@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Gestura",
+  "identifier": "ai.gestura.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Gestura",
+        "label": "main",
+        "visible": false,
+        "width": 800,
+        "height": 640,
+        "decorations": true,
+        "center": true,
+        "skipTaskbar": true,
+        "minimizable": true,
+        "maximizable": true,
+        "closable": true,
+        "resizable": true,
+        "transparent": true,
+        "alwaysOnTop": false,
+        "shadow": true
+      }
+    ]
+  }
+}
+

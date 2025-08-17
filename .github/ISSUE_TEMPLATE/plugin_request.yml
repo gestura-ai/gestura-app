@@ -1,0 +1,335 @@
+name: 🔌 Plugin Request
+description: Request a new plugin for Gestura.app
+title: "[Plugin]: "
+labels: ["plugin", "enhancement", "needs-triage"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a new plugin! Plugins extend Gestura.app's functionality and integrate with third-party services.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      description: Please check all applicable items before submitting
+      options:
+        - label: I have searched existing plugins to ensure this doesn't already exist
+          required: true
+        - label: I have checked the plugin marketplace for similar functionality
+          required: true
+        - label: I understand this is a plugin request, not a core feature request
+          required: true
+
+  - type: input
+    id: plugin_name
+    attributes:
+      label: Plugin Name
+      description: What would you like to call this plugin?
+      placeholder: e.g., "Slack Integration", "Smart Home Controller", "Code Snippets"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: plugin_category
+    attributes:
+      label: Plugin Category
+      description: What category does this plugin belong to?
+      options:
+        - Communication (Slack, Discord, Teams, etc.)
+        - Productivity (Notion, Trello, Calendar, etc.)
+        - Development (GitHub, VS Code, Terminal, etc.)
+        - Entertainment (Spotify, YouTube, Netflix, etc.)
+        - Smart Home (Philips Hue, Nest, Alexa, etc.)
+        - System Utilities (File management, System control, etc.)
+        - Accessibility (Screen reader, Magnifier, etc.)
+        - Health & Fitness (Activity tracking, Reminders, etc.)
+        - Finance (Banking, Budgeting, Trading, etc.)
+        - Education (Learning platforms, Note-taking, etc.)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Plugin Description
+      description: Describe what this plugin would do
+      placeholder: |
+        Provide a clear description of the plugin's functionality:
+        - What service/application would it integrate with?
+        - What actions would users be able to perform?
+        - How would it enhance the Gestura experience?
+    validations:
+      required: true
+
+  - type: textarea
+    id: target_service
+    attributes:
+      label: Target Service/Application
+      description: What service or application would this plugin integrate with?
+      placeholder: |
+        Service details:
+        - Service name and website
+        - API availability (REST, GraphQL, WebSocket, etc.)
+        - Authentication method (OAuth, API key, etc.)
+        - Documentation links
+    validations:
+      required: true
+
+  - type: textarea
+    id: voice_commands
+    attributes:
+      label: Voice Commands
+      description: What voice commands would this plugin support?
+      placeholder: |
+        Example voice commands:
+        - "Send message to John on Slack"
+        - "Turn on living room lights"
+        - "Play my workout playlist"
+        - "Create a new task in Trello"
+    validations:
+      required: true
+
+  - type: textarea
+    id: gestures
+    attributes:
+      label: Gesture Controls
+      description: What gesture controls would this plugin support?
+      placeholder: |
+        Example gestures:
+        - Swipe right: Next track
+        - Tap: Play/pause
+        - Circle: Volume up
+        - Pinch: Zoom in/out
+    validations:
+      required: false
+
+  - type: textarea
+    id: haptic_feedback
+    attributes:
+      label: Haptic Feedback
+      description: How would this plugin use haptic feedback?
+      placeholder: |
+        Haptic feedback scenarios:
+        - Single pulse: Message sent successfully
+        - Double pulse: Error occurred
+        - Long vibration: Incoming notification
+        - Custom pattern: Specific events
+    validations:
+      required: false
+
+  - type: textarea
+    id: use_cases
+    attributes:
+      label: Use Cases
+      description: Provide specific examples of how users would use this plugin
+      placeholder: |
+        Detailed use cases:
+        1. As a remote worker, I want to quickly join Zoom meetings by saying "Join my next meeting"
+        2. As a smart home user, I want to control lights with gestures while cooking
+        3. As a developer, I want to create GitHub issues using voice commands
+    validations:
+      required: true
+
+  - type: dropdown
+    id: complexity
+    attributes:
+      label: Development Complexity
+      description: How complex do you think this plugin would be to develop?
+      options:
+        - Simple (basic API calls, simple UI)
+        - Medium (moderate API integration, some UI)
+        - Complex (advanced features, custom UI)
+        - Very Complex (real-time features, complex workflows)
+        - Not sure
+    validations:
+      required: false
+
+  - type: textarea
+    id: api_requirements
+    attributes:
+      label: API Requirements
+      description: What API capabilities would be needed?
+      placeholder: |
+        API requirements:
+        - Authentication method
+        - Required endpoints
+        - Rate limits
+        - Real-time capabilities (WebSocket, webhooks)
+        - Special permissions needed
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: permissions
+    attributes:
+      label: Required Permissions
+      description: What permissions would this plugin need?
+      options:
+        - label: Network access
+        - label: File system access
+        - label: System commands
+        - label: Notifications
+        - label: Clipboard access
+        - label: Window management
+        - label: Voice control
+        - label: Gesture control
+        - label: Ring control
+
+  - type: textarea
+    id: configuration
+    attributes:
+      label: Configuration Options
+      description: What settings would users need to configure?
+      placeholder: |
+        Configuration options:
+        - API keys/tokens
+        - Server URLs
+        - User preferences
+        - Custom commands
+        - Notification settings
+    validations:
+      required: false
+
+  - type: textarea
+    id: ui_requirements
+    attributes:
+      label: UI Requirements
+      description: What user interface elements would this plugin need?
+      placeholder: |
+        UI elements:
+        - Settings panel
+        - Status indicators
+        - Configuration forms
+        - Dashboard widgets
+        - Notification displays
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How important is this plugin to you?
+      options:
+        - Critical (essential for my workflow)
+        - High (would significantly improve my experience)
+        - Medium (would be nice to have)
+        - Low (minor convenience)
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Current Alternatives
+      description: How do you currently accomplish these tasks?
+      placeholder: |
+        Current workflow:
+        - Manual steps you take now
+        - Other tools you use
+        - Workarounds you've implemented
+        - Pain points with current approach
+    validations:
+      required: false
+
+  - type: textarea
+    id: similar_plugins
+    attributes:
+      label: Similar Plugins/Extensions
+      description: Are there similar plugins in other applications?
+      placeholder: |
+        Examples from other platforms:
+        - Browser extensions
+        - VS Code extensions
+        - Alfred workflows
+        - Zapier integrations
+    validations:
+      required: false
+
+  - type: dropdown
+    id: user_base
+    attributes:
+      label: Potential User Base
+      description: How many users do you think would benefit from this plugin?
+      options:
+        - Very Large (most Gestura users)
+        - Large (many users in specific domain)
+        - Medium (moderate user base)
+        - Small (niche use case)
+        - Very Small (specialized need)
+    validations:
+      required: false
+
+  - type: textarea
+    id: monetization
+    attributes:
+      label: Monetization Considerations
+      description: Should this be a free or paid plugin?
+      placeholder: |
+        Consider:
+        - Development complexity
+        - Ongoing maintenance needs
+        - Third-party service costs
+        - Value provided to users
+        - Suggested pricing model
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional_features
+    attributes:
+      label: Additional Features
+      description: Any other features or capabilities this plugin should have?
+      placeholder: |
+        Additional features:
+        - Advanced settings
+        - Automation capabilities
+        - Integration with other plugins
+        - Analytics/reporting
+        - Backup/sync features
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution Interest
+      description: Would you be interested in contributing to this plugin?
+      options:
+        - label: I would help with requirements gathering
+        - label: I would help with testing
+        - label: I would help with documentation
+        - label: I would help with development
+        - label: I would provide API access/credentials for testing
+        - label: I would help with user feedback
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional Context
+      description: Any other information that would be helpful
+      placeholder: |
+        Additional context:
+        - Links to service documentation
+        - Screenshots or mockups
+        - Related feature requests
+        - Timeline considerations
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Terms
+      description: By submitting this plugin request, you agree to our terms
+      options:
+        - label: I understand this is a plugin request and not a guarantee of development
+          required: true
+        - label: I agree that this plugin request may be shared publicly for discussion
+          required: true
+        - label: I understand that plugin development may require community contribution
+          required: true

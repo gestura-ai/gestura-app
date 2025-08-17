@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestura Configuration</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+        }
+
+        .config-container {
+            display: flex;
+            width: 100%;
+            max-width: 1400px;
+            margin: 2rem auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 16px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+
+        /* Table of Contents Navigation */
+        .toc-nav {
+            width: 280px;
+            background: #f8f9fa;
+            border-right: 1px solid #e9ecef;
+            padding: 2rem 0;
+        }
+
+        .toc-header {
+            padding: 0 2rem 1rem;
+            border-bottom: 1px solid #e9ecef;
+            margin-bottom: 1rem;
+        }
+
+        .toc-header h2 {
+            color: #1D1D1F;
+            font-size: 1.2rem;
+            font-weight: 600;
+        }
+
+        .toc-list {
+            list-style: none;
+        }
+
+        .toc-item {
+            margin-bottom: 0.5rem;
+        }
+
+        .toc-link {
+            display: block;
+            padding: 0.75rem 2rem;
+            color: #6c757d;
+            text-decoration: none;
+            transition: all 0.2s;
+            border-left: 3px solid transparent;
+        }
+
+        .toc-link:hover {
+            background: rgba(0, 123, 255, 0.1);
+            color: #007bff;
+            border-left-color: #007bff;
+        }
+
+        .toc-link.active {
+            background: rgba(0, 123, 255, 0.15);
+            color: #007bff;
+            border-left-color: #007bff;
+            font-weight: 500;
+        }
+
+        .toc-icon {
+            margin-right: 0.5rem;
+        }
+
+        /* Main Content Area */
+        .config-content {
+            flex: 1;
+            padding: 2rem;
+            overflow-y: auto;
+            max-height: calc(100vh - 4rem);
+        }
+
+        .content-header {
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .content-header h1 {
+            color: #1D1D1F;
+            font-size: 1.8rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .content-header p {
+            color: #6c757d;
+            font-size: 1rem;
+        }
+
+        /* Configuration Sections */
+        .config-section {
+            display: none;
+            animation: fadeIn 0.3s ease-in-out;
+        }
+
+        .config-section.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .section-title {
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: #1D1D1F;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+        }
+
+        .section-title .icon {
+            margin-right: 0.75rem;
+            font-size: 1.2em;
+        }
+
+        .subsection {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            border: 1px solid #e9ecef;
+        }
+
+        .subsection-title {
+            font-size: 1.1rem;
+            font-weight: 500;
+            color: #495057;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+        }
+
+        .subsection-title .icon {
+            margin-right: 0.5rem;
+        }
+
+        .form-group {
+            margin-bottom: 1rem;
+        }
+
+        .form-label {
+            display: block;
+            font-weight: 500;
+            color: #1D1D1F;
+            margin-bottom: 0.5rem;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 0.75rem;
+            border: 2px solid #E5E5EA;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: border-color 0.2s;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: #007AFF;
+        }
+
+        .form-select {
+            width: 100%;
+            padding: 0.75rem;
+            border: 2px solid #E5E5EA;
+            border-radius: 8px;
+            font-size: 1rem;
+            background: white;
+            cursor: pointer;
+        }
+
+        .form-checkbox {
+            margin-right: 0.5rem;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .actions {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            margin-top: 2rem;
+        }
+
+        .button {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 10px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .button.primary {
+            background: #007AFF;
+            color: white;
+        }
+
+        .button.primary:hover {
+            background: #0056CC;
+        }
+
+        .button.secondary {
+            background: #F2F2F7;
+            color: #1D1D1F;
+        }
+
+        .button.secondary:hover {
+            background: #E5E5EA;
+        }
+
+        .status {
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            display: none;
+        }
+
+        .status.success {
+            background: #F0FDF4;
+            border: 1px solid #BBF7D0;
+            color: #166534;
+        }
+
+        .status.error {
+            background: #FEF2F2;
+            border: 1px solid #FECACA;
+            color: #DC2626;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>⚙️ Gestura Configuration</h1>
+            <p>Configure your voice and gesture control settings</p>
+        </div>
+
+        <div class="status" id="statusMessage"></div>
+
+        <form id="configForm">
+            <div class="section">
+                <div class="section-title">🎤 Voice Settings</div>
+                
+                <div class="form-group">
+                    <label class="form-label" for="voiceEngine">Voice Engine</label>
+                    <select class="form-select" id="voiceEngine" name="voice_engine">
+                        <option value="whisper">OpenAI Whisper</option>
+                        <option value="faster-whisper">Faster Whisper</option>
+                        <option value="cloud">Cloud STT</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="hotkey">Global Hotkey</label>
+                    <input type="text" class="form-input" id="hotkey" name="hotkey_listen" placeholder="e.g., Cmd+Shift+G">
+                </div>
+
+                <div class="checkbox-group">
+                    <input type="checkbox" class="form-checkbox" id="voiceActivation" name="voice_activation">
+                    <label for="voiceActivation">Enable voice activation</label>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">🔗 Integration Settings</div>
+                
+                <div class="form-group">
+                    <label class="form-label" for="natsUrl">NATS Server URL</label>
+                    <input type="text" class="form-input" id="natsUrl" name="nats_url" placeholder="nats://127.0.0.1:4222">
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="mcpPort">MCP Server Port</label>
+                    <input type="number" class="form-input" id="mcpPort" name="mcp_port" placeholder="8080">
+                </div>
+
+                <div class="checkbox-group">
+                    <input type="checkbox" class="form-checkbox" id="autoConnect" name="auto_connect">
+                    <label for="autoConnect">Auto-connect to services</label>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">🔒 Security & Privacy</div>
+                
+                <div class="checkbox-group">
+                    <input type="checkbox" class="form-checkbox" id="dataCollection" name="data_collection">
+                    <label for="dataCollection">Allow usage analytics</label>
+                </div>
+
+                <div class="checkbox-group">
+                    <input type="checkbox" class="form-checkbox" id="cloudSync" name="cloud_sync">
+                    <label for="cloudSync">Enable cloud synchronization</label>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="gracePeriod">Shutdown Grace Period (seconds)</label>
+                    <input type="number" class="form-input" id="gracePeriod" name="grace_period_secs" min="1" max="60" value="5">
+                </div>
+            </div>
+        </form>
+
+        <div class="actions">
+            <button type="button" class="button secondary" onclick="loadConfig()">Reset</button>
+            <button type="button" class="button primary" onclick="saveConfig()">Save Configuration</button>
+        </div>
+    </div>
+
+    <script type="module">
+        import { invoke } from '@tauri-apps/api/core';
+
+        const statusMessage = document.getElementById('statusMessage');
+        const configForm = document.getElementById('configForm');
+
+        function showStatus(message, type = 'success') {
+            statusMessage.textContent = message;
+            statusMessage.className = `status ${type}`;
+            statusMessage.style.display = 'block';
+            
+            setTimeout(() => {
+                statusMessage.style.display = 'none';
+            }, 3000);
+        }
+
+        async function loadConfig() {
+            try {
+                const config = await invoke('get_config');
+                
+                // Populate form fields
+                document.getElementById('voiceEngine').value = config.voice?.engine || 'whisper';
+                document.getElementById('hotkey').value = config.hotkey_listen || '';
+                document.getElementById('natsUrl').value = config.nats_url || '';
+                document.getElementById('mcpPort').value = config.mcp_port || 8080;
+                document.getElementById('gracePeriod').value = config.grace_period_secs || 5;
+                
+                // Populate checkboxes
+                document.getElementById('voiceActivation').checked = config.voice?.activation || false;
+                document.getElementById('autoConnect').checked = config.auto_connect || false;
+                document.getElementById('dataCollection').checked = config.data_collection || false;
+                document.getElementById('cloudSync').checked = config.cloud_sync || false;
+                
+                showStatus('Configuration loaded successfully');
+            } catch (error) {
+                console.error('Failed to load config:', error);
+                showStatus(`Failed to load configuration: ${error}`, 'error');
+            }
+        }
+
+        window.saveConfig = async function() {
+            try {
+                const formData = new FormData(configForm);
+                const config = {};
+                
+                // Convert form data to config object
+                for (const [key, value] of formData.entries()) {
+                    if (key.includes('.')) {
+                        // Handle nested properties like voice.engine
+                        const parts = key.split('.');
+                        if (!config[parts[0]]) config[parts[0]] = {};
+                        config[parts[0]][parts[1]] = value;
+                    } else {
+                        config[key] = value;
+                    }
+                }
+                
+                // Handle checkboxes (they won't be in FormData if unchecked)
+                config.voice_activation = document.getElementById('voiceActivation').checked;
+                config.auto_connect = document.getElementById('autoConnect').checked;
+                config.data_collection = document.getElementById('dataCollection').checked;
+                config.cloud_sync = document.getElementById('cloudSync').checked;
+                
+                // Convert numeric fields
+                config.mcp_port = parseInt(config.mcp_port) || 8080;
+                config.grace_period_secs = parseInt(config.grace_period_secs) || 5;
+                
+                await invoke('save_config', { cfg: config });
+                showStatus('Configuration saved successfully');
+            } catch (error) {
+                console.error('Failed to save config:', error);
+                showStatus(`Failed to save configuration: ${error}`, 'error');
+            }
+        };
+
+        window.loadConfig = loadConfig;
+
+        // Load config on page load
+        loadConfig();
+    </script>
+</body>
+</html>

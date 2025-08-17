@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>About Gestura</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .container {
+            max-width: 500px;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 16px;
+            padding: 2rem;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        .logo {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+        }
+
+        .app-name {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #1D1D1F;
+            margin-bottom: 0.5rem;
+        }
+
+        .version {
+            color: #8E8E93;
+            font-size: 1.1rem;
+            margin-bottom: 2rem;
+        }
+
+        .description {
+            color: #1D1D1F;
+            line-height: 1.6;
+            margin-bottom: 2rem;
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            text-align: left;
+        }
+
+        .info-item {
+            background: #F2F2F7;
+            padding: 1rem;
+            border-radius: 8px;
+        }
+
+        .info-label {
+            font-weight: 600;
+            color: #1D1D1F;
+            margin-bottom: 0.25rem;
+        }
+
+        .info-value {
+            color: #8E8E93;
+            font-size: 0.9rem;
+        }
+
+        .links {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+        }
+
+        .link-button {
+            padding: 0.5rem 1rem;
+            background: #007AFF;
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            transition: background-color 0.2s;
+        }
+
+        .link-button:hover {
+            background: #0056CC;
+        }
+
+        .link-button.secondary {
+            background: #F2F2F7;
+            color: #1D1D1F;
+        }
+
+        .link-button.secondary:hover {
+            background: #E5E5EA;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">🎯</div>
+        <div class="app-name">Gestura</div>
+        <div class="version">Version 0.1.0</div>
+        
+        <div class="description">
+            Advanced voice and gesture control application with AI-powered automation, 
+            haptic feedback integration, and comprehensive system management capabilities.
+        </div>
+
+        <div class="info-grid">
+            <div class="info-item">
+                <div class="info-label">Platform</div>
+                <div class="info-value">macOS / Windows / Linux</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Framework</div>
+                <div class="info-value">Tauri v2 + Rust</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Voice Engine</div>
+                <div class="info-value">OpenAI Whisper</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">AI Integration</div>
+                <div class="info-value">MCP Protocol</div>
+            </div>
+        </div>
+
+        <div class="links">
+            <a href="#" class="link-button secondary" onclick="window.close()">Close</a>
+            <a href="#" class="link-button" onclick="openDocs()">Documentation</a>
+        </div>
+    </div>
+
+    <script>
+        function openDocs() {
+            // Open documentation in default browser
+            // This would be implemented with Tauri's shell API
+            alert('Documentation will open in your default browser');
+        }
+    </script>
+</body>
+</html>

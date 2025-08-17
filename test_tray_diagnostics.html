@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Tray Diagnostics Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .result { margin: 10px 0; padding: 10px; border-radius: 5px; }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .info { background: #d1ecf1; color: #0c5460; }
+        button { padding: 10px 20px; margin: 5px; }
+    </style>
+</head>
+<body>
+    <h1>🔍 Tray Diagnostics Test</h1>
+    
+    <button onclick="checkTrayStatus()">Check Tray Status</button>
+    <button onclick="testListening()">Test Listening</button>
+    <button onclick="checkPermissions()">Check Permissions</button>
+    
+    <div id="results"></div>
+
+    <script type="module">
+        const { invoke } = window.__TAURI__.core;
+        
+        window.checkTrayStatus = async function() {
+            try {
+                const result = await invoke('get_tray_diagnostic_info');
+                showResult('Tray Status', result, 'info');
+                
+                if (result.status === 'healthy') {
+                    showResult('✅ TRAY STATUS', 'Single tray icon confirmed - no duplicates!', 'success');
+                } else {
+                    showResult('⚠️ TRAY ISSUE', `Status: ${result.status}`, 'error');
+                }
+            } catch (error) {
+                showResult('❌ ERROR', `Failed to check tray status: ${error}`, 'error');
+            }
+        };
+        
+        window.testListening = async function() {
+            try {
+                const speechStatus = await invoke('get_speech_status');
+                showResult('Speech Status', `Currently recording: ${speechStatus}`, 'info');
+                
+                // Test toggle listening
+                const toggleResult = await invoke('toggle_listening');
+                showResult('Toggle Listening', toggleResult, 'info');
+                
+            } catch (error) {
+                showResult('❌ LISTENING ERROR', `Failed to test listening: ${error}`, 'error');
+            }
+        };
+        
+        window.checkPermissions = async function() {
+            try {
+                const permissions = await invoke('check_system_permissions');
+                showResult('System Permissions', permissions, 'info');
+                
+                const granted = permissions.summary.granted;
+                const required = permissions.summary.required;
+                
+                if (granted >= required) {
+                    showResult('✅ PERMISSIONS', `All required permissions granted (${granted}/${required})`, 'success');
+                } else {
+                    showResult('⚠️ PERMISSIONS', `Missing permissions (${granted}/${required})`, 'error');
+                }
+            } catch (error) {
+                showResult('❌ PERMISSIONS ERROR', `Failed to check permissions: ${error}`, 'error');
+            }
+        };
+        
+        function showResult(title, data, type) {
+            const results = document.getElementById('results');
+            const div = document.createElement('div');
+            div.className = `result ${type}`;
+            
+            if (typeof data === 'object') {
+                div.innerHTML = `<strong>${title}:</strong><pre>${JSON.stringify(data, null, 2)}</pre>`;
+            } else {
+                div.innerHTML = `<strong>${title}:</strong> ${data}`;
+            }
+            
+            results.appendChild(div);
+            results.scrollTop = results.scrollHeight;
+        }
+        
+        // Auto-run diagnostics on load
+        setTimeout(() => {
+            checkTrayStatus();
+            checkPermissions();
+        }, 1000);
+    </script>
+</body>
+</html>
