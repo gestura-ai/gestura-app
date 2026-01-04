@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestura Chat</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .chat-header {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 1rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            text-align: center;
+        }
+
+        .chat-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 1rem;
+            overflow: hidden;
+        }
+
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 12px;
+            margin-bottom: 1rem;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        }
+
+        .message {
+            margin-bottom: 1rem;
+            padding: 0.75rem 1rem;
+            border-radius: 18px;
+            max-width: 80%;
+            word-wrap: break-word;
+        }
+
+        .message.user {
+            background: #007AFF;
+            color: white;
+            margin-left: auto;
+            text-align: right;
+        }
+
+        .message.agent {
+            background: #F2F2F7;
+            color: #1D1D1F;
+            margin-right: auto;
+        }
+
+        .message.system {
+            background: #FF9500;
+            color: white;
+            margin: 0 auto;
+            text-align: center;
+            font-size: 0.9em;
+        }
+
+        .input-container {
+            display: flex;
+            gap: 0.5rem;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 1rem;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        }
+
+        .message-input {
+            flex: 1;
+            padding: 0.75rem 1rem;
+            border: 2px solid #E5E5EA;
+            border-radius: 20px;
+            font-size: 1rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .message-input:focus {
+            border-color: #007AFF;
+        }
+
+        .send-button {
+            padding: 0.75rem 1.5rem;
+            background: #007AFF;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .send-button:hover {
+            background: #0056CC;
+        }
+
+        .send-button:disabled {
+            background: #C7C7CC;
+            cursor: not-allowed;
+        }
+
+        .status {
+            text-align: center;
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 0.9em;
+            margin-bottom: 0.5rem;
+        }
+
+        .typing-indicator {
+            display: none;
+            padding: 0.5rem 1rem;
+            color: #8E8E93;
+            font-style: italic;
+        }
+
+        .typing-indicator.show {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-header">
+        <h2>💬 Gestura Agent Chat</h2>
+        <div class="status" id="status">Connected to default agent</div>
+    </div>
+
+    <div class="chat-container">
+        <div class="messages" id="messages">
+            <div class="message system">
+                Welcome to Gestura! I'm your AI assistant. How can I help you today?
+            </div>
+        </div>
+
+        <div class="typing-indicator" id="typing">
+            Agent is typing...
+        </div>
+
+        <div class="input-container">
+            <input 
+                type="text" 
+                class="message-input" 
+                id="messageInput" 
+                placeholder="Type your message..."
+                maxlength="1000"
+            >
+            <button class="send-button" id="sendButton">Send</button>
+        </div>
+    </div>
+
+    <script type="module">
+        import { invoke } from '@tauri-apps/api/core';
+
+        const messagesContainer = document.getElementById('messages');
+        const messageInput = document.getElementById('messageInput');
+        const sendButton = document.getElementById('sendButton');
+        const typingIndicator = document.getElementById('typing');
+        const statusElement = document.getElementById('status');
+
+        let isProcessing = false;
+
+        function addMessage(content, type = 'user') {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+            messageDiv.textContent = content;
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        function showTyping() {
+            typingIndicator.classList.add('show');
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        function hideTyping() {
+            typingIndicator.classList.remove('show');
+        }
+
+        async function sendMessage() {
+            const message = messageInput.value.trim();
+            if (!message || isProcessing) return;
+
+            isProcessing = true;
+            sendButton.disabled = true;
+            messageInput.disabled = true;
+
+            // Add user message
+            addMessage(message, 'user');
+            messageInput.value = '';
+
+            // Show typing indicator
+            showTyping();
+
+            try {
+                // For now, simulate an AI response
+                // TODO: Implement actual AI processing through speech module
+                await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate processing time
+
+                const responses = [
+                    "I understand you said: \"" + message + "\". How can I help you with that?",
+                    "That's interesting! Could you tell me more about what you're looking for?",
+                    "I'm here to help. What would you like me to do with that information?",
+                    "Thanks for sharing that. Is there something specific you'd like assistance with?"
+                ];
+
+                const response = responses[Math.floor(Math.random() * responses.length)];
+
+                hideTyping();
+                addMessage(response, 'agent');
+            } catch (error) {
+                hideTyping();
+                addMessage(`Error: ${error}`, 'system');
+                console.error('Failed to send message:', error);
+            } finally {
+                isProcessing = false;
+                sendButton.disabled = false;
+                messageInput.disabled = false;
+                messageInput.focus();
+            }
+        }
+
+        // Event listeners
+        sendButton.addEventListener('click', sendMessage);
+        messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // Focus input on load
+        messageInput.focus();
+
+        // Listen for speech-to-text messages from the backend
+        async function setupEventListeners() {
+            try {
+                const { listen } = await import('@tauri-apps/api/event');
+
+                // Listen for chat messages from speech processing
+                await listen('chat-message', (event) => {
+                    const data = event.payload;
+                    console.log('Received chat message:', data);
+
+                    if (data.type === 'user') {
+                        addMessage(data.message, 'user');
+                    } else if (data.type === 'assistant') {
+                        addMessage(data.message, 'agent');
+                    }
+                });
+
+                console.log('Event listeners set up successfully');
+            } catch (error) {
+                console.error('Failed to set up event listeners:', error);
+            }
+        }
+
+        // Check agent status
+        async function checkAgentStatus() {
+            try {
+                // For now, just show a default status
+                statusElement.textContent = 'Ready for voice and text input';
+            } catch (error) {
+                statusElement.textContent = 'Agent connection error';
+                console.error('Failed to get agent status:', error);
+            }
+        }
+
+        // Initialize
+        setupEventListeners();
+        checkAgentStatus();
+    </script>
+</body>
+</html>

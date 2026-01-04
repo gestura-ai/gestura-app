@@ -1,0 +1,261 @@
+name: ✨ Feature Request
+description: Suggest a new feature or enhancement for Gestura.app
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a new feature! Please provide as much detail as possible to help us understand your request.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      description: Please check all applicable items before submitting
+      options:
+        - label: I have searched existing issues to ensure this feature hasn't been requested
+          required: true
+        - label: I have checked the roadmap to see if this feature is already planned
+          required: true
+        - label: This is a feature request, not a bug report
+          required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Feature Category
+      description: What category does this feature belong to?
+      options:
+        - Voice Recognition
+        - Gesture Recognition
+        - Haptic Feedback
+        - User Interface
+        - Plugin System
+        - Scripting
+        - Third-party Integrations
+        - Accessibility
+        - Performance
+        - Security/Privacy
+        - Developer Tools
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Feature Summary
+      description: A brief, clear summary of the feature you'd like to see
+      placeholder: Summarize your feature request in 1-2 sentences
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What problem does this feature solve?
+      placeholder: |
+        Describe the problem or limitation you're experiencing:
+        - What are you trying to accomplish?
+        - What's currently preventing you from doing this?
+        - How does this impact your workflow?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe your ideal solution
+      placeholder: |
+        Describe how you envision this feature working:
+        - What would the user interface look like?
+        - How would users interact with this feature?
+        - What would be the expected behavior?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternative Solutions
+      description: Have you considered any alternative approaches?
+      placeholder: |
+        Describe any alternative solutions you've considered:
+        - Other ways to solve the same problem
+        - Existing workarounds you're using
+        - Similar features in other applications
+    validations:
+      required: false
+
+  - type: textarea
+    id: use_cases
+    attributes:
+      label: Use Cases
+      description: Provide specific examples of how this feature would be used
+      placeholder: |
+        Example use cases:
+        1. As a [user type], I want to [action] so that [benefit]
+        2. When [situation], I need to [action] to achieve [goal]
+        3. [Specific scenario where this feature would be valuable]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How important is this feature to you?
+      options:
+        - Critical (blocking my workflow)
+        - High (would significantly improve my experience)
+        - Medium (would be nice to have)
+        - Low (minor improvement)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: complexity
+    attributes:
+      label: Estimated Complexity
+      description: How complex do you think this feature would be to implement?
+      options:
+        - Simple (minor UI change, configuration option)
+        - Medium (new functionality, moderate development)
+        - Complex (major feature, significant development)
+        - Very Complex (fundamental changes, extensive development)
+        - Not sure
+    validations:
+      required: false
+
+  - type: textarea
+    id: mockups
+    attributes:
+      label: Mockups/Wireframes
+      description: If you have any visual mockups, wireframes, or examples, please share them
+      placeholder: Drag and drop images here or paste URLs to mockups/examples
+    validations:
+      required: false
+
+  - type: textarea
+    id: technical_details
+    attributes:
+      label: Technical Details
+      description: Any technical considerations or implementation details
+      placeholder: |
+        If you have technical knowledge, please share:
+        - API requirements
+        - Integration needs
+        - Performance considerations
+        - Security implications
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: platforms
+    attributes:
+      label: Target Platforms
+      description: Which platforms should this feature support?
+      options:
+        - label: macOS
+        - label: Windows
+        - label: Linux
+        - label: All platforms
+        - label: Platform-specific (please specify in additional context)
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: What would need to be true for this feature to be considered complete?
+      placeholder: |
+        Define success criteria:
+        - [ ] User can perform [specific action]
+        - [ ] Feature works on [platforms]
+        - [ ] Performance meets [specific requirements]
+        - [ ] Integration with [existing features] works
+    validations:
+      required: false
+
+  - type: textarea
+    id: related_features
+    attributes:
+      label: Related Features
+      description: Are there any existing features this would interact with?
+      placeholder: |
+        List related features or components:
+        - How would this integrate with existing voice commands?
+        - Would this affect gesture recognition?
+        - Any plugin system implications?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: user_type
+    attributes:
+      label: User Type
+      description: What type of user would primarily benefit from this feature?
+      options:
+        - General users
+        - Power users
+        - Developers
+        - Accessibility users
+        - Enterprise users
+        - All users
+    validations:
+      required: true
+
+  - type: textarea
+    id: research
+    attributes:
+      label: Research & References
+      description: Any research, articles, or references that support this feature request
+      placeholder: |
+        Include any supporting information:
+        - Links to research papers
+        - Examples from other applications
+        - User studies or surveys
+        - Industry standards or best practices
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional Context
+      description: Any other information that would be helpful
+      placeholder: |
+        Add any other context:
+        - Why is this important to you?
+        - How many users might benefit?
+        - Timeline considerations
+        - Budget implications
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      description: Would you be interested in contributing to this feature?
+      options:
+        - label: I would be willing to help with design/mockups
+        - label: I would be willing to help with testing
+        - label: I would be willing to help with documentation
+        - label: I would be willing to help with development (if open source)
+        - label: I would be willing to provide feedback during development
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Terms
+      description: By submitting this feature request, you agree to our terms
+      options:
+        - label: I understand this is a feature request and not a guarantee of implementation
+          required: true
+        - label: I agree that this feature request may be shared publicly for discussion
+          required: true

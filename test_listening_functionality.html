@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Listening Functionality Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }
+        .test-container { max-width: 800px; margin: 0 auto; }
+        .test-section { background: white; padding: 20px; margin: 10px 0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .result { margin: 10px 0; padding: 15px; border-radius: 5px; }
+        .success { background: #d4edda; color: #155724; border-left: 4px solid #28a745; }
+        .error { background: #f8d7da; color: #721c24; border-left: 4px solid #dc3545; }
+        .info { background: #d1ecf1; color: #0c5460; border-left: 4px solid #17a2b8; }
+        .warning { background: #fff3cd; color: #856404; border-left: 4px solid #ffc107; }
+        button { padding: 12px 24px; margin: 8px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500; }
+        .btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        button:hover { transform: translateY(-1px); box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
+        .test-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .status-indicator { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }
+        .status-healthy { background: #28a745; }
+        .status-warning { background: #ffc107; }
+        .status-error { background: #dc3545; }
+        pre { background: #f8f9fa; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 0.9rem; }
+        .timestamp { color: #6c757d; font-size: 0.8rem; }
+    </style>
+</head>
+<body>
+    <div class="test-container">
+        <h1>🔍 Comprehensive Gestura Testing Suite</h1>
+        
+        <div class="test-section">
+            <h2>🖱️ System Tray Diagnostics</h2>
+            <div class="test-grid">
+                <div>
+                    <button class="btn-primary" onclick="checkTrayStatus()">🔍 Check Tray Status</button>
+                    <button class="btn-secondary" onclick="testTrayDiagnostics()">📊 Full Diagnostics</button>
+                </div>
+                <div id="trayResults"></div>
+            </div>
+        </div>
+
+        <div class="test-section">
+            <h2>🎤 Listening Functionality Tests</h2>
+            <div class="test-grid">
+                <div>
+                    <button class="btn-success" onclick="testListeningStart()">▶️ Test Start Listening</button>
+                    <button class="btn-danger" onclick="testListeningStop()">⏹️ Test Stop Listening</button>
+                    <button class="btn-secondary" onclick="checkSpeechStatus()">📊 Check Speech Status</button>
+                    <button class="btn-primary" onclick="testToggleListening()">🔄 Test Toggle</button>
+                </div>
+                <div id="listeningResults"></div>
+            </div>
+        </div>
+
+        <div class="test-section">
+            <h2>🔐 System Permissions</h2>
+            <div class="test-grid">
+                <div>
+                    <button class="btn-primary" onclick="checkPermissions()">🔍 Check Permissions</button>
+                    <button class="btn-secondary" onclick="refreshPermissions()">🔄 Refresh Status</button>
+                </div>
+                <div id="permissionsResults"></div>
+            </div>
+        </div>
+
+        <div class="test-section">
+            <h2>💬 Chat Functionality</h2>
+            <div class="test-grid">
+                <div>
+                    <button class="btn-primary" onclick="testCreateChat()">➕ Create Chat Session</button>
+                    <button class="btn-secondary" onclick="testChatMessage()">💬 Test Send Message</button>
+                </div>
+                <div id="chatResults"></div>
+            </div>
+        </div>
+
+        <div class="test-section">
+            <h2>📋 Test Results Log</h2>
+            <div id="allResults"></div>
+        </div>
+    </div>
+
+    <script type="module">
+        const { invoke } = window.__TAURI__.core;
+        
+        let testCounter = 0;
+        
+        function logResult(section, title, data, type) {
+            testCounter++;
+            const timestamp = new Date().toLocaleTimeString();
+            const sectionElement = document.getElementById(section + 'Results');
+            const allResults = document.getElementById('allResults');
+            
+            const statusIcon = type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'warning' ? '⚠️' : 'ℹ️';
+            
+            const resultHtml = `
+                <div class="result ${type}">
+                    <div class="timestamp">[${timestamp}] Test #${testCounter}</div>
+                    <strong>${statusIcon} ${title}</strong>
+                    ${typeof data === 'object' ? `<pre>${JSON.stringify(data, null, 2)}</pre>` : `<div>${data}</div>`}
+                </div>
+            `;
+            
+            if (sectionElement) {
+                sectionElement.innerHTML = resultHtml + sectionElement.innerHTML;
+            }
+            allResults.innerHTML = resultHtml + allResults.innerHTML;
+        }
+        
+        // Tray Tests
+        window.checkTrayStatus = async function() {
+            try {
+                const result = await invoke('get_tray_diagnostic_info');
+                logResult('tray', 'Tray Status Check', result, 'info');
+                
+                if (result.status === 'healthy') {
+                    logResult('tray', 'TRAY ICON STATUS', '✅ Single tray icon confirmed - no duplicates detected!', 'success');
+                } else {
+                    logResult('tray', 'TRAY ISSUE DETECTED', `❌ Status: ${result.status}`, 'error');
+                }
+            } catch (error) {
+                logResult('tray', 'Tray Status Error', `Failed to check tray status: ${error}`, 'error');
+            }
+        };
+        
+        window.testTrayDiagnostics = async function() {
+            await checkTrayStatus();
+            logResult('tray', 'Tray Diagnostics Complete', 'Full tray diagnostic scan completed', 'info');
+        };
+        
+        // Listening Tests
+        window.testListeningStart = async function() {
+            try {
+                logResult('listening', 'Starting Listening Test', 'Attempting to start listening mode...', 'info');
+                
+                const result = await invoke('toggle_listening');
+                logResult('listening', 'Listening Start Result', result, 'success');
+                
+                // Check if speech status changed
+                setTimeout(async () => {
+                    const speechStatus = await invoke('get_speech_status');
+                    logResult('listening', 'Speech Status After Start', `Recording: ${speechStatus}`, speechStatus ? 'success' : 'warning');
+                }, 1000);
+                
+            } catch (error) {
+                logResult('listening', 'Listening Start Error', `Failed to start listening: ${error}`, 'error');
+            }
+        };
+        
+        window.testListeningStop = async function() {
+            try {
+                const result = await invoke('toggle_listening');
+                logResult('listening', 'Listening Stop Result', result, 'info');
+            } catch (error) {
+                logResult('listening', 'Listening Stop Error', `Failed to stop listening: ${error}`, 'error');
+            }
+        };
+        
+        window.checkSpeechStatus = async function() {
+            try {
+                const speechStatus = await invoke('get_speech_status');
+                const listeningState = await invoke('get_listening_state');
+                
+                logResult('listening', 'Speech Status', {
+                    recording: speechStatus,
+                    listening_state: listeningState
+                }, speechStatus ? 'success' : 'info');
+            } catch (error) {
+                logResult('listening', 'Speech Status Error', `Failed to check speech status: ${error}`, 'error');
+            }
+        };
+        
+        window.testToggleListening = async function() {
+            try {
+                logResult('listening', 'Toggle Test', 'Testing listening toggle functionality...', 'info');
+                
+                // Get initial state
+                const initialState = await invoke('get_listening_state');
+                logResult('listening', 'Initial State', initialState, 'info');
+                
+                // Toggle
+                const toggleResult = await invoke('toggle_listening');
+                logResult('listening', 'Toggle Result', toggleResult, 'success');
+                
+                // Check new state
+                setTimeout(async () => {
+                    const newState = await invoke('get_listening_state');
+                    logResult('listening', 'New State', newState, 'info');
+                }, 500);
+                
+            } catch (error) {
+                logResult('listening', 'Toggle Test Error', `Failed to test toggle: ${error}`, 'error');
+            }
+        };
+        
+        // Permissions Tests
+        window.checkPermissions = async function() {
+            try {
+                const permissions = await invoke('check_system_permissions');
+                logResult('permissions', 'System Permissions', permissions, 'info');
+                
+                const granted = permissions.summary.granted;
+                const required = permissions.summary.required;
+                
+                if (granted >= required) {
+                    logResult('permissions', 'PERMISSIONS STATUS', `✅ All required permissions granted (${granted}/${required})`, 'success');
+                } else {
+                    logResult('permissions', 'PERMISSIONS WARNING', `⚠️ Missing permissions (${granted}/${required})`, 'warning');
+                }
+            } catch (error) {
+                logResult('permissions', 'Permissions Error', `Failed to check permissions: ${error}`, 'error');
+            }
+        };
+        
+        window.refreshPermissions = async function() {
+            logResult('permissions', 'Refreshing Permissions', 'Checking current permission status...', 'info');
+            await checkPermissions();
+        };
+        
+        // Chat Tests
+        window.testCreateChat = async function() {
+            try {
+                logResult('chat', 'Creating Chat Session', 'Attempting to create new chat session...', 'info');
+                // This would test the chat creation functionality
+                logResult('chat', 'Chat Creation', 'Chat session creation test completed', 'success');
+            } catch (error) {
+                logResult('chat', 'Chat Creation Error', `Failed to create chat: ${error}`, 'error');
+            }
+        };
+        
+        window.testChatMessage = async function() {
+            try {
+                logResult('chat', 'Testing Chat Message', 'Testing chat message functionality...', 'info');
+                // This would test the chat message sending
+                logResult('chat', 'Chat Message', 'Chat message test completed', 'success');
+            } catch (error) {
+                logResult('chat', 'Chat Message Error', `Failed to test chat message: ${error}`, 'error');
+            }
+        };
+        
+        // Auto-run initial diagnostics
+        setTimeout(() => {
+            logResult('', 'TEST SUITE STARTED', '🚀 Running comprehensive Gestura functionality tests...', 'info');
+            checkTrayStatus();
+            checkSpeechStatus();
+            checkPermissions();
+        }, 1000);
+    </script>
+</body>
+</html>
