@@ -1,9 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gestura Permissions</title>
+    <link rel="stylesheet" href="icons.css">
     <style>
         * {
             margin: 0;
@@ -192,15 +194,16 @@
         }
     </style>
 </head>
+
 <body>
     <div class="container">
         <div class="header">
-            <h1>🔐 System Permissions</h1>
+            <h1><span class="icon-lock-open"></span> System Permissions</h1>
             <p>Gestura needs these permissions to function properly</p>
         </div>
 
         <div class="warning" id="warningBanner" style="display: none;">
-            <div class="warning-title">⚠️ Missing Required Permissions</div>
+            <div class="warning-title"><span class="icon-warning"></span> Missing Required Permissions</div>
             <div class="warning-text">
                 Some features may not work correctly until all required permissions are granted.
             </div>
@@ -267,12 +270,12 @@
         function createPermissionItem(permission, status) {
             const item = document.createElement('div');
             item.className = `permission-item ${status}`;
-            
-            const statusIcon = status === 'granted' ? '✓' : 
-                              status === 'denied' ? '✗' : '?';
-            
+
+            const statusIcon = status === 'granted' ? '<span class="icon-check"></span>' :
+                status === 'denied' ? '<span class="icon-x"></span>' : '?';
+
             const statusText = status === 'granted' ? 'Granted' :
-                              status === 'denied' ? 'Denied' : 'Pending';
+                status === 'denied' ? 'Denied' : 'Pending';
 
             item.innerHTML = `
                 <div class="permission-info">
@@ -285,7 +288,7 @@
                     ${status !== 'granted' ? `<button class="request-button" onclick="requestPermission('${permission.id}')">Request</button>` : ''}
                 </div>
             `;
-            
+
             return item;
         }
 
@@ -307,7 +310,7 @@
                     console.error(`Failed to check permission ${permission.id}:`, error);
                     const item = createPermissionItem(permission, 'pending');
                     permissionsList.appendChild(item);
-                    
+
                     if (permission.required) {
                         hasWarnings = true;
                     }
@@ -317,7 +320,7 @@
             warningBanner.style.display = hasWarnings ? 'block' : 'none';
         }
 
-        window.requestPermission = async function(permissionId) {
+        window.requestPermission = async function (permissionId) {
             try {
                 await invoke('request_permission', { permission: permissionId });
                 // Refresh the status after requesting
@@ -346,4 +349,5 @@
         }
     </script>
 </body>
+
 </html>

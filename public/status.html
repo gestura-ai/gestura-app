@@ -1,9 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gestura System Status</title>
+    <link rel="stylesheet" href="icons.css">
     <style>
         * {
             margin: 0;
@@ -110,10 +112,11 @@
         }
     </style>
 </head>
+
 <body>
     <div class="container">
         <div class="header">
-            <h1>📊 System Status</h1>
+            <h1><span class="icon-chart"></span> System Status</h1>
             <p>Real-time monitoring of Gestura components</p>
         </div>
 
@@ -141,13 +144,13 @@
         function createStatusCard(item, status) {
             const card = document.createElement('div');
             card.className = `status-card ${status.level}`;
-            
+
             card.innerHTML = `
                 <div class="status-title">${item.title}</div>
                 <div class="status-value ${status.level}">${status.value}</div>
                 <div class="status-description">${status.description || item.description}</div>
             `;
-            
+
             return card;
         }
 
@@ -158,9 +161,9 @@
                 try {
                     // Mock status for now - replace with actual system checks
                     const status = {
-                        value: item.id === 'agents' ? '1 Active' : 
-                               item.id === 'memory' ? '45 MB' :
-                               item.id === 'nats' ? 'Disconnected' : 'Healthy',
+                        value: item.id === 'agents' ? '1 Active' :
+                            item.id === 'memory' ? '45 MB' :
+                                item.id === 'nats' ? 'Disconnected' : 'Healthy',
                         level: item.id === 'nats' ? 'warning' : 'healthy',
                         description: item.id === 'nats' ? 'Using memory bus fallback' : item.description
                     };
@@ -186,4 +189,5 @@
         setInterval(loadStatus, 30000);
     </script>
 </body>
+
 </html>

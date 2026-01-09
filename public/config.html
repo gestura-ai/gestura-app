@@ -1,9 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gestura Configuration</title>
+    <link rel="stylesheet" href="icons.css">
     <style>
         * {
             margin: 0;
@@ -138,8 +140,15 @@
         }
 
         @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
         .section-title {
@@ -201,7 +210,9 @@
             font-size: 0.95rem;
         }
 
-        .form-input, .form-select, .form-textarea {
+        .form-input,
+        .form-select,
+        .form-textarea {
             width: 100%;
             padding: 0.75rem;
             border: 1px solid var(--border-color, #e0e0e0);
@@ -212,7 +223,9 @@
             transition: border-color 0.2s;
         }
 
-        .form-input:focus, .form-select:focus, .form-textarea:focus {
+        .form-input:focus,
+        .form-select:focus,
+        .form-textarea:focus {
             outline: none;
             border-color: #007bff;
         }
@@ -566,63 +579,341 @@
         }
 
         @media (max-width: 768px) {
-            .form-row, .form-row.three-col {
+
+            .form-row,
+            .form-row.three-col {
                 grid-template-columns: 1fr;
             }
         }
+
+        .input-with-button {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .input-with-button .form-input,
+        .input-with-button .form-select {
+            flex: 1;
+        }
+
+        .btn-sm {
+            padding: 0.375rem 0.75rem;
+            font-size: 0.875rem;
+        }
+
+        .test-result {
+            margin-left: 1rem;
+            font-size: 0.875rem;
+        }
+
+        .test-result.success {
+            color: #28a745;
+        }
+
+        .test-result.error {
+            color: #dc3545;
+        }
+
+        .test-result.testing {
+            color: #6c757d;
+        }
+
+        .provider-config-box {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-top: 0.5rem;
+        }
+
+        .form-range {
+            width: 100%;
+            height: 0.5rem;
+            background: var(--bg-tertiary);
+            border-radius: 0.25rem;
+            outline: none;
+        }
+
+        .range-value {
+            display: inline-block;
+            min-width: 2.5rem;
+            text-align: center;
+            font-weight: 500;
+            color: var(--accent);
+        }
+
+        code {
+            background: var(--bg-tertiary);
+            padding: 0.125rem 0.375rem;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.875rem;
+        }
+
+        /* Whisper Model Download UI */
+        .model-status-banner {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.75rem;
+            padding: 1rem;
+            background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%);
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+
+        .model-status-banner.ready {
+            background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+        }
+
+        .model-status-banner .status-icon {
+            font-size: 1.5rem;
+        }
+
+        .model-status-banner .status-message p {
+            margin: 0.25rem 0 0 0;
+            font-size: 0.875rem;
+            color: #666;
+        }
+
+        .model-select-container {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .model-select-container .form-select {
+            flex: 1;
+        }
+
+        .model-ready-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            color: #22c55e;
+            font-weight: 500;
+            padding: 0.5rem 1rem;
+            background: rgba(34, 197, 94, 0.1);
+            border-radius: 4px;
+            font-size: 0.875rem;
+        }
+
+        .model-info {
+            background: var(--bg-tertiary);
+            border-radius: 6px;
+            padding: 0.75rem;
+            margin-top: 0.5rem;
+            font-size: 0.875rem;
+        }
+
+        .model-info-row {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .model-info-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .model-info-label {
+            font-weight: 500;
+            color: var(--text-secondary);
+            min-width: 80px;
+        }
+
+        .download-progress {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 1rem;
+            margin: 1rem 0;
+        }
+
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 0.5rem;
+            font-size: 0.875rem;
+        }
+
+        .progress-bar-container {
+            width: 100%;
+            height: 8px;
+            background: var(--border-color);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), #27ae60);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .progress-details {
+            margin-top: 0.5rem;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            text-align: center;
+        }
+
+        .divider {
+            border: none;
+            border-top: 1px solid var(--border-color);
+            margin: 1rem 0;
+        }
+
+        .label-hint {
+            font-weight: normal;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        /* Custom Modal Dialog */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 10000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal-overlay.visible {
+            display: flex;
+        }
+
+        .modal-dialog {
+            background: var(--section-background, #ffffff);
+            border-radius: 12px;
+            padding: 24px;
+            max-width: 420px;
+            width: 90%;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--border-color, #e0e0e0);
+        }
+
+        .modal-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: var(--text-color);
+        }
+
+        .modal-content {
+            color: var(--text-secondary, #666);
+            font-size: 0.9rem;
+            line-height: 1.5;
+            margin-bottom: 20px;
+            white-space: pre-wrap;
+        }
+
+        .modal-buttons {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+
+        .modal-btn {
+            padding: 8px 20px;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+        }
+
+        .modal-btn-cancel {
+            background: var(--input-background, #f0f0f0);
+            color: var(--text-color);
+        }
+
+        .modal-btn-cancel:hover {
+            background: var(--border-color, #e0e0e0);
+        }
+
+        .modal-btn-confirm {
+            background: #007bff;
+            color: white;
+        }
+
+        .modal-btn-confirm:hover {
+            background: #0056b3;
+        }
     </style>
 </head>
+
 <body>
+    <!-- Custom Modal Dialog for Confirmations -->
+    <div id="customModal" class="modal-overlay">
+        <div class="modal-dialog">
+            <div class="modal-title" id="modalTitle">Confirm Action</div>
+            <div class="modal-content" id="modalContent">Are you sure?</div>
+            <div class="modal-buttons">
+                <button class="modal-btn modal-btn-cancel" id="modalCancel">Cancel</button>
+                <button class="modal-btn modal-btn-confirm" id="modalConfirm">OK</button>
+            </div>
+        </div>
+    </div>
+
     <div class="config-container">
         <!-- Table of Contents Navigation -->
         <nav class="toc-nav">
             <div class="toc-header">
-                <h2>⚙️ Configuration</h2>
+                <h2><span class="icon-settings"></span> Configuration</h2>
             </div>
             <ul class="toc-list">
                 <li class="toc-item">
                     <a href="#permissions-settings" class="toc-link active" data-section="permissions-settings">
-                        <span class="toc-icon">🔐</span>System Permissions
+                        <span class="toc-icon icon-lock-open"></span>System Permissions
                     </a>
                 </li>
                 <li class="toc-item">
                     <a href="#voice-settings" class="toc-link" data-section="voice-settings">
-                        <span class="toc-icon">🎤</span>Voice & Audio
+                        <span class="toc-icon icon-microphone"></span>Voice & Audio
                     </a>
                 </li>
                 <li class="toc-item">
                     <a href="#providers-settings" class="toc-link" data-section="providers-settings">
-                        <span class="toc-icon">🤖</span>AI Providers
+                        <span class="toc-icon icon-robot"></span>AI Providers
                     </a>
                 </li>
                 <li class="toc-item">
                     <a href="#device-settings" class="toc-link" data-section="device-settings">
-                        <span class="toc-icon">📱</span>Device Management
+                        <span class="toc-icon icon-phone"></span>Device Management
                     </a>
                 </li>
                 <li class="toc-item">
                     <a href="#mcp-settings" class="toc-link" data-section="mcp-settings">
-                        <span class="toc-icon">🔌</span>MCP Integrations
+                        <span class="toc-icon icon-plug"></span>MCP Integrations
                     </a>
                 </li>
                 <li class="toc-item">
                     <a href="#mdh-settings" class="toc-link" data-section="mdh-settings">
-                        <span class="toc-icon">🎯</span>MDH Targeting
+                        <span class="toc-icon icon-target"></span>MDH Targeting
                     </a>
                 </li>
                 <li class="toc-item">
                     <a href="#security-settings" class="toc-link" data-section="security-settings">
-                        <span class="toc-icon">🔒</span>Security & Privacy
+                        <span class="toc-icon icon-lock"></span>Security & Privacy
                     </a>
                 </li>
                 <li class="toc-item">
                     <a href="#system-settings" class="toc-link" data-section="system-settings">
-                        <span class="toc-icon">⚙️</span>System Settings
+                        <span class="toc-icon icon-settings"></span>System Settings
                     </a>
                 </li>
                 <li class="toc-item">
                     <a href="#advanced-settings" class="toc-link" data-section="advanced-settings">
-                        <span class="toc-icon">🔧</span>Advanced
+                        <span class="toc-icon icon-wrench"></span>Advanced
                     </a>
                 </li>
             </ul>
@@ -636,22 +927,24 @@
                 <!-- System Permissions Settings -->
                 <section class="config-section active" id="permissions-settings">
                     <div class="section-title">
-                        <span class="icon">🔐</span>System Permissions
+                        <span class="icon icon-lock-open"></span>System Permissions
                     </div>
                     <div class="section-description">
-                        Check and manage system permissions required for Gestura to function properly. Some features may not work without the necessary permissions.
+                        Check and manage system permissions required for Gestura to function properly. Some features may
+                        not work without the necessary permissions.
                     </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon">✅</span>Permission Status
+                            <span class="icon icon-check-circle"></span>Permission Status
                         </div>
 
                         <div id="permissionsList" class="permissions-list">
                             <div class="permission-item loading">
                                 <div class="permission-info">
                                     <div class="permission-name">Loading permissions...</div>
-                                    <div class="permission-description">Please wait while we check system permissions</div>
+                                    <div class="permission-description">Please wait while we check system permissions
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -661,9 +954,28 @@
                                 <span class="summary-label">Granted:</span>
                                 <span class="summary-value" id="grantedCount">-</span>
                             </div>
-                            <div class="summary-item">
-                                <span class="summary-label">Required:</span>
-                                <span class="summary-value" id="requiredCount">-</span>
+
+                            <div class="form-group">
+                                <label class="form-label">How to grant permissions on macOS</label>
+                                <div class="help-text">
+                                    If a permission shows as <strong>Denied</strong>, click the corresponding
+                                    "Request" button in the onboarding wizard or follow these steps manually:
+                                </div>
+                                <ul class="help-text" style="margin-top: 0.5rem; padding-left: 1.25rem;">
+                                    <li>Open <strong>System Settings → Privacy &amp; Security</strong>.</li>
+                                    <li>For <strong>Microphone</strong>: select <em>Microphone</em> and enable
+                                        <strong>Gestura</strong>.
+                                    </li>
+                                    <li>For <strong>Accessibility</strong>: select <em>Accessibility</em> and enable
+                                        <strong>Gestura</strong> (you may need to click the lock icon to make
+                                        changes).
+                                    </li>
+                                    <li>For <strong>Bluetooth</strong>: select <em>Bluetooth</em> and allow
+                                        <strong>Gestura</strong> to use Bluetooth.
+                                    </li>
+                                    <li>Return to this page and click <strong>Refresh Permissions</strong> to
+                                        update the status.</li>
+                                </ul>
                             </div>
                             <div class="summary-item">
                                 <span class="summary-label">Total:</span>
@@ -671,28 +983,33 @@
                             </div>
                         </div>
 
-                        <button type="button" class="button secondary" onclick="refreshPermissions()">🔄 Refresh Permissions</button>
+                        <button type="button" class="button secondary" onclick="refreshPermissions()"><span
+                                class="icon-refresh"></span> Refresh
+                            Permissions</button>
                     </div>
                 </section>
 
                 <!-- Voice & Audio Settings -->
                 <section class="config-section" id="voice-settings">
                     <div class="section-title">
-                        <span class="icon">🎤</span>Voice & Audio Settings
+                        <span class="icon icon-microphone"></span>Voice & Audio Settings
                     </div>
                     <div class="section-description">
-                        Configure how Gestura listens to your voice commands and processes audio input. Set up hotkeys, microphone settings, and voice activation preferences.
+                        Configure how Gestura listens to your voice commands and processes audio input. Set up hotkeys,
+                        microphone settings, and voice activation preferences.
                     </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon">⌨️</span>Hotkeys & Activation
+                            <span class="icon icon-keyboard"></span>Hotkeys & Activation
                         </div>
 
                         <div class="form-group">
                             <label class="form-label" for="hotkey">Global Hotkey</label>
-                            <input type="text" class="form-input" id="hotkey" name="hotkey_listen" placeholder="e.g., Cmd+Shift+G">
-                            <div class="help-text">Press the key combination you want to use to activate voice listening</div>
+                            <input type="text" class="form-input" id="hotkey" name="hotkey_listen"
+                                placeholder="e.g., Cmd+Shift+G">
+                            <div class="help-text">Press the key combination you want to use to activate voice listening
+                            </div>
                         </div>
 
                         <div class="checkbox-group">
@@ -713,14 +1030,16 @@
 
                         <div class="form-group">
                             <label class="form-label" for="listeningTimeout">Listening Timeout (seconds)</label>
-                            <input type="number" class="form-input" id="listeningTimeout" name="listening_timeout" value="30" min="5" max="300">
-                            <div class="help-text">How long to listen for voice commands before automatically stopping</div>
+                            <input type="number" class="form-input" id="listeningTimeout" name="listening_timeout"
+                                value="30" min="5" max="300">
+                            <div class="help-text">How long to listen for voice commands before automatically stopping
+                            </div>
                         </div>
                     </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon">🔊</span>Audio Settings
+                            <span class="icon icon-microphone"></span>Audio Settings
                         </div>
 
                         <div class="form-row">
@@ -734,12 +1053,14 @@
 
                             <div class="form-group">
                                 <label class="form-label" for="sensitivity">Sensitivity</label>
-                                <input type="range" class="form-input" id="sensitivity" name="sensitivity" min="0" max="100" value="50">
+                                <input type="range" class="form-input" id="sensitivity" name="sensitivity" min="0"
+                                    max="100" value="50">
                             </div>
                         </div>
 
                         <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="noiseReduction" name="noise_reduction" checked>
+                            <input type="checkbox" class="form-checkbox" id="noiseReduction" name="noise_reduction"
+                                checked>
                             <div class="checkbox-label">
                                 Enable noise reduction
                                 <div class="checkbox-description">Filter background noise for better recognition</div>
@@ -751,32 +1072,38 @@
                 <!-- AI Providers Settings -->
                 <section class="config-section" id="providers-settings">
                     <div class="section-title">
-                        <span class="icon">🤖</span>AI Providers
+                        <span class="icon icon-robot"></span>AI Providers
                     </div>
                     <div class="section-description">
-                        Configure AI and speech processing providers. Set up API keys for speech-to-text conversion and AI language models to power your voice commands and conversations.
+                        Configure AI and speech processing providers. Set up API keys for speech-to-text conversion and
+                        AI language models to power your voice commands and conversations.
                     </div>
 
                     <!-- Speech-to-Text Provider Selection -->
                     <div class="provider-selector">
                         <div class="subsection-title">
-                            <span class="icon">🎙️</span>Speech-to-Text Provider
+                            <span class="icon icon-microphone"></span>Speech-to-Text Provider
                         </div>
 
                         <div class="provider-options">
                             <div class="provider-option" data-provider="openai-whisper">
                                 <div class="provider-header">
-                                    <input type="radio" name="stt_provider" value="openai-whisper" id="stt-openai" checked>
+                                    <input type="radio" name="stt_provider" value="openai-whisper" id="stt-openai"
+                                        checked>
                                     <label for="stt-openai" class="provider-label">
                                         <div class="provider-name">OpenAI Whisper</div>
-                                        <div class="provider-description">Industry-leading speech recognition with high accuracy</div>
+                                        <div class="provider-description">Industry-leading speech recognition with high
+                                            accuracy</div>
                                     </label>
                                 </div>
                                 <div class="provider-config">
                                     <div class="form-group">
                                         <label class="form-label" for="openaiApiKey">OpenAI API Key</label>
-                                        <input type="password" class="form-input" id="openaiApiKey" name="openai_api_key" placeholder="sk-proj-...">
-                                        <div class="help-text">Get your API key from <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI Platform</a></div>
+                                        <input type="password" class="form-input" id="openaiApiKey"
+                                            name="openai_api_key" placeholder="sk-proj-...">
+                                        <div class="help-text">Get your API key from <a
+                                                href="https://platform.openai.com/api-keys" target="_blank">OpenAI
+                                                Platform</a></div>
                                     </div>
                                 </div>
                             </div>
@@ -786,14 +1113,18 @@
                                     <input type="radio" name="stt_provider" value="google-speech" id="stt-google">
                                     <label for="stt-google" class="provider-label">
                                         <div class="provider-name">Google Cloud Speech</div>
-                                        <div class="provider-description">Google's powerful speech recognition with multiple language support</div>
+                                        <div class="provider-description">Google's powerful speech recognition with
+                                            multiple language support</div>
                                     </label>
                                 </div>
                                 <div class="provider-config">
                                     <div class="form-group">
                                         <label class="form-label" for="googleApiKey">Google Cloud API Key</label>
-                                        <input type="password" class="form-input" id="googleApiKey" name="google_api_key" placeholder="AIza...">
-                                        <div class="help-text">Get your API key from <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud Console</a></div>
+                                        <input type="password" class="form-input" id="googleApiKey"
+                                            name="google_api_key" placeholder="AIza...">
+                                        <div class="help-text">Get your API key from <a
+                                                href="https://console.cloud.google.com/apis/credentials"
+                                                target="_blank">Google Cloud Console</a></div>
                                     </div>
                                 </div>
                             </div>
@@ -803,14 +1134,17 @@
                                     <input type="radio" name="stt_provider" value="azure-speech" id="stt-azure">
                                     <label for="stt-azure" class="provider-label">
                                         <div class="provider-name">Azure Speech Services</div>
-                                        <div class="provider-description">Microsoft's enterprise-grade speech recognition</div>
+                                        <div class="provider-description">Microsoft's enterprise-grade speech
+                                            recognition</div>
                                     </label>
                                 </div>
                                 <div class="provider-config">
                                     <div class="form-group">
                                         <label class="form-label" for="azureApiKey">Azure Speech API Key</label>
-                                        <input type="password" class="form-input" id="azureApiKey" name="azure_api_key" placeholder="Your Azure key">
-                                        <div class="help-text">Get your key from <a href="https://portal.azure.com/" target="_blank">Azure Portal</a></div>
+                                        <input type="password" class="form-input" id="azureApiKey" name="azure_api_key"
+                                            placeholder="Your Azure key">
+                                        <div class="help-text">Get your key from <a href="https://portal.azure.com/"
+                                                target="_blank">Azure Portal</a></div>
                                     </div>
                                 </div>
                             </div>
@@ -820,11 +1154,149 @@
                                     <input type="radio" name="stt_provider" value="local-whisper" id="stt-local">
                                     <label for="stt-local" class="provider-label">
                                         <div class="provider-name">Local Whisper</div>
-                                        <div class="provider-description">Run Whisper locally for complete privacy (requires setup)</div>
+                                        <div class="provider-description">Run Whisper locally for complete privacy
+                                            (requires setup)</div>
                                     </label>
                                 </div>
                                 <div class="provider-config">
-                                    <div class="help-text">No API key required. Processes speech locally on your device for maximum privacy.</div>
+                                    <!-- Model Status Banner -->
+                                    <div id="whisperModelStatus" class="model-status-banner hidden">
+                                        <div class="status-icon"><span class="icon-warning"></span></div>
+                                        <div class="status-message">
+                                            <strong>No Whisper model configured</strong>
+                                            <p>Download a model to enable local speech recognition.</p>
+                                        </div>
+                                    </div>
+
+                                    <!-- Model Selection Dropdown -->
+                                    <div class="form-group">
+                                        <label class="form-label" for="whisperModelSelect">Select Model</label>
+                                        <div class="model-select-container">
+                                            <select class="form-select" id="whisperModelSelect">
+                                                <option value="">-- Select a model --</option>
+                                            </select>
+                                            <button type="button" class="btn btn-primary hidden"
+                                                id="downloadWhisperModel">
+                                                <span class="icon icon-download"></span> Download
+                                            </button>
+                                            <span id="modelReadyIndicator" class="model-ready-indicator hidden">
+                                                <span class="icon icon-check-circle"></span> Ready
+                                            </span>
+                                        </div>
+                                        <div id="selectedModelInfo" class="model-info hidden">
+                                            <div class="model-info-row">
+                                                <span class="model-info-label">Size:</span>
+                                                <span id="modelInfoSize">-</span>
+                                            </div>
+                                            <div class="model-info-row">
+                                                <span class="model-info-label">Language:</span>
+                                                <span id="modelInfoLanguage">-</span>
+                                            </div>
+                                            <div class="model-info-row">
+                                                <span class="model-info-label">Description:</span>
+                                                <span id="modelInfoDescription">-</span>
+                                            </div>
+                                            <div id="modelStatusRow" class="model-info-row hidden">
+                                                <span class="model-info-label">Status:</span>
+                                                <span id="modelInfoStatus">-</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Download Progress -->
+                                    <div id="whisperDownloadProgress" class="download-progress hidden">
+                                        <div class="progress-header">
+                                            <span id="downloadProgressText">Downloading...</span>
+                                            <span id="downloadProgressPercent">0%</span>
+                                        </div>
+                                        <div class="progress-bar-container">
+                                            <div id="downloadProgressBar" class="progress-bar" style="width: 0%"></div>
+                                        </div>
+                                        <div class="progress-details">
+                                            <span id="downloadedSize">0 MB</span> / <span id="totalSize">0 MB</span>
+                                        </div>
+                                    </div>
+
+                                    <hr class="divider" />
+
+                                    <!-- Custom Model Path -->
+                                    <div class="form-group">
+                                        <label class="form-label" for="localWhisperModelPath">
+                                            Custom Model Path <span class="label-hint">(optional)</span>
+                                        </label>
+                                        <div class="input-with-button" style="display: flex; gap: 8px;">
+                                            <input type="text" class="form-input" id="localWhisperModelPath"
+                                                placeholder="Auto-detected or enter custom path"
+                                                title="Path to whisper.cpp compatible model file (.bin)"
+                                                style="flex: 1;">
+                                            <button type="button" class="btn btn-secondary" id="browseWhisperModel"
+                                                style="white-space: nowrap;">
+                                                <span class="icon icon-folder"></span> Browse...
+                                            </button>
+                                        </div>
+                                        <div class="help-text">
+                                            Leave empty to use the default downloaded model, or specify a custom model
+                                            path.
+                                        </div>
+                                    </div>
+
+                                    <div class="form-group">
+                                        <button type="button" class="btn btn-secondary" id="testLocalWhisper">
+                                            <span class="icon icon-microphone"></span> Test Local Whisper
+                                        </button>
+                                        <span id="localWhisperTestResult" class="test-result"></span>
+                                    </div>
+
+                                    <!-- Add Custom Model -->
+                                    <div class="form-group">
+                                        <label class="form-label">Add Custom Whisper Model</label>
+                                        <div class="help-text">
+                                            Use this form to register an existing Whisper model file on disk.
+                                            Gestura will validate the file and use it as the active local model.
+                                        </div>
+                                        <div class="form-group">
+                                            <label class="form-label" for="customModelPath">Model file path</label>
+                                            <input type="text" class="form-input" id="customModelPath"
+                                                placeholder="/path/to/your/whisper-model.bin">
+                                        </div>
+                                        <div class="form-group">
+                                            <label class="form-label" for="customModelName">Display name</label>
+                                            <input type="text" class="form-input" id="customModelName"
+                                                placeholder="My Custom Whisper Model">
+                                        </div>
+                                        <div class="form-group form-grid">
+                                            <div>
+                                                <label class="form-label" for="customModelSize">Size (MB)</label>
+                                                <input type="number" class="form-input" id="customModelSize" min="1"
+                                                    step="1" placeholder="e.g., 142">
+                                            </div>
+                                            <div>
+                                                <label class="form-label" for="customModelLanguage">Language</label>
+                                                <input type="text" class="form-input" id="customModelLanguage"
+                                                    placeholder="English / Multilingual">
+                                            </div>
+                                        </div>
+                                        <div class="form-group">
+                                            <label class="form-label" for="customModelDescription">Description</label>
+                                            <textarea class="form-input" id="customModelDescription" rows="2"
+                                                placeholder="Short description of this model (e.g., accuracy/speed tradeoffs)"></textarea>
+                                        </div>
+                                        <div class="checkbox-group">
+                                            <input type="checkbox" class="form-checkbox" id="customModelSetActive"
+                                                checked>
+                                            <div class="checkbox-label">
+                                                Use this model as the active local Whisper model
+                                                <div class="checkbox-description">Updates the configuration to use this
+                                                    path for
+                                                    local speech recognition.</div>
+                                            </div>
+                                        </div>
+                                        <button type="button" class="btn btn-primary" id="addCustomWhisperModel">
+                                            <span class="icon icon-plus"></span> Add Custom Model
+                                        </button>
+                                        <div class="help-text" id="customModelError"
+                                            style="color: #b00020; display: none;"></div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -832,63 +1304,183 @@
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon">🧠</span>AI Language Model Providers
+                            <span class="icon icon-robot"></span>AI Language Model Providers
                         </div>
 
                         <div class="form-group">
                             <label class="form-label" for="llmProvider">Primary AI Provider</label>
                             <select class="form-select" id="llmProvider" name="llm_provider">
-                                <option value="openai-gpt">OpenAI GPT</option>
-                                <option value="anthropic-claude">Anthropic Claude</option>
-                                <option value="local-llm">Local LLM</option>
-                                <option value="azure-openai">Azure OpenAI</option>
+                                <option value="openai">OpenAI GPT</option>
+                                <option value="anthropic">Anthropic Claude</option>
+                                <option value="ollama">Ollama (Local)</option>
+                                <option value="grok">Grok (xAI)</option>
+                                <option value="echo">Echo (Test)</option>
                             </select>
-                            <div class="help-text">Choose your preferred AI language model for processing commands and conversations</div>
+                            <div class="help-text">Choose your preferred AI language model for processing commands and
+                                conversations</div>
                         </div>
 
-                        <div class="form-group">
-                            <label class="form-label" for="anthropicApiKey">Anthropic API Key</label>
-                            <input type="password" class="form-input" id="anthropicApiKey" name="anthropic_api_key" placeholder="sk-ant-...">
-                            <div class="help-text">Required for Claude models</div>
+                        <!-- OpenAI LLM Configuration -->
+                        <div class="form-group provider-config-section" id="openaiLlmConfig" style="display: none;">
+                            <label class="form-label">OpenAI Configuration</label>
+                            <div class="provider-config-box">
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label class="form-label" for="openaiLlmApiKey">API Key</label>
+                                        <input type="password" class="form-input" id="openaiLlmApiKey"
+                                            name="openai_llm_api_key" placeholder="sk-proj-...">
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="openaiLlmModel">Model</label>
+                                        <select class="form-select" id="openaiLlmModel" name="openai_llm_model">
+                                            <option value="gpt-4o">GPT-4o</option>
+                                            <option value="gpt-4o-mini">GPT-4o Mini</option>
+                                            <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                                            <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="help-text">Get your API key from <a
+                                        href="https://platform.openai.com/api-keys" target="_blank">OpenAI Platform</a>
+                                </div>
+                            </div>
                         </div>
 
-                        <div class="form-group">
-                            <label class="form-label" for="localLlmEndpoint">Local LLM Endpoint</label>
-                            <input type="text" class="form-input" id="localLlmEndpoint" name="local_llm_endpoint" placeholder="http://localhost:11434" value="http://localhost:11434">
-                            <div class="help-text">Endpoint for local LLM server (e.g., Ollama, LM Studio)</div>
+                        <!-- Anthropic Configuration -->
+                        <div class="form-group provider-config-section" id="anthropicLlmConfig" style="display: none;">
+                            <label class="form-label">Anthropic Configuration</label>
+                            <div class="provider-config-box">
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label class="form-label" for="anthropicApiKey">API Key</label>
+                                        <input type="password" class="form-input" id="anthropicApiKey"
+                                            name="anthropic_api_key" placeholder="sk-ant-...">
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="anthropicLlmModel">Model</label>
+                                        <select class="form-select" id="anthropicLlmModel" name="anthropic_llm_model">
+                                            <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
+                                            <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</option>
+                                            <option value="claude-3-opus-20240229">Claude 3 Opus</option>
+                                            <option value="claude-3-haiku-20240307">Claude 3 Haiku</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="help-text">Get your API key from <a href="https://console.anthropic.com/"
+                                        target="_blank">Anthropic Console</a></div>
+                            </div>
+                        </div>
+
+                        <!-- Grok Configuration -->
+                        <div class="form-group provider-config-section" id="grokLlmConfig" style="display: none;">
+                            <label class="form-label">Grok (xAI) Configuration</label>
+                            <div class="provider-config-box">
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label class="form-label" for="grokApiKey">API Key</label>
+                                        <input type="password" class="form-input" id="grokApiKey" name="grok_api_key"
+                                            placeholder="xai-...">
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="grokLlmModel">Model</label>
+                                        <select class="form-select" id="grokLlmModel" name="grok_llm_model">
+                                            <option value="grok-2">Grok 2</option>
+                                            <option value="grok-2-mini">Grok 2 Mini</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="help-text">Get your API key from <a href="https://console.x.ai/"
+                                        target="_blank">xAI Console</a></div>
+                            </div>
+                        </div>
+
+                        <!-- Ollama Configuration -->
+                        <div class="form-group provider-config-section" id="ollamaLlmConfig" style="display: none;">
+                            <label class="form-label">Ollama Configuration</label>
+                            <div class="provider-config-box">
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label class="form-label" for="localLlmEndpoint">Server URL</label>
+                                        <input type="text" class="form-input" id="localLlmEndpoint"
+                                            name="local_llm_endpoint" placeholder="http://localhost:11434"
+                                            value="http://localhost:11434">
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="ollamaModel">Model</label>
+                                        <div class="input-with-button">
+                                            <select class="form-select" id="ollamaModel" name="ollama_model">
+                                                <option value="">Select a model...</option>
+                                            </select>
+                                            <button type="button" class="btn btn-secondary btn-sm"
+                                                id="refreshOllamaModels">
+                                                <span class="icon icon-refresh"></span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label class="form-label" for="ollamaTemperature">Temperature</label>
+                                        <input type="range" class="form-range" id="ollamaTemperature"
+                                            name="ollama_temperature" min="0" max="2" step="0.1" value="0.7">
+                                        <span class="range-value" id="ollamaTemperatureValue">0.7</span>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="ollamaMaxTokens">Max Tokens</label>
+                                        <input type="number" class="form-input" id="ollamaMaxTokens"
+                                            name="ollama_max_tokens" value="2048" min="128" max="32768">
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <button type="button" class="btn btn-secondary" id="testOllamaConnection">
+                                        <span class="icon icon-plug"></span> Test Connection
+                                    </button>
+                                    <span id="ollamaTestResult" class="test-result"></span>
+                                </div>
+                                <div class="help-text">
+                                    Install Ollama from <a href="https://ollama.ai" target="_blank">ollama.ai</a>,
+                                    then run <code>ollama pull llama3.2</code> to download a model.
+                                </div>
+                            </div>
                         </div>
                     </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon">⚙️</span>Provider Settings
+                            <span class="icon icon-settings"></span>Provider Settings
                         </div>
 
                         <div class="form-row">
                             <div class="form-group">
                                 <label class="form-label" for="sttTimeout">Speech-to-Text Timeout (seconds)</label>
-                                <input type="number" class="form-input" id="sttTimeout" name="stt_timeout" value="30" min="5" max="120">
+                                <input type="number" class="form-input" id="sttTimeout" name="stt_timeout" value="30"
+                                    min="5" max="120">
                             </div>
 
                             <div class="form-group">
                                 <label class="form-label" for="llmTimeout">AI Response Timeout (seconds)</label>
-                                <input type="number" class="form-input" id="llmTimeout" name="llm_timeout" value="60" min="10" max="300">
+                                <input type="number" class="form-input" id="llmTimeout" name="llm_timeout" value="60"
+                                    min="10" max="300">
                             </div>
                         </div>
 
                         <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="enableFallback" name="enable_fallback" checked>
+                            <input type="checkbox" class="form-checkbox" id="enableFallback" name="enable_fallback"
+                                checked>
                             <div class="checkbox-label">
                                 Enable provider fallback
-                                <div class="checkbox-description">Automatically try alternative providers if primary fails</div>
+                                <div class="checkbox-description">Automatically try alternative providers if primary
+                                    fails</div>
                             </div>
                         </div>
 
                         <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="cacheResponses" name="cache_responses" checked>
+                            <input type="checkbox" class="form-checkbox" id="cacheResponses" name="cache_responses"
+                                checked>
                             <div class="checkbox-label">
                                 Cache AI responses
-                                <div class="checkbox-description">Cache responses locally to improve performance and reduce API costs</div>
+                                <div class="checkbox-description">Cache responses locally to improve performance and
+                                    reduce API costs</div>
                             </div>
                         </div>
                     </div>
@@ -897,15 +1489,16 @@
                 <!-- Device Management Settings -->
                 <section class="config-section" id="device-settings">
                     <div class="section-title">
-                        <span class="icon">📱</span>Device Management
+                        <span class="icon icon-phone"></span>Device Management
                     </div>
                     <div class="section-description">
-                        Connect and manage external devices like the Haptic Harmony Ring. Configure device authentication, security settings, and haptic feedback preferences for enhanced gesture control.
+                        Connect and manage external devices like the Haptic Harmony Ring. Configure device
+                        authentication, security settings, and haptic feedback preferences for enhanced gesture control.
                     </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon">🔐</span>Authenticated Devices
+                            <span class="icon icon-lock-open"></span>Authenticated Devices
                         </div>
 
                         <div class="form-group">
@@ -914,70 +1507,86 @@
                                 <div class="device-item">
                                     <div class="device-info">
                                         <div class="device-name">No devices connected</div>
-                                        <div class="device-status">Click "Scan for Devices" to discover available devices</div>
+                                        <div class="device-status">Click "Scan for Devices" to discover available
+                                            devices</div>
                                     </div>
                                 </div>
                             </div>
                         </div>
 
                         <div class="form-row">
-                            <button type="button" class="button secondary" onclick="scanForDevices()">🔍 Scan for Devices</button>
-                            <button type="button" class="button secondary" onclick="refreshDevices()">🔄 Refresh</button>
+                            <button type="button" class="button secondary" onclick="scanForDevices()"><span
+                                    class="icon-search"></span> Scan for
+                                Devices</button>
+                            <button type="button" class="button secondary" onclick="refreshDevices()"><span
+                                    class="icon-refresh"></span>
+                                Refresh</button>
                         </div>
                     </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon">💍</span>Haptic Harmony Ring
+                            <span class="icon icon-ring"></span>Haptic Harmony Ring
                         </div>
 
                         <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="enableHapticRing" name="enable_haptic_ring" checked>
+                            <input type="checkbox" class="form-checkbox" id="enableHapticRing" name="enable_haptic_ring"
+                                checked>
                             <div class="checkbox-label">
                                 Enable Haptic Harmony Ring integration
-                                <div class="checkbox-description">Allow MCP communications and haptic feedback through authenticated ring devices</div>
+                                <div class="checkbox-description">Allow MCP communications and haptic feedback through
+                                    authenticated ring devices</div>
                             </div>
                         </div>
 
                         <div class="form-group">
                             <label class="form-label" for="hapticIntensity">Haptic Feedback Intensity</label>
-                            <input type="range" class="form-input" id="hapticIntensity" name="haptic_intensity" min="0" max="100" value="75">
-                            <div class="help-text">Adjust the strength of haptic feedback (0 = disabled, 100 = maximum)</div>
+                            <input type="range" class="form-input" id="hapticIntensity" name="haptic_intensity" min="0"
+                                max="100" value="75">
+                            <div class="help-text">Adjust the strength of haptic feedback (0 = disabled, 100 = maximum)
+                            </div>
                         </div>
 
                         <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="enableTapGestures" name="enable_tap_gestures" checked>
+                            <input type="checkbox" class="form-checkbox" id="enableTapGestures"
+                                name="enable_tap_gestures" checked>
                             <div class="checkbox-label">
                                 Enable tap/tilt gesture recognition
-                                <div class="checkbox-description">Recognize tap and tilt gestures for device control</div>
+                                <div class="checkbox-description">Recognize tap and tilt gestures for device control
+                                </div>
                             </div>
                         </div>
                     </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon">🔧</span>Device Security
+                            <span class="icon icon-wrench"></span>Device Security
                         </div>
 
                         <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="requireDeviceAuth" name="require_device_auth" checked>
+                            <input type="checkbox" class="form-checkbox" id="requireDeviceAuth"
+                                name="require_device_auth" checked>
                             <div class="checkbox-label">
                                 Require device authentication
-                                <div class="checkbox-description">Only allow authenticated devices to connect and communicate</div>
+                                <div class="checkbox-description">Only allow authenticated devices to connect and
+                                    communicate</div>
                             </div>
                         </div>
 
                         <div class="form-group">
                             <label class="form-label" for="deviceTimeout">Device Connection Timeout (minutes)</label>
-                            <input type="number" class="form-input" id="deviceTimeout" name="device_timeout" value="60" min="5" max="1440">
+                            <input type="number" class="form-input" id="deviceTimeout" name="device_timeout" value="60"
+                                min="5" max="1440">
                             <div class="help-text">Automatically disconnect inactive devices after this time</div>
                         </div>
 
                         <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="encryptDeviceComm" name="encrypt_device_comm" checked>
+                            <input type="checkbox" class="form-checkbox" id="encryptDeviceComm"
+                                name="encrypt_device_comm" checked>
                             <div class="checkbox-label">
                                 Encrypt device communications
-                                <div class="checkbox-description">Use end-to-end encryption for all device communications</div>
+                                <div class="checkbox-description">Use end-to-end encryption for all device
+                                    communications</div>
                             </div>
                         </div>
                     </div>
@@ -986,46 +1595,54 @@
                 <!-- MCP Integration Settings -->
                 <section class="config-section" id="mcp-settings">
                     <div class="section-title">
-                        <span class="icon">🔌</span>MCP Integration Settings
+                        <span class="icon icon-plug"></span>MCP Integration Settings
                     </div>
                     <div class="section-description">
-                        Configure Model Context Protocol (MCP) servers to extend Gestura's capabilities. MCP allows integration with external tools and services to enhance your voice commands with additional functionality.
+                        Configure Model Context Protocol (MCP) servers to extend Gestura's capabilities. MCP allows
+                        integration with external tools and services to enhance your voice commands with additional
+                        functionality.
                     </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon">📦</span>MCP Servers
+                            <span class="icon icon-package"></span>MCP Servers
                         </div>
 
                         <div class="form-group">
                             <label class="form-label" for="mcpServers">Configured MCP Servers</label>
-                            <textarea class="form-textarea" id="mcpServers" name="mcp_servers" placeholder="Enter MCP server configurations (JSON format)"></textarea>
-                            <div class="help-text">Configure MCP servers for extended functionality. See documentation for format.</div>
+                            <textarea class="form-textarea" id="mcpServers" name="mcp_servers"
+                                placeholder="Enter MCP server configurations (JSON format)"></textarea>
+                            <div class="help-text">Configure MCP servers for extended functionality. See documentation
+                                for format.</div>
                         </div>
 
                         <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="autoDiscoverMcp" name="auto_discover_mcp" checked>
+                            <input type="checkbox" class="form-checkbox" id="autoDiscoverMcp" name="auto_discover_mcp"
+                                checked>
                             <div class="checkbox-label">
                                 Auto-discover MCP servers
-                                <div class="checkbox-description">Automatically detect and configure available MCP servers</div>
+                                <div class="checkbox-description">Automatically detect and configure available MCP
+                                    servers</div>
                             </div>
                         </div>
                     </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon">🔗</span>MCP Communication
+                            <span class="icon icon-link"></span>MCP Communication
                         </div>
 
                         <div class="form-row">
                             <div class="form-group">
                                 <label class="form-label" for="mcpTimeout">Connection Timeout (ms)</label>
-                                <input type="number" class="form-input" id="mcpTimeout" name="mcp_timeout" value="5000" min="1000" max="30000">
+                                <input type="number" class="form-input" id="mcpTimeout" name="mcp_timeout" value="5000"
+                                    min="1000" max="30000">
                             </div>
 
                             <div class="form-group">
                                 <label class="form-label" for="mcpRetries">Max Retries</label>
-                                <input type="number" class="form-input" id="mcpRetries" name="mcp_retries" value="3" min="0" max="10">
+                                <input type="number" class="form-input" id="mcpRetries" name="mcp_retries" value="3"
+                                    min="0" max="10">
                             </div>
                         </div>
                     </div>
@@ -1034,21 +1651,24 @@
                 <!-- MDH Targeting Settings -->
                 <section class="config-section" id="mdh-settings">
                     <div class="section-title">
-                        <span class="icon">🎯</span>Multi-Device Harmony (MDH) Settings
+                        <span class="icon icon-target"></span>Multi-Device Harmony (MDH) Settings
                     </div>
                     <div class="section-description">
-                        Configure Multi-Device Harmony targeting for coordinated control across multiple devices. Set up custom endpoints and priorities for seamless multi-device workflows and synchronized operations.
+                        Configure Multi-Device Harmony targeting for coordinated control across multiple devices. Set up
+                        custom endpoints and priorities for seamless multi-device workflows and synchronized operations.
                     </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon">🌐</span>Custom MDH Endpoints
+                            <span class="icon icon-globe"></span>Custom MDH Endpoints
                         </div>
 
                         <div class="form-group">
                             <label class="form-label" for="mdhEndpoints">MDH Target Endpoints</label>
-                            <textarea class="form-textarea" id="mdhEndpoints" name="mdh_endpoints" placeholder="Enter custom MDH endpoints (one per line)"></textarea>
-                            <div class="help-text">Configure custom MDH targeting endpoints for specialized workflows</div>
+                            <textarea class="form-textarea" id="mdhEndpoints" name="mdh_endpoints"
+                                placeholder="Enter custom MDH endpoints (one per line)"></textarea>
+                            <div class="help-text">Configure custom MDH targeting endpoints for specialized workflows
+                            </div>
                         </div>
 
                         <div class="form-row">
@@ -1063,7 +1683,8 @@
 
                             <div class="form-group">
                                 <label class="form-label" for="mdhTimeout">MDH Timeout (ms)</label>
-                                <input type="number" class="form-input" id="mdhTimeout" name="mdh_timeout" value="10000" min="1000" max="60000">
+                                <input type="number" class="form-input" id="mdhTimeout" name="mdh_timeout" value="10000"
+                                    min="1000" max="60000">
                             </div>
                         </div>
                     </div>
@@ -1072,22 +1693,24 @@
                 <!-- Security & Privacy Settings -->
                 <section class="config-section" id="security-settings">
                     <div class="section-title">
-                        <span class="icon">🔒</span>Security & Privacy Settings
+                        <span class="icon icon-lock"></span>Security & Privacy Settings
                     </div>
                     <div class="section-description">
-                        Control your privacy and security preferences. Manage data collection, crash reporting, voice data processing, and authentication requirements to keep your information secure.
+                        Control your privacy and security preferences. Manage data collection, crash reporting, voice
+                        data processing, and authentication requirements to keep your information secure.
                     </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon">🛡️</span>Privacy Controls
+                            <span class="icon icon-shield"></span>Privacy Controls
                         </div>
 
                         <div class="checkbox-group">
                             <input type="checkbox" class="form-checkbox" id="dataCollection" name="data_collection">
                             <div class="checkbox-label">
                                 Allow usage analytics
-                                <div class="checkbox-description">Help improve Gestura by sharing anonymous usage data</div>
+                                <div class="checkbox-description">Help improve Gestura by sharing anonymous usage data
+                                </div>
                             </div>
                         </div>
 
@@ -1095,12 +1718,14 @@
                             <input type="checkbox" class="form-checkbox" id="crashReports" name="crash_reports" checked>
                             <div class="checkbox-label">
                                 Send crash reports
-                                <div class="checkbox-description">Automatically send crash reports to help fix issues</div>
+                                <div class="checkbox-description">Automatically send crash reports to help fix issues
+                                </div>
                             </div>
                         </div>
 
                         <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="voiceDataLocal" name="voice_data_local" checked>
+                            <input type="checkbox" class="form-checkbox" id="voiceDataLocal" name="voice_data_local"
+                                checked>
                             <div class="checkbox-label">
                                 Keep voice data local
                                 <div class="checkbox-description">Process voice commands locally when possible</div>
@@ -1110,20 +1735,22 @@
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon">🔐</span>Security Settings
+                            <span class="icon icon-lock-open"></span>Security Settings
                         </div>
 
                         <div class="checkbox-group">
                             <input type="checkbox" class="form-checkbox" id="requireAuth" name="require_auth">
                             <div class="checkbox-label">
                                 Require authentication for sensitive commands
-                                <div class="checkbox-description">Prompt for confirmation before executing system commands</div>
+                                <div class="checkbox-description">Prompt for confirmation before executing system
+                                    commands</div>
                             </div>
                         </div>
 
                         <div class="form-group">
                             <label class="form-label" for="authTimeout">Authentication timeout (minutes)</label>
-                            <input type="number" class="form-input" id="authTimeout" name="auth_timeout" value="15" min="1" max="120">
+                            <input type="number" class="form-input" id="authTimeout" name="auth_timeout" value="15"
+                                min="1" max="120">
                             <div class="help-text">How long to remember authentication before asking again</div>
                         </div>
                     </div>
@@ -1132,22 +1759,25 @@
                 <!-- System Settings -->
                 <section class="config-section" id="system-settings">
                     <div class="section-title">
-                        <span class="icon">⚙️</span>System Settings
+                        <span class="icon icon-settings"></span>System Settings
                     </div>
                     <div class="section-description">
-                        Configure how Gestura behaves on your system. Set startup preferences, performance options, logging levels, and application behavior settings.
+                        Configure how Gestura behaves on your system. Set startup preferences, performance options,
+                        logging levels, and application behavior settings.
                     </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon">🚪</span>Application Behavior
+                            <span class="icon icon-door"></span>Application Behavior
                         </div>
 
                         <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="exitConfirmation" name="exit_confirmation" checked>
+                            <input type="checkbox" class="form-checkbox" id="exitConfirmation" name="exit_confirmation"
+                                checked>
                             <div class="checkbox-label">
                                 Show exit confirmation dialog
-                                <div class="checkbox-description">Ask for confirmation before closing the application</div>
+                                <div class="checkbox-description">Ask for confirmation before closing the application
+                                </div>
                             </div>
                         </div>
 
@@ -1155,26 +1785,30 @@
                             <input type="checkbox" class="form-checkbox" id="startOnBoot" name="start_on_boot">
                             <div class="checkbox-label">
                                 Start on system boot
-                                <div class="checkbox-description">Automatically start Gestura when your computer starts</div>
+                                <div class="checkbox-description">Automatically start Gestura when your computer starts
+                                </div>
                             </div>
                         </div>
 
                         <div class="form-group">
                             <label class="form-label" for="gracePeriod">Shutdown Grace Period (seconds)</label>
-                            <input type="number" class="form-input" id="gracePeriod" name="grace_period_secs" min="1" max="60" value="5">
-                            <div class="help-text">Time to wait for processes to close gracefully before forcing shutdown</div>
+                            <input type="number" class="form-input" id="gracePeriod" name="grace_period_secs" min="1"
+                                max="60" value="5">
+                            <div class="help-text">Time to wait for processes to close gracefully before forcing
+                                shutdown</div>
                         </div>
                     </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon">📊</span>Performance
+                            <span class="icon icon-chart"></span>Performance
                         </div>
 
                         <div class="form-row">
                             <div class="form-group">
                                 <label class="form-label" for="maxSessions">Max Concurrent Sessions</label>
-                                <input type="number" class="form-input" id="maxSessions" name="max_sessions" value="10" min="1" max="50">
+                                <input type="number" class="form-input" id="maxSessions" name="max_sessions" value="10"
+                                    min="1" max="50">
                             </div>
 
                             <div class="form-group">
@@ -1194,21 +1828,23 @@
                 <!-- Advanced Settings -->
                 <section class="config-section" id="advanced-settings">
                     <div class="section-title">
-                        <span class="icon">🔧</span>Advanced Settings
+                        <span class="icon icon-wrench"></span>Advanced Settings
                     </div>
                     <div class="section-description">
-                        Advanced technical settings for power users. Configure network communication, debugging options, and developer tools. Only modify these settings if you understand their impact.
+                        Advanced technical settings for power users. Configure network communication, debugging options,
+                        and developer tools. Only modify these settings if you understand their impact.
                     </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon">🌐</span>Network Configuration
+                            <span class="icon icon-globe"></span>Network Configuration
                         </div>
 
                         <div class="form-row">
                             <div class="form-group">
                                 <label class="form-label" for="natsPort">NATS Port</label>
-                                <input type="number" class="form-input" id="natsPort" name="nats_port" value="4223" min="1024" max="65535">
+                                <input type="number" class="form-input" id="natsPort" name="nats_port" value="4223"
+                                    min="1024" max="65535">
                                 <div class="help-text">Custom port for NATS communication (default: 4223)</div>
                             </div>
 
@@ -1223,14 +1859,15 @@
                             <input type="checkbox" class="form-checkbox" id="natsSecure" name="nats_secure" checked>
                             <div class="checkbox-label">
                                 Enable NATS security
-                                <div class="checkbox-description">Use secure communication with authentication and encryption</div>
+                                <div class="checkbox-description">Use secure communication with authentication and
+                                    encryption</div>
                             </div>
                         </div>
                     </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon">🔍</span>Debug & Development
+                            <span class="icon icon-search"></span>Debug & Development
                         </div>
 
                         <div class="checkbox-group">
@@ -1245,7 +1882,8 @@
                             <input type="checkbox" class="form-checkbox" id="devTools" name="dev_tools">
                             <div class="checkbox-label">
                                 Enable developer tools
-                                <div class="checkbox-description">Allow access to browser developer tools in windows</div>
+                                <div class="checkbox-description">Allow access to browser developer tools in windows
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1265,6 +1903,50 @@
         const configForm = document.getElementById('configForm');
         const tocLinks = document.querySelectorAll('.toc-link');
         const configSections = document.querySelectorAll('.config-section');
+
+        // Custom modal confirm function (replaces browser's confirm() for better WebView compatibility)
+        function showConfirmDialog(title, message) {
+            return new Promise((resolve) => {
+                const modal = document.getElementById('customModal');
+                const modalTitle = document.getElementById('modalTitle');
+                const modalContent = document.getElementById('modalContent');
+                const cancelBtn = document.getElementById('modalCancel');
+                const confirmBtn = document.getElementById('modalConfirm');
+
+                // Set content
+                modalTitle.textContent = title;
+                modalContent.textContent = message;
+
+                // Clean up previous handlers
+                const newCancelBtn = cancelBtn.cloneNode(true);
+                const newConfirmBtn = confirmBtn.cloneNode(true);
+                cancelBtn.parentNode.replaceChild(newCancelBtn, cancelBtn);
+                confirmBtn.parentNode.replaceChild(newConfirmBtn, confirmBtn);
+
+                // Show modal
+                modal.classList.add('visible');
+
+                // Handle cancel
+                newCancelBtn.addEventListener('click', () => {
+                    modal.classList.remove('visible');
+                    resolve(false);
+                });
+
+                // Handle confirm
+                newConfirmBtn.addEventListener('click', () => {
+                    modal.classList.remove('visible');
+                    resolve(true);
+                });
+
+                // Handle clicking outside modal (cancel)
+                modal.addEventListener('click', (e) => {
+                    if (e.target === modal) {
+                        modal.classList.remove('visible');
+                        resolve(false);
+                    }
+                }, { once: true });
+            });
+        }
 
         // Navigation functionality
         function showSection(sectionId) {
@@ -1328,6 +2010,52 @@
                     selectedOption.classList.add('selected');
                 }
             }
+
+            // Setup LLM provider visibility
+            setupLlmProviderVisibility();
+        }
+
+        // Handle LLM provider configuration visibility
+        function setupLlmProviderVisibility() {
+            const llmProviderSelect = document.getElementById('llmProvider');
+            if (!llmProviderSelect) return;
+
+            function updateLlmProviderVisibility() {
+                const provider = llmProviderSelect.value;
+
+                // Hide all provider config sections
+                document.querySelectorAll('#openaiLlmConfig, #anthropicLlmConfig, #grokLlmConfig, #ollamaLlmConfig')
+                    .forEach(section => {
+                        section.style.display = 'none';
+                    });
+
+                // Show the selected provider's config section
+                const sectionMap = {
+                    'openai': 'openaiLlmConfig',
+                    'anthropic': 'anthropicLlmConfig',
+                    'grok': 'grokLlmConfig',
+                    'ollama': 'ollamaLlmConfig'
+                };
+
+                const sectionId = sectionMap[provider];
+                if (sectionId) {
+                    const section = document.getElementById(sectionId);
+                    if (section) {
+                        section.style.display = 'block';
+                    }
+                }
+
+                // If Ollama is selected, try to refresh models
+                if (provider === 'ollama') {
+                    refreshOllamaModels();
+                }
+            }
+
+            // Listen for changes
+            llmProviderSelect.addEventListener('change', updateLlmProviderVisibility);
+
+            // Set initial visibility
+            updateLlmProviderVisibility();
         }
 
         function showStatus(message, type = 'success') {
@@ -1342,11 +2070,19 @@
 
         async function loadConfig() {
             try {
-                // Load default configuration values
-                // TODO: Implement actual config loading from backend
+                // Try to load config from backend if Tauri is available
+                let backendConfig = null;
+                if (isTauriAvailable()) {
+                    try {
+                        backendConfig = await window.__TAURI__.core.invoke('get_config');
+                        console.log('Loaded config from backend:', backendConfig);
+                    } catch (e) {
+                        console.warn('Failed to load config from backend, using defaults:', e);
+                    }
+                }
 
                 // Voice & Audio defaults
-                document.getElementById('hotkey').value = 'Cmd+Shift+G';
+                document.getElementById('hotkey').value = backendConfig?.hotkey_listen || 'Cmd+Shift+G';
                 document.getElementById('voiceActivation').checked = false;
                 document.getElementById('pushToTalk').checked = true;
                 document.getElementById('listeningTimeout').value = 30;
@@ -1354,18 +2090,70 @@
                 document.getElementById('sensitivity').value = 50;
                 document.getElementById('noiseReduction').checked = true;
 
-                // AI Providers defaults
-                document.getElementById('sttProvider').value = 'openai-whisper';
-                document.getElementById('llmProvider').value = 'openai-gpt';
-                document.getElementById('openaiApiKey').value = '';
-                document.getElementById('anthropicApiKey').value = '';
+                // Load LLM provider settings from backend config
+                const llmConfig = backendConfig?.llm;
+                const llmProvider = llmConfig?.primary || 'echo';
+                document.getElementById('llmProvider').value = llmProvider;
+
+                // OpenAI LLM settings
+                const openaiLlmApiKey = document.getElementById('openaiLlmApiKey');
+                if (openaiLlmApiKey) openaiLlmApiKey.value = llmConfig?.openai?.api_key || '';
+                const openaiLlmModel = document.getElementById('openaiLlmModel');
+                if (openaiLlmModel) openaiLlmModel.value = llmConfig?.openai?.model || 'gpt-4o';
+
+                // Anthropic settings
+                const anthropicApiKey = document.getElementById('anthropicApiKey');
+                if (anthropicApiKey) anthropicApiKey.value = llmConfig?.anthropic?.api_key || '';
+                const anthropicLlmModel = document.getElementById('anthropicLlmModel');
+                if (anthropicLlmModel) anthropicLlmModel.value = llmConfig?.anthropic?.model || 'claude-sonnet-4-20250514';
+
+                // Grok settings
+                const grokApiKey = document.getElementById('grokApiKey');
+                if (grokApiKey) grokApiKey.value = llmConfig?.grok?.api_key || '';
+                const grokLlmModel = document.getElementById('grokLlmModel');
+                if (grokLlmModel) grokLlmModel.value = llmConfig?.grok?.model || 'grok-2';
+
+                // Ollama settings
+                document.getElementById('localLlmEndpoint').value = llmConfig?.ollama?.base_url || 'http://localhost:11434';
+                // Note: Ollama model dropdown is populated via refreshOllamaModels()
+                const savedOllamaModel = llmConfig?.ollama?.model;
+                if (savedOllamaModel) {
+                    // Store for later selection after models are loaded
+                    window._savedOllamaModel = savedOllamaModel;
+                }
+
+                // Load voice/STT settings
+                const voiceConfig = backendConfig?.voice || {};
+                const sttProvider = voiceConfig.provider || 'local';
+
+                // Map backend voice provider -> STT provider radio group value
+                // "local" voice => "local-whisper" STT, anything else => "openai-whisper" for now
+                const sttValue = sttProvider === 'local' ? 'local-whisper' : 'openai-whisper';
+                const sttRadios = document.querySelectorAll('input[name="stt_provider"]');
+                sttRadios.forEach(radio => {
+                    radio.checked = radio.value === sttValue;
+                });
+
+                // OpenAI STT API key (separate from LLM)
+                const openaiApiKey = document.getElementById('openaiApiKey');
+                if (openaiApiKey) openaiApiKey.value = voiceConfig?.openai_api_key || '';
+
+                // Local Whisper model path
+                const localWhisperModelPathInput = document.getElementById('localWhisperModelPath');
+                if (localWhisperModelPathInput) {
+                    localWhisperModelPathInput.value = voiceConfig?.local_model_path || '';
+                }
+
+                // Other AI defaults
                 document.getElementById('googleApiKey').value = '';
                 document.getElementById('azureApiKey').value = '';
-                document.getElementById('localLlmEndpoint').value = 'http://localhost:11434';
                 document.getElementById('sttTimeout').value = 30;
                 document.getElementById('llmTimeout').value = 60;
                 document.getElementById('enableFallback').checked = true;
                 document.getElementById('cacheResponses').checked = true;
+
+                // Trigger LLM provider visibility update
+                setupLlmProviderVisibility();
 
                 // Device Management defaults
                 document.getElementById('enableHapticRing').checked = true;
@@ -1414,7 +2202,7 @@
             }
         }
 
-        window.saveConfig = async function() {
+        window.saveConfig = async function () {
             try {
                 const formData = new FormData(configForm);
                 const config = {};
@@ -1452,10 +2240,60 @@
                     }
                 });
 
+                // Build LLM settings based on selected provider
+                const llmProvider = config.llm_provider || 'echo';
+                const llmSettings = {
+                    primary: llmProvider,
+                    openai: null,
+                    anthropic: null,
+                    grok: null,
+                    ollama: null
+                };
+
+                // Set provider-specific config based on selection
+                if (llmProvider === 'openai') {
+                    const apiKey = document.getElementById('openaiLlmApiKey')?.value || '';
+                    const model = document.getElementById('openaiLlmModel')?.value || 'gpt-4o';
+                    if (apiKey) {
+                        llmSettings.openai = {
+                            api_key: apiKey,
+                            base_url: null,
+                            model: model
+                        };
+                    }
+                } else if (llmProvider === 'anthropic') {
+                    const apiKey = document.getElementById('anthropicApiKey')?.value || '';
+                    const model = document.getElementById('anthropicLlmModel')?.value || 'claude-sonnet-4-20250514';
+                    if (apiKey) {
+                        llmSettings.anthropic = {
+                            api_key: apiKey,
+                            base_url: null,
+                            model: model
+                        };
+                    }
+                } else if (llmProvider === 'grok') {
+                    const apiKey = document.getElementById('grokApiKey')?.value || '';
+                    const model = document.getElementById('grokLlmModel')?.value || 'grok-2';
+                    if (apiKey) {
+                        llmSettings.grok = {
+                            api_key: apiKey,
+                            base_url: null,
+                            model: model
+                        };
+                    }
+                } else if (llmProvider === 'ollama') {
+                    const baseUrl = document.getElementById('localLlmEndpoint')?.value || 'http://localhost:11434';
+                    const model = document.getElementById('ollamaModel')?.value || 'llama3.2';
+                    llmSettings.ollama = {
+                        base_url: baseUrl,
+                        model: model
+                    };
+                }
+
                 // Handle speech configuration separately
                 const speechConfig = {
                     stt_provider: config.stt_provider || 'openai-whisper',
-                    llm_provider: config.llm_provider || 'openai-gpt',
+                    llm_provider: llmProvider,
                     openai_api_key: config.openai_api_key || '',
                     anthropic_api_key: config.anthropic_api_key || '',
                     google_api_key: config.google_api_key || '',
@@ -1475,8 +2313,34 @@
                     console.error('Failed to update speech config:', error);
                 }
 
-                // TODO: Implement actual config saving to backend
-                console.log('Saving config:', config);
+                // Save the full app configuration including LLM settings
+                try {
+                    // First get the current config to preserve other settings
+                    const currentConfig = await window.__TAURI__.core.invoke('get_config');
+
+                    // Update with new LLM settings
+                    currentConfig.llm = llmSettings;
+
+                    // Ensure voice config exists
+                    currentConfig.voice = currentConfig.voice || {};
+
+                    // Keep voice.provider in sync with the selected STT provider
+                    const selectedSttProvider = config.stt_provider || 'openai-whisper';
+                    currentConfig.voice.provider = selectedSttProvider === 'local-whisper' ? 'local' : 'openai';
+
+                    // Update voice settings if local Whisper model path is set
+                    const localWhisperModelPathEl = document.getElementById('localWhisperModelPath');
+                    const localWhisperModelPath = localWhisperModelPathEl ? localWhisperModelPathEl.value : '';
+                    if (localWhisperModelPath) {
+                        currentConfig.voice.local_model_path = localWhisperModelPath;
+                    }
+
+                    // Save the updated config
+                    await window.__TAURI__.core.invoke('save_config', { cfg: currentConfig });
+                    console.log('App configuration saved:', currentConfig);
+                } catch (error) {
+                    console.error('Failed to save app config:', error);
+                }
 
                 showStatus('Configuration saved successfully');
             } catch (error) {
@@ -1485,7 +2349,7 @@
             }
         };
 
-        window.resetConfig = async function() {
+        window.resetConfig = async function () {
             if (confirm('Are you sure you want to reset all settings to defaults? This cannot be undone.')) {
                 await loadConfig();
                 showStatus('Configuration reset to defaults');
@@ -1498,6 +2362,7 @@
         async function loadPermissions() {
             try {
                 const result = await window.__TAURI__.core.invoke('check_system_permissions');
+                console.log('\ud83e\udde9 System permissions result:', result);
                 displayPermissions(result.permissions, result.summary);
             } catch (error) {
                 console.error('Failed to load permissions:', error);
@@ -1508,22 +2373,47 @@
         function displayPermissions(permissions, summary) {
             const permissionsList = document.getElementById('permissionsList');
 
-            permissionsList.innerHTML = permissions.map(permission => `
-                <div class="permission-item">
+            permissionsList.innerHTML = permissions.map(permission => {
+                // Special handling for accessibility permission - requires manual grant on macOS
+                const isAccessibility = permission.id === 'accessibility';
+                const needsManualGrant = isAccessibility && permission.status !== 'granted';
+
+                return `
+                <div class="permission-item ${needsManualGrant ? 'accessibility-manual' : ''}">
                     <div class="permission-info">
                         <div class="permission-name">${permission.name}</div>
                         <div class="permission-description">${permission.description}</div>
+                        ${needsManualGrant ? `
+                            <div class="accessibility-instructions" style="margin-top: 8px; padding: 10px; background: rgba(255, 193, 7, 0.1); border-left: 3px solid #ffc107; border-radius: 4px; font-size: 0.85rem;">
+                                <strong style="color: #ffc107;"><span class="icon-warning"></span> Manual Setup Required</strong>
+                                <p style="margin: 6px 0 0 0; color: var(--text-secondary);">
+                                    macOS requires you to manually enable Accessibility permission:
+                                </p>
+                                <ol style="margin: 8px 0 0 16px; padding: 0; color: var(--text-secondary);">
+                                    <li>Click "Open Settings" below</li>
+                                    <li>Find <strong>Gestura</strong> in the list</li>
+                                    <li>Toggle the switch to <strong>ON</strong></li>
+                                    <li>If prompted, enter your password</li>
+                                    <li>Return here and click "Refresh" to verify</li>
+                                </ol>
+                            </div>
+                        ` : ''}
                     </div>
                     <div class="permission-status">
                         <span class="status-badge ${permission.status.replace('_', '-')}">${formatStatus(permission.status)}</span>
-                        ${permission.required ? '<span style="color: #dc3545; font-size: 0.8rem;">Required</span>' : ''}
+                        ${permission.status !== 'granted' ? `
+                            <button class="button small secondary"
+                                    onclick="requestPermission('${permission.id}')"
+                                    style="margin-left: 8px; padding: 4px 8px; font-size: 0.75rem;">
+                                ${isAccessibility ? '<span class="icon-settings"></span> Open Settings' : (permission.status === 'denied' ? '<span class="icon-settings"></span> Open Settings' : '<span class="icon-lock-open"></span> Request')}
+                            </button>
+                        ` : '<span style="color: #28a745; margin-left: 8px;" class="icon-check"></span>'}
                     </div>
                 </div>
-            `).join('');
+            `}).join('');
 
             // Update summary
             document.getElementById('grantedCount').textContent = summary.granted;
-            document.getElementById('requiredCount').textContent = summary.required;
             document.getElementById('totalCount').textContent = summary.total;
         }
 
@@ -1535,6 +2425,30 @@
                 default: return 'Unknown';
             }
         }
+
+        // Request a specific permission
+        window.requestPermission = async function (permissionId) {
+            console.log(`🔐 Requesting permission: ${permissionId}`);
+            try {
+                await window.__TAURI__.core.invoke('request_permission', { permission: permissionId });
+                console.log(`✅ Permission request sent for: ${permissionId}`);
+                // Show feedback to user
+                const statusBadges = document.querySelectorAll('.status-badge');
+                statusBadges.forEach(badge => {
+                    if (badge.closest('.permission-item')?.querySelector('.permission-name')?.textContent?.toLowerCase().includes(permissionId)) {
+                        badge.textContent = 'Checking...';
+                    }
+                });
+                // Wait a moment for system dialog to potentially appear, then refresh
+                setTimeout(() => {
+                    console.log('🔄 Refreshing permissions after request...');
+                    loadPermissions();
+                }, 2000);
+            } catch (error) {
+                console.error(`❌ Failed to request permission ${permissionId}:`, error);
+                alert(`Failed to request ${permissionId} permission: ${error}`);
+            }
+        };
 
         function showPermissionError() {
             const permissionsList = document.getElementById('permissionsList');
@@ -1548,7 +2462,7 @@
             `;
         }
 
-        window.refreshPermissions = function() {
+        window.refreshPermissions = function () {
             const permissionsList = document.getElementById('permissionsList');
             permissionsList.innerHTML = `
                 <div class="permission-item loading">
@@ -1562,7 +2476,7 @@
         };
 
         // Device management functions
-        window.scanForDevices = async function() {
+        window.scanForDevices = async function () {
             const deviceList = document.getElementById('deviceList');
             deviceList.innerHTML = '<div class="device-item"><div class="device-info"><div class="device-name">Scanning...</div><div class="device-status">Looking for available devices</div></div></div>';
 
@@ -1587,11 +2501,11 @@
             }
         };
 
-        window.refreshDevices = function() {
+        window.refreshDevices = function () {
             scanForDevices();
         };
 
-        window.connectDevice = async function(deviceId) {
+        window.connectDevice = async function (deviceId) {
             console.log('Connecting to device:', deviceId);
             showStatus('Connecting to device...', 'info');
 
@@ -1614,14 +2528,14 @@
             }, 1500);
         };
 
-        window.disconnectDevice = function(deviceId) {
+        window.disconnectDevice = function (deviceId) {
             console.log('Disconnecting device:', deviceId);
             const deviceList = document.getElementById('deviceList');
             deviceList.innerHTML = '<div class="device-item"><div class="device-info"><div class="device-name">No devices connected</div><div class="device-status">Click "Scan for Devices" to discover available devices</div></div></div>';
             showStatus('Device disconnected');
         };
 
-        window.testDevice = function(deviceId) {
+        window.testDevice = function (deviceId) {
             console.log('Testing device:', deviceId);
             showStatus('Sending test haptic feedback...', 'info');
 
@@ -1631,12 +2545,639 @@
             }, 1000);
         };
 
-        // Initialize everything
-        setupProviderSelection();
-        loadPermissions();
-        loadConfig();
+        // Ollama connection testing
+        document.getElementById('testOllamaConnection')?.addEventListener('click', async () => {
+            const endpoint = document.getElementById('localLlmEndpoint').value;
+            const resultSpan = document.getElementById('ollamaTestResult');
+            resultSpan.textContent = 'Testing...';
+            resultSpan.className = 'test-result testing';
 
-        console.log('⚙️ Enhanced configuration interface initialized');
+            if (!isTauriAvailable()) {
+                resultSpan.textContent = '✗ Tauri API not available. Please run in the desktop app.';
+                resultSpan.className = 'test-result error';
+                return;
+            }
+
+            try {
+                const result = await window.__TAURI__.core.invoke('test_ollama_connection', { endpoint });
+                resultSpan.innerHTML = `<span class="icon-check"></span> Connected (v${result.version})`;
+                resultSpan.className = 'test-result success';
+                // Refresh models list after successful connection
+                await refreshOllamaModels();
+            } catch (error) {
+                resultSpan.textContent = `✗ ${error}`;
+                resultSpan.className = 'test-result error';
+            }
+        });
+
+        // Refresh Ollama models
+        async function refreshOllamaModels() {
+            if (!isTauriAvailable()) {
+                console.warn('Tauri API not available - cannot refresh Ollama models');
+                return;
+            }
+
+            const endpoint = document.getElementById('localLlmEndpoint').value;
+            const modelSelect = document.getElementById('ollamaModel');
+            const currentValue = modelSelect.value;
+
+            try {
+                const models = await window.__TAURI__.core.invoke('list_ollama_models', { endpoint });
+                modelSelect.innerHTML = '<option value="">Select a model...</option>';
+                models.forEach(model => {
+                    const sizeMB = (model.size / 1000000).toFixed(0);
+                    const option = document.createElement('option');
+                    option.value = model.name;
+                    option.textContent = `${model.name} (${sizeMB} MB)`;
+                    modelSelect.appendChild(option);
+                });
+
+                // Restore previous selection if still available
+                if (currentValue && [...modelSelect.options].some(o => o.value === currentValue)) {
+                    modelSelect.value = currentValue;
+                } else if (window._savedOllamaModel && [...modelSelect.options].some(o => o.value === window._savedOllamaModel)) {
+                    // Restore saved model from config
+                    modelSelect.value = window._savedOllamaModel;
+                    delete window._savedOllamaModel;
+                }
+            } catch (error) {
+                console.error('Failed to list Ollama models:', error);
+            }
+        }
+
+        document.getElementById('refreshOllamaModels')?.addEventListener('click', refreshOllamaModels);
+
+        // Temperature slider value display
+        document.getElementById('ollamaTemperature')?.addEventListener('input', (e) => {
+            document.getElementById('ollamaTemperatureValue').textContent = e.target.value;
+        });
+
+        // =====================================================================
+        // Local Whisper Model Management
+        // =====================================================================
+
+        // Store available models
+        let whisperModels = [];
+
+        // Load available Whisper models
+        async function loadWhisperModels() {
+            console.log('📥 Loading Whisper models...');
+            try {
+                whisperModels = await window.__TAURI__.core.invoke('get_whisper_models');
+                console.log('✅ Loaded Whisper models:', whisperModels);
+                const select = document.getElementById('whisperModelSelect');
+                select.innerHTML = '<option value="">-- Select a model --</option>';
+
+                let recommendedFilename = null;
+                whisperModels.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model.filename;
+                    // Add ⭐ badge for recommended model
+                    const badge = model.recommended ? ' ⭐ Recommended' : '';
+                    option.textContent = `${model.name} (${model.size_mb} MB)${badge}`;
+                    select.appendChild(option);
+
+                    if (model.recommended) {
+                        recommendedFilename = model.filename;
+                    }
+                });
+
+                // Auto-select the recommended model
+                if (recommendedFilename) {
+                    select.value = recommendedFilename;
+                    // Trigger change event to show model info and check download status
+                    select.dispatchEvent(new Event('change'));
+                }
+            } catch (error) {
+                console.error('Failed to load Whisper models:', error);
+            }
+        }
+
+        // Check if a specific model is already downloaded
+        async function checkModelDownloadStatus(filename) {
+            if (!isTauriAvailable() || !filename) {
+                return { exists: false, is_valid: false };
+            }
+            try {
+                const status = await window.__TAURI__.core.invoke('is_whisper_model_downloaded', {
+                    modelFilename: filename
+                });
+                console.log(`📁 Model status for ${filename}:`, status);
+                return status;
+            } catch (error) {
+                console.error('Failed to check model download status:', error);
+                return { exists: false, is_valid: false };
+            }
+        }
+
+        // Update the download button visibility based on model status
+        function updateDownloadButtonVisibility(isDownloaded, isValid) {
+            const downloadBtn = document.getElementById('downloadWhisperModel');
+            const readyIndicator = document.getElementById('modelReadyIndicator');
+            const statusRow = document.getElementById('modelStatusRow');
+            const statusSpan = document.getElementById('modelInfoStatus');
+
+            if (isDownloaded && isValid) {
+                // Model exists and is valid - hide download button, show ready indicator
+                downloadBtn.classList.add('hidden');
+                readyIndicator.classList.remove('hidden');
+                statusRow.classList.remove('hidden');
+                statusSpan.innerHTML = '<span class="icon-check-circle"></span> Downloaded and ready to use';
+                statusSpan.style.color = '#22c55e';
+            } else if (isDownloaded && !isValid) {
+                // Model exists but is invalid - show download button (for re-download)
+                downloadBtn.classList.remove('hidden');
+                downloadBtn.innerHTML = '<span class="icon icon-refresh"></span> Re-download';
+                readyIndicator.classList.add('hidden');
+                statusRow.classList.remove('hidden');
+                statusSpan.innerHTML = '<span class="icon-warning"></span> File exists but is invalid. Re-download to fix.';
+                statusSpan.style.color = '#f59e0b';
+            } else {
+                // Model not downloaded - show download button
+                downloadBtn.classList.remove('hidden');
+                downloadBtn.innerHTML = '<span class="icon icon-download"></span> Download';
+                readyIndicator.classList.add('hidden');
+                statusRow.classList.remove('hidden');
+                statusSpan.textContent = 'Not downloaded yet';
+                statusSpan.style.color = '#888';
+            }
+        }
+
+        // Check model status
+        async function checkWhisperModelStatus() {
+            try {
+                const status = await window.__TAURI__.core.invoke('get_whisper_model_status');
+                const banner = document.getElementById('whisperModelStatus');
+                const modelPathInput = document.getElementById('localWhisperModelPath');
+
+                if (status.exists && status.validation?.is_valid) {
+                    banner.classList.add('ready');
+                    banner.classList.remove('hidden');
+                    banner.innerHTML = `
+                        <div class="status-icon"><span class="icon-check-circle"></span></div>
+                        <div class="status-message">
+                            <strong>Whisper model ready</strong>
+                            <p>${status.default_path} (${status.validation.file_size_mb.toFixed(1)} MB)</p>
+                        </div>
+                    `;
+                    // Set the path in the input if it's empty
+                    if (!modelPathInput.value) {
+                        modelPathInput.placeholder = status.default_path;
+                    }
+                } else {
+                    banner.classList.remove('ready', 'hidden');
+                    banner.innerHTML = `
+                        <div class="status-icon"><span class="icon-warning"></span></div>
+                        <div class="status-message">
+                            <strong>No Whisper model configured</strong>
+                            <p>Download a model below to enable local speech recognition.</p>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                console.error('Failed to check Whisper model status:', error);
+            }
+        }
+
+        // Model selection change handler
+        document.getElementById('whisperModelSelect')?.addEventListener('change', async (e) => {
+            const filename = e.target.value;
+            const infoDiv = document.getElementById('selectedModelInfo');
+            const downloadBtn = document.getElementById('downloadWhisperModel');
+            const readyIndicator = document.getElementById('modelReadyIndicator');
+            const statusRow = document.getElementById('modelStatusRow');
+
+            if (!filename) {
+                infoDiv.classList.add('hidden');
+                downloadBtn.classList.add('hidden');
+                readyIndicator.classList.add('hidden');
+                return;
+            }
+
+            const model = whisperModels.find(m => m.filename === filename);
+            if (model) {
+                document.getElementById('modelInfoSize').textContent = `${model.size_mb} MB`;
+                document.getElementById('modelInfoLanguage').textContent = model.language;
+                document.getElementById('modelInfoDescription').textContent = model.description;
+                infoDiv.classList.remove('hidden');
+
+                // Check if this specific model is already downloaded
+                const downloadStatus = await checkModelDownloadStatus(filename);
+                updateDownloadButtonVisibility(downloadStatus.exists, downloadStatus.is_valid);
+            }
+        });
+
+        // Download button handler
+        document.getElementById('downloadWhisperModel')?.addEventListener('click', async () => {
+            console.log('🔽 Download button clicked');
+            console.log('📋 Available whisperModels:', whisperModels);
+            console.log('🔌 Tauri available:', isTauriAvailable());
+
+            // Check if Tauri API is available
+            if (!isTauriAvailable()) {
+                alert('Download requires the Gestura desktop app. Please open this page within the app.');
+                console.error('Tauri API not available - cannot download model');
+                return;
+            }
+
+            const select = document.getElementById('whisperModelSelect');
+            const filename = select.value;
+            console.log('📁 Selected filename:', filename);
+
+            if (!filename) {
+                alert('Please select a model to download');
+                return;
+            }
+
+            const model = whisperModels.find(m => m.filename === filename);
+            console.log('🔍 Found model:', model);
+
+            if (!model) {
+                alert('Model not found. Please refresh the page and try again.');
+                console.error('Model not found in whisperModels array. Available models:', whisperModels);
+                return;
+            }
+
+            // Get model destination path for display
+            let destinationPath = '~/.gestura/models/whisper/' + filename;
+            try {
+                const status = await window.__TAURI__.core.invoke('get_whisper_model_status');
+                if (status && status.models_dir) {
+                    destinationPath = status.models_dir + '/' + filename;
+                }
+            } catch (e) {
+                console.log('Could not get models dir, using default path');
+            }
+
+            // Confirm download with destination path (using custom dialog for better WebView compatibility)
+            const confirmMessage = `Size: ${model.size_mb} MB\nDestination: ${destinationPath}\n\nThis may take a few minutes.`;
+            const confirmed = await showConfirmDialog(`Download ${model.name}?`, confirmMessage);
+            if (!confirmed) {
+                return;
+            }
+
+            // Disable the dropdown and button during download
+            const downloadBtn = document.getElementById('downloadWhisperModel');
+            const modelSelect = document.getElementById('whisperModelSelect');
+            downloadBtn.disabled = true;
+            downloadBtn.innerHTML = '<span class="icon icon-refresh"></span> Downloading...';
+            modelSelect.disabled = true;
+
+            // Show progress UI immediately with destination info
+            const progressDiv = document.getElementById('whisperDownloadProgress');
+            progressDiv.classList.remove('hidden');
+            document.getElementById('downloadProgressText').textContent = `Preparing download to: ${destinationPath}`;
+            document.getElementById('totalSize').textContent = `${model.size_mb} MB`;
+            document.getElementById('downloadProgressPercent').textContent = '0%';
+            document.getElementById('downloadProgressBar').style.width = '0%';
+            document.getElementById('downloadedSize').textContent = '0 MB';
+
+            let unlisten = null;
+            try {
+                // Listen for progress events
+                console.log('📡 Setting up progress event listener...');
+                unlisten = await window.__TAURI__.event.listen('whisper-download-progress', (event) => {
+                    console.log('📊 Progress event received:', event.payload);
+                    const data = event.payload;
+
+                    if (data.status === 'starting') {
+                        document.getElementById('downloadProgressText').textContent = `Starting download of ${data.filename}...`;
+                    } else if (data.status === 'complete') {
+                        document.getElementById('downloadProgressText').innerHTML = '<span class="icon-check-circle"></span> Download complete!';
+                        document.getElementById('downloadProgressPercent').textContent = '100%';
+                        document.getElementById('downloadProgressBar').style.width = '100%';
+                    } else {
+                        document.getElementById('downloadProgressText').textContent = `Downloading ${data.filename}...`;
+                    }
+
+                    document.getElementById('downloadProgressPercent').textContent = `${data.percent}%`;
+                    document.getElementById('downloadProgressBar').style.width = `${data.percent}%`;
+                    document.getElementById('downloadedSize').textContent = `${(data.downloaded_mb || 0).toFixed(1)} MB`;
+
+                    if (data.status === 'complete') {
+                        setTimeout(async () => {
+                            progressDiv.classList.add('hidden');
+                            checkWhisperModelStatus();
+                            // Update the model path input
+                            if (data.path) {
+                                document.getElementById('localWhisperModelPath').value = data.path;
+                            }
+                            // Re-enable controls and update download button visibility
+                            modelSelect.disabled = false;
+                            downloadBtn.disabled = false;
+                            // Check download status and update UI
+                            const status = await checkModelDownloadStatus(filename);
+                            updateDownloadButtonVisibility(status.exists, status.is_valid);
+                        }, 1500);
+                    }
+                });
+                console.log('📡 Progress listener set up, unlisten function:', typeof unlisten);
+
+                console.log('🚀 Invoking download_whisper_model with filename:', filename);
+                const result = await window.__TAURI__.core.invoke('download_whisper_model', {
+                    modelFilename: filename
+                });
+                console.log('✅ Download result:', result);
+
+                // Handle case where model was already downloaded
+                if (result && result.includes('already downloaded')) {
+                    document.getElementById('downloadProgressText').innerHTML = '<span class="icon-check-circle"></span> Model already downloaded!';
+                    document.getElementById('downloadProgressPercent').textContent = '100%';
+                    document.getElementById('downloadProgressBar').style.width = '100%';
+                    setTimeout(async () => {
+                        progressDiv.classList.add('hidden');
+                        checkWhisperModelStatus();
+                        modelSelect.disabled = false;
+                        downloadBtn.disabled = false;
+                        // Check download status and update UI
+                        const status = await checkModelDownloadStatus(filename);
+                        updateDownloadButtonVisibility(status.exists, status.is_valid);
+                    }, 1500);
+                }
+            } catch (error) {
+                console.error('❌ Download failed:', error);
+                progressDiv.classList.add('hidden');
+                // Re-enable controls on error
+                downloadBtn.disabled = false;
+                downloadBtn.innerHTML = '<span class="icon icon-download"></span> Download';
+                modelSelect.disabled = false;
+                alert(`Download failed: ${error}`);
+            } finally {
+                if (unlisten) {
+                    unlisten();
+                }
+            }
+        });
+
+        // Browse button for Whisper model file picker
+        document.getElementById('browseWhisperModel')?.addEventListener('click', async () => {
+            if (!isTauriAvailable()) {
+                alert('File browser requires the Gestura desktop app. Please open this page within the app.');
+                return;
+            }
+
+            try {
+                // Use Tauri's dialog API to open a file picker
+                const selected = await window.__TAURI__.dialog.open({
+                    multiple: false,
+                    directory: false,
+                    filters: [{
+                        name: 'Whisper Models',
+                        extensions: ['bin']
+                    }],
+                    title: 'Select Whisper Model File'
+                });
+
+                if (selected) {
+                    // Populate the input field with the selected path
+                    document.getElementById('localWhisperModelPath').value = selected;
+                    console.log('📁 Selected Whisper model file:', selected);
+                    // Trigger validation
+                    await checkWhisperModelStatus();
+                }
+            } catch (error) {
+                console.error('❌ Failed to open file picker:', error);
+                alert('Failed to open file picker: ' + error);
+            }
+        });
+
+        // Local Whisper testing (updated to handle empty path)
+        document.getElementById('testLocalWhisper')?.addEventListener('click', async () => {
+            let modelPath = document.getElementById('localWhisperModelPath').value;
+            const resultSpan = document.getElementById('localWhisperTestResult');
+
+            // If no custom path, try to get the default
+            if (!modelPath) {
+                try {
+                    const status = await window.__TAURI__.core.invoke('get_whisper_model_status');
+                    if (status.exists) {
+                        modelPath = status.default_path;
+                    } else {
+                        resultSpan.textContent = '✗ No model configured. Download a model first.';
+                        resultSpan.className = 'test-result error';
+                        return;
+                    }
+                } catch (e) {
+                    resultSpan.textContent = '✗ Failed to check model status';
+                    resultSpan.className = 'test-result error';
+                    return;
+                }
+            }
+
+            resultSpan.textContent = 'Testing...';
+            resultSpan.className = 'test-result testing';
+
+            try {
+                const result = await window.__TAURI__.core.invoke('test_local_whisper', { modelPath });
+                resultSpan.innerHTML = `<span class="icon-check"></span> ${result}`;
+                resultSpan.className = 'test-result success';
+            } catch (error) {
+                resultSpan.textContent = `✗ ${error}`;
+                resultSpan.className = 'test-result error';
+            }
+        });
+
+        // Add custom Whisper model handler
+        document.getElementById('addCustomWhisperModel')?.addEventListener('click', async () => {
+            if (!isTauriAvailable()) {
+                alert('Custom models require the Gestura desktop app. Please open this page within the app.');
+                return;
+            }
+
+            const errorEl = document.getElementById('customModelError');
+            errorEl.style.display = 'none';
+            errorEl.textContent = '';
+
+            const pathInput = document.getElementById('customModelPath');
+            const nameInput = document.getElementById('customModelName');
+            const sizeInput = document.getElementById('customModelSize');
+            const langInput = document.getElementById('customModelLanguage');
+            const descInput = document.getElementById('customModelDescription');
+            const setActiveCheckbox = document.getElementById('customModelSetActive');
+
+            const modelPath = pathInput.value.trim();
+            const displayName = nameInput.value.trim();
+            const sizeMb = parseInt(sizeInput.value, 10) || null;
+            const language = langInput.value.trim() || 'Unknown';
+            const description = descInput.value.trim() || 'Custom Whisper model';
+            const setActive = !!setActiveCheckbox.checked;
+
+            if (!modelPath) {
+                errorEl.textContent = 'Please enter a model file path.';
+                errorEl.style.display = 'block';
+                return;
+            }
+
+            try {
+                console.log('🧩 Validating custom Whisper model at path:', modelPath);
+                const validation = await window.__TAURI__.core.invoke('validate_whisper_model', { path: modelPath });
+                if (!validation || validation.is_valid === false) {
+                    errorEl.textContent = 'The selected file does not appear to be a valid Whisper model.';
+                    errorEl.style.display = 'block';
+                    return;
+                }
+
+                console.log('✅ Custom model validation succeeded:', validation);
+
+                // Update the config to point to this path
+                const config = await window.__TAURI__.core.invoke('get_config');
+                config.voice = config.voice || {};
+                if (setActive) {
+                    config.voice.local_model_path = modelPath;
+                    config.voice.provider = 'local';
+                }
+
+                await window.__TAURI__.core.invoke('save_config', { cfg: config });
+                console.log('💾 Custom model path saved to config:', modelPath);
+
+                // Reflect in UI
+                const modelPathInput = document.getElementById('localWhisperModelPath');
+                modelPathInput.value = modelPath;
+                await checkWhisperModelStatus();
+
+                errorEl.style.display = 'block';
+                errorEl.style.color = '#0c7a34';
+                errorEl.innerHTML = '<span class="icon-check-circle"></span> Custom model registered successfully.';
+            } catch (e) {
+                console.error('Failed to add custom Whisper model:', e);
+                errorEl.style.display = 'block';
+                errorEl.style.color = '#b00020';
+                errorEl.textContent = `Failed to add custom model: ${e}`;
+            }
+        });
+
+        // Initialize Whisper model UI
+        async function initWhisperModelUI() {
+            console.log('🎤 Initializing Whisper model UI...');
+            await loadWhisperModels();
+            await checkWhisperModelStatus();
+            console.log('✅ Whisper model UI initialized');
+        }
+
+        // Check if Tauri API is available
+        function isTauriAvailable() {
+            return typeof window.__TAURI__ !== 'undefined' && window.__TAURI__.core;
+        }
+
+        // Wait for Tauri API to be ready
+        async function waitForTauri(maxWait = 5000) {
+            const startTime = Date.now();
+            while (!isTauriAvailable() && (Date.now() - startTime) < maxWait) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            return isTauriAvailable();
+        }
+
+        // Initialize everything with Tauri API check
+        async function initializeApp() {
+            setupProviderSelection();
+
+            const tauriReady = await waitForTauri();
+            if (!tauriReady) {
+                console.warn('⚠️ Tauri API not available - running in standalone browser mode');
+                // Show a warning banner
+                const mainContent = document.querySelector('.main-content');
+                if (mainContent) {
+                    const warning = document.createElement('div');
+                    warning.className = 'model-status-banner';
+                    warning.innerHTML = `
+                        <div class="status-icon"><span class="icon-warning"></span></div>
+                        <div class="status-message">
+                            <strong>Browser Mode</strong>
+                            <p>This page must be opened within the Gestura app for full functionality.</p>
+                        </div>
+                    `;
+                    mainContent.prepend(warning);
+                }
+                return;
+            }
+
+            // Tauri is available, initialize all features
+            loadPermissions();
+            loadConfig();
+            initWhisperModelUI();
+            loadAudioDevices();
+            console.log('⚙️ Enhanced configuration interface initialized');
+        }
+
+        // Load available audio input devices
+        async function loadAudioDevices() {
+            if (!isTauriAvailable()) {
+                console.warn('Tauri API not available - cannot load audio devices');
+                return;
+            }
+
+            try {
+                const devices = await window.__TAURI__.core.invoke('list_audio_devices');
+                console.log('🎤 Available audio devices:', devices);
+
+                const select = document.getElementById('inputDevice');
+                if (!select) {
+                    console.error('Input device select element not found');
+                    return;
+                }
+
+                // Clear existing options except the first one
+                select.innerHTML = '<option value="default">System Default</option>';
+
+                // Add real devices
+                devices.forEach(device => {
+                    const option = document.createElement('option');
+                    option.value = device.name;
+                    option.textContent = device.name + (device.is_default ? ' (Default)' : '');
+                    select.appendChild(option);
+                });
+
+                // Load saved device from config and select it
+                try {
+                    const config = await window.__TAURI__.core.invoke('get_config');
+                    const savedDevice = config?.voice?.audio_device;
+                    if (savedDevice) {
+                        select.value = savedDevice;
+                        console.log('🎤 Restored saved audio device:', savedDevice);
+                    }
+                } catch (e) {
+                    console.warn('Could not load saved audio device:', e);
+                }
+
+                // Add change handler to save selection
+                select.addEventListener('change', async (e) => {
+                    const deviceName = e.target.value === 'default' ? null : e.target.value;
+                    try {
+                        await window.__TAURI__.core.invoke('update_audio_device', { deviceName });
+                        console.log('🎤 Audio device saved:', deviceName || 'System Default');
+                    } catch (err) {
+                        console.error('Failed to save audio device:', err);
+                    }
+                });
+
+                // Also check if microphone is available
+                const micAvailable = await window.__TAURI__.core.invoke('check_microphone_available');
+                console.log('🎤 Microphone available:', micAvailable);
+
+                if (!micAvailable) {
+                    const warning = document.createElement('div');
+                    warning.className = 'help-text';
+                    warning.style.color = '#dc3545';
+                    warning.innerHTML = '<span class="icon-warning"></span> No microphone detected. Please connect a microphone.';
+                    select.parentNode.appendChild(warning);
+                }
+            } catch (error) {
+                console.error('Failed to load audio devices:', error);
+            }
+        }
+
+        // Verify download button exists
+        const downloadBtn = document.getElementById('downloadWhisperModel');
+        if (downloadBtn) {
+            console.log('✅ Download button found:', downloadBtn);
+        } else {
+            console.error('❌ Download button NOT found! Element #downloadWhisperModel is missing.');
+        }
+
+        // Start initialization
+        initializeApp();
     </script>
 </body>
+
 </html>

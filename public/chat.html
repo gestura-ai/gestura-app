@@ -1,9 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gestura Chat</title>
+    <link rel="stylesheet" href="icons.css">
     <style>
         * {
             margin: 0;
@@ -135,45 +137,216 @@
         .typing-indicator.show {
             display: block;
         }
+
+        .main-layout {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .sidebar {
+            width: 250px;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-right: 1px solid rgba(255, 255, 255, 0.2);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .sidebar-header {
+            padding: 1rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+        }
+
+        .sidebar-header h3 {
+            margin: 0 0 0.5rem 0;
+            font-size: 0.9rem;
+            opacity: 0.8;
+        }
+
+        .new-chat-btn {
+            width: 100%;
+            padding: 0.5rem;
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+
+        .new-chat-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .session-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0.5rem;
+        }
+
+        .session-item {
+            padding: 0.75rem;
+            margin-bottom: 0.25rem;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+
+        .session-item:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .session-item.active {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .session-title {
+            font-weight: 500;
+            margin-bottom: 0.25rem;
+        }
+
+        .session-meta {
+            font-size: 0.75rem;
+            opacity: 0.7;
+        }
+
+        .voice-controls {
+            padding: 1rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .voice-btn {
+            width: 100%;
+            padding: 0.75rem;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            transition: all 0.2s;
+        }
+
+        .voice-btn.inactive {
+            background: #28a745;
+            color: white;
+        }
+
+        .voice-btn.active {
+            background: #dc3545;
+            color: white;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.7;
+            }
+        }
+
+        .voice-status {
+            text-align: center;
+            color: white;
+            font-size: 0.75rem;
+            margin-top: 0.5rem;
+            opacity: 0.8;
+        }
+
+        .chat-main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
     </style>
 </head>
+
 <body>
     <div class="chat-header">
-        <h2>💬 Gestura Agent Chat</h2>
+        <h2><span class="icon-message"></span> Gestura Agent Chat</h2>
         <div class="status" id="status">Connected to default agent</div>
     </div>
 
-    <div class="chat-container">
-        <div class="messages" id="messages">
-            <div class="message system">
-                Welcome to Gestura! I'm your AI assistant. How can I help you today?
+    <div class="main-layout">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h3>Chat Sessions</h3>
+                <button class="new-chat-btn" id="newChatBtn">+ New Chat</button>
+            </div>
+            <div class="session-list" id="sessionList">
+                <!-- Sessions will be populated here -->
+            </div>
+            <div class="voice-controls">
+                <button class="voice-btn inactive" id="voiceBtn">
+                    <span id="voiceIcon" class="icon-microphone"></span>
+                    <span id="voiceBtnText">Start Listening</span>
+                </button>
+                <div class="voice-status" id="voiceStatus">Voice input ready</div>
             </div>
         </div>
 
-        <div class="typing-indicator" id="typing">
-            Agent is typing...
-        </div>
+        <div class="chat-main">
+            <div class="chat-container">
+                <div class="messages" id="messages">
+                    <div class="message system">
+                        Welcome to Gestura! I'm your AI assistant. How can I help you today?
+                    </div>
+                </div>
 
-        <div class="input-container">
-            <input 
-                type="text" 
-                class="message-input" 
-                id="messageInput" 
-                placeholder="Type your message..."
-                maxlength="1000"
-            >
-            <button class="send-button" id="sendButton">Send</button>
+                <div class="typing-indicator" id="typing">
+                    Agent is typing...
+                </div>
+
+                <div class="input-container">
+                    <input type="text" class="message-input" id="messageInput" placeholder="Type your message..."
+                        maxlength="1000">
+                    <button class="send-button" id="sendButton">Send</button>
+                </div>
+            </div>
         </div>
     </div>
 
-    <script type="module">
-        import { invoke } from '@tauri-apps/api/core';
-
+    <script>
         const messagesContainer = document.getElementById('messages');
         const messageInput = document.getElementById('messageInput');
         const sendButton = document.getElementById('sendButton');
         const typingIndicator = document.getElementById('typing');
         const statusElement = document.getElementById('status');
+
+        // Check if Tauri API is available
+        function isTauriAvailable() {
+            return typeof window.__TAURI__ !== 'undefined' && window.__TAURI__.core;
+        }
+
+        // Wait for Tauri API to be ready
+        async function waitForTauri(maxWait = 5000) {
+            const startTime = Date.now();
+            while (!isTauriAvailable() && (Date.now() - startTime) < maxWait) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            return isTauriAvailable();
+        }
+
+        // Safe invoke wrapper that checks Tauri availability
+        async function invoke(command, args = {}) {
+            if (!isTauriAvailable()) {
+                throw new Error('Tauri API not available. Please run in the desktop app.');
+            }
+            return window.__TAURI__.core.invoke(command, args);
+        }
 
         let isProcessing = false;
 
@@ -210,18 +383,8 @@
             showTyping();
 
             try {
-                // For now, simulate an AI response
-                // TODO: Implement actual AI processing through speech module
-                await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate processing time
-
-                const responses = [
-                    "I understand you said: \"" + message + "\". How can I help you with that?",
-                    "That's interesting! Could you tell me more about what you're looking for?",
-                    "I'm here to help. What would you like me to do with that information?",
-                    "Thanks for sharing that. Is there something specific you'd like assistance with?"
-                ];
-
-                const response = responses[Math.floor(Math.random() * responses.length)];
+                // Process message through the configured LLM provider
+                const response = await invoke('process_chat_message', { message: message });
 
                 hideTyping();
                 addMessage(response, 'agent');
@@ -251,18 +414,38 @@
 
         // Listen for speech-to-text messages from the backend
         async function setupEventListeners() {
-            try {
-                const { listen } = await import('@tauri-apps/api/event');
+            if (!isTauriAvailable()) {
+                console.warn('Tauri API not available - event listeners not set up');
+                return;
+            }
 
-                // Listen for chat messages from speech processing
-                await listen('chat-message', (event) => {
+            try {
+                // Listen for voice session start events
+                await window.__TAURI__.event.listen('voice-session-started', (event) => {
+                    const data = event.payload;
+                    console.log('Voice session started:', data);
+                    statusElement.innerHTML = '<span class="icon-microphone"></span> Processing voice input...';
+                    showTyping();
+                });
+
+                // Listen for chat messages from speech processing via global Tauri
+                await window.__TAURI__.event.listen('chat-message', (event) => {
                     const data = event.payload;
                     console.log('Received chat message:', data);
 
                     if (data.type === 'user') {
+                        // Voice input received - hide typing indicator
+                        hideTyping();
                         addMessage(data.message, 'user');
+                        // Show typing indicator for AI response
+                        showTyping();
+                        statusElement.innerHTML = '<span class="icon-robot"></span> Agent is thinking...';
                     } else if (data.type === 'assistant') {
+                        hideTyping();
                         addMessage(data.message, 'agent');
+                        statusElement.innerHTML = '<span class="icon-check"></span> Voice command completed';
+                        // Reset status after a moment
+                        setTimeout(() => checkAgentStatus(), 3000);
                     }
                 });
 
@@ -272,20 +455,178 @@
             }
         }
 
-        // Check agent status
+        // Check agent status and LLM configuration
         async function checkAgentStatus() {
             try {
-                // For now, just show a default status
-                statusElement.textContent = 'Ready for voice and text input';
+                const config = await invoke('get_config');
+                const llmProvider = config.llm?.primary || 'echo';
+                statusElement.textContent = `Connected via ${llmProvider.toUpperCase()} - Ready for input`;
             } catch (error) {
-                statusElement.textContent = 'Agent connection error';
-                console.error('Failed to get agent status:', error);
+                statusElement.textContent = 'Ready for voice and text input';
+                console.error('Failed to get config:', error);
             }
         }
 
-        // Initialize
-        setupEventListeners();
-        checkAgentStatus();
+        // Voice control elements
+        const voiceBtn = document.getElementById('voiceBtn');
+        const voiceIcon = document.getElementById('voiceIcon');
+        const voiceBtnText = document.getElementById('voiceBtnText');
+        const voiceStatus = document.getElementById('voiceStatus');
+        const sessionList = document.getElementById('sessionList');
+        const newChatBtn = document.getElementById('newChatBtn');
+
+        let isListening = false;
+        let voiceStatusInterval = null;
+
+        // Voice control functions
+        async function toggleVoiceListening() {
+            try {
+                if (isListening) {
+                    await invoke('stop_voice_listening');
+                    setVoiceInactive();
+                } else {
+                    await invoke('start_voice_listening');
+                    setVoiceActive();
+                }
+            } catch (error) {
+                console.error('Failed to toggle voice listening:', error);
+                const message = typeof error === 'string' ? error : String(error);
+                voiceStatus.textContent = `Error: ${message}`;
+                // Surface configuration problems directly in the chat as a
+                // system message so users see why voice could not start.
+                addMessage(`Voice error: ${message}`, 'system');
+            }
+        }
+
+        function setVoiceActive() {
+            isListening = true;
+            voiceBtn.className = 'voice-btn active';
+            voiceIcon.className = 'icon-recording';
+            voiceIcon.style.color = 'var(--error-color)';
+            voiceBtnText.textContent = 'Stop Listening';
+            voiceStatus.textContent = 'Listening for voice input...';
+            startVoiceStatusPolling();
+        }
+
+        function setVoiceInactive() {
+            isListening = false;
+            voiceBtn.className = 'voice-btn inactive';
+            voiceIcon.className = 'icon-microphone';
+            voiceIcon.style.color = '';
+            voiceBtnText.textContent = 'Start Listening';
+            voiceStatus.textContent = 'Voice input ready';
+            stopVoiceStatusPolling();
+        }
+
+        function startVoiceStatusPolling() {
+            voiceStatusInterval = setInterval(async () => {
+                try {
+                    const [listening, remaining] = await invoke('get_listening_state');
+                    if (!listening) {
+                        setVoiceInactive();
+                    } else if (remaining !== null) {
+                        voiceStatus.textContent = `Listening... ${remaining}s remaining`;
+                    }
+                } catch (error) {
+                    console.error('Failed to get listening state:', error);
+                }
+            }, 1000);
+        }
+
+        function stopVoiceStatusPolling() {
+            if (voiceStatusInterval) {
+                clearInterval(voiceStatusInterval);
+                voiceStatusInterval = null;
+            }
+        }
+
+        voiceBtn.addEventListener('click', toggleVoiceListening);
+
+        // Session management functions
+        async function loadSessions() {
+            try {
+                const sessions = await invoke('get_chat_sessions');
+                renderSessions(sessions);
+            } catch (error) {
+                console.error('Failed to load sessions:', error);
+            }
+        }
+
+        function renderSessions(sessions) {
+            sessionList.innerHTML = '';
+
+            // Sort by last_active descending
+            sessions.sort((a, b) => new Date(b.last_active) - new Date(a.last_active));
+
+            sessions.forEach(session => {
+                const item = document.createElement('div');
+                item.className = `session-item ${session.is_open ? 'active' : ''}`;
+                item.innerHTML = `
+                    <div class="session-title">${session.title}</div>
+                    <div class="session-meta">
+                        ${session.message_count} messages • ${session.is_open ? 'Open' : 'Closed'}
+                    </div>
+                `;
+                item.addEventListener('click', () => restoreSession(session.id));
+                sessionList.appendChild(item);
+            });
+
+            if (sessions.length === 0) {
+                sessionList.innerHTML = '<div class="session-item">No sessions yet</div>';
+            }
+        }
+
+        async function restoreSession(sessionId) {
+            try {
+                await invoke('restore_chat_session', { sessionId });
+                await loadSessions();
+            } catch (error) {
+                console.error('Failed to restore session:', error);
+            }
+        }
+
+        async function createNewSession() {
+            try {
+                await invoke('create_chat_session');
+                await loadSessions();
+            } catch (error) {
+                console.error('Failed to create session:', error);
+            }
+        }
+
+        newChatBtn.addEventListener('click', createNewSession);
+
+        // Check initial voice state
+        async function checkInitialVoiceState() {
+            try {
+                const [listening, _] = await invoke('get_listening_state');
+                if (listening) {
+                    setVoiceActive();
+                }
+            } catch (error) {
+                console.error('Failed to check initial voice state:', error);
+            }
+        }
+
+        // Initialize the app with Tauri readiness check
+        async function initializeApp() {
+            const tauriReady = await waitForTauri();
+            if (!tauriReady) {
+                console.warn('Tauri API not available - running in standalone browser mode');
+                statusElement.innerHTML = '<span class="icon-warning" style="color: var(--warning-color);"></span> Desktop app not connected';
+                addMessage('Chat requires the Gestura desktop app to function. Please launch the app.', 'system');
+                return;
+            }
+
+            setupEventListeners();
+            checkAgentStatus();
+            loadSessions();
+            checkInitialVoiceState();
+        }
+
+        // Start initialization
+        initializeApp();
     </script>
 </body>
+
 </html>

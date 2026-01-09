@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome to Gestura</title>
+    <link rel="stylesheet" href="icons.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            height: 100%;
+            overflow: hidden;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            flex-direction: column;
+            --background-color: #ffffff;
+            --text-color: #1a1a1a;
+            --text-secondary: #666666;
+            --border-color: #e0e0e0;
+            --surface-color: #f8f9fa;
+            --accent-color: #007bff;
+            --accent-hover: #0056b3;
+            --success-color: #28a745;
+            --warning-color: #ffc107;
+            --error-color: #dc3545;
+        }
+
+        /* Dark theme */
+        @media (prefers-color-scheme: dark) {
+            body {
+                --background-color: #1e1e1e;
+                --text-color: #ffffff;
+                --text-secondary: #b0b0b0;
+                --border-color: #404040;
+                --surface-color: #2d2d2d;
+                --accent-color: #4da3ff;
+                --accent-hover: #2d8cf0;
+                --success-color: #48c774;
+                --warning-color: #ffdd57;
+                --error-color: #ff6b6b;
+            }
+        }
+
+        body {
+            background: var(--background-color);
+            color: var(--text-color);
+        }
+
+        .onboarding-container {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 1.5rem;
+            width: 100%;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 1rem;
+        }
+
+        .header h1 {
+            font-size: 1.75rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .header p {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .progress-container {
+            margin-bottom: 1rem;
+        }
+
+        .progress-bar {
+            height: 4px;
+            background: var(--border-color);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: var(--accent-color);
+            transition: width 0.3s ease;
+        }
+
+        .step-indicator {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 0.5rem;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .step-content {
+            flex: 1;
+            background: var(--surface-color);
+            border-radius: 10px;
+            padding: 1.25rem;
+            border: 1px solid var(--border-color);
+            overflow-y: auto;
+        }
+
+        .step-content h2 {
+            margin-bottom: 0.75rem;
+            font-size: 1.25rem;
+        }
+
+        .step-content p {
+            color: var(--text-secondary);
+            line-height: 1.5;
+            margin-bottom: 1rem;
+            font-size: 0.9rem;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 0.75rem;
+            margin: 1rem 0;
+        }
+
+        .feature-card {
+            background: var(--background-color);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 0.75rem;
+        }
+
+        .feature-card h3 {
+            font-size: 0.9rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .feature-card p {
+            font-size: 0.8rem;
+            margin-bottom: 0;
+        }
+
+        .btn {
+            padding: 0.6rem 1.25rem;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: var(--accent-color);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+        }
+
+        .btn-secondary {
+            background: var(--surface-color);
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
+        }
+
+        .btn-secondary:hover {
+            background: var(--border-color);
+        }
+
+        .btn-small {
+            padding: 0.4rem 0.8rem;
+            font-size: 0.8rem;
+        }
+
+        .btn-success {
+            background: var(--success-color);
+            color: white;
+        }
+
+        .button-row {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 1rem;
+            padding-top: 0.5rem;
+        }
+
+        .permission-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem;
+            background: var(--background-color);
+            border-radius: 6px;
+            margin-bottom: 0.5rem;
+            border: 1px solid var(--border-color);
+        }
+
+        .permission-info {
+            flex: 1;
+        }
+
+        .permission-info strong {
+            font-size: 0.9rem;
+        }
+
+        .permission-info p {
+            margin: 0.25rem 0 0 0;
+            font-size: 0.8rem;
+        }
+
+        .permission-status {
+            margin-left: 0.5rem;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+        .status-granted {
+            background: var(--success-color);
+            color: white;
+        }
+
+        .status-denied {
+            background: var(--error-color);
+            color: white;
+        }
+
+        .status-unknown {
+            background: var(--warning-color);
+            color: #333;
+        }
+
+        select {
+            width: 100%;
+            padding: 0.6rem;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            background: var(--background-color);
+            color: var(--text-color);
+            font-size: 0.9rem;
+            margin-bottom: 0.75rem;
+        }
+
+        select:focus {
+            outline: none;
+            border-color: var(--accent-color);
+        }
+
+        .config-section {
+            margin-bottom: 1rem;
+        }
+
+        .config-section label {
+            display: block;
+            margin-bottom: 0.4rem;
+            font-weight: 500;
+            font-size: 0.85rem;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="onboarding-container">
+        <div class="header">
+            <h1><span class="icon-target"></span> Welcome to Gestura</h1>
+            <p>Let's get you set up with voice commands and haptic feedback</p>
+        </div>
+
+        <div class="progress-container">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="step-indicator">
+                <span id="stepNumber">Step 1 of 6</span>
+                <span id="stepName">Welcome</span>
+            </div>
+        </div>
+
+        <div class="step-content" id="stepContent">
+            <!-- Dynamic step content -->
+        </div>
+
+        <div class="button-row" style="display: flex; justify-content: space-between; margin-top: 1.5rem;">
+            <button class="btn btn-secondary" id="prevBtn" onclick="previousStep()"
+                style="visibility: hidden;">Previous</button>
+            <button class="btn btn-primary" id="nextBtn" onclick="nextStep()">Get Started</button>
+        </div>
+    </div>
+
+    <script>
+        const { invoke } = window.__TAURI__.core;
+
+        let currentStep = 0;
+        let permissionStates = {
+            microphone: 'unknown',
+            accessibility: 'unknown',
+            bluetooth: 'unknown',
+            screen_recording: 'unknown',
+            automation: 'unknown'
+        };
+
+        const steps = [
+            {
+                id: 'welcome',
+                title: 'Welcome',
+                content: `
+                    <h2>Welcome to Gestura</h2>
+                    <p>Gestura is your intelligent voice and gesture assistant. Control your computer with natural speech commands and get tactile feedback through connected hardware.</p>
+                    <div class="features-grid">
+                        <div class="feature-card">
+                            <h3><span class="icon-microphone"></span> Voice Processing</h3>
+                            <p>Convert speech to text with local or cloud-based models</p>
+                        </div>
+                        <div class="feature-card">
+                            <h3><span class="icon-ring"></span> Tactile Hardware</h3>
+                            <p>Connect devices for gesture control and haptic feedback</p>
+                        </div>
+                        <div class="feature-card">
+                            <h3><span class="icon-robot"></span> AI Agents</h3>
+                            <p>Spawn and manage AI agents for various tasks</p>
+                        </div>
+                        <div class="feature-card">
+                            <h3><span class="icon-lock"></span> Privacy First</h3>
+                            <p>Process everything locally - your data stays on your device</p>
+                        </div>
+                    </div>
+                `
+            },
+            {
+                id: 'permissions',
+                title: 'Permissions',
+                content: `
+                    <h2>System Permissions</h2>
+                    <p>Gestura needs a few permissions to work properly. Click Enable to grant each permission.</p>
+                    <div id="permissionsList"></div>
+                `
+            },
+            {
+                id: 'voice',
+                title: 'Voice Setup',
+                content: `
+                    <h2>Voice Processing Setup</h2>
+                    <p>Choose how you want to process voice commands:</p>
+                    <div style="margin: 1rem 0;">
+                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 2px solid var(--accent-color);">
+                            <label style="display: flex; align-items: center; cursor: pointer;">
+                                <input type="radio" name="voiceMode" value="local" checked style="margin-right: 0.75rem;" onchange="updateVoiceMode(this.value)">
+                                <div>
+                                    <strong>Local Processing (Recommended)</strong>
+                                    <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Uses Whisper AI on your device. Private and works offline.</p>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; border: 1px solid var(--border-color);">
+                            <label style="display: flex; align-items: center; cursor: pointer;">
+                                <input type="radio" name="voiceMode" value="openai" style="margin-right: 0.75rem;" onchange="updateVoiceMode(this.value)">
+                                <div>
+                                    <strong>OpenAI Whisper API</strong>
+                                    <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Uses cloud API. Faster but requires internet and API key.</p>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="config-section" style="margin-top: 1rem;">
+                        <label for="microphoneSelect"><span class="icon-microphone"></span> Microphone</label>
+                        <select id="microphoneSelect" onchange="updateMicrophone(this.value)">
+                            <option value="">Loading devices...</option>
+                        </select>
+                    </div>
+                `
+            },
+            {
+                id: 'voice-model',
+                title: 'Voice Model',
+                content: `
+                    <h2>Voice Model Selection</h2>
+                    <p>Select the Whisper model for speech-to-text processing:</p>
+                    <div class="config-section">
+                        <label for="whisperModel">Whisper Model</label>
+                        <select id="whisperModel" onchange="updateWhisperModel(this.value)">
+                            <option value="ggml-tiny.en.bin">Tiny English (75MB) - Fastest</option>
+                            <option value="ggml-base.en.bin" selected>Base English (142MB) - Balanced</option>
+                            <option value="ggml-small.en.bin">Small English (466MB) - Better accuracy</option>
+                            <option value="ggml-medium.en.bin">Medium English (1.5GB) - High accuracy</option>
+                            <option value="ggml-large-v3.bin">Large v3 (3GB) - Best accuracy</option>
+                        </select>
+                    </div>
+                    <div id="modelStatus" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; border: 1px solid var(--border-color); margin-top: 0.5rem;">
+                        <p style="margin: 0; font-size: 0.85rem;">Model will be downloaded when you first use voice commands.</p>
+                    </div>
+                `
+            },
+            {
+                id: 'llm',
+                title: 'AI Provider',
+                content: `
+                    <h2>AI Provider Configuration</h2>
+                    <p>Select the AI provider for the agent loop:</p>
+                    <div class="config-section">
+                        <label for="llmProvider">LLM Provider</label>
+                        <select id="llmProvider" onchange="updateLLMProvider(this.value)">
+                            <option value="ollama" selected>Ollama (Local)</option>
+                            <option value="openai">OpenAI</option>
+                            <option value="anthropic">Anthropic</option>
+                            <option value="echo">Echo (Testing)</option>
+                        </select>
+                    </div>
+                    <div id="llmConfig"></div>
+                `
+            },
+            {
+                id: 'ring',
+                title: 'Tactile Hardware',
+                content: `
+                    <h2>Tactile Hardware (Optional)</h2>
+                    <p>If you have tactile hardware (e.g., haptic ring), you can connect it now for gesture control and haptic feedback.</p>
+                    <div style="text-align: center; margin: 1.5rem 0;">
+                        <div style="font-size: 3rem; margin-bottom: 0.75rem;"><span class="icon-ring icon-xl"></span></div>
+                        <button class="btn btn-primary" id="scanBtn" onclick="scanForRings()">Scan for Devices</button>
+                        <p id="ringStatus" style="margin-top: 0.75rem; color: var(--text-secondary); font-size: 0.85rem;">No device connected</p>
+                    </div>
+                    <p style="font-size: 0.8rem; color: var(--text-secondary);">Don't have a device? No problem! You can skip this step and set it up later.</p>
+                `
+            },
+            {
+                id: 'privacy',
+                title: 'Privacy',
+                content: `
+                    <h2>Privacy & Data Settings</h2>
+                    <p>We believe in privacy-first design. Here's how your data is handled:</p>
+                    <div style="margin: 1rem 0; padding: 0.75rem; background: var(--background-color); border-radius: 6px; border-left: 4px solid var(--success-color);">
+                        <strong><span class="icon-check-circle" style="color: var(--success-color);"></span> Voice Processing</strong>
+                        <p style="margin: 0.25rem 0 0; font-size: 0.85rem;">With local mode, audio is processed entirely on your device and never sent to any server.</p>
+                    </div>
+                    <div style="margin: 1rem 0;">
+                        <label style="display: flex; align-items: flex-start; cursor: pointer;">
+                            <input type="checkbox" id="analyticsConsent" style="margin-right: 0.75rem; margin-top: 0.25rem;">
+                            <div>
+                                <strong>Anonymous Usage Analytics (Optional)</strong>
+                                <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Help improve Gestura by sharing anonymous usage statistics.</p>
+                            </div>
+                        </label>
+                    </div>
+                    <div style="margin: 1rem 0;">
+                        <label style="display: flex; align-items: flex-start; cursor: pointer;">
+                            <input type="checkbox" id="crashReports" checked style="margin-right: 0.75rem; margin-top: 0.25rem;">
+                            <div>
+                                <strong>Crash Reports (Recommended)</strong>
+                                <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Send crash reports to help us fix bugs quickly.</p>
+                            </div>
+                        </label>
+                    </div>
+                `
+            },
+            {
+                id: 'complete',
+                title: 'Complete',
+                content: `
+                    <h2 style="text-align: center;"><span class="icon-party"></span> You're All Set!</h2>
+                    <p style="text-align: center; font-size: 0.9rem;">Gestura is now ready to use. Here are some things you can try:</p>
+                    <div class="features-grid" style="margin-top: 1rem;">
+                        <div class="feature-card">
+                            <h3><span class="icon-microphone"></span> Voice Commands</h3>
+                            <p>Press Ctrl+Space or click "Start Listening"</p>
+                        </div>
+                        <div class="feature-card">
+                            <h3><span class="icon-message"></span> Open a Chat</h3>
+                            <p>Click "New Chat" in the tray menu</p>
+                        </div>
+                        <div class="feature-card">
+                            <h3><span class="icon-settings"></span> Settings</h3>
+                            <p>Access Config from the tray menu</p>
+                        </div>
+                        <div class="feature-card">
+                            <h3><span class="icon-ring"></span> Tactile Hardware</h3>
+                            <p>Connect devices for gesture control</p>
+                        </div>
+                    </div>
+                `
+            }
+        ];
+
+        const permissions = [
+            { id: 'microphone', name: 'Microphone Access', icon: '<span class="icon-microphone"></span>', desc: 'For voice commands and speech-to-text', pane: 'privacy_microphone' },
+            { id: 'accessibility', name: 'Accessibility', icon: '<span class="icon-keyboard"></span>', desc: 'For global hotkeys to trigger voice recording', pane: 'privacy_accessibility' },
+            { id: 'bluetooth', name: 'Bluetooth', icon: '<span class="icon-bluetooth"></span>', desc: 'For connecting tactile hardware devices', pane: 'bluetooth' },
+            { id: 'screen_recording', name: 'Screen Recording', icon: '<span class="icon-monitor"></span>', desc: 'For screen capture features (optional)', pane: 'privacy_screenrecording' },
+            { id: 'automation', name: 'Automation', icon: '<span class="icon-robot"></span>', desc: 'For controlling other applications (optional)', pane: 'privacy_automation' }
+        ];
+
+        async function renderPermissions() {
+            const container = document.getElementById('permissionsList');
+            if (!container) return;
+
+            // Check actual permission states
+            await checkAllPermissions();
+
+            container.innerHTML = permissions.map(p => {
+                const state = permissionStates[p.id] || 'unknown';
+                const isGranted = state === 'granted';
+
+                return `
+                    <div class="permission-row">
+                        <div class="permission-info">
+                            <strong>${p.icon} ${p.name}</strong>
+                            <p>${p.desc}</p>
+                        </div>
+                        ${isGranted
+                        ? `<span class="permission-status status-granted"><span class="icon-check"></span> Approved</span>`
+                        : `<button class="btn btn-small btn-primary" onclick="enablePermission('${p.id}', '${p.pane}')">Enable</button>`
+                    }
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function checkAllPermissions() {
+            for (const p of permissions) {
+                try {
+                    const status = await invoke('check_permission', { permission: p.id });
+                    permissionStates[p.id] = status;
+                } catch (error) {
+                    console.error(`Error checking ${p.id} permission:`, error);
+                    permissionStates[p.id] = 'unknown';
+                }
+            }
+        }
+
+        async function enablePermission(permissionId, pane) {
+            try {
+                await invoke('request_permission', { permission: permissionId });
+                // Wait a moment for the system dialog to appear/process
+                setTimeout(async () => {
+                    await renderPermissions();
+                }, 1000);
+            } catch (error) {
+                console.error('Error requesting permission:', error);
+                // Fallback to opening system preferences
+                try {
+                    await invoke('open_system_preferences', { pane });
+                } catch (e) {
+                    console.error('Error opening system preferences:', e);
+                }
+            }
+        }
+
+        async function updateUI() {
+            const step = steps[currentStep];
+            document.getElementById('progressFill').style.width = `${((currentStep + 1) / steps.length) * 100}%`;
+            document.getElementById('stepNumber').textContent = `Step ${currentStep + 1} of ${steps.length}`;
+            document.getElementById('stepName').textContent = step.title;
+            document.getElementById('stepContent').innerHTML = step.content;
+
+            // Step-specific initialization (async where needed)
+            if (step.id === 'permissions') await renderPermissions();
+            if (step.id === 'voice') await loadMicrophoneDevices();
+            if (step.id === 'voice-model') await loadVoiceModelConfig();
+            if (step.id === 'llm') await loadLLMConfig();
+
+            const prevBtn = document.getElementById('prevBtn');
+            const nextBtn = document.getElementById('nextBtn');
+            prevBtn.style.visibility = currentStep === 0 ? 'hidden' : 'visible';
+            nextBtn.textContent = currentStep === steps.length - 1 ? 'Start Using Gestura' : (currentStep === 0 ? 'Get Started' : 'Continue');
+        }
+
+        async function nextStep() {
+            // Save LLM config when leaving the LLM step
+            await saveLLMConfigIfNeeded();
+
+            if (currentStep === steps.length - 1) {
+                completeOnboarding();
+            } else {
+                currentStep++;
+                updateUI();
+            }
+        }
+
+        async function previousStep() {
+            // Save LLM config when leaving the LLM step
+            await saveLLMConfigIfNeeded();
+
+            if (currentStep > 0) {
+                currentStep--;
+                updateUI();
+            }
+        }
+
+        async function saveLLMConfigIfNeeded() {
+            const currentStepId = steps[currentStep]?.id;
+            if (currentStepId !== 'llm') return;
+
+            const provider = document.getElementById('llmProvider')?.value;
+            if (provider === 'ollama') {
+                const url = document.getElementById('ollamaUrl')?.value || 'http://localhost:11434';
+                const model = document.getElementById('ollamaModel')?.value || 'llama3.2';
+                try {
+                    await invoke('update_ollama_config', { baseUrl: url, model: model });
+                    console.log('Saved Ollama config:', url, model);
+                } catch (e) {
+                    console.error('Failed to save Ollama config:', e);
+                }
+            }
+        }
+
+        async function completeOnboarding() {
+            try {
+                // Get the selected voice provider and model
+                const config = await invoke('get_config');
+                const voiceProvider = config?.voice?.provider || 'local';
+
+                // If using local voice processing, download the Whisper model
+                if (voiceProvider === 'local') {
+                    const modelPath = config?.voice?.local_model_path || '';
+                    const modelFilename = modelPath ? modelPath.split('/').pop() : 'ggml-base.en.bin';
+
+                    // Check if model already exists
+                    const modelStatus = await invoke('is_whisper_model_downloaded', { modelFilename });
+
+                    if (!modelStatus.exists || !modelStatus.is_valid) {
+                        // Show download progress UI
+                        await showDownloadProgress(modelFilename);
+                        return; // The download handler will complete onboarding
+                    }
+                }
+
+                // Complete onboarding if no download needed
+                await invoke('complete_onboarding');
+                await invoke('close_onboarding_window');
+            } catch (error) {
+                console.error('Error completing onboarding:', error);
+                window.close();
+            }
+        }
+
+        async function showDownloadProgress(modelFilename) {
+            const stepContent = document.getElementById('stepContent');
+            const nextBtn = document.getElementById('nextBtn');
+            const prevBtn = document.getElementById('prevBtn');
+
+            // Hide navigation buttons during download
+            nextBtn.style.display = 'none';
+            prevBtn.style.display = 'none';
+
+            // Get model info for size display
+            let modelInfo = null;
+            try {
+                const models = await invoke('get_whisper_models');
+                modelInfo = models.find(m => m.filename === modelFilename);
+            } catch (e) {
+                console.error('Error getting model info:', e);
+            }
+
+            const sizeText = modelInfo ? ` (${modelInfo.size_mb} MB)` : '';
+
+            stepContent.innerHTML = `
+                <h2><span class="icon-download"></span> Downloading Voice Model</h2>
+                <p>Downloading the Whisper speech recognition model${sizeText}...</p>
+                <div style="margin: 2rem 0;">
+                    <div class="progress-bar" style="height: 12px; background: var(--surface-color); border-radius: 6px; overflow: hidden;">
+                        <div id="downloadProgressFill" class="progress-fill" style="width: 0%; height: 100%; background: var(--accent-color); transition: width 0.3s;"></div>
+                    </div>
+                    <p id="downloadStatus" style="text-align: center; margin-top: 1rem; color: var(--text-secondary);">Starting download...</p>
+                </div>
+                <p style="font-size: 0.85rem; color: var(--text-secondary);">This may take a few minutes depending on your connection speed. The model will be cached locally for future use.</p>
+            `;
+
+            // Listen for download progress events
+            const { listen } = window.__TAURI__.event;
+            const unlisten = await listen('whisper-download-progress', (event) => {
+                const data = event.payload;
+                const progressFill = document.getElementById('downloadProgressFill');
+                const statusText = document.getElementById('downloadStatus');
+
+                if (progressFill && data.percent !== undefined) {
+                    progressFill.style.width = `${data.percent}%`;
+                }
+
+                if (statusText) {
+                    if (data.status === 'downloading') {
+                        statusText.textContent = `Downloaded ${data.downloaded_mb?.toFixed(1) || 0} MB of ${data.total_mb || '?'} MB (${data.percent || 0}%)`;
+                    } else if (data.status === 'complete') {
+                        statusText.innerHTML = '<span class="icon-check"></span> Download complete!';
+                    } else if (data.status === 'error') {
+                        statusText.innerHTML = `<span class="icon-x-circle" style="color: var(--error-color);"></span> Error: ${data.error || 'Download failed'}`;
+                    }
+                }
+
+                // If download is complete, finish onboarding
+                if (data.status === 'complete') {
+                    unlisten();
+                    setTimeout(async () => {
+                        try {
+                            await invoke('complete_onboarding');
+                            await invoke('close_onboarding_window');
+                        } catch (e) {
+                            console.error('Error completing onboarding after download:', e);
+                            window.close();
+                        }
+                    }, 1000);
+                }
+            });
+
+            // Start the download
+            try {
+                await invoke('download_whisper_model', { modelFilename });
+            } catch (error) {
+                console.error('Download failed:', error);
+                const statusText = document.getElementById('downloadStatus');
+                if (statusText) {
+                    statusText.innerHTML = `<span class="icon-x-circle" style="color: var(--error-color);"></span> Download failed: ${error}`;
+                }
+                // Show retry button
+                nextBtn.textContent = 'Retry Download';
+                nextBtn.style.display = 'block';
+                nextBtn.onclick = () => showDownloadProgress(modelFilename);
+                unlisten();
+            }
+        }
+
+        async function updateVoiceMode(mode) {
+            try {
+                await invoke('update_voice_provider', { provider: mode });
+            } catch (error) {
+                console.error('Error updating voice mode:', error);
+            }
+        }
+
+        async function updateWhisperModel(model) {
+            try {
+                await invoke('update_whisper_model', { modelFilename: model });
+            } catch (error) {
+                console.error('Error updating whisper model:', error);
+            }
+        }
+
+        async function updateLLMProvider(provider) {
+            try {
+                await invoke('update_llm_provider', { provider });
+                renderLLMConfig();
+            } catch (error) {
+                console.error('Error updating LLM provider:', error);
+            }
+        }
+
+        function renderLLMConfig() {
+            const container = document.getElementById('llmConfig');
+            if (!container) return;
+            const provider = document.getElementById('llmProvider')?.value || 'ollama';
+            let html = '';
+            if (provider === 'ollama') {
+                html = `
+                    <div class="config-section">
+                        <label for="ollamaUrl">Ollama URL</label>
+                        <input type="text" id="ollamaUrl" value="http://localhost:11434" style="width:100%;padding:0.6rem;border:1px solid var(--border-color);border-radius:6px;background:var(--background-color);color:var(--text-color);font-size:0.9rem;">
+                    </div>
+                    <div class="config-section" style="margin-top:0.75rem;">
+                        <label for="ollamaModel">Model Name</label>
+                        <input type="text" id="ollamaModel" value="llama3.2" placeholder="e.g., llama3.2, mistral, gemma2" style="width:100%;padding:0.6rem;border:1px solid var(--border-color);border-radius:6px;background:var(--background-color);color:var(--text-color);font-size:0.9rem;">
+                        <p style="font-size:0.75rem;color:var(--text-secondary);margin-top:0.25rem;">Enter the model name you have pulled in Ollama (e.g., llama3.2, mistral, gemma2)</p>
+                    </div>
+                    <p style="font-size:0.8rem;color:var(--text-secondary);margin-top:0.5rem;">Make sure Ollama is running locally with your model pulled.</p>
+                `;
+            } else if (provider === 'openai' || provider === 'anthropic') {
+                html = `
+                    <div class="config-section">
+                        <label for="apiKey">${provider === 'openai' ? 'OpenAI' : 'Anthropic'} API Key</label>
+                        <input type="password" id="apiKey" placeholder="Enter your API key" style="width:100%;padding:0.6rem;border:1px solid var(--border-color);border-radius:6px;background:var(--background-color);color:var(--text-color);font-size:0.9rem;">
+                    </div>
+                `;
+            } else {
+                html = `<p style="font-size:0.85rem;color:var(--text-secondary);">Echo mode will repeat your input for testing.</p>`;
+            }
+            container.innerHTML = html;
+        }
+
+        // Load microphone devices into the dropdown
+        async function loadMicrophoneDevices() {
+            const select = document.getElementById('microphoneSelect');
+            if (!select) return;
+
+            try {
+                const devices = await invoke('list_audio_devices');
+                const config = await invoke('get_config');
+                const savedDevice = config?.voice?.audio_device || '';
+
+                select.innerHTML = '<option value="">System Default</option>';
+                devices.forEach(device => {
+                    const selected = device.name === savedDevice ? 'selected' : '';
+                    select.innerHTML += `<option value="${device.name}" ${selected}>${device.name}${device.is_default ? ' (Default)' : ''}</option>`;
+                });
+            } catch (error) {
+                console.error('Error loading microphone devices:', error);
+                select.innerHTML = '<option value="">System Default</option>';
+            }
+        }
+
+        async function updateMicrophone(deviceName) {
+            try {
+                await invoke('update_audio_device', { deviceName: deviceName || null });
+                console.log('Microphone updated to:', deviceName || 'System Default');
+            } catch (error) {
+                console.error('Error updating microphone:', error);
+            }
+        }
+
+        // Load voice model config from saved settings
+        async function loadVoiceModelConfig() {
+            try {
+                const config = await invoke('get_config');
+                const modelPath = config?.voice?.local_model_path || '';
+                const select = document.getElementById('whisperModel');
+                if (select && modelPath) {
+                    // Extract filename from path
+                    const filename = modelPath.split('/').pop();
+                    const options = select.querySelectorAll('option');
+                    options.forEach(opt => {
+                        if (opt.value === filename) {
+                            opt.selected = true;
+                        }
+                    });
+                }
+            } catch (error) {
+                console.error('Error loading voice model config:', error);
+            }
+        }
+
+        // Load LLM config from saved settings and render
+        async function loadLLMConfig() {
+            try {
+                const config = await invoke('get_config');
+                const llmPrimary = config?.llm?.primary || 'ollama';
+                const ollamaConfig = config?.llm?.ollama;
+
+                // Set the provider dropdown
+                const providerSelect = document.getElementById('llmProvider');
+                if (providerSelect) {
+                    providerSelect.value = llmPrimary;
+                }
+
+                // Render config UI
+                renderLLMConfig();
+
+                // Populate Ollama fields if applicable
+                if (llmPrimary === 'ollama' && ollamaConfig) {
+                    setTimeout(() => {
+                        const urlInput = document.getElementById('ollamaUrl');
+                        const modelInput = document.getElementById('ollamaModel');
+                        if (urlInput && ollamaConfig.base_url) urlInput.value = ollamaConfig.base_url;
+                        if (modelInput && ollamaConfig.model) modelInput.value = ollamaConfig.model;
+                    }, 50);
+                }
+            } catch (error) {
+                console.error('Error loading LLM config:', error);
+                renderLLMConfig();
+            }
+        }
+
+        async function scanForRings() {
+            const btn = document.getElementById('scanBtn');
+            const status = document.getElementById('ringStatus');
+            btn.textContent = 'Scanning...';
+            btn.disabled = true;
+            try {
+                const rings = await invoke('scan_for_rings');
+                status.textContent = rings?.length > 0 ? `Found ${rings.length} device(s)` : 'No devices found. Make sure your device is in pairing mode.';
+            } catch (error) {
+                status.textContent = 'Bluetooth scan failed. Check permissions.';
+            } finally {
+                btn.textContent = 'Scan for Devices';
+                btn.disabled = false;
+            }
+        }
+
+        // Initialize
+        updateUI();
+    </script>
+</body>
+
+</html>

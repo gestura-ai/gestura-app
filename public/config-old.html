@@ -1,9 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gestura Configuration</title>
+    <link rel="stylesheet" href="icons.css">
     <style>
         * {
             margin: 0;
@@ -119,8 +121,15 @@
         }
 
         @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
         .section-title {
@@ -257,10 +266,11 @@
         }
     </style>
 </head>
+
 <body>
     <div class="container">
         <div class="header">
-            <h1>⚙️ Gestura Configuration</h1>
+            <h1><span class="icon-settings"></span> Gestura Configuration</h1>
             <p>Configure your voice and gesture control settings</p>
         </div>
 
@@ -268,8 +278,8 @@
 
         <form id="configForm">
             <div class="section">
-                <div class="section-title">🎤 Voice Settings</div>
-                
+                <div class="section-title"><span class="icon-microphone"></span> Voice Settings</div>
+
                 <div class="form-group">
                     <label class="form-label" for="voiceEngine">Voice Engine</label>
                     <select class="form-select" id="voiceEngine" name="voice_engine">
@@ -281,7 +291,8 @@
 
                 <div class="form-group">
                     <label class="form-label" for="hotkey">Global Hotkey</label>
-                    <input type="text" class="form-input" id="hotkey" name="hotkey_listen" placeholder="e.g., Cmd+Shift+G">
+                    <input type="text" class="form-input" id="hotkey" name="hotkey_listen"
+                        placeholder="e.g., Cmd+Shift+G">
                 </div>
 
                 <div class="checkbox-group">
@@ -291,11 +302,12 @@
             </div>
 
             <div class="section">
-                <div class="section-title">🔗 Integration Settings</div>
-                
+                <div class="section-title"><span class="icon-link"></span> Integration Settings</div>
+
                 <div class="form-group">
                     <label class="form-label" for="natsUrl">NATS Server URL</label>
-                    <input type="text" class="form-input" id="natsUrl" name="nats_url" placeholder="nats://127.0.0.1:4222">
+                    <input type="text" class="form-input" id="natsUrl" name="nats_url"
+                        placeholder="nats://127.0.0.1:4222">
                 </div>
 
                 <div class="form-group">
@@ -310,8 +322,8 @@
             </div>
 
             <div class="section">
-                <div class="section-title">🔒 Security & Privacy</div>
-                
+                <div class="section-title"><span class="icon-shield"></span> Security & Privacy</div>
+
                 <div class="checkbox-group">
                     <input type="checkbox" class="form-checkbox" id="dataCollection" name="data_collection">
                     <label for="dataCollection">Allow usage analytics</label>
@@ -324,7 +336,8 @@
 
                 <div class="form-group">
                     <label class="form-label" for="gracePeriod">Shutdown Grace Period (seconds)</label>
-                    <input type="number" class="form-input" id="gracePeriod" name="grace_period_secs" min="1" max="60" value="5">
+                    <input type="number" class="form-input" id="gracePeriod" name="grace_period_secs" min="1" max="60"
+                        value="5">
                 </div>
             </div>
         </form>
@@ -345,7 +358,7 @@
             statusMessage.textContent = message;
             statusMessage.className = `status ${type}`;
             statusMessage.style.display = 'block';
-            
+
             setTimeout(() => {
                 statusMessage.style.display = 'none';
             }, 3000);
@@ -354,20 +367,20 @@
         async function loadConfig() {
             try {
                 const config = await invoke('get_config');
-                
+
                 // Populate form fields
                 document.getElementById('voiceEngine').value = config.voice?.engine || 'whisper';
                 document.getElementById('hotkey').value = config.hotkey_listen || '';
                 document.getElementById('natsUrl').value = config.nats_url || '';
                 document.getElementById('mcpPort').value = config.mcp_port || 8080;
                 document.getElementById('gracePeriod').value = config.grace_period_secs || 5;
-                
+
                 // Populate checkboxes
                 document.getElementById('voiceActivation').checked = config.voice?.activation || false;
                 document.getElementById('autoConnect').checked = config.auto_connect || false;
                 document.getElementById('dataCollection').checked = config.data_collection || false;
                 document.getElementById('cloudSync').checked = config.cloud_sync || false;
-                
+
                 showStatus('Configuration loaded successfully');
             } catch (error) {
                 console.error('Failed to load config:', error);
@@ -375,11 +388,11 @@
             }
         }
 
-        window.saveConfig = async function() {
+        window.saveConfig = async function () {
             try {
                 const formData = new FormData(configForm);
                 const config = {};
-                
+
                 // Convert form data to config object
                 for (const [key, value] of formData.entries()) {
                     if (key.includes('.')) {
@@ -391,17 +404,17 @@
                         config[key] = value;
                     }
                 }
-                
+
                 // Handle checkboxes (they won't be in FormData if unchecked)
                 config.voice_activation = document.getElementById('voiceActivation').checked;
                 config.auto_connect = document.getElementById('autoConnect').checked;
                 config.data_collection = document.getElementById('dataCollection').checked;
                 config.cloud_sync = document.getElementById('cloudSync').checked;
-                
+
                 // Convert numeric fields
                 config.mcp_port = parseInt(config.mcp_port) || 8080;
                 config.grace_period_secs = parseInt(config.grace_period_secs) || 5;
-                
+
                 await invoke('save_config', { cfg: config });
                 showStatus('Configuration saved successfully');
             } catch (error) {
@@ -416,4 +429,5 @@
         loadConfig();
     </script>
 </body>
+
 </html>
