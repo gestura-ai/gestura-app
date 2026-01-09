@@ -21,13 +21,20 @@ function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    loadConfig();
-
-    // Check if onboarding has been completed
+    // Check onboarding BEFORE loading config to preserve first-run state
     const onboardingCompleted = localStorage.getItem('gestura_onboarding_completed');
+    console.log('🚀 Gestura App starting...');
+    console.log('📋 Onboarding completed flag:', onboardingCompleted);
+
     if (!onboardingCompleted) {
+      console.log('✅ Showing onboarding wizard (first run or incomplete)');
       setShowOnboarding(true);
+    } else {
+      console.log('⏭️ Skipping onboarding (already completed)');
     }
+
+    // Load config after checking onboarding
+    loadConfig();
 
     // Add keyboard shortcuts
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -106,11 +113,11 @@ function App() {
 
   return (
     <div className="app">
-      <ThemeController 
-        uiSettings={config.ui} 
-        onUpdate={updateUiSettings} 
+      <ThemeController
+        uiSettings={config.ui}
+        onUpdate={updateUiSettings}
       />
-      
+
       <div className="header">
         <div className="header-left">
           <h1>Gestura</h1>

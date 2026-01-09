@@ -24,11 +24,17 @@ pub trait LlmProvider: Send + Sync {
 pub struct EchoProvider;
 #[async_trait::async_trait]
 impl LlmProvider for EchoProvider {
-    async fn call(&self, prompt: &str) -> Result<String, AppError> { Ok(format!("ECHO: {}", prompt)) }
+    async fn call(&self, prompt: &str) -> Result<String, AppError> {
+        Ok(format!("ECHO: {}", prompt))
+    }
 }
 
 /// HTTP-based OpenAI chat completion provider
-pub struct OpenAiProvider { pub api_key: String, pub base_url: String, pub model: String }
+pub struct OpenAiProvider {
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+}
 #[async_trait::async_trait]
 impl LlmProvider for OpenAiProvider {
     async fn call(&self, prompt: &str) -> Result<String, AppError> {
@@ -39,20 +45,30 @@ impl LlmProvider for OpenAiProvider {
             "temperature": 0.2
         });
         let client = reqwest::Client::new();
-        let resp = client.post(&url)
+        let resp = client
+            .post(&url)
             .bearer_auth(&self.api_key)
-            .json(&body).send().await?;
+            .json(&body)
+            .send()
+            .await?;
         if !resp.status().is_success() {
             return Err(AppError::Llm(format!("openai http {}", resp.status())));
         }
         let v: serde_json::Value = resp.json().await?;
-        let text = v["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string();
+        let text = v["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         Ok(text)
     }
 }
 
 /// HTTP-based Anthropic Claude provider
-pub struct AnthropicProvider { pub api_key: String, pub base_url: String, pub model: String }
+pub struct AnthropicProvider {
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+}
 #[async_trait::async_trait]
 impl LlmProvider for AnthropicProvider {
     async fn call(&self, prompt: &str) -> Result<String, AppError> {
@@ -63,11 +79,16 @@ impl LlmProvider for AnthropicProvider {
             "messages": [{"role":"user","content": [{"type":"text","text": prompt}]}]
         });
         let client = reqwest::Client::new();
-        let resp = client.post(&url)
+        let resp = client
+            .post(&url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
-            .json(&body).send().await?;
-        if !resp.status().is_success() { return Err(AppError::Llm(format!("anthropic http {}", resp.status()))); }
+            .json(&body)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(AppError::Llm(format!("anthropic http {}", resp.status())));
+        }
         let v: serde_json::Value = resp.json().await?;
         let text = v["content"][0]["text"].as_str().unwrap_or("").to_string();
         Ok(text)
@@ -75,7 +96,11 @@ impl LlmProvider for AnthropicProvider {
 }
 
 /// HTTP-based Grok (xAI) provider (OpenAI-compatible endpoint for chat/completions)
-pub struct GrokProvider { pub api_key: String, pub base_url: String, pub model: String }
+pub struct GrokProvider {
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+}
 #[async_trait::async_trait]
 impl LlmProvider for GrokProvider {
     async fn call(&self, prompt: &str) -> Result<String, AppError> {
@@ -86,32 +111,46 @@ impl LlmProvider for GrokProvider {
             "messages": [{"role":"user","content": prompt}],
         });
         let client = reqwest::Client::new();
-        let resp = client.post(&url)
+        let resp = client
+            .post(&url)
             .bearer_auth(&self.api_key)
-            .json(&body).send().await?;
-        if !resp.status().is_success() { return Err(AppError::Llm(format!("grok http {}", resp.status()))); }
+            .json(&body)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(AppError::Llm(format!("grok http {}", resp.status())));
+        }
         let v: serde_json::Value = resp.json().await?;
-        let text = v["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string();
+        let text = v["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         Ok(text)
     }
 }
 
 /// HTTP-based Ollama local provider
-pub struct OllamaProvider { pub base_url: String, pub model: String }
+pub struct OllamaProvider {
+    pub base_url: String,
+    pub model: String,
+}
 #[async_trait::async_trait]
 impl LlmProvider for OllamaProvider {
     async fn call(&self, prompt: &str) -> Result<String, AppError> {
         let url = format!("{}/api/chat", self.base_url);
+        // Important: set stream: false to get a single JSON response instead of NDJSON stream
         let body = serde_json::json!({
             "model": self.model,
-            "messages": [{"role":"user","content": prompt}]
+            "messages": [{"role":"user","content": prompt}],
+            "stream": false
         });
         let client = reqwest::Client::new();
-        let resp = client.post(&url)
-            .json(&body).send().await?;
-        if !resp.status().is_success() { return Err(AppError::Llm(format!("ollama http {}", resp.status()))); }
+        let resp = client.post(&url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            return Err(AppError::Llm(format!("ollama http {}", resp.status())));
+        }
         let v: serde_json::Value = resp.json().await?;
-        // Ollama streaming responses can be an array; this expects final content
+        // With stream: false, Ollama returns a single JSON object with message.content
         let text = v["message"]["content"].as_str().unwrap_or("").to_string();
         Ok(text)
     }
@@ -122,25 +161,56 @@ pub fn select_provider(config: &AppConfig, _ctx: &AgentContext) -> Box<dyn LlmPr
     match config.llm.primary.as_str() {
         "openai" => {
             if let Some(c) = &config.llm.openai {
-                Box::new(OpenAiProvider { api_key: c.api_key.clone(), base_url: c.base_url.clone().unwrap_or_else(|| "https://api.openai.com".into()), model: c.model.clone() })
-            } else { Box::new(EchoProvider) }
+                Box::new(OpenAiProvider {
+                    api_key: c.api_key.clone(),
+                    base_url: c
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.openai.com".into()),
+                    model: c.model.clone(),
+                })
+            } else {
+                Box::new(EchoProvider)
+            }
         }
         "anthropic" => {
             if let Some(c) = &config.llm.anthropic {
-                Box::new(AnthropicProvider { api_key: c.api_key.clone(), base_url: c.base_url.clone().unwrap_or_else(|| "https://api.anthropic.com".into()), model: c.model.clone() })
-            } else { Box::new(EchoProvider) }
+                Box::new(AnthropicProvider {
+                    api_key: c.api_key.clone(),
+                    base_url: c
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.anthropic.com".into()),
+                    model: c.model.clone(),
+                })
+            } else {
+                Box::new(EchoProvider)
+            }
         }
         "grok" => {
             if let Some(c) = &config.llm.grok {
-                Box::new(GrokProvider { api_key: c.api_key.clone(), base_url: c.base_url.clone().unwrap_or_else(|| "https://api.x.ai".into()), model: c.model.clone() })
-            } else { Box::new(EchoProvider) }
+                Box::new(GrokProvider {
+                    api_key: c.api_key.clone(),
+                    base_url: c
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.x.ai".into()),
+                    model: c.model.clone(),
+                })
+            } else {
+                Box::new(EchoProvider)
+            }
         }
         "ollama" => {
             if let Some(c) = &config.llm.ollama {
-                Box::new(OllamaProvider { base_url: c.base_url.clone(), model: c.model.clone() })
-            } else { Box::new(EchoProvider) }
+                Box::new(OllamaProvider {
+                    base_url: c.base_url.clone(),
+                    model: c.model.clone(),
+                })
+            } else {
+                Box::new(EchoProvider)
+            }
         }
         _ => Box::new(EchoProvider),
     }
 }
-

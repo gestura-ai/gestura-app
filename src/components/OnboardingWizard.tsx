@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 interface OnboardingStep {
@@ -19,7 +19,7 @@ const WelcomeStep: React.FC<OnboardingStepProps> = ({ onNext }) => (
   <div className="onboarding-step">
     <h2>Welcome to Gestura</h2>
     <p>
-      Gestura is your intelligent voice and gesture assistant. Let's get you set up 
+      Gestura is your intelligent voice and gesture assistant. Let's get you set up
       with everything you need to start using voice commands and haptic feedback.
     </p>
     <div className="features-list">
@@ -46,6 +46,168 @@ const WelcomeStep: React.FC<OnboardingStepProps> = ({ onNext }) => (
   </div>
 );
 
+interface PermissionStatus {
+  id: string;
+  name: string;
+  description: string;
+  status: 'granted' | 'denied' | 'not_determined' | 'pending' | 'unknown';
+  required: boolean;
+}
+
+const PermissionsStep: React.FC<OnboardingStepProps> = ({ onNext, onPrevious }) => {
+  const [permissions, setPermissions] = useState<PermissionStatus[]>([
+    {
+      id: 'microphone',
+      name: 'Microphone Access',
+      description: 'Required for voice commands and speech-to-text',
+      status: 'pending',
+      required: true,
+    },
+    {
+      id: 'accessibility',
+      name: 'Accessibility Access',
+      description: 'Required for gesture control and system integration',
+      status: 'pending',
+      required: true,
+    },
+    {
+      id: 'bluetooth',
+      name: 'Bluetooth Access',
+      description: 'Required for connecting to the Haptic Harmony ring',
+      status: 'pending',
+      required: false,
+    },
+  ]);
+  const [loading, setLoading] = useState(true);
+
+  const checkPermissions = async () => {
+    console.log('[Onboarding] Checking system permissions...');
+    setLoading(true);
+    const updatedPermissions = await Promise.all(
+      permissions.map(async (perm) => {
+        try {
+          const status = await invoke<string>('check_permission', { permission: perm.id });
+          return { ...perm, status: status as PermissionStatus['status'] };
+        } catch (error) {
+          console.error(`Failed to check ${perm.id} permission:`, error);
+          return { ...perm, status: 'unknown' as const };
+        }
+      })
+    );
+    setPermissions(updatedPermissions);
+    console.log('[Onboarding] Updated permission statuses:', updatedPermissions);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    checkPermissions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const requestPermission = async (permissionId: string) => {
+    try {
+      console.log('[Onboarding] Requesting permission:', permissionId);
+      await invoke('request_permission', { permission: permissionId });
+      // Wait a moment for the system dialog to appear and potentially be granted
+      setTimeout(checkPermissions, 1500);
+    } catch (error) {
+      console.error(`Failed to request ${permissionId} permission:`, error);
+    }
+  };
+
+  const getStatusIcon = (status: PermissionStatus['status']) => {
+    switch (status) {
+      case 'granted':
+        return '✅';
+      case 'denied':
+        return '❌';
+      case 'not_determined':
+        return '⏳';
+      case 'pending':
+        return '🔄';
+      default:
+        return '❓';
+    }
+  };
+
+  const getStatusText = (status: PermissionStatus['status']) => {
+    switch (status) {
+      case 'granted':
+        return 'Granted';
+      case 'denied':
+        return 'Denied - Click to open Settings';
+      case 'not_determined':
+        return 'Not yet requested';
+      case 'pending':
+        return 'Checking...';
+      default:
+        return 'Unknown';
+    }
+  };
+
+  const allRequiredGranted = permissions
+    .filter((p) => p.required)
+    .every((p) => p.status === 'granted');
+
+  return (
+    <div className="onboarding-step">
+      <h2>System Permissions</h2>
+      <p>Gestura needs the following permissions to work properly:</p>
+
+      <div className="permissions-list">
+        {permissions.map((perm) => (
+          <div key={perm.id} className={`permission-item ${perm.status}`}>
+            <div className="permission-info">
+              <div className="permission-header">
+                <span className="permission-icon">{getStatusIcon(perm.status)}</span>
+                <strong>{perm.name}</strong>
+                {perm.required && <span className="required-badge">Required</span>}
+              </div>
+              <p className="permission-description">{perm.description}</p>
+              <p className="permission-status">{getStatusText(perm.status)}</p>
+            </div>
+            {perm.status !== 'granted' && perm.status !== 'pending' && (
+              <button
+                className="btn btn-secondary btn-small"
+                onClick={() => requestPermission(perm.id)}
+              >
+                {perm.status === 'denied' ? 'Open Settings' : 'Grant Access'}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="permissions-actions">
+        <button className="btn btn-secondary" onClick={checkPermissions} disabled={loading}>
+          {loading ? 'Checking...' : 'Refresh Status'}
+        </button>
+      </div>
+
+      <div className="button-group">
+        <button className="btn btn-secondary" onClick={onPrevious}>
+          Previous
+        </button>
+        <button className="btn btn-primary" onClick={onNext} disabled={!allRequiredGranted}>
+          {allRequiredGranted ? 'Continue' : 'Grant Required Permissions'}
+        </button>
+      </div>
+
+      {!allRequiredGranted && (
+        <p className="permissions-note">
+          <small>
+            You can skip this step, but some features may not work correctly without the required
+            permissions.
+          </small>
+          <button className="btn-link" onClick={onNext}>
+            Skip for now
+          </button>
+        </p>
+      )}
+    </div>
+  );
+};
+
 const VoiceSetupStep: React.FC<OnboardingStepProps> = ({ onPrevious, onComplete }) => {
   const [provider, setProvider] = useState('local');
   const [modelPath, setModelPath] = useState('');
@@ -67,7 +229,7 @@ const VoiceSetupStep: React.FC<OnboardingStepProps> = ({ onPrevious, onComplete 
     <div className="onboarding-step">
       <h2>Voice Processing Setup</h2>
       <p>Choose how you want to process voice commands:</p>
-      
+
       <div className="form-group">
         <label>Voice Provider</label>
         <select value={provider} onChange={(e) => setProvider(e.target.value)}>
@@ -94,8 +256,8 @@ const VoiceSetupStep: React.FC<OnboardingStepProps> = ({ onPrevious, onComplete 
         <button className="btn btn-secondary" onClick={onPrevious}>
           Previous
         </button>
-        <button 
-          className="btn btn-primary" 
+        <button
+          className="btn btn-primary"
           onClick={testVoiceEngine}
           disabled={testing}
         >
@@ -128,7 +290,7 @@ const RingSetupStep: React.FC<OnboardingStepProps> = ({ onNext, onPrevious, onCo
 
   const pairRing = async () => {
     if (!selectedRing) return;
-    
+
     try {
       await invoke('pair_ring', { deviceId: selectedRing });
       onComplete({ ringId: selectedRing });
@@ -141,10 +303,10 @@ const RingSetupStep: React.FC<OnboardingStepProps> = ({ onNext, onPrevious, onCo
     <div className="onboarding-step">
       <h2>Haptic Harmony Ring Setup</h2>
       <p>Connect your Haptic Harmony ring for gesture control and feedback:</p>
-      
+
       <div className="ring-setup">
-        <button 
-          className="btn btn-primary" 
+        <button
+          className="btn btn-primary"
           onClick={scanForRings}
           disabled={scanning}
         >
@@ -154,8 +316,8 @@ const RingSetupStep: React.FC<OnboardingStepProps> = ({ onNext, onPrevious, onCo
         {rings.length > 0 && (
           <div className="form-group">
             <label>Available Rings</label>
-            <select 
-              value={selectedRing} 
+            <select
+              value={selectedRing}
               onChange={(e) => setSelectedRing(e.target.value)}
             >
               {rings.map(ring => (
@@ -198,7 +360,7 @@ const PrivacyConsentStep: React.FC<OnboardingStepProps> = ({ onPrevious, onCompl
   const registerConsents = async () => {
     try {
       const userId = 'default-user'; // In a real app, this would be the actual user ID
-      
+
       for (const [category, granted] of Object.entries(consents)) {
         if (granted) {
           await invoke('register_consent', {
@@ -208,7 +370,7 @@ const PrivacyConsentStep: React.FC<OnboardingStepProps> = ({ onPrevious, onCompl
           });
         }
       }
-      
+
       onComplete({ consents });
     } catch (error) {
       console.error('Consent registration failed:', error);
@@ -219,7 +381,7 @@ const PrivacyConsentStep: React.FC<OnboardingStepProps> = ({ onPrevious, onCompl
     <div className="onboarding-step">
       <h2>Privacy & Data Consent</h2>
       <p>Please review and consent to data processing:</p>
-      
+
       <div className="consent-options">
         <div className="consent-item">
           <label>
@@ -289,7 +451,7 @@ const CompletionStep: React.FC<OnboardingStepProps> = ({ onComplete }) => {
     <div className="onboarding-step">
       <h2>🎉 Setup Complete!</h2>
       <p>Gestura is now ready to use. Here are some things you can try:</p>
-      
+
       <div className="next-steps">
         <div className="step">
           <h3>🎤 Test Voice Commands</h3>
@@ -326,6 +488,13 @@ const OnboardingWizard: React.FC<{ onComplete: () => void }> = ({ onComplete }) 
       title: 'Welcome',
       description: 'Introduction to Gestura',
       component: WelcomeStep,
+      isComplete: false,
+    },
+    {
+      id: 'permissions',
+      title: 'Permissions',
+      description: 'Grant system permissions',
+      component: PermissionsStep,
       isComplete: false,
     },
     {
@@ -372,7 +541,7 @@ const OnboardingWizard: React.FC<{ onComplete: () => void }> = ({ onComplete }) 
 
   const handleStepComplete = (data: any) => {
     setStepData((prev: any) => ({ ...prev, [steps[currentStep].id]: data }));
-    
+
     if (currentStep === steps.length - 1) {
       // Final step completed
       localStorage.setItem('gestura_onboarding_completed', 'true');
@@ -388,8 +557,8 @@ const OnboardingWizard: React.FC<{ onComplete: () => void }> = ({ onComplete }) 
     <div className="onboarding-wizard">
       <div className="onboarding-header">
         <div className="progress-bar">
-          <div 
-            className="progress-fill" 
+          <div
+            className="progress-fill"
             style={{ width: `${((currentStep + 1) / steps.length) * 100}%` }}
           />
         </div>
