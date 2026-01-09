@@ -1,4 +1,4 @@
-use gestura_app::{AppConfig, voice_select::select_voice};
+use gestura::{AppConfig, voice_select::select_voice};
 
 #[test]
 fn selects_mock_when_no_config() {
@@ -8,4 +8,3 @@ fn selects_mock_when_no_config() {
     let engine = select_voice(&cfg);
     assert_eq!(engine.engine_name(), "mock");
 }
-

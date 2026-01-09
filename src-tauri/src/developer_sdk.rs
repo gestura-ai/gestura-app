@@ -97,7 +97,7 @@ impl SdkClient {
             .timeout(std::time::Duration::from_secs(config.timeout_seconds))
             .user_agent(&config.user_agent)
             .build()
-            .map_err(|e| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            .map_err(|e| AppError::Io(std::io::Error::other(e)))?;
 
         Ok(Self {
             config,
@@ -110,13 +110,16 @@ impl SdkClient {
     pub async fn initialize(&self) -> Result<(), AppError> {
         // Load available endpoints
         let endpoints = self.discover_endpoints().await?;
-        
+
         let mut endpoints_map = self.endpoints.write().await;
         for endpoint in endpoints {
             endpoints_map.insert(endpoint.path.clone(), endpoint);
         }
 
-        tracing::info!("SDK client initialized with {} endpoints", endpoints_map.len());
+        tracing::info!(
+            "SDK client initialized with {} endpoints",
+            endpoints_map.len()
+        );
         Ok(())
     }
 
@@ -169,16 +172,14 @@ impl SdkClient {
                 path: "/api/v1/gestures/recognize".to_string(),
                 method: HttpMethod::POST,
                 description: "Recognize gesture from sensor data".to_string(),
-                parameters: vec![
-                    ApiParameter {
-                        name: "sensor_data".to_string(),
-                        param_type: ParameterType::Array,
-                        description: "Array of sensor readings".to_string(),
-                        required: true,
-                        default_value: None,
-                        validation: None,
-                    },
-                ],
+                parameters: vec![ApiParameter {
+                    name: "sensor_data".to_string(),
+                    param_type: ParameterType::Array,
+                    description: "Array of sensor readings".to_string(),
+                    required: true,
+                    default_value: None,
+                    validation: None,
+                }],
                 response_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -211,23 +212,21 @@ impl SdkClient {
                 path: "/api/v1/analytics/usage".to_string(),
                 method: HttpMethod::GET,
                 description: "Get usage analytics".to_string(),
-                parameters: vec![
-                    ApiParameter {
-                        name: "days".to_string(),
-                        param_type: ParameterType::Integer,
-                        description: "Number of days to include".to_string(),
-                        required: false,
-                        default_value: Some(serde_json::Value::Number(serde_json::Number::from(7))),
-                        validation: Some(ParameterValidation {
-                            min_length: None,
-                            max_length: None,
-                            min_value: Some(1.0),
-                            max_value: Some(365.0),
-                            pattern: None,
-                            allowed_values: None,
-                        }),
-                    },
-                ],
+                parameters: vec![ApiParameter {
+                    name: "days".to_string(),
+                    param_type: ParameterType::Integer,
+                    description: "Number of days to include".to_string(),
+                    required: false,
+                    default_value: Some(serde_json::Value::Number(serde_json::Number::from(7))),
+                    validation: Some(ParameterValidation {
+                        min_length: None,
+                        max_length: None,
+                        min_value: Some(1.0),
+                        max_value: Some(365.0),
+                        pattern: None,
+                        allowed_values: None,
+                    }),
+                }],
                 response_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -244,19 +243,28 @@ impl SdkClient {
     }
 
     /// Make API request
-    pub async fn request(&self, endpoint_path: &str, parameters: HashMap<String, serde_json::Value>) -> Result<serde_json::Value, AppError> {
+    pub async fn request(
+        &self,
+        endpoint_path: &str,
+        parameters: HashMap<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, AppError> {
         let endpoints = self.endpoints.read().await;
-        let endpoint = endpoints.get(endpoint_path)
-            .ok_or_else(|| AppError::Io(std::io::Error::new(
+        let endpoint = endpoints.get(endpoint_path).ok_or_else(|| {
+            AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Endpoint not found: {}", endpoint_path)
-            )))?;
+                format!("Endpoint not found: {}", endpoint_path),
+            ))
+        })?;
 
         // Validate parameters
         self.validate_parameters(endpoint, &parameters)?;
 
         // Build request URL
-        let url = format!("{}{}", self.config.base_url.trim_end_matches('/'), endpoint_path);
+        let url = format!(
+            "{}{}",
+            self.config.base_url.trim_end_matches('/'),
+            endpoint_path
+        );
 
         // Build request
         let mut request_builder = match endpoint.method {
@@ -269,7 +277,8 @@ impl SdkClient {
 
         // Add authentication
         if endpoint.requires_auth {
-            request_builder = request_builder.header("Authorization", format!("Bearer {}", self.config.api_key));
+            request_builder =
+                request_builder.header("Authorization", format!("Bearer {}", self.config.api_key));
         }
 
         // Add parameters
@@ -293,29 +302,39 @@ impl SdkClient {
         }
 
         // Execute request
-        let response = request_builder.send().await
-            .map_err(|e| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        let response = request_builder
+            .send()
+            .await
+            .map_err(|e| AppError::Io(std::io::Error::other(e)))?;
 
         if response.status().is_success() {
-            let json_response = response.json::<serde_json::Value>().await
-                .map_err(|e| AppError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
+            let json_response = response.json::<serde_json::Value>().await.map_err(|e| {
+                AppError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            })?;
             Ok(json_response)
         } else {
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-            Err(AppError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("API request failed: {}", error_text)
-            )))
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            Err(AppError::Io(std::io::Error::other(format!(
+                "API request failed: {}",
+                error_text
+            ))))
         }
     }
 
     /// Validate request parameters
-    fn validate_parameters(&self, endpoint: &ApiEndpoint, parameters: &HashMap<String, serde_json::Value>) -> Result<(), AppError> {
+    fn validate_parameters(
+        &self,
+        endpoint: &ApiEndpoint,
+        parameters: &HashMap<String, serde_json::Value>,
+    ) -> Result<(), AppError> {
         for param in &endpoint.parameters {
             if param.required && !parameters.contains_key(&param.name) {
                 return Err(AppError::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    format!("Required parameter missing: {}", param.name)
+                    format!("Required parameter missing: {}", param.name),
                 )));
             }
 
@@ -328,14 +347,18 @@ impl SdkClient {
     }
 
     /// Validate individual parameter value
-    fn validate_parameter_value(&self, param: &ApiParameter, value: &serde_json::Value) -> Result<(), AppError> {
+    fn validate_parameter_value(
+        &self,
+        param: &ApiParameter,
+        value: &serde_json::Value,
+    ) -> Result<(), AppError> {
         // Type validation
         match param.param_type {
             ParameterType::String => {
                 if !value.is_string() {
                     return Err(AppError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
-                        format!("Parameter '{}' must be a string", param.name)
+                        format!("Parameter '{}' must be a string", param.name),
                     )));
                 }
             }
@@ -343,7 +366,7 @@ impl SdkClient {
                 if !value.is_i64() {
                     return Err(AppError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
-                        format!("Parameter '{}' must be an integer", param.name)
+                        format!("Parameter '{}' must be an integer", param.name),
                     )));
                 }
             }
@@ -351,7 +374,7 @@ impl SdkClient {
                 if !value.is_f64() && !value.is_i64() {
                     return Err(AppError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
-                        format!("Parameter '{}' must be a number", param.name)
+                        format!("Parameter '{}' must be a number", param.name),
                     )));
                 }
             }
@@ -359,7 +382,7 @@ impl SdkClient {
                 if !value.is_boolean() {
                     return Err(AppError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
-                        format!("Parameter '{}' must be a boolean", param.name)
+                        format!("Parameter '{}' must be a boolean", param.name),
                     )));
                 }
             }
@@ -367,7 +390,7 @@ impl SdkClient {
                 if !value.is_array() {
                     return Err(AppError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
-                        format!("Parameter '{}' must be an array", param.name)
+                        format!("Parameter '{}' must be an array", param.name),
                     )));
                 }
             }
@@ -375,7 +398,7 @@ impl SdkClient {
                 if !value.is_object() {
                     return Err(AppError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
-                        format!("Parameter '{}' must be an object", param.name)
+                        format!("Parameter '{}' must be an object", param.name),
                     )));
                 }
             }
@@ -384,7 +407,7 @@ impl SdkClient {
                 if !value.is_string() {
                     return Err(AppError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
-                        format!("Parameter '{}' must be a file path", param.name)
+                        format!("Parameter '{}' must be a file path", param.name),
                     )));
                 }
             }
@@ -393,40 +416,40 @@ impl SdkClient {
         // Additional validation rules
         if let Some(validation) = &param.validation {
             if let Some(str_value) = value.as_str() {
-                if let Some(min_len) = validation.min_length {
-                    if str_value.len() < min_len {
-                        return Err(AppError::Io(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            format!("Parameter '{}' too short (min: {})", param.name, min_len)
-                        )));
-                    }
+                if let Some(min_len) = validation.min_length
+                    && str_value.len() < min_len
+                {
+                    return Err(AppError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("Parameter '{}' too short (min: {})", param.name, min_len),
+                    )));
                 }
-                if let Some(max_len) = validation.max_length {
-                    if str_value.len() > max_len {
-                        return Err(AppError::Io(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            format!("Parameter '{}' too long (max: {})", param.name, max_len)
-                        )));
-                    }
+                if let Some(max_len) = validation.max_length
+                    && str_value.len() > max_len
+                {
+                    return Err(AppError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("Parameter '{}' too long (max: {})", param.name, max_len),
+                    )));
                 }
             }
 
             if let Some(num_value) = value.as_f64() {
-                if let Some(min_val) = validation.min_value {
-                    if num_value < min_val {
-                        return Err(AppError::Io(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            format!("Parameter '{}' too small (min: {})", param.name, min_val)
-                        )));
-                    }
+                if let Some(min_val) = validation.min_value
+                    && num_value < min_val
+                {
+                    return Err(AppError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("Parameter '{}' too small (min: {})", param.name, min_val),
+                    )));
                 }
-                if let Some(max_val) = validation.max_value {
-                    if num_value > max_val {
-                        return Err(AppError::Io(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            format!("Parameter '{}' too large (max: {})", param.name, max_val)
-                        )));
-                    }
+                if let Some(max_val) = validation.max_value
+                    && num_value > max_val
+                {
+                    return Err(AppError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("Parameter '{}' too large (max: {})", param.name, max_val),
+                    )));
                 }
             }
         }
@@ -482,6 +505,12 @@ struct ApiKeyInfo {
     usage_count: u32,
 }
 
+impl Default for SdkManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SdkManager {
     /// Create a new SDK manager
     pub fn new() -> Self {
@@ -492,9 +521,13 @@ impl SdkManager {
     }
 
     /// Generate a new API key
-    pub async fn generate_api_key(&self, name: String, permissions: Vec<String>) -> Result<String, AppError> {
+    pub async fn generate_api_key(
+        &self,
+        name: String,
+        permissions: Vec<String>,
+    ) -> Result<String, AppError> {
         let api_key = format!("gsk_{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
-        
+
         let key_info = ApiKeyInfo {
             key: api_key.clone(),
             name,
@@ -515,7 +548,7 @@ impl SdkManager {
     /// Validate API key
     pub async fn validate_api_key(&self, api_key: &str) -> Result<Vec<String>, AppError> {
         let mut api_keys = self.api_keys.write().await;
-        
+
         if let Some(key_info) = api_keys.get_mut(api_key) {
             key_info.last_used = Some(chrono::Utc::now());
             key_info.usage_count += 1;
@@ -523,13 +556,17 @@ impl SdkManager {
         } else {
             Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
-                "Invalid API key"
+                "Invalid API key",
             )))
         }
     }
 
     /// Create SDK client
-    pub async fn create_client(&self, api_key: String, base_url: String) -> Result<String, AppError> {
+    pub async fn create_client(
+        &self,
+        api_key: String,
+        base_url: String,
+    ) -> Result<String, AppError> {
         // Validate API key
         self.validate_api_key(&api_key).await?;
 
@@ -573,9 +610,9 @@ static SDK_MANAGER: tokio::sync::OnceCell<SdkManager> = tokio::sync::OnceCell::c
 
 /// Get the global SDK manager
 pub async fn get_sdk_manager() -> &'static SdkManager {
-    SDK_MANAGER.get_or_init(|| async {
-        SdkManager::new()
-    }).await
+    SDK_MANAGER
+        .get_or_init(|| async { SdkManager::new() })
+        .await
 }
 
 #[cfg(test)]
@@ -585,12 +622,15 @@ mod tests {
     #[tokio::test]
     async fn test_sdk_manager() {
         let manager = SdkManager::new();
-        
-        let api_key = manager.generate_api_key(
-            "Test App".to_string(),
-            vec!["voice".to_string(), "gestures".to_string()]
-        ).await.unwrap();
-        
+
+        let api_key = manager
+            .generate_api_key(
+                "Test App".to_string(),
+                vec!["voice".to_string(), "gestures".to_string()],
+            )
+            .await
+            .unwrap();
+
         let permissions = manager.validate_api_key(&api_key).await.unwrap();
         assert_eq!(permissions.len(), 2);
     }
@@ -622,13 +662,21 @@ mod tests {
         };
 
         let client = SdkClient::new(config).unwrap();
-        
+
         // Valid value
         let valid_value = serde_json::Value::String("hello".to_string());
-        assert!(client.validate_parameter_value(&param, &valid_value).is_ok());
-        
+        assert!(
+            client
+                .validate_parameter_value(&param, &valid_value)
+                .is_ok()
+        );
+
         // Invalid value (too short)
         let invalid_value = serde_json::Value::String("hi".to_string());
-        assert!(client.validate_parameter_value(&param, &invalid_value).is_err());
+        assert!(
+            client
+                .validate_parameter_value(&param, &invalid_value)
+                .is_err()
+        );
     }
 }

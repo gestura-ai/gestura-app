@@ -5,14 +5,18 @@
 //! graceful shutdown with a configurable grace period, and persists state
 //! to a local SQLite database.
 
-use std::{collections::HashMap, path::PathBuf, time::Duration};
 use std::sync::Arc;
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 
-use crate::mcp::{mdh_translate, MdhResource};
-use crate::llm_provider::{select_provider, AgentContext};
+use crate::llm_provider::{AgentContext, select_provider};
+use crate::mcp::{MdhResource, mdh_translate};
 
-use tokio::{sync::{mpsc, Mutex}, task::JoinHandle, time};
 use crate::kv::KvStore;
+use tokio::{
+    sync::{Mutex, mpsc},
+    task::JoinHandle,
+    time,
+};
 
 /// Commands that can be sent to an agent task.
 /// IPC envelope for events exchanged with agents.
@@ -66,21 +70,38 @@ pub enum AgentCommand {
 
 /// Status value persisted for an agent.
 #[derive(Debug, Clone)]
-pub enum AgentStatus { Running, Stopped }
+pub enum AgentStatus {
+    Running,
+    Stopped,
+}
 
 impl AgentStatus {
     fn as_str(&self) -> &'static str {
-        match self { AgentStatus::Running => "running", AgentStatus::Stopped => "stopped" }
+        match self {
+            AgentStatus::Running => "running",
+            AgentStatus::Stopped => "stopped",
+        }
     }
+}
+
+/// Public agent info for status queries
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentInfo {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub last_activity: chrono::DateTime<chrono::Utc>,
 }
 
 /// Record kept for each agent in memory.
 #[derive(Debug)]
 struct AgentRecord {
-    #[allow(dead_code)]
     name: String,
     tx: mpsc::Sender<AgentCommand>,
     _handle: JoinHandle<()>,
+    #[allow(dead_code)]
+    created_at: chrono::DateTime<chrono::Utc>,
+    last_activity: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Default)]
@@ -103,25 +124,38 @@ pub struct AgentManager {
 impl AgentManager {
     /// Create a new AgentManager with the given database path.
     pub fn new(db_path: PathBuf) -> Self {
-        let this = Self { inner: Arc::new(Mutex::new(Inner::default())), db_path, kv: None, kv_bucket: "agents_state".into() };
-        this
+        Self {
+            inner: Arc::new(Mutex::new(Inner::default())),
+            db_path,
+            kv: None,
+            kv_bucket: "agents_state".into(),
+        }
     }
 
     /// Attach a KV store (backed by JetStream) for persistence.
-    pub fn attach_kv(&mut self, kv: KvStore) { self.kv = Some(kv); }
-
+    pub fn attach_kv(&mut self, kv: KvStore) {
+        self.kv = Some(kv);
+    }
 
     /// Returns a connection to the SQLite database.
     // Placeholder retained for compatibility; no file DB used when NATS enabled.
     #[allow(dead_code)]
-    fn init_db(&self) -> Result<(), ()> { Ok(()) }
+    fn init_db(&self) -> Result<(), ()> {
+        Ok(())
+    }
 
     /// Upsert the agent's state to NATS KV if available.
     fn persist_state(&self, id: &str, name: &str, status: AgentStatus) {
         if let Some(kv) = &self.kv {
             let key = format!("agents/{}", id);
-            let val = serde_json::json!({"id": id, "name": name, "status": status.as_str()}).to_string();
-            let _ = tokio::spawn({ let kv = kv.clone(); async move { let _ = kv.put(&key, val.into_bytes()).await; }});
+            let val =
+                serde_json::json!({"id": id, "name": name, "status": status.as_str()}).to_string();
+            drop(tokio::spawn({
+                let kv = kv.clone();
+                async move {
+                    let _ = kv.put(&key, val.into_bytes()).await;
+                }
+            }));
         }
     }
 
@@ -149,8 +183,15 @@ impl AgentManager {
                             let ld_path = std::path::PathBuf::from(path.trim());
                             let mdh: Option<MdhResource> = mdh_translate(ld_path).ok();
                             let mut prompt = String::from("Handle event with context.");
-                            if let Some(res) = mdh { prompt.push_str(&format!("\nMDH: {}", res.uri)); }
-                            let provider = select_provider(&crate::AppConfig::load(), &AgentContext { agent_id: String::from("default")});
+                            if let Some(res) = mdh {
+                                prompt.push_str(&format!("\nMDH: {}", res.uri));
+                            }
+                            let provider = select_provider(
+                                &crate::AppConfig::load(),
+                                &AgentContext {
+                                    agent_id: String::from("default"),
+                                },
+                            );
                             let _ = provider.call(&prompt).await;
                         }
                     }
@@ -158,9 +199,50 @@ impl AgentManager {
             }
         });
 
-        let rec = AgentRecord { name: name.clone(), tx, _handle: handle };
+        let now = chrono::Utc::now();
+        let rec = AgentRecord {
+            name: name.clone(),
+            tx,
+            _handle: handle,
+            created_at: now,
+            last_activity: now,
+        };
         let mut inner = self.inner.lock().await;
         inner.agents.insert(id, rec);
+    }
+
+    /// Get status information for a specific agent
+    pub async fn get_agent_status(&self, id: &str) -> Option<AgentInfo> {
+        let inner = self.inner.lock().await;
+        inner.agents.get(id).map(|rec| AgentInfo {
+            id: id.to_string(),
+            name: rec.name.clone(),
+            status: "running".to_string(),
+            last_activity: rec.last_activity,
+        })
+    }
+
+    /// List all active agents
+    pub async fn list_agents(&self) -> Vec<AgentInfo> {
+        let inner = self.inner.lock().await;
+        inner
+            .agents
+            .iter()
+            .map(|(id, rec)| AgentInfo {
+                id: id.clone(),
+                name: rec.name.clone(),
+                status: "running".to_string(),
+                last_activity: rec.last_activity,
+            })
+            .collect()
+    }
+
+    /// Update last activity timestamp for an agent
+    pub async fn update_activity(&self, id: &str) {
+        let mut inner = self.inner.lock().await;
+        if let Some(rec) = inner.agents.get_mut(id) {
+            rec.last_activity = chrono::Utc::now();
+        }
     }
 
     /// Publish an event to a specific agent if present.
@@ -168,7 +250,9 @@ impl AgentManager {
     pub async fn load_state(&self, id: &str) -> Option<String> {
         if let Some(kv) = &self.kv {
             let key = format!("agents/{}", id);
-            if let Ok(Some(bytes)) = kv.get(&key).await { return Some(String::from_utf8_lossy(&bytes).to_string()); }
+            if let Ok(Some(bytes)) = kv.get(&key).await {
+                return Some(String::from_utf8_lossy(&bytes).to_string());
+            }
         }
         None
     }
@@ -178,7 +262,9 @@ impl AgentManager {
             let inner = self.inner.lock().await;
             inner.agents.get(id).map(|r| r.tx.clone())
         };
-        if let Some(tx) = tx_opt { let _ = tx.send(AgentCommand::Event(payload)).await; }
+        if let Some(tx) = tx_opt {
+            let _ = tx.send(AgentCommand::Event(payload)).await;
+        }
     }
 
     /// Gracefully shutdown all agents, waiting up to `grace_secs` for completion.
@@ -190,7 +276,9 @@ impl AgentManager {
                 to_shutdown.push(rec.tx.clone());
             }
         }
-        for tx in to_shutdown { let _ = tx.send(AgentCommand::Shutdown).await; }
+        for tx in to_shutdown {
+            let _ = tx.send(AgentCommand::Shutdown).await;
+        }
         time::sleep(Duration::from_secs(grace_secs)).await;
     }
 
@@ -203,4 +291,3 @@ impl AgentManager {
         dir
     }
 }
-

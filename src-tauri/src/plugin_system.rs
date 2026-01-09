@@ -76,19 +76,23 @@ pub struct Plugin {
 pub trait PluginApi {
     /// Initialize the plugin
     fn initialize(&mut self, config: serde_json::Value) -> Result<(), String>;
-    
+
     /// Start the plugin
     fn start(&mut self) -> Result<(), String>;
-    
+
     /// Stop the plugin
     fn stop(&mut self) -> Result<(), String>;
-    
+
     /// Handle a command
-    fn handle_command(&mut self, command: &str, args: serde_json::Value) -> Result<serde_json::Value, String>;
-    
+    fn handle_command(
+        &mut self,
+        command: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, String>;
+
     /// Get plugin status
     fn get_status(&self) -> serde_json::Value;
-    
+
     /// Handle events
     fn handle_event(&mut self, event: &str, data: serde_json::Value) -> Result<(), String>;
 }
@@ -117,26 +121,31 @@ impl PluginManager {
     /// Discover plugins in the plugin directory
     pub async fn discover_plugins(&self) -> Result<Vec<PluginMetadata>, AppError> {
         let mut discovered = Vec::new();
-        
+
         if !self.plugin_directory.exists() {
-            tokio::fs::create_dir_all(&self.plugin_directory).await
-                .map_err(|e| AppError::Io(e))?;
+            tokio::fs::create_dir_all(&self.plugin_directory)
+                .await
+                .map_err(AppError::Io)?;
             return Ok(discovered);
         }
 
-        let mut entries = tokio::fs::read_dir(&self.plugin_directory).await
-            .map_err(|e| AppError::Io(e))?;
+        let mut entries = tokio::fs::read_dir(&self.plugin_directory)
+            .await
+            .map_err(AppError::Io)?;
 
-        while let Some(entry) = entries.next_entry().await.map_err(|e| AppError::Io(e))? {
+        while let Some(entry) = entries.next_entry().await.map_err(AppError::Io)? {
             let path = entry.path();
-            
+
             if path.is_dir() {
                 let manifest_path = path.join("plugin.json");
                 if manifest_path.exists() {
                     match self.load_plugin_metadata(&manifest_path).await {
                         Ok(metadata) => discovered.push(metadata),
-                        Err(e) => tracing::warn!("Failed to load plugin metadata from {}: {}", 
-                            manifest_path.display(), e),
+                        Err(e) => tracing::warn!(
+                            "Failed to load plugin metadata from {}: {}",
+                            manifest_path.display(),
+                            e
+                        ),
                     }
                 }
             }
@@ -148,15 +157,16 @@ impl PluginManager {
 
     /// Load plugin metadata from manifest file
     async fn load_plugin_metadata(&self, manifest_path: &Path) -> Result<PluginMetadata, AppError> {
-        let content = tokio::fs::read_to_string(manifest_path).await
-            .map_err(|e| AppError::Io(e))?;
-        
+        let content = tokio::fs::read_to_string(manifest_path)
+            .await
+            .map_err(AppError::Io)?;
+
         let metadata: PluginMetadata = serde_json::from_str(&content)
             .map_err(|e| AppError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
-        
+
         // Validate metadata
         self.validate_plugin_metadata(&metadata)?;
-        
+
         Ok(metadata)
     }
 
@@ -165,21 +175,21 @@ impl PluginManager {
         if metadata.id.is_empty() {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Plugin ID cannot be empty"
+                "Plugin ID cannot be empty",
             )));
         }
 
         if metadata.name.is_empty() {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Plugin name cannot be empty"
+                "Plugin name cannot be empty",
             )));
         }
 
         if metadata.entry_point.is_empty() {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Plugin entry point cannot be empty"
+                "Plugin entry point cannot be empty",
             )));
         }
 
@@ -187,7 +197,7 @@ impl PluginManager {
         if !metadata.version.contains('.') {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Invalid version format"
+                "Invalid version format",
             )));
         }
 
@@ -198,29 +208,30 @@ impl PluginManager {
     pub async fn load_plugin(&self, plugin_id: &str) -> Result<(), AppError> {
         let plugin_path = self.plugin_directory.join(plugin_id);
         let manifest_path = plugin_path.join("plugin.json");
-        
+
         if !manifest_path.exists() {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Plugin manifest not found: {}", plugin_id)
+                format!("Plugin manifest not found: {}", plugin_id),
             )));
         }
 
         let metadata = self.load_plugin_metadata(&manifest_path).await?;
-        
+
         // Check if plugin is already loaded
         {
             let plugins = self.plugins.read().await;
             if plugins.contains_key(plugin_id) {
                 return Err(AppError::Io(std::io::Error::new(
                     std::io::ErrorKind::AlreadyExists,
-                    format!("Plugin already loaded: {}", plugin_id)
+                    format!("Plugin already loaded: {}", plugin_id),
                 )));
             }
         }
 
         // Validate permissions
-        self.validate_plugin_permissions(&metadata.permissions).await?;
+        self.validate_plugin_permissions(&metadata.permissions)
+            .await?;
 
         // Create plugin instance
         let plugin = Plugin {
@@ -242,7 +253,10 @@ impl PluginManager {
     }
 
     /// Validate plugin permissions
-    async fn validate_plugin_permissions(&self, permissions: &[PluginPermission]) -> Result<(), AppError> {
+    async fn validate_plugin_permissions(
+        &self,
+        permissions: &[PluginPermission],
+    ) -> Result<(), AppError> {
         for permission in permissions {
             match permission {
                 PluginPermission::FileSystem(path) => {
@@ -250,7 +264,7 @@ impl PluginManager {
                     if path.contains("..") || path.starts_with('/') {
                         return Err(AppError::Io(std::io::Error::new(
                             std::io::ErrorKind::PermissionDenied,
-                            "Invalid file system permission pattern"
+                            "Invalid file system permission pattern",
                         )));
                     }
                 }
@@ -259,7 +273,7 @@ impl PluginManager {
                     if host == "*" {
                         return Err(AppError::Io(std::io::Error::new(
                             std::io::ErrorKind::PermissionDenied,
-                            "Wildcard network access not allowed"
+                            "Wildcard network access not allowed",
                         )));
                     }
                 }
@@ -276,12 +290,13 @@ impl PluginManager {
     /// Start a plugin
     pub async fn start_plugin(&self, plugin_id: &str) -> Result<(), AppError> {
         let mut plugins = self.plugins.write().await;
-        
-        let plugin = plugins.get_mut(plugin_id)
-            .ok_or_else(|| AppError::Io(std::io::Error::new(
+
+        let plugin = plugins.get_mut(plugin_id).ok_or_else(|| {
+            AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Plugin not found: {}", plugin_id)
-            )))?;
+                format!("Plugin not found: {}", plugin_id),
+            ))
+        })?;
 
         if plugin.state == PluginState::Running {
             return Ok(());
@@ -298,12 +313,13 @@ impl PluginManager {
     /// Stop a plugin
     pub async fn stop_plugin(&self, plugin_id: &str) -> Result<(), AppError> {
         let mut plugins = self.plugins.write().await;
-        
-        let plugin = plugins.get_mut(plugin_id)
-            .ok_or_else(|| AppError::Io(std::io::Error::new(
+
+        let plugin = plugins.get_mut(plugin_id).ok_or_else(|| {
+            AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Plugin not found: {}", plugin_id)
-            )))?;
+                format!("Plugin not found: {}", plugin_id),
+            ))
+        })?;
 
         if plugin.state == PluginState::Stopped {
             return Ok(());
@@ -330,12 +346,12 @@ impl PluginManager {
 
         plugins.remove(plugin_id);
         enabled.retain(|id| id != plugin_id);
-        
+
         // Remove event handlers
         for handlers in event_handlers.values_mut() {
             handlers.retain(|id| id != plugin_id);
         }
-        
+
         // Remove command handlers
         command_handlers.retain(|_, id| id != plugin_id);
 
@@ -344,13 +360,17 @@ impl PluginManager {
     }
 
     /// Execute plugin command
-    pub async fn execute_command(&self, command: &str, _args: serde_json::Value) -> Result<serde_json::Value, AppError> {
+    pub async fn execute_command(
+        &self,
+        command: &str,
+        _args: serde_json::Value,
+    ) -> Result<serde_json::Value, AppError> {
         let command_handlers = self.command_handlers.read().await;
-        
+
         if let Some(plugin_id) = command_handlers.get(command) {
             // In real implementation, would call plugin's handle_command method
             tracing::info!("Executing command '{}' on plugin '{}'", command, plugin_id);
-            
+
             Ok(serde_json::json!({
                 "status": "success",
                 "plugin_id": plugin_id,
@@ -360,15 +380,19 @@ impl PluginManager {
         } else {
             Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("No handler found for command: {}", command)
+                format!("No handler found for command: {}", command),
             )))
         }
     }
 
     /// Broadcast event to plugins
-    pub async fn broadcast_event(&self, event: &str, _data: serde_json::Value) -> Result<(), AppError> {
+    pub async fn broadcast_event(
+        &self,
+        event: &str,
+        _data: serde_json::Value,
+    ) -> Result<(), AppError> {
         let event_handlers = self.event_handlers.read().await;
-        
+
         if let Some(handlers) = event_handlers.get(event) {
             for plugin_id in handlers {
                 // In real implementation, would call plugin's handle_event method
@@ -395,9 +419,10 @@ impl PluginManager {
     pub async fn get_stats(&self) -> serde_json::Value {
         let plugins = self.plugins.read().await;
         let enabled = self.enabled_plugins.read().await;
-        
+
         let total_plugins = plugins.len();
-        let running_plugins = plugins.values()
+        let running_plugins = plugins
+            .values()
             .filter(|p| p.state == PluginState::Running)
             .count();
         let enabled_plugins = enabled.len();
@@ -416,12 +441,14 @@ static PLUGIN_MANAGER: tokio::sync::OnceCell<PluginManager> = tokio::sync::OnceC
 
 /// Get the global plugin manager
 pub async fn get_plugin_manager() -> &'static PluginManager {
-    PLUGIN_MANAGER.get_or_init(|| async {
-        let plugin_dir = std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join("plugins");
-        PluginManager::new(plugin_dir)
-    }).await
+    PLUGIN_MANAGER
+        .get_or_init(|| async {
+            let plugin_dir = std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join("plugins");
+            PluginManager::new(plugin_dir)
+        })
+        .await
 }
 
 #[cfg(test)]
@@ -433,11 +460,11 @@ mod tests {
     async fn test_plugin_discovery() {
         let temp_dir = TempDir::new().unwrap();
         let manager = PluginManager::new(temp_dir.path().to_path_buf());
-        
+
         // Create a test plugin
         let plugin_dir = temp_dir.path().join("test-plugin");
         tokio::fs::create_dir_all(&plugin_dir).await.unwrap();
-        
+
         let manifest = serde_json::json!({
             "id": "test-plugin",
             "name": "Test Plugin",
@@ -452,9 +479,11 @@ mod tests {
             "supported_platforms": ["linux", "macos", "windows"],
             "min_app_version": "1.0.0"
         });
-        
-        tokio::fs::write(plugin_dir.join("plugin.json"), manifest.to_string()).await.unwrap();
-        
+
+        tokio::fs::write(plugin_dir.join("plugin.json"), manifest.to_string())
+            .await
+            .unwrap();
+
         let discovered = manager.discover_plugins().await.unwrap();
         assert_eq!(discovered.len(), 1);
         assert_eq!(discovered[0].id, "test-plugin");
@@ -464,11 +493,11 @@ mod tests {
     async fn test_plugin_loading() {
         let temp_dir = TempDir::new().unwrap();
         let manager = PluginManager::new(temp_dir.path().to_path_buf());
-        
+
         // Create and load test plugin
         let plugin_dir = temp_dir.path().join("test-plugin");
         tokio::fs::create_dir_all(&plugin_dir).await.unwrap();
-        
+
         let manifest = serde_json::json!({
             "id": "test-plugin",
             "name": "Test Plugin",
@@ -483,11 +512,13 @@ mod tests {
             "supported_platforms": ["linux", "macos", "windows"],
             "min_app_version": "1.0.0"
         });
-        
-        tokio::fs::write(plugin_dir.join("plugin.json"), manifest.to_string()).await.unwrap();
-        
+
+        tokio::fs::write(plugin_dir.join("plugin.json"), manifest.to_string())
+            .await
+            .unwrap();
+
         manager.load_plugin("test-plugin").await.unwrap();
-        
+
         let plugin = manager.get_plugin("test-plugin").await;
         assert!(plugin.is_some());
         assert_eq!(plugin.unwrap().state, PluginState::Loaded);

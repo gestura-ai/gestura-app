@@ -104,14 +104,14 @@ impl GesturePatternLearner {
         if sequence.data_points.is_empty() {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Gesture sequence cannot be empty"
+                "Gesture sequence cannot be empty",
             )));
         }
 
         if sequence.gesture_type.is_empty() {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Gesture type cannot be empty"
+                "Gesture type cannot be empty",
             )));
         }
 
@@ -120,7 +120,8 @@ impl GesturePatternLearner {
 
         // Trigger learning if we have enough samples
         let config = self.config.read().await;
-        let gesture_count = training_data.iter()
+        let gesture_count = training_data
+            .iter()
             .filter(|s| s.gesture_type == sequence.gesture_type)
             .count();
 
@@ -135,12 +136,17 @@ impl GesturePatternLearner {
     }
 
     /// Recognize gesture from sequence
-    pub async fn recognize_gesture(&self, sequence: &GestureSequence) -> Result<GestureRecognitionResult, AppError> {
+    pub async fn recognize_gesture(
+        &self,
+        sequence: &GestureSequence,
+    ) -> Result<GestureRecognitionResult, AppError> {
         let start_time = std::time::Instant::now();
-        
+
         // Extract features from the sequence
-        let features = self.feature_extractor.extract_features(&sequence.data_points)?;
-        
+        let features = self
+            .feature_extractor
+            .extract_features(&sequence.data_points)?;
+
         // Get all patterns
         let patterns = self.patterns.read().await;
         let mut scores = Vec::new();
@@ -148,13 +154,15 @@ impl GesturePatternLearner {
         // Compare with all learned patterns
         for (_pattern_id, pattern) in patterns.iter() {
             // Skip user-specific patterns if not matching user
-            if let Some(pattern_user) = &pattern.user_id {
-                if *pattern_user != sequence.user_id {
-                    continue;
-                }
+            if let Some(pattern_user) = &pattern.user_id
+                && *pattern_user != sequence.user_id
+            {
+                continue;
             }
 
-            let similarity = self.classifier.calculate_similarity(&features, &pattern.feature_vector);
+            let similarity = self
+                .classifier
+                .calculate_similarity(&features, &pattern.feature_vector);
             if similarity >= pattern.confidence_threshold {
                 scores.push((pattern.gesture_type.clone(), similarity));
             }
@@ -192,12 +200,13 @@ impl GesturePatternLearner {
         };
 
         // Online learning: update pattern if recognition was confident
-        if config.enable_online_learning && result.confidence > 0.8 {
-            if let Some(ref gesture_type) = result.recognized_gesture {
-                drop(config);
-                drop(patterns);
-                self.update_pattern_online(gesture_type, &features).await?;
-            }
+        if config.enable_online_learning
+            && result.confidence > 0.8
+            && let Some(ref gesture_type) = result.recognized_gesture
+        {
+            drop(config);
+            drop(patterns);
+            self.update_pattern_online(gesture_type, &features).await?;
         }
 
         Ok(result)
@@ -206,9 +215,10 @@ impl GesturePatternLearner {
     /// Update pattern for a specific gesture type
     async fn update_pattern(&self, gesture_type: &str) -> Result<(), AppError> {
         let training_data = self.training_data.read().await;
-        
+
         // Get all sequences for this gesture type
-        let gesture_sequences: Vec<&GestureSequence> = training_data.iter()
+        let gesture_sequences: Vec<&GestureSequence> = training_data
+            .iter()
             .filter(|s| s.gesture_type == gesture_type)
             .collect();
 
@@ -219,18 +229,24 @@ impl GesturePatternLearner {
         // Extract features from all sequences
         let mut all_features = Vec::new();
         for sequence in &gesture_sequences {
-            let features = self.feature_extractor.extract_features(&sequence.data_points)?;
+            let features = self
+                .feature_extractor
+                .extract_features(&sequence.data_points)?;
             all_features.push(features);
         }
 
         // Calculate average feature vector
         let feature_vector = self.classifier.average_features(&all_features);
-        
+
         // Calculate accuracy (simplified)
         let accuracy = self.calculate_pattern_accuracy(&feature_vector, &all_features);
 
         // Create or update pattern
-        let pattern_id = format!("{}_{}", gesture_type, uuid::Uuid::new_v4().to_string()[..8].to_string());
+        let pattern_id = format!(
+            "{}_{}",
+            gesture_type,
+            &uuid::Uuid::new_v4().to_string()[..8]
+        );
         let pattern = GesturePattern {
             pattern_id: pattern_id.clone(),
             gesture_type: gesture_type.to_string(),
@@ -245,51 +261,67 @@ impl GesturePatternLearner {
         let mut patterns = self.patterns.write().await;
         patterns.insert(pattern_id.clone(), pattern);
 
-        tracing::info!("Updated pattern for gesture '{}' with {} samples (accuracy: {:.2})", 
-            gesture_type, gesture_sequences.len(), accuracy);
+        tracing::info!(
+            "Updated pattern for gesture '{}' with {} samples (accuracy: {:.2})",
+            gesture_type,
+            gesture_sequences.len(),
+            accuracy
+        );
 
         Ok(())
     }
 
     /// Online learning update
-    async fn update_pattern_online(&self, gesture_type: &str, new_features: &[f32]) -> Result<(), AppError> {
+    async fn update_pattern_online(
+        &self,
+        gesture_type: &str,
+        new_features: &[f32],
+    ) -> Result<(), AppError> {
         let mut patterns = self.patterns.write().await;
         let config = self.config.read().await;
 
         // Find existing pattern for this gesture type
-        let pattern_key = patterns.iter()
+        let pattern_key = patterns
+            .iter()
             .find(|(_, p)| p.gesture_type == gesture_type)
             .map(|(k, _)| k.clone());
 
-        if let Some(key) = pattern_key {
-            if let Some(pattern) = patterns.get_mut(&key) {
-                // Update feature vector using exponential moving average
-                for (i, &new_val) in new_features.iter().enumerate() {
-                    if i < pattern.feature_vector.len() {
-                        pattern.feature_vector[i] = (1.0 - config.learning_rate) * pattern.feature_vector[i] + 
-                                                   config.learning_rate * new_val;
-                    }
+        if let Some(key) = pattern_key
+            && let Some(pattern) = patterns.get_mut(&key)
+        {
+            // Update feature vector using exponential moving average
+            for (i, &new_val) in new_features.iter().enumerate() {
+                if i < pattern.feature_vector.len() {
+                    pattern.feature_vector[i] = (1.0 - config.learning_rate)
+                        * pattern.feature_vector[i]
+                        + config.learning_rate * new_val;
                 }
-                
-                pattern.last_updated = chrono::Utc::now();
-                pattern.sample_count += 1;
-                
-                tracing::debug!("Updated pattern '{}' with online learning", gesture_type);
             }
+
+            pattern.last_updated = chrono::Utc::now();
+            pattern.sample_count += 1;
+
+            tracing::debug!("Updated pattern '{}' with online learning", gesture_type);
         }
 
         Ok(())
     }
 
     /// Calculate pattern accuracy
-    fn calculate_pattern_accuracy(&self, pattern_features: &[f32], all_features: &[Vec<f32>]) -> f32 {
+    fn calculate_pattern_accuracy(
+        &self,
+        pattern_features: &[f32],
+        all_features: &[Vec<f32>],
+    ) -> f32 {
         if all_features.is_empty() {
             return 0.0;
         }
 
         let mut correct_predictions = 0;
         for features in all_features {
-            let similarity = self.classifier.calculate_similarity(pattern_features, features);
+            let similarity = self
+                .classifier
+                .calculate_similarity(pattern_features, features);
             if similarity > 0.7 {
                 correct_predictions += 1;
             }
@@ -309,7 +341,8 @@ impl GesturePatternLearner {
         let patterns = self.patterns.read().await;
         let training_data = self.training_data.read().await;
 
-        let gesture_types: std::collections::HashSet<String> = training_data.iter()
+        let gesture_types: std::collections::HashSet<String> = training_data
+            .iter()
             .map(|s| s.gesture_type.clone())
             .collect();
 
@@ -334,17 +367,17 @@ impl GesturePatternLearner {
     pub async fn cleanup_old_patterns(&self) -> Result<usize, AppError> {
         let config = self.config.read().await;
         let cutoff_date = chrono::Utc::now() - chrono::Duration::days(config.max_pattern_age_days);
-        
+
         let mut patterns = self.patterns.write().await;
         let initial_count = patterns.len();
-        
+
         patterns.retain(|_, pattern| pattern.last_updated > cutoff_date);
-        
+
         let removed_count = initial_count - patterns.len();
         if removed_count > 0 {
             tracing::info!("Cleaned up {} old patterns", removed_count);
         }
-        
+
         Ok(removed_count)
     }
 
@@ -361,11 +394,15 @@ pub struct GestureFeatureExtractor {
     window_size: usize,
 }
 
+impl Default for GestureFeatureExtractor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GestureFeatureExtractor {
     pub fn new() -> Self {
-        Self {
-            window_size: 50,
-        }
+        Self { window_size: 50 }
     }
 
     /// Extract features from gesture data points
@@ -373,7 +410,7 @@ impl GestureFeatureExtractor {
         if data_points.is_empty() {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Cannot extract features from empty data"
+                "Cannot extract features from empty data",
             )));
         }
 
@@ -398,21 +435,31 @@ impl GestureFeatureExtractor {
         features.extend(self.calculate_statistical_features(&gyro_z));
 
         // Magnitude features
-        let acc_magnitude: Vec<f32> = data_points.iter()
-            .map(|p| (p.accelerometer[0].powi(2) + p.accelerometer[1].powi(2) + p.accelerometer[2].powi(2)).sqrt())
+        let acc_magnitude: Vec<f32> = data_points
+            .iter()
+            .map(|p| {
+                (p.accelerometer[0].powi(2)
+                    + p.accelerometer[1].powi(2)
+                    + p.accelerometer[2].powi(2))
+                .sqrt()
+            })
             .collect();
         features.extend(self.calculate_statistical_features(&acc_magnitude));
 
-        let gyro_magnitude: Vec<f32> = data_points.iter()
-            .map(|p| (p.gyroscope[0].powi(2) + p.gyroscope[1].powi(2) + p.gyroscope[2].powi(2)).sqrt())
+        let gyro_magnitude: Vec<f32> = data_points
+            .iter()
+            .map(|p| {
+                (p.gyroscope[0].powi(2) + p.gyroscope[1].powi(2) + p.gyroscope[2].powi(2)).sqrt()
+            })
             .collect();
         features.extend(self.calculate_statistical_features(&gyro_magnitude));
 
         // Temporal features
         features.push(data_points.len() as f32); // Sequence length
-        
+
         if data_points.len() > 1 {
-            let duration = (data_points.last().unwrap().timestamp - data_points.first().unwrap().timestamp)
+            let duration = (data_points.last().unwrap().timestamp
+                - data_points.first().unwrap().timestamp)
                 .num_milliseconds() as f32;
             features.push(duration); // Total duration
             features.push(data_points.len() as f32 / duration * 1000.0); // Sampling rate
@@ -444,6 +491,12 @@ impl GestureFeatureExtractor {
 /// Gesture classifier
 pub struct GestureClassifier;
 
+impl Default for GestureClassifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GestureClassifier {
     pub fn new() -> Self {
         Self
@@ -456,7 +509,11 @@ impl GestureClassifier {
         }
 
         // Cosine similarity
-        let dot_product: f32 = features1.iter().zip(features2.iter()).map(|(a, b)| a * b).sum();
+        let dot_product: f32 = features1
+            .iter()
+            .zip(features2.iter())
+            .map(|(a, b)| a * b)
+            .sum();
         let norm1: f32 = features1.iter().map(|x| x * x).sum::<f32>().sqrt();
         let norm2: f32 = features2.iter().map(|x| x * x).sum::<f32>().sqrt();
 
@@ -494,13 +551,14 @@ impl GestureClassifier {
 }
 
 /// Global gesture pattern learner instance
-static GESTURE_PATTERN_LEARNER: tokio::sync::OnceCell<GesturePatternLearner> = tokio::sync::OnceCell::const_new();
+static GESTURE_PATTERN_LEARNER: tokio::sync::OnceCell<GesturePatternLearner> =
+    tokio::sync::OnceCell::const_new();
 
 /// Get the global gesture pattern learner
 pub async fn get_gesture_pattern_learner() -> &'static GesturePatternLearner {
-    GESTURE_PATTERN_LEARNER.get_or_init(|| async {
-        GesturePatternLearner::new(LearningConfig::default())
-    }).await
+    GESTURE_PATTERN_LEARNER
+        .get_or_init(|| async { GesturePatternLearner::new(LearningConfig::default()) })
+        .await
 }
 
 #[cfg(test)]
@@ -510,7 +568,7 @@ mod tests {
     #[test]
     fn test_feature_extraction() {
         let extractor = GestureFeatureExtractor::new();
-        
+
         let data_points = vec![
             GestureDataPoint {
                 timestamp: chrono::Utc::now(),
@@ -527,7 +585,7 @@ mod tests {
                 quaternion: [0.99, 0.01, 0.01, 0.01],
             },
         ];
-        
+
         let features = extractor.extract_features(&data_points).unwrap();
         assert!(!features.is_empty());
         assert!(features.len() > 30); // Should have many features
@@ -536,12 +594,12 @@ mod tests {
     #[test]
     fn test_similarity_calculation() {
         let classifier = GestureClassifier::new();
-        
+
         let features1 = vec![1.0, 2.0, 3.0];
         let features2 = vec![1.0, 2.0, 3.0];
         let similarity = classifier.calculate_similarity(&features1, &features2);
         assert!((similarity - 1.0).abs() < 0.001); // Should be 1.0 for identical vectors
-        
+
         let features3 = vec![0.0, 0.0, 0.0];
         let similarity2 = classifier.calculate_similarity(&features1, &features3);
         assert_eq!(similarity2, 0.0); // Should be 0.0 for zero vector
@@ -553,28 +611,26 @@ mod tests {
             min_samples_per_pattern: 2,
             ..LearningConfig::default()
         });
-        
+
         let sequence = GestureSequence {
             id: "test1".to_string(),
             user_id: "user1".to_string(),
             gesture_type: "tap".to_string(),
-            data_points: vec![
-                GestureDataPoint {
-                    timestamp: chrono::Utc::now(),
-                    accelerometer: [1.0, 0.0, 0.0],
-                    gyroscope: [0.0, 0.0, 0.0],
-                    magnetometer: [0.0, 0.0, 0.0],
-                    quaternion: [1.0, 0.0, 0.0, 0.0],
-                },
-            ],
+            data_points: vec![GestureDataPoint {
+                timestamp: chrono::Utc::now(),
+                accelerometer: [1.0, 0.0, 0.0],
+                gyroscope: [0.0, 0.0, 0.0],
+                magnetometer: [0.0, 0.0, 0.0],
+                quaternion: [1.0, 0.0, 0.0, 0.0],
+            }],
             duration_ms: 100,
             confidence: 1.0,
             created_at: chrono::Utc::now(),
         };
-        
+
         learner.add_training_data(sequence.clone()).await.unwrap();
         learner.add_training_data(sequence).await.unwrap();
-        
+
         let patterns = learner.get_patterns().await;
         assert!(!patterns.is_empty());
         assert_eq!(patterns[0].gesture_type, "tap");

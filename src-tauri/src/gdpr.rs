@@ -84,7 +84,13 @@ impl GdprManager {
     }
 
     /// Register consent for data processing
-    pub async fn register_consent(&self, user_id: String, category: DataCategory, purpose: String, legal_basis: String) -> Result<(), AppError> {
+    pub async fn register_consent(
+        &self,
+        user_id: String,
+        category: DataCategory,
+        purpose: String,
+        legal_basis: String,
+    ) -> Result<(), AppError> {
         let consent = ConsentRecord {
             user_id: user_id.clone(),
             category: category.clone(),
@@ -96,35 +102,54 @@ impl GdprManager {
         };
 
         let mut consents = self.consent_records.write().await;
-        consents.entry(user_id.clone()).or_insert_with(Vec::new).push(consent);
+        consents
+            .entry(user_id.clone())
+            .or_insert_with(Vec::new)
+            .push(consent);
 
         // Audit the consent
-        self.audit_data_operation(user_id.clone(), DataOperation::Collect, category, "Consent granted".to_string(), legal_basis).await;
+        self.audit_data_operation(
+            user_id.clone(),
+            DataOperation::Collect,
+            category,
+            "Consent granted".to_string(),
+            legal_basis,
+        )
+        .await;
 
         tracing::info!("Consent registered for user: {}", user_id);
         Ok(())
     }
 
     /// Withdraw consent for data processing
-    pub async fn withdraw_consent(&self, user_id: &str, category: &DataCategory) -> Result<(), AppError> {
+    pub async fn withdraw_consent(
+        &self,
+        user_id: &str,
+        category: &DataCategory,
+    ) -> Result<(), AppError> {
         let mut consents = self.consent_records.write().await;
-        
+
         if let Some(user_consents) = consents.get_mut(user_id) {
             for consent in user_consents.iter_mut() {
                 if consent.category == *category && consent.status == ConsentStatus::Granted {
                     consent.status = ConsentStatus::Withdrawn;
                     consent.withdrawn_at = Some(chrono::Utc::now());
-                    
+
                     // Audit the withdrawal
                     self.audit_data_operation(
-                        user_id.to_string(), 
-                        DataOperation::Modify, 
-                        category.clone(), 
-                        "Consent withdrawn".to_string(), 
-                        consent.legal_basis.clone()
-                    ).await;
-                    
-                    tracing::info!("Consent withdrawn for user: {} category: {:?}", user_id, category);
+                        user_id.to_string(),
+                        DataOperation::Modify,
+                        category.clone(),
+                        "Consent withdrawn".to_string(),
+                        consent.legal_basis.clone(),
+                    )
+                    .await;
+
+                    tracing::info!(
+                        "Consent withdrawn for user: {} category: {:?}",
+                        user_id,
+                        category
+                    );
                     return Ok(());
                 }
             }
@@ -132,16 +157,18 @@ impl GdprManager {
 
         Err(AppError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "Consent record not found"
+            "Consent record not found",
         )))
     }
 
     /// Check if user has given consent for a data category
     pub async fn has_consent(&self, user_id: &str, category: &DataCategory) -> bool {
         let consents = self.consent_records.read().await;
-        
+
         if let Some(user_consents) = consents.get(user_id) {
-            user_consents.iter().any(|c| c.category == *category && c.status == ConsentStatus::Granted)
+            user_consents
+                .iter()
+                .any(|c| c.category == *category && c.status == ConsentStatus::Granted)
         } else {
             false
         }
@@ -155,8 +182,9 @@ impl GdprManager {
             DataOperation::Export,
             DataCategory::PersonalIdentifiers,
             "Data export requested".to_string(),
-            "GDPR Article 20".to_string()
-        ).await;
+            "GDPR Article 20".to_string(),
+        )
+        .await;
 
         let mut export_data = serde_json::Map::new();
 
@@ -172,18 +200,27 @@ impl GdprManager {
 
         // Export audit trail for this user
         let audit_entries = self.get_user_audit_trail(user_id).await;
-        export_data.insert("audit_trail".to_string(), serde_json::to_value(&audit_entries)?);
+        export_data.insert(
+            "audit_trail".to_string(),
+            serde_json::to_value(&audit_entries)?,
+        );
 
         // Export voice data locations (metadata only)
         let data_locations = self.data_locations.read().await;
         if let Some(voice_locations) = data_locations.get(&DataCategory::VoiceRecordings) {
-            let voice_metadata: Vec<_> = voice_locations.iter()
-                .map(|path| serde_json::json!({
-                    "path": path.to_string_lossy(),
-                    "category": "voice_recording"
-                }))
+            let voice_metadata: Vec<_> = voice_locations
+                .iter()
+                .map(|path| {
+                    serde_json::json!({
+                        "path": path.to_string_lossy(),
+                        "category": "voice_recording"
+                    })
+                })
                 .collect();
-            export_data.insert("voice_data_locations".to_string(), serde_json::Value::Array(voice_metadata));
+            export_data.insert(
+                "voice_data_locations".to_string(),
+                serde_json::Value::Array(voice_metadata),
+            );
         }
 
         tracing::info!("Data export completed for user: {}", user_id);
@@ -191,7 +228,11 @@ impl GdprManager {
     }
 
     /// Delete all user data (GDPR Article 17 - Right to be forgotten)
-    pub async fn delete_user_data(&self, user_id: &str, verify: bool) -> Result<Vec<String>, AppError> {
+    pub async fn delete_user_data(
+        &self,
+        user_id: &str,
+        verify: bool,
+    ) -> Result<Vec<String>, AppError> {
         let mut deleted_items = Vec::new();
 
         // Audit the deletion request
@@ -200,8 +241,9 @@ impl GdprManager {
             DataOperation::Delete,
             DataCategory::PersonalIdentifiers,
             "Data deletion requested".to_string(),
-            "GDPR Article 17".to_string()
-        ).await;
+            "GDPR Article 17".to_string(),
+        )
+        .await;
 
         // Delete consent records
         let mut consents = self.consent_records.write().await;
@@ -256,11 +298,21 @@ impl GdprManager {
     /// Register data location for tracking
     pub async fn register_data_location(&self, category: DataCategory, path: PathBuf) {
         let mut locations = self.data_locations.write().await;
-        locations.entry(category).or_insert_with(Vec::new).push(path);
+        locations
+            .entry(category)
+            .or_insert_with(Vec::new)
+            .push(path);
     }
 
     /// Audit data operation
-    pub async fn audit_data_operation(&self, user_id: String, operation: DataOperation, category: DataCategory, details: String, legal_basis: String) {
+    pub async fn audit_data_operation(
+        &self,
+        user_id: String,
+        operation: DataOperation,
+        category: DataCategory,
+        details: String,
+        legal_basis: String,
+    ) {
         let entry = DataAuditEntry {
             timestamp: chrono::Utc::now(),
             user_id,
@@ -282,7 +334,8 @@ impl GdprManager {
     /// Get audit trail for a specific user
     pub async fn get_user_audit_trail(&self, user_id: &str) -> Vec<DataAuditEntry> {
         let audit_trail = self.audit_trail.read().await;
-        audit_trail.iter()
+        audit_trail
+            .iter()
             .filter(|entry| entry.user_id == user_id)
             .cloned()
             .collect()
@@ -339,9 +392,9 @@ static GDPR_MANAGER: tokio::sync::OnceCell<GdprManager> = tokio::sync::OnceCell:
 
 /// Get the global GDPR manager
 pub async fn get_gdpr_manager() -> &'static GdprManager {
-    GDPR_MANAGER.get_or_init(|| async {
-        GdprManager::new(50000)
-    }).await
+    GDPR_MANAGER
+        .get_or_init(|| async { GdprManager::new(50000) })
+        .await
 }
 
 #[cfg(test)]
@@ -351,22 +404,36 @@ mod tests {
     #[tokio::test]
     async fn test_gdpr_manager() {
         let manager = GdprManager::new(1000);
-        
+
         // Test consent registration
-        manager.register_consent(
-            "test-user".to_string(),
-            DataCategory::VoiceRecordings,
-            "Voice processing".to_string(),
-            "User consent".to_string()
-        ).await.unwrap();
-        
+        manager
+            .register_consent(
+                "test-user".to_string(),
+                DataCategory::VoiceRecordings,
+                "Voice processing".to_string(),
+                "User consent".to_string(),
+            )
+            .await
+            .unwrap();
+
         // Test consent check
-        assert!(manager.has_consent("test-user", &DataCategory::VoiceRecordings).await);
-        
+        assert!(
+            manager
+                .has_consent("test-user", &DataCategory::VoiceRecordings)
+                .await
+        );
+
         // Test consent withdrawal
-        manager.withdraw_consent("test-user", &DataCategory::VoiceRecordings).await.unwrap();
-        assert!(!manager.has_consent("test-user", &DataCategory::VoiceRecordings).await);
-        
+        manager
+            .withdraw_consent("test-user", &DataCategory::VoiceRecordings)
+            .await
+            .unwrap();
+        assert!(
+            !manager
+                .has_consent("test-user", &DataCategory::VoiceRecordings)
+                .await
+        );
+
         // Test data export
         let export = manager.export_user_data("test-user").await.unwrap();
         assert!(export.get("consents").is_some());

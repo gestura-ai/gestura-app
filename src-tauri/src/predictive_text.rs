@@ -35,7 +35,7 @@ pub enum SuggestionType {
 }
 
 /// Language model for predictions
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LanguageModel {
     /// N-gram frequencies (n-gram -> frequency)
     ngrams: HashMap<String, u32>,
@@ -45,17 +45,6 @@ pub struct LanguageModel {
     command_patterns: HashMap<String, Vec<String>>,
     /// Context-aware suggestions
     context_suggestions: HashMap<String, Vec<String>>,
-}
-
-impl Default for LanguageModel {
-    fn default() -> Self {
-        Self {
-            ngrams: HashMap::new(),
-            word_frequencies: HashMap::new(),
-            command_patterns: HashMap::new(),
-            context_suggestions: HashMap::new(),
-        }
-    }
 }
 
 /// Predictive text engine
@@ -91,9 +80,13 @@ impl PredictiveTextEngine {
     }
 
     /// Get text predictions for input
-    pub async fn predict(&self, input: &str, context: Option<&str>) -> Result<PredictionResult, AppError> {
+    pub async fn predict(
+        &self,
+        input: &str,
+        context: Option<&str>,
+    ) -> Result<PredictionResult, AppError> {
         let start_time = std::time::Instant::now();
-        
+
         if input.is_empty() {
             return Ok(PredictionResult {
                 suggestions: Vec::new(),
@@ -116,17 +109,18 @@ impl PredictiveTextEngine {
         }
 
         // Command completion
-        if input.starts_with('/') || input.starts_with('!') {
-            if let Some(command_suggestions) = self.get_command_completions(&model, input).await {
-                suggestions.extend(command_suggestions);
-            }
+        if (input.starts_with('/') || input.starts_with('!'))
+            && let Some(command_suggestions) = self.get_command_completions(&model, input).await
+        {
+            suggestions.extend(command_suggestions);
         }
 
         // Contextual suggestions
-        if let Some(ctx) = context {
-            if let Some(context_suggestions) = self.get_contextual_suggestions(&model, input, ctx).await {
-                suggestions.extend(context_suggestions);
-            }
+        if let Some(ctx) = context
+            && let Some(context_suggestions) =
+                self.get_contextual_suggestions(&model, input, ctx).await
+        {
+            suggestions.extend(context_suggestions);
         }
 
         // Auto-correction
@@ -135,7 +129,11 @@ impl PredictiveTextEngine {
         }
 
         // Sort by confidence and filter
-        suggestions.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+        suggestions.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         suggestions.retain(|s| s.confidence >= self.min_confidence_threshold);
         suggestions.truncate(10); // Limit to top 10 suggestions
 
@@ -182,22 +180,26 @@ impl PredictiveTextEngine {
     }
 
     /// Get word completions
-    async fn get_word_completions(&self, model: &LanguageModel, input: &str) -> Option<Vec<TextSuggestion>> {
+    async fn get_word_completions(
+        &self,
+        model: &LanguageModel,
+        input: &str,
+    ) -> Option<Vec<TextSuggestion>> {
         let words = input.split_whitespace().collect::<Vec<&str>>();
         let last_word = words.last()?;
-        
+
         if last_word.len() < 2 {
             return None;
         }
 
         let mut suggestions = Vec::new();
-        
+
         for (word, frequency) in &model.word_frequencies {
             if word.starts_with(last_word) && word != *last_word {
                 let confidence = (*frequency as f32).log10() / 10.0; // Normalize frequency to confidence
                 suggestions.push(TextSuggestion {
                     text: word.clone(),
-                    confidence: confidence.min(1.0).max(0.1),
+                    confidence: confidence.clamp(0.1, 1.0),
                     suggestion_type: SuggestionType::WordCompletion,
                     context: None,
                 });
@@ -212,14 +214,18 @@ impl PredictiveTextEngine {
     }
 
     /// Get phrase completions
-    async fn get_phrase_completions(&self, model: &LanguageModel, input: &str) -> Option<Vec<TextSuggestion>> {
+    async fn get_phrase_completions(
+        &self,
+        model: &LanguageModel,
+        input: &str,
+    ) -> Option<Vec<TextSuggestion>> {
         let words = input.split_whitespace().collect::<Vec<&str>>();
         if words.len() < 2 {
             return None;
         }
 
         let mut suggestions = Vec::new();
-        let last_two_words = format!("{} {}", words[words.len()-2], words[words.len()-1]);
+        let last_two_words = format!("{} {}", words[words.len() - 2], words[words.len() - 1]);
 
         for (ngram, frequency) in &model.ngrams {
             if ngram.starts_with(&last_two_words) && ngram != &last_two_words {
@@ -228,7 +234,7 @@ impl PredictiveTextEngine {
                     let confidence = (*frequency as f32).log10() / 15.0;
                     suggestions.push(TextSuggestion {
                         text: remaining.to_string(),
-                        confidence: confidence.min(1.0).max(0.1),
+                        confidence: confidence.clamp(0.1, 1.0),
                         suggestion_type: SuggestionType::PhraseCompletion,
                         context: Some(last_two_words.clone()),
                     });
@@ -244,9 +250,13 @@ impl PredictiveTextEngine {
     }
 
     /// Get command completions
-    async fn get_command_completions(&self, model: &LanguageModel, input: &str) -> Option<Vec<TextSuggestion>> {
+    async fn get_command_completions(
+        &self,
+        model: &LanguageModel,
+        input: &str,
+    ) -> Option<Vec<TextSuggestion>> {
         let mut suggestions = Vec::new();
-        
+
         for (command_prefix, completions) in &model.command_patterns {
             if input.starts_with(command_prefix) {
                 for completion in completions {
@@ -270,9 +280,14 @@ impl PredictiveTextEngine {
     }
 
     /// Get contextual suggestions
-    async fn get_contextual_suggestions(&self, model: &LanguageModel, input: &str, context: &str) -> Option<Vec<TextSuggestion>> {
+    async fn get_contextual_suggestions(
+        &self,
+        model: &LanguageModel,
+        input: &str,
+        context: &str,
+    ) -> Option<Vec<TextSuggestion>> {
         let mut suggestions = Vec::new();
-        
+
         if let Some(context_suggestions) = model.context_suggestions.get(context) {
             for suggestion in context_suggestions {
                 if suggestion.contains(input) || input.contains(suggestion) {
@@ -294,20 +309,24 @@ impl PredictiveTextEngine {
     }
 
     /// Get auto-corrections
-    async fn get_auto_corrections(&self, model: &LanguageModel, input: &str) -> Option<Vec<TextSuggestion>> {
+    async fn get_auto_corrections(
+        &self,
+        model: &LanguageModel,
+        input: &str,
+    ) -> Option<Vec<TextSuggestion>> {
         let words = input.split_whitespace().collect::<Vec<&str>>();
         let last_word = words.last()?;
-        
+
         if last_word.len() < 3 {
             return None;
         }
 
         let mut suggestions = Vec::new();
-        
+
         // Simple edit distance-based corrections
         for (word, frequency) in &model.word_frequencies {
-            if word.len() >= last_word.len().saturating_sub(2) && 
-               word.len() <= last_word.len() + 2 {
+            if word.len() >= last_word.len().saturating_sub(2) && word.len() <= last_word.len() + 2
+            {
                 let edit_distance = self.calculate_edit_distance(last_word, word);
                 if edit_distance <= 2 && edit_distance > 0 {
                     let confidence = 1.0 - (edit_distance as f32 / last_word.len() as f32);
@@ -334,8 +353,8 @@ impl PredictiveTextEngine {
         let len2 = s2.len();
         let mut matrix = vec![vec![0; len2 + 1]; len1 + 1];
 
-        for i in 0..=len1 {
-            matrix[i][0] = i;
+        for (i, row) in matrix.iter_mut().enumerate().take(len1 + 1) {
+            row[0] = i;
         }
         for j in 0..=len2 {
             matrix[0][j] = j;
@@ -346,10 +365,10 @@ impl PredictiveTextEngine {
                 let cost = if c1 == c2 { 0 } else { 1 };
                 matrix[i + 1][j + 1] = std::cmp::min(
                     std::cmp::min(
-                        matrix[i][j + 1] + 1,     // deletion
-                        matrix[i + 1][j] + 1,     // insertion
+                        matrix[i][j + 1] + 1, // deletion
+                        matrix[i + 1][j] + 1, // insertion
                     ),
-                    matrix[i][j] + cost,          // substitution
+                    matrix[i][j] + cost, // substitution
                 );
             }
         }
@@ -360,7 +379,7 @@ impl PredictiveTextEngine {
     /// Update language model with new input
     async fn update_model(&self, input: &str, is_command: bool) -> Result<(), AppError> {
         let mut model = self.model.write().await;
-        
+
         if is_command {
             // Update command patterns
             let command_prefix = if input.starts_with('/') {
@@ -370,8 +389,9 @@ impl PredictiveTextEngine {
             } else {
                 "cmd"
             };
-            
-            model.command_patterns
+
+            model
+                .command_patterns
                 .entry(command_prefix.to_string())
                 .or_insert_with(Vec::new)
                 .push(input.to_string());
@@ -396,48 +416,94 @@ impl PredictiveTextEngine {
     /// Initialize default patterns
     async fn initialize_default_patterns(&self) -> Result<(), AppError> {
         let mut model = self.model.write().await;
-        
+
         // Common words
         let common_words = vec![
-            ("the", 1000), ("and", 800), ("for", 600), ("are", 500), ("but", 400),
-            ("not", 350), ("you", 300), ("all", 250), ("can", 200), ("had", 150),
-            ("her", 120), ("was", 100), ("one", 90), ("our", 80), ("out", 70),
+            ("the", 1000),
+            ("and", 800),
+            ("for", 600),
+            ("are", 500),
+            ("but", 400),
+            ("not", 350),
+            ("you", 300),
+            ("all", 250),
+            ("can", 200),
+            ("had", 150),
+            ("her", 120),
+            ("was", 100),
+            ("one", 90),
+            ("our", 80),
+            ("out", 70),
         ];
-        
+
         for (word, freq) in common_words {
             model.word_frequencies.insert(word.to_string(), freq);
         }
 
         // Common commands
         let voice_commands = vec![
-            "/play", "/pause", "/stop", "/next", "/previous", "/volume", "/mute",
-            "/open", "/close", "/save", "/delete", "/copy", "/paste", "/undo", "/redo",
+            "/play",
+            "/pause",
+            "/stop",
+            "/next",
+            "/previous",
+            "/volume",
+            "/mute",
+            "/open",
+            "/close",
+            "/save",
+            "/delete",
+            "/copy",
+            "/paste",
+            "/undo",
+            "/redo",
         ];
-        
-        model.command_patterns.insert("/".to_string(), voice_commands.iter().map(|s| s.to_string()).collect());
+
+        model.command_patterns.insert(
+            "/".to_string(),
+            voice_commands.iter().map(|s| s.to_string()).collect(),
+        );
 
         // Gesture commands
-        let gesture_commands = vec![
-            "!tap", "!double_tap", "!swipe_left", "!swipe_right", "!swipe_up", "!swipe_down",
-            "!pinch", "!zoom", "!rotate", "!hold", "!release",
+        let gesture_commands = [
+            "!tap",
+            "!double_tap",
+            "!swipe_left",
+            "!swipe_right",
+            "!swipe_up",
+            "!swipe_down",
+            "!pinch",
+            "!zoom",
+            "!rotate",
+            "!hold",
+            "!release",
         ];
-        
-        model.command_patterns.insert("!".to_string(), gesture_commands.iter().map(|s| s.to_string()).collect());
+
+        model.command_patterns.insert(
+            "!".to_string(),
+            gesture_commands.iter().map(|s| s.to_string()).collect(),
+        );
 
         // Context suggestions
-        model.context_suggestions.insert("voice".to_string(), vec![
-            "speak louder".to_string(),
-            "repeat that".to_string(),
-            "what did you say".to_string(),
-            "I didn't understand".to_string(),
-        ]);
+        model.context_suggestions.insert(
+            "voice".to_string(),
+            vec![
+                "speak louder".to_string(),
+                "repeat that".to_string(),
+                "what did you say".to_string(),
+                "I didn't understand".to_string(),
+            ],
+        );
 
-        model.context_suggestions.insert("gesture".to_string(), vec![
-            "try again".to_string(),
-            "gesture not recognized".to_string(),
-            "please repeat gesture".to_string(),
-            "calibrate ring".to_string(),
-        ]);
+        model.context_suggestions.insert(
+            "gesture".to_string(),
+            vec![
+                "try again".to_string(),
+                "gesture not recognized".to_string(),
+                "please repeat gesture".to_string(),
+                "calibrate ring".to_string(),
+            ],
+        );
 
         tracing::info!("Initialized predictive text with default patterns");
         Ok(())
@@ -475,9 +541,9 @@ impl PredictiveTextEngine {
         drop(model);
         drop(user_history);
         drop(command_history);
-        
+
         self.initialize_default_patterns().await?;
-        
+
         tracing::info!("Cleared all learning data and reinitialized defaults");
         Ok(())
     }
@@ -505,40 +571,42 @@ impl PredictiveTextEngine {
         let mut user_history = self.user_history.write().await;
         let mut command_history = self.command_history.write().await;
 
-        if let Some(word_freq) = data.get("word_frequencies") {
-            if let Ok(freq_map) = serde_json::from_value::<HashMap<String, u32>>(word_freq.clone()) {
-                model.word_frequencies = freq_map;
-            }
+        if let Some(word_freq) = data.get("word_frequencies")
+            && let Ok(freq_map) = serde_json::from_value::<HashMap<String, u32>>(word_freq.clone())
+        {
+            model.word_frequencies = freq_map;
         }
 
-        if let Some(ngrams) = data.get("ngrams") {
-            if let Ok(ngram_map) = serde_json::from_value::<HashMap<String, u32>>(ngrams.clone()) {
-                model.ngrams = ngram_map;
-            }
+        if let Some(ngrams) = data.get("ngrams")
+            && let Ok(ngram_map) = serde_json::from_value::<HashMap<String, u32>>(ngrams.clone())
+        {
+            model.ngrams = ngram_map;
         }
 
-        if let Some(commands) = data.get("command_patterns") {
-            if let Ok(cmd_map) = serde_json::from_value::<HashMap<String, Vec<String>>>(commands.clone()) {
-                model.command_patterns = cmd_map;
-            }
+        if let Some(commands) = data.get("command_patterns")
+            && let Ok(cmd_map) =
+                serde_json::from_value::<HashMap<String, Vec<String>>>(commands.clone())
+        {
+            model.command_patterns = cmd_map;
         }
 
-        if let Some(context) = data.get("context_suggestions") {
-            if let Ok(ctx_map) = serde_json::from_value::<HashMap<String, Vec<String>>>(context.clone()) {
-                model.context_suggestions = ctx_map;
-            }
+        if let Some(context) = data.get("context_suggestions")
+            && let Ok(ctx_map) =
+                serde_json::from_value::<HashMap<String, Vec<String>>>(context.clone())
+        {
+            model.context_suggestions = ctx_map;
         }
 
-        if let Some(user_hist) = data.get("user_history") {
-            if let Ok(hist_vec) = serde_json::from_value::<Vec<String>>(user_hist.clone()) {
-                *user_history = hist_vec.into();
-            }
+        if let Some(user_hist) = data.get("user_history")
+            && let Ok(hist_vec) = serde_json::from_value::<Vec<String>>(user_hist.clone())
+        {
+            *user_history = hist_vec.into();
         }
 
-        if let Some(cmd_hist) = data.get("command_history") {
-            if let Ok(hist_vec) = serde_json::from_value::<Vec<String>>(cmd_hist.clone()) {
-                *command_history = hist_vec.into();
-            }
+        if let Some(cmd_hist) = data.get("command_history")
+            && let Ok(hist_vec) = serde_json::from_value::<Vec<String>>(cmd_hist.clone())
+        {
+            *command_history = hist_vec.into();
         }
 
         tracing::info!("Imported predictive text model");
@@ -547,13 +615,14 @@ impl PredictiveTextEngine {
 }
 
 /// Global predictive text engine instance
-static PREDICTIVE_TEXT_ENGINE: tokio::sync::OnceCell<PredictiveTextEngine> = tokio::sync::OnceCell::const_new();
+static PREDICTIVE_TEXT_ENGINE: tokio::sync::OnceCell<PredictiveTextEngine> =
+    tokio::sync::OnceCell::const_new();
 
 /// Get the global predictive text engine
 pub async fn get_predictive_text_engine() -> &'static PredictiveTextEngine {
-    PREDICTIVE_TEXT_ENGINE.get_or_init(|| async {
-        PredictiveTextEngine::new(1000, 0.3)
-    }).await
+    PREDICTIVE_TEXT_ENGINE
+        .get_or_init(|| async { PredictiveTextEngine::new(1000, 0.3) })
+        .await
 }
 
 #[cfg(test)]
@@ -563,16 +632,18 @@ mod tests {
     #[tokio::test]
     async fn test_word_completion() {
         let engine = PredictiveTextEngine::new(100, 0.1);
-        
+
         // Learn some words
         engine.learn_from_input("hello world", false).await.unwrap();
         engine.learn_from_input("hello there", false).await.unwrap();
-        
+
         // Test prediction
         let result = engine.predict("hel", None).await.unwrap();
         assert!(!result.suggestions.is_empty());
-        
-        let hello_suggestions: Vec<_> = result.suggestions.iter()
+
+        let hello_suggestions: Vec<_> = result
+            .suggestions
+            .iter()
             .filter(|s| s.text.starts_with("hello"))
             .collect();
         assert!(!hello_suggestions.is_empty());
@@ -581,12 +652,17 @@ mod tests {
     #[tokio::test]
     async fn test_command_completion() {
         let engine = PredictiveTextEngine::new(100, 0.1);
-        
+
+        // Wait a bit for background initialization to complete
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
         // Test command prediction
         let result = engine.predict("/pl", None).await.unwrap();
         assert!(!result.suggestions.is_empty());
-        
-        let play_suggestions: Vec<_> = result.suggestions.iter()
+
+        let play_suggestions: Vec<_> = result
+            .suggestions
+            .iter()
             .filter(|s| s.text == "/play")
             .collect();
         assert!(!play_suggestions.is_empty());
@@ -595,18 +671,21 @@ mod tests {
     #[tokio::test]
     async fn test_learning() {
         let engine = PredictiveTextEngine::new(100, 0.1);
-        
+
         // Learn from input
-        engine.learn_from_input("machine learning is awesome", false).await.unwrap();
-        
+        engine
+            .learn_from_input("machine learning is awesome", false)
+            .await
+            .unwrap();
+
         let stats = engine.get_stats().await;
         assert!(stats["word_count"].as_u64().unwrap() > 0);
     }
 
-    #[test]
-    fn test_edit_distance() {
+    #[tokio::test]
+    async fn test_edit_distance() {
         let engine = PredictiveTextEngine::new(100, 0.1);
-        
+
         assert_eq!(engine.calculate_edit_distance("hello", "hello"), 0);
         assert_eq!(engine.calculate_edit_distance("hello", "helo"), 1);
         assert_eq!(engine.calculate_edit_distance("hello", "world"), 4);

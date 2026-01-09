@@ -3,10 +3,10 @@
 
 #[allow(unused_imports)]
 use crate::AppError;
-use std::collections::{HashMap, BTreeMap};
+use chrono::Timelike;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use chrono::Timelike;
 
 /// Usage event types
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -153,7 +153,7 @@ impl UsageAnalytics {
     /// Track a usage event
     pub async fn track_event(&self, mut event: UsageEvent) -> Result<(), AppError> {
         let config = self.config.read().await;
-        
+
         if !config.enable_collection || config.privacy_mode == PrivacyMode::Disabled {
             return Ok(());
         }
@@ -185,7 +185,11 @@ impl UsageAnalytics {
     }
 
     /// Track app launch
-    pub async fn track_app_launch(&self, session_id: String, user_id: Option<String>) -> Result<(), AppError> {
+    pub async fn track_app_launch(
+        &self,
+        session_id: String,
+        user_id: Option<String>,
+    ) -> Result<(), AppError> {
         let event = UsageEvent {
             event_id: uuid::Uuid::new_v4().to_string(),
             event_type: EventType::AppLaunch,
@@ -193,8 +197,14 @@ impl UsageAnalytics {
             user_id,
             session_id,
             properties: HashMap::from([
-                ("version".to_string(), serde_json::Value::String("1.0.0".to_string())),
-                ("platform".to_string(), serde_json::Value::String(std::env::consts::OS.to_string())),
+                (
+                    "version".to_string(),
+                    serde_json::Value::String("1.0.0".to_string()),
+                ),
+                (
+                    "platform".to_string(),
+                    serde_json::Value::String(std::env::consts::OS.to_string()),
+                ),
             ]),
             duration_ms: None,
         };
@@ -203,8 +213,14 @@ impl UsageAnalytics {
     }
 
     /// Track voice command
-    pub async fn track_voice_command(&self, session_id: String, user_id: Option<String>, 
-                                   command: &str, confidence: f32, processing_time_ms: u64) -> Result<(), AppError> {
+    pub async fn track_voice_command(
+        &self,
+        session_id: String,
+        user_id: Option<String>,
+        command: &str,
+        confidence: f32,
+        processing_time_ms: u64,
+    ) -> Result<(), AppError> {
         let event = UsageEvent {
             event_id: uuid::Uuid::new_v4().to_string(),
             event_type: EventType::VoiceCommand,
@@ -212,9 +228,20 @@ impl UsageAnalytics {
             user_id,
             session_id,
             properties: HashMap::from([
-                ("command_length".to_string(), serde_json::Value::Number(serde_json::Number::from(command.len()))),
-                ("confidence".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(confidence as f64).unwrap())),
-                ("processing_time_ms".to_string(), serde_json::Value::Number(serde_json::Number::from(processing_time_ms))),
+                (
+                    "command_length".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(command.len())),
+                ),
+                (
+                    "confidence".to_string(),
+                    serde_json::Value::Number(
+                        serde_json::Number::from_f64(confidence as f64).unwrap(),
+                    ),
+                ),
+                (
+                    "processing_time_ms".to_string(),
+                    serde_json::Value::Number(serde_json::Number::from(processing_time_ms)),
+                ),
             ]),
             duration_ms: Some(processing_time_ms),
         };
@@ -223,8 +250,13 @@ impl UsageAnalytics {
     }
 
     /// Track gesture
-    pub async fn track_gesture(&self, session_id: String, user_id: Option<String>, 
-                             gesture_type: &str, confidence: f32) -> Result<(), AppError> {
+    pub async fn track_gesture(
+        &self,
+        session_id: String,
+        user_id: Option<String>,
+        gesture_type: &str,
+        confidence: f32,
+    ) -> Result<(), AppError> {
         let event = UsageEvent {
             event_id: uuid::Uuid::new_v4().to_string(),
             event_type: EventType::GesturePerformed,
@@ -232,8 +264,16 @@ impl UsageAnalytics {
             user_id,
             session_id,
             properties: HashMap::from([
-                ("gesture_type".to_string(), serde_json::Value::String(gesture_type.to_string())),
-                ("confidence".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(confidence as f64).unwrap())),
+                (
+                    "gesture_type".to_string(),
+                    serde_json::Value::String(gesture_type.to_string()),
+                ),
+                (
+                    "confidence".to_string(),
+                    serde_json::Value::Number(
+                        serde_json::Number::from_f64(confidence as f64).unwrap(),
+                    ),
+                ),
             ]),
             duration_ms: None,
         };
@@ -242,8 +282,13 @@ impl UsageAnalytics {
     }
 
     /// Track error
-    pub async fn track_error(&self, session_id: String, user_id: Option<String>, 
-                           error_type: &str, error_message: &str) -> Result<(), AppError> {
+    pub async fn track_error(
+        &self,
+        session_id: String,
+        user_id: Option<String>,
+        error_type: &str,
+        error_message: &str,
+    ) -> Result<(), AppError> {
         let event = UsageEvent {
             event_id: uuid::Uuid::new_v4().to_string(),
             event_type: EventType::ErrorOccurred,
@@ -251,8 +296,14 @@ impl UsageAnalytics {
             user_id,
             session_id,
             properties: HashMap::from([
-                ("error_type".to_string(), serde_json::Value::String(error_type.to_string())),
-                ("error_message".to_string(), serde_json::Value::String(error_message.to_string())),
+                (
+                    "error_type".to_string(),
+                    serde_json::Value::String(error_type.to_string()),
+                ),
+                (
+                    "error_message".to_string(),
+                    serde_json::Value::String(error_message.to_string()),
+                ),
             ]),
             duration_ms: None,
         };
@@ -261,13 +312,17 @@ impl UsageAnalytics {
     }
 
     /// Generate analytics insights
-    pub async fn generate_insights(&self, days_back: Option<i64>) -> Result<AnalyticsInsights, AppError> {
+    pub async fn generate_insights(
+        &self,
+        days_back: Option<i64>,
+    ) -> Result<AnalyticsInsights, AppError> {
         let days = days_back.unwrap_or(7);
         let start_time = chrono::Utc::now() - chrono::Duration::days(days);
         let end_time = chrono::Utc::now();
 
         let events = self.events.read().await;
-        let filtered_events: Vec<&UsageEvent> = events.iter()
+        let filtered_events: Vec<&UsageEvent> = events
+            .iter()
             .filter(|e| e.timestamp >= start_time && e.timestamp <= end_time)
             .collect();
 
@@ -306,11 +361,13 @@ impl UsageAnalytics {
 
         // Basic metrics
         let total_events = filtered_events.len();
-        let unique_users = filtered_events.iter()
+        let unique_users = filtered_events
+            .iter()
             .filter_map(|e| e.user_id.as_ref())
             .collect::<std::collections::HashSet<_>>()
             .len();
-        let unique_sessions = filtered_events.iter()
+        let unique_sessions = filtered_events
+            .iter()
             .map(|e| &e.session_id)
             .collect::<std::collections::HashSet<_>>()
             .len();
@@ -335,10 +392,10 @@ impl UsageAnalytics {
 
         // Usage patterns
         let usage_patterns = self.analyze_usage_patterns(&filtered_events).await;
-        
+
         // Performance metrics
         let performance_metrics = self.analyze_performance(&filtered_events).await;
-        
+
         // Error analysis
         let error_analysis = self.analyze_errors(&filtered_events).await;
 
@@ -372,7 +429,7 @@ impl UsageAnalytics {
             let hour = event.timestamp.hour() as u8;
             *hour_counts.entry(hour).or_insert(0) += 1;
         }
-        
+
         let mut peak_hours: Vec<(u8, usize)> = hour_counts.into_iter().collect();
         peak_hours.sort_by(|a, b| b.1.cmp(&a.1));
         let peak_usage_hours = peak_hours.into_iter().take(3).map(|(h, _)| h).collect();
@@ -380,7 +437,8 @@ impl UsageAnalytics {
         // Session duration analysis
         let sessions = self.session_cache.read().await;
         let avg_duration = if !sessions.is_empty() {
-            let total_duration: i64 = sessions.values()
+            let total_duration: i64 = sessions
+                .values()
                 .map(|s| (s.last_activity - s.start_time).num_minutes())
                 .sum();
             total_duration as f64 / sessions.len() as f64
@@ -391,22 +449,28 @@ impl UsageAnalytics {
         // Gesture analysis
         let mut gesture_counts = HashMap::new();
         for event in events {
-            if let EventType::GesturePerformed = event.event_type {
-                if let Some(gesture_type) = event.properties.get("gesture_type") {
-                    if let Some(gesture_str) = gesture_type.as_str() {
-                        *gesture_counts.entry(gesture_str.to_string()).or_insert(0) += 1;
-                    }
-                }
+            if let EventType::GesturePerformed = event.event_type
+                && let Some(gesture_type) = event.properties.get("gesture_type")
+                && let Some(gesture_str) = gesture_type.as_str()
+            {
+                *gesture_counts.entry(gesture_str.to_string()).or_insert(0) += 1;
             }
         }
-        
+
         let mut most_common_gestures: Vec<(String, usize)> = gesture_counts.into_iter().collect();
         most_common_gestures.sort_by(|a, b| b.1.cmp(&a.1));
         most_common_gestures.truncate(5);
 
         // Voice command frequency
-        let voice_commands = events.iter().filter(|e| matches!(e.event_type, EventType::VoiceCommand)).count();
-        let unique_sessions = events.iter().map(|e| &e.session_id).collect::<std::collections::HashSet<_>>().len();
+        let voice_commands = events
+            .iter()
+            .filter(|e| matches!(e.event_type, EventType::VoiceCommand))
+            .count();
+        let unique_sessions = events
+            .iter()
+            .map(|e| &e.session_id)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
         let voice_command_frequency = if unique_sessions > 0 {
             voice_commands as f64 / unique_sessions as f64
         } else {
@@ -433,13 +497,13 @@ impl UsageAnalytics {
                 response_times.push(duration as f64);
             }
 
-            if let Some(confidence) = event.properties.get("confidence") {
-                if let Some(conf_val) = confidence.as_f64() {
-                    match event.event_type {
-                        EventType::GesturePerformed => gesture_confidences.push(conf_val),
-                        EventType::VoiceCommand => voice_confidences.push(conf_val),
-                        _ => {}
-                    }
+            if let Some(confidence) = event.properties.get("confidence")
+                && let Some(conf_val) = confidence.as_f64()
+            {
+                match event.event_type {
+                    EventType::GesturePerformed => gesture_confidences.push(conf_val),
+                    EventType::VoiceCommand => voice_confidences.push(conf_val),
+                    _ => {}
                 }
             }
         }
@@ -463,8 +527,11 @@ impl UsageAnalytics {
         };
 
         // System stability (1 - error_rate)
-        let error_count = events.iter().filter(|e| matches!(e.event_type, EventType::ErrorOccurred)).count();
-        let stability_score = if events.len() > 0 {
+        let error_count = events
+            .iter()
+            .filter(|e| matches!(e.event_type, EventType::ErrorOccurred))
+            .count();
+        let stability_score = if !events.is_empty() {
             1.0 - (error_count as f64 / events.len() as f64)
         } else {
             1.0
@@ -480,13 +547,18 @@ impl UsageAnalytics {
 
     /// Analyze errors
     async fn analyze_errors(&self, events: &[&UsageEvent]) -> ErrorAnalysis {
-        let error_events: Vec<&UsageEvent> = events.iter()
+        let error_events: Vec<&UsageEvent> = events
+            .iter()
             .filter(|e| matches!(e.event_type, EventType::ErrorOccurred))
             .cloned()
             .collect();
 
         let total_errors = error_events.len();
-        let unique_sessions = events.iter().map(|e| &e.session_id).collect::<std::collections::HashSet<_>>().len();
+        let unique_sessions = events
+            .iter()
+            .map(|e| &e.session_id)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
         let error_rate = if unique_sessions > 0 {
             total_errors as f64 / unique_sessions as f64
         } else {
@@ -496,10 +568,10 @@ impl UsageAnalytics {
         // Most common errors
         let mut error_counts = HashMap::new();
         for event in &error_events {
-            if let Some(error_type) = event.properties.get("error_type") {
-                if let Some(error_str) = error_type.as_str() {
-                    *error_counts.entry(error_str.to_string()).or_insert(0) += 1;
-                }
+            if let Some(error_type) = event.properties.get("error_type")
+                && let Some(error_str) = error_type.as_str()
+            {
+                *error_counts.entry(error_str.to_string()).or_insert(0) += 1;
             }
         }
 
@@ -514,7 +586,8 @@ impl UsageAnalytics {
             *daily_errors.entry(date).or_insert(0) += 1;
         }
 
-        let error_trends: Vec<(chrono::DateTime<chrono::Utc>, usize)> = daily_errors.into_iter()
+        let error_trends: Vec<(chrono::DateTime<chrono::Utc>, usize)> = daily_errors
+            .into_iter()
             .map(|(date, count)| (date.and_hms_opt(0, 0, 0).unwrap().and_utc(), count))
             .collect();
 
@@ -529,16 +602,17 @@ impl UsageAnalytics {
     /// Update session information
     async fn update_session_info(&self, event: &UsageEvent) {
         let mut sessions = self.session_cache.write().await;
-        
-        let session_info = sessions.entry(event.session_id.clone()).or_insert_with(|| {
-            SessionInfo {
-                session_id: event.session_id.clone(),
-                user_id: event.user_id.clone(),
-                start_time: event.timestamp,
-                last_activity: event.timestamp,
-                event_count: 0,
-            }
-        });
+
+        let session_info =
+            sessions
+                .entry(event.session_id.clone())
+                .or_insert_with(|| SessionInfo {
+                    session_id: event.session_id.clone(),
+                    user_id: event.user_id.clone(),
+                    start_time: event.timestamp,
+                    last_activity: event.timestamp,
+                    event_count: 0,
+                });
 
         session_info.last_activity = event.timestamp;
         session_info.event_count += 1;
@@ -555,10 +629,10 @@ impl UsageAnalytics {
 
         // In a real implementation, this would write to a database or file
         tracing::info!("Flushing {} analytics events", events.len());
-        
+
         // Clear events after flushing
         events.clear();
-        
+
         let mut last_flush = self.last_flush.write().await;
         *last_flush = chrono::Utc::now();
 
@@ -569,17 +643,17 @@ impl UsageAnalytics {
     pub async fn cleanup_old_data(&self) -> Result<usize, AppError> {
         let config = self.config.read().await;
         let cutoff_date = chrono::Utc::now() - chrono::Duration::days(config.retention_days);
-        
+
         let mut events = self.events.write().await;
         let initial_count = events.len();
-        
+
         events.retain(|event| event.timestamp > cutoff_date);
-        
+
         let removed_count = initial_count - events.len();
         if removed_count > 0 {
             tracing::info!("Cleaned up {} old analytics events", removed_count);
         }
-        
+
         Ok(removed_count)
     }
 
@@ -607,9 +681,9 @@ static USAGE_ANALYTICS: tokio::sync::OnceCell<UsageAnalytics> = tokio::sync::Onc
 
 /// Get the global usage analytics
 pub async fn get_usage_analytics() -> &'static UsageAnalytics {
-    USAGE_ANALYTICS.get_or_init(|| async {
-        UsageAnalytics::new(AnalyticsConfig::default())
-    }).await
+    USAGE_ANALYTICS
+        .get_or_init(|| async { UsageAnalytics::new(AnalyticsConfig::default()) })
+        .await
 }
 
 #[cfg(test)]
@@ -618,11 +692,30 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_tracking() {
-        let analytics = UsageAnalytics::new(AnalyticsConfig::default());
-        
-        analytics.track_app_launch("session1".to_string(), Some("user1".to_string())).await.unwrap();
-        analytics.track_voice_command("session1".to_string(), Some("user1".to_string()), "test command", 0.9, 100).await.unwrap();
-        
+        // Use Full privacy mode to preserve user_id for testing
+        let config = AnalyticsConfig {
+            enable_collection: true,
+            anonymize_data: false,
+            privacy_mode: PrivacyMode::Full,
+            ..Default::default()
+        };
+        let analytics = UsageAnalytics::new(config);
+
+        analytics
+            .track_app_launch("session1".to_string(), Some("user1".to_string()))
+            .await
+            .unwrap();
+        analytics
+            .track_voice_command(
+                "session1".to_string(),
+                Some("user1".to_string()),
+                "test command",
+                0.9,
+                100,
+            )
+            .await
+            .unwrap();
+
         let insights = analytics.generate_insights(Some(1)).await.unwrap();
         assert_eq!(insights.total_events, 2);
         assert_eq!(insights.unique_users, 1);
@@ -630,11 +723,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_privacy_mode() {
-        let mut config = AnalyticsConfig::default();
-        config.privacy_mode = PrivacyMode::Anonymous;
-        
+        let config = AnalyticsConfig {
+            privacy_mode: PrivacyMode::Anonymous,
+            ..Default::default()
+        };
+
         let analytics = UsageAnalytics::new(config);
-        
+
         let event = UsageEvent {
             event_id: "test".to_string(),
             event_type: EventType::VoiceCommand,
@@ -644,9 +739,9 @@ mod tests {
             properties: HashMap::new(),
             duration_ms: None,
         };
-        
+
         analytics.track_event(event.clone()).await.unwrap();
-        
+
         // User ID should be anonymized
         let events = analytics.events.read().await;
         assert!(events[0].user_id.is_none());
@@ -655,17 +750,20 @@ mod tests {
     #[tokio::test]
     async fn test_insights_generation() {
         let analytics = UsageAnalytics::new(AnalyticsConfig::default());
-        
+
         // Add some test events
         for i in 0..10 {
-            analytics.track_gesture(
-                "session1".to_string(),
-                Some("user1".to_string()),
-                "tap",
-                0.8 + (i as f32 * 0.01)
-            ).await.unwrap();
+            analytics
+                .track_gesture(
+                    "session1".to_string(),
+                    Some("user1".to_string()),
+                    "tap",
+                    0.8 + (i as f32 * 0.01),
+                )
+                .await
+                .unwrap();
         }
-        
+
         let insights = analytics.generate_insights(Some(1)).await.unwrap();
         assert_eq!(insights.total_events, 10);
         assert!(insights.performance_metrics.gesture_recognition_accuracy > 0.8);

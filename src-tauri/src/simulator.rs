@@ -1,14 +1,13 @@
+use crate::ble::{BleEvent, RingManager, SimulatorStatus, TestHapticPattern};
 /// Haptic Harmony Ring Simulator Support Module
-/// 
+///
 /// This module provides enhanced support for Haptic Harmony Ring simulators,
 /// including auto-discovery, health monitoring, and development workflow integration.
-
 use crate::{AppError, config::DeveloperSettings};
-use crate::ble::{BleEvent, SimulatorStatus, TestHapticPattern, RingManager};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast};
-use serde::{Serialize, Deserialize};
 
 /// Simulator discovery and management service
 pub struct SimulatorManager {
@@ -77,7 +76,10 @@ impl SimulatorManager {
     pub async fn start(&mut self) -> Result<(), AppError> {
         let (enable_simulators, auto_discover) = {
             let settings = self.settings.read().await;
-            (settings.enable_simulators, settings.auto_discover_simulators)
+            (
+                settings.enable_simulators,
+                settings.auto_discover_simulators,
+            )
         };
 
         if !enable_simulators {
@@ -110,12 +112,16 @@ impl SimulatorManager {
     async fn start_auto_discovery(&self) -> Result<(), AppError> {
         let settings = self.settings.read().await;
         let (start_port, end_port) = settings.simulator.discovery_port_range;
-        
-        tracing::info!("Starting simulator auto-discovery on ports {}-{}", start_port, end_port);
+
+        tracing::info!(
+            "Starting simulator auto-discovery on ports {}-{}",
+            start_port,
+            end_port
+        );
 
         // Scan for simulators
         let simulators = self.ring_manager.scan_for_simulators().await?;
-        
+
         for simulator_id in simulators {
             self.register_simulator(simulator_id).await?;
         }
@@ -126,7 +132,7 @@ impl SimulatorManager {
     /// Register a new simulator
     async fn register_simulator(&self, device_id: String) -> Result<(), AppError> {
         let settings = self.settings.read().await;
-        
+
         let simulator_info = SimulatorInfo {
             device_id: device_id.clone(),
             device_name: settings.simulator.device_name_pattern.clone(),
@@ -142,7 +148,9 @@ impl SimulatorManager {
         }
 
         // Emit simulator found event
-        let _ = self.event_tx.send(BleEvent::SimulatorFound(device_id.clone()));
+        let _ = self
+            .event_tx
+            .send(BleEvent::SimulatorFound(device_id.clone()));
 
         // Auto-connect if enabled
         if settings.simulator.auto_connect {
@@ -184,13 +192,18 @@ impl SimulatorManager {
                             if let Some(info) = simulators.get_mut(&device_id) {
                                 info.status = status.clone();
                                 info.last_health_check = chrono::Utc::now();
-                                info.metrics.uptime_seconds = 
-                                    (chrono::Utc::now() - info.connection_time).num_seconds() as u64;
+                                info.metrics.uptime_seconds =
+                                    (chrono::Utc::now() - info.connection_time).num_seconds()
+                                        as u64;
                             }
                             let _ = event_tx.send(BleEvent::SimulatorStatus(device_id, status));
                         }
                         Err(e) => {
-                            tracing::warn!("Health check failed for simulator {}: {}", device_id, e);
+                            tracing::warn!(
+                                "Health check failed for simulator {}: {}",
+                                device_id,
+                                e
+                            );
                         }
                     }
                 }
@@ -208,7 +221,7 @@ impl SimulatorManager {
     /// Reset a specific simulator
     pub async fn reset_simulator(&self, device_id: &str) -> Result<(), AppError> {
         self.ring_manager.reset_simulator(device_id).await?;
-        
+
         // Update simulator info
         let mut simulators = self.simulators.write().await;
         if let Some(info) = simulators.get_mut(device_id) {
@@ -220,9 +233,15 @@ impl SimulatorManager {
     }
 
     /// Send test haptic pattern to simulator
-    pub async fn send_test_haptic(&self, device_id: &str, pattern: TestHapticPattern) -> Result<(), AppError> {
-        self.ring_manager.send_test_haptic(device_id, pattern).await?;
-        
+    pub async fn send_test_haptic(
+        &self,
+        device_id: &str,
+        pattern: TestHapticPattern,
+    ) -> Result<(), AppError> {
+        self.ring_manager
+            .send_test_haptic(device_id, pattern)
+            .await?;
+
         // Update metrics
         let mut simulators = self.simulators.write().await;
         if let Some(info) = simulators.get_mut(device_id) {
@@ -249,7 +268,7 @@ impl SimulatorManager {
             if let Some(latency) = latency_ms {
                 info.metrics.latency_ms = Some(latency);
             }
-            info.metrics.uptime_seconds = 
+            info.metrics.uptime_seconds =
                 (chrono::Utc::now() - info.connection_time).num_seconds() as u64;
         }
     }
@@ -275,49 +294,81 @@ impl SimulatorTester {
 
     /// Run comprehensive simulator tests
     pub async fn run_comprehensive_test(&self, device_id: &str) -> Result<TestResults, AppError> {
-        let mut results = TestResults::default();
-
-        // Test connectivity
-        results.connectivity = self.test_connectivity(device_id).await?;
-
-        // Test latency
-        results.latency_ms = self.test_latency(device_id).await?;
-
-        // Test haptic patterns
-        results.haptic_tests = self.test_haptic_patterns(device_id).await?;
+        let results = TestResults {
+            connectivity: self.test_connectivity(device_id).await?,
+            latency_ms: self.test_latency(device_id).await?,
+            haptic_tests: self.test_haptic_patterns(device_id).await?,
+        };
 
         Ok(results)
     }
 
     async fn test_connectivity(&self, device_id: &str) -> Result<bool, AppError> {
-        self.manager.send_test_haptic(device_id, TestHapticPattern::ConnectivityTest).await?;
+        self.manager
+            .send_test_haptic(device_id, TestHapticPattern::ConnectivityTest)
+            .await?;
         Ok(true)
     }
 
     async fn test_latency(&self, device_id: &str) -> Result<f64, AppError> {
         let start = std::time::Instant::now();
-        self.manager.send_test_haptic(device_id, TestHapticPattern::LatencyTest).await?;
+        self.manager
+            .send_test_haptic(device_id, TestHapticPattern::LatencyTest)
+            .await?;
         let latency = start.elapsed().as_millis() as f64;
-        
+
         self.manager.update_metrics(device_id, Some(latency)).await;
         Ok(latency)
     }
 
-    async fn test_haptic_patterns(&self, device_id: &str) -> Result<Vec<HapticTestResult>, AppError> {
+    async fn test_haptic_patterns(
+        &self,
+        device_id: &str,
+    ) -> Result<Vec<HapticTestResult>, AppError> {
         let mut results = Vec::new();
 
         // Test intensity range
-        let intensity_test = TestHapticPattern::IntensityTest { min: 0.1, max: 1.0, steps: 10 };
-        match self.manager.send_test_haptic(device_id, intensity_test).await {
-            Ok(_) => results.push(HapticTestResult { pattern: "IntensityTest".to_string(), success: true, error: None }),
-            Err(e) => results.push(HapticTestResult { pattern: "IntensityTest".to_string(), success: false, error: Some(e.to_string()) }),
+        let intensity_test = TestHapticPattern::IntensityTest {
+            min: 0.1,
+            max: 1.0,
+            steps: 10,
+        };
+        match self
+            .manager
+            .send_test_haptic(device_id, intensity_test)
+            .await
+        {
+            Ok(_) => results.push(HapticTestResult {
+                pattern: "IntensityTest".to_string(),
+                success: true,
+                error: None,
+            }),
+            Err(e) => results.push(HapticTestResult {
+                pattern: "IntensityTest".to_string(),
+                success: false,
+                error: Some(e.to_string()),
+            }),
         }
 
         // Test duration patterns
-        let duration_test = TestHapticPattern::DurationTest { durations: vec![100, 200, 500, 1000] };
-        match self.manager.send_test_haptic(device_id, duration_test).await {
-            Ok(_) => results.push(HapticTestResult { pattern: "DurationTest".to_string(), success: true, error: None }),
-            Err(e) => results.push(HapticTestResult { pattern: "DurationTest".to_string(), success: false, error: Some(e.to_string()) }),
+        let duration_test = TestHapticPattern::DurationTest {
+            durations: vec![100, 200, 500, 1000],
+        };
+        match self
+            .manager
+            .send_test_haptic(device_id, duration_test)
+            .await
+        {
+            Ok(_) => results.push(HapticTestResult {
+                pattern: "DurationTest".to_string(),
+                success: true,
+                error: None,
+            }),
+            Err(e) => results.push(HapticTestResult {
+                pattern: "DurationTest".to_string(),
+                success: false,
+                error: Some(e.to_string()),
+            }),
         }
 
         Ok(results)

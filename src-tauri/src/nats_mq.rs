@@ -3,7 +3,7 @@
 //! - Connects a client to NATS and exposes simple publish/subscribe helpers
 
 #[cfg(feature = "nats")]
-use std::process::{Command, Stdio, Child};
+use std::process::{Child, Command, Stdio};
 
 use std::io;
 
@@ -16,23 +16,15 @@ pub type Connection = ();
 /// Connect to NATS server
 #[cfg(feature = "nats")]
 pub async fn connect_nats(url: &str) -> Result<Connection, std::io::Error> {
-    async_nats::connect(url).await.map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e)
-    })
+    async_nats::connect(url)
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e))
 }
 
 #[cfg(not(feature = "nats"))]
 pub async fn connect_nats(_url: &str) -> Result<Connection, std::io::Error> {
     Ok(())
 }
-
-
-
-
-
-
-
-
 
 /// Spawn an embedded NATS server with JetStream enabled.
 /// Returns the child process handle.
@@ -62,15 +54,22 @@ pub fn spawn_nats_server() -> std::io::Result<Child> {
 #[cfg(not(feature = "nats"))]
 pub fn spawn_nats_server() -> std::io::Result<std::process::Child> {
     // Return a dummy child process for compatibility
-    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "NATS feature not enabled"))
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "NATS feature not enabled",
+    ))
 }
 
 /// Find NATS server binary (bundled or system)
 #[cfg(feature = "nats")]
 fn find_nats_binary() -> std::io::Result<String> {
     // Check for bundled binary first
-    if let Ok(exe_dir) = std::env::current_exe().and_then(|p| Ok(p.parent().unwrap().to_path_buf())) {
-        let binary_name = if cfg!(windows) { "nats-server.exe" } else { "nats-server" };
+    if let Ok(exe_dir) = std::env::current_exe().map(|p| p.parent().unwrap().to_path_buf()) {
+        let binary_name = if cfg!(windows) {
+            "nats-server.exe"
+        } else {
+            "nats-server"
+        };
         let bundled_path = exe_dir.join(binary_name);
         if bundled_path.exists() {
             return Ok(bundled_path.to_string_lossy().to_string());
@@ -79,11 +78,22 @@ fn find_nats_binary() -> std::io::Result<String> {
 
     // Check common system locations
     let system_paths = if cfg!(windows) {
-        vec!["nats-server.exe", "C:\\Program Files\\NATS\\nats-server.exe"]
+        vec![
+            "nats-server.exe",
+            "C:\\Program Files\\NATS\\nats-server.exe",
+        ]
     } else if cfg!(target_os = "macos") {
-        vec!["nats-server", "/usr/local/bin/nats-server", "/opt/homebrew/bin/nats-server"]
+        vec![
+            "nats-server",
+            "/usr/local/bin/nats-server",
+            "/opt/homebrew/bin/nats-server",
+        ]
     } else {
-        vec!["nats-server", "/usr/bin/nats-server", "/usr/local/bin/nats-server"]
+        vec![
+            "nats-server",
+            "/usr/bin/nats-server",
+            "/usr/local/bin/nats-server",
+        ]
     };
 
     for path in system_paths {
@@ -125,7 +135,11 @@ fn get_nats_auth_token() -> std::io::Result<String> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let mut hasher = DefaultHasher::new();
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos().hash(&mut hasher);
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .hash(&mut hasher);
         std::process::id().hash(&mut hasher);
 
         let token = format!("gestura_{:x}", hasher.finish());
@@ -197,45 +211,56 @@ VkBPQxB+oqsJAgMBAAECggEABNiODKIXkQYsXkLDcHidFdxoL8UVkBPQxB+oqsJ
     Ok(())
 }
 
-
-
 /// Attempt to connect to NATS, retrying a few times while the server starts.
 #[cfg(feature = "nats")]
 pub async fn connect_with_retry(url: &str) -> Result<Connection, io::Error> {
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
     let mut last_err: Option<io::Error> = None;
     for _ in 0..10 {
         match async_nats::connect(url).await {
             Ok(conn) => return Ok(conn),
             Err(e) => {
-                last_err = Some(io::Error::new(io::ErrorKind::Other, e.to_string()));
+                last_err = Some(io::Error::other(e.to_string()));
                 sleep(Duration::from_millis(200)).await;
             }
         }
     }
-    Err(last_err.unwrap_or_else(|| io::Error::new(io::ErrorKind::Other, "retry failed")))
+    Err(last_err.unwrap_or_else(|| io::Error::other("retry failed")))
 }
 
 /// Fallback when the `nats` feature is disabled: returns an error on connect.
 
 #[cfg(not(feature = "nats"))]
 pub async fn connect_with_retry(_url: &str) -> Result<Connection, io::Error> {
-    Err(io::Error::new(io::ErrorKind::Other, "nats feature disabled"))
+    Err(io::Error::new(
+        io::ErrorKind::Other,
+        "nats feature disabled",
+    ))
 }
 
 /// Publish a JSON payload to a subject.
 #[cfg(feature = "nats")]
-pub async fn publish_json(conn: &Connection, subject: &str, payload: &serde_json::Value) -> Result<(), io::Error> {
+pub async fn publish_json(
+    conn: &Connection,
+    subject: &str,
+    payload: &serde_json::Value,
+) -> Result<(), io::Error> {
     let bytes = bytes::Bytes::from(payload.to_string());
     conn.publish(subject.to_string(), bytes)
         .await
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+        .map_err(|e| io::Error::other(e.to_string()))
 }
 
 /// Fallback publish that is a no-op when `nats` feature is disabled.
 
 #[cfg(not(feature = "nats"))]
-pub async fn publish_json(_conn: &(), _subject: &str, _payload: &serde_json::Value) -> Result<(), io::Error> { Ok(()) }
+pub async fn publish_json(
+    _conn: &(),
+    _subject: &str,
+    _payload: &serde_json::Value,
+) -> Result<(), io::Error> {
+    Ok(())
+}
 
 /// Subscribe to a subject and provide each message as bytes to a handler closure.
 #[cfg(feature = "nats")]
@@ -243,7 +268,10 @@ pub async fn subscribe<F>(conn: &Connection, subject: &str, mut handler: F) -> R
 where
     F: FnMut(Vec<u8>) + Send + 'static,
 {
-    let mut sub = conn.subscribe(subject.to_string()).await.map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let mut sub = conn
+        .subscribe(subject.to_string())
+        .await
+        .map_err(|e| io::Error::other(e.to_string()))?;
     tokio::spawn(async move {
         use futures_util::StreamExt as _;
         while let Some(msg) = sub.next().await {
@@ -268,33 +296,40 @@ pub async fn init_jetstream(conn: &Connection, bucket: &str) -> Result<(), io::E
                 ..Default::default()
             })
             .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
             Ok(())
         }
     }
 }
 
 #[cfg(not(feature = "nats"))]
-pub async fn init_jetstream(_conn: &(), _bucket: &str) -> Result<(), io::Error> { Ok(()) }
+pub async fn init_jetstream(_conn: &(), _bucket: &str) -> Result<(), io::Error> {
+    Ok(())
+}
 #[cfg(not(feature = "nats"))]
 /// Fallback subscribe that is a no-op when `nats` feature is disabled.
 
 pub async fn subscribe<F>(_conn: &(), _subject: &str, _handler: F) -> Result<(), io::Error>
 where
     F: FnMut(Vec<u8>) + Send + 'static,
-{ Ok(()) }
-
+{
+    Ok(())
+}
 
 /// Subscribe to a wildcard subject and forward raw bytes to a handler.
 #[cfg(feature = "nats")]
-pub async fn subscribe_wildcard<F>(conn: &Connection, subject: &str, mut handler: F) -> Result<(), io::Error>
+pub async fn subscribe_wildcard<F>(
+    conn: &Connection,
+    subject: &str,
+    mut handler: F,
+) -> Result<(), io::Error>
 where
     F: FnMut(String, Vec<u8>) + Send + 'static,
 {
     let mut sub = conn
         .subscribe(subject.to_string())
         .await
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| io::Error::other(e.to_string()))?;
     let subject_str = subject.to_string();
     tokio::spawn(async move {
         use futures_util::StreamExt as _;
@@ -309,9 +344,9 @@ where
 pub async fn subscribe_wildcard<F>(_conn: &(), _subject: &str, _handler: F) -> Result<(), io::Error>
 where
     F: FnMut(String, Vec<u8>) + Send + 'static,
-{ Ok(()) }
-
-
+{
+    Ok(())
+}
 
 /// Common subjects used across the app (JetStream suggested)
 pub mod subjects {
@@ -343,7 +378,13 @@ pub struct NatsHealthMonitor {
 impl NatsHealthMonitor {
     pub fn new(connection: Connection) -> (Self, tokio::sync::broadcast::Receiver<bool>) {
         let (health_tx, health_rx) = tokio::sync::broadcast::channel(10);
-        (Self { connection, health_tx }, health_rx)
+        (
+            Self {
+                connection,
+                health_tx,
+            },
+            health_rx,
+        )
     }
 
     /// Start health monitoring
@@ -359,7 +400,10 @@ impl NatsHealthMonitor {
                 interval.tick().await;
 
                 // Test connection with a simple publish
-                match connection.publish(subjects::SYSTEM_HEALTH, bytes::Bytes::from_static(b"ping")).await {
+                match connection
+                    .publish(subjects::SYSTEM_HEALTH, bytes::Bytes::from_static(b"ping"))
+                    .await
+                {
                     Ok(_) => {
                         if consecutive_failures > 0 {
                             tracing::info!("NATS connection recovered");
@@ -369,10 +413,17 @@ impl NatsHealthMonitor {
                     }
                     Err(e) => {
                         consecutive_failures += 1;
-                        tracing::warn!("NATS health check failed ({}): {}", consecutive_failures, e);
+                        tracing::warn!(
+                            "NATS health check failed ({}): {}",
+                            consecutive_failures,
+                            e
+                        );
 
                         if consecutive_failures >= 3 {
-                            tracing::error!("NATS connection unhealthy after {} failures", consecutive_failures);
+                            tracing::error!(
+                                "NATS connection unhealthy after {} failures",
+                                consecutive_failures
+                            );
                             let _ = health_tx.send(false);
                         }
                     }

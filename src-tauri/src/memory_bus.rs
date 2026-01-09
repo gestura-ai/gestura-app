@@ -4,14 +4,17 @@
 use crate::AppError;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
+
+/// Type alias for the complex subscriber map
+type SubscriberMap = HashMap<String, Vec<broadcast::Receiver<Vec<u8>>>>;
 
 /// In-memory message bus for offline operation
 #[derive(Clone)]
 pub struct MemoryBus {
     channels: Arc<RwLock<HashMap<String, broadcast::Sender<Vec<u8>>>>>,
     #[allow(dead_code)]
-    subscribers: Arc<RwLock<HashMap<String, Vec<broadcast::Receiver<Vec<u8>>>>>>,
+    subscribers: Arc<RwLock<SubscriberMap>>,
     message_history: Arc<RwLock<Vec<StoredMessage>>>,
     max_history: usize,
 }
@@ -43,11 +46,11 @@ impl MemoryBus {
             payload: payload.clone(),
             timestamp: chrono::Utc::now(),
         };
-        
+
         {
             let mut history = self.message_history.write().await;
             history.push(message);
-            
+
             // Trim history if it exceeds max size
             if history.len() > self.max_history {
                 history.remove(0);
@@ -105,7 +108,11 @@ impl MemoryBus {
     }
 
     /// Replay messages for a subject since a timestamp
-    pub async fn replay_since(&self, subject: &str, since: chrono::DateTime<chrono::Utc>) -> Result<(), AppError> {
+    pub async fn replay_since(
+        &self,
+        subject: &str,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), AppError> {
         let history = self.message_history.read().await;
         let messages_to_replay: Vec<StoredMessage> = history
             .iter()
@@ -120,7 +127,11 @@ impl MemoryBus {
             self.publish(&message.subject, message.payload).await?;
         }
 
-        tracing::info!("Replayed {} messages for subject: {}", replay_count, subject);
+        tracing::info!(
+            "Replayed {} messages for subject: {}",
+            replay_count,
+            subject
+        );
         Ok(())
     }
 
@@ -135,7 +146,7 @@ impl MemoryBus {
     pub async fn get_stats(&self) -> BusStats {
         let channels = self.channels.read().await;
         let history = self.message_history.read().await;
-        
+
         BusStats {
             active_channels: channels.len(),
             total_messages: history.len(),
@@ -187,16 +198,19 @@ impl UnifiedBus {
     pub async fn publish(&self, subject: &str, payload: Vec<u8>) -> Result<(), AppError> {
         match self {
             #[cfg(feature = "nats")]
-            UnifiedBus::Nats(conn) => {
-                conn.publish(subject.to_string(), bytes::Bytes::from(payload)).await
-                    .map_err(|e| AppError::Nats(e.to_string()))
-            }
+            UnifiedBus::Nats(conn) => conn
+                .publish(subject.to_string(), bytes::Bytes::from(payload))
+                .await
+                .map_err(|e| AppError::Nats(e.to_string())),
             UnifiedBus::Memory(bus) => bus.publish(subject, payload).await,
         }
     }
 
     /// Subscribe to a subject (simplified interface)
-    pub async fn subscribe_simple(&self, subject: &str) -> Result<broadcast::Receiver<Vec<u8>>, AppError> {
+    pub async fn subscribe_simple(
+        &self,
+        subject: &str,
+    ) -> Result<broadcast::Receiver<Vec<u8>>, AppError> {
         match self {
             #[cfg(feature = "nats")]
             UnifiedBus::Nats(_) => {
@@ -204,7 +218,7 @@ impl UnifiedBus {
                 // For now, return an error indicating this needs NATS-specific handling
                 Err(AppError::Io(std::io::Error::new(
                     std::io::ErrorKind::Unsupported,
-                    "NATS subscription requires specialized handling"
+                    "NATS subscription requires specialized handling",
                 )))
             }
             UnifiedBus::Memory(bus) => bus.subscribe(subject).await,
@@ -215,19 +229,21 @@ impl UnifiedBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     #[tokio::test]
     async fn test_memory_bus_publish_subscribe() {
         let bus = MemoryBus::new(100);
-        
+
         // Subscribe to a subject
         let mut receiver = bus.subscribe("test.subject").await.unwrap();
-        
+
         // Publish a message
         let test_data = b"hello world".to_vec();
-        bus.publish("test.subject", test_data.clone()).await.unwrap();
-        
+        bus.publish("test.subject", test_data.clone())
+            .await
+            .unwrap();
+
         // Receive the message
         let received = receiver.recv().await.unwrap();
         assert_eq!(received, test_data);
@@ -236,12 +252,16 @@ mod tests {
     #[tokio::test]
     async fn test_message_history() {
         let bus = MemoryBus::new(100);
-        
+
         // Publish some messages
-        bus.publish("test.history", b"message1".to_vec()).await.unwrap();
+        bus.publish("test.history", b"message1".to_vec())
+            .await
+            .unwrap();
         sleep(Duration::from_millis(10)).await;
-        bus.publish("test.history", b"message2".to_vec()).await.unwrap();
-        
+        bus.publish("test.history", b"message2".to_vec())
+            .await
+            .unwrap();
+
         // Get history
         let history = bus.get_history("test.history", None).await;
         assert_eq!(history.len(), 2);
@@ -252,12 +272,14 @@ mod tests {
     #[tokio::test]
     async fn test_history_limit() {
         let bus = MemoryBus::new(2); // Small limit for testing
-        
+
         // Publish more messages than the limit
         for i in 0..5 {
-            bus.publish("test.limit", format!("message{}", i).into_bytes()).await.unwrap();
+            bus.publish("test.limit", format!("message{}", i).into_bytes())
+                .await
+                .unwrap();
         }
-        
+
         let stats = bus.get_stats().await;
         assert_eq!(stats.total_messages, 2); // Should be limited to 2
     }

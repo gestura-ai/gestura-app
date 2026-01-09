@@ -1,7 +1,7 @@
 //! Integration tests for Gestura.app
 //! Tests the interaction between major components
 
-use gestura_app::*;
+use gestura::*;
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -9,18 +9,26 @@ use tokio::time::timeout;
 async fn test_voice_to_agent_pipeline() {
     // Test voice processing -> agent communication pipeline
     let config = AppConfig::load();
-    let engine = gestura_app::voice_select::select_voice(&config);
-    
+    let engine = gestura::voice_select::select_voice(&config);
+
     // Validate engine selection
     assert!(!engine.engine_name().is_empty());
-    
+
     // Test agent manager
-    let agent_manager = gestura_app::agents::AgentManager::new(std::env::temp_dir().join("test_agents.db"));
-    agent_manager.spawn_agent("test-voice-agent".to_string(), "Voice Test Agent".to_string()).await;
-    
+    let agent_manager =
+        gestura::agents::AgentManager::new(std::env::temp_dir().join("test_agents.db"));
+    agent_manager
+        .spawn_agent(
+            "test-voice-agent".to_string(),
+            "Voice Test Agent".to_string(),
+        )
+        .await;
+
     // Send test event
-    agent_manager.send_event("test-voice-agent", "voice:test message".to_string()).await;
-    
+    agent_manager
+        .send_event("test-voice-agent", "voice:test message".to_string())
+        .await;
+
     // Cleanup
     agent_manager.shutdown_all(5).await;
 }
@@ -28,24 +36,24 @@ async fn test_voice_to_agent_pipeline() {
 #[tokio::test]
 async fn test_mcp_server_functionality() {
     // Test MCP server with haptic integration
-    let haptic_interface = std::sync::Arc::new(gestura_app::haptics::MockHaptics);
-    let mcp_server = gestura_app::mcp_server::McpServer::new(haptic_interface);
-    
+    let haptic_interface = std::sync::Arc::new(gestura::haptics::MockHaptics);
+    let mcp_server = gestura::mcp_server::McpServer::new(haptic_interface);
+
     // Test tools/list
-    let request = gestura_app::mcp_server::JsonRpcRequest {
+    let request = gestura::mcp_server::JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: "tools/list".to_string(),
         params: None,
         id: Some(serde_json::Value::Number(serde_json::Number::from(1))),
     };
-    
+
     let response = mcp_server.handle_request(request).await;
     assert_eq!(response.jsonrpc, "2.0");
     assert!(response.result.is_some());
     assert!(response.error.is_none());
-    
+
     // Test haptic tool call
-    let haptic_request = gestura_app::mcp_server::JsonRpcRequest {
+    let haptic_request = gestura::mcp_server::JsonRpcRequest {
         jsonrpc: "2.0".to_string(),
         method: "tools/call".to_string(),
         params: Some(serde_json::json!({
@@ -58,7 +66,7 @@ async fn test_mcp_server_functionality() {
         })),
         id: Some(serde_json::Value::Number(serde_json::Number::from(2))),
     };
-    
+
     let response = mcp_server.handle_request(haptic_request).await;
     assert_eq!(response.jsonrpc, "2.0");
     assert!(response.result.is_some());
@@ -68,27 +76,27 @@ async fn test_mcp_server_functionality() {
 #[tokio::test]
 async fn test_ble_ring_integration() {
     // Test BLE ring manager functionality
-    let ring_manager = gestura_app::ble::create_ring_manager();
-    
+    let ring_manager = gestura::ble::create_ring_manager();
+
     // Test scanning (should work with mock)
     let rings = ring_manager.scan_for_rings().await;
     assert!(rings.is_ok());
-    
+
     let ring_ids = rings.unwrap();
     if !ring_ids.is_empty() {
         let device_id = &ring_ids[0];
-        
+
         // Test pairing
         let pair_result = ring_manager.pair_ring(device_id).await;
         assert!(pair_result.is_ok());
-        
+
         // Test status
         let status = ring_manager.get_ring_status(device_id).await;
         assert!(status.is_ok());
         assert!(status.unwrap().is_some());
-        
+
         // Test haptic feedback
-        let haptic_request = gestura_app::haptics::HapticRequest::click();
+        let haptic_request = gestura::haptics::HapticRequest::click();
         let haptic_result = ring_manager.send_haptic(device_id, haptic_request).await;
         assert!(haptic_result.is_ok());
     }
@@ -97,45 +105,54 @@ async fn test_ble_ring_integration() {
 #[tokio::test]
 async fn test_event_dispatcher() {
     // Test NATS event dispatcher
-    let agent_manager = gestura_app::agents::AgentManager::new(std::env::temp_dir().join("test_dispatcher.db"));
-    let agent_spawner: std::sync::Arc<dyn gestura_app::agents::AgentSpawner> = std::sync::Arc::new(agent_manager);
-    let dispatcher = gestura_app::dispatcher::EventDispatcher::new(agent_spawner);
-    
+    let agent_manager =
+        gestura::agents::AgentManager::new(std::env::temp_dir().join("test_dispatcher.db"));
+    let agent_spawner: std::sync::Arc<dyn gestura::agents::AgentSpawner> =
+        std::sync::Arc::new(agent_manager);
+    let dispatcher = gestura::dispatcher::EventDispatcher::new(agent_spawner);
+
     // Test voice event dispatch
-    let result = dispatcher.dispatch("events.voice", b"test voice data".to_vec()).await;
+    let result = dispatcher
+        .dispatch("events.voice", b"test voice data".to_vec())
+        .await;
     assert!(result.is_ok());
-    
+
     // Test hotkey event dispatch
-    let result = dispatcher.dispatch("events.hotkey", b"trigger".to_vec()).await;
+    let result = dispatcher
+        .dispatch("events.hotkey", b"trigger".to_vec())
+        .await;
     assert!(result.is_ok());
-    
+
     // Test agent event dispatch
-    let result = dispatcher.dispatch("agents.test", b"agent data".to_vec()).await;
+    let result = dispatcher
+        .dispatch("agents.test", b"agent data".to_vec())
+        .await;
     assert!(result.is_ok());
 }
 
 #[tokio::test]
 async fn test_haptic_patterns() {
     // Test advanced haptic pattern builder
-    let click_pattern = gestura_app::haptics::HapticRequest::click();
+    let click_pattern = gestura::haptics::HapticRequest::click();
     assert_eq!(click_pattern.duration_ms, 50);
     assert_eq!(click_pattern.repeat_count, 0);
-    
-    let notification_pattern = gestura_app::haptics::HapticRequest::notification();
+
+    let notification_pattern = gestura::haptics::HapticRequest::notification();
     assert_eq!(notification_pattern.repeat_count, 2);
     assert_eq!(notification_pattern.repeat_delay_ms, 300);
-    
-    let alert_pattern = gestura_app::haptics::HapticRequest::alert();
+
+    let alert_pattern = gestura::haptics::HapticRequest::alert();
     assert_eq!(alert_pattern.intensity, 1.0);
     assert_eq!(alert_pattern.repeat_count, 3);
-    
+
     // Test custom pattern builder
-    let custom_pattern = gestura_app::haptics::HapticPatternBuilder::new(gestura_app::haptics::HapticPattern::Pulse)
-        .intensity(0.8)
-        .duration(200)
-        .repeat(5, 100)
-        .build();
-    
+    let custom_pattern =
+        gestura::haptics::HapticPatternBuilder::new(gestura::haptics::HapticPattern::Pulse)
+            .intensity(0.8)
+            .duration(200)
+            .repeat(5, 100)
+            .build();
+
     assert_eq!(custom_pattern.intensity, 0.8);
     assert_eq!(custom_pattern.duration_ms, 200);
     assert_eq!(custom_pattern.repeat_count, 5);
@@ -145,16 +162,16 @@ async fn test_haptic_patterns() {
 #[cfg(feature = "security")]
 #[tokio::test]
 async fn test_security_encryption() {
-    use gestura_app::security::encryption::Encryptor;
-    
+    use gestura::security::encryption::Encryptor;
+
     // Test encryption/decryption
     let encryptor = Encryptor::new().expect("Failed to create encryptor");
     let test_data = b"Hello, secure world!";
-    
+
     let encrypted = encryptor.encrypt(test_data).expect("Failed to encrypt");
     assert_ne!(encrypted, test_data);
     assert!(encrypted.len() > test_data.len()); // Should be larger due to nonce + tag
-    
+
     let decrypted = encryptor.decrypt(&encrypted).expect("Failed to decrypt");
     assert_eq!(decrypted, test_data);
 }
@@ -162,8 +179,8 @@ async fn test_security_encryption() {
 #[tokio::test]
 async fn test_mdh_translation() {
     // Test MDH JSON-LD translation
-    let translator = gestura_app::mdh_translator::MdhTranslator::new();
-    
+    let translator = gestura::mdh_translator::MdhTranslator::new();
+
     // Create a temporary JSON-LD file
     let mut temp_file = tempfile::NamedTempFile::new().unwrap();
     let json_ld_content = r#"{
@@ -173,12 +190,12 @@ async fn test_mdh_translation() {
         "name": "Test Person",
         "email": "test@example.com"
     }"#;
-    
+
     std::io::Write::write_all(&mut temp_file, json_ld_content.as_bytes()).unwrap();
-    
+
     let result = translator.translate(temp_file.path().to_path_buf()).await;
     assert!(result.is_ok());
-    
+
     let resource = result.unwrap();
     assert_eq!(resource.uri, "mcp://mdh/Person");
     assert!(resource.data.get("name").is_some());
@@ -189,17 +206,17 @@ async fn test_mdh_translation() {
 async fn test_configuration_persistence() {
     // Test configuration loading and saving
     let mut config = AppConfig::load();
-    
+
     // Modify config
     config.hotkey_listen = "Ctrl+Alt+G".to_string();
     config.grace_period_secs = 45;
     config.ui.theme_mode = "dark".to_string();
     config.ui.accent = Some("emerald".to_string());
-    
+
     // Save and reload
     assert!(config.save().is_ok());
     let reloaded_config = AppConfig::load();
-    
+
     assert_eq!(reloaded_config.hotkey_listen, "Ctrl+Alt+G");
     assert_eq!(reloaded_config.grace_period_secs, 45);
     assert_eq!(reloaded_config.ui.theme_mode, "dark");
@@ -210,16 +227,16 @@ async fn test_configuration_persistence() {
 async fn test_voice_engine_selection() {
     // Test voice engine selection logic
     let mut config = AppConfig::load();
-    
+
     // Test with no local model (should select mock or OpenAI)
     config.voice.local_model_path = None;
-    let engine = gestura_app::voice_select::select_voice(&config);
+    let engine = gestura::voice_select::select_voice(&config);
     let name = engine.engine_name();
     assert!(name == "mock" || name == "openai-whisper");
-    
+
     // Test with local model path
     config.voice.local_model_path = Some("/path/to/model.bin".to_string());
-    let engine = gestura_app::voice_select::select_voice(&config);
+    let engine = gestura::voice_select::select_voice(&config);
     let name = engine.engine_name();
     // Should prefer faster-whisper if available, otherwise whisper-local
     assert!(name == "faster-whisper-local" || name == "whisper-local" || name == "mock");
@@ -228,21 +245,24 @@ async fn test_voice_engine_selection() {
 #[tokio::test]
 async fn test_stress_agent_spawning() {
     // Stress test agent spawning and shutdown
-    let agent_manager = gestura_app::agents::AgentManager::new(std::env::temp_dir().join("test_stress.db"));
-    
+    let agent_manager =
+        gestura::agents::AgentManager::new(std::env::temp_dir().join("test_stress.db"));
+
     // Spawn multiple agents
     for i in 0..10 {
         let agent_id = format!("stress-agent-{}", i);
         let agent_name = format!("Stress Agent {}", i);
         agent_manager.spawn_agent(agent_id, agent_name).await;
     }
-    
+
     // Send events to all agents
     for i in 0..10 {
         let agent_id = format!("stress-agent-{}", i);
-        agent_manager.send_event(&agent_id, format!("test-message-{}", i)).await;
+        agent_manager
+            .send_event(&agent_id, format!("test-message-{}", i))
+            .await;
     }
-    
+
     // Shutdown all agents
     let shutdown_result = timeout(Duration::from_secs(10), agent_manager.shutdown_all(5)).await;
     assert!(shutdown_result.is_ok());

@@ -62,7 +62,13 @@ impl SessionManager {
     }
 
     /// Create a new user session
-    pub async fn create_session(&self, user_id: String, username: String, email: Option<String>, roles: Vec<String>) -> Result<UserSession, AppError> {
+    pub async fn create_session(
+        &self,
+        user_id: String,
+        username: String,
+        email: Option<String>,
+        roles: Vec<String>,
+    ) -> Result<UserSession, AppError> {
         let session_id = self.generate_session_id();
         let now = SystemTime::now();
         let expires_at = now + self.default_session_duration;
@@ -94,7 +100,7 @@ impl SessionManager {
     /// Get session by ID
     pub async fn get_session(&self, session_id: &str) -> Option<UserSession> {
         let mut sessions = self.sessions.write().await;
-        
+
         if let Some(session) = sessions.get_mut(session_id) {
             // Check if session is expired
             if SystemTime::now() > session.expires_at || !session.is_active {
@@ -112,18 +118,25 @@ impl SessionManager {
 
     /// Validate session and return user info
     pub async fn validate_session(&self, session_id: &str) -> Result<UserSession, AppError> {
-        self.get_session(session_id).await
-            .ok_or_else(|| AppError::Io(std::io::Error::new(
+        self.get_session(session_id).await.ok_or_else(|| {
+            AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
-                "Invalid or expired session"
-            )))
+                "Invalid or expired session",
+            ))
+        })
     }
 
     /// Create authentication token
-    pub async fn create_token(&self, session_id: &str, token_type: TokenType, scopes: Vec<String>, duration: Option<Duration>) -> Result<AuthToken, AppError> {
+    pub async fn create_token(
+        &self,
+        session_id: &str,
+        token_type: TokenType,
+        scopes: Vec<String>,
+        duration: Option<Duration>,
+    ) -> Result<AuthToken, AppError> {
         // Validate session exists
         let session = self.validate_session(session_id).await?;
-        
+
         let token = self.generate_token();
         let expires_at = SystemTime::now() + duration.unwrap_or(Duration::from_secs(3600));
 
@@ -138,13 +151,14 @@ impl SessionManager {
         let mut tokens = self.tokens.write().await;
         tokens.insert(token.clone(), auth_token.clone());
 
-        tracing::info!("Created {} token for session {}", 
+        tracing::info!(
+            "Created {} token for session {}",
             match auth_token.token_type {
                 TokenType::Bearer => "Bearer",
                 TokenType::ApiKey => "API Key",
                 TokenType::Refresh => "Refresh",
                 TokenType::Temporary => "Temporary",
-            }, 
+            },
             session_id
         );
 
@@ -154,7 +168,7 @@ impl SessionManager {
     /// Validate authentication token
     pub async fn validate_token(&self, token: &str) -> Result<(UserSession, AuthToken), AppError> {
         let tokens = self.tokens.read().await;
-        
+
         if let Some(auth_token) = tokens.get(token) {
             // Check if token is expired
             if SystemTime::now() > auth_token.expires_at {
@@ -162,7 +176,7 @@ impl SessionManager {
                 self.revoke_token(token).await?;
                 return Err(AppError::Io(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
-                    "Token expired"
+                    "Token expired",
                 )));
             }
 
@@ -172,7 +186,7 @@ impl SessionManager {
         } else {
             Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
-                "Invalid token"
+                "Invalid token",
             )))
         }
     }
@@ -186,7 +200,7 @@ impl SessionManager {
         } else {
             Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "Token not found"
+                "Token not found",
             )))
         }
     }
@@ -194,43 +208,52 @@ impl SessionManager {
     /// End user session
     pub async fn end_session(&self, session_id: &str) -> Result<(), AppError> {
         let mut sessions = self.sessions.write().await;
-        
+
         if let Some(session) = sessions.get_mut(session_id) {
             session.is_active = false;
-            
+
             // Revoke all tokens for this session
             let mut tokens = self.tokens.write().await;
-            let tokens_to_remove: Vec<String> = tokens.iter()
+            let tokens_to_remove: Vec<String> = tokens
+                .iter()
                 .filter(|(_, token)| token.session_id == session_id)
                 .map(|(token_str, _)| token_str.clone())
                 .collect();
-            
+
             for token in tokens_to_remove {
                 tokens.remove(&token);
             }
-            
+
             tracing::info!("Ended session: {}", session_id);
             Ok(())
         } else {
             Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "Session not found"
+                "Session not found",
             )))
         }
     }
 
     /// Extend session expiration
-    pub async fn extend_session(&self, session_id: &str, additional_duration: Duration) -> Result<(), AppError> {
+    pub async fn extend_session(
+        &self,
+        session_id: &str,
+        additional_duration: Duration,
+    ) -> Result<(), AppError> {
         let mut sessions = self.sessions.write().await;
-        
+
         if let Some(session) = sessions.get_mut(session_id) {
             session.expires_at += additional_duration;
-            tracing::info!("Extended session {} by {:?}", session_id, additional_duration);
+            tracing::info!(
+                "Extended session {} by {:?}",
+                session_id,
+                additional_duration
+            );
             Ok(())
         } else {
             Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "Session not found"
+                "Session not found",
             )))
         }
     }
@@ -238,7 +261,8 @@ impl SessionManager {
     /// Get all active sessions for a user
     pub async fn get_user_sessions(&self, user_id: &str) -> Vec<UserSession> {
         let sessions = self.sessions.read().await;
-        sessions.values()
+        sessions
+            .values()
             .filter(|session| session.user_id == user_id && session.is_active)
             .cloned()
             .collect()
@@ -247,25 +271,27 @@ impl SessionManager {
     /// Cleanup expired sessions and tokens
     pub async fn cleanup_expired(&self) -> Result<(), AppError> {
         let now = SystemTime::now();
-        
+
         // Cleanup expired sessions
         let mut sessions = self.sessions.write().await;
-        let expired_sessions: Vec<String> = sessions.iter()
+        let expired_sessions: Vec<String> = sessions
+            .iter()
             .filter(|(_, session)| now > session.expires_at)
             .map(|(id, _)| id.clone())
             .collect();
-        
+
         for session_id in expired_sessions {
             sessions.remove(&session_id);
         }
 
         // Cleanup expired tokens
         let mut tokens = self.tokens.write().await;
-        let expired_tokens: Vec<String> = tokens.iter()
+        let expired_tokens: Vec<String> = tokens
+            .iter()
             .filter(|(_, token)| now > token.expires_at)
             .map(|(token_str, _)| token_str.clone())
             .collect();
-        
+
         for token in expired_tokens {
             tokens.remove(&token);
         }
@@ -277,7 +303,8 @@ impl SessionManager {
     /// Cleanup old sessions for a user (keep only the most recent ones)
     async fn cleanup_user_sessions(&self, user_id: &str) -> Result<(), AppError> {
         let mut sessions = self.sessions.write().await;
-        let mut user_sessions: Vec<_> = sessions.iter()
+        let mut user_sessions: Vec<_> = sessions
+            .iter()
             .filter(|(_, session)| session.user_id == user_id && session.is_active)
             .map(|(id, session)| (id.clone(), session.last_accessed))
             .collect();
@@ -285,7 +312,7 @@ impl SessionManager {
         if user_sessions.len() >= self.max_sessions_per_user {
             // Sort by last accessed time (oldest first)
             user_sessions.sort_by_key(|(_, last_accessed)| *last_accessed);
-            
+
             // Remove oldest sessions
             let sessions_to_remove = user_sessions.len() - self.max_sessions_per_user + 1;
             for (session_id, _) in user_sessions.iter().take(sessions_to_remove) {
@@ -311,7 +338,7 @@ impl SessionManager {
     pub async fn get_stats(&self) -> serde_json::Value {
         let sessions = self.sessions.read().await;
         let tokens = self.tokens.read().await;
-        
+
         let active_sessions = sessions.values().filter(|s| s.is_active).count();
         let total_sessions = sessions.len();
         let total_tokens = tokens.len();
@@ -329,21 +356,22 @@ impl SessionManager {
     pub async fn start_cleanup_task(&self) {
         let sessions = self.sessions.clone();
         let tokens = self.tokens.clone();
-        
+
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(300)); // 5 minutes
-            
+
             loop {
                 interval.tick().await;
-                
+
                 let now = SystemTime::now();
-                
+
                 // Cleanup expired sessions
                 {
                     let mut sessions_guard = sessions.write().await;
-                    sessions_guard.retain(|_, session| now <= session.expires_at && session.is_active);
+                    sessions_guard
+                        .retain(|_, session| now <= session.expires_at && session.is_active);
                 }
-                
+
                 // Cleanup expired tokens
                 {
                     let mut tokens_guard = tokens.write().await;
@@ -351,7 +379,7 @@ impl SessionManager {
                 }
             }
         });
-        
+
         tracing::info!("Started session cleanup task");
     }
 }
@@ -361,11 +389,13 @@ static SESSION_MANAGER: tokio::sync::OnceCell<SessionManager> = tokio::sync::Onc
 
 /// Get the global session manager
 pub async fn get_session_manager() -> &'static SessionManager {
-    SESSION_MANAGER.get_or_init(|| async {
-        let manager = SessionManager::new(Duration::from_secs(24 * 3600), 5);
-        manager.start_cleanup_task().await;
-        manager
-    }).await
+    SESSION_MANAGER
+        .get_or_init(|| async {
+            let manager = SessionManager::new(Duration::from_secs(24 * 3600), 5);
+            manager.start_cleanup_task().await;
+            manager
+        })
+        .await
 }
 
 #[cfg(test)]
@@ -375,14 +405,17 @@ mod tests {
     #[tokio::test]
     async fn test_session_creation() {
         let manager = SessionManager::new(Duration::from_secs(3600), 3);
-        
-        let session = manager.create_session(
-            "user123".to_string(),
-            "testuser".to_string(),
-            Some("test@example.com".to_string()),
-            vec!["user".to_string()]
-        ).await.unwrap();
-        
+
+        let session = manager
+            .create_session(
+                "user123".to_string(),
+                "testuser".to_string(),
+                Some("test@example.com".to_string()),
+                vec!["user".to_string()],
+            )
+            .await
+            .unwrap();
+
         assert_eq!(session.user_id, "user123");
         assert_eq!(session.username, "testuser");
         assert!(session.is_active);
@@ -391,22 +424,29 @@ mod tests {
     #[tokio::test]
     async fn test_token_creation_and_validation() {
         let manager = SessionManager::new(Duration::from_secs(3600), 3);
-        
-        let session = manager.create_session(
-            "user123".to_string(),
-            "testuser".to_string(),
-            None,
-            vec!["user".to_string()]
-        ).await.unwrap();
-        
-        let token = manager.create_token(
-            &session.session_id,
-            TokenType::Bearer,
-            vec!["read".to_string()],
-            Some(Duration::from_secs(1800))
-        ).await.unwrap();
-        
-        let (validated_session, validated_token) = manager.validate_token(&token.token).await.unwrap();
+
+        let session = manager
+            .create_session(
+                "user123".to_string(),
+                "testuser".to_string(),
+                None,
+                vec!["user".to_string()],
+            )
+            .await
+            .unwrap();
+
+        let token = manager
+            .create_token(
+                &session.session_id,
+                TokenType::Bearer,
+                vec!["read".to_string()],
+                Some(Duration::from_secs(1800)),
+            )
+            .await
+            .unwrap();
+
+        let (validated_session, validated_token) =
+            manager.validate_token(&token.token).await.unwrap();
         assert_eq!(validated_session.session_id, session.session_id);
         assert_eq!(validated_token.token, token.token);
     }
@@ -414,17 +454,20 @@ mod tests {
     #[tokio::test]
     async fn test_session_expiration() {
         let manager = SessionManager::new(Duration::from_millis(100), 3);
-        
-        let session = manager.create_session(
-            "user123".to_string(),
-            "testuser".to_string(),
-            None,
-            vec!["user".to_string()]
-        ).await.unwrap();
-        
+
+        let session = manager
+            .create_session(
+                "user123".to_string(),
+                "testuser".to_string(),
+                None,
+                vec!["user".to_string()],
+            )
+            .await
+            .unwrap();
+
         // Wait for session to expire
         tokio::time::sleep(Duration::from_millis(150)).await;
-        
+
         let result = manager.validate_session(&session.session_id).await;
         assert!(result.is_err());
     }

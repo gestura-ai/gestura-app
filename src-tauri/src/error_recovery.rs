@@ -11,7 +11,10 @@ use tokio::sync::{Mutex, RwLock};
 #[derive(Debug, Clone)]
 pub enum RecoveryStrategy {
     /// Retry the operation with exponential backoff
-    Retry { max_attempts: u32, base_delay: Duration },
+    Retry {
+        max_attempts: u32,
+        base_delay: Duration,
+    },
     /// Restart the component
     Restart,
     /// Fallback to alternative implementation
@@ -51,20 +54,29 @@ impl ErrorRecoveryManager {
     /// Create a new error recovery manager
     pub fn new(max_history: usize) -> Self {
         let mut strategies = HashMap::new();
-        
+
         // Default recovery strategies
-        strategies.insert("nats_connection".to_string(), RecoveryStrategy::Retry { 
-            max_attempts: 3, 
-            base_delay: Duration::from_secs(1) 
-        });
-        strategies.insert("ble_connection".to_string(), RecoveryStrategy::Retry { 
-            max_attempts: 5, 
-            base_delay: Duration::from_millis(500) 
-        });
+        strategies.insert(
+            "nats_connection".to_string(),
+            RecoveryStrategy::Retry {
+                max_attempts: 3,
+                base_delay: Duration::from_secs(1),
+            },
+        );
+        strategies.insert(
+            "ble_connection".to_string(),
+            RecoveryStrategy::Retry {
+                max_attempts: 5,
+                base_delay: Duration::from_millis(500),
+            },
+        );
         strategies.insert("agent_crash".to_string(), RecoveryStrategy::Restart);
-        strategies.insert("voice_engine_failure".to_string(), RecoveryStrategy::Fallback);
+        strategies.insert(
+            "voice_engine_failure".to_string(),
+            RecoveryStrategy::Fallback,
+        );
         strategies.insert("config_corruption".to_string(), RecoveryStrategy::Escalate);
-        
+
         Self {
             strategies: Arc::new(RwLock::new(strategies)),
             recovery_history: Arc::new(Mutex::new(Vec::new())),
@@ -82,12 +94,15 @@ impl ErrorRecoveryManager {
     pub async fn recover(&self, error_type: &str, error: &AppError) -> RecoveryResult {
         let strategy = {
             let strategies = self.strategies.read().await;
-            strategies.get(error_type).cloned().unwrap_or(RecoveryStrategy::Escalate)
+            strategies
+                .get(error_type)
+                .cloned()
+                .unwrap_or(RecoveryStrategy::Escalate)
         };
 
         let start_time = Instant::now();
         let result = self.execute_recovery(&strategy, error_type, error).await;
-        
+
         // Record the attempt
         let attempt = RecoveryAttempt {
             error_type: error_type.to_string(),
@@ -99,7 +114,7 @@ impl ErrorRecoveryManager {
 
         let mut history = self.recovery_history.lock().await;
         history.push(attempt);
-        
+
         // Trim history if needed
         if history.len() > self.max_history {
             history.remove(0);
@@ -110,37 +125,51 @@ impl ErrorRecoveryManager {
     }
 
     /// Execute a specific recovery strategy
-    async fn execute_recovery(&self, strategy: &RecoveryStrategy, error_type: &str, error: &AppError) -> RecoveryResult {
+    async fn execute_recovery(
+        &self,
+        strategy: &RecoveryStrategy,
+        error_type: &str,
+        error: &AppError,
+    ) -> RecoveryResult {
         match strategy {
-            RecoveryStrategy::Retry { max_attempts, base_delay } => {
-                self.retry_recovery(*max_attempts, *base_delay, error_type).await
+            RecoveryStrategy::Retry {
+                max_attempts,
+                base_delay,
+            } => {
+                self.retry_recovery(*max_attempts, *base_delay, error_type)
+                    .await
             }
-            RecoveryStrategy::Restart => {
-                self.restart_recovery(error_type).await
-            }
-            RecoveryStrategy::Fallback => {
-                self.fallback_recovery(error_type).await
-            }
+            RecoveryStrategy::Restart => self.restart_recovery(error_type).await,
+            RecoveryStrategy::Fallback => self.fallback_recovery(error_type).await,
             RecoveryStrategy::Ignore => {
                 tracing::warn!("Ignoring error for {}: {:?}", error_type, error);
                 RecoveryResult::Success
             }
-            RecoveryStrategy::Escalate => {
-                RecoveryResult::RequiresUserIntervention(
-                    format!("Manual intervention required for {}: {:?}", error_type, error)
-                )
-            }
+            RecoveryStrategy::Escalate => RecoveryResult::RequiresUserIntervention(format!(
+                "Manual intervention required for {}: {:?}",
+                error_type, error
+            )),
         }
     }
 
     /// Implement retry recovery with exponential backoff
-    async fn retry_recovery(&self, max_attempts: u32, base_delay: Duration, error_type: &str) -> RecoveryResult {
+    async fn retry_recovery(
+        &self,
+        max_attempts: u32,
+        base_delay: Duration,
+        error_type: &str,
+    ) -> RecoveryResult {
         for attempt in 1..=max_attempts {
             let delay = base_delay * 2_u32.pow(attempt - 1);
-            tracing::info!("Retry attempt {} for {} (delay: {:?})", attempt, error_type, delay);
-            
+            tracing::info!(
+                "Retry attempt {} for {} (delay: {:?})",
+                attempt,
+                error_type,
+                delay
+            );
+
             tokio::time::sleep(delay).await;
-            
+
             // Attempt recovery based on error type
             let success = match error_type {
                 "nats_connection" => self.recover_nats_connection().await,
@@ -148,22 +177,22 @@ impl ErrorRecoveryManager {
                 "voice_engine_failure" => self.recover_voice_engine().await,
                 _ => false,
             };
-            
+
             if success {
                 return RecoveryResult::Success;
             }
         }
-        
+
         RecoveryResult::Failed(AppError::Io(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
-            format!("Recovery failed after {} attempts", max_attempts)
+            format!("Recovery failed after {} attempts", max_attempts),
         )))
     }
 
     /// Implement restart recovery
     async fn restart_recovery(&self, error_type: &str) -> RecoveryResult {
         tracing::info!("Attempting restart recovery for {}", error_type);
-        
+
         match error_type {
             "agent_crash" => {
                 // In a real implementation, this would restart the crashed agent
@@ -172,15 +201,15 @@ impl ErrorRecoveryManager {
             }
             _ => RecoveryResult::Failed(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                format!("Restart not supported for {}", error_type)
-            )))
+                format!("Restart not supported for {}", error_type),
+            ))),
         }
     }
 
     /// Implement fallback recovery
     async fn fallback_recovery(&self, error_type: &str) -> RecoveryResult {
         tracing::info!("Attempting fallback recovery for {}", error_type);
-        
+
         match error_type {
             "voice_engine_failure" => {
                 // Fallback to mock voice engine
@@ -194,8 +223,8 @@ impl ErrorRecoveryManager {
             }
             _ => RecoveryResult::Failed(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                format!("Fallback not available for {}", error_type)
-            )))
+                format!("Fallback not available for {}", error_type),
+            ))),
         }
     }
 
@@ -237,19 +266,21 @@ impl ErrorRecoveryManager {
         let history = self.recovery_history.lock().await;
         let total_attempts = history.len();
         let successful_attempts = history.iter().filter(|a| a.success).count();
-        
+
         let mut error_type_counts = HashMap::new();
         for attempt in history.iter() {
-            *error_type_counts.entry(attempt.error_type.clone()).or_insert(0) += 1;
+            *error_type_counts
+                .entry(attempt.error_type.clone())
+                .or_insert(0) += 1;
         }
 
         RecoveryStats {
             total_attempts,
             successful_attempts,
-            success_rate: if total_attempts > 0 { 
-                successful_attempts as f64 / total_attempts as f64 
-            } else { 
-                0.0 
+            success_rate: if total_attempts > 0 {
+                successful_attempts as f64 / total_attempts as f64
+            } else {
+                0.0
             },
             error_type_counts,
         }
@@ -273,13 +304,14 @@ pub struct RecoveryStats {
 }
 
 /// Global error recovery instance
-static RECOVERY_MANAGER: tokio::sync::OnceCell<ErrorRecoveryManager> = tokio::sync::OnceCell::const_new();
+static RECOVERY_MANAGER: tokio::sync::OnceCell<ErrorRecoveryManager> =
+    tokio::sync::OnceCell::const_new();
 
 /// Get the global recovery manager
 pub async fn get_recovery_manager() -> &'static ErrorRecoveryManager {
-    RECOVERY_MANAGER.get_or_init(|| async {
-        ErrorRecoveryManager::new(1000)
-    }).await
+    RECOVERY_MANAGER
+        .get_or_init(|| async { ErrorRecoveryManager::new(1000) })
+        .await
 }
 
 /// Convenience function to attempt error recovery
@@ -295,12 +327,15 @@ mod tests {
     #[tokio::test]
     async fn test_recovery_manager() {
         let manager = ErrorRecoveryManager::new(10);
-        
+
         // Test retry strategy
-        let error = AppError::Io(std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "test"));
+        let error = AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "test",
+        ));
         let result = manager.recover("nats_connection", &error).await;
         assert!(matches!(result, RecoveryResult::Success));
-        
+
         // Check stats
         let stats = manager.get_recovery_stats().await;
         assert_eq!(stats.total_attempts, 1);
@@ -309,17 +344,20 @@ mod tests {
     #[tokio::test]
     async fn test_recovery_strategies() {
         let manager = ErrorRecoveryManager::new(10);
-        
+
         // Test different strategies
-        let error = AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, "test"));
-        
+        let error = AppError::Io(std::io::Error::other("test"));
+
         let result = manager.recover("agent_crash", &error).await;
         assert!(matches!(result, RecoveryResult::Success));
-        
+
         let result = manager.recover("voice_engine_failure", &error).await;
         assert!(matches!(result, RecoveryResult::Success));
-        
+
         let result = manager.recover("config_corruption", &error).await;
-        assert!(matches!(result, RecoveryResult::RequiresUserIntervention(_)));
+        assert!(matches!(
+            result,
+            RecoveryResult::RequiresUserIntervention(_)
+        ));
     }
 }

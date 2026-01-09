@@ -157,11 +157,16 @@ impl PersonalizedRecommendationEngine {
     }
 
     /// Update user behavior pattern
-    pub async fn update_user_pattern(&self, user_id: &str, usage_data: serde_json::Value) -> Result<(), AppError> {
+    pub async fn update_user_pattern(
+        &self,
+        user_id: &str,
+        usage_data: serde_json::Value,
+    ) -> Result<(), AppError> {
         let mut patterns = self.user_patterns.write().await;
-        
-        let pattern = patterns.entry(user_id.to_string()).or_insert_with(|| {
-            UserBehaviorPattern {
+
+        let pattern = patterns
+            .entry(user_id.to_string())
+            .or_insert_with(|| UserBehaviorPattern {
                 user_id: user_id.to_string(),
                 feature_usage: HashMap::new(),
                 gesture_frequency: HashMap::new(),
@@ -170,31 +175,33 @@ impl PersonalizedRecommendationEngine {
                 error_patterns: HashMap::new(),
                 preference_scores: HashMap::new(),
                 last_updated: chrono::Utc::now(),
-            }
-        });
+            });
 
         // Update pattern based on usage data
-        if let Some(features) = usage_data.get("features") {
-            if let Ok(feature_map) = serde_json::from_value::<HashMap<String, u32>>(features.clone()) {
-                for (feature, count) in feature_map {
-                    *pattern.feature_usage.entry(feature).or_insert(0) += count;
-                }
+        if let Some(features) = usage_data.get("features")
+            && let Ok(feature_map) =
+                serde_json::from_value::<HashMap<String, u32>>(features.clone())
+        {
+            for (feature, count) in feature_map {
+                *pattern.feature_usage.entry(feature).or_insert(0) += count;
             }
         }
 
-        if let Some(gestures) = usage_data.get("gestures") {
-            if let Ok(gesture_map) = serde_json::from_value::<HashMap<String, u32>>(gestures.clone()) {
-                for (gesture, count) in gesture_map {
-                    *pattern.gesture_frequency.entry(gesture).or_insert(0) += count;
-                }
+        if let Some(gestures) = usage_data.get("gestures")
+            && let Ok(gesture_map) =
+                serde_json::from_value::<HashMap<String, u32>>(gestures.clone())
+        {
+            for (gesture, count) in gesture_map {
+                *pattern.gesture_frequency.entry(gesture).or_insert(0) += count;
             }
         }
 
-        if let Some(voice_commands) = usage_data.get("voice_commands") {
-            if let Ok(voice_map) = serde_json::from_value::<HashMap<String, u32>>(voice_commands.clone()) {
-                for (command, count) in voice_map {
-                    *pattern.voice_command_frequency.entry(command).or_insert(0) += count;
-                }
+        if let Some(voice_commands) = usage_data.get("voice_commands")
+            && let Ok(voice_map) =
+                serde_json::from_value::<HashMap<String, u32>>(voice_commands.clone())
+        {
+            for (command, count) in voice_map {
+                *pattern.voice_command_frequency.entry(command).or_insert(0) += count;
             }
         }
 
@@ -209,15 +216,21 @@ impl PersonalizedRecommendationEngine {
     }
 
     /// Generate personalized recommendations for a user
-    pub async fn generate_recommendations(&self, user_id: &str) -> Result<Vec<Recommendation>, AppError> {
+    pub async fn generate_recommendations(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<Recommendation>, AppError> {
         // Check cache first
         {
             let cache = self.recommendations_cache.read().await;
             if let Some(cached_recommendations) = cache.get(user_id) {
                 let config = self.config.read().await;
-                let cache_age = chrono::Utc::now().timestamp() - 
-                    cached_recommendations.first().map(|r| r.created_at.timestamp()).unwrap_or(0);
-                
+                let cache_age = chrono::Utc::now().timestamp()
+                    - cached_recommendations
+                        .first()
+                        .map(|r| r.created_at.timestamp())
+                        .unwrap_or(0);
+
                 if cache_age < (config.recommendation_refresh_hours * 3600) as i64 {
                     return Ok(cached_recommendations.clone());
                 }
@@ -226,7 +239,7 @@ impl PersonalizedRecommendationEngine {
 
         let patterns = self.user_patterns.read().await;
         let user_pattern = patterns.get(user_id);
-        
+
         if user_pattern.is_none() {
             return Ok(Vec::new()); // No data yet
         }
@@ -244,8 +257,11 @@ impl PersonalizedRecommendationEngine {
 
         // Sort by priority and confidence
         recommendations.sort_by(|a, b| {
-            b.priority.cmp(&a.priority)
-                .then_with(|| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal))
+            b.priority.cmp(&a.priority).then_with(|| {
+                b.confidence
+                    .partial_cmp(&a.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
         });
 
         // Apply filters
@@ -260,12 +276,20 @@ impl PersonalizedRecommendationEngine {
         let mut cache = self.recommendations_cache.write().await;
         cache.insert(user_id.to_string(), recommendations.clone());
 
-        tracing::info!("Generated {} recommendations for user: {}", recommendations.len(), user_id);
+        tracing::info!(
+            "Generated {} recommendations for user: {}",
+            recommendations.len(),
+            user_id
+        );
         Ok(recommendations)
     }
 
     /// Evaluate a recommendation template against user pattern
-    async fn evaluate_template(&self, template: &RecommendationTemplate, user_pattern: &UserBehaviorPattern) -> Option<Recommendation> {
+    async fn evaluate_template(
+        &self,
+        template: &RecommendationTemplate,
+        user_pattern: &UserBehaviorPattern,
+    ) -> Option<Recommendation> {
         let mut confidence = 0.5; // Base confidence
         let mut conditions_met = 0;
         let total_conditions = template.conditions.len();
@@ -294,7 +318,11 @@ impl PersonalizedRecommendationEngine {
                     }
                 }
                 RecommendationCondition::SessionDurationBelow { threshold_minutes } => {
-                    if user_pattern.session_patterns.average_session_duration_minutes < *threshold_minutes {
+                    if user_pattern
+                        .session_patterns
+                        .average_session_duration_minutes
+                        < *threshold_minutes
+                    {
                         conditions_met += 1;
                         confidence += 0.1;
                     }
@@ -344,17 +372,26 @@ impl PersonalizedRecommendationEngine {
     /// Personalize text templates with user data
     fn personalize_text(&self, template: &str, user_pattern: &UserBehaviorPattern) -> String {
         let mut result = template.to_string();
-        
+
         // Replace placeholders with user-specific data
         if let Some(most_used) = user_pattern.session_patterns.most_used_features.first() {
             result = result.replace("{most_used_feature}", most_used);
         }
-        
-        result = result.replace("{session_duration}", 
-            &format!("{:.1}", user_pattern.session_patterns.average_session_duration_minutes));
-        
-        result = result.replace("{error_rate}", 
-            &format!("{:.1}%", user_pattern.session_patterns.error_rate * 100.0));
+
+        result = result.replace(
+            "{session_duration}",
+            &format!(
+                "{:.1}",
+                user_pattern
+                    .session_patterns
+                    .average_session_duration_minutes
+            ),
+        );
+
+        result = result.replace(
+            "{error_rate}",
+            &format!("{:.1}%", user_pattern.session_patterns.error_rate * 100.0),
+        );
 
         result
     }
@@ -362,7 +399,7 @@ impl PersonalizedRecommendationEngine {
     /// Initialize default recommendation templates
     async fn initialize_default_templates(&self) -> Result<(), AppError> {
         let mut templates = self.recommendation_templates.write().await;
-        
+
         templates.push(RecommendationTemplate {
             id: "voice_training".to_string(),
             title_template: "Improve Voice Recognition Accuracy".to_string(),
@@ -440,31 +477,41 @@ impl PersonalizedRecommendationEngine {
     }
 
     /// Record user feedback on recommendations
-    pub async fn record_feedback(&self, user_id: &str, recommendation_id: &str, 
-                                feedback: RecommendationFeedback) -> Result<(), AppError> {
+    pub async fn record_feedback(
+        &self,
+        user_id: &str,
+        recommendation_id: &str,
+        feedback: RecommendationFeedback,
+    ) -> Result<(), AppError> {
         let mut patterns = self.user_patterns.write().await;
-        
+
         if let Some(pattern) = patterns.get_mut(user_id) {
             // Update preference scores based on feedback
             let cache = self.recommendations_cache.read().await;
-            if let Some(recommendations) = cache.get(user_id) {
-                if let Some(recommendation) = recommendations.iter().find(|r| r.id == recommendation_id) {
-                    let category = &recommendation.category;
-                    let current_score = pattern.preference_scores.get(category).unwrap_or(&0.5);
-                    
-                    let adjustment = match feedback {
-                        RecommendationFeedback::Helpful => 0.1,
-                        RecommendationFeedback::NotHelpful => -0.1,
-                        RecommendationFeedback::Implemented => 0.2,
-                        RecommendationFeedback::Dismissed => -0.05,
-                    };
-                    
-                    let new_score = (current_score + adjustment).max(0.0).min(1.0);
-                    pattern.preference_scores.insert(category.clone(), new_score);
-                    
-                    tracing::debug!("Updated preference score for category '{}' to {:.2} based on feedback", 
-                        category, new_score);
-                }
+            if let Some(recommendations) = cache.get(user_id)
+                && let Some(recommendation) =
+                    recommendations.iter().find(|r| r.id == recommendation_id)
+            {
+                let category = &recommendation.category;
+                let current_score = pattern.preference_scores.get(category).unwrap_or(&0.5);
+
+                let adjustment = match feedback {
+                    RecommendationFeedback::Helpful => 0.1,
+                    RecommendationFeedback::NotHelpful => -0.1,
+                    RecommendationFeedback::Implemented => 0.2,
+                    RecommendationFeedback::Dismissed => -0.05,
+                };
+
+                let new_score = (current_score + adjustment).clamp(0.0, 1.0);
+                pattern
+                    .preference_scores
+                    .insert(category.clone(), new_score);
+
+                tracing::debug!(
+                    "Updated preference score for category '{}' to {:.2} based on feedback",
+                    category,
+                    new_score
+                );
             }
         }
 
@@ -485,10 +532,10 @@ impl PersonalizedRecommendationEngine {
             "total_users": total_users,
             "total_cached_recommendations": total_cached_recommendations,
             "total_templates": total_templates,
-            "average_recommendations_per_user": if total_users > 0 { 
-                total_cached_recommendations as f64 / total_users as f64 
-            } else { 
-                0.0 
+            "average_recommendations_per_user": if total_users > 0 {
+                total_cached_recommendations as f64 / total_users as f64
+            } else {
+                0.0
             }
         })
     }
@@ -497,10 +544,10 @@ impl PersonalizedRecommendationEngine {
     pub async fn clear_user_data(&self, user_id: &str) -> Result<(), AppError> {
         let mut patterns = self.user_patterns.write().await;
         let mut cache = self.recommendations_cache.write().await;
-        
+
         patterns.remove(user_id);
         cache.remove(user_id);
-        
+
         tracing::info!("Cleared recommendation data for user: {}", user_id);
         Ok(())
     }
@@ -528,13 +575,16 @@ pub enum RecommendationFeedback {
 }
 
 /// Global recommendation engine instance
-static RECOMMENDATION_ENGINE: tokio::sync::OnceCell<PersonalizedRecommendationEngine> = tokio::sync::OnceCell::const_new();
+static RECOMMENDATION_ENGINE: tokio::sync::OnceCell<PersonalizedRecommendationEngine> =
+    tokio::sync::OnceCell::const_new();
 
 /// Get the global recommendation engine
 pub async fn get_recommendation_engine() -> &'static PersonalizedRecommendationEngine {
-    RECOMMENDATION_ENGINE.get_or_init(|| async {
-        PersonalizedRecommendationEngine::new(RecommendationConfig::default())
-    }).await
+    RECOMMENDATION_ENGINE
+        .get_or_init(|| async {
+            PersonalizedRecommendationEngine::new(RecommendationConfig::default())
+        })
+        .await
 }
 
 #[cfg(test)]
@@ -544,7 +594,10 @@ mod tests {
     #[tokio::test]
     async fn test_recommendation_generation() {
         let engine = PersonalizedRecommendationEngine::new(RecommendationConfig::default());
-        
+
+        // Wait a bit for background template initialization to complete
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
         // Create user pattern
         let usage_data = serde_json::json!({
             "features": {
@@ -556,9 +609,12 @@ mod tests {
                 "swipe": 20
             }
         });
-        
-        engine.update_user_pattern("user1", usage_data).await.unwrap();
-        
+
+        engine
+            .update_user_pattern("user1", usage_data)
+            .await
+            .unwrap();
+
         let recommendations = engine.generate_recommendations("user1").await.unwrap();
         assert!(!recommendations.is_empty());
     }
@@ -566,19 +622,25 @@ mod tests {
     #[tokio::test]
     async fn test_feedback_recording() {
         let engine = PersonalizedRecommendationEngine::new(RecommendationConfig::default());
-        
+
         // Setup user and generate recommendations
         let usage_data = serde_json::json!({
             "features": {"gestures": 100}
         });
-        
-        engine.update_user_pattern("user1", usage_data).await.unwrap();
+
+        engine
+            .update_user_pattern("user1", usage_data)
+            .await
+            .unwrap();
         let recommendations = engine.generate_recommendations("user1").await.unwrap();
-        
+
         if let Some(rec) = recommendations.first() {
-            engine.record_feedback("user1", &rec.id, RecommendationFeedback::Helpful).await.unwrap();
+            engine
+                .record_feedback("user1", &rec.id, RecommendationFeedback::Helpful)
+                .await
+                .unwrap();
         }
-        
+
         // Verify feedback was recorded (would check preference scores in real test)
         let stats = engine.get_stats().await;
         assert_eq!(stats["total_users"].as_u64().unwrap(), 1);

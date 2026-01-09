@@ -48,12 +48,26 @@ pub struct QueryPlan {
 /// Execution step in query plan
 #[derive(Debug, Clone, serde::Serialize)]
 pub enum ExecutionStep {
-    IndexScan { index_name: String, filter: String },
-    TableScan { table_name: String },
-    Filter { condition: String },
-    Sort { columns: Vec<String> },
-    Join { join_type: String, condition: String },
-    Aggregate { functions: Vec<String> },
+    IndexScan {
+        index_name: String,
+        filter: String,
+    },
+    TableScan {
+        table_name: String,
+    },
+    Filter {
+        condition: String,
+    },
+    Sort {
+        columns: Vec<String>,
+    },
+    Join {
+        join_type: String,
+        condition: String,
+    },
+    Aggregate {
+        functions: Vec<String>,
+    },
 }
 
 /// Query optimizer and index manager
@@ -98,11 +112,11 @@ impl QueryOptimizer {
     /// Create an index
     pub async fn create_index(&self, definition: IndexDefinition) -> Result<(), AppError> {
         let mut indexes = self.indexes.write().await;
-        
+
         if indexes.contains_key(&definition.name) {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
-                format!("Index {} already exists", definition.name)
+                format!("Index {} already exists", definition.name),
             )));
         }
 
@@ -110,26 +124,30 @@ impl QueryOptimizer {
         if definition.columns.is_empty() {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Index must have at least one column"
+                "Index must have at least one column",
             )));
         }
 
         indexes.insert(definition.name.clone(), definition.clone());
-        tracing::info!("Created index: {} on table: {}", definition.name, definition.table);
+        tracing::info!(
+            "Created index: {} on table: {}",
+            definition.name,
+            definition.table
+        );
         Ok(())
     }
 
     /// Drop an index
     pub async fn drop_index(&self, index_name: &str) -> Result<(), AppError> {
         let mut indexes = self.indexes.write().await;
-        
+
         if indexes.remove(index_name).is_some() {
             tracing::info!("Dropped index: {}", index_name);
             Ok(())
         } else {
             Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Index {} not found", index_name)
+                format!("Index {} not found", index_name),
             )))
         }
     }
@@ -137,7 +155,7 @@ impl QueryOptimizer {
     /// Optimize a query and return execution plan
     pub async fn optimize_query(&self, query: &str) -> Result<QueryPlan, AppError> {
         let query_hash = self.hash_query(query);
-        
+
         // Check if we have a cached plan
         if let Some(cached_plan) = self.get_cached_plan(&query_hash).await {
             return Ok(cached_plan);
@@ -145,10 +163,10 @@ impl QueryOptimizer {
 
         // Analyze query and create execution plan
         let plan = self.analyze_query(query).await?;
-        
+
         // Cache the plan
         self.cache_plan(&query_hash, &plan).await;
-        
+
         Ok(plan)
     }
 
@@ -156,7 +174,7 @@ impl QueryOptimizer {
     pub async fn execute_query(&self, query: &str) -> Result<serde_json::Value, AppError> {
         let start_time = std::time::Instant::now();
         let query_hash = self.hash_query(query);
-        
+
         // Check query cache first
         if let Some(cached_result) = self.get_cached_result(&query_hash).await {
             self.record_cache_hit().await;
@@ -167,12 +185,12 @@ impl QueryOptimizer {
 
         // Get optimized execution plan
         let plan = self.optimize_query(query).await?;
-        
+
         // Execute the query (simplified - in real implementation would execute against actual DB)
         let result = self.execute_plan(&plan).await?;
-        
+
         let execution_time = start_time.elapsed().as_millis() as f64;
-        
+
         // Record execution statistics
         self.record_execution(QueryExecution {
             query_hash: query_hash.clone(),
@@ -180,11 +198,12 @@ impl QueryOptimizer {
             rows_returned: self.count_result_rows(&result),
             indexes_used: plan.indexes_used.clone(),
             timestamp: chrono::Utc::now(),
-        }).await;
+        })
+        .await;
 
         // Cache the result
         self.cache_result(&query_hash, &result).await;
-        
+
         Ok(result)
     }
 
@@ -198,25 +217,25 @@ impl QueryOptimizer {
 
         // Simple query analysis (in real implementation, use proper SQL parser)
         let query_lower = query.to_lowercase();
-        
+
         // Check for table scans
-        if query_lower.contains("select") {
-            if let Some(table_name) = self.extract_table_name(&query_lower) {
-                // Check if we can use an index
-                if let Some(index_name) = self.find_best_index(&table_name, &query_lower).await {
-                    execution_steps.push(ExecutionStep::IndexScan {
-                        index_name: index_name.clone(),
-                        filter: self.extract_where_clause(&query_lower),
-                    });
-                    indexes_used.push(index_name);
-                    estimated_cost += 10.0; // Index scan cost
-                    estimated_rows = 100; // Estimated rows from index
-                } else {
-                    execution_steps.push(ExecutionStep::TableScan {
-                        table_name: table_name.clone(),
-                    });
-                    estimated_cost += 1000.0; // Table scan cost
-                }
+        if query_lower.contains("select")
+            && let Some(table_name) = self.extract_table_name(&query_lower)
+        {
+            // Check if we can use an index
+            if let Some(index_name) = self.find_best_index(&table_name, &query_lower).await {
+                execution_steps.push(ExecutionStep::IndexScan {
+                    index_name: index_name.clone(),
+                    filter: self.extract_where_clause(&query_lower),
+                });
+                indexes_used.push(index_name);
+                estimated_cost += 10.0; // Index scan cost
+                estimated_rows = 100; // Estimated rows from index
+            } else {
+                execution_steps.push(ExecutionStep::TableScan {
+                    table_name: table_name.clone(),
+                });
+                estimated_cost += 1000.0; // Table scan cost
             }
         }
 
@@ -239,8 +258,11 @@ impl QueryOptimizer {
         }
 
         // Check for GROUP BY or aggregates
-        if query_lower.contains("group by") || query_lower.contains("count(") || 
-           query_lower.contains("sum(") || query_lower.contains("avg(") {
+        if query_lower.contains("group by")
+            || query_lower.contains("count(")
+            || query_lower.contains("sum(")
+            || query_lower.contains("avg(")
+        {
             execution_steps.push(ExecutionStep::Aggregate {
                 functions: self.extract_aggregate_functions(&query_lower),
             });
@@ -281,12 +303,12 @@ impl QueryOptimizer {
     /// Calculate how well an index matches a query
     fn calculate_index_score(&self, index_def: &IndexDefinition, query: &str) -> f64 {
         let mut score = 0.0;
-        
+
         // Check if index columns are mentioned in WHERE clause
         for column in &index_def.columns {
             if query.contains(column) {
                 score += 10.0;
-                
+
                 // Bonus for equality conditions
                 if query.contains(&format!("{} =", column)) {
                     score += 5.0;
@@ -301,7 +323,9 @@ impl QueryOptimizer {
 
         // Penalty for composite indexes with unused columns
         if index_def.columns.len() > 1 {
-            let unused_columns = index_def.columns.iter()
+            let unused_columns = index_def
+                .columns
+                .iter()
                 .filter(|col| !query.contains(*col))
                 .count();
             score -= unused_columns as f64 * 2.0;
@@ -314,11 +338,15 @@ impl QueryOptimizer {
     async fn execute_plan(&self, plan: &QueryPlan) -> Result<serde_json::Value, AppError> {
         // This is a simplified execution - in real implementation would execute against actual database
         let mut result_rows = Vec::new();
-        
+
         for step in &plan.execution_steps {
             match step {
                 ExecutionStep::IndexScan { index_name, filter } => {
-                    tracing::debug!("Executing index scan on {} with filter: {}", index_name, filter);
+                    tracing::debug!(
+                        "Executing index scan on {} with filter: {}",
+                        index_name,
+                        filter
+                    );
                     // Simulate index scan results
                     for i in 0..plan.estimated_rows.min(100) {
                         result_rows.push(serde_json::json!({
@@ -357,7 +385,10 @@ impl QueryOptimizer {
                         "aggregated": true
                     })];
                 }
-                ExecutionStep::Join { join_type, condition } => {
+                ExecutionStep::Join {
+                    join_type,
+                    condition,
+                } => {
                     tracing::debug!("Executing {} join with condition: {}", join_type, condition);
                     // Simulate join (double the rows)
                     let original_count = result_rows.len();
@@ -393,9 +424,11 @@ impl QueryOptimizer {
     fn extract_where_clause(&self, query: &str) -> String {
         if let Some(where_pos) = query.find("where ") {
             let after_where = &query[where_pos + 6..];
-            if let Some(end_pos) = after_where.find(" order by")
+            if let Some(end_pos) = after_where
+                .find(" order by")
                 .or_else(|| after_where.find(" group by"))
-                .or_else(|| after_where.find(" limit")) {
+                .or_else(|| after_where.find(" limit"))
+            {
                 after_where[..end_pos].trim().to_string()
             } else {
                 after_where.trim().to_string()
@@ -413,8 +446,9 @@ impl QueryOptimizer {
             } else {
                 after_order
             };
-            
-            columns_str.split(',')
+
+            columns_str
+                .split(',')
                 .map(|col| col.trim().to_string())
                 .collect()
         } else {
@@ -425,13 +459,13 @@ impl QueryOptimizer {
     fn extract_aggregate_functions(&self, query: &str) -> Vec<String> {
         let mut functions = Vec::new();
         let aggregates = ["count(", "sum(", "avg(", "min(", "max("];
-        
+
         for agg in &aggregates {
             if query.contains(agg) {
                 functions.push(agg.trim_end_matches('(').to_string());
             }
         }
-        
+
         functions
     }
 
@@ -439,14 +473,15 @@ impl QueryOptimizer {
     fn hash_query(&self, query: &str) -> String {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        
+
         let mut hasher = DefaultHasher::new();
         query.hash(&mut hasher);
         format!("{:x}", hasher.finish())
     }
 
     fn count_result_rows(&self, result: &serde_json::Value) -> usize {
-        result.get("rows")
+        result
+            .get("rows")
             .and_then(|rows| rows.as_array())
             .map(|arr| arr.len())
             .unwrap_or(0)
@@ -469,14 +504,14 @@ impl QueryOptimizer {
 
     async fn cache_result(&self, query_hash: &str, result: &serde_json::Value) {
         let mut cache = self.query_cache.write().await;
-        
+
         if cache.len() >= self.max_cache_size {
             // Simple LRU: remove first entry
             if let Some(first_key) = cache.keys().next().cloned() {
                 cache.remove(&first_key);
             }
         }
-        
+
         cache.insert(query_hash.to_string(), result.clone());
     }
 
@@ -497,21 +532,25 @@ impl QueryOptimizer {
         // Update statistics
         {
             let mut stats = self.query_stats.write().await;
-            
+
             // Update average execution time
-            let total_time = stats.average_execution_time_ms * (stats.total_queries - 1) as f64 + execution.execution_time_ms;
+            let total_time = stats.average_execution_time_ms * (stats.total_queries - 1) as f64
+                + execution.execution_time_ms;
             stats.average_execution_time_ms = total_time / stats.total_queries as f64;
-            
+
             // Update index usage counts
             for index_name in &execution.indexes_used {
-                *stats.index_usage_count.entry(index_name.clone()).or_insert(0) += 1;
+                *stats
+                    .index_usage_count
+                    .entry(index_name.clone())
+                    .or_insert(0) += 1;
             }
         }
 
         // Store execution history
         let mut history = self.execution_history.write().await;
         history.push(execution);
-        
+
         if history.len() > self.max_history_size {
             history.remove(0);
         }
@@ -541,9 +580,9 @@ static QUERY_OPTIMIZER: tokio::sync::OnceCell<QueryOptimizer> = tokio::sync::Onc
 
 /// Get the global query optimizer
 pub async fn get_query_optimizer() -> &'static QueryOptimizer {
-    QUERY_OPTIMIZER.get_or_init(|| async {
-        QueryOptimizer::new(1000, 10000)
-    }).await
+    QUERY_OPTIMIZER
+        .get_or_init(|| async { QueryOptimizer::new(1000, 10000) })
+        .await
 }
 
 #[cfg(test)]
@@ -553,7 +592,7 @@ mod tests {
     #[tokio::test]
     async fn test_index_creation() {
         let optimizer = QueryOptimizer::new(100, 1000);
-        
+
         let index_def = IndexDefinition {
             name: "idx_user_email".to_string(),
             table: "users".to_string(),
@@ -561,9 +600,9 @@ mod tests {
             index_type: IndexType::Hash,
             is_unique: true,
         };
-        
+
         optimizer.create_index(index_def).await.unwrap();
-        
+
         let indexes = optimizer.get_indexes().await;
         assert_eq!(indexes.len(), 1);
         assert_eq!(indexes[0].name, "idx_user_email");
@@ -572,7 +611,7 @@ mod tests {
     #[tokio::test]
     async fn test_query_optimization() {
         let optimizer = QueryOptimizer::new(100, 1000);
-        
+
         // Create an index
         let index_def = IndexDefinition {
             name: "idx_users_id".to_string(),
@@ -582,11 +621,11 @@ mod tests {
             is_unique: true,
         };
         optimizer.create_index(index_def).await.unwrap();
-        
+
         // Optimize a query
         let query = "SELECT * FROM users WHERE id = 123";
         let plan = optimizer.optimize_query(query).await.unwrap();
-        
+
         assert!(!plan.execution_steps.is_empty());
         assert!(plan.estimated_cost > 0.0);
     }
@@ -594,17 +633,17 @@ mod tests {
     #[tokio::test]
     async fn test_query_execution() {
         let optimizer = QueryOptimizer::new(100, 1000);
-        
+
         let query = "SELECT * FROM users WHERE name = 'test'";
         let result = optimizer.execute_query(query).await.unwrap();
-        
+
         assert!(result.get("rows").is_some());
         assert!(result.get("execution_plan").is_some());
-        
+
         // Test caching
         let result2 = optimizer.execute_query(query).await.unwrap();
         assert_eq!(result, result2);
-        
+
         let stats = optimizer.get_stats().await;
         assert_eq!(stats.total_queries, 2);
         assert_eq!(stats.cache_hits, 1);

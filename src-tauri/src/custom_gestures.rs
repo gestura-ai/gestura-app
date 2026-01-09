@@ -3,10 +3,10 @@
 
 #[allow(unused_imports)]
 use crate::AppError;
+use chrono::Timelike;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use chrono::Timelike;
 
 /// Custom gesture definition
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -56,14 +56,30 @@ pub enum TriggerCondition {
 pub enum GestureAction {
     KeyboardShortcut(String),
     LaunchApplication(String),
-    SendNotification { title: String, message: String },
+    SendNotification {
+        title: String,
+        message: String,
+    },
     ExecuteCommand(String),
-    TriggerHapticFeedback { pattern: String, intensity: f32 },
+    TriggerHapticFeedback {
+        pattern: String,
+        intensity: f32,
+    },
     PlaySound(String),
-    ChangeSystemSetting { setting: String, value: String },
-    SendWebhook { url: String, payload: serde_json::Value },
+    ChangeSystemSetting {
+        setting: String,
+        value: String,
+    },
+    SendWebhook {
+        url: String,
+        payload: serde_json::Value,
+    },
     RunScript(String),
-    Custom { plugin_id: String, command: String, args: serde_json::Value },
+    Custom {
+        plugin_id: String,
+        command: String,
+        args: serde_json::Value,
+    },
 }
 
 /// Training sample for gesture recognition
@@ -116,6 +132,12 @@ struct TrainingSession {
     started_at: chrono::DateTime<chrono::Utc>,
 }
 
+impl Default for CustomGestureManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CustomGestureManager {
     /// Create a new custom gesture manager
     pub fn new() -> Self {
@@ -128,10 +150,15 @@ impl CustomGestureManager {
     }
 
     /// Create a new custom gesture
-    pub async fn create_gesture(&self, user_id: String, name: String, description: String, 
-                               gesture_type: GestureType) -> Result<String, AppError> {
+    pub async fn create_gesture(
+        &self,
+        user_id: String,
+        name: String,
+        description: String,
+        gesture_type: GestureType,
+    ) -> Result<String, AppError> {
         let gesture_id = uuid::Uuid::new_v4().to_string();
-        
+
         let gesture = CustomGesture {
             id: gesture_id.clone(),
             name: name.clone(),
@@ -154,20 +181,28 @@ impl CustomGestureManager {
 
         // Add to user's gesture list
         let mut user_gestures = self.user_gestures.write().await;
-        user_gestures.entry(user_id.clone()).or_insert_with(Vec::new).push(gesture_id.clone());
+        user_gestures
+            .entry(user_id.clone())
+            .or_insert_with(Vec::new)
+            .push(gesture_id.clone());
 
         tracing::info!("Created custom gesture '{}' for user {}", name, user_id);
         Ok(gesture_id)
     }
 
     /// Start training session for a gesture
-    pub async fn start_training(&self, gesture_id: String, target_samples: usize) -> Result<(), AppError> {
+    pub async fn start_training(
+        &self,
+        gesture_id: String,
+        target_samples: usize,
+    ) -> Result<(), AppError> {
         let gestures = self.gestures.read().await;
-        let gesture = gestures.get(&gesture_id)
-            .ok_or_else(|| AppError::Io(std::io::Error::new(
+        let gesture = gestures.get(&gesture_id).ok_or_else(|| {
+            AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "Gesture not found"
-            )))?;
+                "Gesture not found",
+            ))
+        })?;
 
         let session = TrainingSession {
             gesture_id: gesture_id.clone(),
@@ -185,22 +220,26 @@ impl CustomGestureManager {
     }
 
     /// Record a training sample
-    pub async fn record_training_sample(&self, sensor_data: Vec<SensorReading>) -> Result<bool, AppError> {
+    pub async fn record_training_sample(
+        &self,
+        sensor_data: Vec<SensorReading>,
+    ) -> Result<bool, AppError> {
         let mut active_training = self.active_training.write().await;
-        
-        let session = active_training.as_mut()
-            .ok_or_else(|| AppError::Io(std::io::Error::new(
+
+        let session = active_training.as_mut().ok_or_else(|| {
+            AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "No active training session"
-            )))?;
+                "No active training session",
+            ))
+        })?;
 
         // Calculate sample quality
         let quality_score = self.calculate_sample_quality(&sensor_data);
-        
+
         if quality_score < 0.5 {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Sample quality too low"
+                "Sample quality too low",
             )));
         }
 
@@ -228,7 +267,7 @@ impl CustomGestureManager {
             *active_training = None;
             drop(active_training);
             drop(gestures);
-            
+
             // Train the gesture model
             self.train_gesture_model(&gesture_id).await?;
         }
@@ -239,30 +278,40 @@ impl CustomGestureManager {
     /// Train the gesture recognition model
     async fn train_gesture_model(&self, gesture_id: &str) -> Result<(), AppError> {
         let mut gestures = self.gestures.write().await;
-        let gesture = gestures.get_mut(gesture_id)
-            .ok_or_else(|| AppError::Io(std::io::Error::new(
+        let gesture = gestures.get_mut(gesture_id).ok_or_else(|| {
+            AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "Gesture not found"
-            )))?;
+                "Gesture not found",
+            ))
+        })?;
 
         if gesture.training_samples.len() < 3 {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Need at least 3 training samples"
+                "Need at least 3 training samples",
             )));
         }
 
         // Train the model (simplified)
-        let model_accuracy = self.recognition_engine.train_model(&gesture.training_samples).await?;
-        
+        let model_accuracy = self
+            .recognition_engine
+            .train_model(&gesture.training_samples)
+            .await?;
+
         // Enable gesture if accuracy is good enough
         if model_accuracy > 0.8 {
             gesture.is_enabled = true;
-            tracing::info!("Gesture '{}' trained successfully with {:.2}% accuracy", 
-                gesture.name, model_accuracy * 100.0);
+            tracing::info!(
+                "Gesture '{}' trained successfully with {:.2}% accuracy",
+                gesture.name,
+                model_accuracy * 100.0
+            );
         } else {
-            tracing::warn!("Gesture '{}' training completed but accuracy too low: {:.2}%", 
-                gesture.name, model_accuracy * 100.0);
+            tracing::warn!(
+                "Gesture '{}' training completed but accuracy too low: {:.2}%",
+                gesture.name,
+                model_accuracy * 100.0
+            );
         }
 
         Ok(())
@@ -277,21 +326,23 @@ impl CustomGestureManager {
         // Calculate signal strength and consistency
         let mut total_magnitude = 0.0;
         let mut variance = 0.0;
-        
+
         for reading in sensor_data {
-            let acc_mag = (reading.accelerometer[0].powi(2) + 
-                          reading.accelerometer[1].powi(2) + 
-                          reading.accelerometer[2].powi(2)).sqrt();
+            let acc_mag = (reading.accelerometer[0].powi(2)
+                + reading.accelerometer[1].powi(2)
+                + reading.accelerometer[2].powi(2))
+            .sqrt();
             total_magnitude += acc_mag;
         }
 
         let avg_magnitude = total_magnitude / sensor_data.len() as f32;
-        
+
         // Calculate variance
         for reading in sensor_data {
-            let acc_mag = (reading.accelerometer[0].powi(2) + 
-                          reading.accelerometer[1].powi(2) + 
-                          reading.accelerometer[2].powi(2)).sqrt();
+            let acc_mag = (reading.accelerometer[0].powi(2)
+                + reading.accelerometer[1].powi(2)
+                + reading.accelerometer[2].powi(2))
+            .sqrt();
             variance += (acc_mag - avg_magnitude).powi(2);
         }
         variance /= sensor_data.len() as f32;
@@ -299,18 +350,22 @@ impl CustomGestureManager {
         // Quality score based on signal strength and consistency
         let signal_score = (avg_magnitude / 10.0).min(1.0); // Normalize to 0-1
         let consistency_score = 1.0 / (1.0 + variance); // Higher variance = lower score
-        
+
         (signal_score + consistency_score) / 2.0
     }
 
     /// Recognize gesture from sensor data
-    pub async fn recognize_gesture(&self, user_id: &str, sensor_data: Vec<SensorReading>) -> Result<GestureRecognitionResult, AppError> {
+    pub async fn recognize_gesture(
+        &self,
+        user_id: &str,
+        sensor_data: Vec<SensorReading>,
+    ) -> Result<GestureRecognitionResult, AppError> {
         let start_time = std::time::Instant::now();
-        
+
         // Get user's gestures
         let user_gestures = self.user_gestures.read().await;
         let gesture_ids = user_gestures.get(user_id).cloned().unwrap_or_default();
-        
+
         let gestures = self.gestures.read().await;
         let mut best_match: Option<(String, String, f32)> = None; // (id, name, confidence)
 
@@ -322,27 +377,33 @@ impl CustomGestureManager {
                 }
 
                 // Check trigger conditions
-                if !self.check_trigger_conditions(&gesture.trigger_conditions).await {
+                if !self
+                    .check_trigger_conditions(&gesture.trigger_conditions)
+                    .await
+                {
                     continue;
                 }
 
                 // Calculate recognition confidence
-                let confidence = self.recognition_engine.calculate_confidence(&sensor_data, &gesture.training_samples).await;
-                
-                if confidence > gesture.recognition_threshold {
-                    if best_match.is_none() || confidence > best_match.as_ref().unwrap().2 {
-                        best_match = Some((gesture_id.clone(), gesture.name.clone(), confidence));
-                    }
+                let confidence = self
+                    .recognition_engine
+                    .calculate_confidence(&sensor_data, &gesture.training_samples)
+                    .await;
+
+                if confidence > gesture.recognition_threshold
+                    && (best_match.is_none() || confidence > best_match.as_ref().unwrap().2)
+                {
+                    best_match = Some((gesture_id.clone(), gesture.name.clone(), confidence));
                 }
             }
         }
 
         let execution_time = start_time.elapsed().as_millis() as f32;
-        
+
         if let Some((gesture_id, gesture_name, confidence)) = best_match {
             // Execute gesture actions
             let actions_executed = self.execute_gesture_actions(&gesture_id).await?;
-            
+
             // Update usage count
             drop(gestures);
             let mut gestures_mut = self.gestures.write().await;
@@ -398,11 +459,12 @@ impl CustomGestureManager {
     /// Execute gesture actions
     async fn execute_gesture_actions(&self, gesture_id: &str) -> Result<Vec<String>, AppError> {
         let gestures = self.gestures.read().await;
-        let gesture = gestures.get(gesture_id)
-            .ok_or_else(|| AppError::Io(std::io::Error::new(
+        let gesture = gestures.get(gesture_id).ok_or_else(|| {
+            AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "Gesture not found"
-            )))?;
+                "Gesture not found",
+            ))
+        })?;
 
         let mut executed_actions = Vec::new();
 
@@ -442,9 +504,10 @@ impl CustomGestureManager {
     pub async fn get_user_gestures(&self, user_id: &str) -> Vec<CustomGesture> {
         let user_gestures = self.user_gestures.read().await;
         let gesture_ids = user_gestures.get(user_id).cloned().unwrap_or_default();
-        
+
         let gestures = self.gestures.read().await;
-        gesture_ids.iter()
+        gesture_ids
+            .iter()
             .filter_map(|id| gestures.get(id).cloned())
             .collect()
     }
@@ -455,17 +518,17 @@ impl CustomGestureManager {
         let mut user_gestures = self.user_gestures.write().await;
 
         // Verify ownership
-        if let Some(gesture) = gestures.get(gesture_id) {
-            if gesture.user_id != user_id {
-                return Err(AppError::Io(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "Not authorized to delete this gesture"
-                )));
-            }
+        if let Some(gesture) = gestures.get(gesture_id)
+            && gesture.user_id != user_id
+        {
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "Not authorized to delete this gesture",
+            )));
         }
 
         gestures.remove(gesture_id);
-        
+
         if let Some(user_gesture_list) = user_gestures.get_mut(user_id) {
             user_gesture_list.retain(|id| id != gesture_id);
         }
@@ -478,7 +541,7 @@ impl CustomGestureManager {
     pub async fn get_stats(&self) -> serde_json::Value {
         let gestures = self.gestures.read().await;
         let user_gestures = self.user_gestures.read().await;
-        
+
         let total_gestures = gestures.len();
         let enabled_gestures = gestures.values().filter(|g| g.is_enabled).count();
         let total_users = user_gestures.len();
@@ -507,20 +570,25 @@ impl GestureRecognitionEngine {
         Ok(0.85) // Mock accuracy
     }
 
-    async fn calculate_confidence(&self, _input: &[SensorReading], _training_samples: &[GestureTrainingSample]) -> f32 {
+    async fn calculate_confidence(
+        &self,
+        _input: &[SensorReading],
+        _training_samples: &[GestureTrainingSample],
+    ) -> f32 {
         // Simplified confidence calculation
         0.9 // Mock confidence
     }
 }
 
 /// Global custom gesture manager instance
-static CUSTOM_GESTURE_MANAGER: tokio::sync::OnceCell<CustomGestureManager> = tokio::sync::OnceCell::const_new();
+static CUSTOM_GESTURE_MANAGER: tokio::sync::OnceCell<CustomGestureManager> =
+    tokio::sync::OnceCell::const_new();
 
 /// Get the global custom gesture manager
 pub async fn get_custom_gesture_manager() -> &'static CustomGestureManager {
-    CUSTOM_GESTURE_MANAGER.get_or_init(|| async {
-        CustomGestureManager::new()
-    }).await
+    CUSTOM_GESTURE_MANAGER
+        .get_or_init(|| async { CustomGestureManager::new() })
+        .await
 }
 
 #[cfg(test)]
@@ -530,14 +598,17 @@ mod tests {
     #[tokio::test]
     async fn test_gesture_creation() {
         let manager = CustomGestureManager::new();
-        
-        let gesture_id = manager.create_gesture(
-            "user1".to_string(),
-            "Test Gesture".to_string(),
-            "A test gesture".to_string(),
-            GestureType::Tap
-        ).await.unwrap();
-        
+
+        let gesture_id = manager
+            .create_gesture(
+                "user1".to_string(),
+                "Test Gesture".to_string(),
+                "A test gesture".to_string(),
+                GestureType::Tap,
+            )
+            .await
+            .unwrap();
+
         let gestures = manager.get_user_gestures("user1").await;
         assert_eq!(gestures.len(), 1);
         assert_eq!(gestures[0].id, gesture_id);
@@ -546,27 +617,28 @@ mod tests {
     #[tokio::test]
     async fn test_training_session() {
         let manager = CustomGestureManager::new();
-        
-        let gesture_id = manager.create_gesture(
-            "user1".to_string(),
-            "Test Gesture".to_string(),
-            "A test gesture".to_string(),
-            GestureType::Tap
-        ).await.unwrap();
-        
+
+        let gesture_id = manager
+            .create_gesture(
+                "user1".to_string(),
+                "Test Gesture".to_string(),
+                "A test gesture".to_string(),
+                GestureType::Tap,
+            )
+            .await
+            .unwrap();
+
         manager.start_training(gesture_id, 3).await.unwrap();
-        
+
         // Record training samples
-        let sensor_data = vec![
-            SensorReading {
-                timestamp_ms: 0,
-                accelerometer: [1.0, 0.0, 0.0],
-                gyroscope: [0.0, 0.0, 0.0],
-                magnetometer: [0.0, 0.0, 1.0],
-                quaternion: [1.0, 0.0, 0.0, 0.0],
-            }
-        ];
-        
+        let sensor_data = vec![SensorReading {
+            timestamp_ms: 0,
+            accelerometer: [1.0, 0.0, 0.0],
+            gyroscope: [0.0, 0.0, 0.0],
+            magnetometer: [0.0, 0.0, 1.0],
+            quaternion: [1.0, 0.0, 0.0, 0.0],
+        }];
+
         let result = manager.record_training_sample(sensor_data).await;
         assert!(result.is_ok());
     }

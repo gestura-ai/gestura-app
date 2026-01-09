@@ -49,7 +49,7 @@ pub struct FederatedConfig {
     pub min_clients_for_aggregation: usize,
     pub max_clients_per_round: usize,
     pub learning_rate: f32,
-    pub privacy_epsilon: f32, // Differential privacy parameter
+    pub privacy_epsilon: f32,           // Differential privacy parameter
     pub model_staleness_threshold: u64, // Max version difference allowed
     pub aggregation_strategy: AggregationStrategy,
     pub enable_secure_aggregation: bool,
@@ -141,16 +141,19 @@ impl FederatedLearningCoordinator {
     /// Register a client for federated learning
     pub async fn register_client(&self, client_id: String) -> Result<(), AppError> {
         let mut registry = self.client_registry.write().await;
-        
-        registry.insert(client_id.clone(), ClientInfo {
-            client_id: client_id.clone(),
-            last_seen: chrono::Utc::now(),
-            model_versions: HashMap::new(),
-            data_quality_score: 0.5, // Default score
-            resource_capacity: 1.0,   // Default capacity
-            privacy_budget_remaining: 10.0, // Default budget
-            total_contributions: 0,
-        });
+
+        registry.insert(
+            client_id.clone(),
+            ClientInfo {
+                client_id: client_id.clone(),
+                last_seen: chrono::Utc::now(),
+                model_versions: HashMap::new(),
+                data_quality_score: 0.5,        // Default score
+                resource_capacity: 1.0,         // Default capacity
+                privacy_budget_remaining: 10.0, // Default budget
+                total_contributions: 0,
+            },
+        );
 
         tracing::info!("Registered federated learning client: {}", client_id);
         Ok(())
@@ -167,11 +170,12 @@ impl FederatedLearningCoordinator {
         // Store pending update
         let mut pending = self.pending_updates.write().await;
         let model_type = ModelType::GestureRecognition; // Infer from update context
-        
+
         let client_id = private_update.client_id.clone();
         let privacy_budget = private_update.privacy_budget;
 
-        pending.entry(model_type.clone())
+        pending
+            .entry(model_type.clone())
             .or_insert_with(Vec::new)
             .push(private_update);
 
@@ -185,7 +189,9 @@ impl FederatedLearningCoordinator {
 
         // Check if we can trigger aggregation
         let config = self.config.read().await;
-        if pending.get(&model_type).map(|v| v.len()).unwrap_or(0) >= config.min_clients_for_aggregation {
+        if pending.get(&model_type).map(|v| v.len()).unwrap_or(0)
+            >= config.min_clients_for_aggregation
+        {
             drop(pending);
             drop(registry);
             drop(config);
@@ -205,7 +211,7 @@ impl FederatedLearningCoordinator {
     async fn trigger_aggregation(&self, model_type: ModelType) -> Result<(), AppError> {
         let mut pending = self.pending_updates.write().await;
         let updates = pending.remove(&model_type).unwrap_or_default();
-        
+
         if updates.is_empty() {
             return Ok(());
         }
@@ -214,15 +220,17 @@ impl FederatedLearningCoordinator {
 
         // Select clients for this round
         let selected_updates = self.select_clients_for_aggregation(&updates).await;
-        
+
         if selected_updates.len() < self.config.read().await.min_clients_for_aggregation {
             tracing::warn!("Not enough clients selected for aggregation");
             return Ok(());
         }
 
         // Perform aggregation
-        let new_global_model = self.aggregate_updates(&selected_updates, &model_type).await?;
-        
+        let new_global_model = self
+            .aggregate_updates(&selected_updates, &model_type)
+            .await?;
+
         // Update global model
         let mut models = self.global_models.write().await;
         let old_version = models.get(&model_type).map(|m| m.version).unwrap_or(0);
@@ -232,11 +240,14 @@ impl FederatedLearningCoordinator {
         let round = AggregationRound {
             round_id: uuid::Uuid::new_v4().to_string(),
             model_type: model_type.clone(),
-            participating_clients: selected_updates.iter().map(|u| u.client_id.clone()).collect(),
+            participating_clients: selected_updates
+                .iter()
+                .map(|u| u.client_id.clone())
+                .collect(),
             old_version,
             new_version: new_global_model.version,
-            accuracy_improvement: new_global_model.accuracy - 
-                models.get(&model_type).map(|m| m.accuracy).unwrap_or(0.0),
+            accuracy_improvement: new_global_model.accuracy
+                - models.get(&model_type).map(|m| m.accuracy).unwrap_or(0.0),
             timestamp: chrono::Utc::now(),
         };
 
@@ -246,8 +257,11 @@ impl FederatedLearningCoordinator {
             history.remove(0); // Keep only recent rounds
         }
 
-        tracing::info!("Completed federated aggregation for {:?}, new version: {}", 
-            model_type, new_global_model.version);
+        tracing::info!(
+            "Completed federated aggregation for {:?}, new version: {}",
+            model_type,
+            new_global_model.version
+        );
 
         Ok(())
     }
@@ -256,17 +270,18 @@ impl FederatedLearningCoordinator {
     async fn validate_update(&self, update: &ModelUpdate) -> Result<(), AppError> {
         // Check client registration
         let registry = self.client_registry.read().await;
-        let client_info = registry.get(&update.client_id)
-            .ok_or_else(|| AppError::Io(std::io::Error::new(
+        let client_info = registry.get(&update.client_id).ok_or_else(|| {
+            AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "Client not registered"
-            )))?;
+                "Client not registered",
+            ))
+        })?;
 
         // Check privacy budget
         if client_info.privacy_budget_remaining < update.privacy_budget {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
-                "Insufficient privacy budget"
+                "Insufficient privacy budget",
             )));
         }
 
@@ -278,7 +293,7 @@ impl FederatedLearningCoordinator {
             if version_diff > config.model_staleness_threshold {
                 return Err(AppError::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "Model update too stale"
+                    "Model update too stale",
                 )));
             }
         }
@@ -287,7 +302,7 @@ impl FederatedLearningCoordinator {
         if update.parameters.is_empty() || update.gradient_updates.is_empty() {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Invalid parameter dimensions"
+                "Invalid parameter dimensions",
             )));
         }
 
@@ -295,13 +310,16 @@ impl FederatedLearningCoordinator {
     }
 
     /// Apply differential privacy to model update
-    async fn apply_differential_privacy(&self, mut update: ModelUpdate) -> Result<ModelUpdate, AppError> {
+    async fn apply_differential_privacy(
+        &self,
+        mut update: ModelUpdate,
+    ) -> Result<ModelUpdate, AppError> {
         let config = self.config.read().await;
         let epsilon = config.privacy_epsilon;
-        
+
         // Add Gaussian noise to gradients for differential privacy
         let noise_scale = 2.0 / epsilon; // Simplified noise calculation
-        
+
         for gradient in update.gradient_updates.iter_mut() {
             let noise = rand::random::<f32>() * noise_scale - noise_scale / 2.0;
             *gradient += noise;
@@ -309,8 +327,13 @@ impl FederatedLearningCoordinator {
 
         // Clip gradients to bound sensitivity
         let clip_norm = 1.0;
-        let gradient_norm: f32 = update.gradient_updates.iter().map(|g| g * g).sum::<f32>().sqrt();
-        
+        let gradient_norm: f32 = update
+            .gradient_updates
+            .iter()
+            .map(|g| g * g)
+            .sum::<f32>()
+            .sqrt();
+
         if gradient_norm > clip_norm {
             let scale_factor = clip_norm / gradient_norm;
             for gradient in update.gradient_updates.iter_mut() {
@@ -326,8 +349,9 @@ impl FederatedLearningCoordinator {
     async fn select_clients_for_aggregation(&self, updates: &[ModelUpdate]) -> Vec<ModelUpdate> {
         let config = self.config.read().await;
         let registry = self.client_registry.read().await;
-        
-        let mut scored_updates: Vec<(ModelUpdate, f32)> = updates.iter()
+
+        let mut scored_updates: Vec<(ModelUpdate, f32)> = updates
+            .iter()
             .filter_map(|update| {
                 registry.get(&update.client_id).map(|client_info| {
                     let score = match config.client_selection_strategy {
@@ -336,10 +360,10 @@ impl FederatedLearningCoordinator {
                         ClientSelectionStrategy::ResourceBased => client_info.resource_capacity,
                         ClientSelectionStrategy::Staleness => {
                             1.0 / (1.0 + update.model_version as f32)
-                        },
+                        }
                         ClientSelectionStrategy::Hybrid => {
                             (client_info.data_quality_score + client_info.resource_capacity) / 2.0
-                        },
+                        }
                     };
                     (update.clone(), score)
                 })
@@ -349,22 +373,32 @@ impl FederatedLearningCoordinator {
         // Sort by score and select top clients
         scored_updates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored_updates.truncate(config.max_clients_per_round);
-        
-        scored_updates.into_iter().map(|(update, _)| update).collect()
+
+        scored_updates
+            .into_iter()
+            .map(|(update, _)| update)
+            .collect()
     }
 
     /// Aggregate model updates
-    async fn aggregate_updates(&self, updates: &[ModelUpdate], model_type: &ModelType) -> Result<GlobalModel, AppError> {
+    async fn aggregate_updates(
+        &self,
+        updates: &[ModelUpdate],
+        model_type: &ModelType,
+    ) -> Result<GlobalModel, AppError> {
         if updates.is_empty() {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "No updates to aggregate"
+                "No updates to aggregate",
             )));
         }
 
         let config = self.config.read().await;
         let current_models = self.global_models.read().await;
-        let current_version = current_models.get(model_type).map(|m| m.version).unwrap_or(0);
+        let current_version = current_models
+            .get(model_type)
+            .map(|m| m.version)
+            .unwrap_or(0);
 
         // Initialize aggregated parameters
         let param_size = updates[0].parameters.len();
@@ -377,12 +411,12 @@ impl FederatedLearningCoordinator {
                 for update in updates {
                     let weight = update.training_samples as f32;
                     total_weight += weight;
-                    
+
                     for (i, &param) in update.parameters.iter().enumerate() {
                         aggregated_params[i] += param * weight;
                     }
                 }
-                
+
                 // Normalize by total weight
                 for param in aggregated_params.iter_mut() {
                     *param /= total_weight;
@@ -392,26 +426,30 @@ impl FederatedLearningCoordinator {
                 for update in updates {
                     let weight = update.accuracy;
                     total_weight += weight;
-                    
+
                     for (i, &param) in update.parameters.iter().enumerate() {
                         aggregated_params[i] += param * weight;
                     }
                 }
-                
+
                 for param in aggregated_params.iter_mut() {
                     *param /= total_weight;
                 }
             }
             AggregationStrategy::MedianAggregation => {
                 // For each parameter, take the median across all updates
-                for i in 0..param_size {
-                    let mut param_values: Vec<f32> = updates.iter()
-                        .map(|u| u.parameters[i])
-                        .collect();
-                    param_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                    
-                    aggregated_params[i] = if param_values.len() % 2 == 0 {
-                        (param_values[param_values.len() / 2 - 1] + param_values[param_values.len() / 2]) / 2.0
+                for (i, aggregated_param) in
+                    aggregated_params.iter_mut().enumerate().take(param_size)
+                {
+                    let mut param_values: Vec<f32> =
+                        updates.iter().map(|u| u.parameters[i]).collect();
+                    param_values
+                        .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+                    *aggregated_param = if param_values.len() % 2 == 0 {
+                        (param_values[param_values.len() / 2 - 1]
+                            + param_values[param_values.len() / 2])
+                            / 2.0
                     } else {
                         param_values[param_values.len() / 2]
                     };
@@ -422,12 +460,12 @@ impl FederatedLearningCoordinator {
                 for update in updates {
                     let weight = update.training_samples as f32;
                     total_weight += weight;
-                    
+
                     for (i, &param) in update.parameters.iter().enumerate() {
                         aggregated_params[i] += param * weight;
                     }
                 }
-                
+
                 for param in aggregated_params.iter_mut() {
                     *param /= total_weight;
                 }
@@ -435,9 +473,14 @@ impl FederatedLearningCoordinator {
         }
 
         // Calculate aggregated accuracy
-        let aggregated_accuracy = updates.iter()
+        let aggregated_accuracy = updates
+            .iter()
             .map(|u| u.accuracy * u.training_samples as f32)
-            .sum::<f32>() / updates.iter().map(|u| u.training_samples as f32).sum::<f32>();
+            .sum::<f32>()
+            / updates
+                .iter()
+                .map(|u| u.training_samples as f32)
+                .sum::<f32>();
 
         Ok(GlobalModel {
             version: current_version + 1,
@@ -458,7 +501,8 @@ impl FederatedLearningCoordinator {
         let pending = self.pending_updates.read().await;
 
         let total_clients = registry.len();
-        let active_clients = registry.values()
+        let active_clients = registry
+            .values()
             .filter(|c| (chrono::Utc::now() - c.last_seen).num_hours() < 24)
             .count();
 
@@ -480,27 +524,28 @@ impl FederatedLearningCoordinator {
     pub async fn clear_client_data(&self, client_id: &str) -> Result<(), AppError> {
         let mut registry = self.client_registry.write().await;
         let mut pending = self.pending_updates.write().await;
-        
+
         registry.remove(client_id);
-        
+
         // Remove pending updates from this client
         for updates in pending.values_mut() {
             updates.retain(|u| u.client_id != client_id);
         }
-        
+
         tracing::info!("Cleared federated learning data for client: {}", client_id);
         Ok(())
     }
 }
 
 /// Global federated learning coordinator instance
-static FEDERATED_COORDINATOR: tokio::sync::OnceCell<FederatedLearningCoordinator> = tokio::sync::OnceCell::const_new();
+static FEDERATED_COORDINATOR: tokio::sync::OnceCell<FederatedLearningCoordinator> =
+    tokio::sync::OnceCell::const_new();
 
 /// Get the global federated learning coordinator
 pub async fn get_federated_coordinator() -> &'static FederatedLearningCoordinator {
-    FEDERATED_COORDINATOR.get_or_init(|| async {
-        FederatedLearningCoordinator::new(FederatedConfig::default())
-    }).await
+    FEDERATED_COORDINATOR
+        .get_or_init(|| async { FederatedLearningCoordinator::new(FederatedConfig::default()) })
+        .await
 }
 
 #[cfg(test)]
@@ -510,9 +555,12 @@ mod tests {
     #[tokio::test]
     async fn test_client_registration() {
         let coordinator = FederatedLearningCoordinator::new(FederatedConfig::default());
-        
-        coordinator.register_client("client1".to_string()).await.unwrap();
-        
+
+        coordinator
+            .register_client("client1".to_string())
+            .await
+            .unwrap();
+
         let stats = coordinator.get_stats().await;
         assert_eq!(stats["total_clients"].as_u64().unwrap(), 1);
     }
@@ -523,9 +571,12 @@ mod tests {
             min_clients_for_aggregation: 1,
             ..FederatedConfig::default()
         });
-        
-        coordinator.register_client("client1".to_string()).await.unwrap();
-        
+
+        coordinator
+            .register_client("client1".to_string())
+            .await
+            .unwrap();
+
         let update = ModelUpdate {
             update_id: "update1".to_string(),
             client_id: "client1".to_string(),
@@ -537,17 +588,19 @@ mod tests {
             timestamp: chrono::Utc::now(),
             privacy_budget: 0.1,
         };
-        
+
         coordinator.submit_update(update).await.unwrap();
-        
-        let model = coordinator.get_global_model(ModelType::GestureRecognition).await;
+
+        let model = coordinator
+            .get_global_model(ModelType::GestureRecognition)
+            .await;
         assert!(model.is_some());
     }
 
     #[tokio::test]
     async fn test_differential_privacy() {
         let coordinator = FederatedLearningCoordinator::new(FederatedConfig::default());
-        
+
         let original_update = ModelUpdate {
             update_id: "update1".to_string(),
             client_id: "client1".to_string(),
@@ -559,11 +612,17 @@ mod tests {
             timestamp: chrono::Utc::now(),
             privacy_budget: 0.0,
         };
-        
-        let private_update = coordinator.apply_differential_privacy(original_update.clone()).await.unwrap();
-        
+
+        let private_update = coordinator
+            .apply_differential_privacy(original_update.clone())
+            .await
+            .unwrap();
+
         // Gradients should be different due to noise
-        assert_ne!(private_update.gradient_updates, original_update.gradient_updates);
+        assert_ne!(
+            private_update.gradient_updates,
+            original_update.gradient_updates
+        );
         assert!(private_update.privacy_budget > 0.0);
     }
 }

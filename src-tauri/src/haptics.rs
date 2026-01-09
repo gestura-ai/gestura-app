@@ -126,6 +126,7 @@ pub struct MockHaptics;
 
 #[async_trait::async_trait]
 impl HapticInterface for MockHaptics {
-    async fn send(&self, _auth: &HapticAuthToken, _req: &HapticRequest) -> Result<(), AppError> { Ok(()) }
+    async fn send(&self, _auth: &HapticAuthToken, _req: &HapticRequest) -> Result<(), AppError> {
+        Ok(())
+    }
 }
-

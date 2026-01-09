@@ -1,12 +1,12 @@
 //! Device simulation for testing without real hardware
 //! Provides virtual Haptic Harmony rings and other devices
 
+use crate::AppError;
 use crate::ble::{BleEvent, GestureType, RingManager, RingStatus};
 use crate::haptics::HapticRequest;
-use crate::AppError;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 
 /// Simulated Haptic Harmony ring device
 #[derive(Debug, Clone)]
@@ -46,7 +46,7 @@ impl SimulatedRing {
     /// Simulate connection status changes
     pub fn simulate_connection_change(&mut self) -> Option<BleEvent> {
         let should_disconnect = rand::random::<f32>() < 0.1; // 10% chance
-        
+
         if self.is_connected && should_disconnect {
             self.is_connected = false;
             Some(BleEvent::Disconnected(self.device_id.clone()))
@@ -66,7 +66,8 @@ impl SimulatedRing {
         }
 
         let gesture_chance = rand::random::<f32>();
-        if gesture_chance < 0.05 { // 5% chance per update
+        if gesture_chance < 0.05 {
+            // 5% chance per update
             let gestures = [
                 GestureType::Tap,
                 GestureType::DoubleTap,
@@ -94,7 +95,7 @@ impl DeviceSimulator {
     /// Create a new device simulator
     pub fn new() -> (Self, broadcast::Receiver<BleEvent>) {
         let (event_tx, event_rx) = broadcast::channel(1000);
-        
+
         let simulator = Self {
             rings: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
@@ -130,27 +131,28 @@ impl DeviceSimulator {
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
-            
+
             while *simulation_running.read().await {
                 interval.tick().await;
-                
+
                 let mut rings_guard = rings.write().await;
                 for (_, ring) in rings_guard.iter_mut() {
                     // Update battery
                     ring.update_battery();
-                    
+
                     // Simulate connection changes
                     if let Some(event) = ring.simulate_connection_change() {
                         let _ = event_tx.send(event);
                     }
-                    
+
                     // Generate gestures
                     if let Some(gesture) = ring.generate_gesture() {
                         let _ = event_tx.send(BleEvent::GestureDetected(gesture));
                     }
-                    
+
                     // Emit battery level updates occasionally
-                    if rand::random::<f32>() < 0.2 { // 20% chance
+                    if rand::random::<f32>() < 0.2 {
+                        // 20% chance
                         let _ = event_tx.send(BleEvent::BatteryLevel(ring.battery_level));
                     }
                 }
@@ -199,8 +201,10 @@ impl DeviceSimulator {
             ring.is_paired = true;
             ring.is_connected = true;
             ring.last_seen = chrono::Utc::now();
-            
-            let _ = self.event_tx.send(BleEvent::Connected(device_id.to_string()));
+
+            let _ = self
+                .event_tx
+                .send(BleEvent::Connected(device_id.to_string()));
             tracing::info!("Simulated pairing for ring: {}", device_id);
             Ok(())
         } else {
@@ -209,12 +213,21 @@ impl DeviceSimulator {
     }
 
     /// Simulate haptic feedback
-    pub async fn send_haptic(&self, device_id: &str, request: HapticRequest) -> Result<(), AppError> {
+    pub async fn send_haptic(
+        &self,
+        device_id: &str,
+        request: HapticRequest,
+    ) -> Result<(), AppError> {
         let rings = self.rings.read().await;
         if let Some(ring) = rings.get(device_id) {
             if ring.is_connected {
-                tracing::info!("Simulated haptic feedback for {}: {:?} ({}ms, {}% intensity)", 
-                    device_id, request.pattern, request.duration_ms, (request.intensity * 100.0) as u8);
+                tracing::info!(
+                    "Simulated haptic feedback for {}: {:?} ({}ms, {}% intensity)",
+                    device_id,
+                    request.pattern,
+                    request.duration_ms,
+                    (request.intensity * 100.0) as u8
+                );
                 Ok(())
             } else {
                 Err(AppError::Ble("Ring not connected".to_string()))
@@ -229,7 +242,10 @@ impl DeviceSimulator {
         let mut rings = self.rings.write().await;
         if let Some(ring) = rings.get_mut(device_id) {
             ring.gesture_monitoring = true;
-            tracing::info!("Started gesture monitoring for simulated ring: {}", device_id);
+            tracing::info!(
+                "Started gesture monitoring for simulated ring: {}",
+                device_id
+            );
             Ok(())
         } else {
             Err(AppError::Ble("Ring not found".to_string()))
@@ -241,7 +257,10 @@ impl DeviceSimulator {
         let mut rings = self.rings.write().await;
         if let Some(ring) = rings.get_mut(device_id) {
             ring.gesture_monitoring = false;
-            tracing::info!("Stopped gesture monitoring for simulated ring: {}", device_id);
+            tracing::info!(
+                "Stopped gesture monitoring for simulated ring: {}",
+                device_id
+            );
             Ok(())
         } else {
             Err(AppError::Ble("Ring not found".to_string()))
@@ -283,7 +302,11 @@ impl RingManager for SimulatedRingManager {
         self.simulator.send_haptic(device_id, pattern).await
     }
 
-    async fn send_test_haptic(&self, device_id: &str, test_pattern: crate::ble::TestHapticPattern) -> Result<(), AppError> {
+    async fn send_test_haptic(
+        &self,
+        device_id: &str,
+        test_pattern: crate::ble::TestHapticPattern,
+    ) -> Result<(), AppError> {
         tracing::info!("Sending test haptic to {}: {:?}", device_id, test_pattern);
         // Convert test pattern to regular haptic request for simulation
         let haptic_request = match test_pattern {
@@ -312,12 +335,24 @@ impl RingManager for SimulatedRingManager {
         self.simulator.send_haptic(device_id, haptic_request).await
     }
 
-    async fn start_ota_update(&self, device_id: &str, firmware_data: Vec<u8>) -> Result<(), AppError> {
-        tracing::info!("Simulated OTA update for {}: {} bytes", device_id, firmware_data.len());
+    async fn start_ota_update(
+        &self,
+        device_id: &str,
+        firmware_data: Vec<u8>,
+    ) -> Result<(), AppError> {
+        tracing::info!(
+            "Simulated OTA update for {}: {} bytes",
+            device_id,
+            firmware_data.len()
+        );
         Ok(())
     }
 
-    async fn start_gesture_monitoring(&self, device_id: &str, _event_tx: broadcast::Sender<BleEvent>) -> Result<(), AppError> {
+    async fn start_gesture_monitoring(
+        &self,
+        device_id: &str,
+        _event_tx: broadcast::Sender<BleEvent>,
+    ) -> Result<(), AppError> {
         self.simulator.start_gesture_monitoring(device_id).await
     }
 
@@ -331,7 +366,10 @@ impl RingManager for SimulatedRingManager {
         Ok(())
     }
 
-    async fn get_simulator_health(&self, device_id: &str) -> Result<crate::ble::SimulatorStatus, AppError> {
+    async fn get_simulator_health(
+        &self,
+        device_id: &str,
+    ) -> Result<crate::ble::SimulatorStatus, AppError> {
         // Check if the device exists in our simulator
         let rings = self.simulator.get_rings().await;
         if rings.contains(&device_id.to_string()) {
@@ -358,9 +396,15 @@ pub async fn create_test_simulator() -> (Arc<DeviceSimulator>, broadcast::Receiv
     let simulator = Arc::new(simulator);
 
     // Add some sample rings
-    simulator.add_ring("sim-ring-001".to_string(), "Simulated Ring 1".to_string()).await;
-    simulator.add_ring("sim-ring-002".to_string(), "Simulated Ring 2".to_string()).await;
-    simulator.add_ring("sim-ring-003".to_string(), "Test Ring".to_string()).await;
+    simulator
+        .add_ring("sim-ring-001".to_string(), "Simulated Ring 1".to_string())
+        .await;
+    simulator
+        .add_ring("sim-ring-002".to_string(), "Simulated Ring 2".to_string())
+        .await;
+    simulator
+        .add_ring("sim-ring-003".to_string(), "Test Ring".to_string())
+        .await;
 
     // Start simulation
     simulator.start_simulation().await;
@@ -375,14 +419,16 @@ mod tests {
     #[tokio::test]
     async fn test_device_simulator() {
         let (simulator, mut event_rx) = DeviceSimulator::new();
-        
+
         // Add a ring
-        simulator.add_ring("test-ring".to_string(), "Test Ring".to_string()).await;
-        
+        simulator
+            .add_ring("test-ring".to_string(), "Test Ring".to_string())
+            .await;
+
         // Should receive device found event
         let event = event_rx.recv().await.unwrap();
         assert!(matches!(event, BleEvent::DeviceFound(_)));
-        
+
         // Get rings
         let rings = simulator.get_rings().await;
         assert_eq!(rings.len(), 1);
@@ -394,17 +440,19 @@ mod tests {
         let (simulator, _) = DeviceSimulator::new();
         let simulator = Arc::new(simulator);
         let manager = SimulatedRingManager::new(simulator.clone());
-        
+
         // Add a ring
-        simulator.add_ring("test-ring".to_string(), "Test Ring".to_string()).await;
-        
+        simulator
+            .add_ring("test-ring".to_string(), "Test Ring".to_string())
+            .await;
+
         // Test scanning
         let rings = manager.scan_for_rings().await.unwrap();
         assert_eq!(rings.len(), 1);
-        
+
         // Test pairing
         manager.pair_ring("test-ring").await.unwrap();
-        
+
         // Test status
         let status = manager.get_ring_status("test-ring").await.unwrap();
         assert!(status.is_some());

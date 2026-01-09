@@ -53,7 +53,7 @@ impl NoiseCancellationProcessor {
     /// Create a new noise cancellation processor
     pub fn new(config: NoiseCancellationConfig) -> Self {
         let window_function = Self::create_hann_window(config.frame_size);
-        
+
         Self {
             noise_spectrum: vec![0.0; config.frame_size / 2 + 1],
             gain_history: VecDeque::with_capacity(10),
@@ -70,20 +70,24 @@ impl NoiseCancellationProcessor {
         if input_frame.len() != self.config.frame_size {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("Frame size mismatch: expected {}, got {}", 
-                    self.config.frame_size, input_frame.len())
+                format!(
+                    "Frame size mismatch: expected {}, got {}",
+                    self.config.frame_size,
+                    input_frame.len()
+                ),
             )));
         }
 
         // Apply window function
-        let windowed_frame: Vec<f32> = input_frame.iter()
+        let windowed_frame: Vec<f32> = input_frame
+            .iter()
             .zip(self.window_function.iter())
             .map(|(sample, window)| sample * window)
             .collect();
 
         // Compute FFT (simplified - in real implementation use proper FFT library)
         let spectrum = self.compute_spectrum(&windowed_frame);
-        
+
         // Update noise estimation if needed
         if !self.is_noise_estimated || self.config.adaptive_estimation {
             self.update_noise_estimation(&spectrum);
@@ -101,17 +105,22 @@ impl NoiseCancellationProcessor {
     /// Process streaming audio with overlap-add
     pub fn process_stream(&mut self, audio_data: &[f32]) -> Result<Vec<f32>, AppError> {
         let mut output = Vec::new();
-        
+
         // Add new data to buffer
         self.frame_buffer.extend_from_slice(audio_data);
-        
+
         // Process complete frames with 50% overlap
         let hop_size = self.config.frame_size / 2;
-        
+
         while self.frame_buffer.len() >= self.config.frame_size {
-            let frame: Vec<f32> = self.frame_buffer.iter().take(self.config.frame_size).cloned().collect();
+            let frame: Vec<f32> = self
+                .frame_buffer
+                .iter()
+                .take(self.config.frame_size)
+                .cloned()
+                .collect();
             let processed_frame = self.process_frame(&frame)?;
-            
+
             // Overlap-add
             if output.len() < hop_size {
                 output.extend_from_slice(&processed_frame[..hop_size]);
@@ -122,11 +131,11 @@ impl NoiseCancellationProcessor {
                 }
                 output.extend_from_slice(&processed_frame[hop_size..]);
             }
-            
+
             // Remove processed samples
             self.frame_buffer.drain(..hop_size);
         }
-        
+
         Ok(output)
     }
 
@@ -135,24 +144,25 @@ impl NoiseCancellationProcessor {
         if noise_samples.is_empty() {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Need at least one noise sample"
+                "Need at least one noise sample",
             )));
         }
 
         let mut accumulated_spectrum = vec![0.0; self.config.frame_size / 2 + 1];
-        
+
         for sample in noise_samples {
             if sample.len() != self.config.frame_size {
                 continue;
             }
-            
-            let windowed: Vec<f32> = sample.iter()
+
+            let windowed: Vec<f32> = sample
+                .iter()
                 .zip(self.window_function.iter())
                 .map(|(s, w)| s * w)
                 .collect();
-            
+
             let spectrum = self.compute_spectrum(&windowed);
-            
+
             for (i, &mag) in spectrum.iter().enumerate() {
                 accumulated_spectrum[i] += mag;
             }
@@ -166,8 +176,11 @@ impl NoiseCancellationProcessor {
 
         self.noise_spectrum = accumulated_spectrum;
         self.is_noise_estimated = true;
-        
-        tracing::info!("Noise spectrum estimated from {} samples", noise_samples.len());
+
+        tracing::info!(
+            "Noise spectrum estimated from {} samples",
+            noise_samples.len()
+        );
         Ok(())
     }
 
@@ -179,7 +192,7 @@ impl NoiseCancellationProcessor {
 
         // Store current frame for noise estimation
         self.noise_frames.push_back(current_spectrum.to_vec());
-        
+
         if self.noise_frames.len() > self.config.noise_window_size {
             self.noise_frames.pop_front();
         }
@@ -187,23 +200,24 @@ impl NoiseCancellationProcessor {
         // Update noise spectrum (simple moving average)
         if self.noise_frames.len() >= self.config.noise_window_size / 2 {
             let mut updated_noise = vec![0.0; current_spectrum.len()];
-            
+
             for frame in &self.noise_frames {
                 for (i, &mag) in frame.iter().enumerate() {
                     updated_noise[i] += mag;
                 }
             }
-            
+
             let count = self.noise_frames.len() as f32;
             for magnitude in updated_noise.iter_mut() {
                 *magnitude /= count;
             }
-            
+
             // Smooth update with existing noise estimate
             if self.is_noise_estimated {
                 let alpha = 0.1; // Update rate
                 for (i, &new_mag) in updated_noise.iter().enumerate() {
-                    self.noise_spectrum[i] = (1.0 - alpha) * self.noise_spectrum[i] + alpha * new_mag;
+                    self.noise_spectrum[i] =
+                        (1.0 - alpha) * self.noise_spectrum[i] + alpha * new_mag;
                 }
             } else {
                 self.noise_spectrum = updated_noise;
@@ -216,45 +230,45 @@ impl NoiseCancellationProcessor {
     fn apply_spectral_subtraction(&mut self, input_spectrum: &[f32]) -> Vec<f32> {
         let mut enhanced_spectrum = Vec::with_capacity(input_spectrum.len());
         let mut current_gains = Vec::with_capacity(input_spectrum.len());
-        
+
         for (i, &input_mag) in input_spectrum.iter().enumerate() {
             let noise_mag = if i < self.noise_spectrum.len() {
                 self.noise_spectrum[i]
             } else {
                 0.0
             };
-            
+
             // Spectral subtraction
             let subtracted_mag = input_mag - self.config.subtraction_factor * noise_mag;
-            
+
             // Calculate gain
             let gain = if input_mag > 0.0 {
                 (subtracted_mag / input_mag).max(self.config.min_gain)
             } else {
                 self.config.min_gain
             };
-            
+
             current_gains.push(gain);
             enhanced_spectrum.push(input_mag * gain);
         }
-        
+
         // Apply gain smoothing
         if let Some(previous_gains) = self.gain_history.back() {
             for (i, gain) in current_gains.iter_mut().enumerate() {
                 if i < previous_gains.len() {
-                    *gain = self.config.smoothing_factor * previous_gains[i] + 
-                           (1.0 - self.config.smoothing_factor) * *gain;
+                    *gain = self.config.smoothing_factor * previous_gains[i]
+                        + (1.0 - self.config.smoothing_factor) * *gain;
                     enhanced_spectrum[i] = input_spectrum[i] * *gain;
                 }
             }
         }
-        
+
         // Store gains for next frame
         self.gain_history.push_back(current_gains);
         if self.gain_history.len() > 5 {
             self.gain_history.pop_front();
         }
-        
+
         enhanced_spectrum
     }
 
@@ -262,23 +276,24 @@ impl NoiseCancellationProcessor {
     fn compute_spectrum(&self, frame: &[f32]) -> Vec<f32> {
         // This is a simplified spectrum computation
         // In a real implementation, use proper FFT library like rustfft
-        
+
         let mut spectrum = Vec::with_capacity(self.config.frame_size / 2 + 1);
-        
+
         for k in 0..=self.config.frame_size / 2 {
             let mut real = 0.0;
             let mut imag = 0.0;
-            
+
             for (n, &sample) in frame.iter().enumerate() {
-                let angle = -2.0 * std::f32::consts::PI * (k as f32) * (n as f32) / (self.config.frame_size as f32);
+                let angle = -2.0 * std::f32::consts::PI * (k as f32) * (n as f32)
+                    / (self.config.frame_size as f32);
                 real += sample * angle.cos();
                 imag += sample * angle.sin();
             }
-            
+
             let magnitude = (real * real + imag * imag).sqrt();
             spectrum.push(magnitude);
         }
-        
+
         spectrum
     }
 
@@ -286,21 +301,22 @@ impl NoiseCancellationProcessor {
     fn spectrum_to_time_domain(&self, spectrum: &[f32]) -> Vec<f32> {
         // This is a simplified inverse transform
         // In a real implementation, use proper IFFT
-        
+
         let mut time_domain = vec![0.0; self.config.frame_size];
-        
+
         for (n, sample) in time_domain.iter_mut().enumerate() {
             for (k, &magnitude) in spectrum.iter().enumerate() {
-                let angle = 2.0 * std::f32::consts::PI * (k as f32) * (n as f32) / (self.config.frame_size as f32);
+                let angle = 2.0 * std::f32::consts::PI * (k as f32) * (n as f32)
+                    / (self.config.frame_size as f32);
                 *sample += magnitude * angle.cos() / (self.config.frame_size as f32);
             }
         }
-        
+
         // Apply window function again
         for (i, sample) in time_domain.iter_mut().enumerate() {
             *sample *= self.window_function[i];
         }
-        
+
         time_domain
     }
 
@@ -347,7 +363,7 @@ impl NoiseCancellationProcessor {
             self.noise_spectrum = vec![0.0; config.frame_size / 2 + 1];
             self.reset();
         }
-        
+
         self.config = config;
     }
 }
@@ -398,7 +414,7 @@ mod tests {
     fn test_noise_canceller_creation() {
         let config = NoiseCancellationConfig::default();
         let processor = NoiseCancellationProcessor::new(config);
-        
+
         let stats = processor.get_stats();
         assert!(!stats.is_noise_estimated);
         assert_eq!(stats.frames_processed, 0);
@@ -419,14 +435,11 @@ mod tests {
             ..NoiseCancellationConfig::default()
         };
         let mut processor = NoiseCancellationProcessor::new(config);
-        
-        let noise_samples = vec![
-            vec![0.1, 0.1, 0.1, 0.1],
-            vec![0.2, 0.2, 0.2, 0.2],
-        ];
-        
+
+        let noise_samples = vec![vec![0.1, 0.1, 0.1, 0.1], vec![0.2, 0.2, 0.2, 0.2]];
+
         processor.estimate_noise(&noise_samples).unwrap();
-        
+
         let stats = processor.get_stats();
         assert!(stats.is_noise_estimated);
         assert!(stats.noise_level > 0.0);
@@ -439,15 +452,15 @@ mod tests {
             ..NoiseCancellationConfig::default()
         };
         let mut processor = NoiseCancellationProcessor::new(config);
-        
+
         // Estimate noise first
         let noise_samples = vec![vec![0.01, 0.01, 0.01, 0.01]];
         processor.estimate_noise(&noise_samples).unwrap();
-        
+
         // Process a frame
         let input_frame = vec![0.5, 0.4, 0.3, 0.2];
         let output_frame = processor.process_frame(&input_frame).unwrap();
-        
+
         assert_eq!(output_frame.len(), input_frame.len());
     }
 
@@ -455,7 +468,7 @@ mod tests {
     fn test_speech_optimized_settings() {
         let processor = create_speech_noise_canceller();
         let stats = processor.get_stats();
-        
+
         assert_eq!(stats.subtraction_factor, 1.5);
         assert_eq!(stats.min_gain, 0.15);
     }

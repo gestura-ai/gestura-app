@@ -39,8 +39,8 @@ pub struct Script {
 /// Script permissions
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ScriptPermission {
-    FileSystem(String),    // Path pattern
-    Network(String),       // Host pattern
+    FileSystem(String), // Path pattern
+    Network(String),    // Host pattern
     SystemCommands,
     VoiceControl,
     GestureControl,
@@ -150,8 +150,9 @@ impl ScriptingEngine {
 
     /// Load script from file
     pub async fn load_script(&self, script_path: &PathBuf) -> Result<String, AppError> {
-        let content = tokio::fs::read_to_string(script_path).await
-            .map_err(|e| AppError::Io(e))?;
+        let content = tokio::fs::read_to_string(script_path)
+            .await
+            .map_err(AppError::Io)?;
 
         // Parse script metadata from comments
         let metadata = self.parse_script_metadata(&content, script_path)?;
@@ -169,12 +170,17 @@ impl ScriptingEngine {
     }
 
     /// Parse script metadata from source code comments
-    fn parse_script_metadata(&self, content: &str, script_path: &PathBuf) -> Result<Script, AppError> {
+    fn parse_script_metadata(
+        &self,
+        content: &str,
+        script_path: &std::path::Path,
+    ) -> Result<Script, AppError> {
         let language = self.detect_language(script_path)?;
         let script_id = uuid::Uuid::new_v4().to_string();
 
         // Extract metadata from comments (simplified parser)
-        let mut name = script_path.file_stem()
+        let mut name = script_path
+            .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("Unnamed Script")
             .to_string();
@@ -186,27 +192,27 @@ impl ScriptingEngine {
 
         for line in content.lines() {
             let line = line.trim();
-            if line.starts_with("--") || line.starts_with("#") || line.starts_with("//") {
-                if let Some(meta) = line.split_once("@") {
-                    let (_, meta_content) = meta;
-                    if let Some((key, value)) = meta_content.split_once(" ") {
-                        match key {
-                            "name" => name = value.to_string(),
-                            "description" => description = value.to_string(),
-                            "author" => author = value.to_string(),
-                            "version" => version = value.to_string(),
-                            "permission" => {
-                                if let Ok(perm) = self.parse_permission(value) {
-                                    permissions.push(perm);
-                                }
+            if (line.starts_with("--") || line.starts_with("#") || line.starts_with("//"))
+                && let Some(meta) = line.split_once("@")
+            {
+                let (_, meta_content) = meta;
+                if let Some((key, value)) = meta_content.split_once(" ") {
+                    match key {
+                        "name" => name = value.to_string(),
+                        "description" => description = value.to_string(),
+                        "author" => author = value.to_string(),
+                        "version" => version = value.to_string(),
+                        "permission" => {
+                            if let Ok(perm) = self.parse_permission(value) {
+                                permissions.push(perm);
                             }
-                            "trigger" => {
-                                if let Ok(trigger) = self.parse_trigger(value) {
-                                    triggers.push(trigger);
-                                }
-                            }
-                            _ => {}
                         }
+                        "trigger" => {
+                            if let Ok(trigger) = self.parse_trigger(value) {
+                                triggers.push(trigger);
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -232,24 +238,24 @@ impl ScriptingEngine {
     }
 
     /// Detect script language from file extension
-    fn detect_language(&self, script_path: &PathBuf) -> Result<ScriptLanguage, AppError> {
+    fn detect_language(&self, script_path: &std::path::Path) -> Result<ScriptLanguage, AppError> {
         match script_path.extension().and_then(|ext| ext.to_str()) {
             Some("lua") => Ok(ScriptLanguage::Lua),
             Some("py") => Ok(ScriptLanguage::Python),
             Some("js") => Ok(ScriptLanguage::JavaScript),
             _ => Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Unsupported script language"
-            )))
+                "Unsupported script language",
+            ))),
         }
     }
 
     /// Parse permission from string
     fn parse_permission(&self, perm_str: &str) -> Result<ScriptPermission, AppError> {
-        if perm_str.starts_with("filesystem:") {
-            Ok(ScriptPermission::FileSystem(perm_str[11..].to_string()))
-        } else if perm_str.starts_with("network:") {
-            Ok(ScriptPermission::Network(perm_str[8..].to_string()))
+        if let Some(stripped) = perm_str.strip_prefix("filesystem:") {
+            Ok(ScriptPermission::FileSystem(stripped.to_string()))
+        } else if let Some(stripped) = perm_str.strip_prefix("network:") {
+            Ok(ScriptPermission::Network(stripped.to_string()))
         } else {
             match perm_str {
                 "system_commands" => Ok(ScriptPermission::SystemCommands),
@@ -262,26 +268,26 @@ impl ScriptingEngine {
                 "database" => Ok(ScriptPermission::DatabaseAccess),
                 _ => Err(AppError::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    format!("Unknown permission: {}", perm_str)
-                )))
+                    format!("Unknown permission: {}", perm_str),
+                ))),
             }
         }
     }
 
     /// Parse trigger from string
     fn parse_trigger(&self, trigger_str: &str) -> Result<ScriptTrigger, AppError> {
-        if trigger_str.starts_with("voice:") {
-            Ok(ScriptTrigger::VoiceCommand(trigger_str[6..].to_string()))
-        } else if trigger_str.starts_with("gesture:") {
-            Ok(ScriptTrigger::Gesture(trigger_str[8..].to_string()))
-        } else if trigger_str.starts_with("schedule:") {
-            Ok(ScriptTrigger::TimeSchedule(trigger_str[9..].to_string()))
-        } else if trigger_str.starts_with("app:") {
-            Ok(ScriptTrigger::ApplicationEvent(trigger_str[4..].to_string()))
+        if let Some(stripped) = trigger_str.strip_prefix("voice:") {
+            Ok(ScriptTrigger::VoiceCommand(stripped.to_string()))
+        } else if let Some(stripped) = trigger_str.strip_prefix("gesture:") {
+            Ok(ScriptTrigger::Gesture(stripped.to_string()))
+        } else if let Some(stripped) = trigger_str.strip_prefix("schedule:") {
+            Ok(ScriptTrigger::TimeSchedule(stripped.to_string()))
+        } else if let Some(stripped) = trigger_str.strip_prefix("app:") {
+            Ok(ScriptTrigger::ApplicationEvent(stripped.to_string()))
         } else {
             Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("Unknown trigger: {}", trigger_str)
+                format!("Unknown trigger: {}", trigger_str),
             )))
         }
     }
@@ -297,7 +303,7 @@ impl ScriptingEngine {
                 ScriptPermission::FileSystem(path) if path.contains("..") => {
                     return Err(AppError::Io(std::io::Error::new(
                         std::io::ErrorKind::PermissionDenied,
-                        "Invalid file system permission"
+                        "Invalid file system permission",
                     )));
                 }
                 _ => {}
@@ -312,17 +318,23 @@ impl ScriptingEngine {
                 }
             }
             ScriptLanguage::Python => {
-                if script.source_code.contains("import os") && 
-                   !script.permissions.contains(&ScriptPermission::SystemCommands) {
+                if script.source_code.contains("import os")
+                    && !script
+                        .permissions
+                        .contains(&ScriptPermission::SystemCommands)
+                {
                     return Err(AppError::Io(std::io::Error::new(
                         std::io::ErrorKind::PermissionDenied,
-                        "Script uses 'os' module without system permission"
+                        "Script uses 'os' module without system permission",
                     )));
                 }
             }
             ScriptLanguage::JavaScript => {
-                if script.source_code.contains("require(") && 
-                   !script.permissions.contains(&ScriptPermission::SystemCommands) {
+                if script.source_code.contains("require(")
+                    && !script
+                        .permissions
+                        .contains(&ScriptPermission::SystemCommands)
+                {
                     tracing::warn!("JavaScript script uses require() without system permission");
                 }
             }
@@ -332,23 +344,30 @@ impl ScriptingEngine {
     }
 
     /// Execute a script
-    pub async fn execute_script(&self, script_id: &str, context: ScriptContext) -> Result<ScriptExecutionResult, AppError> {
+    pub async fn execute_script(
+        &self,
+        script_id: &str,
+        context: ScriptContext,
+    ) -> Result<ScriptExecutionResult, AppError> {
         let start_time = std::time::Instant::now();
         let execution_id = uuid::Uuid::new_v4().to_string();
 
         // Get script
         let scripts = self.scripts.read().await;
-        let script = scripts.get(script_id)
-            .ok_or_else(|| AppError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Script not found"
-            )))?
+        let script = scripts
+            .get(script_id)
+            .ok_or_else(|| {
+                AppError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Script not found",
+                ))
+            })?
             .clone();
 
         if !script.is_enabled {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
-                "Script is disabled"
+                "Script is disabled",
             )));
         }
 
@@ -357,7 +376,7 @@ impl ScriptingEngine {
             if !context.permissions.contains(required_perm) {
                 return Err(AppError::Io(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
-                    format!("Missing permission: {:?}", required_perm)
+                    format!("Missing permission: {:?}", required_perm),
                 )));
             }
         }
@@ -404,66 +423,74 @@ impl ScriptingEngine {
         let execution_time = start_time.elapsed().as_millis() as u64;
 
         match result {
-            Ok((return_value, output, warnings)) => {
-                Ok(ScriptExecutionResult {
-                    script_id: script_id.to_string(),
-                    success: true,
-                    return_value,
-                    error_message: None,
-                    execution_time_ms: execution_time,
-                    output,
-                    warnings,
-                })
-            }
-            Err(error) => {
-                Ok(ScriptExecutionResult {
-                    script_id: script_id.to_string(),
-                    success: false,
-                    return_value: None,
-                    error_message: Some(error.to_string()),
-                    execution_time_ms: execution_time,
-                    output: String::new(),
-                    warnings: Vec::new(),
-                })
-            }
+            Ok((return_value, output, warnings)) => Ok(ScriptExecutionResult {
+                script_id: script_id.to_string(),
+                success: true,
+                return_value,
+                error_message: None,
+                execution_time_ms: execution_time,
+                output,
+                warnings,
+            }),
+            Err(error) => Ok(ScriptExecutionResult {
+                script_id: script_id.to_string(),
+                success: false,
+                return_value: None,
+                error_message: Some(error.to_string()),
+                execution_time_ms: execution_time,
+                output: String::new(),
+                warnings: Vec::new(),
+            }),
         }
     }
 
     /// Execute Lua script
-    async fn execute_lua_script(&self, script: &Script, _context: &ScriptContext) -> Result<(Option<serde_json::Value>, String, Vec<String>), AppError> {
+    async fn execute_lua_script(
+        &self,
+        script: &Script,
+        _context: &ScriptContext,
+    ) -> Result<(Option<serde_json::Value>, String, Vec<String>), AppError> {
         let lua_runtime = self.lua_runtime.read().await;
         if let Some(runtime) = lua_runtime.as_ref() {
             runtime.execute(&script.source_code).await
         } else {
             Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "Lua runtime not initialized"
+                "Lua runtime not initialized",
             )))
         }
     }
 
     /// Execute Python script
-    async fn execute_python_script(&self, script: &Script, _context: &ScriptContext) -> Result<(Option<serde_json::Value>, String, Vec<String>), AppError> {
+    async fn execute_python_script(
+        &self,
+        script: &Script,
+        _context: &ScriptContext,
+    ) -> Result<(Option<serde_json::Value>, String, Vec<String>), AppError> {
         let python_runtime = self.python_runtime.read().await;
         if let Some(runtime) = python_runtime.as_ref() {
             runtime.execute(&script.source_code).await
         } else {
             Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "Python runtime not initialized"
+                "Python runtime not initialized",
             )))
         }
     }
 
     /// Execute JavaScript script
-    async fn execute_js_script(&self, script: &Script, _context: &ScriptContext) -> Result<(Option<serde_json::Value>, String, Vec<String>), AppError> {
+    async fn execute_js_script(
+        &self,
+        script: &Script,
+        _context: &ScriptContext,
+    ) -> Result<(Option<serde_json::Value>, String, Vec<String>), AppError> {
         let js_runtime = self.js_runtime.read().await;
         if let Some(runtime) = js_runtime.as_ref() {
             runtime.execute(&script.source_code).await
         } else {
             Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "JavaScript runtime not initialized"
+                "JavaScript runtime not initialized",
             )))
         }
     }
@@ -502,15 +529,18 @@ impl LuaRuntime {
         Ok(Self)
     }
 
-    async fn execute(&self, code: &str) -> Result<(Option<serde_json::Value>, String, Vec<String>), AppError> {
+    async fn execute(
+        &self,
+        code: &str,
+    ) -> Result<(Option<serde_json::Value>, String, Vec<String>), AppError> {
         // Simplified Lua execution
         tracing::info!("Executing Lua code: {}", &code[..code.len().min(50)]);
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        
+
         Ok((
             Some(serde_json::json!({"result": "lua_executed"})),
             "Lua script executed successfully".to_string(),
-            Vec::new()
+            Vec::new(),
         ))
     }
 }
@@ -524,15 +554,18 @@ impl PythonRuntime {
         Ok(Self)
     }
 
-    async fn execute(&self, code: &str) -> Result<(Option<serde_json::Value>, String, Vec<String>), AppError> {
+    async fn execute(
+        &self,
+        code: &str,
+    ) -> Result<(Option<serde_json::Value>, String, Vec<String>), AppError> {
         // Simplified Python execution
         tracing::info!("Executing Python code: {}", &code[..code.len().min(50)]);
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        
+
         Ok((
             Some(serde_json::json!({"result": "python_executed"})),
             "Python script executed successfully".to_string(),
-            Vec::new()
+            Vec::new(),
         ))
     }
 }
@@ -546,30 +579,36 @@ impl JavaScriptRuntime {
         Ok(Self)
     }
 
-    async fn execute(&self, code: &str) -> Result<(Option<serde_json::Value>, String, Vec<String>), AppError> {
+    async fn execute(
+        &self,
+        code: &str,
+    ) -> Result<(Option<serde_json::Value>, String, Vec<String>), AppError> {
         // Simplified JavaScript execution
         tracing::info!("Executing JavaScript code: {}", &code[..code.len().min(50)]);
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        
+
         Ok((
             Some(serde_json::json!({"result": "js_executed"})),
             "JavaScript executed successfully".to_string(),
-            Vec::new()
+            Vec::new(),
         ))
     }
 }
 
 /// Global scripting engine instance
-static SCRIPTING_ENGINE: tokio::sync::OnceCell<ScriptingEngine> = tokio::sync::OnceCell::const_new();
+static SCRIPTING_ENGINE: tokio::sync::OnceCell<ScriptingEngine> =
+    tokio::sync::OnceCell::const_new();
 
 /// Get the global scripting engine
 pub async fn get_scripting_engine() -> &'static ScriptingEngine {
-    SCRIPTING_ENGINE.get_or_init(|| async {
-        let script_dir = std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join("scripts");
-        ScriptingEngine::new(script_dir)
-    }).await
+    SCRIPTING_ENGINE
+        .get_or_init(|| async {
+            let script_dir = std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join("scripts");
+            ScriptingEngine::new(script_dir)
+        })
+        .await
 }
 
 #[cfg(test)]
@@ -581,7 +620,7 @@ mod tests {
     async fn test_script_loading() {
         let temp_dir = TempDir::new().unwrap();
         let engine = ScriptingEngine::new(temp_dir.path().to_path_buf());
-        
+
         let script_path = temp_dir.path().join("test.lua");
         let script_content = r#"
 -- @name Test Script
@@ -596,12 +635,14 @@ function main()
     return "success"
 end
 "#;
-        
-        tokio::fs::write(&script_path, script_content).await.unwrap();
-        
+
+        tokio::fs::write(&script_path, script_content)
+            .await
+            .unwrap();
+
         let script_id = engine.load_script(&script_path).await.unwrap();
         let scripts = engine.get_scripts().await;
-        
+
         assert_eq!(scripts.len(), 1);
         assert_eq!(scripts[0].id, script_id);
         assert_eq!(scripts[0].name, "Test Script");
@@ -612,14 +653,16 @@ end
         let temp_dir = TempDir::new().unwrap();
         let engine = ScriptingEngine::new(temp_dir.path().to_path_buf());
         engine.initialize().await.unwrap();
-        
+
         let script_path = temp_dir.path().join("test.lua");
         let script_content = "print('Hello World!')";
-        
-        tokio::fs::write(&script_path, script_content).await.unwrap();
-        
+
+        tokio::fs::write(&script_path, script_content)
+            .await
+            .unwrap();
+
         let script_id = engine.load_script(&script_path).await.unwrap();
-        
+
         let context = ScriptContext {
             script_id: script_id.clone(),
             user_id: "user1".to_string(),
@@ -628,7 +671,7 @@ end
             permissions: vec![ScriptPermission::VoiceControl],
             execution_timeout: std::time::Duration::from_secs(30),
         };
-        
+
         let result = engine.execute_script(&script_id, context).await.unwrap();
         assert!(result.success);
     }

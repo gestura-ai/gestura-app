@@ -1,9 +1,9 @@
 //! Event dispatcher for routing NATS messages to appropriate handlers
 //! Provides centralized event routing and processing
 
-use crate::agents::AgentSpawner;
-use crate::nats_mq::{subjects, DispatchEvent};
 use crate::AppError;
+use crate::agents::AgentSpawner;
+use crate::nats_mq::{DispatchEvent, subjects};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -40,7 +40,10 @@ impl EventDispatcher {
                 DispatchEvent::Mcp(data)
             }
             _ if subject.starts_with("agents.") => {
-                let agent_id = subject.strip_prefix("agents.").unwrap_or("unknown").to_string();
+                let agent_id = subject
+                    .strip_prefix("agents.")
+                    .unwrap_or("unknown")
+                    .to_string();
                 DispatchEvent::Agent(agent_id, payload)
             }
             _ => {
@@ -62,17 +65,23 @@ impl EventDispatcher {
             DispatchEvent::Voice(text) => {
                 tracing::info!("Voice event: {}", text);
                 // Forward to default agent for processing
-                self.agent_spawner.send_event("default-agent", format!("voice:{}", text)).await;
+                self.agent_spawner
+                    .send_event("default-agent", format!("voice:{}", text))
+                    .await;
             }
             DispatchEvent::Hotkey(action) => {
                 tracing::info!("Hotkey event: {}", action);
                 // Trigger voice recording or show window
-                self.agent_spawner.send_event("default-agent", format!("hotkey:{}", action)).await;
+                self.agent_spawner
+                    .send_event("default-agent", format!("hotkey:{}", action))
+                    .await;
             }
             DispatchEvent::Mcp(data) => {
                 tracing::info!("MCP event: {}", data);
                 // Forward to MCP handler agent
-                self.agent_spawner.send_event("mcp-agent", format!("mcp:{}", data)).await;
+                self.agent_spawner
+                    .send_event("mcp-agent", format!("mcp:{}", data))
+                    .await;
             }
             DispatchEvent::Agent(agent_id, payload) => {
                 let payload_str = String::from_utf8_lossy(&payload).to_string();
@@ -105,11 +114,15 @@ mod tests {
         let dispatcher = EventDispatcher::new(spawner);
 
         // Test voice event
-        let result = dispatcher.dispatch("events.voice", b"hello world".to_vec()).await;
+        let result = dispatcher
+            .dispatch("events.voice", b"hello world".to_vec())
+            .await;
         assert!(result.is_ok());
 
         // Test hotkey event
-        let result = dispatcher.dispatch("events.hotkey", b"trigger".to_vec()).await;
+        let result = dispatcher
+            .dispatch("events.hotkey", b"trigger".to_vec())
+            .await;
         assert!(result.is_ok());
 
         // Test agent event

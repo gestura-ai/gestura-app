@@ -1,9 +1,9 @@
 //! MCP server implementation with JSON-RPC transport
 //! Provides MCP protocol compliance and tool execution
 
-use crate::security::McpToken;
-use crate::haptics::{HapticInterface, HapticAuthToken};
 use crate::AppError;
+use crate::haptics::{HapticAuthToken, HapticInterface};
+use crate::security::McpToken;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -74,11 +74,11 @@ impl McpServer {
             haptic_interface,
             auth_tokens: HashMap::new(),
         };
-        
+
         // Register built-in tools
         server.register_haptic_tools();
         server.register_ring_resources();
-        
+
         server
     }
 
@@ -109,16 +109,21 @@ impl McpServer {
             description: "Primary haptic feedback device".to_string(),
             mime_type: Some("application/x-haptic-device".to_string()),
         };
-        self.resources.insert("ring://haptic-harmony/main".to_string(), ring_resource);
+        self.resources
+            .insert("ring://haptic-harmony/main".to_string(), ring_resource);
     }
 
     /// Handle JSON-RPC request with audit logging
     pub async fn handle_request(&self, request: JsonRpcRequest) -> JsonRpcResponse {
         // Audit the request
         let telemetry = crate::telemetry::get_telemetry_manager().await;
-        telemetry.increment_counter("mcp.requests.total", 1.0, std::collections::HashMap::from([
-            ("method".to_string(), request.method.clone())
-        ])).await;
+        telemetry
+            .increment_counter(
+                "mcp.requests.total",
+                1.0,
+                std::collections::HashMap::from([("method".to_string(), request.method.clone())]),
+            )
+            .await;
 
         let timer = crate::telemetry::start_timer("mcp.request.duration")
             .with_tag("method".to_string(), request.method.clone());
@@ -145,13 +150,21 @@ impl McpServer {
 
         // Audit response status
         if response.error.is_some() {
-            telemetry.increment_counter("mcp.requests.errors", 1.0, std::collections::HashMap::from([
-                ("method".to_string(), request.method)
-            ])).await;
+            telemetry
+                .increment_counter(
+                    "mcp.requests.errors",
+                    1.0,
+                    std::collections::HashMap::from([("method".to_string(), request.method)]),
+                )
+                .await;
         } else {
-            telemetry.increment_counter("mcp.requests.success", 1.0, std::collections::HashMap::from([
-                ("method".to_string(), request.method)
-            ])).await;
+            telemetry
+                .increment_counter(
+                    "mcp.requests.success",
+                    1.0,
+                    std::collections::HashMap::from([("method".to_string(), request.method)]),
+                )
+                .await;
         }
 
         response
@@ -169,11 +182,19 @@ impl McpServer {
     }
 
     /// Handle tools/call request
-    async fn handle_call_tool(&self, params: Option<serde_json::Value>, id: Option<serde_json::Value>) -> JsonRpcResponse {
+    async fn handle_call_tool(
+        &self,
+        params: Option<serde_json::Value>,
+        id: Option<serde_json::Value>,
+    ) -> JsonRpcResponse {
         // Extract tool name and arguments
         let (tool_name, args) = match params {
             Some(serde_json::Value::Object(map)) => {
-                let name = map.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let name = map
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let arguments = map.get("arguments").cloned().unwrap_or_default();
                 (name, arguments)
             }
@@ -213,23 +234,43 @@ impl McpServer {
     }
 
     /// Execute a specific tool
-    async fn execute_tool(&self, tool_name: &str, args: serde_json::Value) -> Result<serde_json::Value, AppError> {
+    async fn execute_tool(
+        &self,
+        tool_name: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, AppError> {
         match tool_name {
             "send_haptic" => self.execute_haptic_tool(args).await,
-            _ => Err(AppError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "Tool not found"))),
+            _ => Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Tool not found",
+            ))),
         }
     }
 
     /// Execute haptic feedback tool with sandboxing
-    async fn execute_haptic_tool(&self, args: serde_json::Value) -> Result<serde_json::Value, AppError> {
+    async fn execute_haptic_tool(
+        &self,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, AppError> {
         // Validate tool execution parameters
-        self.validate_tool_execution("send_haptic", &args).await
+        self.validate_tool_execution("send_haptic", &args)
+            .await
             .map_err(|e| AppError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, e)))?;
 
         // Parse haptic request
-        let pattern_str = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("click");
-        let intensity = args.get("intensity").and_then(|v| v.as_f64()).unwrap_or(0.5) as f32;
-        let duration_ms = args.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(100) as u32;
+        let pattern_str = args
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("click");
+        let intensity = args
+            .get("intensity")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.5) as f32;
+        let duration_ms = args
+            .get("duration_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(100) as u32;
 
         let pattern = match pattern_str {
             "click" => crate::haptics::HapticPattern::Click,
@@ -256,7 +297,12 @@ impl McpServer {
         // TODO: Implement proper auth token validation
         let auth_token = HapticAuthToken("mock-token".to_string());
 
-        match tokio::time::timeout(timeout_duration, self.haptic_interface.send(&auth_token, &request)).await {
+        match tokio::time::timeout(
+            timeout_duration,
+            self.haptic_interface.send(&auth_token, &request),
+        )
+        .await
+        {
             Ok(Ok(_)) => Ok(serde_json::json!({
                 "status": "success",
                 "message": "Haptic feedback sent",
@@ -265,16 +311,24 @@ impl McpServer {
                 "duration_ms": duration_ms
             })),
             Ok(Err(e)) => Err(e),
-            Err(_) => Err(AppError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, "Tool execution timeout"))),
+            Err(_) => Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Tool execution timeout",
+            ))),
         }
     }
 
     /// Validate tool execution parameters
-    async fn validate_tool_execution(&self, name: &str, arguments: &serde_json::Value) -> Result<(), String> {
+    async fn validate_tool_execution(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<(), String> {
         match name {
             "send_haptic" => {
                 // Validate haptic parameters
-                let intensity = arguments.get("intensity")
+                let intensity = arguments
+                    .get("intensity")
                     .and_then(|v| v.as_f64())
                     .unwrap_or(0.5);
 
@@ -282,7 +336,8 @@ impl McpServer {
                     return Err("Intensity must be between 0.0 and 1.0".to_string());
                 }
 
-                let duration_ms = arguments.get("duration_ms")
+                let duration_ms = arguments
+                    .get("duration_ms")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(100);
 
@@ -290,17 +345,27 @@ impl McpServer {
                     return Err("Duration cannot exceed 5000ms".to_string());
                 }
 
-                let pattern = arguments.get("pattern")
+                let pattern = arguments
+                    .get("pattern")
                     .and_then(|v| v.as_str())
                     .unwrap_or("click");
 
-                if !["click", "pulse", "ramp", "heartbeat", "notification", "alert"].contains(&pattern) {
+                if ![
+                    "click",
+                    "pulse",
+                    "ramp",
+                    "heartbeat",
+                    "notification",
+                    "alert",
+                ]
+                .contains(&pattern)
+                {
                     return Err("Invalid haptic pattern".to_string());
                 }
 
                 Ok(())
             }
-            _ => Err(format!("Unknown tool: {}", name))
+            _ => Err(format!("Unknown tool: {}", name)),
         }
     }
 
@@ -316,8 +381,16 @@ impl McpServer {
     }
 
     /// Handle resources/read request
-    async fn handle_read_resource(&self, params: Option<serde_json::Value>, id: Option<serde_json::Value>) -> JsonRpcResponse {
-        let uri = match params.as_ref().and_then(|p| p.get("uri")).and_then(|v| v.as_str()) {
+    async fn handle_read_resource(
+        &self,
+        params: Option<serde_json::Value>,
+        id: Option<serde_json::Value>,
+    ) -> JsonRpcResponse {
+        let uri = match params
+            .as_ref()
+            .and_then(|p| p.get("uri"))
+            .and_then(|v| v.as_str())
+        {
             Some(uri) => uri.to_string(),
             None => {
                 return JsonRpcResponse {

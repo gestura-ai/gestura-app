@@ -107,22 +107,24 @@ impl VoiceModelTuner {
     /// Load training data from directory
     pub async fn load_training_data(&self, data_path: &PathBuf) -> Result<usize, AppError> {
         let mut samples = Vec::new();
-        
+
         // Read training data directory
-        let mut entries = tokio::fs::read_dir(data_path).await
-            .map_err(|e| AppError::Io(e))?;
-        
-        while let Some(entry) = entries.next_entry().await.map_err(|e| AppError::Io(e))? {
+        let mut entries = tokio::fs::read_dir(data_path).await.map_err(AppError::Io)?;
+
+        while let Some(entry) = entries.next_entry().await.map_err(AppError::Io)? {
             let path = entry.path();
-            
+
             if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
                 // Load training manifest
-                let content = tokio::fs::read_to_string(&path).await
-                    .map_err(|e| AppError::Io(e))?;
-                
+                let content = tokio::fs::read_to_string(&path)
+                    .await
+                    .map_err(AppError::Io)?;
+
                 let manifest_samples: Vec<TrainingSample> = serde_json::from_str(&content)
-                    .map_err(|e| AppError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
-                
+                    .map_err(|e| {
+                        AppError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                    })?;
+
                 samples.extend(manifest_samples);
             }
         }
@@ -130,11 +132,15 @@ impl VoiceModelTuner {
         // Validate samples
         let valid_samples = self.validate_training_samples(samples).await?;
         let sample_count = valid_samples.len();
-        
+
         let mut training_samples = self.training_samples.write().await;
         *training_samples = valid_samples;
-        
-        tracing::info!("Loaded {} training samples from {}", sample_count, data_path.display());
+
+        tracing::info!(
+            "Loaded {} training samples from {}",
+            sample_count,
+            data_path.display()
+        );
         Ok(sample_count)
     }
 
@@ -144,20 +150,20 @@ impl VoiceModelTuner {
         if !sample.audio_path.exists() {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Audio file not found: {}", sample.audio_path.display())
+                format!("Audio file not found: {}", sample.audio_path.display()),
             )));
         }
 
         if sample.transcript.trim().is_empty() {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Transcript cannot be empty"
+                "Transcript cannot be empty",
             )));
         }
 
         let mut training_samples = self.training_samples.write().await;
         training_samples.push(sample);
-        
+
         Ok(())
     }
 
@@ -167,7 +173,7 @@ impl VoiceModelTuner {
         if *is_training {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
-                "Training is already in progress"
+                "Training is already in progress",
             )));
         }
         *is_training = true;
@@ -175,19 +181,23 @@ impl VoiceModelTuner {
 
         let config = self.config.read().await.clone();
         let samples = self.training_samples.read().await.clone();
-        
+
         if samples.is_empty() {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "No training samples available"
+                "No training samples available",
             )));
         }
 
         // Split data into training and validation sets
-        let (train_samples, val_samples) = self.split_training_data(&samples, config.validation_split);
-        
-        tracing::info!("Starting fine-tuning with {} training samples, {} validation samples", 
-            train_samples.len(), val_samples.len());
+        let (train_samples, val_samples) =
+            self.split_training_data(&samples, config.validation_split);
+
+        tracing::info!(
+            "Starting fine-tuning with {} training samples, {} validation samples",
+            train_samples.len(),
+            val_samples.len()
+        );
 
         // Start training in background
         let tuner = self.clone();
@@ -195,7 +205,7 @@ impl VoiceModelTuner {
             if let Err(e) = tuner.run_training(config, train_samples, val_samples).await {
                 tracing::error!("Training failed: {}", e);
             }
-            
+
             let mut is_training = tuner.is_training.lock().await;
             *is_training = false;
         });
@@ -209,10 +219,10 @@ impl VoiceModelTuner {
         if !*is_training {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "No training in progress"
+                "No training in progress",
             )));
         }
-        
+
         *is_training = false;
         tracing::info!("Training stop requested");
         Ok(())
@@ -231,56 +241,63 @@ impl VoiceModelTuner {
     }
 
     /// Evaluate model performance
-    pub async fn evaluate_model(&self, model_path: &PathBuf, test_samples: &[TrainingSample]) -> Result<EvaluationMetrics, AppError> {
+    pub async fn evaluate_model(
+        &self,
+        model_path: &PathBuf,
+        test_samples: &[TrainingSample],
+    ) -> Result<EvaluationMetrics, AppError> {
         if !model_path.exists() {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Model not found: {}", model_path.display())
+                format!("Model not found: {}", model_path.display()),
             )));
         }
 
         // This is a simplified evaluation - in real implementation would use actual model
         let start_time = std::time::Instant::now();
-        
+
         let mut total_word_errors = 0;
         let mut total_words = 0;
         let mut total_char_errors = 0;
         let mut total_chars = 0;
-        
+
         for sample in test_samples {
             // Simulate model inference
             let predicted_transcript = self.simulate_inference(&sample.audio_path).await?;
-            
+
             // Calculate errors
-            let (word_errors, word_count) = self.calculate_word_errors(&sample.transcript, &predicted_transcript);
-            let (char_errors, char_count) = self.calculate_character_errors(&sample.transcript, &predicted_transcript);
-            
+            let (word_errors, word_count) =
+                self.calculate_word_errors(&sample.transcript, &predicted_transcript);
+            let (char_errors, char_count) =
+                self.calculate_character_errors(&sample.transcript, &predicted_transcript);
+
             total_word_errors += word_errors;
             total_words += word_count;
             total_char_errors += char_errors;
             total_chars += char_count;
         }
-        
+
         let inference_time = start_time.elapsed().as_millis() as f32 / test_samples.len() as f32;
-        
+
         // Calculate metrics
         let word_error_rate = if total_words > 0 {
             total_word_errors as f32 / total_words as f32
         } else {
             0.0
         };
-        
+
         let character_error_rate = if total_chars > 0 {
             total_char_errors as f32 / total_chars as f32
         } else {
             0.0
         };
-        
+
         // Mock other metrics
         let bleu_score = 1.0 - word_error_rate; // Simplified BLEU approximation
         let perplexity = 10.0 + word_error_rate * 50.0; // Mock perplexity
-        
-        let model_size_mb = tokio::fs::metadata(model_path).await
+
+        let model_size_mb = tokio::fs::metadata(model_path)
+            .await
             .map(|meta| meta.len() as f32 / 1024.0 / 1024.0)
             .unwrap_or(0.0);
 
@@ -295,10 +312,15 @@ impl VoiceModelTuner {
     }
 
     /// Run the actual training process
-    async fn run_training(&self, config: FineTuningConfig, train_samples: Vec<TrainingSample>, val_samples: Vec<TrainingSample>) -> Result<(), AppError> {
-        let total_batches = (train_samples.len() + config.batch_size - 1) / config.batch_size;
+    async fn run_training(
+        &self,
+        config: FineTuningConfig,
+        train_samples: Vec<TrainingSample>,
+        val_samples: Vec<TrainingSample>,
+    ) -> Result<(), AppError> {
+        let total_batches = train_samples.len().div_ceil(config.batch_size);
         let start_time = std::time::Instant::now();
-        
+
         for epoch in 0..config.epochs {
             // Check if training should stop
             {
@@ -308,28 +330,29 @@ impl VoiceModelTuner {
                     break;
                 }
             }
-            
+
             let mut epoch_training_loss = 0.0;
-            
+
             // Training phase
             for batch_idx in 0..total_batches {
                 let batch_start = batch_idx * config.batch_size;
                 let batch_end = (batch_start + config.batch_size).min(train_samples.len());
                 let batch = &train_samples[batch_start..batch_end];
-                
+
                 // Simulate training step
                 let batch_loss = self.simulate_training_step(batch, &config).await?;
                 epoch_training_loss += batch_loss;
-                
+
                 // Update progress
                 let elapsed = start_time.elapsed().as_secs();
-                let progress_ratio = (epoch * total_batches + batch_idx + 1) as f64 / (config.epochs * total_batches) as f64;
+                let progress_ratio = (epoch * total_batches + batch_idx + 1) as f64
+                    / (config.epochs * total_batches) as f64;
                 let estimated_total_time = if progress_ratio > 0.0 {
                     (elapsed as f64 / progress_ratio) as u64
                 } else {
                     0
                 };
-                
+
                 let progress = TrainingProgress {
                     current_epoch: epoch + 1,
                     total_epochs: config.epochs,
@@ -341,11 +364,11 @@ impl VoiceModelTuner {
                     elapsed_time_seconds: elapsed,
                     estimated_remaining_seconds: estimated_total_time.saturating_sub(elapsed),
                 };
-                
+
                 let mut progress_guard = self.progress.lock().await;
                 *progress_guard = Some(progress.clone());
                 drop(progress_guard);
-                
+
                 // Store in history
                 let mut history = self.training_history.write().await;
                 history.push(progress);
@@ -353,88 +376,114 @@ impl VoiceModelTuner {
                     history.remove(0);
                 }
             }
-            
+
             // Validation phase
             let validation_loss = self.simulate_validation(&val_samples, &config).await?;
-            
+
             // Update progress with validation results
             let mut progress_guard = self.progress.lock().await;
             if let Some(ref mut progress) = *progress_guard {
                 progress.validation_loss = validation_loss;
             }
-            
-            tracing::info!("Epoch {}/{}: training_loss={:.4}, validation_loss={:.4}", 
-                epoch + 1, config.epochs, epoch_training_loss / total_batches as f32, validation_loss);
+
+            tracing::info!(
+                "Epoch {}/{}: training_loss={:.4}, validation_loss={:.4}",
+                epoch + 1,
+                config.epochs,
+                epoch_training_loss / total_batches as f32,
+                validation_loss
+            );
         }
-        
+
         // Save the fine-tuned model
         self.save_model(&config.output_model_path).await?;
-        
-        tracing::info!("Fine-tuning completed. Model saved to: {}", config.output_model_path.display());
+
+        tracing::info!(
+            "Fine-tuning completed. Model saved to: {}",
+            config.output_model_path.display()
+        );
         Ok(())
     }
 
     /// Validate training samples
-    async fn validate_training_samples(&self, samples: Vec<TrainingSample>) -> Result<Vec<TrainingSample>, AppError> {
+    async fn validate_training_samples(
+        &self,
+        samples: Vec<TrainingSample>,
+    ) -> Result<Vec<TrainingSample>, AppError> {
         let mut valid_samples = Vec::new();
-        
+
         for sample in samples {
             // Check if audio file exists
             if !sample.audio_path.exists() {
-                tracing::warn!("Skipping sample with missing audio file: {}", sample.audio_path.display());
+                tracing::warn!(
+                    "Skipping sample with missing audio file: {}",
+                    sample.audio_path.display()
+                );
                 continue;
             }
-            
+
             // Check if transcript is not empty
             if sample.transcript.trim().is_empty() {
                 tracing::warn!("Skipping sample with empty transcript");
                 continue;
             }
-            
+
             valid_samples.push(sample);
         }
-        
+
         Ok(valid_samples)
     }
 
     /// Split training data into train and validation sets
-    fn split_training_data(&self, samples: &[TrainingSample], validation_split: f32) -> (Vec<TrainingSample>, Vec<TrainingSample>) {
+    fn split_training_data(
+        &self,
+        samples: &[TrainingSample],
+        validation_split: f32,
+    ) -> (Vec<TrainingSample>, Vec<TrainingSample>) {
         let val_size = (samples.len() as f32 * validation_split) as usize;
         let train_size = samples.len() - val_size;
-        
+
         let mut samples = samples.to_vec();
         // Simple shuffle (in real implementation, use proper randomization)
         samples.reverse();
-        
+
         let train_samples = samples[..train_size].to_vec();
         let val_samples = samples[train_size..].to_vec();
-        
+
         (train_samples, val_samples)
     }
 
     /// Simulate training step (in real implementation, would use actual ML framework)
-    async fn simulate_training_step(&self, _batch: &[TrainingSample], _config: &FineTuningConfig) -> Result<f32, AppError> {
+    async fn simulate_training_step(
+        &self,
+        _batch: &[TrainingSample],
+        _config: &FineTuningConfig,
+    ) -> Result<f32, AppError> {
         // Simulate training time
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        
+
         // Return mock loss (decreasing over time)
         Ok(0.5 + rand::random::<f32>() * 0.3)
     }
 
     /// Simulate validation
-    async fn simulate_validation(&self, _val_samples: &[TrainingSample], _config: &FineTuningConfig) -> Result<f32, AppError> {
+    async fn simulate_validation(
+        &self,
+        _val_samples: &[TrainingSample],
+        _config: &FineTuningConfig,
+    ) -> Result<f32, AppError> {
         // Simulate validation time
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-        
+
         // Return mock validation loss
         Ok(0.4 + rand::random::<f32>() * 0.2)
     }
 
     /// Simulate model inference
-    async fn simulate_inference(&self, _audio_path: &PathBuf) -> Result<String, AppError> {
+    async fn simulate_inference(&self, _audio_path: &std::path::Path) -> Result<String, AppError> {
         // Simulate inference time
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        
+
         // Return mock transcript
         Ok("this is a mock transcription".to_string())
     }
@@ -443,12 +492,14 @@ impl VoiceModelTuner {
     fn calculate_word_errors(&self, reference: &str, hypothesis: &str) -> (usize, usize) {
         let ref_words: Vec<&str> = reference.split_whitespace().collect();
         let hyp_words: Vec<&str> = hypothesis.split_whitespace().collect();
-        
+
         // Simple word error calculation (in real implementation, use edit distance)
-        let errors = ref_words.iter().zip(hyp_words.iter())
+        let errors = ref_words
+            .iter()
+            .zip(hyp_words.iter())
             .filter(|(r, h)| r != h)
             .count();
-        
+
         (errors, ref_words.len())
     }
 
@@ -456,12 +507,14 @@ impl VoiceModelTuner {
     fn calculate_character_errors(&self, reference: &str, hypothesis: &str) -> (usize, usize) {
         let ref_chars: Vec<char> = reference.chars().collect();
         let hyp_chars: Vec<char> = hypothesis.chars().collect();
-        
+
         // Simple character error calculation
-        let errors = ref_chars.iter().zip(hyp_chars.iter())
+        let errors = ref_chars
+            .iter()
+            .zip(hyp_chars.iter())
             .filter(|(r, h)| r != h)
             .count();
-        
+
         (errors, ref_chars.len())
     }
 
@@ -469,9 +522,11 @@ impl VoiceModelTuner {
     async fn save_model(&self, output_path: &PathBuf) -> Result<(), AppError> {
         // Create output directory if it doesn't exist
         if let Some(parent) = output_path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| AppError::Io(e))?;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(AppError::Io)?;
         }
-        
+
         // In real implementation, would save actual model weights
         let model_data = serde_json::json!({
             "model_type": "fine_tuned_whisper",
@@ -479,9 +534,11 @@ impl VoiceModelTuner {
             "timestamp": chrono::Utc::now(),
             "config": *self.config.read().await
         });
-        
-        tokio::fs::write(output_path, model_data.to_string()).await.map_err(|e| AppError::Io(e))?;
-        
+
+        tokio::fs::write(output_path, model_data.to_string())
+            .await
+            .map_err(AppError::Io)?;
+
         Ok(())
     }
 
@@ -511,13 +568,14 @@ impl Clone for VoiceModelTuner {
 }
 
 /// Global voice model tuner instance
-static VOICE_MODEL_TUNER: tokio::sync::OnceCell<VoiceModelTuner> = tokio::sync::OnceCell::const_new();
+static VOICE_MODEL_TUNER: tokio::sync::OnceCell<VoiceModelTuner> =
+    tokio::sync::OnceCell::const_new();
 
 /// Get the global voice model tuner
 pub async fn get_voice_model_tuner() -> &'static VoiceModelTuner {
-    VOICE_MODEL_TUNER.get_or_init(|| async {
-        VoiceModelTuner::new(FineTuningConfig::default())
-    }).await
+    VOICE_MODEL_TUNER
+        .get_or_init(|| async { VoiceModelTuner::new(FineTuningConfig::default()) })
+        .await
 }
 
 #[cfg(test)]
@@ -529,10 +587,12 @@ mod tests {
     async fn test_training_sample_validation() {
         let temp_dir = TempDir::new().unwrap();
         let audio_path = temp_dir.path().join("test.wav");
-        tokio::fs::write(&audio_path, b"mock audio data").await.unwrap();
-        
+        tokio::fs::write(&audio_path, b"mock audio data")
+            .await
+            .unwrap();
+
         let tuner = VoiceModelTuner::new(FineTuningConfig::default());
-        
+
         let sample = TrainingSample {
             audio_path,
             transcript: "test transcript".to_string(),
@@ -540,9 +600,9 @@ mod tests {
             domain: None,
             quality_score: None,
         };
-        
+
         tuner.add_training_sample(sample).await.unwrap();
-        
+
         let samples = tuner.training_samples.read().await;
         assert_eq!(samples.len(), 1);
     }
@@ -550,7 +610,7 @@ mod tests {
     #[tokio::test]
     async fn test_data_splitting() {
         let tuner = VoiceModelTuner::new(FineTuningConfig::default());
-        
+
         let samples = vec![
             TrainingSample {
                 audio_path: PathBuf::from("1.wav"),
@@ -567,7 +627,7 @@ mod tests {
                 quality_score: None,
             },
         ];
-        
+
         let (train, val) = tuner.split_training_data(&samples, 0.5);
         assert_eq!(train.len(), 1);
         assert_eq!(val.len(), 1);
@@ -576,14 +636,14 @@ mod tests {
     #[test]
     fn test_error_calculation() {
         let tuner = VoiceModelTuner::new(FineTuningConfig::default());
-        
+
         let reference = "hello world";
         let hypothesis = "hello word";
-        
+
         let (word_errors, word_count) = tuner.calculate_word_errors(reference, hypothesis);
         assert_eq!(word_errors, 1);
         assert_eq!(word_count, 2);
-        
+
         let (char_errors, char_count) = tuner.calculate_character_errors(reference, hypothesis);
         assert!(char_errors > 0);
         assert_eq!(char_count, reference.len());

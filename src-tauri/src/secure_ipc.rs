@@ -19,6 +19,7 @@ pub struct SecureMessage {
 /// IPC encryption key manager
 pub struct IpcKeyManager {
     agent_keys: Arc<RwLock<HashMap<String, [u8; 32]>>>,
+    #[allow(dead_code)]
     master_key: [u8; 32],
 }
 
@@ -27,12 +28,14 @@ impl IpcKeyManager {
     pub fn new() -> Result<Self, AppError> {
         #[allow(unused_assignments)]
         let mut master_key = [0u8; 32];
-        
+
         #[cfg(feature = "security")]
         {
             use ring::rand::{SecureRandom, SystemRandom};
             let rng = SystemRandom::new();
-            rng.fill(&mut master_key).map_err(|_| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, "failed to generate master key")))?;
+            rng.fill(&mut master_key).map_err(|_| {
+                AppError::Io(std::io::Error::other("failed to generate master key"))
+            })?;
         }
         #[cfg(not(feature = "security"))]
         {
@@ -49,12 +52,13 @@ impl IpcKeyManager {
     /// Generate a new key for an agent
     pub async fn generate_agent_key(&self, agent_id: &str) -> Result<[u8; 32], AppError> {
         let mut agent_key = [0u8; 32];
-        
+
         #[cfg(feature = "security")]
         {
             use ring::rand::{SecureRandom, SystemRandom};
             let rng = SystemRandom::new();
-            rng.fill(&mut agent_key).map_err(|_| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, "failed to generate agent key")))?;
+            rng.fill(&mut agent_key)
+                .map_err(|_| AppError::Io(std::io::Error::other("failed to generate agent key")))?;
         }
         #[cfg(not(feature = "security"))]
         {
@@ -70,7 +74,7 @@ impl IpcKeyManager {
 
         let mut keys = self.agent_keys.write().await;
         keys.insert(agent_id.to_string(), agent_key);
-        
+
         tracing::info!("Generated IPC key for agent: {}", agent_id);
         Ok(agent_key)
     }
@@ -106,25 +110,38 @@ impl SecureIpcChannel {
 
     /// Encrypt a message for an agent
     #[cfg(feature = "security")]
-    async fn encrypt_message(&self, agent_id: &str, payload: &[u8]) -> Result<(Vec<u8>, Vec<u8>), AppError> {
-        use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
+    async fn encrypt_message(
+        &self,
+        agent_id: &str,
+        payload: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>), AppError> {
+        use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
         use ring::rand::{SecureRandom, SystemRandom};
 
-        let key_bytes = self.key_manager.get_agent_key(agent_id).await
-            .ok_or_else(|| AppError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "agent key not found")))?;
+        let key_bytes = self
+            .key_manager
+            .get_agent_key(agent_id)
+            .await
+            .ok_or_else(|| {
+                AppError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "agent key not found",
+                ))
+            })?;
 
         let unbound_key = UnboundKey::new(&AES_256_GCM, &key_bytes)
-            .map_err(|_| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, "failed to create key")))?;
+            .map_err(|_| AppError::Io(std::io::Error::other("failed to create key")))?;
         let key = LessSafeKey::new(unbound_key);
 
         let rng = SystemRandom::new();
         let mut nonce_bytes = [0u8; 12];
-        rng.fill(&mut nonce_bytes).map_err(|_| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, "failed to generate nonce")))?;
+        rng.fill(&mut nonce_bytes)
+            .map_err(|_| AppError::Io(std::io::Error::other("failed to generate nonce")))?;
         let nonce = Nonce::assume_unique_for_key(nonce_bytes);
 
         let mut in_out = payload.to_vec();
         key.seal_in_place_append_tag(nonce, Aad::empty(), &mut in_out)
-            .map_err(|_| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, "encryption failed")))?;
+            .map_err(|_| AppError::Io(std::io::Error::other("encryption failed")))?;
 
         let mut encrypted = nonce_bytes.to_vec();
         encrypted.extend_from_slice(&in_out);
@@ -137,7 +154,11 @@ impl SecureIpcChannel {
 
     /// Encrypt a message for an agent (mock version)
     #[cfg(not(feature = "security"))]
-    async fn encrypt_message(&self, agent_id: &str, payload: &[u8]) -> Result<(Vec<u8>, Vec<u8>), AppError> {
+    async fn encrypt_message(
+        &self,
+        agent_id: &str,
+        payload: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>), AppError> {
         // Mock encryption - just base64 encode for testing
         use base64::{Engine as _, engine::general_purpose};
         let encrypted = general_purpose::STANDARD.encode(payload).into_bytes();
@@ -148,7 +169,7 @@ impl SecureIpcChannel {
     /// Send a secure message to an agent
     pub async fn send_secure(&self, agent_id: &str, payload: &[u8]) -> Result<(), AppError> {
         let (encrypted_payload, signature) = self.encrypt_message(agent_id, payload).await?;
-        
+
         let message = SecureMessage {
             agent_id: agent_id.to_string(),
             message_id: uuid::Uuid::new_v4().to_string(),
@@ -159,24 +180,36 @@ impl SecureIpcChannel {
 
         let channels = self.channels.lock().await;
         if let Some(sender) = channels.get(agent_id) {
-            sender.send(message).await.map_err(|_| AppError::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "channel closed")))?;
+            sender.send(message).await.map_err(|_| {
+                AppError::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "channel closed",
+                ))
+            })?;
             tracing::debug!("Sent secure message to agent: {}", agent_id);
         } else {
-            return Err(AppError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "agent channel not found")));
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "agent channel not found",
+            )));
         }
 
         Ok(())
     }
 
     /// Register a channel for an agent
-    pub async fn register_agent(&self, agent_id: &str, sender: tokio::sync::mpsc::Sender<SecureMessage>) -> Result<(), AppError> {
+    pub async fn register_agent(
+        &self,
+        agent_id: &str,
+        sender: tokio::sync::mpsc::Sender<SecureMessage>,
+    ) -> Result<(), AppError> {
         // Generate key for the agent
         self.key_manager.generate_agent_key(agent_id).await?;
-        
+
         // Register the channel
         let mut channels = self.channels.lock().await;
         channels.insert(agent_id.to_string(), sender);
-        
+
         tracing::info!("Registered secure IPC channel for agent: {}", agent_id);
         Ok(())
     }
@@ -204,13 +237,13 @@ mod tests {
     #[tokio::test]
     async fn test_key_generation() {
         let key_manager = IpcKeyManager::new().unwrap();
-        
+
         let key1 = key_manager.generate_agent_key("agent1").await.unwrap();
         let key2 = key_manager.generate_agent_key("agent2").await.unwrap();
-        
+
         // Keys should be different
         assert_ne!(key1, key2);
-        
+
         // Should be able to retrieve keys
         assert_eq!(key_manager.get_agent_key("agent1").await, Some(key1));
         assert_eq!(key_manager.get_agent_key("agent2").await, Some(key2));
@@ -219,17 +252,20 @@ mod tests {
     #[tokio::test]
     async fn test_secure_channel() {
         let (_key_manager, channel) = create_secure_ipc().unwrap();
-        
+
         // Create a mock channel for testing
         let (sender, mut receiver) = tokio::sync::mpsc::channel(10);
-        
+
         // Register agent
         channel.register_agent("test-agent", sender).await.unwrap();
-        
+
         // Send secure message
         let test_payload = b"secret message";
-        channel.send_secure("test-agent", test_payload).await.unwrap();
-        
+        channel
+            .send_secure("test-agent", test_payload)
+            .await
+            .unwrap();
+
         // Receive message
         let message = receiver.recv().await.unwrap();
         assert_eq!(message.agent_id, "test-agent");

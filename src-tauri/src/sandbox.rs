@@ -40,6 +40,12 @@ pub struct SandboxManager {
     configs: HashMap<String, SandboxConfig>,
 }
 
+impl Default for SandboxManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SandboxManager {
     pub fn new() -> Self {
         Self {
@@ -58,46 +64,61 @@ impl SandboxManager {
     }
 
     /// Apply sandbox restrictions to a command
-    pub fn apply_sandbox(&self, agent_id: &str, mut cmd: tokio::process::Command) -> tokio::process::Command {
+    pub fn apply_sandbox(
+        &self,
+        agent_id: &str,
+        mut cmd: tokio::process::Command,
+    ) -> tokio::process::Command {
         let config = self.get_config(agent_id);
-        
+
         // Set resource limits (platform-specific)
         #[cfg(unix)]
         {
             // On Unix systems, we can use ulimit-style restrictions
             // This is a simplified approach - production would use cgroups or similar
-            cmd.env("RLIMIT_AS", (config.max_memory_mb * 1024 * 1024).to_string());
+            cmd.env(
+                "RLIMIT_AS",
+                (config.max_memory_mb * 1024 * 1024).to_string(),
+            );
             cmd.env("RLIMIT_CPU", config.max_cpu_time_secs.to_string());
         }
-        
+
         // Set allowed environment variables
         cmd.env_clear();
         for (key, value) in &config.env_vars {
             cmd.env(key, value);
         }
-        
+
         // Add basic security environment
         cmd.env("GESTURA_AGENT_ID", agent_id);
         cmd.env("GESTURA_SANDBOX", "1");
-        
+
         tracing::info!("Applied sandbox config for agent: {}", agent_id);
         cmd
     }
 
     /// Validate file access for an agent
-    pub fn validate_file_access(&self, agent_id: &str, path: &PathBuf, write_access: bool) -> Result<(), AppError> {
+    pub fn validate_file_access(
+        &self,
+        agent_id: &str,
+        path: &PathBuf,
+        write_access: bool,
+    ) -> Result<(), AppError> {
         let config = self.get_config(agent_id);
-        
+
         if write_access {
             for allowed_path in &config.allowed_write_paths {
                 if path.starts_with(allowed_path) {
                     return Ok(());
                 }
             }
-            return Err(AppError::Io(std::io::Error::new(
+            Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
-                format!("Write access denied for agent {} to path: {:?}", agent_id, path)
-            )));
+                format!(
+                    "Write access denied for agent {} to path: {:?}",
+                    agent_id, path
+                ),
+            )))
         } else {
             for allowed_path in &config.allowed_read_paths {
                 if path.starts_with(allowed_path) {
@@ -109,31 +130,37 @@ impl SandboxManager {
                     return Ok(());
                 }
             }
-            return Err(AppError::Io(std::io::Error::new(
+            Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
-                format!("Read access denied for agent {} to path: {:?}", agent_id, path)
-            )));
+                format!(
+                    "Read access denied for agent {} to path: {:?}",
+                    agent_id, path
+                ),
+            )))
         }
     }
 
     /// Validate network access for an agent
     pub fn validate_network_access(&self, agent_id: &str, host: &str) -> Result<(), AppError> {
         let config = self.get_config(agent_id);
-        
+
         if config.allowed_hosts.is_empty() {
             // If no hosts specified, allow all (permissive default)
             return Ok(());
         }
-        
+
         for allowed_host in &config.allowed_hosts {
             if host == allowed_host || host.ends_with(&format!(".{}", allowed_host)) {
                 return Ok(());
             }
         }
-        
+
         Err(AppError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            format!("Network access denied for agent {} to host: {}", agent_id, host)
+            format!(
+                "Network access denied for agent {} to host: {}",
+                agent_id, host
+            ),
         )))
     }
 }
@@ -141,7 +168,7 @@ impl SandboxManager {
 /// Create default sandbox config for different agent types
 pub fn create_default_sandbox(agent_type: &str) -> SandboxConfig {
     let mut config = SandboxConfig::default();
-    
+
     match agent_type {
         "voice-agent" => {
             config.max_memory_mb = 256;
@@ -166,7 +193,7 @@ pub fn create_default_sandbox(agent_type: &str) -> SandboxConfig {
             config.max_cpu_time_secs = 30;
         }
     }
-    
+
     config
 }
 
@@ -179,7 +206,7 @@ mod tests {
         let voice_config = create_default_sandbox("voice-agent");
         assert_eq!(voice_config.max_memory_mb, 256);
         assert_eq!(voice_config.max_cpu_time_secs, 60);
-        
+
         let mcp_config = create_default_sandbox("mcp-agent");
         assert_eq!(mcp_config.max_memory_mb, 512);
         assert!(mcp_config.allowed_hosts.contains(&"localhost".to_string()));
@@ -191,19 +218,22 @@ mod tests {
         let mut config = SandboxConfig::default();
         config.allowed_read_paths.push(PathBuf::from("/tmp"));
         config.allowed_write_paths.push(PathBuf::from("/var/app"));
-        
+
         manager.register_agent("test-agent", config);
-        
+
         // Test read access
-        let result = manager.validate_file_access("test-agent", &PathBuf::from("/tmp/test.txt"), false);
+        let result =
+            manager.validate_file_access("test-agent", &PathBuf::from("/tmp/test.txt"), false);
         assert!(result.is_ok());
-        
+
         // Test write access
-        let result = manager.validate_file_access("test-agent", &PathBuf::from("/var/app/data.json"), true);
+        let result =
+            manager.validate_file_access("test-agent", &PathBuf::from("/var/app/data.json"), true);
         assert!(result.is_ok());
-        
+
         // Test denied access
-        let result = manager.validate_file_access("test-agent", &PathBuf::from("/etc/passwd"), false);
+        let result =
+            manager.validate_file_access("test-agent", &PathBuf::from("/etc/passwd"), false);
         assert!(result.is_err());
     }
 }

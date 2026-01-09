@@ -1,10 +1,10 @@
 //! Automated testing module for Gestura UI components
 //! Provides comprehensive automated testing capabilities
 
-use tauri::{AppHandle, Manager};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::time::{sleep, Duration};
+use tauri::{AppHandle, Manager};
+use tokio::time::{Duration, sleep};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestResult {
@@ -82,9 +82,15 @@ impl AutomatedTester {
             }
         };
 
-        self.add_result(test_name, success, 
-            if success { "Tray initialization successful" } else { "Tray initialization failed" },
-            None
+        self.add_result(
+            test_name,
+            success,
+            if success {
+                "Tray initialization successful"
+            } else {
+                "Tray initialization failed"
+            },
+            None,
         );
     }
 
@@ -105,10 +111,17 @@ impl AutomatedTester {
         }
 
         let success = successful_windows == window_types.len();
-        let message = format!("Created {}/{} windows successfully", successful_windows, window_types.len());
+        let message = format!(
+            "Created {}/{} windows successfully",
+            successful_windows,
+            window_types.len()
+        );
 
-        self.add_result(test_name, success, &message, 
-            Some(serde_json::to_value(window_results).unwrap())
+        self.add_result(
+            test_name,
+            success,
+            &message,
+            Some(serde_json::to_value(window_results).unwrap()),
         );
     }
 
@@ -118,18 +131,22 @@ impl AutomatedTester {
         let html_file = format!("{}.html", window_type);
         let window_label = format!("test-{}", window_type);
 
-        match tauri::WebviewWindowBuilder::new(&self.app, &window_label, tauri::WebviewUrl::App(html_file.into()))
-            .title(&format!("Test - {}", window_type))
-            .inner_size(400.0, 300.0)
-            .visible(false) // Keep hidden for testing
-            .build()
+        match tauri::WebviewWindowBuilder::new(
+            &self.app,
+            &window_label,
+            tauri::WebviewUrl::App(html_file.into()),
+        )
+        .title(format!("Test - {}", window_type))
+        .inner_size(400.0, 300.0)
+        .visible(false) // Keep hidden for testing
+        .build()
         {
             Ok(window) => {
                 tracing::info!("✅ Window created: {}", window_type);
-                
+
                 // Wait for window to load
                 sleep(Duration::from_millis(1000)).await;
-                
+
                 // Close the test window
                 let _ = window.close();
                 true
@@ -146,7 +163,13 @@ impl AutomatedTester {
         tracing::info!("🔍 Testing: {}", test_name);
 
         // Test if HTML files exist and are valid
-        let html_files = vec!["chat.html", "config.html", "permissions.html", "status.html", "about.html"];
+        let html_files = vec![
+            "chat.html",
+            "config.html",
+            "permissions.html",
+            "status.html",
+            "about.html",
+        ];
         let mut valid_files = 0;
 
         for _file in &html_files {
@@ -195,10 +218,16 @@ impl AutomatedTester {
         let successful_commands = command_results.values().filter(|&&v| v).count();
         let total_commands = command_results.len();
         let success = successful_commands == total_commands;
-        let message = format!("Tested {}/{} commands successfully", successful_commands, total_commands);
+        let message = format!(
+            "Tested {}/{} commands successfully",
+            successful_commands, total_commands
+        );
 
-        self.add_result(test_name, success, &message, 
-            Some(serde_json::to_value(command_results).unwrap())
+        self.add_result(
+            test_name,
+            success,
+            &message,
+            Some(serde_json::to_value(command_results).unwrap()),
         );
     }
 
@@ -208,31 +237,46 @@ impl AutomatedTester {
 
         // Create a test window and check if it renders properly
         let window_label = "ui-render-test";
-        
-        match tauri::WebviewWindowBuilder::new(&self.app, window_label, tauri::WebviewUrl::App("permissions.html".into()))
-            .title("UI Render Test")
-            .inner_size(600.0, 500.0)
-            .visible(false)
-            .build()
+
+        match tauri::WebviewWindowBuilder::new(
+            &self.app,
+            window_label,
+            tauri::WebviewUrl::App("permissions.html".into()),
+        )
+        .title("UI Render Test")
+        .inner_size(600.0, 500.0)
+        .visible(false)
+        .build()
         {
             Ok(window) => {
                 // Wait for content to load
                 sleep(Duration::from_millis(2000)).await;
-                
+
                 // In a real implementation, we could inject JavaScript to check if content loaded
                 // For now, we'll consider it successful if the window was created
                 let _ = window.close();
-                
+
                 self.add_result(test_name, true, "UI rendering test completed", None);
             }
             Err(e) => {
                 tracing::error!("❌ UI rendering test failed: {}", e);
-                self.add_result(test_name, false, &format!("UI rendering failed: {}", e), None);
+                self.add_result(
+                    test_name,
+                    false,
+                    &format!("UI rendering failed: {}", e),
+                    None,
+                );
             }
         }
     }
 
-    fn add_result(&mut self, test_name: &str, success: bool, message: &str, data: Option<serde_json::Value>) {
+    fn add_result(
+        &mut self,
+        test_name: &str,
+        success: bool,
+        message: &str,
+        data: Option<serde_json::Value>,
+    ) {
         let result = TestResult {
             test_name: test_name.to_string(),
             success,
@@ -258,15 +302,30 @@ impl AutomatedTester {
         let mut recommendations = Vec::new();
 
         if failed > 0 {
-            recommendations.push("Some tests failed. Check the detailed results for specific issues.".to_string());
+            recommendations.push(
+                "Some tests failed. Check the detailed results for specific issues.".to_string(),
+            );
         }
 
-        if self.results.iter().any(|r| r.test_name == "Window Creation" && !r.success) {
-            recommendations.push("Window creation failed. Check HTML file paths and Tauri configuration.".to_string());
+        if self
+            .results
+            .iter()
+            .any(|r| r.test_name == "Window Creation" && !r.success)
+        {
+            recommendations.push(
+                "Window creation failed. Check HTML file paths and Tauri configuration."
+                    .to_string(),
+            );
         }
 
-        if self.results.iter().any(|r| r.test_name == "Tauri Commands" && !r.success) {
-            recommendations.push("Tauri commands failed. Check command implementations and imports.".to_string());
+        if self
+            .results
+            .iter()
+            .any(|r| r.test_name == "Tauri Commands" && !r.success)
+        {
+            recommendations.push(
+                "Tauri commands failed. Check command implementations and imports.".to_string(),
+            );
         }
 
         TestReport {
@@ -286,30 +345,36 @@ impl AutomatedTester {
 #[tauri::command]
 pub async fn run_automated_tests(app: tauri::AppHandle) -> Result<TestReport, String> {
     tracing::info!("🧪 Starting automated UI tests via command");
-    
+
     let mut tester = AutomatedTester::new(app);
     let report = tester.run_all_tests().await;
-    
-    tracing::info!("📊 Automated tests completed: {}/{} passed", 
-        report.summary.passed, report.summary.total_tests);
-    
+
+    tracing::info!(
+        "📊 Automated tests completed: {}/{} passed",
+        report.summary.passed,
+        report.summary.total_tests
+    );
+
     Ok(report)
 }
 
 #[tauri::command]
-pub async fn test_specific_window(window_type: String, app: tauri::AppHandle) -> Result<TestResult, String> {
+pub async fn test_specific_window(
+    window_type: String,
+    app: tauri::AppHandle,
+) -> Result<TestResult, String> {
     tracing::info!("🔍 Testing specific window: {}", window_type);
-    
+
     let tester = AutomatedTester::new(app);
     let success = tester.create_test_window(&window_type).await;
-    
+
     Ok(TestResult {
         test_name: format!("Window Test: {}", window_type),
         success,
-        message: if success { 
-            format!("Window {} created successfully", window_type) 
-        } else { 
-            format!("Window {} creation failed", window_type) 
+        message: if success {
+            format!("Window {} created successfully", window_type)
+        } else {
+            format!("Window {} creation failed", window_type)
         },
         timestamp: chrono::Utc::now().to_rfc3339(),
         data: None,

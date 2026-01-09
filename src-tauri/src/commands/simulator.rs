@@ -1,8 +1,7 @@
 /// Tauri commands for Haptic Harmony Ring simulator functionality
-
 use crate::AppState;
+use crate::ble::{SimulatorStatus, TestHapticPattern};
 use crate::simulator::{SimulatorInfo, TestResults};
-use crate::ble::{TestHapticPattern, SimulatorStatus};
 use std::collections::HashMap;
 use tauri::State;
 
@@ -12,12 +11,12 @@ pub async fn get_simulators(
     state: State<'_, AppState>,
 ) -> Result<HashMap<String, SimulatorInfo>, String> {
     let _app_state = state.inner();
-    
+
     // Get simulator manager from app state
     // Note: In a real implementation, this would be stored in AppState
     // For now, we'll return a mock response
     let mut simulators = HashMap::new();
-    
+
     simulators.insert(
         "mock-simulator-001".to_string(),
         SimulatorInfo {
@@ -27,22 +26,22 @@ pub async fn get_simulators(
             last_health_check: chrono::Utc::now(),
             connection_time: chrono::Utc::now(),
             metrics: crate::simulator::SimulatorMetrics::default(),
-        }
+        },
     );
-    
+
     Ok(simulators)
 }
 
 /// Scan for available simulators
 #[tauri::command]
-pub async fn scan_for_simulators(
-    state: State<'_, AppState>,
-) -> Result<Vec<String>, String> {
+pub async fn scan_for_simulators(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let app_state = state.inner();
 
     // Use the ring manager to scan for simulators
     if let Some(ring_manager) = &app_state.ring_manager {
-        ring_manager.scan_for_simulators().await
+        ring_manager
+            .scan_for_simulators()
+            .await
             .map_err(|e| e.to_string())
     } else {
         Ok(vec!["mock-simulator-001".to_string()])
@@ -51,14 +50,13 @@ pub async fn scan_for_simulators(
 
 /// Reset a specific simulator
 #[tauri::command]
-pub async fn reset_simulator(
-    device_id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn reset_simulator(device_id: String, state: State<'_, AppState>) -> Result<(), String> {
     let app_state = state.inner();
-    
+
     if let Some(ring_manager) = &app_state.ring_manager {
-        ring_manager.reset_simulator(&device_id).await
+        ring_manager
+            .reset_simulator(&device_id)
+            .await
             .map_err(|e| e.to_string())
     } else {
         tracing::info!("Mock: Reset simulator {}", device_id);
@@ -74,23 +72,35 @@ pub async fn send_test_haptic(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let app_state = state.inner();
-    
+
     let pattern = match pattern_type.as_str() {
         "connectivity" => TestHapticPattern::ConnectivityTest,
         "latency" => TestHapticPattern::LatencyTest,
-        "intensity" => TestHapticPattern::IntensityTest { min: 0.1, max: 1.0, steps: 10 },
-        "duration" => TestHapticPattern::DurationTest { durations: vec![100, 200, 500, 1000] },
-        "complex" => TestHapticPattern::ComplexPattern { 
-            pattern: vec![(0.5, 100), (1.0, 200), (0.3, 150)] 
+        "intensity" => TestHapticPattern::IntensityTest {
+            min: 0.1,
+            max: 1.0,
+            steps: 10,
+        },
+        "duration" => TestHapticPattern::DurationTest {
+            durations: vec![100, 200, 500, 1000],
+        },
+        "complex" => TestHapticPattern::ComplexPattern {
+            pattern: vec![(0.5, 100), (1.0, 200), (0.3, 150)],
         },
         _ => return Err("Invalid pattern type".to_string()),
     };
-    
+
     if let Some(ring_manager) = &app_state.ring_manager {
-        ring_manager.send_test_haptic(&device_id, pattern).await
+        ring_manager
+            .send_test_haptic(&device_id, pattern)
+            .await
             .map_err(|e| e.to_string())
     } else {
-        tracing::info!("Mock: Send test haptic to {} with pattern {:?}", device_id, pattern);
+        tracing::info!(
+            "Mock: Send test haptic to {} with pattern {:?}",
+            device_id,
+            pattern
+        );
         Ok(())
     }
 }
@@ -102,9 +112,11 @@ pub async fn get_simulator_health(
     state: State<'_, AppState>,
 ) -> Result<SimulatorStatus, String> {
     let app_state = state.inner();
-    
+
     if let Some(ring_manager) = &app_state.ring_manager {
-        ring_manager.get_simulator_health(&device_id).await
+        ring_manager
+            .get_simulator_health(&device_id)
+            .await
             .map_err(|e| e.to_string())
     } else {
         Ok(SimulatorStatus::Healthy)
@@ -118,9 +130,11 @@ pub async fn get_simulator_logs(
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
     let app_state = state.inner();
-    
+
     if let Some(ring_manager) = &app_state.ring_manager {
-        ring_manager.get_connection_logs(&device_id).await
+        ring_manager
+            .get_connection_logs(&device_id)
+            .await
             .map_err(|e| e.to_string())
     } else {
         Ok(vec![
@@ -139,7 +153,7 @@ pub async fn run_simulator_test(
     state: State<'_, AppState>,
 ) -> Result<TestResults, String> {
     let _app_state = state.inner();
-    
+
     // For now, return mock test results
     // In a real implementation, this would use SimulatorTester
     Ok(TestResults {
@@ -162,9 +176,7 @@ pub async fn run_simulator_test(
 
 /// Check if developer mode is enabled
 #[tauri::command]
-pub async fn is_developer_mode_enabled(
-    state: State<'_, AppState>,
-) -> Result<bool, String> {
+pub async fn is_developer_mode_enabled(state: State<'_, AppState>) -> Result<bool, String> {
     let app_state = state.inner();
     Ok(app_state.config.developer.developer_mode)
 }
@@ -179,8 +191,11 @@ pub async fn toggle_developer_mode(
 
     // Update configuration
     // Note: In a real implementation, this would persist the config
-    tracing::info!("Developer mode {}", if enabled { "enabled" } else { "disabled" });
-    
+    tracing::info!(
+        "Developer mode {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
+
     Ok(())
 }
 
@@ -192,8 +207,11 @@ pub async fn toggle_simulator_support(
 ) -> Result<(), String> {
     let _app_state = state.inner();
 
-    tracing::info!("Simulator support {}", if enabled { "enabled" } else { "disabled" });
-    
+    tracing::info!(
+        "Simulator support {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
+
     Ok(())
 }
 
@@ -215,26 +233,21 @@ pub async fn update_simulator_config(
     let _app_state = state.inner();
 
     tracing::info!("Updating simulator config: {:?}", config);
-    
+
     // Note: In a real implementation, this would update and persist the config
     Ok(())
 }
 
 /// Auto-discover simulators on localhost
 #[tauri::command]
-pub async fn auto_discover_simulators(
-    state: State<'_, AppState>,
-) -> Result<Vec<String>, String> {
+pub async fn auto_discover_simulators(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let _app_state = state.inner();
 
     // Mock auto-discovery
-    let discovered = vec![
-        "localhost:8080".to_string(),
-        "localhost:8081".to_string(),
-    ];
-    
+    let discovered = vec!["localhost:8080".to_string(), "localhost:8081".to_string()];
+
     tracing::info!("Auto-discovered simulators: {:?}", discovered);
-    
+
     Ok(discovered)
 }
 
@@ -245,7 +258,7 @@ pub async fn get_simulator_metrics(
     state: State<'_, AppState>,
 ) -> Result<crate::simulator::SimulatorMetrics, String> {
     let _app_state = state.inner();
-    
+
     // Return mock metrics
     Ok(crate::simulator::SimulatorMetrics {
         latency_ms: Some(12.3),
@@ -265,8 +278,12 @@ pub async fn start_health_monitoring(
 ) -> Result<(), String> {
     let _app_state = state.inner();
 
-    tracing::info!("Starting health monitoring for {} with interval {}s", device_id, interval_seconds);
-    
+    tracing::info!(
+        "Starting health monitoring for {} with interval {}s",
+        device_id,
+        interval_seconds
+    );
+
     Ok(())
 }
 
@@ -285,22 +302,15 @@ pub async fn stop_health_monitoring(
 
 /// Set window size for the application
 #[tauri::command]
-pub async fn set_window_size(
-    width: f64,
-    height: f64,
-    window: tauri::Window,
-) -> Result<(), String> {
-    use tauri::Manager;
-
+pub async fn set_window_size(width: f64, height: f64, window: tauri::Window) -> Result<(), String> {
     tracing::info!("Setting window size to {}x{}", width, height);
 
     let size = tauri::LogicalSize::new(width, height);
 
-    window.set_size(size)
-        .map_err(|e| {
-            tracing::error!("Failed to set window size: {}", e);
-            format!("Failed to set window size: {}", e)
-        })?;
+    window.set_size(size).map_err(|e| {
+        tracing::error!("Failed to set window size: {}", e);
+        format!("Failed to set window size: {}", e)
+    })?;
 
     tracing::info!("Window size set successfully to {}x{}", width, height);
     Ok(())

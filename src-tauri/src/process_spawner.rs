@@ -1,15 +1,15 @@
 //! Process-based agent spawning with IPC communication
 //! Implements subprocess isolation for agents with proper IPC channels
 
-use crate::agents::{AgentSpawner, AgentEnvelope};
 use crate::AppError;
+use crate::agents::{AgentEnvelope, AgentSpawner};
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, Mutex};
-use tokio::time::{timeout, Duration};
+use tokio::sync::{Mutex, mpsc};
+use tokio::time::{Duration, timeout};
 
 /// Process-based agent record
 struct ProcessAgent {
@@ -45,7 +45,9 @@ impl ProcessSpawner {
     }
 
     /// Start health monitoring task
-    fn start_health_monitor(agents: Arc<Mutex<HashMap<String, ProcessAgent>>>) -> tokio::task::JoinHandle<()> {
+    fn start_health_monitor(
+        agents: Arc<Mutex<HashMap<String, ProcessAgent>>>,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
             loop {
@@ -103,12 +105,16 @@ impl ProcessSpawner {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| AppError::Io(e))?;
+            .map_err(AppError::Io)?;
 
-        let stdin = child.stdin.take()
-            .ok_or_else(|| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, "Failed to get stdin")))?;
-        let stdout = child.stdout.take()
-            .ok_or_else(|| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, "Failed to get stdout")))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| AppError::Io(std::io::Error::other("Failed to get stdin")))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| AppError::Io(std::io::Error::other("Failed to get stdout")))?;
 
         // Set up stdout reader
         let (stdout_tx, stdout_rx) = mpsc::channel(100);
@@ -116,7 +122,9 @@ impl ProcessSpawner {
             let mut reader = BufReader::new(stdout);
             let mut line = String::new();
             while let Ok(n) = reader.read_line(&mut line).await {
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 let _ = stdout_tx.send(line.trim().to_string()).await;
                 line.clear();
             }
@@ -133,11 +141,19 @@ impl ProcessSpawner {
     }
 
     /// Send IPC message to agent
-    async fn send_ipc_message(&self, agent: &mut ProcessAgent, envelope: AgentEnvelope) -> Result<(), AppError> {
-        let message = serde_json::to_string(&envelope).map_err(|e| AppError::Json(e))?;
-        agent.stdin.write_all(message.as_bytes()).await.map_err(|e| AppError::Io(e))?;
-        agent.stdin.write_all(b"\n").await.map_err(|e| AppError::Io(e))?;
-        agent.stdin.flush().await.map_err(|e| AppError::Io(e))?;
+    async fn send_ipc_message(
+        &self,
+        agent: &mut ProcessAgent,
+        envelope: AgentEnvelope,
+    ) -> Result<(), AppError> {
+        let message = serde_json::to_string(&envelope).map_err(AppError::Json)?;
+        agent
+            .stdin
+            .write_all(message.as_bytes())
+            .await
+            .map_err(AppError::Io)?;
+        agent.stdin.write_all(b"\n").await.map_err(AppError::Io)?;
+        agent.stdin.flush().await.map_err(AppError::Io)?;
         Ok(())
     }
 
@@ -185,10 +201,10 @@ impl AgentSpawner for ProcessSpawner {
         };
 
         let mut agents = self.agents.lock().await;
-        if let Some(agent) = agents.get_mut(id) {
-            if let Err(e) = self.send_ipc_message(agent, envelope).await {
-                tracing::error!("Failed to send event to process agent {}: {}", id, e);
-            }
+        if let Some(agent) = agents.get_mut(id)
+            && let Err(e) = self.send_ipc_message(agent, envelope).await
+        {
+            tracing::error!("Failed to send event to process agent {}: {}", id, e);
         }
     }
 
@@ -198,7 +214,7 @@ impl AgentSpawner for ProcessSpawner {
 
     async fn shutdown_all(&self, grace_secs: u64) {
         let mut agents = self.agents.lock().await;
-        
+
         // Send shutdown signals
         for (id, agent) in agents.iter_mut() {
             let envelope = AgentEnvelope {
@@ -218,7 +234,10 @@ impl AgentSpawner for ProcessSpawner {
             }
         };
 
-        if timeout(Duration::from_secs(grace_secs), shutdown_future).await.is_err() {
+        if timeout(Duration::from_secs(grace_secs), shutdown_future)
+            .await
+            .is_err()
+        {
             tracing::warn!("Grace period expired, force killing process agents");
             for (id, agent) in agents.iter_mut() {
                 if let Err(e) = agent.child.kill().await {
@@ -239,13 +258,17 @@ mod tests {
     #[tokio::test]
     async fn test_process_spawner() {
         let spawner = ProcessSpawner::new(None);
-        
+
         // Test spawning
-        spawner.spawn_agent("test-agent".to_string(), "Test Agent".to_string()).await;
-        
+        spawner
+            .spawn_agent("test-agent".to_string(), "Test Agent".to_string())
+            .await;
+
         // Test sending event
-        spawner.send_event("test-agent", "test message".to_string()).await;
-        
+        spawner
+            .send_event("test-agent", "test message".to_string())
+            .await;
+
         // Test shutdown
         spawner.shutdown_all(5).await;
     }

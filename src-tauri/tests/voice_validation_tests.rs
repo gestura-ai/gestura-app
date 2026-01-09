@@ -1,4 +1,7 @@
-use gestura_app::{AppConfig, voice_select::{select_voice, validate_voice_config_for_run}};
+use gestura::{
+    AppConfig,
+    voice_select::{select_voice, validate_voice_config_for_run},
+};
 
 #[test]
 fn validation_fails_when_input_missing_for_real_engines() {
@@ -11,4 +14,3 @@ fn validation_fails_when_input_missing_for_real_engines() {
     let err = validate_voice_config_for_run(&cfg, engine.as_ref()).unwrap_err();
     assert!(err.to_string().contains("input_path"));
 }
-

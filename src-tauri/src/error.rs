@@ -34,4 +34,3 @@ pub enum AppError {
     #[error("Voice error: {0}")]
     Voice(String),
 }
-

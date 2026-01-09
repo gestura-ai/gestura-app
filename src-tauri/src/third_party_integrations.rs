@@ -120,6 +120,12 @@ pub struct ThirdPartyIntegrationManager {
     rate_limiters: Arc<RwLock<HashMap<String, RateLimiter>>>,
 }
 
+impl Default for ThirdPartyIntegrationManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ThirdPartyIntegrationManager {
     /// Create a new integration manager
     pub fn new() -> Self {
@@ -153,11 +159,15 @@ impl ThirdPartyIntegrationManager {
             let mut rate_limiters = self.rate_limiters.write().await;
             rate_limiters.insert(
                 integration.id.clone(),
-                RateLimiter::new(rate_limit.requests_per_minute, rate_limit.burst_limit)
+                RateLimiter::new(rate_limit.requests_per_minute, rate_limit.burst_limit),
             );
         }
 
-        tracing::info!("Added integration: {} ({})", integration.name, integration.provider);
+        tracing::info!(
+            "Added integration: {} ({})",
+            integration.name,
+            integration.provider
+        );
         Ok(())
     }
 
@@ -167,7 +177,7 @@ impl ThirdPartyIntegrationManager {
         if integration.name.is_empty() {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Integration name cannot be empty"
+                "Integration name cannot be empty",
             )));
         }
 
@@ -177,7 +187,7 @@ impl ThirdPartyIntegrationManager {
                 if integration.config.endpoint_url.is_none() {
                     return Err(AppError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
-                        "Endpoint URL required for API integrations"
+                        "Endpoint URL required for API integrations",
                     )));
                 }
             }
@@ -185,11 +195,12 @@ impl ThirdPartyIntegrationManager {
         }
 
         // Validate credentials
-        if integration.credentials.auth_type != AuthType::None && 
-           integration.credentials.encrypted_data.is_empty() {
+        if integration.credentials.auth_type != AuthType::None
+            && integration.credentials.encrypted_data.is_empty()
+        {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Credentials required for authenticated integrations"
+                "Credentials required for authenticated integrations",
             )));
         }
 
@@ -201,12 +212,13 @@ impl ThirdPartyIntegrationManager {
         match integration.integration_type {
             IntegrationType::RestApi => {
                 if let Some(url) = &integration.config.endpoint_url {
-                    let response = self.http_client
+                    let response = self
+                        .http_client
                         .get(url)
                         .timeout(std::time::Duration::from_secs(10))
                         .send()
                         .await;
-                    
+
                     match response {
                         Ok(resp) => {
                             if resp.status().is_success() || resp.status().is_client_error() {
@@ -217,7 +229,7 @@ impl ThirdPartyIntegrationManager {
                         Err(_) => {
                             return Err(AppError::Io(std::io::Error::new(
                                 std::io::ErrorKind::ConnectionRefused,
-                                "Failed to connect to integration endpoint"
+                                "Failed to connect to integration endpoint",
                             )));
                         }
                     }
@@ -229,7 +241,10 @@ impl ThirdPartyIntegrationManager {
             }
             _ => {
                 // Other integration types would have specific connection tests
-                tracing::debug!("Connection test not implemented for {:?}", integration.integration_type);
+                tracing::debug!(
+                    "Connection test not implemented for {:?}",
+                    integration.integration_type
+                );
             }
         }
 
@@ -237,22 +252,28 @@ impl ThirdPartyIntegrationManager {
     }
 
     /// Execute integration request
-    pub async fn execute_request(&self, request: IntegrationRequest) -> Result<IntegrationResponse, AppError> {
+    pub async fn execute_request(
+        &self,
+        request: IntegrationRequest,
+    ) -> Result<IntegrationResponse, AppError> {
         let start_time = std::time::Instant::now();
 
         // Get integration
         let integrations = self.integrations.read().await;
-        let integration = integrations.get(&request.integration_id)
-            .ok_or_else(|| AppError::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Integration not found"
-            )))?
+        let integration = integrations
+            .get(&request.integration_id)
+            .ok_or_else(|| {
+                AppError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Integration not found",
+                ))
+            })?
             .clone();
 
         if !integration.is_enabled {
             return Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
-                "Integration is disabled"
+                "Integration is disabled",
             )));
         }
 
@@ -261,21 +282,16 @@ impl ThirdPartyIntegrationManager {
         // Check rate limit
         if let Some(_rate_limit) = &integration.config.rate_limit {
             let rate_limiters = self.rate_limiters.read().await;
-            if let Some(limiter) = rate_limiters.get(&integration.id) {
-                if !limiter.allow_request().await {
-                    return Err(AppError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "Rate limit exceeded"
-                    )));
-                }
+            if let Some(limiter) = rate_limiters.get(&integration.id)
+                && !limiter.allow_request().await
+            {
+                return Err(AppError::Io(std::io::Error::other("Rate limit exceeded")));
             }
         }
 
         // Execute request based on integration type
         let response = match integration.integration_type {
-            IntegrationType::RestApi => {
-                self.execute_rest_request(&integration, &request).await?
-            }
+            IntegrationType::RestApi => self.execute_rest_request(&integration, &request).await?,
             IntegrationType::Webhook => {
                 self.execute_webhook_request(&integration, &request).await?
             }
@@ -285,7 +301,10 @@ impl ThirdPartyIntegrationManager {
             _ => {
                 return Err(AppError::Io(std::io::Error::new(
                     std::io::ErrorKind::Unsupported,
-                    format!("Integration type {:?} not implemented", integration.integration_type)
+                    format!(
+                        "Integration type {:?} not implemented",
+                        integration.integration_type
+                    ),
                 )));
             }
         };
@@ -308,15 +327,24 @@ impl ThirdPartyIntegrationManager {
     }
 
     /// Execute REST API request
-    async fn execute_rest_request(&self, integration: &Integration, request: &IntegrationRequest) -> Result<IntegrationResponse, AppError> {
-        let base_url = integration.config.endpoint_url.as_ref()
-            .ok_or_else(|| AppError::Io(std::io::Error::new(
+    async fn execute_rest_request(
+        &self,
+        integration: &Integration,
+        request: &IntegrationRequest,
+    ) -> Result<IntegrationResponse, AppError> {
+        let base_url = integration.config.endpoint_url.as_ref().ok_or_else(|| {
+            AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "No endpoint URL configured"
-            )))?;
+                "No endpoint URL configured",
+            ))
+        })?;
 
         let url = if let Some(path) = &request.path {
-            format!("{}/{}", base_url.trim_end_matches('/'), path.trim_start_matches('/'))
+            format!(
+                "{}/{}",
+                base_url.trim_end_matches('/'),
+                path.trim_start_matches('/')
+            )
         } else {
             base_url.clone()
         };
@@ -332,7 +360,7 @@ impl ThirdPartyIntegrationManager {
             HttpMethod::OPTIONS => {
                 return Err(AppError::Io(std::io::Error::new(
                     std::io::ErrorKind::Unsupported,
-                    "OPTIONS method not implemented"
+                    "OPTIONS method not implemented",
                 )));
             }
         };
@@ -346,7 +374,9 @@ impl ThirdPartyIntegrationManager {
         }
 
         // Add authentication
-        req_builder = self.add_authentication(req_builder, &integration.credentials).await?;
+        req_builder = self
+            .add_authentication(req_builder, &integration.credentials)
+            .await?;
 
         // Add body for POST/PUT/PATCH
         if let Some(body) = &request.body {
@@ -354,22 +384,22 @@ impl ThirdPartyIntegrationManager {
         }
 
         // Set timeout
-        let timeout = request.timeout.unwrap_or(std::time::Duration::from_secs(integration.config.timeout_seconds));
+        let timeout = request.timeout.unwrap_or(std::time::Duration::from_secs(
+            integration.config.timeout_seconds,
+        ));
         req_builder = req_builder.timeout(timeout);
 
         // Execute request
         match req_builder.send().await {
             Ok(response) => {
                 let status_code = response.status().as_u16();
-                let headers: HashMap<String, String> = response.headers()
+                let headers: HashMap<String, String> = response
+                    .headers()
                     .iter()
                     .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
                     .collect();
 
-                let body = match response.json::<serde_json::Value>().await {
-                    Ok(json) => Some(json),
-                    Err(_) => None,
-                };
+                let body = (response.json::<serde_json::Value>().await).ok();
 
                 Ok(IntegrationResponse {
                     success: status_code < 400,
@@ -384,32 +414,39 @@ impl ThirdPartyIntegrationManager {
                     response_time_ms: 0, // Will be set by caller
                 })
             }
-            Err(error) => {
-                Ok(IntegrationResponse {
-                    success: false,
-                    status_code: None,
-                    headers: HashMap::new(),
-                    body: None,
-                    error_message: Some(error.to_string()),
-                    response_time_ms: 0,
-                })
-            }
+            Err(error) => Ok(IntegrationResponse {
+                success: false,
+                status_code: None,
+                headers: HashMap::new(),
+                body: None,
+                error_message: Some(error.to_string()),
+                response_time_ms: 0,
+            }),
         }
     }
 
     /// Execute webhook request
-    async fn execute_webhook_request(&self, integration: &Integration, request: &IntegrationRequest) -> Result<IntegrationResponse, AppError> {
+    async fn execute_webhook_request(
+        &self,
+        integration: &Integration,
+        request: &IntegrationRequest,
+    ) -> Result<IntegrationResponse, AppError> {
         // Webhooks are typically outgoing HTTP requests
         self.execute_rest_request(integration, request).await
     }
 
     /// Execute GraphQL request
-    async fn execute_graphql_request(&self, integration: &Integration, request: &IntegrationRequest) -> Result<IntegrationResponse, AppError> {
-        let endpoint = integration.config.endpoint_url.as_ref()
-            .ok_or_else(|| AppError::Io(std::io::Error::new(
+    async fn execute_graphql_request(
+        &self,
+        integration: &Integration,
+        request: &IntegrationRequest,
+    ) -> Result<IntegrationResponse, AppError> {
+        let endpoint = integration.config.endpoint_url.as_ref().ok_or_else(|| {
+            AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "No GraphQL endpoint configured"
-            )))?;
+                "No GraphQL endpoint configured",
+            ))
+        })?;
 
         // GraphQL requests are always POST
         let mut req_builder = self.http_client.post(endpoint);
@@ -421,7 +458,9 @@ impl ThirdPartyIntegrationManager {
         }
 
         // Add authentication
-        req_builder = self.add_authentication(req_builder, &integration.credentials).await?;
+        req_builder = self
+            .add_authentication(req_builder, &integration.credentials)
+            .await?;
 
         // GraphQL body format
         if let Some(body) = &request.body {
@@ -447,21 +486,23 @@ impl ThirdPartyIntegrationManager {
                     response_time_ms: 0,
                 })
             }
-            Err(error) => {
-                Ok(IntegrationResponse {
-                    success: false,
-                    status_code: None,
-                    headers: HashMap::new(),
-                    body: None,
-                    error_message: Some(error.to_string()),
-                    response_time_ms: 0,
-                })
-            }
+            Err(error) => Ok(IntegrationResponse {
+                success: false,
+                status_code: None,
+                headers: HashMap::new(),
+                body: None,
+                error_message: Some(error.to_string()),
+                response_time_ms: 0,
+            }),
         }
     }
 
     /// Add authentication to request
-    async fn add_authentication(&self, mut req_builder: reqwest::RequestBuilder, credentials: &IntegrationCredentials) -> Result<reqwest::RequestBuilder, AppError> {
+    async fn add_authentication(
+        &self,
+        mut req_builder: reqwest::RequestBuilder,
+        credentials: &IntegrationCredentials,
+    ) -> Result<reqwest::RequestBuilder, AppError> {
         match credentials.auth_type {
             AuthType::None => Ok(req_builder),
             AuthType::ApiKey => {
@@ -518,18 +559,20 @@ impl ThirdPartyIntegrationManager {
     /// Get integration statistics
     pub async fn get_stats(&self) -> serde_json::Value {
         let integrations = self.integrations.read().await;
-        
+
         let total_integrations = integrations.len();
         let enabled_integrations = integrations.values().filter(|i| i.is_enabled).count();
         let total_usage: u32 = integrations.values().map(|i| i.usage_count).sum();
         let total_errors: u32 = integrations.values().map(|i| i.error_count).sum();
 
-        let integration_types: HashMap<String, usize> = integrations.values()
-            .fold(HashMap::new(), |mut acc, integration| {
-                let type_name = format!("{:?}", integration.integration_type);
-                *acc.entry(type_name).or_insert(0) += 1;
-                acc
-            });
+        let integration_types: HashMap<String, usize> =
+            integrations
+                .values()
+                .fold(HashMap::new(), |mut acc, integration| {
+                    let type_name = format!("{:?}", integration.integration_type);
+                    *acc.entry(type_name).or_insert(0) += 1;
+                    acc
+                });
 
         serde_json::json!({
             "total_integrations": total_integrations,
@@ -588,13 +631,14 @@ impl RateLimiter {
 }
 
 /// Global third-party integration manager instance
-static INTEGRATION_MANAGER: tokio::sync::OnceCell<ThirdPartyIntegrationManager> = tokio::sync::OnceCell::const_new();
+static INTEGRATION_MANAGER: tokio::sync::OnceCell<ThirdPartyIntegrationManager> =
+    tokio::sync::OnceCell::const_new();
 
 /// Get the global integration manager
 pub async fn get_integration_manager() -> &'static ThirdPartyIntegrationManager {
-    INTEGRATION_MANAGER.get_or_init(|| async {
-        ThirdPartyIntegrationManager::new()
-    }).await
+    INTEGRATION_MANAGER
+        .get_or_init(|| async { ThirdPartyIntegrationManager::new() })
+        .await
 }
 
 #[cfg(test)]
@@ -604,7 +648,7 @@ mod tests {
     #[tokio::test]
     async fn test_integration_creation() {
         let manager = ThirdPartyIntegrationManager::new();
-        
+
         let integration = Integration {
             id: "test-integration".to_string(),
             name: "Test Integration".to_string(),
@@ -631,7 +675,7 @@ mod tests {
             error_count: 0,
             created_at: chrono::Utc::now(),
         };
-        
+
         // Note: This test will fail connection test in real environment
         // In actual testing, would mock the HTTP client
         let _result = manager.add_integration(integration).await;
@@ -641,7 +685,7 @@ mod tests {
     #[tokio::test]
     async fn test_rate_limiter() {
         let limiter = RateLimiter::new(5, 10);
-        
+
         // Should allow first few requests
         assert!(limiter.allow_request().await);
         assert!(limiter.allow_request().await);
