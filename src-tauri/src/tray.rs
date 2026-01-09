@@ -1,10 +1,11 @@
 //! System tray utilities for Gestura
-use tauri::{AppHandle, Manager};
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState};
-use crate::window_manager::{self, get_session_counts, get_all_sessions};
+use crate::window_manager::{self, get_all_sessions};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tauri::image::Image;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Manager};
 
 // Global listening state and tray management
 lazy_static::lazy_static! {
@@ -26,7 +27,8 @@ impl Default for ListeningState {
         Self {
             is_listening: false,
             started_at: None,
-            timeout_duration: Duration::from_secs(30), // Default 30 seconds
+            // 3 minutes timeout: 2 min max recording + 1 min for transcription/LLM processing
+            timeout_duration: Duration::from_secs(180),
             session_id: None,
         }
     }
@@ -64,10 +66,44 @@ pub fn init_tray(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_tray_menu(app)?;
     tracing::info!("📋 Tray menu built successfully");
 
+    // Load tray icon - try default_window_icon first, then fall back to loading from file
+    let icon = match app.default_window_icon() {
+        Some(icon) => {
+            tracing::info!("Using default window icon for tray");
+            icon.clone()
+        }
+        None => {
+            tracing::info!("Default window icon not available, loading from file");
+            // Try to load icon from the icons directory using include_bytes! at compile time
+            // or create a simple fallback icon
+            let icon_bytes = include_bytes!("../icons/32x32.png");
+            match image::load_from_memory(icon_bytes) {
+                Ok(img) => {
+                    let rgba = img.to_rgba8();
+                    let (width, height) = rgba.dimensions();
+                    Image::new_owned(rgba.into_raw(), width, height)
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load embedded icon: {}, using fallback", e);
+                    // Create a simple 16x16 colored icon as fallback (blue square)
+                    let size = 16u32;
+                    let mut rgba = vec![0u8; (size * size * 4) as usize];
+                    for i in 0..(size * size) as usize {
+                        rgba[i * 4] = 66; // R
+                        rgba[i * 4 + 1] = 133; // G
+                        rgba[i * 4 + 2] = 244; // B
+                        rgba[i * 4 + 3] = 255; // A
+                    }
+                    Image::new_owned(rgba, size, size)
+                }
+            }
+        }
+    };
+
     // Create tray icon with proper icon and event handlers
     let tray = TrayIconBuilder::new()
         .menu(&menu)
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(icon)
         .tooltip("Gestura - Voice & Gesture Control")
         .on_menu_event(handle_menu_event)
         .on_tray_icon_event(handle_tray_event)
@@ -99,8 +135,28 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     drop(listening_state);
 
     let listen = MenuItem::with_id(app, "listen", listen_text, true, Option::<&str>::None)?;
-    let new_chat = MenuItem::with_id(app, "new_chat", "New Chat Session", true, Option::<&str>::None)?;
+    let new_chat = MenuItem::with_id(
+        app,
+        "new_chat",
+        "New Chat Session",
+        true,
+        Option::<&str>::None,
+    )?;
     let config = MenuItem::with_id(app, "config", "Configuration", true, Option::<&str>::None)?;
+    let devtools_config = MenuItem::with_id(
+        app,
+        "devtools_config",
+        "Open Config DevTools",
+        true,
+        Option::<&str>::None,
+    )?;
+    let devtools_last_chat = MenuItem::with_id(
+        app,
+        "devtools_last_chat",
+        "Open Last Chat DevTools",
+        true,
+        Option::<&str>::None,
+    )?;
 
     // Sessions submenu
     let sessions_menu = build_sessions_submenu(app)?;
@@ -108,6 +164,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     // Separators
     let separator1 = PredefinedMenuItem::separator(app)?;
     let separator2 = PredefinedMenuItem::separator(app)?;
+    let separator3 = PredefinedMenuItem::separator(app)?;
 
     // Exit
     let quit = MenuItem::with_id(app, "quit", "Exit Gestura", true, Option::<&str>::None)?;
@@ -119,7 +176,9 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     menu.append(&sessions_menu)?;
     menu.append(&separator2)?;
     menu.append(&config)?;
-    menu.append(&separator1)?;
+    menu.append(&devtools_config)?;
+    menu.append(&devtools_last_chat)?;
+    menu.append(&separator3)?;
     menu.append(&quit)?;
 
     Ok(menu)
@@ -128,36 +187,164 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 /// Build sessions submenu with active and closed sessions
 fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>> {
     let sessions_menu = Menu::new(app)?;
-    let (active_count, closed_count) = get_session_counts();
+    let all_sessions = get_all_sessions();
+    let active_sessions: Vec<_> = all_sessions.iter().filter(|s| s.is_open).collect();
+    let closed_sessions: Vec<_> = all_sessions.iter().filter(|s| !s.is_open).collect();
 
-    if active_count == 0 && closed_count == 0 {
-        let no_sessions = MenuItem::with_id(app, "no_sessions", "No sessions yet", false, Option::<&str>::None)?;
+    if active_sessions.is_empty() && closed_sessions.is_empty() {
+        let no_sessions = MenuItem::with_id(
+            app,
+            "no_sessions",
+            "No sessions yet",
+            false,
+            Option::<&str>::None,
+        )?;
         sessions_menu.append(&no_sessions)?;
     } else {
         // Add active sessions
-        if active_count > 0 {
-            let active_header = MenuItem::with_id(app, "active_header", &format!("Active Sessions ({})", active_count), false, Option::<&str>::None)?;
+        if !active_sessions.is_empty() {
+            let active_header = MenuItem::with_id(
+                app,
+                "active_header",
+                format!("── Active ({}) ──", active_sessions.len()),
+                false,
+                Option::<&str>::None,
+            )?;
             sessions_menu.append(&active_header)?;
 
-            // TODO: Add individual active sessions
+            // Add individual active sessions (limit to 10)
+            for session in active_sessions.iter().take(10) {
+                let label = format!(
+                    "💬 {} ({})",
+                    session.title,
+                    session.last_active.format("%H:%M")
+                );
+                let session_item = MenuItem::with_id(
+                    app,
+                    format!("session_{}", session.id),
+                    label,
+                    true,
+                    Option::<&str>::None,
+                )?;
+                sessions_menu.append(&session_item)?;
+            }
         }
 
         // Add closed sessions
-        if closed_count > 0 {
-            if active_count > 0 {
+        if !closed_sessions.is_empty() {
+            if !active_sessions.is_empty() {
                 let separator = PredefinedMenuItem::separator(app)?;
                 sessions_menu.append(&separator)?;
             }
 
-            let closed_header = MenuItem::with_id(app, "closed_header", &format!("Closed Sessions ({})", closed_count), false, Option::<&str>::None)?;
+            let closed_header = MenuItem::with_id(
+                app,
+                "closed_header",
+                format!("── Closed ({}) ──", closed_sessions.len()),
+                false,
+                Option::<&str>::None,
+            )?;
             sessions_menu.append(&closed_header)?;
 
-            let restore_all = MenuItem::with_id(app, "restore_all", "Restore All Sessions", true, Option::<&str>::None)?;
-            sessions_menu.append(&restore_all)?;
+            // Add individual closed sessions (limit to 5)
+            for session in closed_sessions.iter().take(5) {
+                let label = format!(
+                    "📁 {} ({})",
+                    session.title,
+                    session.last_active.format("%b %d")
+                );
+                let session_item = MenuItem::with_id(
+                    app,
+                    format!("session_{}", session.id),
+                    label,
+                    true,
+                    Option::<&str>::None,
+                )?;
+                sessions_menu.append(&session_item)?;
+            }
+
+            // Add "Restore All" option if more than one closed session
+            if closed_sessions.len() > 1 {
+                let separator = PredefinedMenuItem::separator(app)?;
+                sessions_menu.append(&separator)?;
+
+                let restore_all = MenuItem::with_id(
+                    app,
+                    "restore_all",
+                    "🔄 Restore All Sessions",
+                    true,
+                    Option::<&str>::None,
+                )?;
+                sessions_menu.append(&restore_all)?;
+            }
         }
     }
 
-    Ok(Submenu::with_id(app, "sessions", "📋 Chat Sessions", true)?)
+    Submenu::with_id(app, "sessions", "📋 Chat Sessions", true)
+}
+
+/// Helper to open DevTools for a specific window label
+fn open_window_devtools(app: &AppHandle, window_label: &str) {
+    if let Some(window) = app.get_webview_window(window_label) {
+        // Ensure window is visible and focused before opening DevTools
+        if let Err(e) = window.show() {
+            tracing::warn!(
+                "Failed to show window '{}' before opening DevTools: {}",
+                window_label,
+                e
+            );
+        }
+        if let Err(e) = window.set_focus() {
+            tracing::warn!(
+                "Failed to focus window '{}' before opening DevTools: {}",
+                window_label,
+                e
+            );
+        }
+        // In Tauri v2, the devtools APIs are only available in debug builds by default.
+        // The `open_devtools` method itself is gated behind `debug_assertions`, so we
+        // must also guard our call to avoid compile errors in release (signed) builds.
+        #[cfg(debug_assertions)]
+        {
+            window.open_devtools();
+            tracing::info!("Opened DevTools for window '{}'", window_label);
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            tracing::info!(
+                "DevTools open requested for window '{}' but debug assertions are disabled; \
+	                 DevTools can only be opened programmatically in dev/debug builds.",
+                window_label
+            );
+        }
+    } else {
+        tracing::warn!(
+            "Requested DevTools for window '{}', but no such window exists",
+            window_label
+        );
+    }
+}
+
+/// Helper to open DevTools for the most recently active open chat session
+fn open_last_chat_devtools(app: &AppHandle) {
+    let sessions = get_all_sessions();
+    let maybe_session = sessions
+        .into_iter()
+        .filter(|s| s.is_open)
+        .max_by_key(|s| s.last_active);
+
+    if let Some(session) = maybe_session {
+        if let Some(label) = session.window_label.as_deref() {
+            open_window_devtools(app, label);
+        } else {
+            tracing::warn!(
+                "Open chat session '{}' has no associated window label; cannot open DevTools",
+                session.id
+            );
+        }
+    } else {
+        tracing::warn!("No open chat sessions available to open DevTools for");
+    }
 }
 
 /// Handle menu item clicks
@@ -177,6 +364,17 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             if let Err(e) = window_manager::open_config_window() {
                 tracing::error!("Failed to open config window: {}", e);
             }
+        }
+        "devtools_config" => {
+            tracing::info!("Opening DevTools for config window from tray menu");
+            if let Err(e) = window_manager::open_config_window() {
+                tracing::error!("Failed to open config window before DevTools: {}", e);
+            }
+            open_window_devtools(app, "config");
+        }
+        "devtools_last_chat" => {
+            tracing::info!("Opening DevTools for last active chat window from tray menu");
+            open_last_chat_devtools(app);
         }
         "restore_all" => {
             restore_all_sessions();
@@ -219,7 +417,7 @@ fn handle_tray_event(tray: &tauri::tray::TrayIcon, event: TrayIconEvent) {
         } => {
             // Double left-click: Toggle listening mode
             tracing::info!("Tray double-click detected - toggling listen mode");
-            toggle_listening_mode(&app);
+            toggle_listening_mode(app);
         }
         // Note: Right-click events are handled automatically by the tray system
         _ => {
@@ -228,102 +426,217 @@ fn handle_tray_event(tray: &tauri::tray::TrayIcon, event: TrayIconEvent) {
     }
 }
 
+/// Start listening with shared validation logic used by both the tray and
+/// chat UI entry points.
+///
+/// This ensures we always run the same configuration checks (provider
+/// selected, OpenAI key present, local Whisper model available, etc.) before
+/// starting the speech pipeline.
+pub fn start_listening_with_validation(app: &AppHandle) -> Result<(), String> {
+    // Validate configuration first so that tray-initiated starts behave the
+    // same way as the chat UI and return user-friendly error messages.
+    let validation = crate::api::validate_voice_and_llm_config();
+    if !validation.is_valid {
+        let error_msg = format!(
+            "{} {}",
+            validation
+                .error_message
+                .unwrap_or_else(|| "Configuration error".to_string()),
+            validation.suggestion.unwrap_or_default()
+        );
+        return Err(error_msg);
+    }
+
+    // Scope the lock to avoid deadlock when calling rebuild_tray_menu
+    let timeout_duration = {
+        let mut state = LISTENING_STATE.lock().unwrap();
+        if state.is_listening {
+            return Err("Voice listening is already active.".to_string());
+        }
+
+        tracing::info!("Starting listening mode");
+        state.is_listening = true;
+        state.started_at = Some(Instant::now());
+
+        // Start actual speech processing
+        let session_id = format!(
+            "listening-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        );
+        state.session_id = Some(session_id.clone());
+        let timeout_duration = state.timeout_duration;
+        tracing::info!("Starting speech processing session: {}", session_id);
+
+        timeout_duration
+        // Lock is dropped here at end of scope
+    };
+
+    show_system_notification(
+        app,
+        "Listening Started",
+        "Gestura is now listening for voice commands. Speak your command now.",
+    );
+
+    // Start speech capture and processing
+    // Use tauri::async_runtime::spawn instead of tokio::spawn because menu
+    // event handlers run on the main thread outside of a tokio async context.
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // Start speech listening with timeout
+        let speech_result = tokio::time::timeout(
+            timeout_duration,
+            crate::speech::start_speech_listening(&app_handle),
+        )
+        .await;
+
+        match speech_result {
+            Ok(Ok(())) => {
+                tracing::info!("Speech processing completed successfully");
+                // Reset listening state after successful completion
+                reset_listening_state(&app_handle);
+            }
+            Ok(Err(e)) => {
+                tracing::error!("Speech processing failed: {}", e);
+                show_system_notification(
+                    &app_handle,
+                    "Listening Error",
+                    &format!("Speech processing failed: {}", e),
+                );
+                // Reset listening state after failure
+                reset_listening_state(&app_handle);
+            }
+            Err(_) => {
+                tracing::info!("Speech processing timed out");
+                stop_listening_on_timeout(&app_handle);
+            }
+        }
+    });
+
+    // Rebuild tray menu to update button text
+    // Note: Lock must be released before this call to avoid deadlock
+    let _ = rebuild_tray_menu(app);
+
+    Ok(())
+}
+
 /// Toggle listening mode (start/stop)
 fn toggle_listening_mode(app: &AppHandle) {
-    let mut state = LISTENING_STATE.lock().unwrap();
+    // Check current state and update if stopping
+    let was_listening = {
+        let mut state = LISTENING_STATE.lock().unwrap();
+        if state.is_listening {
+            // Stop listening
+            tracing::info!("Stopping listening mode");
+            state.is_listening = false;
+            state.started_at = None;
+            state.session_id = None;
+            true
+        } else {
+            false
+        }
+        // Lock is dropped here
+    };
 
-    if state.is_listening {
-        // Stop listening
-        tracing::info!("Stopping listening mode");
-        state.is_listening = false;
-        state.started_at = None;
-        state.session_id = None;
-
-        // Stop speech processing
+    if was_listening {
+        // Stop speech processing (outside of lock)
         if let Err(e) = crate::speech::stop_speech_listening() {
             tracing::warn!("Failed to stop speech processing: {}", e);
         }
 
         show_system_notification(app, "Listening Stopped", "Voice listening has been stopped");
 
+        // Rebuild tray menu to update button text (lock is not held)
+        let _ = rebuild_tray_menu(app);
     } else {
-        // Start listening
-        tracing::info!("Starting listening mode");
-        state.is_listening = true;
-        state.started_at = Some(Instant::now());
-
-        // Start actual speech processing
-        let session_id = format!("listening-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
-        state.session_id = Some(session_id.clone());
-        tracing::info!("Starting speech processing session: {}", session_id);
-
-        show_system_notification(app, "Listening Started", "Gestura is now listening for voice commands. Speak your command now.");
-
-        // Start speech capture and processing
-        let app_handle = app.clone();
-        let timeout_duration = state.timeout_duration;
-        tokio::spawn(async move {
-            // Start speech listening with timeout
-            let speech_result = tokio::time::timeout(
-                timeout_duration,
-                crate::speech::start_speech_listening(&app_handle)
-            ).await;
-
-            match speech_result {
-                Ok(Ok(())) => {
-                    tracing::info!("Speech processing completed successfully");
-                }
-                Ok(Err(e)) => {
-                    tracing::error!("Speech processing failed: {}", e);
-                    show_system_notification(&app_handle, "Listening Error", &format!("Speech processing failed: {}", e));
-                }
-                Err(_) => {
-                    tracing::info!("Speech processing timed out");
-                    stop_listening_on_timeout(&app_handle);
-                }
-            }
-        });
+        // Start listening (lock already released)
+        if let Err(err) = start_listening_with_validation(app) {
+            tracing::warn!("Failed to start listening from tray: {}", err);
+            show_system_notification(app, "Listening Error", &err);
+        }
     }
-
-    // Rebuild tray menu to update button text
-    let _ = rebuild_tray_menu(app);
 }
 
 /// Stop listening when timeout is reached
 fn stop_listening_on_timeout(app: &AppHandle) {
-    let mut state = LISTENING_STATE.lock().unwrap();
+    // Check and update state within a scoped lock to avoid deadlock
+    let should_rebuild = {
+        let mut state = LISTENING_STATE.lock().unwrap();
 
-    if state.is_listening {
-        if let Some(started_at) = state.started_at {
-            if started_at.elapsed() >= state.timeout_duration {
-                tracing::info!("Listening timeout reached, stopping");
-                state.is_listening = false;
-                state.started_at = None;
-                state.session_id = None;
-
-                show_system_notification(app, "Listening Timeout", "Voice listening stopped due to timeout");
-
-                // Rebuild tray menu to update button text
-                let _ = rebuild_tray_menu(app);
-            }
+        if state.is_listening
+            && let Some(started_at) = state.started_at
+            && started_at.elapsed() >= state.timeout_duration
+        {
+            tracing::info!("Listening timeout reached, stopping");
+            state.is_listening = false;
+            state.started_at = None;
+            state.session_id = None;
+            true
+        } else {
+            false
         }
+        // Lock is dropped here
+    };
+
+    if should_rebuild {
+        show_system_notification(
+            app,
+            "Listening Timeout",
+            "Voice listening stopped due to timeout",
+        );
+
+        // Rebuild tray menu to update button text (lock is not held)
+        let _ = rebuild_tray_menu(app);
+    }
+}
+
+/// Reset listening state after speech processing completes (success or failure)
+fn reset_listening_state(app: &AppHandle) {
+    // Check and update state within a scoped lock to avoid deadlock
+    let should_rebuild = {
+        let mut state = LISTENING_STATE.lock().unwrap();
+
+        if state.is_listening {
+            tracing::info!("Resetting listening state after speech processing completed");
+            state.is_listening = false;
+            state.started_at = None;
+            state.session_id = None;
+            true
+        } else {
+            false
+        }
+        // Lock is dropped here
+    };
+
+    if should_rebuild {
+        // Rebuild tray menu to update button text (lock is not held)
+        let _ = rebuild_tray_menu(app);
     }
 }
 
 /// Rebuild tray menu to update dynamic content
 fn rebuild_tray_menu(app: &AppHandle) -> tauri::Result<()> {
-    // For now, we'll just log that we need to rebuild
-    // In a full implementation, we would recreate the tray with updated menu
-    tracing::info!("Tray menu needs rebuilding to update listen button text");
+    tracing::info!("Rebuilding tray menu to update listen button text");
 
-    // TODO: Implement proper tray menu rebuilding
-    // This requires recreating the tray icon with updated menu
+    // Build a new menu with updated state
+    let new_menu = build_tray_menu(app)?;
+
+    // Get the tray instance and update its menu
+    let tray_instance = TRAY_INSTANCE.lock().unwrap();
+    if let Some(tray) = tray_instance.as_ref() {
+        tray.set_menu(Some(new_menu))?;
+        tracing::info!("Tray menu rebuilt successfully");
+    } else {
+        tracing::warn!("No tray instance found to rebuild menu");
+    }
 
     Ok(())
 }
 
 /// Show system notification
-fn show_system_notification(app: &AppHandle, title: &str, body: &str) {
+fn show_system_notification(_app: &AppHandle, title: &str, body: &str) {
     tracing::info!("NOTIFICATION: {} - {}", title, body);
 
     // Try to show actual system notification
@@ -339,7 +652,7 @@ fn show_native_notification(title: &str, body: &str) -> Result<(), Box<dyn std::
         use std::process::Command;
         Command::new("osascript")
             .arg("-e")
-            .arg(&format!(
+            .arg(format!(
                 r#"display notification "{}" with title "{}""#,
                 body, title
             ))
@@ -355,10 +668,7 @@ fn show_native_notification(title: &str, body: &str) -> Result<(), Box<dyn std::
     #[cfg(target_os = "linux")]
     {
         use std::process::Command;
-        Command::new("notify-send")
-            .arg(title)
-            .arg(body)
-            .output()?;
+        Command::new("notify-send").arg(title).arg(body).output()?;
     }
 
     Ok(())
@@ -388,12 +698,32 @@ pub fn set_listening_timeout(duration: Duration) {
     tracing::info!("Listening timeout set to {:?}", duration);
 }
 
+/// Start voice listening
+pub fn start_listening() {
+    let mut state = LISTENING_STATE.lock().unwrap();
+    if !state.is_listening {
+        state.is_listening = true;
+        state.started_at = Some(Instant::now());
+        state.session_id = Some(uuid::Uuid::new_v4().to_string());
+        tracing::info!("Voice listening started");
+    }
+}
+
+/// Stop voice listening
+pub fn stop_listening() {
+    let mut state = LISTENING_STATE.lock().unwrap();
+    if state.is_listening {
+        state.is_listening = false;
+        state.started_at = None;
+        state.session_id = None;
+        tracing::info!("Voice listening stopped");
+    }
+}
+
 /// Restore all closed sessions
 fn restore_all_sessions() {
     let sessions = get_all_sessions();
-    let closed_sessions: Vec<_> = sessions.iter()
-        .filter(|s| !s.is_open)
-        .collect();
+    let closed_sessions: Vec<_> = sessions.iter().filter(|s| !s.is_open).collect();
 
     tracing::info!("Restoring {} closed sessions", closed_sessions.len());
 
@@ -455,7 +785,3 @@ pub fn get_tray_diagnostic_info() -> serde_json::Value {
         }
     })
 }
-
-
-
-

@@ -1,10 +1,10 @@
 //! Window and session management for Gestura
 //! Handles chat sessions, window lifecycle, and session restoration
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,7 +46,7 @@ impl WindowManager {
     pub fn create_chat_session(&self) -> tauri::Result<String> {
         let session_id = Uuid::new_v4().to_string();
         let window_label = format!("chat-{}", session_id);
-        
+
         tracing::info!("Creating new chat session: {}", session_id);
 
         // Create the session with user-friendly title
@@ -75,18 +75,21 @@ impl WindowManager {
 
     /// Create a chat window for a session
     fn create_chat_window(&self, session_id: &str, window_label: &str) -> tauri::Result<()> {
-        let window = WebviewWindowBuilder::new(
-            &self.app,
-            window_label,
-            WebviewUrl::App("chat.html".into())
-        )
-        .title("Gestura Chat")
-        .inner_size(800.0, 600.0)
-        .center()
-        .resizable(true)
-        .decorations(true)
-        .visible(true)
-        .build()?;
+        let window =
+            WebviewWindowBuilder::new(&self.app, window_label, WebviewUrl::App("chat.html".into()))
+                .title("Gestura Chat")
+                .inner_size(800.0, 600.0)
+                .center()
+                .resizable(true)
+                .decorations(true)
+                .visible(true)
+                .focused(true)  // Ensure window gets focus when created
+                .devtools(true)
+                .build()?;
+
+        // Make sure window is shown and focused
+        let _ = window.show();
+        let _ = window.set_focus();
 
         // Store window info
         let window_info = WindowInfo {
@@ -113,12 +116,12 @@ impl WindowManager {
                 tracing::info!("Chat window closing: {}", window_label_clone);
 
                 // Mark session as closed but don't delete it
-                if let Ok(mut sessions) = sessions.lock() {
-                    if let Some(session) = sessions.get_mut(&session_id) {
-                        session.is_open = false;
-                        session.window_label = None;
-                        session.last_active = chrono::Utc::now();
-                    }
+                if let Ok(mut sessions) = sessions.lock()
+                    && let Some(session) = sessions.get_mut(&session_id)
+                {
+                    session.is_open = false;
+                    session.window_label = None;
+                    session.last_active = chrono::Utc::now();
                 }
 
                 // Remove window info
@@ -135,20 +138,20 @@ impl WindowManager {
     /// Create configuration window
     pub fn create_config_window(&self) -> tauri::Result<()> {
         let window_label = "config";
-        
+
         // Check if window already exists
-        if self.app.get_webview_window(window_label).is_some() {
-            if let Some(window) = self.app.get_webview_window(window_label) {
-                let _ = window.show();
-                let _ = window.set_focus();
-                return Ok(());
-            }
+        if self.app.get_webview_window(window_label).is_some()
+            && let Some(window) = self.app.get_webview_window(window_label)
+        {
+            let _ = window.show();
+            let _ = window.set_focus();
+            return Ok(());
         }
 
         let _window = WebviewWindowBuilder::new(
             &self.app,
             window_label,
-            WebviewUrl::App("config.html".into())
+            WebviewUrl::App("config.html".into()),
         )
         .title("Gestura Configuration")
         .inner_size(700.0, 500.0)
@@ -156,9 +159,51 @@ impl WindowManager {
         .resizable(true)
         .decorations(true)
         .visible(true)
+        .devtools(true)
         .build()?;
 
         tracing::info!("Created config window");
+        Ok(())
+    }
+
+    /// Create onboarding window for first-time users
+    pub fn create_onboarding_window(&self) -> tauri::Result<()> {
+        let window_label = "onboarding";
+
+        // Check if window already exists
+        if self.app.get_webview_window(window_label).is_some()
+            && let Some(window) = self.app.get_webview_window(window_label)
+        {
+            let _ = window.show();
+            let _ = window.set_focus();
+            return Ok(());
+        }
+
+        let _window = WebviewWindowBuilder::new(
+            &self.app,
+            window_label,
+            WebviewUrl::App("onboarding.html".into()),
+        )
+        .title("Welcome to Gestura")
+        .inner_size(720.0, 580.0)
+        .center()
+        .resizable(true)
+        .decorations(true)
+        .visible(true)
+        .transparent(false) // Ensure opaque background
+        .devtools(true)
+        .build()?;
+
+        tracing::info!("Created onboarding window");
+        Ok(())
+    }
+
+    /// Close the onboarding window
+    pub fn close_onboarding_window(&self) -> tauri::Result<()> {
+        if let Some(window) = self.app.get_webview_window("onboarding") {
+            let _ = window.close();
+            tracing::info!("Closed onboarding window");
+        }
         Ok(())
     }
 
@@ -169,21 +214,21 @@ impl WindowManager {
             sessions.get(session_id).cloned()
         };
 
-        if let Some(mut session) = session {
-            if !session.is_open {
-                let window_label = format!("chat-{}", session_id);
-                self.create_chat_window(session_id, &window_label)?;
-                
-                // Update session
-                session.is_open = true;
-                session.window_label = Some(window_label);
-                session.last_active = chrono::Utc::now();
-                
-                let mut sessions = self.sessions.lock().unwrap();
-                sessions.insert(session_id.to_string(), session);
-                
-                tracing::info!("Restored session: {}", session_id);
-            }
+        if let Some(mut session) = session
+            && !session.is_open
+        {
+            let window_label = format!("chat-{}", session_id);
+            self.create_chat_window(session_id, &window_label)?;
+
+            // Update session
+            session.is_open = true;
+            session.window_label = Some(window_label);
+            session.last_active = chrono::Utc::now();
+
+            let mut sessions = self.sessions.lock().unwrap();
+            sessions.insert(session_id.to_string(), session);
+
+            tracing::info!("Restored session: {}", session_id);
         }
 
         Ok(())
@@ -198,19 +243,13 @@ impl WindowManager {
     /// Get active (open) sessions
     pub fn get_active_sessions(&self) -> Vec<ChatSession> {
         let sessions = self.sessions.lock().unwrap();
-        sessions.values()
-            .filter(|s| s.is_open)
-            .cloned()
-            .collect()
+        sessions.values().filter(|s| s.is_open).cloned().collect()
     }
 
     /// Get closed sessions that can be restored
     pub fn get_closed_sessions(&self) -> Vec<ChatSession> {
         let sessions = self.sessions.lock().unwrap();
-        sessions.values()
-            .filter(|s| !s.is_open)
-            .cloned()
-            .collect()
+        sessions.values().filter(|s| !s.is_open).cloned().collect()
     }
 
     /// Close all windows and sessions
@@ -229,7 +268,7 @@ impl WindowManager {
         // Clear all data
         self.sessions.lock().unwrap().clear();
         self.windows.lock().unwrap().clear();
-        
+
         tracing::info!("Closed all windows and sessions");
     }
 
@@ -303,5 +342,21 @@ pub fn get_session_counts() -> (usize, usize) {
         manager.get_session_counts()
     } else {
         (0, 0)
+    }
+}
+
+pub fn open_onboarding_window() -> tauri::Result<()> {
+    if let Some(manager) = get_window_manager() {
+        manager.create_onboarding_window()
+    } else {
+        Err(tauri::Error::FailedToReceiveMessage)
+    }
+}
+
+pub fn close_onboarding() -> tauri::Result<()> {
+    if let Some(manager) = get_window_manager() {
+        manager.close_onboarding_window()
+    } else {
+        Err(tauri::Error::FailedToReceiveMessage)
     }
 }

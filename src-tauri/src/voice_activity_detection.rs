@@ -72,8 +72,11 @@ impl VoiceActivityDetector {
     /// Process audio frame and return VAD result
     pub fn process_frame(&mut self, audio_frame: &[f32]) -> VadResult {
         if audio_frame.len() != self.config.frame_size {
-            tracing::warn!("Frame size mismatch: expected {}, got {}", 
-                self.config.frame_size, audio_frame.len());
+            tracing::warn!(
+                "Frame size mismatch: expected {}, got {}",
+                self.config.frame_size,
+                audio_frame.len()
+            );
             return VadResult::Unknown;
         }
 
@@ -104,7 +107,7 @@ impl VoiceActivityDetector {
     fn calculate_zero_crossing_rate(&self, frame: &[f32]) -> f32 {
         let mut crossings = 0;
         for i in 1..frame.len() {
-            if (frame[i] >= 0.0) != (frame[i-1] >= 0.0) {
+            if (frame[i] >= 0.0) != (frame[i - 1] >= 0.0) {
                 crossings += 1;
             }
         }
@@ -139,17 +142,21 @@ impl VoiceActivityDetector {
     /// Apply temporal smoothing to reduce false positives
     fn apply_smoothing(&mut self, raw_decision: VadResult) -> VadResult {
         self.decision_history.push_back(raw_decision);
-        
+
         if self.decision_history.len() > self.config.smoothing_window {
             self.decision_history.pop_front();
         }
 
         // Count speech vs silence decisions in window
-        let speech_count = self.decision_history.iter()
+        let speech_count = self
+            .decision_history
+            .iter()
             .filter(|&d| *d == VadResult::Speech)
             .count();
-        
-        let silence_count = self.decision_history.iter()
+
+        let silence_count = self
+            .decision_history
+            .iter()
             .filter(|&d| *d == VadResult::Silence)
             .count();
 
@@ -277,25 +284,33 @@ impl StreamingVad {
     /// Process streaming audio data
     pub fn process_audio(&mut self, audio_data: &[f32]) -> Vec<SpeechSegment> {
         let mut completed_segments = Vec::new();
-        
+
         // Add new data to buffer
         self.buffer.extend_from_slice(audio_data);
-        
+
         // Process complete frames
         while self.buffer.len() >= self.vad.config.frame_size {
             let frame: Vec<f32> = self.buffer.drain(..self.vad.config.frame_size).collect();
             let result = self.vad.process_frame(&frame);
-            
+
             self.update_segments(result, &mut completed_segments);
         }
-        
+
         completed_segments
     }
 
     /// Update speech segments based on VAD result
-    fn update_segments(&mut self, vad_result: VadResult, completed_segments: &mut Vec<SpeechSegment>) {
-        let current_frame = self.speech_segments.len() + 
-            self.current_segment.as_ref().map(|s| s.duration_frames).unwrap_or(0);
+    fn update_segments(
+        &mut self,
+        vad_result: VadResult,
+        completed_segments: &mut Vec<SpeechSegment>,
+    ) {
+        let current_frame = self.speech_segments.len()
+            + self
+                .current_segment
+                .as_ref()
+                .map(|s| s.duration_frames)
+                .unwrap_or(0);
 
         match vad_result {
             VadResult::Speech => {
@@ -373,7 +388,7 @@ pub fn create_speech_vad() -> VoiceActivityDetector {
 pub fn create_wake_word_vad() -> VoiceActivityDetector {
     let config = VadConfig {
         sample_rate: 16000,
-        frame_size: 160, // 10ms for faster response
+        frame_size: 160,         // 10ms for faster response
         energy_threshold: 0.002, // More sensitive
         zcr_threshold: 0.4,
         min_speech_frames: 2,
@@ -398,7 +413,7 @@ mod tests {
     fn test_energy_calculation() {
         let config = VadConfig::default();
         let vad = VoiceActivityDetector::new(config);
-        
+
         let frame = vec![0.1, -0.1, 0.2, -0.2]; // Simple test frame
         let energy = vad.calculate_energy(&frame);
         assert!(energy > 0.0);
@@ -408,7 +423,7 @@ mod tests {
     fn test_zcr_calculation() {
         let config = VadConfig::default();
         let vad = VoiceActivityDetector::new(config);
-        
+
         let frame = vec![1.0, -1.0, 1.0, -1.0]; // Alternating signal
         let zcr = vad.calculate_zero_crossing_rate(&frame);
         assert_eq!(zcr, 1.0); // Every sample crosses zero
@@ -421,11 +436,11 @@ mod tests {
             ..VadConfig::default()
         };
         let mut streaming_vad = StreamingVad::new(config);
-        
+
         // Process some audio data
         let audio_data = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
         let _segments = streaming_vad.process_audio(&audio_data);
-        
+
         // Should process 2 complete frames
         assert_eq!(streaming_vad.buffer.len(), 0); // All data processed
     }
