@@ -27,10 +27,15 @@ fn ensure_default_icon() {
         img.put_pixel(0, 0, image::Rgba([0, 0, 0, 0]));
         img.save(&icon_path)?;
         // Removed cargo:rerun-if-changed to prevent rebuild loops
-        println!("cargo:warning=Generated default icon at {}", icon_path.display());
+        println!(
+            "cargo:warning=Generated default icon at {}",
+            icon_path.display()
+        );
         Ok(())
     })() {
-        println!("cargo:warning=failed to generate default RGBA icon: {}", err);
+        println!(
+            "cargo:warning=failed to generate default RGBA icon: {}",
+            err
+        );
     }
 }
-

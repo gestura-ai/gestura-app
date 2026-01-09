@@ -18,11 +18,14 @@ export default defineConfig({
         "**/*.log",
         "**/*.tmp",
         "**/node_modules/**",
-        "**/.git/**"
+        "**/.git/**",
       ],
     },
   },
   build: {
+    // Use a dedicated frontend output directory so that macOS packaging
+    // artifacts (dist/macos*) never conflict with Vite's cleanup logic.
+    outDir: 'dist/frontend',
     target: process.env.TAURI_ENV_PLATFORM == 'windows' ? 'chrome105' : 'safari13',
     minify: !process.env.TAURI_ENV_DEBUG ? 'esbuild' : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,

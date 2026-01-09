@@ -7,9 +7,16 @@
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
     "devUrl": "http://localhost:1420",
-    "frontendDist": "../dist"
+    "frontendDist": "../dist/frontend"
   },
   "app": {
+    "withGlobalTauri": true,
+    "macOSPrivateApi": true,
+    "security": {
+      "capabilities": [
+        "main-capability"
+      ]
+    },
     "windows": [
       {
         "title": "Gestura",
@@ -26,7 +33,8 @@
         "resizable": true,
         "transparent": true,
         "alwaysOnTop": false,
-        "shadow": true
+        "shadow": true,
+        "devtools": true
       }
     ]
   },
@@ -84,4 +92,3 @@
     }
   }
 }
-

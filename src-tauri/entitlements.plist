@@ -26,9 +26,9 @@
     <key>com.apple.security.device.camera</key>
     <false/>
 
-    <!-- Microphone access disabled by default (can be enabled later) -->
+    <!-- Microphone access for voice input and speech-to-text -->
     <key>com.apple.security.device.audio-input</key>
-    <false/>
+    <true/>
 
     <!-- Disable App Sandbox for development tool -->
     <key>com.apple.security.app-sandbox</key>

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Microphone Access -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Gestura needs access to your microphone for voice commands and speech-to-text transcription.</string>
+    
+    <!-- Bluetooth Access -->
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Gestura needs Bluetooth access to connect to the Haptic Harmony ring for gesture control and haptic feedback.</string>
+    
+    <key>NSBluetoothPeripheralUsageDescription</key>
+    <string>Gestura needs Bluetooth access to connect to the Haptic Harmony ring for gesture control and haptic feedback.</string>
+    
+    <!-- Accessibility / AppleScript Access -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Gestura needs accessibility access to control your computer with voice commands and gestures.</string>
+    
+    <!-- Speech Recognition (if using Apple's speech recognition) -->
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Gestura uses speech recognition to understand your voice commands.</string>
+    
+    <!-- Camera Access (for future gesture recognition) -->
+    <key>NSCameraUsageDescription</key>
+    <string>Gestura may use the camera for visual gesture recognition in future updates.</string>
+    
+    <!-- Location Access (for context-aware features) -->
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Gestura may use your location for context-aware voice commands.</string>
+    
+    <!-- Network Access -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Gestura needs local network access to communicate with local AI services like Ollama.</string>
+    
+    <!-- App Transport Security - Allow local connections -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+        <key>NSAllowsArbitraryLoads</key>
+        <false/>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <!-- Allow localhost for Ollama -->
+            <key>localhost</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+                <key>NSIncludesSubdomains</key>
+                <true/>
+            </dict>
+            <!-- Allow 127.0.0.1 for Ollama -->
+            <key>127.0.0.1</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+            </dict>
+        </dict>
+    </dict>
+    
+    <!-- High Resolution Capable -->
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    
+    <!-- Supports Automatic Graphics Switching -->
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+</dict>
+</plist>
+

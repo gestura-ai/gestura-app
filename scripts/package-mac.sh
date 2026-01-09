@@ -14,10 +14,31 @@ NC='\033[0m' # No Color
 APP_NAME="Gestura"
 BUNDLE_ID="com.gestura.app"
 VERSION=$(grep -o '"version": "[^"]*"' package.json | cut -d'"' -f4)
-BUILD_DIR="src-tauri/target/release/bundle/macos"
+# BUILD_DIR will be set after build completes (see resolve_build_dir function)
+BUILD_DIR=""
 DIST_DIR="dist/macos"
 SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
 NOTARIZATION_PROFILE="${APPLE_NOTARIZATION_PROFILE:-}"
+
+# Resolve the correct build directory after build completes
+resolve_build_dir() {
+    # Tauri builds universal macOS binaries to a different path
+    local universal_path="src-tauri/target/universal-apple-darwin/release/bundle/macos"
+    local regular_path="src-tauri/target/release/bundle/macos"
+
+    if [ -d "${universal_path}/${APP_NAME}.app" ]; then
+        BUILD_DIR="${universal_path}"
+        echo -e "${GREEN}✅ Found app bundle at universal path${NC}"
+    elif [ -d "${regular_path}/${APP_NAME}.app" ]; then
+        BUILD_DIR="${regular_path}"
+        echo -e "${GREEN}✅ Found app bundle at regular path${NC}"
+    else
+        echo -e "${RED}❌ App bundle not found in either:${NC}"
+        echo -e "${RED}   - ${universal_path}/${APP_NAME}.app${NC}"
+        echo -e "${RED}   - ${regular_path}/${APP_NAME}.app${NC}"
+        exit 1
+    fi
+}
 
 echo -e "${BLUE}📦 Starting macOS packaging for ${APP_NAME} v${VERSION}${NC}"
 
@@ -45,22 +66,22 @@ build_app() {
     # Check if this is a dry run
     if [ "${DRY_RUN:-false}" = "true" ]; then
         echo -e "${YELLOW}🔍 DRY RUN: Skipping actual build${NC}"
-        # Create mock app bundle for testing
-        mkdir -p "${BUILD_DIR}"
-        mkdir -p "${BUILD_DIR}/${APP_NAME}.app/Contents/MacOS"
-        echo "Mock app" > "${BUILD_DIR}/${APP_NAME}.app/Contents/MacOS/${APP_NAME}"
-        chmod +x "${BUILD_DIR}/${APP_NAME}.app/Contents/MacOS/${APP_NAME}"
+        # Create mock app bundle for testing in the universal path
+        local mock_path="src-tauri/target/universal-apple-darwin/release/bundle/macos"
+        mkdir -p "${mock_path}/${APP_NAME}.app/Contents/MacOS"
+        echo "Mock app" > "${mock_path}/${APP_NAME}.app/Contents/MacOS/${APP_NAME}"
+        chmod +x "${mock_path}/${APP_NAME}.app/Contents/MacOS/${APP_NAME}"
         echo -e "${GREEN}✅ Mock application created for testing${NC}"
+        # Resolve the build directory
+        resolve_build_dir
         return 0
     fi
 
     # Build with Tauri
     npm run tauri build -- --target universal-apple-darwin
 
-    if [ ! -d "${BUILD_DIR}/${APP_NAME}.app" ]; then
-        echo -e "${RED}❌ Build failed - app bundle not found${NC}"
-        exit 1
-    fi
+    # Resolve the build directory after build completes
+    resolve_build_dir
 
     echo -e "${GREEN}✅ Application built successfully${NC}"
 }
@@ -68,14 +89,55 @@ build_app() {
 # Create distribution directory
 setup_dist() {
     echo -e "${YELLOW}📁 Setting up distribution directory...${NC}"
-    
-    rm -rf "${DIST_DIR}"
-    mkdir -p "${DIST_DIR}"
-    
-    # Copy app bundle
-    cp -R "${BUILD_DIR}/${APP_NAME}.app" "${DIST_DIR}/"
-    
-    echo -e "${GREEN}✅ Distribution directory ready${NC}"
+
+	# If a previous dist directory exists, avoid modifying it directly.
+	# In some environments a prior run may have been executed with sudo,
+	# leaving root-owned files that the current user cannot delete. Rather
+	# than failing on "rm -rf", we always fall back to a fresh,
+	# timestamped dist directory when an existing one is detected.
+	if [ -d "${DIST_DIR}" ]; then
+	    echo -e "${YELLOW}⚠️ Existing dist directory (${DIST_DIR}) detected.${NC}"
+	    echo -e "${YELLOW}   To avoid permission issues from previous runs, a new directory will be used.${NC}"
+	    local timestamp
+	    timestamp=$(date +"%Y%m%d-%H%M%S")
+	    DIST_DIR="${DIST_DIR}-${timestamp}"
+	    echo -e "${YELLOW}ℹ️ Using alternate distribution directory: ${DIST_DIR}${NC}"
+	fi
+
+	mkdir -p "${DIST_DIR}"
+
+	# Copy app bundle
+	cp -R "${BUILD_DIR}/${APP_NAME}.app" "${DIST_DIR}/"
+
+	# Add privacy usage descriptions to Info.plist
+	inject_privacy_descriptions
+
+	echo -e "${GREEN}✅ Distribution directory ready at ${DIST_DIR}${NC}"
+}
+
+# Inject privacy usage descriptions into Info.plist
+inject_privacy_descriptions() {
+	local info_plist="${DIST_DIR}/${APP_NAME}.app/Contents/Info.plist"
+
+	if [ ! -f "${info_plist}" ]; then
+		echo -e "${YELLOW}⚠️ Info.plist not found, skipping privacy descriptions${NC}"
+		return 0
+	fi
+
+	echo -e "${YELLOW}📝 Adding privacy usage descriptions to Info.plist...${NC}"
+
+	# Add microphone usage description
+	/usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string 'Gestura needs microphone access for voice commands and speech-to-text functionality.'" "${info_plist}" 2>/dev/null || \
+	/usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription 'Gestura needs microphone access for voice commands and speech-to-text functionality.'" "${info_plist}"
+
+	# Add Bluetooth usage descriptions
+	/usr/libexec/PlistBuddy -c "Add :NSBluetoothAlwaysUsageDescription string 'Gestura uses Bluetooth to connect to the Haptic Harmony Ring for gesture control.'" "${info_plist}" 2>/dev/null || \
+	/usr/libexec/PlistBuddy -c "Set :NSBluetoothAlwaysUsageDescription 'Gestura uses Bluetooth to connect to the Haptic Harmony Ring for gesture control.'" "${info_plist}"
+
+	/usr/libexec/PlistBuddy -c "Add :NSBluetoothPeripheralUsageDescription string 'Gestura uses Bluetooth to connect to the Haptic Harmony Ring for gesture control.'" "${info_plist}" 2>/dev/null || \
+	/usr/libexec/PlistBuddy -c "Set :NSBluetoothPeripheralUsageDescription 'Gestura uses Bluetooth to connect to the Haptic Harmony Ring for gesture control.'" "${info_plist}"
+
+	echo -e "${GREEN}✅ Privacy descriptions added${NC}"
 }
 
 # Code sign the application
@@ -151,15 +213,41 @@ create_pkg() {
     echo -e "${YELLOW}📦 Creating PKG installer...${NC}"
     
     PKG_NAME="${APP_NAME}-${VERSION}-universal.pkg"
-    PKG_PATH="${DIST_DIR}/${PKG_NAME}"
-    
-    # Create component package
-    pkgbuild \
-        --root "${DIST_DIR}" \
-        --identifier "${BUNDLE_ID}" \
-        --version "${VERSION}" \
-        --install-location "/Applications" \
-        "${PKG_PATH}"
+	PKG_PATH="${DIST_DIR}/${PKG_NAME}"
+	PKGROOT_DIR="${DIST_DIR}/pkgroot"
+
+	# Prepare a clean package root so that the PKG only installs the
+	# application bundle into /Applications (and any optional CLI tools into
+	# /usr/local/bin).
+	rm -rf "${PKGROOT_DIR}"
+	mkdir -p "${PKGROOT_DIR}/Applications"
+
+	# App bundle goes under /Applications
+	cp -R "${DIST_DIR}/${APP_NAME}.app" "${PKGROOT_DIR}/Applications/"
+
+	# Optional CLI tooling: if a standalone CLI binary exists we install it
+	# into /usr/local/bin. This keeps the GUI app and any future CLI tools
+	# correctly separated in the filesystem hierarchy.
+	#
+	# NOTE: At present Gestura ships only the desktop app. This is defensive
+	# scaffolding so that adding a CLI in the future does not require
+	# reworking the installer layout again.
+	CLI_BIN_PATH="src-tauri/target/universal-apple-darwin/release/gestura-cli"
+	if [ -f "${CLI_BIN_PATH}" ]; then
+	    mkdir -p "${PKGROOT_DIR}/usr/local/bin"
+	    cp "${CLI_BIN_PATH}" "${PKGROOT_DIR}/usr/local/bin/gestura"
+	    echo -e "${GREEN}✅ Included CLI tool in /usr/local/bin/gestura${NC}"
+	fi
+
+	# Create component package. We use / as the install root so that the
+	# payload paths inside PKGROOT_DIR (Applications/..., usr/local/bin/...)
+	# map to /Applications and /usr/local/bin on the target system.
+	pkgbuild \
+	    --root "${PKGROOT_DIR}" \
+	    --identifier "${BUNDLE_ID}" \
+	    --version "${VERSION}" \
+	    --install-location "/" \
+	    "${PKG_PATH}"
     
     if [ ! -f "${PKG_PATH}" ]; then
         echo -e "${RED}❌ PKG creation failed${NC}"

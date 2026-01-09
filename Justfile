@@ -149,28 +149,52 @@ build-macos:
 	npm run build
 	npm run tauri:build
 
-# Build and sign macOS app bundle
+# Build and sign macOS app bundle (for local development)
+# This uses certificates already installed in your Keychain.
+# For CI/CD, use the GitHub Actions workflow which imports certificates.
+#
+# Required environment variables:
+#   APPLE_SIGNING_IDENTITY - Developer ID Application certificate name
+#   APPLE_TEAM_ID          - Your Apple Developer Team ID
+#   APPLE_ID               - Your Apple ID email (for notarization)
+#   APPLE_PASSWORD         - App-specific password or @keychain:profile-name
+#
+# Example setup:
+#   export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+#   export APPLE_TEAM_ID="XXXXXXXXXX"
+#   export APPLE_ID="your@email.com"
+#   export APPLE_PASSWORD="@keychain:notarytool-password"
 build-macos-signed:
 	@echo "🍎🔐 Building and signing macOS app bundle..."
-	@if [ -z "$APPLE_SIGNING_IDENTITY" ]; then \
+	@if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then \
 		echo "❌ APPLE_SIGNING_IDENTITY environment variable not set"; \
 		echo "Set it to your Developer ID Application certificate name"; \
+		echo "Example: Developer ID Application: Your Name (TEAMID)"; \
+		echo ""; \
+		echo "Available certificates:"; \
+		security find-identity -v -p codesigning | grep "Developer ID Application" || echo "  (none found)"; \
 		exit 1; \
 	fi
-	@if [ -z "$APPLE_CERTIFICATE" ]; then \
-		echo "❌ APPLE_CERTIFICATE environment variable not set"; \
-		echo "This should contain the certificate data"; \
+	@if [ -z "${APPLE_TEAM_ID:-}" ]; then \
+		echo "❌ APPLE_TEAM_ID environment variable not set"; \
+		echo "Set it to your 10-character Apple Developer Team ID"; \
 		exit 1; \
 	fi
 	@echo "Using signing identity: $APPLE_SIGNING_IDENTITY"
 	@echo "Using team ID: $APPLE_TEAM_ID"
-	@echo "Certificate data: $(echo "$APPLE_CERTIFICATE" | wc -c) bytes"
-	#!/bin/bash
 	set -e
-	# Do not modify signing environment; rely on already-set variables
+	# 1. Build frontend + Rust backend
 	npm install
 	npm run build
-	npm run tauri:build
+	# 2. Build the macOS app bundle without letting Tauri perform notarization
+	#    We *unset* APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID for this command so
+	#    Tauri only builds & (optionally) signs. Our standalone script then
+	#    handles notarization via notarytool. This avoids long hangs inside Tauri
+	#    when Apple's notarization service is slow or stuck.
+	env -u APPLE_ID -u APPLE_PASSWORD -u APPLE_TEAM_ID \
+		npm run tauri build -- --target universal-apple-darwin
+	echo "✅ Build complete. Running notarization script..."
+	./scripts/notarize-mac.sh
 
 # Build universal macOS binary (Intel + Apple Silicon)
 build-macos-universal:
@@ -345,6 +369,11 @@ package-windows: build-windows
 		./scripts/package-windows.sh; \
 	fi
 
+# Create signed macOS DMG and PKG (uses already-signed app from build-macos-signed)
+package-macos-signed:
+	@echo "📦🍎🔐 Creating signed macOS packages (DMG + PKG)..."
+	./scripts/package-mac.sh
+
 # Create Windows MSI installer
 create-windows-msi:
 	@echo "📦🪟 Creating Windows MSI installer..."
@@ -402,20 +431,30 @@ check-macos-signing:
 	security find-identity -v -p codesigning | grep "Developer ID Application" || echo "❌ No Developer ID Application certificates found"
 	@echo ""
 	@echo "Environment variables:"
-	@if [ -n "$APPLE_CERTIFICATE" ]; then echo "APPLE_CERTIFICATE: ✅ $(echo "$APPLE_CERTIFICATE" | wc -c) bytes"; else echo "APPLE_CERTIFICATE: ❌ Not set"; fi
-	@if [ -n "$APPLE_CERTIFICATE_PASSWORD" ]; then echo "APPLE_CERTIFICATE_PASSWORD: ✅ Set"; else echo "APPLE_CERTIFICATE_PASSWORD: ❌ Not set"; fi
-	@if [ -n "$APPLE_SIGNING_IDENTITY" ]; then echo "APPLE_SIGNING_IDENTITY: ✅ $APPLE_SIGNING_IDENTITY"; else echo "APPLE_SIGNING_IDENTITY: ❌ Not set"; fi
-	@if [ -n "$APPLE_ID" ]; then echo "APPLE_ID: ✅ $APPLE_ID"; else echo "APPLE_ID: ❌ Not set"; fi
-	@if [ -n "$APPLE_PASSWORD" ]; then echo "APPLE_PASSWORD: ✅ Set"; else echo "APPLE_PASSWORD: ❌ Not set"; fi
-	@if [ -n "$APPLE_TEAM_ID" ]; then echo "APPLE_TEAM_ID: ✅ $APPLE_TEAM_ID"; else echo "APPLE_TEAM_ID: ❌ Not set"; fi
+	@if [ -n "${APPLE_CERTIFICATE:-}" ]; then echo "APPLE_CERTIFICATE: ✅ $(echo "${APPLE_CERTIFICATE}" | wc -c) bytes"; else echo "APPLE_CERTIFICATE: ❌ Not set (CI/CD only)"; fi
+	@if [ -n "${APPLE_CERTIFICATE_PASSWORD:-}" ]; then echo "APPLE_CERTIFICATE_PASSWORD: ✅ Set"; else echo "APPLE_CERTIFICATE_PASSWORD: ❌ Not set (CI/CD only)"; fi
+	@if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then echo "APPLE_SIGNING_IDENTITY: ✅ ${APPLE_SIGNING_IDENTITY}"; else echo "APPLE_SIGNING_IDENTITY: ❌ Not set"; fi
+	@if [ -n "${APPLE_ID:-}" ]; then echo "APPLE_ID: ✅ ${APPLE_ID}"; else echo "APPLE_ID: ❌ Not set"; fi
+	@if [ -n "${APPLE_PASSWORD:-}" ]; then echo "APPLE_PASSWORD: ✅ Set"; else echo "APPLE_PASSWORD: ❌ Not set"; fi
+	@if [ -n "${APPLE_TEAM_ID:-}" ]; then echo "APPLE_TEAM_ID: ✅ ${APPLE_TEAM_ID}"; else echo "APPLE_TEAM_ID: ❌ Not set"; fi
 	@echo ""
-	@echo "📋 Required for signing (matching haptic-harmony-simulation):"
+	@echo "📋 Required for LOCAL development signing:"
+	@echo "  ✅ APPLE_SIGNING_IDENTITY - Identity name (e.g., 'Developer ID Application: ...')"
+	@echo "  ✅ APPLE_TEAM_ID - Developer team ID"
+	@echo "  ✅ APPLE_ID - Apple ID for notarization"
+	@echo "  ✅ APPLE_PASSWORD - App-specific password (or @keychain:profile-name)"
+	@echo ""
+	@echo "📋 Additional for CI/CD (GitHub Actions):"
 	@echo "  ✅ APPLE_CERTIFICATE - Certificate data (base64 encoded .p12)"
 	@echo "  ✅ APPLE_CERTIFICATE_PASSWORD - Certificate password"
-	@echo "  ✅ APPLE_SIGNING_IDENTITY - Identity name (e.g., 'Developer ID Application: ...')"
-	@echo "  ✅ APPLE_ID - Apple ID for notarization"
-	@echo "  ✅ APPLE_PASSWORD - App-specific password for notarization"
-	@echo "  ✅ APPLE_TEAM_ID - Developer team ID"
+	@echo ""
+	@echo "💡 Setup notarization credentials in Keychain:"
+	@echo "   xcrun notarytool store-credentials notarytool-password \\"
+	@echo "     --apple-id your@email.com \\"
+	@echo "     --team-id XXXXXXXXXX \\"
+	@echo "     --password <app-specific-password>"
+	@echo ""
+	@echo "   Then set: export APPLE_PASSWORD=\"@keychain:notarytool-password\""
 
 
 
@@ -445,23 +484,31 @@ sign-macos:
 build-and-sign-macos: build-macos sign-macos
 	@echo "🎉 Build and manual signing complete!"
 
-# Notarize macOS app
-notarize-macos: sign-macos
+# Notarize macOS app (standalone, assumes app is already built)
+notarize-macos:
 	@echo "🔐📋 Notarizing macOS app..."
-	@echo "⚠️ Notarization requires Apple Developer account and app-specific password"
-	@echo "See: https://developer.apple.com/documentation/security/notarizing_macos_software_before_distribution"
 	./scripts/notarize-mac.sh
 
-# Verify macOS app signature
+# Verify macOS app signature (auto-detects universal or regular build)
 verify-macos:
-	@echo "🔍🍎 Verifying macOS app signature..."
-	@if [ ! -d "src-tauri/target/release/bundle/macos/Gestura.app" ]; then \
-		echo "❌ App bundle not found. Run 'just build-macos' first"; \
-		exit 1; \
+	#!/bin/bash
+	set -e
+	echo "🔍🍎 Verifying macOS app signature..."
+	UNIVERSAL_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Gestura.app"
+	REGULAR_PATH="src-tauri/target/release/bundle/macos/Gestura.app"
+	if [ -d "$UNIVERSAL_PATH" ]; then
+	    APP_PATH="$UNIVERSAL_PATH"
+	    echo "Verifying universal build"
+	elif [ -d "$REGULAR_PATH" ]; then
+	    APP_PATH="$REGULAR_PATH"
+	    echo "Verifying regular build"
+	else
+	    echo "❌ App bundle not found. Run 'just build-macos' or 'just build-macos-signed' first"
+	    exit 1
 	fi
-	codesign --verify --deep --strict --verbose=2 "src-tauri/target/release/bundle/macos/Gestura.app"
-	codesign -dv --verbose=4 "src-tauri/target/release/bundle/macos/Gestura.app"
-	spctl --assess --type open --context context:primary-signature --verbose=2 "src-tauri/target/release/bundle/macos/Gestura.app"
+	codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+	codesign -dv --verbose=4 "$APP_PATH"
+	spctl --assess --type open --context context:primary-signature --verbose=2 "$APP_PATH" || echo "⚠️ Gatekeeper check failed (app may not be notarized)"
 
 # Check Windows signing setup
 check-windows-signing:
@@ -527,25 +574,35 @@ test-tray:
 	@echo "🧪📱 Testing system tray functionality..."
 	node scripts/test-tray.js
 
-# Test macOS app bundle
+# Test macOS app bundle (auto-detects universal or regular build)
 test-macos-app:
-	@echo "🧪🍎 Testing macOS app bundle..."
-	@if [ ! -d "src-tauri/target/release/bundle/macos/Gestura.app" ]; then \
-		echo "❌ App bundle not found. Run 'just build-macos' first"; \
-		exit 1; \
+	#!/bin/bash
+	set -e
+	echo "🧪🍎 Testing macOS app bundle..."
+	UNIVERSAL_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Gestura.app"
+	REGULAR_PATH="src-tauri/target/release/bundle/macos/Gestura.app"
+	if [ -d "$UNIVERSAL_PATH" ]; then
+	    APP_PATH="$UNIVERSAL_PATH"
+	    echo "Testing universal build"
+	elif [ -d "$REGULAR_PATH" ]; then
+	    APP_PATH="$REGULAR_PATH"
+	    echo "Testing regular build"
+	else
+	    echo "❌ App bundle not found. Run 'just build-macos' or 'just build-macos-signed' first"
+	    exit 1
 	fi
-	@echo "📋 App bundle info:"
-	@ls -la "src-tauri/target/release/bundle/macos/Gestura.app/Contents/"
-	@echo ""
-	@echo "📄 Info.plist:"
-	@plutil -p "src-tauri/target/release/bundle/macos/Gestura.app/Contents/Info.plist"
-	@echo ""
-	@echo "🔐 Signature status:"
-	@codesign -dv "src-tauri/target/release/bundle/macos/Gestura.app" 2>&1 || echo "❌ App is not signed"
-	@echo ""
-	@echo "🚀 Launching app for testing..."
-	@open "src-tauri/target/release/bundle/macos/Gestura.app"
-	@echo "✅ App launched. Check system tray for Gestura icon."
+	echo "📋 App bundle info:"
+	ls -la "$APP_PATH/Contents/"
+	echo ""
+	echo "📄 Info.plist:"
+	plutil -p "$APP_PATH/Contents/Info.plist"
+	echo ""
+	echo "🔐 Signature status:"
+	codesign -dv "$APP_PATH" 2>&1 || echo "❌ App is not signed"
+	echo ""
+	echo "🚀 Launching app for testing..."
+	open "$APP_PATH"
+	echo "✅ App launched. Check system tray for Gestura icon."
 
 # Test Windows executable
 test-windows-app:
@@ -600,20 +657,30 @@ test-linux-app:
 		echo "⚠️ Not on Linux - cannot test binary directly"; \
 	fi
 
-# Create DMG for distribution
+# Create DMG for distribution (auto-detects universal or regular build)
 create-dmg:
-	@echo "💿 Creating DMG for distribution..."
-	@if [ ! -d "src-tauri/target/release/bundle/macos/Gestura.app" ]; then \
-		echo "❌ App bundle not found. Run 'just build-macos' first"; \
-		exit 1; \
+	#!/bin/bash
+	set -e
+	echo "💿 Creating DMG for distribution..."
+	UNIVERSAL_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Gestura.app"
+	REGULAR_PATH="src-tauri/target/release/bundle/macos/Gestura.app"
+	if [ -d "$UNIVERSAL_PATH" ]; then
+	    APP_PATH="$UNIVERSAL_PATH"
+	    echo "Using universal build"
+	elif [ -d "$REGULAR_PATH" ]; then
+	    APP_PATH="$REGULAR_PATH"
+	    echo "Using regular build"
+	else
+	    echo "❌ App bundle not found. Run 'just build-macos' or 'just build-macos-signed' first"
+	    exit 1
 	fi
-	@echo "Creating Gestura-0.1.0-macos.dmg..."
-	@rm -f "Gestura-0.1.0-macos.dmg"
-	@hdiutil create -volname "Gestura" \
-		-srcfolder "src-tauri/target/release/bundle/macos/Gestura.app" \
-		-ov -format UDZO "Gestura-0.1.0-macos.dmg"
-	@echo "✅ DMG created: Gestura-0.1.0-macos.dmg"
-	@ls -lh "Gestura-0.1.0-macos.dmg"
+	echo "Creating Gestura-0.1.0-macos.dmg..."
+	rm -f "Gestura-0.1.0-macos.dmg"
+	hdiutil create -volname "Gestura" \
+	    -srcfolder "$APP_PATH" \
+	    -ov -format UDZO "Gestura-0.1.0-macos.dmg"
+	echo "✅ DMG created: Gestura-0.1.0-macos.dmg"
+	ls -lh "Gestura-0.1.0-macos.dmg"
 
 # Utility Commands
 # ================
