@@ -1,4 +1,10 @@
 fn main() {
+    // Set minimum macOS deployment target for C/C++ dependencies (whisper.cpp requires 10.15+)
+    // This is needed because whisper.cpp uses std::filesystem which requires macOS 10.15+
+    if std::env::var("MACOSX_DEPLOYMENT_TARGET").is_err() {
+        println!("cargo:rustc-env=MACOSX_DEPLOYMENT_TARGET=10.15");
+    }
+
     // Only ensure icon exists during release builds to prevent dev rebuild loops
     if std::env::var("PROFILE").unwrap_or_default() == "release" {
         ensure_default_icon();

@@ -27,7 +27,11 @@
     <false/>
 
     <!-- Microphone access for voice input and speech-to-text -->
+    <!-- Both keys are required for signed/notarized apps on macOS -->
+    <!-- See: https://github.com/tauri-apps/tauri/issues/9928 -->
     <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>com.apple.security.device.microphone</key>
     <true/>
 
     <!-- Disable App Sandbox for development tool -->

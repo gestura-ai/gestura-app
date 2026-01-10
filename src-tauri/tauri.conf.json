@@ -46,19 +46,18 @@
     "copyright": "Copyright © 2025 Gestura AI LLC. All rights reserved.",
     "externalBin": [],
     "icon": [
-      "icons/16x16.png",
       "icons/32x32.png",
       "icons/64x64.png",
       "icons/128x128.png",
-      "icons/256x256.png",
-      "icons/512x512.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
       "icons/icon.icns",
       "icons/icon.ico"
     ],
     "longDescription": "Gestura is an advanced voice and gesture control desktop application that provides seamless interaction with your computer through natural speech commands and haptic feedback devices.",
     "macOS": {
       "frameworks": [],
-      "minimumSystemVersion": "10.13",
+      "minimumSystemVersion": "10.15",
       "exceptionDomain": "",
       "signingIdentity": null,
       "providerShortName": null,
@@ -78,7 +77,9 @@
         }
       }
     },
-    "resources": [],
+    "resources": [
+      "icons/tray/**/*"
+    ],
     "shortDescription": "Advanced voice and gesture control desktop application",
     "windows": {
       "certificateThumbprint": null,

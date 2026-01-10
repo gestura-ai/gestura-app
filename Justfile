@@ -191,7 +191,8 @@ build-macos-signed:
 	#    Tauri only builds & (optionally) signs. Our standalone script then
 	#    handles notarization via notarytool. This avoids long hangs inside Tauri
 	#    when Apple's notarization service is slow or stuck.
-	env -u APPLE_ID -u APPLE_PASSWORD -u APPLE_TEAM_ID \
+	#    Set MACOSX_DEPLOYMENT_TARGET=10.15 for whisper.cpp std::filesystem support
+	MACOSX_DEPLOYMENT_TARGET=10.15 env -u APPLE_ID -u APPLE_PASSWORD -u APPLE_TEAM_ID \
 		npm run tauri build -- --target universal-apple-darwin
 	echo "✅ Build complete. Running notarization script..."
 	./scripts/notarize-mac.sh

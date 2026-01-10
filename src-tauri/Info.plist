@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!-- Bundle Icon - explicitly set for signed/notarized builds -->
+    <key>CFBundleIconFile</key>
+    <string>icon.icns</string>
+
     <!-- Microphone Access -->
     <key>NSMicrophoneUsageDescription</key>
     <string>Gestura needs access to your microphone for voice commands and speech-to-text transcription.</string>
