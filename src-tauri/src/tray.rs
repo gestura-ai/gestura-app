@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Listener, Manager};
 
 // Global listening state and tray management
 lazy_static::lazy_static! {
@@ -66,44 +66,78 @@ pub fn init_tray(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_tray_menu(app)?;
     tracing::info!("📋 Tray menu built successfully");
 
-    // Load tray icon - try default_window_icon first, then fall back to loading from file
-    let icon = match app.default_window_icon() {
-        Some(icon) => {
-            tracing::info!("Using default window icon for tray");
-            icon.clone()
-        }
-        None => {
-            tracing::info!("Default window icon not available, loading from file");
-            // Try to load icon from the icons directory using include_bytes! at compile time
-            // or create a simple fallback icon
-            let icon_bytes = include_bytes!("../icons/32x32.png");
-            match image::load_from_memory(icon_bytes) {
-                Ok(img) => {
-                    let rgba = img.to_rgba8();
-                    let (width, height) = rgba.dimensions();
-                    Image::new_owned(rgba.into_raw(), width, height)
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to load embedded icon: {}, using fallback", e);
-                    // Create a simple 16x16 colored icon as fallback (blue square)
-                    let size = 16u32;
-                    let mut rgba = vec![0u8; (size * size * 4) as usize];
-                    for i in 0..(size * size) as usize {
-                        rgba[i * 4] = 66; // R
-                        rgba[i * 4 + 1] = 133; // G
-                        rgba[i * 4 + 2] = 244; // B
-                        rgba[i * 4 + 3] = 255; // A
+    // Load tray icon from bundled resources
+    // Detect system appearance and load appropriate icon (black for light mode, white for dark mode)
+    let icon = {
+        // Detect dark mode on macOS
+        let is_dark_mode = is_system_dark_mode();
+        let icon_variant = if is_dark_mode { "white" } else { "black" };
+        let icon_filename = format!("icons/tray/icon-{}@2x.png", icon_variant);
+
+        tracing::info!("System dark mode: {}, loading {} icon", is_dark_mode, icon_variant);
+
+        // Try to load from bundled resources first (works in production builds)
+        let resource_icon = app
+            .path()
+            .resolve(&icon_filename, tauri::path::BaseDirectory::Resource)
+            .ok()
+            .and_then(|path| {
+                tracing::info!("Attempting to load tray icon from: {:?}", path);
+                std::fs::read(&path).ok().and_then(|bytes| {
+                    image::load_from_memory(&bytes).ok().map(|img| {
+                        let rgba = img.to_rgba8();
+                        let (width, height) = rgba.dimensions();
+                        Image::new_owned(rgba.into_raw(), width, height)
+                    })
+                })
+            });
+
+        match resource_icon {
+            Some(icon) => {
+                tracing::info!("Loaded tray icon from bundled resources");
+                icon
+            }
+            None => {
+                // Fall back to embedded icon for development builds
+                tracing::info!("Falling back to embedded tray icon ({})", icon_variant);
+                // Use black icon as default embedded fallback
+                // Convert to slices to handle different array sizes
+                let icon_bytes: &[u8] = if is_dark_mode {
+                    include_bytes!("../icons/tray/icon-white@2x.png").as_slice()
+                } else {
+                    include_bytes!("../icons/tray/icon-black@2x.png").as_slice()
+                };
+                match image::load_from_memory(icon_bytes) {
+                    Ok(img) => {
+                        let rgba = img.to_rgba8();
+                        let (width, height) = rgba.dimensions();
+                        Image::new_owned(rgba.into_raw(), width, height)
                     }
-                    Image::new_owned(rgba, size, size)
+                    Err(e) => {
+                        tracing::warn!("Failed to load embedded tray icon: {}, using fallback", e);
+                        // Create a simple 22x22 colored icon as fallback (blue circle)
+                        let size = 22u32;
+                        let mut rgba = vec![0u8; (size * size * 4) as usize];
+                        for i in 0..(size * size) as usize {
+                            rgba[i * 4] = 66; // R
+                            rgba[i * 4 + 1] = 133; // G
+                            rgba[i * 4 + 2] = 244; // B
+                            rgba[i * 4 + 3] = 255; // A
+                        }
+                        Image::new_owned(rgba, size, size)
+                    }
                 }
             }
         }
     };
 
     // Create tray icon with proper icon and event handlers
+    // Use icon_as_template(true) for macOS - this allows the system to automatically
+    // adjust the icon colors for light/dark menu bar appearance
     let tray = TrayIconBuilder::new()
         .menu(&menu)
         .icon(icon)
+        .icon_as_template(true)
         .tooltip("Gestura - Voice & Gesture Control")
         .on_menu_event(handle_menu_event)
         .on_tray_icon_event(handle_tray_event)
@@ -116,6 +150,15 @@ pub fn init_tray(app: &AppHandle) -> tauri::Result<()> {
         let mut tray_instance = TRAY_INSTANCE.lock().unwrap();
         *tray_instance = Some(tray);
     }
+
+    // Listen for sessions-changed events to rebuild the tray menu
+    let app_handle = app.clone();
+    app.listen("sessions-changed", move |_event| {
+        tracing::info!("Received sessions-changed event, rebuilding tray menu");
+        if let Err(e) = rebuild_tray_menu(&app_handle) {
+            tracing::error!("Failed to rebuild tray menu after sessions change: {}", e);
+        }
+    });
 
     tracing::info!("✅ System tray initialized successfully - SINGLE ICON GUARANTEED");
     Ok(())
@@ -519,6 +562,12 @@ pub fn start_listening_with_validation(app: &AppHandle) -> Result<(), String> {
     // Note: Lock must be released before this call to avoid deadlock
     let _ = rebuild_tray_menu(app);
 
+    // Emit event to notify frontend that listening has started
+    let _ = app.emit("listening-state-changed", serde_json::json!({
+        "is_listening": true
+    }));
+    tracing::info!("Emitted listening-state-changed event (started)");
+
     Ok(())
 }
 
@@ -550,6 +599,12 @@ fn toggle_listening_mode(app: &AppHandle) {
 
         // Rebuild tray menu to update button text (lock is not held)
         let _ = rebuild_tray_menu(app);
+
+        // Emit event to notify frontend that listening has stopped
+        let _ = app.emit("listening-state-changed", serde_json::json!({
+            "is_listening": false
+        }));
+        tracing::info!("Emitted listening-state-changed event (stopped via toggle)");
     } else {
         // Start listening (lock already released)
         if let Err(err) = start_listening_with_validation(app) {
@@ -589,6 +644,12 @@ fn stop_listening_on_timeout(app: &AppHandle) {
 
         // Rebuild tray menu to update button text (lock is not held)
         let _ = rebuild_tray_menu(app);
+
+        // Emit event to notify frontend that listening has stopped
+        let _ = app.emit("listening-state-changed", serde_json::json!({
+            "is_listening": false
+        }));
+        tracing::info!("Emitted listening-state-changed event (timeout)");
     }
 }
 
@@ -613,6 +674,12 @@ fn reset_listening_state(app: &AppHandle) {
     if should_rebuild {
         // Rebuild tray menu to update button text (lock is not held)
         let _ = rebuild_tray_menu(app);
+
+        // Emit event to notify frontend that listening has stopped
+        let _ = app.emit("listening-state-changed", serde_json::json!({
+            "is_listening": false
+        }));
+        tracing::info!("Emitted listening-state-changed event (stopped)");
     }
 }
 
@@ -784,4 +851,32 @@ pub fn get_tray_diagnostic_info() -> serde_json::Value {
             "not_initialized"
         }
     })
+}
+
+/// Detect if the system is using dark mode
+#[cfg(target_os = "macos")]
+fn is_system_dark_mode() -> bool {
+    use std::process::Command;
+
+    // Query macOS for the current appearance setting
+    let output = Command::new("defaults")
+        .args(["read", "-g", "AppleInterfaceStyle"])
+        .output();
+
+    match output {
+        Ok(output) => {
+            let result = String::from_utf8_lossy(&output.stdout);
+            result.trim().eq_ignore_ascii_case("dark")
+        }
+        Err(_) => {
+            // If the command fails or the key doesn't exist, assume light mode
+            false
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_system_dark_mode() -> bool {
+    // Default to light mode on non-macOS platforms
+    false
 }
