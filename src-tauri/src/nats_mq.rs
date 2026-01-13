@@ -229,13 +229,9 @@ pub async fn connect_with_retry(url: &str) -> Result<Connection, io::Error> {
 }
 
 /// Fallback when the `nats` feature is disabled: returns an error on connect.
-
 #[cfg(not(feature = "nats"))]
 pub async fn connect_with_retry(_url: &str) -> Result<Connection, io::Error> {
-    Err(io::Error::new(
-        io::ErrorKind::Other,
-        "nats feature disabled",
-    ))
+    Err(io::Error::other("nats feature disabled"))
 }
 
 /// Publish a JSON payload to a subject.
@@ -252,7 +248,6 @@ pub async fn publish_json(
 }
 
 /// Fallback publish that is a no-op when `nats` feature is disabled.
-
 #[cfg(not(feature = "nats"))]
 pub async fn publish_json(
     _conn: &(),
@@ -306,9 +301,9 @@ pub async fn init_jetstream(conn: &Connection, bucket: &str) -> Result<(), io::E
 pub async fn init_jetstream(_conn: &(), _bucket: &str) -> Result<(), io::Error> {
     Ok(())
 }
-#[cfg(not(feature = "nats"))]
-/// Fallback subscribe that is a no-op when `nats` feature is disabled.
 
+/// Fallback subscribe that is a no-op when `nats` feature is disabled.
+#[cfg(not(feature = "nats"))]
 pub async fn subscribe<F>(_conn: &(), _subject: &str, _handler: F) -> Result<(), io::Error>
 where
     F: FnMut(Vec<u8>) + Send + 'static,

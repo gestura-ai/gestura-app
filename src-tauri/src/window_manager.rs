@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +70,10 @@ impl WindowManager {
         // Create the window
         self.create_chat_window(&session_id, &window_label)?;
 
+        // Emit event to notify tray that sessions changed
+        let _ = self.app.emit("sessions-changed", ());
+        tracing::info!("Emitted sessions-changed event (new session created)");
+
         Ok(session_id)
     }
 
@@ -108,6 +112,7 @@ impl WindowManager {
         // Set up window close handler
         let sessions = Arc::clone(&self.sessions);
         let windows = Arc::clone(&self.windows);
+        let app_handle = self.app.clone();
         let session_id = session_id.to_string();
         let window_label_clone = window_label.to_string();
 
@@ -128,6 +133,10 @@ impl WindowManager {
                 if let Ok(mut windows) = windows.lock() {
                     windows.remove(&window_label_clone);
                 }
+
+                // Emit event to notify tray that sessions changed
+                let _ = app_handle.emit("sessions-changed", ());
+                tracing::info!("Emitted sessions-changed event (session closed)");
             }
         });
 
@@ -252,6 +261,41 @@ impl WindowManager {
         sessions.values().filter(|s| !s.is_open).cloned().collect()
     }
 
+    /// Get the focused chat session, if any
+    /// Returns the session ID of the currently focused chat window
+    pub fn get_focused_chat_session(&self) -> Option<String> {
+        let sessions = self.sessions.lock().unwrap();
+
+        // Find active sessions with window labels
+        for session in sessions.values().filter(|s| s.is_open) {
+            if let Some(ref window_label) = session.window_label
+                && let Some(window) = self.app.get_webview_window(window_label)
+                && window.is_focused().unwrap_or(false)
+            {
+                tracing::info!("Found focused chat session: {}", session.id);
+                return Some(session.id.clone());
+            }
+        }
+
+        tracing::info!("No focused chat session found");
+        None
+    }
+
+    /// Get the most recently active open chat session
+    /// Falls back to this if no window is focused
+    pub fn get_most_recent_active_session(&self) -> Option<String> {
+        let sessions = self.sessions.lock().unwrap();
+
+        sessions
+            .values()
+            .filter(|s| s.is_open && s.window_label.is_some())
+            .max_by_key(|s| s.last_active)
+            .map(|s| {
+                tracing::info!("Found most recent active session: {}", s.id);
+                s.id.clone()
+            })
+    }
+
     /// Close all windows and sessions
     pub fn close_all(&self) {
         let windows = {
@@ -278,6 +322,14 @@ impl WindowManager {
         let active = sessions.values().filter(|s| s.is_open).count();
         let closed = sessions.values().filter(|s| !s.is_open).count();
         (active, closed)
+    }
+
+    /// Get the window label for a session by its ID
+    pub fn get_session_window_label(&self, session_id: &str) -> Option<String> {
+        let sessions = self.sessions.lock().unwrap();
+        sessions
+            .get(session_id)
+            .and_then(|s| s.window_label.clone())
     }
 }
 
@@ -359,4 +411,31 @@ pub fn close_onboarding() -> tauri::Result<()> {
     } else {
         Err(tauri::Error::FailedToReceiveMessage)
     }
+}
+
+/// Get the focused chat session, if any
+pub fn get_focused_chat_session() -> Option<String> {
+    get_window_manager().and_then(|m| m.get_focused_chat_session())
+}
+
+/// Get the most recently active open chat session
+pub fn get_most_recent_active_session() -> Option<String> {
+    get_window_manager().and_then(|m| m.get_most_recent_active_session())
+}
+
+/// Get an active chat session to use for voice input
+/// Priority: 1) Focused chat window, 2) Most recently active chat, 3) None (create new)
+pub fn get_active_chat_for_voice() -> Option<String> {
+    // First try to get the focused chat window
+    if let Some(session_id) = get_focused_chat_session() {
+        return Some(session_id);
+    }
+
+    // Fall back to most recently active session
+    get_most_recent_active_session()
+}
+
+/// Get the window label for a session by its ID
+pub fn get_session_window_label(session_id: &str) -> Option<String> {
+    get_window_manager().and_then(|m| m.get_session_window_label(session_id))
 }

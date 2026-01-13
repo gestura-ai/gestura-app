@@ -96,7 +96,11 @@ impl SpeechProcessor {
             return Err("Not currently recording".to_string());
         }
         *recording = false;
-        tracing::info!("Stopped speech capture");
+
+        // Signal the audio capture to stop immediately
+        crate::audio_capture::request_stop_recording();
+
+        tracing::info!("Stopped speech capture and requested audio recording stop");
         Ok(())
     }
 
@@ -291,41 +295,53 @@ impl SpeechProcessor {
         app: &AppHandle,
         user_text: &str,
     ) -> Result<String, String> {
-        tracing::info!("Creating chat window with transcription: '{}'", user_text);
+        tracing::info!("Setting up chat for transcription: '{}'", user_text);
 
-        // Create a new chat session
-        match crate::window_manager::create_new_chat_session() {
-            Ok(session_id) => {
-                tracing::info!("Created chat session {} for voice input", session_id);
-
-                // Give the window time to load and set up event listeners
-                // The webview needs to initialize JavaScript and set up Tauri event listeners
-                // 1.5 seconds should be enough for the window to fully load
-                tracing::info!("Waiting for chat window to initialize...");
-                tokio::time::sleep(Duration::from_millis(1500)).await;
-                tracing::info!("Chat window should be ready, emitting events");
-
-                // Emit voice session start event so the frontend knows to expect messages
-                if let Err(e) = app.emit(
-                    "voice-session-started",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "timestamp": chrono::Utc::now().to_rfc3339()
-                    }),
-                ) {
-                    tracing::warn!("Failed to emit voice-session-started: {}", e);
-                } else {
-                    tracing::info!("Emitted voice-session-started event");
+        // Check if there's an active chat session to use
+        let (session_id, is_new_session) = if let Some(existing_session) =
+            crate::window_manager::get_active_chat_for_voice()
+        {
+            tracing::info!("Using existing chat session {} for voice input", existing_session);
+            (existing_session, false)
+        } else {
+            // Create a new chat session
+            match crate::window_manager::create_new_chat_session() {
+                Ok(new_session_id) => {
+                    tracing::info!("Created new chat session {} for voice input", new_session_id);
+                    (new_session_id, true)
                 }
-
-                // Send the transcribed text as a user message to the chat
-                self.send_user_message_to_chat(app, &session_id, user_text)
-                    .await?;
-
-                Ok(session_id)
+                Err(e) => return Err(format!("Failed to create chat session: {}", e)),
             }
-            Err(e) => Err(format!("Failed to create chat session: {}", e)),
+        };
+
+        // Only wait for window initialization if we created a new session
+        if is_new_session {
+            // Give the window time to load and set up event listeners
+            // The webview needs to initialize JavaScript and set up Tauri event listeners
+            // 1.5 seconds should be enough for the window to fully load
+            tracing::info!("Waiting for new chat window to initialize...");
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            tracing::info!("Chat window should be ready, emitting events");
         }
+
+        // Emit voice session start event so the frontend knows to expect messages
+        if let Err(e) = app.emit(
+            "voice-session-started",
+            serde_json::json!({
+                "session_id": session_id,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        ) {
+            tracing::warn!("Failed to emit voice-session-started: {}", e);
+        } else {
+            tracing::info!("Emitted voice-session-started event");
+        }
+
+        // Send the transcribed text as a user message to the chat
+        self.send_user_message_to_chat(app, &session_id, user_text)
+            .await?;
+
+        Ok(session_id)
     }
 
     async fn send_user_message_to_chat(
@@ -336,21 +352,27 @@ impl SpeechProcessor {
     ) -> Result<(), String> {
         tracing::info!("Sending user message to chat {}: '{}'", session_id, message);
 
-        // Emit a custom event that the chat window listens to
+        // Get the window label for this session to target the specific window
+        let window_label = crate::window_manager::get_session_window_label(session_id)
+            .ok_or_else(|| format!("No window found for session {}", session_id))?;
+
+        tracing::info!("Targeting window '{}' for session {}", window_label, session_id);
+
+        // Emit a custom event to the specific chat window only
         let payload = serde_json::json!({
             "session_id": session_id,
             "type": "user",
             "message": message,
             "timestamp": chrono::Utc::now().to_rfc3339()
         });
-        tracing::info!("Emitting chat-message event with payload: {:?}", payload);
+        tracing::info!("Emitting chat-message event to window '{}' with payload: {:?}", window_label, payload);
 
-        if let Err(e) = app.emit("chat-message", payload) {
-            tracing::error!("Failed to emit chat-message: {}", e);
+        if let Err(e) = app.emit_to(&window_label, "chat-message", payload) {
+            tracing::error!("Failed to emit chat-message to window '{}': {}", window_label, e);
             return Err(format!("Failed to emit user message: {}", e));
         }
 
-        tracing::info!("Successfully emitted chat-message event for user input");
+        tracing::info!("Successfully emitted chat-message event to window '{}'", window_label);
         Ok(())
     }
 
@@ -362,10 +384,15 @@ impl SpeechProcessor {
     ) -> Result<(), String> {
         tracing::info!("Sending AI response to chat {}: '{}'", session_id, response);
 
+        // Get the window label for this session to target the specific window
+        let window_label = crate::window_manager::get_session_window_label(session_id)
+            .ok_or_else(|| format!("No window found for session {}", session_id))?;
+
         // Simulate AI thinking time
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        if let Err(e) = app.emit(
+        if let Err(e) = app.emit_to(
+            &window_label,
             "chat-message",
             serde_json::json!({
                 "session_id": session_id,
@@ -374,9 +401,10 @@ impl SpeechProcessor {
                 "timestamp": chrono::Utc::now().to_rfc3339()
             }),
         ) {
-            return Err(format!("Failed to emit AI response: {}", e));
+            return Err(format!("Failed to emit AI response to window '{}': {}", window_label, e));
         }
 
+        tracing::info!("Successfully emitted AI response to window '{}'", window_label);
         Ok(())
     }
 
