@@ -7,6 +7,39 @@
     <title>Gestura Chat</title>
     <link rel="stylesheet" href="icons.css">
     <style>
+        :root {
+            /* Light mode colors - macOS inspired */
+            --bg-primary: #f5f5f7;
+            --bg-secondary: #ffffff;
+            --bg-tertiary: #e8e8ed;
+            --text-primary: #1d1d1f;
+            --text-secondary: #86868b;
+            --border-color: #d2d2d7;
+            --accent-color: #0071e3;
+            --accent-hover: #0077ed;
+            --user-bubble: #0071e3;
+            --agent-bubble: #e8e8ed;
+            --system-bubble: #f5a623;
+            --shadow: rgba(0, 0, 0, 0.08);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg-primary: #1d1d1f;
+                --bg-secondary: #2c2c2e;
+                --bg-tertiary: #3a3a3c;
+                --text-primary: #f5f5f7;
+                --text-secondary: #98989d;
+                --border-color: #48484a;
+                --accent-color: #0a84ff;
+                --accent-hover: #409cff;
+                --user-bubble: #0a84ff;
+                --agent-bubble: #3a3a3c;
+                --system-bubble: #ff9f0a;
+                --shadow: rgba(0, 0, 0, 0.3);
+            }
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -14,20 +47,34 @@
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
             height: 100vh;
             display: flex;
             flex-direction: column;
         }
 
         .chat-header {
-            background: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);
-            padding: 1rem;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
-            color: white;
-            text-align: center;
+            background: var(--bg-secondary);
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .chat-header h2 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
         }
 
         .chat-container {
@@ -42,10 +89,10 @@
             flex: 1;
             overflow-y: auto;
             padding: 1rem;
-            background: rgba(255, 255, 255, 0.95);
+            background: var(--bg-secondary);
             border-radius: 12px;
             margin-bottom: 1rem;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            border: 1px solid var(--border-color);
         }
 
         .message {
@@ -54,193 +101,103 @@
             border-radius: 18px;
             max-width: 80%;
             word-wrap: break-word;
+            line-height: 1.4;
         }
 
         .message.user {
-            background: #007AFF;
+            background: var(--user-bubble);
             color: white;
             margin-left: auto;
-            text-align: right;
+            border-bottom-right-radius: 4px;
         }
 
         .message.agent {
-            background: #F2F2F7;
-            color: #1D1D1F;
+            background: var(--agent-bubble);
+            color: var(--text-primary);
             margin-right: auto;
+            border-bottom-left-radius: 4px;
         }
 
         .message.system {
-            background: #FF9500;
+            background: var(--system-bubble);
             color: white;
             margin: 0 auto;
             text-align: center;
             font-size: 0.9em;
+            border-radius: 8px;
         }
 
         .input-container {
             display: flex;
-            gap: 0.5rem;
-            background: rgba(255, 255, 255, 0.95);
+            gap: 0.75rem;
+            background: var(--bg-secondary);
             padding: 1rem;
             border-radius: 12px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            border: 1px solid var(--border-color);
+            align-items: center;
         }
 
         .message-input {
             flex: 1;
             padding: 0.75rem 1rem;
-            border: 2px solid #E5E5EA;
+            border: 1px solid var(--border-color);
             border-radius: 20px;
             font-size: 1rem;
             outline: none;
             transition: border-color 0.2s;
+            background: var(--bg-primary);
+            color: var(--text-primary);
         }
 
         .message-input:focus {
-            border-color: #007AFF;
+            border-color: var(--accent-color);
+        }
+
+        .message-input::placeholder {
+            color: var(--text-secondary);
         }
 
         .send-button {
-            padding: 0.75rem 1.5rem;
-            background: #007AFF;
+            padding: 0.75rem 1.25rem;
+            background: var(--accent-color);
             color: white;
             border: none;
             border-radius: 20px;
-            font-size: 1rem;
+            font-size: 0.9rem;
+            font-weight: 500;
             cursor: pointer;
             transition: background-color 0.2s;
         }
 
         .send-button:hover {
-            background: #0056CC;
+            background: var(--accent-hover);
         }
 
         .send-button:disabled {
-            background: #C7C7CC;
+            background: var(--text-secondary);
             cursor: not-allowed;
         }
 
-        .status {
-            text-align: center;
-            color: rgba(255, 255, 255, 0.8);
-            font-size: 0.9em;
-            margin-bottom: 0.5rem;
-        }
-
-        .typing-indicator {
-            display: none;
-            padding: 0.5rem 1rem;
-            color: #8E8E93;
-            font-style: italic;
-        }
-
-        .typing-indicator.show {
-            display: block;
-        }
-
-        .main-layout {
-            display: flex;
-            flex: 1;
-            overflow: hidden;
-        }
-
-        .sidebar {
-            width: 250px;
-            background: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);
-            border-right: 1px solid rgba(255, 255, 255, 0.2);
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-
-        .sidebar-header {
-            padding: 1rem;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
-            color: white;
-        }
-
-        .sidebar-header h3 {
-            margin: 0 0 0.5rem 0;
-            font-size: 0.9rem;
-            opacity: 0.8;
-        }
-
-        .new-chat-btn {
-            width: 100%;
-            padding: 0.5rem;
-            background: rgba(255, 255, 255, 0.2);
-            border: none;
-            border-radius: 8px;
-            color: white;
-            cursor: pointer;
-            font-size: 0.9rem;
-        }
-
-        .new-chat-btn:hover {
-            background: rgba(255, 255, 255, 0.3);
-        }
-
-        .session-list {
-            flex: 1;
-            overflow-y: auto;
-            padding: 0.5rem;
-        }
-
-        .session-item {
-            padding: 0.75rem;
-            margin-bottom: 0.25rem;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 8px;
-            color: white;
-            cursor: pointer;
-            font-size: 0.85rem;
-        }
-
-        .session-item:hover {
-            background: rgba(255, 255, 255, 0.2);
-        }
-
-        .session-item.active {
-            background: rgba(255, 255, 255, 0.3);
-        }
-
-        .session-title {
-            font-weight: 500;
-            margin-bottom: 0.25rem;
-        }
-
-        .session-meta {
-            font-size: 0.75rem;
-            opacity: 0.7;
-        }
-
-        .voice-controls {
-            padding: 1rem;
-            border-top: 1px solid rgba(255, 255, 255, 0.2);
-        }
-
         .voice-btn {
-            width: 100%;
             padding: 0.75rem;
             border: none;
-            border-radius: 8px;
+            border-radius: 50%;
             cursor: pointer;
-            font-size: 0.9rem;
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 0.5rem;
             transition: all 0.2s;
+            width: 44px;
+            height: 44px;
         }
 
         .voice-btn.inactive {
-            background: #28a745;
+            background: #34c759;
             color: white;
         }
 
         .voice-btn.active {
-            background: #dc3545;
+            background: #ff3b30;
             color: white;
             animation: pulse 1.5s infinite;
         }
@@ -249,74 +206,61 @@
 
             0%,
             100% {
-                opacity: 1;
+                transform: scale(1);
             }
 
             50% {
-                opacity: 0.7;
+                transform: scale(1.05);
             }
         }
 
-        .voice-status {
-            text-align: center;
-            color: white;
-            font-size: 0.75rem;
-            margin-top: 0.5rem;
-            opacity: 0.8;
+        .typing-indicator {
+            display: none;
+            padding: 0.5rem 1rem;
+            color: var(--text-secondary);
+            font-style: italic;
+            font-size: 0.9rem;
         }
 
-        .chat-main {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
+        .typing-indicator.show {
+            display: block;
+        }
+
+        .voice-status {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            text-align: center;
+            padding-top: 0.5rem;
         }
     </style>
 </head>
 
 <body>
     <div class="chat-header">
-        <h2><span class="icon-message"></span> Gestura Agent Chat</h2>
-        <div class="status" id="status">Connected to default agent</div>
+        <h2><span class="icon-message"></span> Gestura Chat</h2>
+        <div class="status" id="status">Ready</div>
     </div>
 
-    <div class="main-layout">
-        <div class="sidebar">
-            <div class="sidebar-header">
-                <h3>Chat Sessions</h3>
-                <button class="new-chat-btn" id="newChatBtn">+ New Chat</button>
-            </div>
-            <div class="session-list" id="sessionList">
-                <!-- Sessions will be populated here -->
-            </div>
-            <div class="voice-controls">
-                <button class="voice-btn inactive" id="voiceBtn">
-                    <span id="voiceIcon" class="icon-microphone"></span>
-                    <span id="voiceBtnText">Start Listening</span>
-                </button>
-                <div class="voice-status" id="voiceStatus">Voice input ready</div>
+    <div class="chat-container">
+        <div class="messages" id="messages">
+            <div class="message system">
+                Welcome to Gestura! How can I help you today?
             </div>
         </div>
 
-        <div class="chat-main">
-            <div class="chat-container">
-                <div class="messages" id="messages">
-                    <div class="message system">
-                        Welcome to Gestura! I'm your AI assistant. How can I help you today?
-                    </div>
-                </div>
-
-                <div class="typing-indicator" id="typing">
-                    Agent is typing...
-                </div>
-
-                <div class="input-container">
-                    <input type="text" class="message-input" id="messageInput" placeholder="Type your message..."
-                        maxlength="1000">
-                    <button class="send-button" id="sendButton">Send</button>
-                </div>
-            </div>
+        <div class="typing-indicator" id="typing">
+            Agent is typing...
         </div>
+
+        <div class="input-container">
+            <button class="voice-btn inactive" id="voiceBtn" title="Voice input">
+                <span id="voiceIcon" class="icon-microphone"></span>
+            </button>
+            <input type="text" class="message-input" id="messageInput" placeholder="Type your message..."
+                maxlength="1000">
+            <button class="send-button" id="sendButton">Send</button>
+        </div>
+        <div class="voice-status" id="voiceStatus"></div>
     </div>
 
     <script>
@@ -439,13 +383,25 @@
                         addMessage(data.message, 'user');
                         // Show typing indicator for AI response
                         showTyping();
-                        statusElement.innerHTML = '<span class="icon-robot"></span> Agent is thinking...';
+                        statusElement.textContent = 'Agent is thinking...';
                     } else if (data.type === 'assistant') {
                         hideTyping();
                         addMessage(data.message, 'agent');
-                        statusElement.innerHTML = '<span class="icon-check"></span> Voice command completed';
+                        statusElement.textContent = 'Voice command completed';
                         // Reset status after a moment
                         setTimeout(() => checkAgentStatus(), 3000);
+                    }
+                });
+
+                // Listen for listening state changes from tray/backend
+                await window.__TAURI__.event.listen('listening-state-changed', (event) => {
+                    const data = event.payload;
+                    console.log('Listening state changed:', data);
+
+                    if (data.is_listening) {
+                        setVoiceActive();
+                    } else {
+                        setVoiceInactive();
                     }
                 });
 
@@ -470,138 +426,71 @@
         // Voice control elements
         const voiceBtn = document.getElementById('voiceBtn');
         const voiceIcon = document.getElementById('voiceIcon');
-        const voiceBtnText = document.getElementById('voiceBtnText');
         const voiceStatus = document.getElementById('voiceStatus');
-        const sessionList = document.getElementById('sessionList');
-        const newChatBtn = document.getElementById('newChatBtn');
 
         let isListening = false;
         let voiceStatusInterval = null;
 
         // Voice control functions
+        // NOTE: State is ONLY changed via 'listening-state-changed' events from the backend
+        // This ensures tray menu and chat button are always in sync
         async function toggleVoiceListening() {
+            // Prevent double-clicks while processing
+            if (voiceBtn.disabled) return;
+            voiceBtn.disabled = true;
+
             try {
                 if (isListening) {
+                    console.log('Stopping voice listening...');
                     await invoke('stop_voice_listening');
-                    setVoiceInactive();
+                    // Don't call setVoiceInactive() here - wait for backend event
                 } else {
+                    console.log('Starting voice listening...');
                     await invoke('start_voice_listening');
-                    setVoiceActive();
+                    // Don't call setVoiceActive() here - wait for backend event
                 }
             } catch (error) {
                 console.error('Failed to toggle voice listening:', error);
                 const message = typeof error === 'string' ? error : String(error);
                 voiceStatus.textContent = `Error: ${message}`;
-                // Surface configuration problems directly in the chat as a
-                // system message so users see why voice could not start.
                 addMessage(`Voice error: ${message}`, 'system');
+                // On error, sync state from backend
+                await checkInitialVoiceState();
+            } finally {
+                // Re-enable button after a short delay to prevent rapid clicks
+                setTimeout(() => { voiceBtn.disabled = false; }, 300);
             }
         }
 
         function setVoiceActive() {
+            console.log('setVoiceActive() called');
             isListening = true;
             voiceBtn.className = 'voice-btn active';
             voiceIcon.className = 'icon-recording';
-            voiceIcon.style.color = 'var(--error-color)';
-            voiceBtnText.textContent = 'Stop Listening';
-            voiceStatus.textContent = 'Listening for voice input...';
-            startVoiceStatusPolling();
+            voiceStatus.textContent = 'Listening...';
+            voiceBtn.title = 'Stop listening';
         }
 
         function setVoiceInactive() {
+            console.log('setVoiceInactive() called');
             isListening = false;
             voiceBtn.className = 'voice-btn inactive';
             voiceIcon.className = 'icon-microphone';
-            voiceIcon.style.color = '';
-            voiceBtnText.textContent = 'Start Listening';
-            voiceStatus.textContent = 'Voice input ready';
-            stopVoiceStatusPolling();
-        }
-
-        function startVoiceStatusPolling() {
-            voiceStatusInterval = setInterval(async () => {
-                try {
-                    const [listening, remaining] = await invoke('get_listening_state');
-                    if (!listening) {
-                        setVoiceInactive();
-                    } else if (remaining !== null) {
-                        voiceStatus.textContent = `Listening... ${remaining}s remaining`;
-                    }
-                } catch (error) {
-                    console.error('Failed to get listening state:', error);
-                }
-            }, 1000);
-        }
-
-        function stopVoiceStatusPolling() {
-            if (voiceStatusInterval) {
-                clearInterval(voiceStatusInterval);
-                voiceStatusInterval = null;
-            }
+            voiceStatus.textContent = '';
+            voiceBtn.title = 'Voice input';
         }
 
         voiceBtn.addEventListener('click', toggleVoiceListening);
 
-        // Session management functions
-        async function loadSessions() {
-            try {
-                const sessions = await invoke('get_chat_sessions');
-                renderSessions(sessions);
-            } catch (error) {
-                console.error('Failed to load sessions:', error);
-            }
-        }
-
-        function renderSessions(sessions) {
-            sessionList.innerHTML = '';
-
-            // Sort by last_active descending
-            sessions.sort((a, b) => new Date(b.last_active) - new Date(a.last_active));
-
-            sessions.forEach(session => {
-                const item = document.createElement('div');
-                item.className = `session-item ${session.is_open ? 'active' : ''}`;
-                item.innerHTML = `
-                    <div class="session-title">${session.title}</div>
-                    <div class="session-meta">
-                        ${session.message_count} messages • ${session.is_open ? 'Open' : 'Closed'}
-                    </div>
-                `;
-                item.addEventListener('click', () => restoreSession(session.id));
-                sessionList.appendChild(item);
-            });
-
-            if (sessions.length === 0) {
-                sessionList.innerHTML = '<div class="session-item">No sessions yet</div>';
-            }
-        }
-
-        async function restoreSession(sessionId) {
-            try {
-                await invoke('restore_chat_session', { sessionId });
-                await loadSessions();
-            } catch (error) {
-                console.error('Failed to restore session:', error);
-            }
-        }
-
-        async function createNewSession() {
-            try {
-                await invoke('create_chat_session');
-                await loadSessions();
-            } catch (error) {
-                console.error('Failed to create session:', error);
-            }
-        }
-
-        newChatBtn.addEventListener('click', createNewSession);
-
-        // Check initial voice state
+        // Check and sync voice state with backend
         async function checkInitialVoiceState() {
             try {
                 const [listening, _] = await invoke('get_listening_state');
+                console.log('Initial voice state from backend:', listening);
                 if (listening) {
                     setVoiceActive();
+                } else {
+                    setVoiceInactive();
                 }
             } catch (error) {
                 console.error('Failed to check initial voice state:', error);
@@ -613,14 +502,13 @@
             const tauriReady = await waitForTauri();
             if (!tauriReady) {
                 console.warn('Tauri API not available - running in standalone browser mode');
-                statusElement.innerHTML = '<span class="icon-warning" style="color: var(--warning-color);"></span> Desktop app not connected';
+                statusElement.textContent = 'Desktop app not connected';
                 addMessage('Chat requires the Gestura desktop app to function. Please launch the app.', 'system');
                 return;
             }
 
             setupEventListeners();
             checkAgentStatus();
-            loadSessions();
             checkInitialVoiceState();
         }
 

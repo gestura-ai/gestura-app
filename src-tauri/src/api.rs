@@ -3,7 +3,7 @@ use crate::{
     AppConfig,
     llm_provider::{AgentContext, select_provider},
 };
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[tauri::command]
 pub fn get_config() -> Result<AppConfig, String> {
@@ -1422,13 +1422,22 @@ pub fn start_voice_listening(app: tauri::AppHandle) -> Result<String, String> {
 
 /// Stop voice listening
 #[tauri::command]
-pub fn stop_voice_listening() -> Result<String, String> {
+pub fn stop_voice_listening(app: tauri::AppHandle) -> Result<String, String> {
     // Stop the speech processing (audio recording)
     if let Err(e) = crate::speech::stop_speech_listening() {
         tracing::warn!("Failed to stop speech processing: {}", e);
     }
     // Update the listening state
     crate::tray::stop_listening();
+
+    // Emit event to notify frontend that listening has stopped
+    if let Err(e) = app.emit("listening-state-changed", serde_json::json!({
+        "is_listening": false
+    })) {
+        tracing::warn!("Failed to emit listening-state-changed: {}", e);
+    }
+    tracing::info!("Emitted listening-state-changed event (stopped via API)");
+
     Ok("Voice listening stopped".to_string())
 }
 
