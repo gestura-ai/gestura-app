@@ -6,6 +6,19 @@
 //! adding external crates. Real providers will be added behind features.
 
 use crate::{AppConfig, AppError};
+use std::time::Duration;
+
+/// Default timeout for LLM API calls (2 minutes for slow local models)
+const LLM_TIMEOUT_SECS: u64 = 120;
+
+/// Create a reqwest client with appropriate timeouts
+fn create_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(LLM_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
 
 /// Context hints for provider selection (agent, tenant, etc.)
 #[derive(Debug, Clone, Default)]
@@ -44,15 +57,18 @@ impl LlmProvider for OpenAiProvider {
             "messages": [{"role":"user","content": prompt}],
             "temperature": 0.2
         });
-        let client = reqwest::Client::new();
+        let client = create_http_client();
         let resp = client
             .post(&url)
             .bearer_auth(&self.api_key)
             .json(&body)
             .send()
-            .await?;
+            .await
+            .map_err(|e| AppError::Llm(format!("openai request failed: {}", e)))?;
         if !resp.status().is_success() {
-            return Err(AppError::Llm(format!("openai http {}", resp.status())));
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AppError::Llm(format!("openai http {}: {}", status, body)));
         }
         let v: serde_json::Value = resp.json().await?;
         let text = v["choices"][0]["message"]["content"]
@@ -78,16 +94,19 @@ impl LlmProvider for AnthropicProvider {
             "max_tokens": 512,
             "messages": [{"role":"user","content": [{"type":"text","text": prompt}]}]
         });
-        let client = reqwest::Client::new();
+        let client = create_http_client();
         let resp = client
             .post(&url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .json(&body)
             .send()
-            .await?;
+            .await
+            .map_err(|e| AppError::Llm(format!("anthropic request failed: {}", e)))?;
         if !resp.status().is_success() {
-            return Err(AppError::Llm(format!("anthropic http {}", resp.status())));
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AppError::Llm(format!("anthropic http {}: {}", status, body)));
         }
         let v: serde_json::Value = resp.json().await?;
         let text = v["content"][0]["text"].as_str().unwrap_or("").to_string();
@@ -110,15 +129,18 @@ impl LlmProvider for GrokProvider {
             "model": self.model,
             "messages": [{"role":"user","content": prompt}],
         });
-        let client = reqwest::Client::new();
+        let client = create_http_client();
         let resp = client
             .post(&url)
             .bearer_auth(&self.api_key)
             .json(&body)
             .send()
-            .await?;
+            .await
+            .map_err(|e| AppError::Llm(format!("grok request failed: {}", e)))?;
         if !resp.status().is_success() {
-            return Err(AppError::Llm(format!("grok http {}", resp.status())));
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AppError::Llm(format!("grok http {}: {}", status, body)));
         }
         let v: serde_json::Value = resp.json().await?;
         let text = v["choices"][0]["message"]["content"]
@@ -144,10 +166,17 @@ impl LlmProvider for OllamaProvider {
             "messages": [{"role":"user","content": prompt}],
             "stream": false
         });
-        let client = reqwest::Client::new();
-        let resp = client.post(&url).json(&body).send().await?;
+        let client = create_http_client();
+        let resp = client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::Llm(format!("ollama request failed: {}", e)))?;
         if !resp.status().is_success() {
-            return Err(AppError::Llm(format!("ollama http {}", resp.status())));
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AppError::Llm(format!("ollama http {}: {}", status, body)));
         }
         let v: serde_json::Value = resp.json().await?;
         // With stream: false, Ollama returns a single JSON object with message.content
