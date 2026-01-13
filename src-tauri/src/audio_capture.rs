@@ -8,10 +8,33 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Silence detection configuration
-const SILENCE_THRESHOLD: f32 = 0.02; // RMS threshold for detecting silence
+const SILENCE_THRESHOLD: f32 = 0.005; // RMS threshold for detecting silence (lowered for sensitivity)
 const SILENCE_TIMEOUT_SECS: f32 = 4.0; // Stop recording after 4 seconds of silence
 const MAX_RECORDING_SECS: u64 = 120; // Maximum recording duration (2 minutes)
 const VAD_WINDOW_MS: u64 = 100; // Window size for VAD analysis
+const WAIT_FOR_SPEECH_TIMEOUT_SECS: u64 = 30; // Timeout if no speech detected after 30 seconds
+const WHISPER_SAMPLE_RATE: u32 = 16000; // Whisper requires 16kHz audio
+
+// Global flag to signal external stop request (e.g., from "Stop Listening" button)
+lazy_static::lazy_static! {
+    static ref EXTERNAL_STOP_FLAG: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+}
+
+/// Request the audio recording to stop from external code
+pub fn request_stop_recording() {
+    tracing::info!("External stop requested for audio recording");
+    EXTERNAL_STOP_FLAG.store(true, Ordering::SeqCst);
+}
+
+/// Reset the external stop flag (call before starting a new recording)
+pub fn reset_stop_flag() {
+    EXTERNAL_STOP_FLAG.store(false, Ordering::SeqCst);
+}
+
+/// Check if external stop was requested
+pub fn is_stop_requested() -> bool {
+    EXTERNAL_STOP_FLAG.load(Ordering::SeqCst)
+}
 
 /// Record audio from the microphone until user stops speaking (4 seconds of silence)
 /// Returns the duration of recorded audio in seconds
@@ -20,6 +43,9 @@ const VAD_WINDOW_MS: u64 = 100; // Window size for VAD analysis
 /// to avoid Send/Sync issues with cpal::Stream
 pub async fn record_audio(_duration: Duration, output_path: &Path) -> Result<f32, crate::AppError> {
     let output_path = output_path.to_path_buf();
+
+    // Reset the external stop flag before starting a new recording
+    reset_stop_flag();
 
     // Get the configured audio device from config
     let config = crate::config::AppConfig::load();
@@ -47,6 +73,8 @@ struct VadState {
     has_detected_speech: bool,
     recording_start: Instant,
     has_logged_max_duration: bool,
+    last_rms_log_time: Instant,
+    peak_rms: f32,
 }
 
 impl VadState {
@@ -57,6 +85,8 @@ impl VadState {
             has_detected_speech: false,
             recording_start: now,
             has_logged_max_duration: false,
+            last_rms_log_time: now,
+            peak_rms: 0.0,
         }
     }
 }
@@ -122,6 +152,11 @@ fn record_audio_with_vad(output_path: &Path, device_name: Option<&str>) -> Resul
             .build_input_stream(
                 &config.into(),
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    // Early exit if we should stop - don't process any more audio
+                    if should_stop_clone.load(Ordering::SeqCst) {
+                        return;
+                    }
+
                     // Store all samples
                     {
                         let mut buffer = samples_clone.lock().unwrap();
@@ -141,18 +176,42 @@ fn record_audio_with_vad(output_path: &Path, device_name: Option<&str>) -> Resul
                             let mut state = vad_state_clone.lock().unwrap();
                             let now = Instant::now();
 
+                            // Track peak RMS for debugging
+                            if rms > state.peak_rms {
+                                state.peak_rms = rms;
+                            }
+
+                            // Log RMS periodically (every 2 seconds) for debugging
+                            if now.duration_since(state.last_rms_log_time).as_secs() >= 2 {
+                                tracing::info!(
+                                    "VAD status: current_rms={:.4}, peak_rms={:.4}, threshold={:.4}, speech_detected={}",
+                                    rms, state.peak_rms, SILENCE_THRESHOLD, state.has_detected_speech
+                                );
+                                state.last_rms_log_time = now;
+                            }
+
                             if rms > SILENCE_THRESHOLD {
                                 // Speech detected
                                 state.last_speech_time = now;
                                 if !state.has_detected_speech {
                                     state.has_detected_speech = true;
-                                    tracing::info!("Speech detected (RMS: {:.4})", rms);
+                                    tracing::info!("🎤 Speech detected! (RMS: {:.4} > threshold: {:.4})", rms, SILENCE_THRESHOLD);
                                 }
                             } else if state.has_detected_speech {
-                                // Check if silence timeout reached
+                                // Check if silence timeout reached (only stop once)
                                 let silence_duration = now.duration_since(state.last_speech_time);
-                                if silence_duration.as_secs_f32() >= SILENCE_TIMEOUT_SECS {
-                                    tracing::info!("Silence timeout reached ({:.1}s)", silence_duration.as_secs_f32());
+                                if silence_duration.as_secs_f32() >= SILENCE_TIMEOUT_SECS && !should_stop_clone.load(Ordering::SeqCst) {
+                                    tracing::info!("🔇 Silence timeout reached ({:.1}s) - stopping recording", silence_duration.as_secs_f32());
+                                    should_stop_clone.store(true, Ordering::SeqCst);
+                                }
+                            } else {
+                                // No speech detected yet - check for "waiting for speech" timeout
+                                let waiting_duration = now.duration_since(state.recording_start).as_secs();
+                                if waiting_duration >= WAIT_FOR_SPEECH_TIMEOUT_SECS {
+                                    tracing::warn!(
+                                        "⏱️ No speech detected after {}s (peak_rms={:.4}, threshold={:.4}) - stopping",
+                                        waiting_duration, state.peak_rms, SILENCE_THRESHOLD
+                                    );
                                     should_stop_clone.store(true, Ordering::SeqCst);
                                 }
                             }
@@ -184,6 +243,11 @@ fn record_audio_with_vad(output_path: &Path, device_name: Option<&str>) -> Resul
                 .build_input_stream(
                     &config.into(),
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                        // Early exit if we should stop - don't process any more audio
+                        if should_stop_i16.load(Ordering::SeqCst) {
+                            return;
+                        }
+
                         let f32_data: Vec<f32> =
                             data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
 
@@ -205,16 +269,40 @@ fn record_audio_with_vad(output_path: &Path, device_name: Option<&str>) -> Resul
                                 let mut state = vad_state_i16.lock().unwrap();
                                 let now = Instant::now();
 
+                                // Track peak RMS for debugging
+                                if rms > state.peak_rms {
+                                    state.peak_rms = rms;
+                                }
+
+                                // Log RMS periodically (every 2 seconds) for debugging
+                                if now.duration_since(state.last_rms_log_time).as_secs() >= 2 {
+                                    tracing::info!(
+                                        "VAD status: current_rms={:.4}, peak_rms={:.4}, threshold={:.4}, speech_detected={}",
+                                        rms, state.peak_rms, SILENCE_THRESHOLD, state.has_detected_speech
+                                    );
+                                    state.last_rms_log_time = now;
+                                }
+
                                 if rms > SILENCE_THRESHOLD {
                                     state.last_speech_time = now;
                                     if !state.has_detected_speech {
                                         state.has_detected_speech = true;
-                                        tracing::info!("Speech detected (RMS: {:.4})", rms);
+                                        tracing::info!("🎤 Speech detected! (RMS: {:.4} > threshold: {:.4})", rms, SILENCE_THRESHOLD);
                                     }
                                 } else if state.has_detected_speech {
                                     let silence_duration = now.duration_since(state.last_speech_time);
-                                    if silence_duration.as_secs_f32() >= SILENCE_TIMEOUT_SECS {
-                                        tracing::info!("Silence timeout reached ({:.1}s)", silence_duration.as_secs_f32());
+                                    if silence_duration.as_secs_f32() >= SILENCE_TIMEOUT_SECS && !should_stop_i16.load(Ordering::SeqCst) {
+                                        tracing::info!("🔇 Silence timeout reached ({:.1}s) - stopping recording", silence_duration.as_secs_f32());
+                                        should_stop_i16.store(true, Ordering::SeqCst);
+                                    }
+                                } else {
+                                    // No speech detected yet - check for "waiting for speech" timeout
+                                    let waiting_duration = now.duration_since(state.recording_start).as_secs();
+                                    if waiting_duration >= WAIT_FOR_SPEECH_TIMEOUT_SECS {
+                                        tracing::warn!(
+                                            "⏱️ No speech detected after {}s (peak_rms={:.4}, threshold={:.4}) - stopping",
+                                            waiting_duration, state.peak_rms, SILENCE_THRESHOLD
+                                        );
                                         should_stop_i16.store(true, Ordering::SeqCst);
                                     }
                                 }
@@ -247,11 +335,20 @@ fn record_audio_with_vad(output_path: &Path, device_name: Option<&str>) -> Resul
 
     tracing::info!("Recording with VAD - will stop after {}s of silence...", SILENCE_TIMEOUT_SECS);
 
-    // Wait for speech to end (with silence timeout) or max duration
+    // Wait for speech to end (with silence timeout), max duration, or external stop request
     loop {
         std::thread::sleep(Duration::from_millis(100));
 
+        // Check internal VAD stop flag
         if should_stop.load(Ordering::SeqCst) {
+            tracing::info!("Recording stopped by VAD (silence/max duration)");
+            break;
+        }
+
+        // Check external stop request (e.g., "Stop Listening" button)
+        if is_stop_requested() {
+            tracing::info!("Recording stopped by external request");
+            should_stop.store(true, Ordering::SeqCst);
             break;
         }
 
@@ -262,8 +359,10 @@ fn record_audio_with_vad(output_path: &Path, device_name: Option<&str>) -> Resul
         }
     }
 
-    // Stop recording
+    // Stop recording - explicitly pause and drop the stream to release the microphone
+    let _ = stream.pause();
     drop(stream);
+    tracing::info!("Audio stream stopped and microphone released");
 
     // Get recorded samples
     let recorded_samples = samples.lock().unwrap();
@@ -272,14 +371,72 @@ fn record_audio_with_vad(output_path: &Path, device_name: Option<&str>) -> Resul
 
     tracing::info!("Recorded {} samples ({:.2}s)", sample_count, duration_secs);
 
+    // If externally stopped with no audio, return early without error
     if sample_count == 0 {
+        if is_stop_requested() {
+            return Err(crate::AppError::Voice("Recording cancelled by user".into()));
+        }
         return Err(crate::AppError::Voice("No audio captured".into()));
     }
 
-    // Save to WAV file
-    save_samples_to_wav(&recorded_samples, sample_rate, channels, output_path)?;
+    // Resample audio to 16kHz mono for Whisper compatibility
+    let resampled = resample_to_16khz(&recorded_samples, sample_rate, channels);
+
+    // Save to WAV file at 16kHz mono (what Whisper expects)
+    save_samples_to_wav(&resampled, WHISPER_SAMPLE_RATE, 1, output_path)?;
 
     Ok(duration_secs)
+}
+
+/// Resample audio from source sample rate to 16kHz mono for Whisper
+/// Uses simple linear interpolation for resampling
+fn resample_to_16khz(samples: &[f32], source_rate: u32, channels: u16) -> Vec<f32> {
+    if samples.is_empty() {
+        return Vec::new();
+    }
+
+    // First, convert to mono if stereo
+    let mono_samples: Vec<f32> = if channels > 1 {
+        samples
+            .chunks(channels as usize)
+            .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
+            .collect()
+    } else {
+        samples.to_vec()
+    };
+
+    // If already at 16kHz, return mono samples
+    if source_rate == WHISPER_SAMPLE_RATE {
+        tracing::info!("Audio already at 16kHz, no resampling needed");
+        return mono_samples;
+    }
+
+    // Calculate resampling ratio
+    let ratio = source_rate as f64 / WHISPER_SAMPLE_RATE as f64;
+    let output_len = (mono_samples.len() as f64 / ratio).ceil() as usize;
+    let mut resampled = Vec::with_capacity(output_len);
+
+    tracing::info!(
+        "Resampling audio from {}Hz to {}Hz ({} -> {} samples)",
+        source_rate, WHISPER_SAMPLE_RATE, mono_samples.len(), output_len
+    );
+
+    // Linear interpolation resampling
+    for i in 0..output_len {
+        let src_pos = i as f64 * ratio;
+        let src_idx = src_pos.floor() as usize;
+        let frac = (src_pos - src_idx as f64) as f32;
+
+        if src_idx + 1 < mono_samples.len() {
+            // Interpolate between two samples
+            let sample = mono_samples[src_idx] * (1.0 - frac) + mono_samples[src_idx + 1] * frac;
+            resampled.push(sample);
+        } else if src_idx < mono_samples.len() {
+            resampled.push(mono_samples[src_idx]);
+        }
+    }
+
+    resampled
 }
 
 /// Save audio samples to a WAV file
@@ -311,7 +468,7 @@ fn save_samples_to_wav(
         .finalize()
         .map_err(|e| crate::AppError::Voice(format!("Failed to finalize WAV: {}", e)))?;
 
-    tracing::info!("Saved audio to {:?}", path);
+    tracing::info!("Saved audio to {:?} ({}Hz, {} channels)", path, sample_rate, channels);
     Ok(())
 }
 
