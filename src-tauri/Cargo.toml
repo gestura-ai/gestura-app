@@ -15,7 +15,8 @@ base64 = "0.22"
 image = { version = "0.25", features = ["png"] }
 
 [features]
-default = []
+# Default features for production builds - voice-local is always enabled
+default = ["voice-local"]
 # Enable NATS MQ integration
 nats = ["dep:async-nats"]
 # Local voice via whisper.cpp bindings
