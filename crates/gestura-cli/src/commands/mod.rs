@@ -1,0 +1,21 @@
+//! CLI Command Implementations
+//!
+//! Each subcommand has its own module with a `run` function.
+
+pub mod agent;
+pub mod chat;
+pub mod completion;
+pub mod config;
+pub mod device;
+pub mod exec;
+pub mod health;
+pub mod init;
+pub mod listen;
+pub mod mcp;
+pub mod model;
+pub mod privacy;
+pub mod session;
+pub mod tools;
+
+/// Common error type for CLI commands
+pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;

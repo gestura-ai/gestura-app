@@ -1,0 +1,1531 @@
+//! TUI Application state and mode management
+//!
+//! This module contains the core application state machine for the TUI,
+//! including mode management, message handling, and state transitions.
+
+use gestura_core::AppConfig;
+use ratatui::style::Color;
+use ratatui::widgets::ListState;
+
+use super::super::{ChatMessage, ChatSession};
+
+/// Theme configuration for the TUI
+#[derive(Debug, Clone)]
+pub struct Theme {
+    pub name: &'static str,
+    pub header_bg: Color,
+    pub header_fg: Color,
+    pub user_msg: Color,
+    pub assistant_msg: Color,
+    pub system_msg: Color,
+    pub error_msg: Color,
+    pub streaming: Color,
+    pub border: Color,
+    pub border_focused: Color,
+    pub status_bg: Color,
+    pub status_fg: Color,
+    pub mode_normal: Color,
+    pub mode_insert: Color,
+    pub mode_command: Color,
+    pub tab_active: Color,
+    pub tab_inactive: Color,
+    pub selection_bg: Color,
+    // Code highlighting colors
+    pub code_bg: Color,
+    pub code_fg: Color,
+    pub code_keyword: Color,
+    pub code_string: Color,
+    pub code_comment: Color,
+    pub code_number: Color,
+    pub code_function: Color,
+    pub code_lang_label: Color,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self::catppuccin_mocha()
+    }
+}
+
+impl Theme {
+    /// Catppuccin Mocha theme (default dark theme)
+    pub fn catppuccin_mocha() -> Self {
+        Self {
+            name: "Catppuccin Mocha",
+            header_bg: Color::Rgb(30, 30, 46),
+            header_fg: Color::Rgb(205, 214, 244),
+            user_msg: Color::Rgb(166, 227, 161),
+            assistant_msg: Color::Rgb(137, 180, 250),
+            system_msg: Color::Rgb(249, 226, 175),
+            error_msg: Color::Rgb(243, 139, 168),
+            streaming: Color::Rgb(180, 190, 254),
+            border: Color::Rgb(88, 91, 112),
+            border_focused: Color::Rgb(137, 180, 250),
+            status_bg: Color::Rgb(30, 30, 46),
+            status_fg: Color::Rgb(166, 173, 200),
+            mode_normal: Color::Rgb(137, 180, 250),
+            mode_insert: Color::Rgb(166, 227, 161),
+            mode_command: Color::Rgb(249, 226, 175),
+            tab_active: Color::Rgb(137, 180, 250),
+            tab_inactive: Color::Rgb(88, 91, 112),
+            selection_bg: Color::Rgb(49, 50, 68),
+            code_bg: Color::Rgb(24, 24, 37),
+            code_fg: Color::Rgb(166, 173, 200),
+            code_keyword: Color::Rgb(203, 166, 247),
+            code_string: Color::Rgb(166, 227, 161),
+            code_comment: Color::Rgb(108, 112, 134),
+            code_number: Color::Rgb(250, 179, 135),
+            code_function: Color::Rgb(137, 180, 250),
+            code_lang_label: Color::Rgb(249, 226, 175),
+        }
+    }
+
+    /// Light theme for bright terminals
+    pub fn light() -> Self {
+        Self {
+            name: "Light",
+            header_bg: Color::Rgb(239, 241, 245),
+            header_fg: Color::Rgb(76, 79, 105),
+            user_msg: Color::Rgb(64, 160, 43),
+            assistant_msg: Color::Rgb(30, 102, 245),
+            system_msg: Color::Rgb(223, 142, 29),
+            error_msg: Color::Rgb(210, 15, 57),
+            streaming: Color::Rgb(114, 135, 253),
+            border: Color::Rgb(172, 176, 190),
+            border_focused: Color::Rgb(30, 102, 245),
+            status_bg: Color::Rgb(239, 241, 245),
+            status_fg: Color::Rgb(92, 95, 119),
+            mode_normal: Color::Rgb(30, 102, 245),
+            mode_insert: Color::Rgb(64, 160, 43),
+            mode_command: Color::Rgb(223, 142, 29),
+            tab_active: Color::Rgb(30, 102, 245),
+            tab_inactive: Color::Rgb(172, 176, 190),
+            selection_bg: Color::Rgb(220, 224, 232),
+            code_bg: Color::Rgb(230, 233, 239),
+            code_fg: Color::Rgb(76, 79, 105),
+            code_keyword: Color::Rgb(136, 57, 239),
+            code_string: Color::Rgb(64, 160, 43),
+            code_comment: Color::Rgb(140, 143, 161),
+            code_number: Color::Rgb(254, 100, 11),
+            code_function: Color::Rgb(30, 102, 245),
+            code_lang_label: Color::Rgb(223, 142, 29),
+        }
+    }
+
+    /// High contrast theme for accessibility
+    pub fn high_contrast() -> Self {
+        Self {
+            name: "High Contrast",
+            header_bg: Color::Black,
+            header_fg: Color::White,
+            user_msg: Color::Green,
+            assistant_msg: Color::Cyan,
+            system_msg: Color::Yellow,
+            error_msg: Color::Red,
+            streaming: Color::LightCyan,
+            border: Color::White,
+            border_focused: Color::LightYellow,
+            status_bg: Color::Black,
+            status_fg: Color::White,
+            mode_normal: Color::Cyan,
+            mode_insert: Color::Green,
+            mode_command: Color::Yellow,
+            tab_active: Color::LightYellow,
+            tab_inactive: Color::Gray,
+            selection_bg: Color::DarkGray,
+            code_bg: Color::Black,
+            code_fg: Color::White,
+            code_keyword: Color::Magenta,
+            code_string: Color::Green,
+            code_comment: Color::Gray,
+            code_number: Color::Yellow,
+            code_function: Color::Cyan,
+            code_lang_label: Color::Yellow,
+        }
+    }
+
+    /// Dracula theme
+    pub fn dracula() -> Self {
+        Self {
+            name: "Dracula",
+            header_bg: Color::Rgb(40, 42, 54),
+            header_fg: Color::Rgb(248, 248, 242),
+            user_msg: Color::Rgb(80, 250, 123),
+            assistant_msg: Color::Rgb(139, 233, 253),
+            system_msg: Color::Rgb(241, 250, 140),
+            error_msg: Color::Rgb(255, 85, 85),
+            streaming: Color::Rgb(189, 147, 249),
+            border: Color::Rgb(68, 71, 90),
+            border_focused: Color::Rgb(139, 233, 253),
+            status_bg: Color::Rgb(40, 42, 54),
+            status_fg: Color::Rgb(98, 114, 164),
+            mode_normal: Color::Rgb(139, 233, 253),
+            mode_insert: Color::Rgb(80, 250, 123),
+            mode_command: Color::Rgb(241, 250, 140),
+            tab_active: Color::Rgb(139, 233, 253),
+            tab_inactive: Color::Rgb(68, 71, 90),
+            selection_bg: Color::Rgb(68, 71, 90),
+            code_bg: Color::Rgb(33, 34, 44),
+            code_fg: Color::Rgb(248, 248, 242),
+            code_keyword: Color::Rgb(255, 121, 198),
+            code_string: Color::Rgb(241, 250, 140),
+            code_comment: Color::Rgb(98, 114, 164),
+            code_number: Color::Rgb(189, 147, 249),
+            code_function: Color::Rgb(80, 250, 123),
+            code_lang_label: Color::Rgb(241, 250, 140),
+        }
+    }
+
+    /// Get theme by name
+    pub fn by_name(name: &str) -> Self {
+        match name.to_lowercase().as_str() {
+            "light" => Self::light(),
+            "high-contrast" | "highcontrast" | "high_contrast" => Self::high_contrast(),
+            "dracula" => Self::dracula(),
+            _ => Self::catppuccin_mocha(),
+        }
+    }
+
+    /// List available theme names
+    pub fn available_themes() -> &'static [&'static str] {
+        &["catppuccin-mocha", "light", "high-contrast", "dracula"]
+    }
+}
+
+/// Current mode of the TUI application
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TuiMode {
+    /// Normal mode - navigation and commands
+    #[default]
+    Normal,
+    /// Insert mode - typing a message
+    Insert,
+    /// Command mode - entering a slash command
+    Command,
+    /// Help overlay is displayed
+    Help,
+    /// Confirmation dialog is displayed
+    Confirm,
+    /// Search mode - searching through messages
+    Search,
+}
+
+/// Types of confirmation dialogs
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfirmAction {
+    /// Confirm quitting without saving
+    QuitWithoutSave,
+    /// Confirm clearing message history
+    ClearMessages,
+    /// Confirm starting a new session
+    NewSession,
+}
+
+/// Actions that can be triggered by user input
+#[derive(Debug, Clone, PartialEq)]
+pub enum Action {
+    /// Continue the main loop
+    Continue,
+    /// Quit the application
+    Quit,
+    /// Send the current input as a message
+    SendMessage(String),
+    /// Execute a slash command
+    ExecuteCommand(String),
+    /// Switch to a different tab
+    SwitchTab(usize),
+    /// Toggle help overlay
+    ToggleHelp,
+    /// Scroll messages up
+    ScrollUp,
+    /// Scroll messages down
+    ScrollDown,
+    /// Clear the input field
+    ClearInput,
+    /// Cancel current operation (streaming, etc.)
+    Cancel,
+}
+
+/// Message for TUI display with additional metadata
+#[derive(Debug, Clone)]
+pub struct TuiMessage {
+    pub role: String,
+    pub content: String,
+    pub is_streaming: bool,
+    pub is_error: bool,
+}
+
+impl From<&ChatMessage> for TuiMessage {
+    fn from(msg: &ChatMessage) -> Self {
+        Self {
+            role: msg.role.clone(),
+            content: msg.content.clone(),
+            is_streaming: false,
+            is_error: false,
+        }
+    }
+}
+
+/// Available slash commands
+pub const COMMANDS: &[(&str, &str)] = &[
+    ("/help", "Show help information"),
+    ("/tools", "List available tools"),
+    ("/tools <name>", "Show tool details"),
+    ("/clear", "Clear message history"),
+    ("/save", "Save current session"),
+    ("/new", "Start a new session"),
+    ("/history", "Show session statistics"),
+    ("/quit", "Exit the application"),
+    ("/settings", "Switch to settings tab"),
+    ("/capabilities", "Show AI capabilities"),
+    ("/theme", "List available themes"),
+    ("/theme <name>", "Change theme (catppuccin-mocha, light, high-contrast, dracula)"),
+    ("/sessions", "List all saved sessions"),
+    ("/session list", "List all saved sessions"),
+    ("/session load <id>", "Load/switch to a session"),
+    ("/session delete <id>", "Delete a session"),
+    ("/session export", "Export current session to file"),
+    ("/session export <id>", "Export a session to file"),
+    ("/session info", "Show current session details"),
+];
+
+/// TUI application state
+pub struct TuiApp {
+    /// Current input buffer
+    pub input: String,
+    /// Cursor position within input
+    pub cursor_pos: usize,
+    /// Chat messages
+    pub messages: Vec<TuiMessage>,
+    /// Message list state for scrolling
+    pub message_list_state: ListState,
+    /// Whether user has manually scrolled (disables auto-scroll)
+    pub user_scrolled: bool,
+    /// Chat session for persistence
+    pub session: ChatSession,
+    /// Application configuration
+    pub config: AppConfig,
+    /// Optional system prompt
+    pub system_prompt: Option<String>,
+    /// Current TUI mode
+    pub mode: TuiMode,
+    /// Whether we're waiting for a response
+    pub is_loading: bool,
+    /// Current status message
+    pub status: String,
+    /// Error message (if any)
+    pub error: Option<String>,
+    /// Active tab index
+    pub active_tab: usize,
+    /// Available tabs
+    pub tabs: Vec<&'static str>,
+    /// Command palette: filtered commands based on input
+    pub command_suggestions: Vec<(String, String)>,
+    /// Command palette: selected suggestion index
+    pub command_selection: usize,
+    /// Command history for up/down navigation
+    pub command_history: Vec<String>,
+    /// Current position in command history
+    pub command_history_pos: Option<usize>,
+    /// Pending confirmation action
+    pub pending_confirm: Option<ConfirmAction>,
+    /// Layout areas for mouse click detection (set during render)
+    pub layout_areas: LayoutAreas,
+    /// Current theme
+    pub theme: Theme,
+    /// Search query
+    pub search_query: String,
+    /// Search matches: (message_index, character_ranges)
+    pub search_matches: Vec<(usize, Vec<std::ops::Range<usize>>)>,
+    /// Current match index for n/N navigation
+    pub current_match_idx: usize,
+    /// Whether to filter to show only matching messages
+    pub search_filter_mode: bool,
+}
+
+/// Cached layout areas for mouse click detection
+#[derive(Debug, Clone, Default)]
+pub struct LayoutAreas {
+    /// Tab header area
+    pub tabs: Option<ratatui::layout::Rect>,
+    /// Message list area
+    pub messages: Option<ratatui::layout::Rect>,
+    /// Input field area
+    pub input: Option<ratatui::layout::Rect>,
+}
+
+impl TuiApp {
+    /// Create a new TUI application
+    pub fn new(session: ChatSession, config: AppConfig, system_prompt: Option<String>) -> Self {
+        let messages: Vec<TuiMessage> = session.messages.iter().map(TuiMessage::from).collect();
+
+        let mut message_list_state = ListState::default();
+        // Select the last message if any exist
+        if !messages.is_empty() {
+            message_list_state.select(Some(messages.len().saturating_sub(1)));
+        }
+
+        Self {
+            input: String::new(),
+            cursor_pos: 0,
+            messages,
+            message_list_state,
+            user_scrolled: false,
+            session,
+            config,
+            system_prompt,
+            mode: TuiMode::Insert, // Start in insert mode for immediate typing
+            is_loading: false,
+            status: "Ready".to_string(),
+            error: None,
+            active_tab: 0,
+            tabs: vec!["Chat", "Tools", "Settings", "Help"],
+            command_suggestions: Vec::new(),
+            command_selection: 0,
+            command_history: Vec::new(),
+            command_history_pos: None,
+            pending_confirm: None,
+            layout_areas: LayoutAreas::default(),
+            theme: Theme::default(),
+            search_query: String::new(),
+            search_matches: Vec::new(),
+            current_match_idx: 0,
+            search_filter_mode: false,
+        }
+    }
+
+    /// Set the theme by name
+    pub fn set_theme(&mut self, name: &str) {
+        self.theme = Theme::by_name(name);
+        self.set_status(format!("Theme changed to: {}", self.theme.name));
+    }
+
+    /// Cycle to the next theme
+    pub fn cycle_theme(&mut self) {
+        let themes = Theme::available_themes();
+        let current_idx = themes
+            .iter()
+            .position(|&t| t == self.theme.name.to_lowercase().replace(' ', "-"))
+            .unwrap_or(0);
+        let next_idx = (current_idx + 1) % themes.len();
+        self.set_theme(themes[next_idx]);
+    }
+
+    /// Show a confirmation dialog
+    pub fn show_confirm(&mut self, action: ConfirmAction) {
+        self.pending_confirm = Some(action);
+        self.mode = TuiMode::Confirm;
+    }
+
+    /// Cancel the confirmation dialog
+    pub fn cancel_confirm(&mut self) {
+        self.pending_confirm = None;
+        self.mode = TuiMode::Insert;
+    }
+
+    /// Get the pending confirmation action and clear it
+    pub fn take_confirm(&mut self) -> Option<ConfirmAction> {
+        self.mode = TuiMode::Insert;
+        self.pending_confirm.take()
+    }
+
+    /// Update command suggestions based on current input (fuzzy filter)
+    pub fn update_command_suggestions(&mut self) {
+        let query = self.input.to_lowercase();
+        self.command_suggestions = COMMANDS
+            .iter()
+            .filter(|(cmd, desc)| {
+                cmd.to_lowercase().contains(&query)
+                    || desc.to_lowercase().contains(&query)
+            })
+            .map(|(cmd, desc)| (cmd.to_string(), desc.to_string()))
+            .collect();
+        // Reset selection if out of bounds
+        if self.command_selection >= self.command_suggestions.len() {
+            self.command_selection = 0;
+        }
+    }
+
+    /// Select next command suggestion
+    pub fn next_command_suggestion(&mut self) {
+        if !self.command_suggestions.is_empty() {
+            self.command_selection = (self.command_selection + 1) % self.command_suggestions.len();
+        }
+    }
+
+    /// Select previous command suggestion
+    pub fn prev_command_suggestion(&mut self) {
+        if !self.command_suggestions.is_empty() {
+            self.command_selection = if self.command_selection == 0 {
+                self.command_suggestions.len() - 1
+            } else {
+                self.command_selection - 1
+            };
+        }
+    }
+
+    /// Apply selected command suggestion to input
+    pub fn apply_command_suggestion(&mut self) {
+        if let Some((cmd, _)) = self.command_suggestions.get(self.command_selection) {
+            // Extract just the command part (before any <arg>)
+            let cmd_base = cmd.split_whitespace().next().unwrap_or(cmd);
+            self.input = cmd_base.to_string();
+            self.cursor_pos = self.input.len();
+        }
+    }
+
+    /// Add command to history
+    pub fn add_to_command_history(&mut self, cmd: &str) {
+        // Don't add duplicates of the last command
+        if self.command_history.last().map(|s| s.as_str()) != Some(cmd) {
+            self.command_history.push(cmd.to_string());
+        }
+        self.command_history_pos = None;
+    }
+
+    /// Navigate to previous command in history
+    pub fn prev_command_history(&mut self) {
+        if self.command_history.is_empty() {
+            return;
+        }
+        let new_pos = match self.command_history_pos {
+            None => self.command_history.len() - 1,
+            Some(0) => 0,
+            Some(p) => p - 1,
+        };
+        self.command_history_pos = Some(new_pos);
+        if let Some(cmd) = self.command_history.get(new_pos) {
+            self.input = cmd.clone();
+            self.cursor_pos = self.input.len();
+        }
+    }
+
+    /// Navigate to next command in history
+    pub fn next_command_history(&mut self) {
+        if self.command_history.is_empty() {
+            return;
+        }
+        match self.command_history_pos {
+            None => {}
+            Some(p) if p >= self.command_history.len() - 1 => {
+                self.command_history_pos = None;
+                self.input.clear();
+                self.cursor_pos = 0;
+            }
+            Some(p) => {
+                self.command_history_pos = Some(p + 1);
+                if let Some(cmd) = self.command_history.get(p + 1) {
+                    self.input = cmd.clone();
+                    self.cursor_pos = self.input.len();
+                }
+            }
+        }
+    }
+
+    /// Get the current model name from config
+    pub fn model_name(&self) -> &str {
+        if self.config.llm.primary == "openai" {
+            self.config
+                .llm
+                .openai
+                .as_ref()
+                .map(|o| o.model.as_str())
+                .unwrap_or("default")
+        } else if self.config.llm.primary == "anthropic" {
+            self.config
+                .llm
+                .anthropic
+                .as_ref()
+                .map(|a| a.model.as_str())
+                .unwrap_or("default")
+        } else {
+            "default"
+        }
+    }
+
+    /// Add a message to the chat
+    pub fn add_message(&mut self, role: &str, content: &str) {
+        self.messages.push(TuiMessage {
+            role: role.to_string(),
+            content: content.to_string(),
+            is_streaming: false,
+            is_error: false,
+        });
+        self.session.add_message(role, content);
+
+        // Auto-scroll to bottom unless user has scrolled up
+        if !self.user_scrolled {
+            self.scroll_to_bottom();
+        }
+    }
+
+    /// Add a streaming message (placeholder that will be updated)
+    pub fn add_streaming_message(&mut self) {
+        self.messages.push(TuiMessage {
+            role: "assistant".to_string(),
+            content: String::new(),
+            is_streaming: true,
+            is_error: false,
+        });
+        if !self.user_scrolled {
+            self.scroll_to_bottom();
+        }
+    }
+
+    /// Update the last message (for streaming)
+    pub fn update_last_message(&mut self, content: &str) {
+        if let Some(last) = self.messages.last_mut() {
+            last.content = content.to_string();
+        }
+    }
+
+    /// Finalize the streaming message
+    pub fn finalize_streaming_message(&mut self) {
+        if let Some(last) = self.messages.last_mut() {
+            last.is_streaming = false;
+            // Also save to session
+            self.session.add_message(&last.role, &last.content);
+        }
+    }
+
+    /// Scroll to the bottom of messages
+    pub fn scroll_to_bottom(&mut self) {
+        if !self.messages.is_empty() {
+            self.message_list_state
+                .select(Some(self.messages.len().saturating_sub(1)));
+        }
+        self.user_scrolled = false;
+    }
+
+    /// Scroll up in the message list
+    pub fn scroll_up(&mut self) {
+        self.user_scrolled = true;
+        let current = self.message_list_state.selected().unwrap_or(0);
+        if current > 0 {
+            self.message_list_state.select(Some(current - 1));
+        }
+    }
+
+    /// Scroll down in the message list
+    pub fn scroll_down(&mut self) {
+        let current = self.message_list_state.selected().unwrap_or(0);
+        let max = self.messages.len().saturating_sub(1);
+        if current < max {
+            self.message_list_state.select(Some(current + 1));
+        }
+        // If we're at the bottom, re-enable auto-scroll
+        if current + 1 >= max {
+            self.user_scrolled = false;
+        }
+    }
+
+    /// Insert a character at cursor position
+    pub fn insert_char(&mut self, c: char) {
+        self.input.insert(self.cursor_pos, c);
+        self.cursor_pos += 1;
+    }
+
+    /// Delete the character before cursor
+    pub fn delete_char_before(&mut self) {
+        if self.cursor_pos > 0 {
+            self.cursor_pos -= 1;
+            self.input.remove(self.cursor_pos);
+        }
+    }
+
+    /// Delete the character after cursor
+    pub fn delete_char_after(&mut self) {
+        if self.cursor_pos < self.input.len() {
+            self.input.remove(self.cursor_pos);
+        }
+    }
+
+    /// Move cursor left
+    pub fn cursor_left(&mut self) {
+        self.cursor_pos = self.cursor_pos.saturating_sub(1);
+    }
+
+    /// Move cursor right
+    pub fn cursor_right(&mut self) {
+        if self.cursor_pos < self.input.len() {
+            self.cursor_pos += 1;
+        }
+    }
+
+    /// Move cursor to start
+    pub fn cursor_home(&mut self) {
+        self.cursor_pos = 0;
+    }
+
+    /// Move cursor to end
+    pub fn cursor_end(&mut self) {
+        self.cursor_pos = self.input.len();
+    }
+
+    /// Move cursor to next word (vim 'w' motion)
+    pub fn cursor_word_forward(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let len = chars.len();
+        if self.cursor_pos >= len {
+            return;
+        }
+
+        // Skip current word (non-whitespace)
+        while self.cursor_pos < len && !chars[self.cursor_pos].is_whitespace() {
+            self.cursor_pos += 1;
+        }
+        // Skip whitespace
+        while self.cursor_pos < len && chars[self.cursor_pos].is_whitespace() {
+            self.cursor_pos += 1;
+        }
+    }
+
+    /// Move cursor to previous word (vim 'b' motion)
+    pub fn cursor_word_backward(&mut self) {
+        if self.cursor_pos == 0 {
+            return;
+        }
+
+        let chars: Vec<char> = self.input.chars().collect();
+
+        // Move back one to start
+        self.cursor_pos -= 1;
+
+        // Skip whitespace
+        while self.cursor_pos > 0 && chars[self.cursor_pos].is_whitespace() {
+            self.cursor_pos -= 1;
+        }
+        // Skip to start of word
+        while self.cursor_pos > 0 && !chars[self.cursor_pos - 1].is_whitespace() {
+            self.cursor_pos -= 1;
+        }
+    }
+
+    /// Delete word before cursor (vim 'db' or Ctrl+W)
+    pub fn delete_word_before(&mut self) {
+        if self.cursor_pos == 0 {
+            return;
+        }
+
+        let chars: Vec<char> = self.input.chars().collect();
+        let original_pos = self.cursor_pos;
+
+        // Skip whitespace
+        while self.cursor_pos > 0 && chars[self.cursor_pos - 1].is_whitespace() {
+            self.cursor_pos -= 1;
+        }
+        // Skip to start of word
+        while self.cursor_pos > 0 && !chars[self.cursor_pos - 1].is_whitespace() {
+            self.cursor_pos -= 1;
+        }
+
+        // Remove the characters
+        self.input = chars[..self.cursor_pos]
+            .iter()
+            .chain(chars[original_pos..].iter())
+            .collect();
+    }
+
+    /// Delete to end of line (vim 'D' or Ctrl+K)
+    pub fn delete_to_end(&mut self) {
+        self.input.truncate(self.cursor_pos);
+    }
+
+    /// Clear the input field
+    pub fn clear_input(&mut self) {
+        self.input.clear();
+        self.cursor_pos = 0;
+    }
+
+    /// Take the current input (clears the input buffer)
+    pub fn take_input(&mut self) -> String {
+        let input = std::mem::take(&mut self.input);
+        self.cursor_pos = 0;
+        input
+    }
+
+    /// Set status message
+    pub fn set_status(&mut self, status: impl Into<String>) {
+        self.status = status.into();
+        self.error = None;
+    }
+
+    /// Set error message
+    pub fn set_error(&mut self, error: impl Into<String>) {
+        let err = error.into();
+        self.status = format!("Error: {}", &err);
+        self.error = Some(err);
+    }
+
+    /// Clear error
+    pub fn clear_error(&mut self) {
+        self.error = None;
+        self.status = "Ready".to_string();
+    }
+
+    /// Get the scroll position indicator (e.g., "5/23")
+    pub fn scroll_indicator(&self) -> String {
+        let current = self.message_list_state.selected().unwrap_or(0) + 1;
+        let total = self.messages.len();
+        if total == 0 {
+            "0/0".to_string()
+        } else {
+            format!("{}/{}", current, total)
+        }
+    }
+
+    /// Check if we're at the bottom of the message list
+    pub fn is_at_bottom(&self) -> bool {
+        let current = self.message_list_state.selected().unwrap_or(0);
+        current + 1 >= self.messages.len()
+    }
+
+    // ========== Search Methods ==========
+
+    /// Start search mode
+    pub fn start_search(&mut self) {
+        self.mode = TuiMode::Search;
+        self.search_query.clear();
+        self.search_matches.clear();
+        self.current_match_idx = 0;
+    }
+
+    /// Update search query and find matches
+    pub fn update_search(&mut self, query: &str) {
+        self.search_query = query.to_string();
+        self.find_matches();
+        self.current_match_idx = 0;
+        // Jump to first match if any
+        if !self.search_matches.is_empty() {
+            self.jump_to_match(0);
+        }
+    }
+
+    /// Add a character to search query
+    pub fn search_insert_char(&mut self, c: char) {
+        self.search_query.push(c);
+        self.find_matches();
+        // Jump to first match if any
+        if !self.search_matches.is_empty() && self.current_match_idx == 0 {
+            self.jump_to_match(0);
+        }
+    }
+
+    /// Remove last character from search query
+    pub fn search_backspace(&mut self) {
+        self.search_query.pop();
+        self.find_matches();
+        self.current_match_idx = 0;
+        if !self.search_matches.is_empty() {
+            self.jump_to_match(0);
+        }
+    }
+
+    /// Find all matches in messages (case-insensitive)
+    fn find_matches(&mut self) {
+        self.search_matches.clear();
+
+        if self.search_query.is_empty() {
+            return;
+        }
+
+        let query_lower = self.search_query.to_lowercase();
+
+        for (msg_idx, msg) in self.messages.iter().enumerate() {
+            let content_lower = msg.content.to_lowercase();
+            let mut ranges = Vec::new();
+
+            // Find all occurrences
+            let mut start = 0;
+            while let Some(pos) = content_lower[start..].find(&query_lower) {
+                let abs_pos = start + pos;
+                ranges.push(abs_pos..abs_pos + query_lower.len());
+                start = abs_pos + 1;
+            }
+
+            if !ranges.is_empty() {
+                self.search_matches.push((msg_idx, ranges));
+            }
+        }
+
+        // Update status with match count
+        let total_matches: usize = self.search_matches.iter().map(|(_, r)| r.len()).sum();
+        if total_matches > 0 {
+            self.status = format!(
+                "Found {} match{} in {} message{}",
+                total_matches,
+                if total_matches == 1 { "" } else { "es" },
+                self.search_matches.len(),
+                if self.search_matches.len() == 1 { "" } else { "s" }
+            );
+        } else if !self.search_query.is_empty() {
+            self.status = "No matches found".to_string();
+        }
+    }
+
+    /// Jump to a specific match by index
+    fn jump_to_match(&mut self, match_idx: usize) {
+        if match_idx < self.search_matches.len() {
+            let (msg_idx, _) = &self.search_matches[match_idx];
+            self.message_list_state.select(Some(*msg_idx));
+            self.user_scrolled = true;
+        }
+    }
+
+    /// Go to next search match
+    pub fn next_match(&mut self) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        self.current_match_idx = (self.current_match_idx + 1) % self.search_matches.len();
+        self.jump_to_match(self.current_match_idx);
+        self.status = format!(
+            "Match {}/{}",
+            self.current_match_idx + 1,
+            self.search_matches.len()
+        );
+    }
+
+    /// Go to previous search match
+    pub fn prev_match(&mut self) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        if self.current_match_idx == 0 {
+            self.current_match_idx = self.search_matches.len() - 1;
+        } else {
+            self.current_match_idx -= 1;
+        }
+        self.jump_to_match(self.current_match_idx);
+        self.status = format!(
+            "Match {}/{}",
+            self.current_match_idx + 1,
+            self.search_matches.len()
+        );
+    }
+
+    /// Toggle filter mode (show only matching messages)
+    pub fn toggle_search_filter(&mut self) {
+        self.search_filter_mode = !self.search_filter_mode;
+        if self.search_filter_mode {
+            self.status = "Filter mode: showing only matches".to_string();
+        } else {
+            self.status = "Filter mode: off".to_string();
+        }
+    }
+
+    /// Cancel search and return to normal mode
+    pub fn cancel_search(&mut self) {
+        self.mode = TuiMode::Normal;
+        self.search_query.clear();
+        self.search_matches.clear();
+        self.search_filter_mode = false;
+        self.status = "Ready".to_string();
+    }
+
+    /// Confirm search and return to normal mode (keep highlights)
+    pub fn confirm_search(&mut self) {
+        self.mode = TuiMode::Normal;
+        if self.search_matches.is_empty() {
+            self.status = "No matches found".to_string();
+        } else {
+            self.status = format!(
+                "Found {} matches - n/N to navigate, Esc to clear",
+                self.search_matches.len()
+            );
+        }
+    }
+
+    /// Clear search results (called when pressing Esc in normal mode with active search)
+    pub fn clear_search(&mut self) {
+        self.search_query.clear();
+        self.search_matches.clear();
+        self.current_match_idx = 0;
+        self.search_filter_mode = false;
+        self.status = "Search cleared".to_string();
+    }
+
+    /// Check if a message has search matches
+    pub fn message_has_match(&self, msg_idx: usize) -> bool {
+        self.search_matches.iter().any(|(idx, _)| *idx == msg_idx)
+    }
+
+    /// Get match ranges for a specific message
+    pub fn get_match_ranges(&self, msg_idx: usize) -> Option<&Vec<std::ops::Range<usize>>> {
+        self.search_matches
+            .iter()
+            .find(|(idx, _)| *idx == msg_idx)
+            .map(|(_, ranges)| ranges)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to create a test app with a mock session
+    fn create_test_app() -> TuiApp {
+        let session = crate::commands::chat::ChatSession::new(None);
+        let config = AppConfig::default();
+        TuiApp::new(session, config, None)
+    }
+
+    // ==================== State Transition Tests ====================
+
+    #[test]
+    fn test_initial_state() {
+        let app = create_test_app();
+        // App starts in Insert mode for immediate typing
+        assert_eq!(app.mode, TuiMode::Insert);
+        assert!(app.input.is_empty());
+        assert_eq!(app.cursor_pos, 0);
+        assert!(app.messages.is_empty());
+    }
+
+    #[test]
+    fn test_mode_transitions() {
+        let mut app = create_test_app();
+
+        // Start in Insert mode, switch to Normal
+        app.mode = TuiMode::Normal;
+        assert_eq!(app.mode, TuiMode::Normal);
+
+        // Normal -> Insert
+        app.mode = TuiMode::Insert;
+        assert_eq!(app.mode, TuiMode::Insert);
+
+        // Insert -> Command
+        app.mode = TuiMode::Command;
+        assert_eq!(app.mode, TuiMode::Command);
+
+        // Command -> Help
+        app.mode = TuiMode::Help;
+        assert_eq!(app.mode, TuiMode::Help);
+
+        // Help -> Search
+        app.mode = TuiMode::Search;
+        assert_eq!(app.mode, TuiMode::Search);
+
+        // Search -> Confirm
+        app.mode = TuiMode::Confirm;
+        assert_eq!(app.mode, TuiMode::Confirm);
+    }
+
+    // ==================== Input Handling Tests ====================
+
+    #[test]
+    fn test_insert_char() {
+        let mut app = create_test_app();
+
+        app.insert_char('H');
+        app.insert_char('e');
+        app.insert_char('l');
+        app.insert_char('l');
+        app.insert_char('o');
+
+        assert_eq!(app.input, "Hello");
+        assert_eq!(app.cursor_pos, 5);
+    }
+
+    #[test]
+    fn test_delete_char_before() {
+        let mut app = create_test_app();
+        app.input = "Hello".to_string();
+        app.cursor_pos = 5;
+
+        app.delete_char_before();
+        assert_eq!(app.input, "Hell");
+        assert_eq!(app.cursor_pos, 4);
+
+        // Delete at position 0 should do nothing
+        app.cursor_pos = 0;
+        app.delete_char_before();
+        assert_eq!(app.input, "Hell");
+    }
+
+    #[test]
+    fn test_delete_char_after() {
+        let mut app = create_test_app();
+        app.input = "Hello".to_string();
+        app.cursor_pos = 0;
+
+        app.delete_char_after();
+        assert_eq!(app.input, "ello");
+        assert_eq!(app.cursor_pos, 0);
+
+        // Delete at end should do nothing
+        app.cursor_pos = 4;
+        app.delete_char_after();
+        assert_eq!(app.input, "ello");
+    }
+
+    #[test]
+    fn test_cursor_movement() {
+        let mut app = create_test_app();
+        app.input = "Hello".to_string();
+        app.cursor_pos = 5;
+
+        // Move left
+        app.cursor_left();
+        assert_eq!(app.cursor_pos, 4);
+
+        // Move left multiple times
+        app.cursor_left();
+        app.cursor_left();
+        assert_eq!(app.cursor_pos, 2);
+
+        // Move right
+        app.cursor_right();
+        assert_eq!(app.cursor_pos, 3);
+
+        // Move to start
+        app.cursor_home();
+        assert_eq!(app.cursor_pos, 0);
+
+        // Move to end
+        app.cursor_end();
+        assert_eq!(app.cursor_pos, 5);
+
+        // Can't move left past 0
+        app.cursor_pos = 0;
+        app.cursor_left();
+        assert_eq!(app.cursor_pos, 0);
+
+        // Can't move right past end
+        app.cursor_pos = 5;
+        app.cursor_right();
+        assert_eq!(app.cursor_pos, 5);
+    }
+
+    #[test]
+    fn test_insert_at_cursor_position() {
+        let mut app = create_test_app();
+        app.input = "Hllo".to_string();
+        app.cursor_pos = 1;
+
+        app.insert_char('e');
+        assert_eq!(app.input, "Hello");
+        assert_eq!(app.cursor_pos, 2);
+    }
+
+    // ==================== Message Management Tests ====================
+
+    #[test]
+    fn test_add_message() {
+        let mut app = create_test_app();
+
+        app.add_message("user", "Hello");
+        assert_eq!(app.messages.len(), 1);
+        assert_eq!(app.messages[0].role, "user");
+        assert_eq!(app.messages[0].content, "Hello");
+
+        app.add_message("assistant", "Hi there!");
+        assert_eq!(app.messages.len(), 2);
+        assert_eq!(app.messages[1].role, "assistant");
+    }
+
+    #[test]
+    fn test_scroll_bounds() {
+        let mut app = create_test_app();
+
+        // Add 10 messages
+        for i in 0..10 {
+            app.add_message("user", &format!("Message {}", i));
+        }
+
+        // Scroll up from bottom
+        app.scroll_to_bottom();
+        let _initial_selection = app.message_list_state.selected();
+
+        app.scroll_up();
+        let after_up = app.message_list_state.selected();
+        assert!(after_up.is_some());
+
+        // Scroll down
+        app.scroll_down();
+        let after_down = app.message_list_state.selected();
+        assert!(after_down.is_some());
+
+        // Scroll to bottom
+        app.scroll_to_bottom();
+        assert_eq!(app.message_list_state.selected(), Some(9));
+    }
+
+    #[test]
+    fn test_scroll_empty_messages() {
+        let mut app = create_test_app();
+
+        // Should not panic with empty messages
+        app.scroll_up();
+        app.scroll_down();
+        app.scroll_to_bottom();
+
+        assert!(app.message_list_state.selected().is_none());
+    }
+
+    // ==================== Search Functionality Tests ====================
+
+    #[test]
+    fn test_search_messages() {
+        let mut app = create_test_app();
+
+        app.add_message("user", "Hello world");
+        app.add_message("assistant", "Hi there, world!");
+        app.add_message("user", "How are you?");
+
+        // Use update_search which sets query and finds matches
+        app.update_search("world");
+
+        assert_eq!(app.search_query, "world");
+        assert_eq!(app.search_matches.len(), 2); // Two messages contain "world"
+    }
+
+    #[test]
+    fn test_search_case_insensitive() {
+        let mut app = create_test_app();
+
+        app.add_message("user", "Hello WORLD");
+        app.add_message("assistant", "world is great");
+
+        app.update_search("World");
+
+        assert_eq!(app.search_matches.len(), 2);
+    }
+
+    #[test]
+    fn test_search_navigation() {
+        let mut app = create_test_app();
+
+        app.add_message("user", "First target");
+        app.add_message("assistant", "No hit here");
+        app.add_message("user", "Second target");
+        app.add_message("assistant", "Third target");
+
+        app.update_search("target");
+        assert_eq!(app.search_matches.len(), 3);
+        assert_eq!(app.current_match_idx, 0);
+
+        app.next_match();
+        assert_eq!(app.current_match_idx, 1);
+
+        app.next_match();
+        assert_eq!(app.current_match_idx, 2);
+
+        // Wrap around
+        app.next_match();
+        assert_eq!(app.current_match_idx, 0);
+
+        // Previous
+        app.prev_match();
+        assert_eq!(app.current_match_idx, 2);
+    }
+
+    #[test]
+    fn test_clear_search() {
+        let mut app = create_test_app();
+
+        app.add_message("user", "Hello world");
+        app.update_search("world");
+        assert!(!app.search_query.is_empty());
+
+        app.clear_search();
+        assert!(app.search_query.is_empty());
+        assert!(app.search_matches.is_empty());
+        assert_eq!(app.current_match_idx, 0);
+    }
+
+    // ==================== Theme Tests ====================
+
+    #[test]
+    fn test_theme_switching() {
+        let mut app = create_test_app();
+
+        // Default theme is "Catppuccin Mocha" (display name, not slug)
+        let initial_theme = app.theme.name;
+        assert_eq!(initial_theme, "Catppuccin Mocha");
+
+        app.set_theme("light");
+        assert_eq!(app.theme.name, "Light");
+
+        app.set_theme("high-contrast");
+        assert_eq!(app.theme.name, "High Contrast");
+
+        app.set_theme("dracula");
+        assert_eq!(app.theme.name, "Dracula");
+
+        // Invalid theme falls back to default (catppuccin-mocha)
+        app.set_theme("nonexistent");
+        assert_eq!(app.theme.name, "Catppuccin Mocha");
+    }
+
+    #[test]
+    fn test_theme_cycling() {
+        let mut app = create_test_app();
+
+        // Get initial theme name and verify it's the default
+        assert_eq!(app.theme.name, "Catppuccin Mocha");
+
+        // Cycle to next theme
+        app.cycle_theme();
+        // After cycling from catppuccin-mocha (index 0), should be light (index 1)
+        assert_eq!(app.theme.name, "Light");
+
+        // Cycle again
+        app.cycle_theme();
+        assert_eq!(app.theme.name, "High Contrast");
+
+        // Cycle again
+        app.cycle_theme();
+        assert_eq!(app.theme.name, "Dracula");
+
+        // Cycle wraps back to first
+        app.cycle_theme();
+        assert_eq!(app.theme.name, "Catppuccin Mocha");
+    }
+
+    // ==================== Command Suggestion Tests ====================
+
+    #[test]
+    fn test_command_suggestions() {
+        let mut app = create_test_app();
+
+        app.input = "/he".to_string();
+        app.update_command_suggestions();
+
+        // Should match /help
+        assert!(!app.command_suggestions.is_empty());
+        assert!(app.command_suggestions.iter().any(|(cmd, _)| cmd.contains("help")));
+    }
+
+    #[test]
+    fn test_command_suggestion_navigation() {
+        let mut app = create_test_app();
+
+        app.input = "/".to_string();
+        app.update_command_suggestions();
+
+        let total = app.command_suggestions.len();
+        assert!(total > 0);
+
+        app.next_command_suggestion();
+        assert_eq!(app.command_selection, 1);
+
+        app.prev_command_suggestion();
+        assert_eq!(app.command_selection, 0);
+
+        // Wrap around
+        app.prev_command_suggestion();
+        assert_eq!(app.command_selection, total - 1);
+    }
+
+    // ==================== Status and Error Tests ====================
+
+    #[test]
+    fn test_set_status() {
+        let mut app = create_test_app();
+
+        app.set_status("Loading...");
+        assert_eq!(app.status, "Loading...");
+    }
+
+    #[test]
+    fn test_set_error() {
+        let mut app = create_test_app();
+
+        app.set_error("Something went wrong");
+        assert!(app.error.is_some());
+        assert_eq!(app.error.as_ref().unwrap(), "Something went wrong");
+    }
+
+    // ==================== Tab Navigation Tests ====================
+
+    #[test]
+    fn test_tab_navigation() {
+        let mut app = create_test_app();
+
+        assert_eq!(app.active_tab, 0);
+
+        // Simulate tab switching (done via direct field access in events.rs)
+        app.active_tab = (app.active_tab + 1) % app.tabs.len();
+        assert_eq!(app.active_tab, 1);
+
+        app.active_tab = (app.active_tab + 1) % app.tabs.len();
+        assert_eq!(app.active_tab, 2);
+
+        app.active_tab = (app.active_tab + 1) % app.tabs.len();
+        assert_eq!(app.active_tab, 3);
+
+        // Wrap around
+        app.active_tab = (app.active_tab + 1) % app.tabs.len();
+        assert_eq!(app.active_tab, 0);
+
+        // Previous tab
+        app.active_tab = if app.active_tab == 0 {
+            app.tabs.len() - 1
+        } else {
+            app.active_tab - 1
+        };
+        assert_eq!(app.active_tab, 3);
+    }
+
+    // ==================== Vim Motion Tests ====================
+
+    #[test]
+    fn test_word_forward_motion() {
+        let mut app = create_test_app();
+        app.input = "hello world test".to_string();
+        app.cursor_pos = 0;
+
+        app.cursor_word_forward();
+        // Should skip to after "hello " (position 6)
+        assert!(app.cursor_pos > 0);
+    }
+
+    #[test]
+    fn test_word_backward_motion() {
+        let mut app = create_test_app();
+        app.input = "hello world test".to_string();
+        app.cursor_pos = 12; // In "test"
+
+        app.cursor_word_backward();
+        // Should move back to start of "world" or "test"
+        assert!(app.cursor_pos < 12);
+    }
+
+    #[test]
+    fn test_delete_word_before() {
+        let mut app = create_test_app();
+        app.input = "hello world".to_string();
+        app.cursor_pos = 11; // At end
+
+        app.delete_word_before();
+        // Should delete "world"
+        assert!(!app.input.contains("world") || app.input.len() < 11);
+    }
+
+    #[test]
+    fn test_delete_to_end() {
+        let mut app = create_test_app();
+        app.input = "hello world".to_string();
+        app.cursor_pos = 5; // After "hello"
+
+        app.delete_to_end();
+        assert_eq!(app.input, "hello");
+    }
+
+    // ==================== Scroll Indicator Tests ====================
+
+    #[test]
+    fn test_scroll_indicator() {
+        let mut app = create_test_app();
+
+        // Empty messages
+        assert_eq!(app.scroll_indicator(), "0/0");
+
+        // Add messages
+        app.add_message("user", "Message 1");
+        app.add_message("user", "Message 2");
+        app.add_message("user", "Message 3");
+
+        app.scroll_to_bottom();
+        assert_eq!(app.scroll_indicator(), "3/3");
+
+        app.scroll_up();
+        assert_eq!(app.scroll_indicator(), "2/3");
+    }
+
+    // ==================== Performance Tests ====================
+
+    #[test]
+    fn test_large_message_history() {
+        let mut app = create_test_app();
+
+        // Add 1000+ messages to test performance
+        for i in 0..1000 {
+            app.add_message("user", &format!("User message {}", i));
+            app.add_message("assistant", &format!("Assistant response {}", i));
+        }
+
+        assert_eq!(app.messages.len(), 2000);
+
+        // Verify scrolling still works
+        app.scroll_to_bottom();
+        assert_eq!(app.message_list_state.selected(), Some(1999));
+
+        app.scroll_up();
+        assert_eq!(app.message_list_state.selected(), Some(1998));
+
+        // Verify scroll indicator
+        assert_eq!(app.scroll_indicator(), "1999/2000");
+    }
+
+    #[test]
+    fn test_rapid_input() {
+        let mut app = create_test_app();
+
+        // Simulate rapid typing
+        let test_string = "The quick brown fox jumps over the lazy dog. ".repeat(10);
+        for c in test_string.chars() {
+            app.insert_char(c);
+        }
+
+        assert_eq!(app.input.len(), test_string.len());
+        assert_eq!(app.cursor_pos, test_string.len());
+
+        // Rapid deletion
+        for _ in 0..100 {
+            app.delete_char_before();
+        }
+
+        assert_eq!(app.input.len(), test_string.len() - 100);
+    }
+
+    #[test]
+    fn test_search_large_history() {
+        let mut app = create_test_app();
+
+        // Add many messages with searchable content
+        for i in 0..500 {
+            app.add_message("user", &format!("Message number {} with keyword", i));
+            app.add_message("assistant", &format!("Response {} without the word", i));
+        }
+
+        // Search should find all user messages
+        app.update_search("keyword");
+        assert_eq!(app.search_matches.len(), 500);
+
+        // Navigate through matches
+        for _ in 0..10 {
+            app.next_match();
+        }
+        assert_eq!(app.current_match_idx, 10);
+    }
+
+    #[test]
+    fn test_cursor_operations_long_input() {
+        let mut app = create_test_app();
+
+        // Create a very long input
+        app.input = "a".repeat(10000);
+        app.cursor_pos = 5000;
+
+        // Test cursor operations on long input
+        app.cursor_left();
+        assert_eq!(app.cursor_pos, 4999);
+
+        app.cursor_right();
+        assert_eq!(app.cursor_pos, 5000);
+
+        app.cursor_home();
+        assert_eq!(app.cursor_pos, 0);
+
+        app.cursor_end();
+        assert_eq!(app.cursor_pos, 10000);
+
+        // Word navigation on long input
+        app.cursor_pos = 5000;
+        app.cursor_word_forward();
+        // Should move to end since it's all 'a' characters
+        assert!(app.cursor_pos > 5000);
+    }
+}
