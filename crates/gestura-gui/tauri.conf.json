@@ -1,0 +1,95 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.0.0-beta",
+  "productName": "Gestura",
+  "identifier": "ai.gestura.desktop",
+  "version": "0.1.0",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "frontend/dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "macOSPrivateApi": true,
+    "security": {
+      "capabilities": [
+        "main-capability"
+      ]
+    },
+    "windows": [
+      {
+        "title": "Gestura",
+        "label": "main",
+        "visible": false,
+        "width": 800,
+        "height": 640,
+        "decorations": true,
+        "center": true,
+        "skipTaskbar": true,
+        "minimizable": true,
+        "maximizable": true,
+        "closable": true,
+        "resizable": true,
+        "transparent": true,
+        "alwaysOnTop": false,
+        "shadow": true,
+        "devtools": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "publisher": "Gestura AI LLC",
+    "category": "Productivity",
+    "copyright": "Copyright © 2025 Gestura AI LLC. All rights reserved.",
+    "externalBin": [],
+    "icon": [
+      "icons/32x32.png",
+      "icons/64x64.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "longDescription": "Gestura is an advanced voice and gesture control desktop application that provides seamless interaction with your computer through natural speech commands and haptic feedback devices.",
+    "macOS": {
+      "frameworks": [],
+      "minimumSystemVersion": "10.15",
+      "exceptionDomain": "",
+      "signingIdentity": null,
+      "providerShortName": null,
+      "entitlements": "entitlements.plist",
+      "dmg": {
+        "appPosition": {
+          "x": 180,
+          "y": 170
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 170
+        },
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        }
+      }
+    },
+    "resources": [
+      "icons/tray/**/*"
+    ],
+    "shortDescription": "Advanced voice and gesture control desktop application",
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": ""
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    }
+  }
+}

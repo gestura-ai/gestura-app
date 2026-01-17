@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestura Permissions</title>
+    <link rel="stylesheet" href="icons.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 2rem;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 16px;
+            padding: 2rem;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .header h1 {
+            color: #1D1D1F;
+            margin-bottom: 0.5rem;
+        }
+
+        .header p {
+            color: #8E8E93;
+            font-size: 1.1rem;
+        }
+
+        .permission-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            background: #F2F2F7;
+            border-radius: 12px;
+            border-left: 4px solid #E5E5EA;
+            transition: all 0.3s ease;
+        }
+
+        .permission-item.granted {
+            border-left-color: #34C759;
+            background: #F0FDF4;
+        }
+
+        .permission-item.denied {
+            border-left-color: #FF3B30;
+            background: #FEF2F2;
+        }
+
+        .permission-item.pending {
+            border-left-color: #FF9500;
+            background: #FFFBEB;
+        }
+
+        .permission-info {
+            flex: 1;
+        }
+
+        .permission-title {
+            font-weight: 600;
+            color: #1D1D1F;
+            margin-bottom: 0.25rem;
+        }
+
+        .permission-description {
+            color: #8E8E93;
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+
+        .permission-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status-icon {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+
+        .status-icon.granted {
+            background: #34C759;
+            color: white;
+        }
+
+        .status-icon.denied {
+            background: #FF3B30;
+            color: white;
+        }
+
+        .status-icon.pending {
+            background: #FF9500;
+            color: white;
+        }
+
+        .request-button {
+            padding: 0.5rem 1rem;
+            background: #007AFF;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: background-color 0.2s;
+        }
+
+        .request-button:hover {
+            background: #0056CC;
+        }
+
+        .request-button:disabled {
+            background: #C7C7CC;
+            cursor: not-allowed;
+        }
+
+        .actions {
+            margin-top: 2rem;
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+        }
+
+        .action-button {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 10px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .primary {
+            background: #007AFF;
+            color: white;
+        }
+
+        .primary:hover {
+            background: #0056CC;
+        }
+
+        .secondary {
+            background: #F2F2F7;
+            color: #1D1D1F;
+        }
+
+        .secondary:hover {
+            background: #E5E5EA;
+        }
+
+        .warning {
+            background: #FEF2F2;
+            border: 1px solid #FECACA;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .warning-title {
+            color: #DC2626;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+
+        .warning-text {
+            color: #7F1D1D;
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 999px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            margin-left: 0.5rem;
+            vertical-align: middle;
+        }
+
+        .badge.required {
+            background: #DC2626;
+            color: white;
+        }
+
+        .badge.optional {
+            background: #6B7280;
+            color: white;
+        }
+
+        .permission-instructions {
+            margin-top: 0.5rem;
+            color: #6B7280;
+            font-size: 0.85rem;
+            line-height: 1.4;
+        }
+
+        .manual-instructions {
+            margin-top: 0.75rem;
+            padding: 0.75rem;
+            background: rgba(255, 193, 7, 0.12);
+            border-left: 3px solid #F59E0B;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            color: #4B5563;
+        }
+
+        .manual-instructions strong {
+            color: #92400E;
+        }
+
+        .manual-instructions ol {
+            margin: 0.5rem 0 0 1.25rem;
+            padding: 0;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1><span class="icon-lock-open"></span> System Permissions</h1>
+            <p>Gestura needs these permissions to function properly</p>
+        </div>
+
+        <div class="warning" id="warningBanner" style="display: none;">
+            <div class="warning-title"><span class="icon-warning"></span> Missing Required Permissions</div>
+            <div class="warning-text">
+                Some features may not work correctly until all required permissions are granted.
+            </div>
+        </div>
+
+        <div id="permissionsList">
+            <!-- Permissions will be populated by JavaScript -->
+        </div>
+
+        <div class="actions">
+            <button class="action-button secondary" onclick="window.close()">Close</button>
+            <button class="action-button primary" id="refreshButton">Refresh Status</button>
+        </div>
+    </div>
+
+    <script type="module">
+        console.log('🔍 Permissions.html script starting...');
+
+        let invoke;
+        try {
+            console.log('📦 Importing Tauri API...');
+            ({ invoke } = await import('@tauri-apps/api/core'));
+            console.log('✅ Tauri API imported successfully');
+        } catch (error) {
+            console.error('❌ Failed to import Tauri API:', error);
+        }
+
+        const permissionsList = document.getElementById('permissionsList');
+        const warningBanner = document.getElementById('warningBanner');
+        const refreshButton = document.getElementById('refreshButton');
+
+        // Permission metadata comes from the backend so we only display real OS-level permissions.
+        let permissions = [];
+
+        function normalizeStatusClass(status) {
+            if (status === 'granted') return 'granted';
+            if (status === 'denied' || status === 'restricted') return 'denied';
+            return 'pending';
+        }
+
+        function formatStatusText(status) {
+            switch (status) {
+                case 'granted':
+                    return 'Granted';
+                case 'denied':
+                    return 'Denied';
+                case 'restricted':
+                    return 'Restricted';
+                case 'not_determined':
+                    return 'Not yet requested';
+                case 'unknown':
+                    return 'Unknown';
+                default:
+                    return 'Pending';
+            }
+        }
+
+        function createPermissionItem(permission, status) {
+            const item = document.createElement('div');
+            const statusClass = normalizeStatusClass(status);
+            item.className = `permission-item ${statusClass}`;
+
+            const statusIcon = status === 'granted'
+                ? '<span class="icon-check"></span>'
+                : (status === 'denied' || status === 'restricted')
+                    ? '<span class="icon-x"></span>'
+                    : '<span class="icon-warning"></span>';
+
+            const statusText = formatStatusText(status);
+
+            const requiredBadge = permission.required
+                ? '<span class="badge required">Required</span>'
+                : '<span class="badge optional">Optional</span>';
+
+            const isAccessibility = permission.id === 'accessibility';
+            const needsManualGrant = isAccessibility && status !== 'granted';
+
+            const buttonLabel = (status === 'denied' || status === 'restricted' || needsManualGrant)
+                ? 'Open Settings'
+                : 'Enable';
+
+            item.innerHTML = `
+                <div class="permission-info">
+                    <div class="permission-title">${permission.name} ${requiredBadge}</div>
+                    <div class="permission-description">${permission.description}</div>
+                    ${permission.instructions ? `<div class="permission-instructions">${permission.instructions}</div>` : ''}
+                    ${needsManualGrant ? `
+                        <div class="manual-instructions">
+                            <strong><span class="icon-warning"></span> Manual Setup Required</strong>
+                            <div style="margin-top: 0.35rem;">
+                                macOS requires you to manually enable Accessibility:
+                                <ol>
+                                    <li>Click <strong>Open Settings</strong></li>
+                                    <li>Find <strong>Gestura</strong> in the list</li>
+                                    <li>Toggle it <strong>ON</strong> (enter your password if prompted)</li>
+                                    <li>Return here and click <strong>Refresh Status</strong></li>
+                                </ol>
+                            </div>
+                        </div>
+                    ` : ''}
+                </div>
+                <div class="permission-status">
+                    <div class="status-icon ${statusClass}">${statusIcon}</div>
+                    <span>${statusText}</span>
+                    ${status !== 'granted'
+                    ? `<button class="request-button" onclick="requestPermission('${permission.id}')">${buttonLabel}</button>`
+                    : ''}
+                </div>
+            `;
+
+            return item;
+        }
+
+        async function loadPermissions() {
+            console.log('🔄 Loading permissions...');
+            permissionsList.innerHTML = '';
+            let hasWarnings = false;
+
+            if (!invoke) {
+                permissionsList.innerHTML = '<div class="permission-item pending">Unable to access Tauri API.</div>';
+                warningBanner.style.display = 'block';
+                return;
+            }
+
+            try {
+                const result = await invoke('check_system_permissions');
+                permissions = (result && result.permissions) ? result.permissions : [];
+            } catch (error) {
+                console.error('Failed to load system permissions:', error);
+                permissions = [];
+            }
+
+            for (const permission of permissions) {
+                const status = permission.status || 'unknown';
+                const item = createPermissionItem(permission, status);
+                permissionsList.appendChild(item);
+
+                if (permission.required && status !== 'granted') {
+                    hasWarnings = true;
+                }
+            }
+
+            warningBanner.style.display = hasWarnings ? 'block' : 'none';
+        }
+
+        window.requestPermission = async function (permissionId) {
+            try {
+                await invoke('request_permission', { permission: permissionId });
+                // Refresh the status after requesting
+                setTimeout(loadPermissions, 1500);
+            } catch (error) {
+                console.error(`Failed to request permission ${permissionId}:`, error);
+                // Fallback: try to open the correct System Settings pane directly
+                try {
+                    await invoke('open_system_preferences', { pane: permissionId });
+                } catch (e) {
+                    console.error(`Failed to open System Settings for ${permissionId}:`, e);
+                    alert(`Failed to request permission: ${error}`);
+                }
+            }
+        };
+
+        refreshButton.addEventListener('click', loadPermissions);
+
+        // Load permissions on page load
+        console.log('🚀 Initializing permissions page...');
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('📄 DOM loaded, starting permission load...');
+            loadPermissions();
+        });
+
+        // Also try immediate load in case DOM is already ready
+        if (document.readyState === 'loading') {
+            console.log('⏳ DOM still loading, waiting...');
+        } else {
+            console.log('✅ DOM ready, loading permissions immediately...');
+            loadPermissions();
+        }
+    </script>
+</body>
+
+</html>

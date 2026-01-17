@@ -1,0 +1,87 @@
+[package]
+name = "gestura-gui"
+version.workspace = true
+edition.workspace = true
+description = "Gestura desktop app (Tauri v2)"
+license.workspace = true
+authors.workspace = true
+
+# Tauri binary name
+default-run = "gestura-gui"
+
+[[bin]]
+name = "gestura-gui"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build.workspace = true
+base64.workspace = true
+image.workspace = true
+
+[features]
+# Default features for production builds - voice-local is always enabled
+default = ["voice-local"]
+# Enable NATS MQ integration
+nats = ["dep:async-nats", "gestura-core/nats"]
+# Local voice via whisper.cpp bindings
+voice-local = ["dep:whisper-rs", "gestura-core/voice-local"]
+# Local voice via Faster-Whisper (CTranslate2) scaffolding
+voice-faster-whisper = []
+# Cloud voice via OpenAI Whisper HTTP
+voice-openai = ["gestura-core/voice-openai"]
+# BLE integration for Haptic Harmony ring
+ble = ["dep:btleplug", "gestura-core/ble"]
+# JSON-LD processing for MDH
+json-ld = ["dep:json-ld", "gestura-core/json-ld"]
+# macOS permissions
+macos-permissions = ["dep:objc", "dep:cocoa", "gestura-core/macos-permissions"]
+# Security features (encryption, keychain)
+security = ["dep:ring", "dep:keyring", "gestura-core/security"]
+# Development features - includes EchoProvider for testing
+dev = ["gestura-core/dev"]
+
+[dependencies]
+# Shared core library - provides config, error, llm_provider, mcp, gdpr, etc.
+gestura-core.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+cpal.workspace = true
+tauri.workspace = true
+dirs.workspace = true
+tauri-plugin-global-shortcut.workspace = true
+tauri-plugin-dialog.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+async-nats = { workspace = true, optional = true }
+reqwest.workspace = true
+futures-util.workspace = true
+bytes.workspace = true
+hound.workspace = true
+bytemuck.workspace = true
+whisper-rs = { workspace = true, optional = true }
+btleplug = { workspace = true, optional = true }
+json-ld = { workspace = true, optional = true }
+ring = { workspace = true, optional = true }
+keyring = { workspace = true, optional = true }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+lazy_static.workspace = true
+tempfile.workspace = true
+hex.workspace = true
+base64.workspace = true
+rand.workspace = true
+futures.workspace = true
+objc = { workspace = true, optional = true }
+cocoa = { workspace = true, optional = true }
+image.workspace = true
+
+
+
+
+
+
+
