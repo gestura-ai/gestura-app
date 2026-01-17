@@ -13,18 +13,21 @@ NC='\033[0m' # No Color
 # Configuration
 APP_NAME="Gestura"
 BUNDLE_ID="com.gestura.app"
-VERSION=$(grep -o '"version": "[^"]*"' package.json | cut -d'"' -f4)
+VERSION=$(grep -o '"version": "[^"]*"' crates/gestura-gui/frontend/package.json | cut -d'"' -f4)
 # BUILD_DIR will be set after build completes (see resolve_build_dir function)
 BUILD_DIR=""
 DIST_DIR="dist/macos"
 SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
 NOTARIZATION_PROFILE="${APPLE_NOTARIZATION_PROFILE:-}"
 
+# Paths - Updated for new workspace structure (crates/gestura-gui)
+GUI_DIR="crates/gestura-gui"
+
 # Resolve the correct build directory after build completes
 resolve_build_dir() {
     # Tauri builds universal macOS binaries to a different path
-    local universal_path="src-tauri/target/universal-apple-darwin/release/bundle/macos"
-    local regular_path="src-tauri/target/release/bundle/macos"
+    local universal_path="${GUI_DIR}/target/universal-apple-darwin/release/bundle/macos"
+    local regular_path="${GUI_DIR}/target/release/bundle/macos"
 
     if [ -d "${universal_path}/${APP_NAME}.app" ]; then
         BUILD_DIR="${universal_path}"
@@ -67,7 +70,7 @@ build_app() {
     if [ "${DRY_RUN:-false}" = "true" ]; then
         echo -e "${YELLOW}🔍 DRY RUN: Skipping actual build${NC}"
         # Create mock app bundle for testing in the universal path
-        local mock_path="src-tauri/target/universal-apple-darwin/release/bundle/macos"
+        local mock_path="${GUI_DIR}/target/universal-apple-darwin/release/bundle/macos"
         mkdir -p "${mock_path}/${APP_NAME}.app/Contents/MacOS"
         echo "Mock app" > "${mock_path}/${APP_NAME}.app/Contents/MacOS/${APP_NAME}"
         chmod +x "${mock_path}/${APP_NAME}.app/Contents/MacOS/${APP_NAME}"
@@ -77,8 +80,9 @@ build_app() {
         return 0
     fi
 
-    # Build with Tauri
-    npm run tauri build -- --target universal-apple-darwin
+    # Build with Tauri (from the GUI directory)
+    cd "${GUI_DIR}/frontend" && npm install && npm run build && cd - >/dev/null
+    cd "${GUI_DIR}" && cargo tauri build --features voice-local -- --target universal-apple-darwin && cd - >/dev/null
 
     # Resolve the build directory after build completes
     resolve_build_dir
@@ -146,25 +150,25 @@ code_sign() {
         echo -e "${YELLOW}⚠️ No signing identity provided, skipping code signing${NC}"
         return 0
     fi
-    
+
     echo -e "${YELLOW}🔐 Code signing application...${NC}"
-    
+
     # Sign all binaries and frameworks
     find "${DIST_DIR}/${APP_NAME}.app" -type f \( -name "*.dylib" -o -name "*.so" \) -exec codesign --force --verify --verbose --sign "${SIGNING_IDENTITY}" {} \;
-    
+
     # Sign frameworks
     find "${DIST_DIR}/${APP_NAME}.app/Contents/Frameworks" -type d -name "*.framework" -exec codesign --force --verify --verbose --sign "${SIGNING_IDENTITY}" {} \;
-    
+
     # Sign the main executable
     codesign --force --verify --verbose --sign "${SIGNING_IDENTITY}" "${DIST_DIR}/${APP_NAME}.app/Contents/MacOS/${APP_NAME}"
-    
+
     # Sign the app bundle
-    codesign --force --verify --verbose --sign "${SIGNING_IDENTITY}" --entitlements src-tauri/entitlements.plist "${DIST_DIR}/${APP_NAME}.app"
-    
+    codesign --force --verify --verbose --sign "${SIGNING_IDENTITY}" --entitlements "${GUI_DIR}/entitlements.plist" "${DIST_DIR}/${APP_NAME}.app"
+
     # Verify signature
     codesign --verify --deep --strict --verbose=2 "${DIST_DIR}/${APP_NAME}.app"
     spctl -a -t exec -vv "${DIST_DIR}/${APP_NAME}.app"
-    
+
     echo -e "${GREEN}✅ Code signing complete${NC}"
 }
 
@@ -190,8 +194,8 @@ create_dmg() {
     )
 
     # Add optional assets if they exist
-    if [ -f "src-tauri/icons/icon.icns" ]; then
-        DMG_ARGS+=(--volicon "src-tauri/icons/icon.icns")
+    if [ -f "${GUI_DIR}/icons/icon.icns" ]; then
+        DMG_ARGS+=(--volicon "${GUI_DIR}/icons/icon.icns")
     fi
 
     if [ -f "assets/dmg-background.png" ]; then
@@ -225,29 +229,58 @@ create_pkg() {
 	# App bundle goes under /Applications
 	cp -R "${DIST_DIR}/${APP_NAME}.app" "${PKGROOT_DIR}/Applications/"
 
-	# Optional CLI tooling: if a standalone CLI binary exists we install it
-	# into /usr/local/bin. This keeps the GUI app and any future CLI tools
-	# correctly separated in the filesystem hierarchy.
-	#
-	# NOTE: At present Gestura ships only the desktop app. This is defensive
-	# scaffolding so that adding a CLI in the future does not require
-	# reworking the installer layout again.
-	CLI_BIN_PATH="src-tauri/target/universal-apple-darwin/release/gestura-cli"
-	if [ -f "${CLI_BIN_PATH}" ]; then
+	# CLI tooling: The CLI binary is built separately via cargo build -p gestura-cli
+	# and installed into /usr/local/bin. Check multiple possible locations.
+	CLI_UNIVERSAL_PATH="target/universal-apple-darwin/release/gestura"
+	CLI_RELEASE_PATH="target/release/gestura"
+	CLI_BIN_PATH=""
+
+	if [ -f "${CLI_UNIVERSAL_PATH}" ]; then
+	    CLI_BIN_PATH="${CLI_UNIVERSAL_PATH}"
+	    echo -e "${GREEN}✅ Found universal CLI binary${NC}"
+	elif [ -f "${CLI_RELEASE_PATH}" ]; then
+	    CLI_BIN_PATH="${CLI_RELEASE_PATH}"
+	    echo -e "${GREEN}✅ Found release CLI binary${NC}"
+	else
+	    echo -e "${YELLOW}⚠️ CLI binary not found. Build with: cargo build --release -p gestura-cli${NC}"
+	fi
+
+	if [ -n "${CLI_BIN_PATH}" ]; then
 	    mkdir -p "${PKGROOT_DIR}/usr/local/bin"
 	    cp "${CLI_BIN_PATH}" "${PKGROOT_DIR}/usr/local/bin/gestura"
+	    # Sign the CLI binary if signing identity is available
+	    if [ -n "${SIGNING_IDENTITY}" ]; then
+	        echo -e "${YELLOW}🔐 Signing CLI binary...${NC}"
+	        codesign --force --options runtime --timestamp \
+	            --sign "${SIGNING_IDENTITY}" \
+	            "${PKGROOT_DIR}/usr/local/bin/gestura"
+	    fi
 	    echo -e "${GREEN}✅ Included CLI tool in /usr/local/bin/gestura${NC}"
 	fi
 
 	# Create component package. We use / as the install root so that the
 	# payload paths inside PKGROOT_DIR (Applications/..., usr/local/bin/...)
 	# map to /Applications and /usr/local/bin on the target system.
+	UNSIGNED_PKG_PATH="${DIST_DIR}/${APP_NAME}-${VERSION}-unsigned.pkg"
 	pkgbuild \
 	    --root "${PKGROOT_DIR}" \
 	    --identifier "${BUNDLE_ID}" \
 	    --version "${VERSION}" \
 	    --install-location "/" \
-	    "${PKG_PATH}"
+	    "${UNSIGNED_PKG_PATH}"
+
+	# Sign the PKG if installer identity is available
+	INSTALLER_IDENTITY="${APPLE_INSTALLER_IDENTITY:-}"
+	if [ -n "${INSTALLER_IDENTITY}" ]; then
+	    echo -e "${YELLOW}🔐 Signing PKG installer...${NC}"
+	    productsign --sign "${INSTALLER_IDENTITY}" "${UNSIGNED_PKG_PATH}" "${PKG_PATH}"
+	    rm -f "${UNSIGNED_PKG_PATH}"
+	    echo -e "${GREEN}✅ PKG signed with: ${INSTALLER_IDENTITY}${NC}"
+	else
+	    # No installer identity, just rename the unsigned pkg
+	    mv "${UNSIGNED_PKG_PATH}" "${PKG_PATH}"
+	    echo -e "${YELLOW}⚠️ PKG not signed (set APPLE_INSTALLER_IDENTITY for signing)${NC}"
+	fi
     
     if [ ! -f "${PKG_PATH}" ]; then
         echo -e "${RED}❌ PKG creation failed${NC}"

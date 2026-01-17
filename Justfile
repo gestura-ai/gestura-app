@@ -12,12 +12,14 @@ help:
 	@echo "  dev                  # run frontend dev server with hot reload"
 	@echo "  build                # cargo build (debug)"
 	@echo "  build-release        # cargo build (release)"
+	@echo "  build-cli            # build CLI binary (release)"
+	@echo "  build-cli-universal  # build universal CLI binary (Intel + Apple Silicon)"
 	@echo "  test                 # cargo test"
 	@echo "  clean                # cargo clean"
 	@echo ""
 	@echo "🏗️ Platform Builds:"
 	@echo "  build-macos          # build macOS app bundle"
-	@echo "  build-macos-signed   # build and sign macOS app bundle"
+	@echo "  build-macos-signed   # build and sign macOS app + CLI bundle"
 	@echo "  build-macos-universal # build universal macOS binary"
 	@echo "  build-windows        # build Windows executable"
 	@echo "  build-windows-signed # build and sign Windows executable"
@@ -64,6 +66,7 @@ help:
 	@echo "  icons                # generate app icons"
 	@echo "  quick-dev            # quick development build"
 	@echo "  full-build           # full build and test"
+	@echo "  generate-man-pages   # generate CLI man pages"
 	@echo "  release-macos        # complete macOS release"
 	@echo "  release-windows      # complete Windows release"
 	@echo "  release-linux        # complete Linux release"
@@ -86,7 +89,10 @@ validate-quick:
 	@echo "✅ Quick validation complete!"
 
 # Root paths
-app_dir := "src-tauri"
+gui_dir := "crates/gestura-gui"
+frontend_dir := "crates/gestura-gui/frontend"
+# Legacy alias for compatibility
+app_dir := "crates/gestura-gui"
 
 # Development Commands
 # ====================
@@ -107,8 +113,9 @@ clean-all:
 	@echo "🧹 Cleaning all build artifacts..."
 	cargo clean --manifest-path {{app_dir}}/Cargo.toml
 	rm -rf dist/
-	rm -rf src-tauri/target/
-	rm -rf node_modules/
+	rm -rf {{frontend_dir}}/dist/
+	rm -rf {{frontend_dir}}/node_modules/
+	rm -rf target/
 	rm -f *.dmg *.pkg *.exe *.deb *.AppImage
 	@echo "✅ All build artifacts cleaned"
 
@@ -136,18 +143,35 @@ check-nats:
 
 dev:
 	@echo "🚀 Starting development server with hot reload..."
-	npm install
-	npm run tauri:dev
+	cd {{frontend_dir}} && npm install
+	cd {{gui_dir}} && cargo tauri dev --features voice-local
 
 # Platform-Specific Builds
 # =========================
 
+# Build CLI binary (release)
+build-cli:
+	@echo "🔧 Building CLI binary..."
+	cargo build --release -p gestura-cli --features voice-local
+
+# Build CLI binary for universal macOS (Intel + Apple Silicon)
+build-cli-universal:
+	@echo "🔧 Building universal CLI binary..."
+	cargo build --release -p gestura-cli --features voice-local --target aarch64-apple-darwin
+	cargo build --release -p gestura-cli --features voice-local --target x86_64-apple-darwin
+	@mkdir -p target/universal-apple-darwin/release
+	lipo -create \
+		target/aarch64-apple-darwin/release/gestura \
+		target/x86_64-apple-darwin/release/gestura \
+		-output target/universal-apple-darwin/release/gestura
+	@echo "✅ Universal CLI binary created at target/universal-apple-darwin/release/gestura"
+
 # Build macOS app bundle (unsigned)
 build-macos:
 	@echo "🍎 Building macOS app bundle (unsigned)..."
-	npm install
-	npm run build
-	npm run tauri:build
+	cd {{frontend_dir}} && npm install
+	cd {{frontend_dir}} && npm run build
+	cd {{gui_dir}} && cargo tauri build --features voice-local
 
 # Build and sign macOS app bundle (for local development)
 # This uses certificates already installed in your Keychain.
@@ -165,7 +189,7 @@ build-macos:
 #   export APPLE_ID="your@email.com"
 #   export APPLE_PASSWORD="@keychain:notarytool-password"
 build-macos-signed:
-	@echo "🍎🔐 Building and signing macOS app bundle..."
+	@echo "🍎🔐 Building and signing macOS app bundle + CLI..."
 	@if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then \
 		echo "❌ APPLE_SIGNING_IDENTITY environment variable not set"; \
 		echo "Set it to your Developer ID Application certificate name"; \
@@ -183,33 +207,43 @@ build-macos-signed:
 	@echo "Using signing identity: $APPLE_SIGNING_IDENTITY"
 	@echo "Using team ID: $APPLE_TEAM_ID"
 	set -e
-	# 1. Build frontend + Rust backend
-	npm install
-	npm run build
-	# 2. Build the macOS app bundle without letting Tauri perform notarization
+	# 1. Build frontend
+	cd {{frontend_dir}} && npm install
+	cd {{frontend_dir}} && npm run build
+	# 2. Build the CLI binary (universal)
+	@echo "🔧 Building universal CLI binary..."
+	cargo build --release -p gestura-cli --features voice-local --target aarch64-apple-darwin
+	cargo build --release -p gestura-cli --features voice-local --target x86_64-apple-darwin
+	mkdir -p target/universal-apple-darwin/release
+	lipo -create \
+		target/aarch64-apple-darwin/release/gestura \
+		target/x86_64-apple-darwin/release/gestura \
+		-output target/universal-apple-darwin/release/gestura
+	@echo "✅ Universal CLI binary created"
+	# 3. Build the macOS app bundle without letting Tauri perform notarization
 	#    We *unset* APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID for this command so
 	#    Tauri only builds & (optionally) signs. Our standalone script then
 	#    handles notarization via notarytool. This avoids long hangs inside Tauri
 	#    when Apple's notarization service is slow or stuck.
 	#    Set MACOSX_DEPLOYMENT_TARGET=10.15 for whisper.cpp std::filesystem support
-	MACOSX_DEPLOYMENT_TARGET=10.15 env -u APPLE_ID -u APPLE_PASSWORD -u APPLE_TEAM_ID \
-		npm run tauri build -- --target universal-apple-darwin
-	echo "✅ Build complete. Running notarization script..."
+	cd {{gui_dir}} && MACOSX_DEPLOYMENT_TARGET=10.15 env -u APPLE_ID -u APPLE_PASSWORD -u APPLE_TEAM_ID \
+		cargo tauri build --target universal-apple-darwin --features voice-local
+	echo "✅ GUI build complete. Running notarization script..."
 	./scripts/notarize-mac.sh
 
 # Build universal macOS binary (Intel + Apple Silicon)
 build-macos-universal:
 	@echo "🍎🔄 Building universal macOS binary..."
-	npm install
-	npm run build
-	npm run tauri build -- --target universal-apple-darwin
+	cd {{frontend_dir}} && npm install
+	cd {{frontend_dir}} && npm run build
+	cd {{gui_dir}} && cargo tauri build --target universal-apple-darwin --features voice-local
 
 # Build Windows executable
 build-windows:
 	@echo "🪟 Building Windows executable..."
-	npm install
-	npm run build
-	npm run tauri build -- --target x86_64-pc-windows-msvc
+	cd {{frontend_dir}} && npm install
+	cd {{frontend_dir}} && npm run build
+	cd {{gui_dir}} && cargo tauri build --features voice-local -- --target x86_64-pc-windows-msvc
 
 # Build and sign Windows executable
 build-windows-signed:
@@ -222,35 +256,35 @@ build-windows-signed:
 	@echo "Using signing certificate: $$WINDOWS_SIGNING_CERT"
 	export WINDOWS_SIGNING_CERT="$$WINDOWS_SIGNING_CERT" && \
 	export WINDOWS_SIGNING_PASSWORD="$$WINDOWS_SIGNING_PASSWORD" && \
-	npm install && \
-	npm run build && \
-	npm run tauri build -- --target x86_64-pc-windows-msvc
+	cd {{frontend_dir}} && npm install && \
+	cd {{frontend_dir}} && npm run build && \
+	cd {{gui_dir}} && cargo tauri build --features voice-local -- --target x86_64-pc-windows-msvc
 
 # Build Linux binary
 build-linux:
 	@echo "🐧 Building Linux binary..."
-	npm install
-	npm run build
-	npm run tauri build -- --target x86_64-unknown-linux-gnu
+	cd {{frontend_dir}} && npm install
+	cd {{frontend_dir}} && npm run build
+	cd {{gui_dir}} && cargo tauri build --features voice-local -- --target x86_64-unknown-linux-gnu
 
 # Build Linux AppImage
 build-linux-appimage:
 	@echo "🐧📦 Building Linux AppImage..."
-	npm install
-	npm run build
-	npm run tauri build -- --target x86_64-unknown-linux-gnu --bundles appimage
+	cd {{frontend_dir}} && npm install
+	cd {{frontend_dir}} && npm run build
+	cd {{gui_dir}} && cargo tauri build --features voice-local -- --target x86_64-unknown-linux-gnu --bundles appimage
 
 # Build Linux deb package
 build-linux-deb:
 	@echo "🐧📦 Building Linux deb package..."
-	npm install
-	npm run build
-	npm run tauri build -- --target x86_64-unknown-linux-gnu --bundles deb
+	cd {{frontend_dir}} && npm install
+	cd {{frontend_dir}} && npm run build
+	cd {{gui_dir}} && cargo tauri build --features voice-local -- --target x86_64-unknown-linux-gnu --bundles deb
 
 package:
 	@echo "📦 Building production app for current platform..."
-	npm install
-	npm run tauri:build
+	cd {{frontend_dir}} && npm install
+	cd {{gui_dir}} && cargo tauri build --features voice-local
 
 doctor:
 	@echo "🩺 Gestura.app Development Environment"
@@ -276,17 +310,21 @@ doctor:
 	@echo ""
 	@echo "🔐 Code Signing:"
 	@if [ -n "$$APPLE_SIGNING_IDENTITY" ]; then echo "  APPLE_SIGNING_IDENTITY: ✅ $$APPLE_SIGNING_IDENTITY"; else echo "  APPLE_SIGNING_IDENTITY: ❌ not set"; fi
+	@if [ -n "$$APPLE_INSTALLER_IDENTITY" ]; then echo "  APPLE_INSTALLER_IDENTITY: ✅ $$APPLE_INSTALLER_IDENTITY"; else echo "  APPLE_INSTALLER_IDENTITY: ❌ not set (PKG signing)"; fi
 	@if [ -n "$$APPLE_TEAM_ID" ]; then echo "  APPLE_TEAM_ID: ✅ $$APPLE_TEAM_ID"; else echo "  APPLE_TEAM_ID: ❌ not set"; fi
-	@echo "  Developer certificates: $(security find-identity -v -p codesigning | grep -c "Developer ID Application" || echo '0')"
+	@echo "  Developer ID Application certs: $(security find-identity -v -p codesigning | grep -c "Developer ID Application" || echo '0')"
+	@echo "  Developer ID Installer certs: $(security find-identity -v -p codesigning | grep -c "Developer ID Installer" || echo '0')"
 	@echo ""
 	@echo "💻 System:"
 	@echo "  OS: $(uname -a)"
 	@echo "  Architecture: $(uname -m)"
 	@echo ""
 	@echo "📁 Project Status:"
-	@echo "  Frontend built: $([ -d 'dist' ] && echo '✅ yes' || echo '❌ no')"
-	@echo "  Rust binary: $([ -f 'src-tauri/target/release/gestura' ] && echo '✅ yes' || echo '❌ no')"
-	@echo "  macOS app: $([ -d 'src-tauri/target/release/bundle/macos/Gestura.app' ] && echo '✅ yes' || echo '❌ no')"
+	@echo "  Frontend built: $([ -d '{{frontend_dir}}/dist' ] && echo '✅ yes' || echo '❌ no')"
+	@echo "  CLI binary: $([ -f 'target/release/gestura' ] && echo '✅ yes' || echo '❌ no')"
+	@echo "  CLI universal: $([ -f 'target/universal-apple-darwin/release/gestura' ] && echo '✅ yes' || echo '❌ no')"
+	@echo "  macOS app: $([ -d '{{gui_dir}}/target/release/bundle/macos/Gestura.app' ] && echo '✅ yes' || echo '❌ no')"
+	@echo "  macOS universal: $([ -d '{{gui_dir}}/target/universal-apple-darwin/release/bundle/macos/Gestura.app' ] && echo '✅ yes' || echo '❌ no')"
 
 # Quick development workflow
 quick-dev: clean build-release test
@@ -296,20 +334,38 @@ quick-dev: clean build-release test
 full-build: clean build-macos test-macos-app
 	@echo "🎉 Full build and test complete!"
 
-# Release workflow for macOS
-release-macos: clean build-macos-signed verify-macos create-dmg
+# Generate CLI man pages using clap_mangen
+generate-man-pages:
+	@echo "📖 Generating CLI man pages..."
+	@mkdir -p dist/man/man1
+	cargo run -p gestura-cli -- completion --generate-man dist/man/man1
+	@echo "📖 Man pages generated in dist/man/man1/"
+
+# Release workflow for macOS (signed .app, .pkg, .dmg with CLI in /usr/local/bin)
+release-macos: clean build-macos-signed verify-macos package-macos-signed
 	@echo "🎉 macOS release build complete!"
-	@echo "📁 Check for Gestura-*-macos.dmg file"
+	@echo ""
+	@echo "📁 Release artifacts in dist/macos/:"
+	@ls -la dist/macos/*.dmg dist/macos/*.pkg 2>/dev/null || echo "  (check dist/macos-* for timestamped directory)"
+	@echo ""
+	@echo "📦 Package contents:"
+	@echo "  • Gestura.app → /Applications/Gestura.app"
+	@echo "  • gestura CLI → /usr/local/bin/gestura"
+	@echo ""
+	@echo "🔐 Signing status:"
+	@echo "  • .app: Signed and notarized"
+	@echo "  • .pkg: Signed (if APPLE_INSTALLER_IDENTITY set)"
+	@echo "  • CLI:  Signed"
 
 # Release workflow for Windows
 release-windows: clean build-windows-signed create-windows-msi
 	@echo "🎉 Windows release build complete!"
-	@echo "📁 Check src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/ for installer"
+	@echo "📁 Check target/x86_64-pc-windows-msvc/release/bundle/msi/ for installer"
 
 # Release workflow for Linux
 release-linux: clean build-linux-deb build-linux-appimage
 	@echo "🎉 Linux release build complete!"
-	@echo "📁 Check src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/ for packages"
+	@echo "📁 Check target/x86_64-unknown-linux-gnu/release/bundle/ for packages"
 
 # Release workflow for all platforms
 release-all: clean
@@ -323,19 +379,19 @@ release-all: clean
 # Test all platforms
 test-all-platforms:
 	@echo "🧪🌍 Testing all platform builds..."
-	@if [ -d "src-tauri/target/release/bundle/macos/Gestura.app" ]; then \
+	@if [ -d "target/release/bundle/macos/Gestura.app" ]; then \
 		echo "Testing macOS..."; \
 		just test-macos-app; \
 	else \
 		echo "⚠️ macOS build not found"; \
 	fi
-	@if [ -f "src-tauri/target/x86_64-pc-windows-msvc/release/gestura.exe" ]; then \
+	@if [ -f "target/x86_64-pc-windows-msvc/release/gestura-gui.exe" ]; then \
 		echo "Testing Windows..."; \
 		just test-windows-app; \
 	else \
 		echo "⚠️ Windows build not found"; \
 	fi
-	@if [ -f "src-tauri/target/x86_64-unknown-linux-gnu/release/gestura" ]; then \
+	@if [ -f "target/x86_64-unknown-linux-gnu/release/gestura-gui" ]; then \
 		echo "Testing Linux..."; \
 		just test-linux-app; \
 	else \
@@ -370,20 +426,215 @@ package-windows: build-windows
 		./scripts/package-windows.sh; \
 	fi
 
-# Create signed macOS DMG and PKG (uses already-signed app from build-macos-signed)
+# Create signed macOS DMG and PKG (uses already-built and notarized app from build-macos-signed)
+# This recipe does NOT rebuild - it packages the existing artifacts
 package-macos-signed:
-	@echo "📦🍎🔐 Creating signed macOS packages (DMG + PKG)..."
-	./scripts/package-mac.sh
+	#!/usr/bin/env bash
+	set -euo pipefail
+
+	echo "📦🍎🔐 Creating signed macOS packages (DMG + PKG)..."
+
+	# Get version from frontend package.json
+	VERSION=$(grep -o '"version": "[^"]*"' {{frontend_dir}}/package.json | cut -d'"' -f4)
+	echo "📋 Version: ${VERSION}"
+
+	# Paths
+	APP_BUNDLE="target/universal-apple-darwin/release/bundle/macos/Gestura.app"
+	CLI_BIN="target/universal-apple-darwin/release/gestura"
+	DIST_DIR="dist/macos-release"
+
+	# Verify artifacts exist
+	if [ ! -d "${APP_BUNDLE}" ]; then
+		echo "❌ App bundle not found at ${APP_BUNDLE}"
+		echo "   Run 'just build-macos-signed' first"
+		exit 1
+	fi
+
+	if [ ! -f "${CLI_BIN}" ]; then
+		echo "❌ CLI binary not found at ${CLI_BIN}"
+		echo "   Run 'just build-macos-signed' first"
+		exit 1
+	fi
+
+	# Verify app is notarized
+	echo "🔍 Verifying app is notarized..."
+	if ! xcrun stapler validate "${APP_BUNDLE}" 2>/dev/null; then
+		echo "⚠️ App is not stapled with notarization ticket"
+		echo "   Attempting to staple..."
+		xcrun stapler staple "${APP_BUNDLE}" || {
+			echo "❌ Failed to staple. Make sure the app was notarized."
+			exit 1
+		}
+	fi
+	echo "✅ App is notarized"
+
+	# Clean and create dist directory
+	rm -rf "${DIST_DIR}"
+	mkdir -p "${DIST_DIR}/pkgroot/Applications"
+	mkdir -p "${DIST_DIR}/pkgroot/usr/local/bin"
+
+	# Copy artifacts for PKG
+	echo "📁 Copying app bundle..."
+	cp -R "${APP_BUNDLE}" "${DIST_DIR}/pkgroot/Applications/"
+
+	echo "📁 Copying CLI binary..."
+	cp "${CLI_BIN}" "${DIST_DIR}/pkgroot/usr/local/bin/gestura"
+
+	# Create PKG
+	echo "📦 Building PKG installer..."
+	UNSIGNED_PKG="${DIST_DIR}/Gestura-${VERSION}-universal-unsigned.pkg"
+	SIGNED_PKG="${DIST_DIR}/Gestura-${VERSION}-universal.pkg"
+
+	pkgbuild \
+		--root "${DIST_DIR}/pkgroot" \
+		--identifier "ai.gestura.desktop" \
+		--version "${VERSION}" \
+		--install-location "/" \
+		"${UNSIGNED_PKG}"
+
+	# Sign PKG if installer identity is available
+	INSTALLER_IDENTITY="${APPLE_INSTALLER_IDENTITY:-}"
+	if [ -n "${INSTALLER_IDENTITY}" ]; then
+		echo "🔐 Signing PKG with: ${INSTALLER_IDENTITY}"
+		productsign --sign "${INSTALLER_IDENTITY}" "${UNSIGNED_PKG}" "${SIGNED_PKG}"
+		rm -f "${UNSIGNED_PKG}"
+
+		echo "📋 Submitting PKG for notarization..."
+		# Use keychain profile if APPLE_PASSWORD starts with @keychain:, otherwise use direct credentials
+		if [[ "${APPLE_PASSWORD:-}" == @keychain:* ]]; then
+			PROFILE_NAME="${APPLE_PASSWORD#@keychain:}"
+			xcrun notarytool submit "${SIGNED_PKG}" \
+				--keychain-profile "${PROFILE_NAME}" \
+				--wait
+		elif [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_PASSWORD:-}" ]; then
+			xcrun notarytool submit "${SIGNED_PKG}" \
+				--apple-id "${APPLE_ID}" \
+				--team-id "${APPLE_TEAM_ID}" \
+				--password "${APPLE_PASSWORD}" \
+				--wait
+		else
+			echo "⚠️ Skipping PKG notarization - credentials not configured"
+			echo "   Set APPLE_PASSWORD=@keychain:profile-name or provide APPLE_ID/APPLE_TEAM_ID/APPLE_PASSWORD"
+		fi
+
+		echo "📎 Stapling notarization ticket to PKG..."
+		xcrun stapler staple "${SIGNED_PKG}" || echo "⚠️ Stapling skipped (notarization may not have completed)"
+		echo "✅ PKG signed"
+	else
+		mv "${UNSIGNED_PKG}" "${SIGNED_PKG}"
+		echo "⚠️ PKG not signed (set APPLE_INSTALLER_IDENTITY for signing)"
+	fi
+
+	# Create DMG
+	echo "💿 Creating DMG..."
+	DMG_NAME="Gestura-${VERSION}-universal.dmg"
+
+	# Check if create-dmg is installed
+	if ! command -v create-dmg &> /dev/null; then
+		echo "Installing create-dmg..."
+		brew install create-dmg
+	fi
+
+	create-dmg \
+		--volname "Gestura" \
+		--window-pos 200 120 \
+		--window-size 600 400 \
+		--icon-size 100 \
+		--icon "Gestura.app" 175 120 \
+		--hide-extension "Gestura.app" \
+		--app-drop-link 425 120 \
+		"${DIST_DIR}/${DMG_NAME}" \
+		"${APP_BUNDLE}" || true
+
+	# Sign and notarize DMG
+	SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
+	if [ -n "${SIGNING_IDENTITY}" ]; then
+		echo "🔐 Signing DMG..."
+		codesign --force --sign "${SIGNING_IDENTITY}" "${DIST_DIR}/${DMG_NAME}"
+
+		echo "📋 Submitting DMG for notarization..."
+		# Use keychain profile if APPLE_PASSWORD starts with @keychain:, otherwise use direct credentials
+		if [[ "${APPLE_PASSWORD:-}" == @keychain:* ]]; then
+			PROFILE_NAME="${APPLE_PASSWORD#@keychain:}"
+			xcrun notarytool submit "${DIST_DIR}/${DMG_NAME}" \
+				--keychain-profile "${PROFILE_NAME}" \
+				--wait
+		elif [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_PASSWORD:-}" ]; then
+			xcrun notarytool submit "${DIST_DIR}/${DMG_NAME}" \
+				--apple-id "${APPLE_ID}" \
+				--team-id "${APPLE_TEAM_ID}" \
+				--password "${APPLE_PASSWORD}" \
+				--wait
+		else
+			echo "⚠️ Skipping DMG notarization - credentials not configured"
+			echo "   Set APPLE_PASSWORD=@keychain:profile-name or provide APPLE_ID/APPLE_TEAM_ID/APPLE_PASSWORD"
+		fi
+
+		echo "📎 Stapling notarization ticket to DMG..."
+		xcrun stapler staple "${DIST_DIR}/${DMG_NAME}" || echo "⚠️ Stapling skipped (notarization may not have completed)"
+		echo "✅ DMG signed"
+	else
+		echo "⚠️ DMG not signed (set APPLE_SIGNING_IDENTITY for signing)"
+	fi
+
+	# Generate checksums
+	echo "🔢 Generating checksums..."
+	cd "${DIST_DIR}"
+	shasum -a 256 "Gestura-${VERSION}-universal.pkg" > "Gestura-${VERSION}-universal.pkg.sha256"
+	shasum -a 256 "Gestura-${VERSION}-universal.dmg" > "Gestura-${VERSION}-universal.dmg.sha256"
+
+	# Clean up pkgroot
+	rm -rf pkgroot
+
+		# Create release info
+		# NOTE: Recipe bodies in just must be indented. A bash heredoc delimiter must
+		# start at the beginning of the line, so we use `<<-EOF` to allow tab-indented
+		# heredoc contents and terminator.
+		cat > RELEASE_INFO.txt <<-EOF
+		Gestura v${VERSION} - macOS Universal Release
+		=========================================
+		
+		Build Information:
+		- Version: ${VERSION}
+		- Platform: macOS Universal (Intel x86_64 + Apple Silicon arm64)
+		- Build Date: $(date +%Y-%m-%d)
+		- Signed by: ${SIGNING_IDENTITY:-Unsigned}
+		- Notarized: Yes (Apple Notary Service)
+		
+		Files:
+		- Gestura-${VERSION}-universal.pkg - Installer Package
+		  Installs: /Applications/Gestura.app and /usr/local/bin/gestura
+		
+		- Gestura-${VERSION}-universal.dmg - Disk Image
+		  Drag-and-drop installation to /Applications
+		
+		Installation:
+		1. PKG (Recommended): Double-click the .pkg file
+		2. DMG: Open .dmg and drag Gestura.app to Applications
+		
+		CLI Usage:
+		  $ gestura --help
+		
+		Support: https://gestura.app
+		License: Gestura Prosperity License 1.0
+		EOF
+
+	cd - > /dev/null
+
+	echo ""
+	echo "🎉 Packaging complete!"
+	echo "📁 Release artifacts in ${DIST_DIR}/:"
+	ls -la "${DIST_DIR}/"
 
 # Create Windows MSI installer
 create-windows-msi:
 	@echo "📦🪟 Creating Windows MSI installer..."
-	@if [ ! -d "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi" ]; then \
+	@if [ ! -d "target/x86_64-pc-windows-msvc/release/bundle/msi" ]; then \
 		echo "❌ Windows MSI not found. Run 'just build-windows' first"; \
 		exit 1; \
 	fi
-	@echo "✅ Windows MSI available in src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/"
-	@ls -la "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/"
+	@echo "✅ Windows MSI available in target/x86_64-pc-windows-msvc/release/bundle/msi/"
+	@ls -la "target/x86_64-pc-windows-msvc/release/bundle/msi/"
 
 # Create Linux packages (deb, rpm, AppImage)
 package-linux: build-linux
@@ -398,22 +649,22 @@ package-linux: build-linux
 # Create Linux AppImage
 create-linux-appimage:
 	@echo "📦🐧 Creating Linux AppImage..."
-	@if [ ! -f "src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/gestura_0.1.0_amd64.AppImage" ]; then \
+	@if [ ! -f "target/x86_64-unknown-linux-gnu/release/bundle/appimage/gestura_0.1.0_amd64.AppImage" ]; then \
 		echo "❌ Linux AppImage not found. Run 'just build-linux-appimage' first"; \
 		exit 1; \
 	fi
 	@echo "✅ Linux AppImage available:"
-	@ls -la "src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/"
+	@ls -la "target/x86_64-unknown-linux-gnu/release/bundle/appimage/"
 
 # Create Linux deb package
 create-linux-deb:
 	@echo "📦🐧 Creating Linux deb package..."
-	@if [ ! -f "src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/gestura_0.1.0_amd64.deb" ]; then \
+	@if [ ! -f "target/x86_64-unknown-linux-gnu/release/bundle/deb/gestura_0.1.0_amd64.deb" ]; then \
 		echo "❌ Linux deb not found. Run 'just build-linux-deb' first"; \
 		exit 1; \
 	fi
 	@echo "✅ Linux deb package available:"
-	@ls -la "src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/"
+	@ls -la "target/x86_64-unknown-linux-gnu/release/bundle/deb/"
 
 # Create packages for all platforms
 package-all:
@@ -462,7 +713,7 @@ check-macos-signing:
 # Sign macOS app bundle manually (fallback method)
 sign-macos:
 	@echo "🔐🍎 Manual code signing macOS app..."
-	@if [ ! -d "src-tauri/target/release/bundle/macos/Gestura.app" ]; then \
+	@if [ ! -d "target/release/bundle/macos/Gestura.app" ]; then \
 		echo "❌ App bundle not found. Run 'just build-macos' first"; \
 		exit 1; \
 	fi
@@ -473,12 +724,12 @@ sign-macos:
 	@echo "Attempting manual signing with identity: $APPLE_SIGNING_IDENTITY"
 	@# Try signing without hardened runtime first
 	codesign --force --sign "$APPLE_SIGNING_IDENTITY" \
-		"src-tauri/target/release/bundle/macos/Gestura.app" || \
+		"target/release/bundle/macos/Gestura.app" || \
 	echo "⚠️ Basic signing failed, trying with entitlements..." && \
 	codesign --force --options runtime \
-		--entitlements src-tauri/entitlements.plist \
+		--entitlements {{gui_dir}}/entitlements.plist \
 		--sign "$APPLE_SIGNING_IDENTITY" \
-		"src-tauri/target/release/bundle/macos/Gestura.app"
+		"target/release/bundle/macos/Gestura.app"
 	@echo "✅ Manual code signing complete"
 
 # Build unsigned then sign manually (often more reliable)
@@ -495,8 +746,8 @@ verify-macos:
 	#!/bin/bash
 	set -e
 	echo "🔍🍎 Verifying macOS app signature..."
-	UNIVERSAL_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Gestura.app"
-	REGULAR_PATH="src-tauri/target/release/bundle/macos/Gestura.app"
+	UNIVERSAL_PATH="target/universal-apple-darwin/release/bundle/macos/Gestura.app"
+	REGULAR_PATH="target/release/bundle/macos/Gestura.app"
 	if [ -d "$UNIVERSAL_PATH" ]; then
 	    APP_PATH="$UNIVERSAL_PATH"
 	    echo "Verifying universal build"
@@ -523,7 +774,7 @@ check-windows-signing:
 # Sign Windows executable
 sign-windows:
 	@echo "🔐🪟 Code signing Windows executable..."
-	@if [ ! -f "src-tauri/target/x86_64-pc-windows-msvc/release/gestura.exe" ]; then \
+	@if [ ! -f "target/x86_64-pc-windows-msvc/release/gestura-gui.exe" ]; then \
 		echo "❌ Windows executable not found. Run 'just build-windows' first"; \
 		exit 1; \
 	fi
@@ -537,12 +788,12 @@ sign-windows:
 # Verify Windows executable signature
 verify-windows:
 	@echo "🔍🪟 Verifying Windows executable signature..."
-	@if [ ! -f "src-tauri/target/x86_64-pc-windows-msvc/release/gestura.exe" ]; then \
+	@if [ ! -f "target/x86_64-pc-windows-msvc/release/gestura-gui.exe" ]; then \
 		echo "❌ Windows executable not found. Run 'just build-windows' first"; \
 		exit 1; \
 	fi
 	@echo "⚠️ Windows signature verification requires running on Windows"
-	@echo "Use: Get-AuthenticodeSignature -FilePath gestura.exe"
+	@echo "Use: Get-AuthenticodeSignature -FilePath gestura-gui.exe"
 
 # Check Linux signing setup (for AppImage)
 check-linux-signing:
@@ -580,8 +831,8 @@ test-macos-app:
 	#!/bin/bash
 	set -e
 	echo "🧪🍎 Testing macOS app bundle..."
-	UNIVERSAL_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Gestura.app"
-	REGULAR_PATH="src-tauri/target/release/bundle/macos/Gestura.app"
+	UNIVERSAL_PATH="target/universal-apple-darwin/release/bundle/macos/Gestura.app"
+	REGULAR_PATH="target/release/bundle/macos/Gestura.app"
 	if [ -d "$UNIVERSAL_PATH" ]; then
 	    APP_PATH="$UNIVERSAL_PATH"
 	    echo "Testing universal build"
@@ -608,17 +859,17 @@ test-macos-app:
 # Test Windows executable
 test-windows-app:
 	@echo "🧪🪟 Testing Windows executable..."
-	@if [ ! -f "src-tauri/target/x86_64-pc-windows-msvc/release/gestura.exe" ]; then \
+	@if [ ! -f "target/x86_64-pc-windows-msvc/release/gestura-gui.exe" ]; then \
 		echo "❌ Windows executable not found. Run 'just build-windows' first"; \
 		exit 1; \
 	fi
 	@echo "📋 Windows executable info:"
-	@ls -la "src-tauri/target/x86_64-pc-windows-msvc/release/gestura.exe"
+	@ls -la "target/x86_64-pc-windows-msvc/release/gestura-gui.exe"
 	@echo ""
 	@echo "📦 Available installers:"
-	@if [ -d "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi" ]; then \
+	@if [ -d "target/x86_64-pc-windows-msvc/release/bundle/msi" ]; then \
 		echo "✅ MSI installer:"; \
-		ls -la "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/"; \
+		ls -la "target/x86_64-pc-windows-msvc/release/bundle/msi/"; \
 	else \
 		echo "❌ No MSI installer found"; \
 	fi
@@ -628,24 +879,24 @@ test-windows-app:
 # Test Linux packages
 test-linux-app:
 	@echo "🧪🐧 Testing Linux packages..."
-	@if [ ! -f "src-tauri/target/x86_64-unknown-linux-gnu/release/gestura" ]; then \
+	@if [ ! -f "target/x86_64-unknown-linux-gnu/release/gestura-gui" ]; then \
 		echo "❌ Linux binary not found. Run 'just build-linux' first"; \
 		exit 1; \
 	fi
 	@echo "📋 Linux binary info:"
-	@ls -la "src-tauri/target/x86_64-unknown-linux-gnu/release/gestura"
-	@file "src-tauri/target/x86_64-unknown-linux-gnu/release/gestura"
+	@ls -la "target/x86_64-unknown-linux-gnu/release/gestura-gui"
+	@file "target/x86_64-unknown-linux-gnu/release/gestura-gui"
 	@echo ""
 	@echo "📦 Available packages:"
-	@if [ -f "src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/gestura_0.1.0_amd64.deb" ]; then \
+	@if [ -f "target/x86_64-unknown-linux-gnu/release/bundle/deb/gestura_0.1.0_amd64.deb" ]; then \
 		echo "✅ DEB package:"; \
-		ls -la "src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/"; \
+		ls -la "target/x86_64-unknown-linux-gnu/release/bundle/deb/"; \
 	else \
 		echo "❌ No DEB package found"; \
 	fi
-	@if [ -f "src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/gestura_0.1.0_amd64.AppImage" ]; then \
+	@if [ -f "target/x86_64-unknown-linux-gnu/release/bundle/appimage/gestura_0.1.0_amd64.AppImage" ]; then \
 		echo "✅ AppImage:"; \
-		ls -la "src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/"; \
+		ls -la "target/x86_64-unknown-linux-gnu/release/bundle/appimage/"; \
 	else \
 		echo "❌ No AppImage found"; \
 	fi
@@ -653,7 +904,7 @@ test-linux-app:
 	@echo "🚀 Testing binary (if on Linux)..."
 	@if [ "$$(uname)" = "Linux" ]; then \
 		echo "Running quick test..."; \
-		"src-tauri/target/x86_64-unknown-linux-gnu/release/gestura" --version || echo "Binary test failed"; \
+		"target/x86_64-unknown-linux-gnu/release/gestura-gui" --version || echo "Binary test failed"; \
 	else \
 		echo "⚠️ Not on Linux - cannot test binary directly"; \
 	fi
@@ -663,8 +914,8 @@ create-dmg:
 	#!/bin/bash
 	set -e
 	echo "💿 Creating DMG for distribution..."
-	UNIVERSAL_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Gestura.app"
-	REGULAR_PATH="src-tauri/target/release/bundle/macos/Gestura.app"
+	UNIVERSAL_PATH="target/universal-apple-darwin/release/bundle/macos/Gestura.app"
+	REGULAR_PATH="target/release/bundle/macos/Gestura.app"
 	if [ -d "$UNIVERSAL_PATH" ]; then
 	    APP_PATH="$UNIVERSAL_PATH"
 	    echo "Using universal build"

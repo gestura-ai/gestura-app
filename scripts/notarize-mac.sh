@@ -21,6 +21,10 @@
 
 set -euo pipefail
 
+# Resolve repo root so this script can be run from any working directory.
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+ROOT_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -30,13 +34,26 @@ NC='\033[0m'
 
 # Configuration
 APP_NAME="Gestura"
-VERSION=$(grep -o '"version": "[^"]*"' package.json | cut -d'"' -f4)
+VERSION=$(grep -o '"version": "[^"]*"' "${ROOT_DIR}/crates/gestura-gui/frontend/package.json" | cut -d'"' -f4)
 BUNDLE_ID="ai.gestura.desktop"
 
 # Paths
-UNIVERSAL_APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/${APP_NAME}.app"
-RELEASE_APP_PATH="src-tauri/target/release/bundle/macos/${APP_NAME}.app"
-DIST_DIR="dist/macos"
+GUI_DIR="${ROOT_DIR}/crates/gestura-gui"
+
+# In a Cargo workspace, build artifacts are typically written to the workspace
+# root `target/` directory (even when running `cargo` from a member crate).
+UNIVERSAL_APP_PATH="${ROOT_DIR}/target/universal-apple-darwin/release/bundle/macos/${APP_NAME}.app"
+RELEASE_APP_PATH="${ROOT_DIR}/target/release/bundle/macos/${APP_NAME}.app"
+
+# Legacy/fallback paths (in case CARGO_TARGET_DIR is set differently)
+UNIVERSAL_APP_PATH_LEGACY="${GUI_DIR}/target/universal-apple-darwin/release/bundle/macos/${APP_NAME}.app"
+RELEASE_APP_PATH_LEGACY="${GUI_DIR}/target/release/bundle/macos/${APP_NAME}.app"
+
+DIST_DIR="${ROOT_DIR}/dist/macos"
+
+# CLI binary paths (built via cargo build -p gestura-cli)
+CLI_UNIVERSAL_PATH="${ROOT_DIR}/target/universal-apple-darwin/release/gestura"
+CLI_RELEASE_PATH="${ROOT_DIR}/target/release/gestura"
 
 echo -e "${BLUE}🔐 Gestura macOS Notarization Script${NC}"
 echo -e "${BLUE}Version: ${VERSION}${NC}"
@@ -117,8 +134,21 @@ find_app_bundle() {
     elif [ -d "${RELEASE_APP_PATH}" ]; then
         APP_PATH="${RELEASE_APP_PATH}"
         echo -e "${GREEN}✅ Found release app bundle${NC}"
+    elif [ -d "${UNIVERSAL_APP_PATH_LEGACY}" ]; then
+        APP_PATH="${UNIVERSAL_APP_PATH_LEGACY}"
+        echo -e "${GREEN}✅ Found universal app bundle (legacy path)${NC}"
+    elif [ -d "${RELEASE_APP_PATH_LEGACY}" ]; then
+        APP_PATH="${RELEASE_APP_PATH_LEGACY}"
+        echo -e "${GREEN}✅ Found release app bundle (legacy path)${NC}"
     else
-        echo -e "${RED}❌ App bundle not found. Run 'just build-macos' first.${NC}"
+        echo -e "${RED}❌ App bundle not found.${NC}"
+        echo "Looked for:"
+        echo "  - ${UNIVERSAL_APP_PATH}"
+        echo "  - ${RELEASE_APP_PATH}"
+        echo "  - ${UNIVERSAL_APP_PATH_LEGACY}"
+        echo "  - ${RELEASE_APP_PATH_LEGACY}"
+        echo ""
+        echo "Run 'just build-macos-signed' (or 'just build-macos') first."
         exit 1
     fi
 }
@@ -140,21 +170,65 @@ sign_app() {
             --sign "${APPLE_SIGNING_IDENTITY}" {} \; 2>/dev/null || true
     fi
     
-    # Sign the main executable
-    echo "   Signing main executable..."
+    # Sign the main executable (do not assume it matches the app bundle name).
+    # Tauri sets CFBundleExecutable in Info.plist (often something like "gestura-gui").
+    local bundle_executable=""
+    if [ -f "${APP_PATH}/Contents/Info.plist" ]; then
+        bundle_executable=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || true)
+    fi
+
+    if [ -z "${bundle_executable}" ] && [ -d "${APP_PATH}/Contents/MacOS" ]; then
+        # Fallback: pick the first executable file in Contents/MacOS.
+        bundle_executable=$(find "${APP_PATH}/Contents/MacOS" -maxdepth 1 -type f -perm -111 -print | head -n 1 | xargs -I{} basename "{}" 2>/dev/null || true)
+    fi
+
+    if [ -z "${bundle_executable}" ] || [ ! -f "${APP_PATH}/Contents/MacOS/${bundle_executable}" ]; then
+        echo -e "${RED}❌ Could not determine main executable inside app bundle${NC}"
+        echo "Expected to find CFBundleExecutable in: ${APP_PATH}/Contents/Info.plist"
+        echo "Contents/MacOS directory listing:"
+        ls -la "${APP_PATH}/Contents/MacOS" || true
+        exit 1
+    fi
+
+    echo "   Signing main executable: ${bundle_executable}"
     codesign --force --options runtime --timestamp \
-        --entitlements src-tauri/entitlements.plist \
+        --entitlements "${GUI_DIR}/entitlements.plist" \
         --sign "${APPLE_SIGNING_IDENTITY}" \
-        "${APP_PATH}/Contents/MacOS/${APP_NAME}"
-    
+        "${APP_PATH}/Contents/MacOS/${bundle_executable}"
+
     # Sign the app bundle
     echo "   Signing app bundle..."
     codesign --force --options runtime --timestamp \
-        --entitlements src-tauri/entitlements.plist \
+        --entitlements "${GUI_DIR}/entitlements.plist" \
         --sign "${APPLE_SIGNING_IDENTITY}" \
         "${APP_PATH}"
-    
+
     echo -e "${GREEN}✅ Application signed${NC}"
+}
+
+# Sign the CLI binary
+sign_cli() {
+    echo -e "${YELLOW}🔐 Signing CLI binary...${NC}"
+
+    # Find CLI binary
+    if [ -f "${CLI_UNIVERSAL_PATH}" ]; then
+        CLI_PATH="${CLI_UNIVERSAL_PATH}"
+        echo -e "${GREEN}✅ Found universal CLI binary${NC}"
+    elif [ -f "${CLI_RELEASE_PATH}" ]; then
+        CLI_PATH="${CLI_RELEASE_PATH}"
+        echo -e "${GREEN}✅ Found release CLI binary${NC}"
+    else
+        echo -e "${YELLOW}⚠️ CLI binary not found, skipping CLI signing${NC}"
+        echo "   Build CLI with: cargo build --release -p gestura-cli"
+        return 0
+    fi
+
+    # Sign the CLI binary
+    codesign --force --options runtime --timestamp \
+        --sign "${APPLE_SIGNING_IDENTITY}" \
+        "${CLI_PATH}"
+
+    echo -e "${GREEN}✅ CLI binary signed: ${CLI_PATH}${NC}"
 }
 
 # Verify signature
@@ -239,6 +313,7 @@ main() {
     validate_env
     find_app_bundle
     sign_app
+    sign_cli
     verify_signature
     create_zip
     notarize_app
@@ -248,9 +323,12 @@ main() {
     echo ""
     echo -e "${GREEN}🎉 Notarization complete!${NC}"
     echo -e "${BLUE}📁 Signed app: ${APP_PATH}${NC}"
+    if [ -n "${CLI_PATH:-}" ]; then
+        echo -e "${BLUE}📁 Signed CLI: ${CLI_PATH}${NC}"
+    fi
     echo ""
     echo -e "${YELLOW}Next steps:${NC}"
-    echo "  1. Run 'just package-macos' to create DMG and PKG"
+    echo "  1. Run 'just package-macos-signed' to create DMG and PKG"
     echo "  2. The packages will inherit the notarized signature"
 }
 

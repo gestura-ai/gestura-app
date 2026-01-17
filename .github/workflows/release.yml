@@ -18,10 +18,11 @@ jobs:
   create-release:
     runs-on: ubuntu-latest
     outputs:
-      release_id: ${{ steps.create-release.outputs.result }}
+      release_id: ${{ steps.create-release.outputs.release_id }}
+      upload_url: ${{ steps.create-release.outputs.upload_url }}
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Get version
         id: get_version
         run: |
@@ -30,7 +31,7 @@ jobs:
           else
             echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
-      
+
       - name: Create release
         id: create-release
         uses: actions/github-script@v7
@@ -45,7 +46,8 @@ jobs:
               draft: true,
               prerelease: false
             });
-            return data.id;
+            core.setOutput('release_id', data.id);
+            core.setOutput('upload_url', data.upload_url);
 
   build-release:
     needs: create-release
@@ -85,20 +87,179 @@ jobs:
         with:
           node-version: '18'
           cache: 'npm'
+          cache-dependency-path: 'crates/gestura-gui/frontend/package-lock.json'
 
       - name: Install frontend dependencies
+        working-directory: crates/gestura-gui/frontend
         run: npm ci
 
       - name: Build frontend
+        working-directory: crates/gestura-gui/frontend
         run: npm run build
+
+      - name: Build CLI binary (macOS universal)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          cargo build --release -p gestura-cli --features voice-local --target aarch64-apple-darwin
+          cargo build --release -p gestura-cli --features voice-local --target x86_64-apple-darwin
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/gestura \
+            target/x86_64-apple-darwin/release/gestura \
+            -output target/universal-apple-darwin/release/gestura
+
+      - name: Build CLI binary (Linux/Windows)
+        if: matrix.platform != 'macos-latest'
+        run: cargo build --release -p gestura-cli --features voice-local
+
+      - name: Import Apple certificates (macOS)
+        if: matrix.platform == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_INSTALLER_CERTIFICATE: ${{ secrets.APPLE_INSTALLER_CERTIFICATE }}
+          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          # Create temporary keychain
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # Import Developer ID Application certificate
+          if [ -n "$APPLE_CERTIFICATE" ]; then
+            echo "$APPLE_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/certificate.p12
+            security import $RUNNER_TEMP/certificate.p12 -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          fi
+
+          # Import Developer ID Installer certificate (for PKG signing)
+          if [ -n "$APPLE_INSTALLER_CERTIFICATE" ]; then
+            echo "$APPLE_INSTALLER_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/installer_certificate.p12
+            security import $RUNNER_TEMP/installer_certificate.p12 -P "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          fi
+
+          security list-keychain -d user -s $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MACOSX_DEPLOYMENT_TARGET: '10.15'
+          # macOS signing environment variables
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
-          args: ${{ matrix.args }}
+          projectPath: crates/gestura-gui
+          args: '--features voice-local ${{ matrix.args }}'
+
+      - name: Sign CLI binary (macOS)
+        if: matrix.platform == 'macos-latest' && env.APPLE_SIGNING_IDENTITY != ''
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            target/universal-apple-darwin/release/gestura
+          codesign --verify --deep --strict target/universal-apple-darwin/release/gestura
+
+      - name: Create signed PKG installer (macOS)
+        if: matrix.platform == 'macos-latest'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
+        run: |
+          VERSION=$(grep -o '"version": "[^"]*"' crates/gestura-gui/frontend/package.json | cut -d'"' -f4)
+          DIST_DIR="dist/macos"
+          PKGROOT_DIR="${DIST_DIR}/pkgroot"
+
+          # Find the app bundle
+          APP_PATH="crates/gestura-gui/target/universal-apple-darwin/release/bundle/macos/Gestura.app"
+          if [ ! -d "$APP_PATH" ]; then
+            APP_PATH="crates/gestura-gui/target/release/bundle/macos/Gestura.app"
+          fi
+
+          # Create package root
+          mkdir -p "${PKGROOT_DIR}/Applications"
+          mkdir -p "${PKGROOT_DIR}/usr/local/bin"
+
+          # Copy app and CLI
+          cp -R "$APP_PATH" "${PKGROOT_DIR}/Applications/"
+          cp target/universal-apple-darwin/release/gestura "${PKGROOT_DIR}/usr/local/bin/"
+
+          # Create unsigned PKG
+          pkgbuild \
+            --root "${PKGROOT_DIR}" \
+            --identifier "ai.gestura.desktop" \
+            --version "${VERSION}" \
+            --install-location "/" \
+            "${DIST_DIR}/Gestura-${VERSION}-unsigned.pkg"
+
+          # Sign PKG if installer identity is available
+          if [ -n "$APPLE_INSTALLER_IDENTITY" ]; then
+            productsign --sign "$APPLE_INSTALLER_IDENTITY" \
+              "${DIST_DIR}/Gestura-${VERSION}-unsigned.pkg" \
+              "${DIST_DIR}/Gestura-${VERSION}-universal.pkg"
+            rm -f "${DIST_DIR}/Gestura-${VERSION}-unsigned.pkg"
+          else
+            mv "${DIST_DIR}/Gestura-${VERSION}-unsigned.pkg" "${DIST_DIR}/Gestura-${VERSION}-universal.pkg"
+          fi
+
+      - name: Get version for PKG upload
+        if: matrix.platform == 'macos-latest'
+        id: pkg_version
+        run: |
+          VERSION=$(grep -o '"version": "[^"]*"' crates/gestura-gui/frontend/package.json | cut -d'"' -f4)
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Upload PKG installer (macOS)
+        if: matrix.platform == 'macos-latest'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: dist/macos/Gestura-${{ steps.pkg_version.outputs.VERSION }}-universal.pkg
+          asset_name: Gestura-${{ steps.pkg_version.outputs.VERSION }}-universal.pkg
+          asset_content_type: application/octet-stream
+
+      - name: Upload CLI binary (macOS)
+        if: matrix.platform == 'macos-latest'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: target/universal-apple-darwin/release/gestura
+          asset_name: gestura-cli-macos-universal
+          asset_content_type: application/octet-stream
+
+      - name: Upload CLI binary (Linux)
+        if: matrix.platform == 'ubuntu-latest'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: target/release/gestura
+          asset_name: gestura-cli-linux-x86_64
+          asset_content_type: application/octet-stream
+
+      - name: Upload CLI binary (Windows)
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: target/release/gestura.exe
+          asset_name: gestura-cli-windows-x86_64.exe
+          asset_content_type: application/octet-stream
 
   publish-release:
     needs: [create-release, build-release]
