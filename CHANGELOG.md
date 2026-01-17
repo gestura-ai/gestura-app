@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **gestura-cli**: Full-featured CLI binary with all commands (chat, exec, listen, config, model, device, mcp, session, agent, privacy, health, completion, init, tools)
+- **gestura-core**: Shared library crate with all business logic (config, error, llm_provider, mcp, gdpr, session_manager, telemetry, audio_capture, speech, tools)
+- **CLI TUI mode**: Interactive terminal UI with ratatui for chat sessions (`gestura chat --tui`)
+- **CLI tools**: Built-in system tools (file, shell, git, code, web, permissions) accessible via `gestura tools`
+- **Universal macOS binary**: CLI and GUI both build as universal binaries (Intel + Apple Silicon)
+- **PKG installer**: macOS installer that places Gestura.app in /Applications and gestura CLI in /usr/local/bin
+- **Signed releases**: Full code signing support for .app, .pkg, and CLI binary with notarization
 - Comprehensive GitHub release workflow with multi-platform builds
 - Automated package manager publishing (Homebrew, Chocolatey, Winget, Snap)
 - Professional release script with version synchronization (`scripts/release.sh`)
@@ -17,15 +24,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Version synchronization across Cargo.toml, package.json, and tauri.conf.json
 
 ### Changed
+- **BREAKING**: Workspace restructured to Core-First architecture
+  - `crates/gestura-core/` - shared library with all business logic
+  - `crates/gestura-gui/` - Tauri desktop app (thin shell)
+  - `crates/gestura-cli/` - CLI binary (thin shell)
+- Frontend moved from root to `crates/gestura-gui/frontend/`
+- All Tauri-specific code consolidated in gestura-gui
+- Build scripts updated for new workspace structure
+- CI/CD workflows updated for workspace builds
 - Updated package.json to reflect gestura-app instead of homepage project
 - Added version field to tauri.conf.json for proper Tauri versioning
-- Synchronized versions across all configuration files (currently 0.1.0)
+- Synchronized versions across all configuration files (currently 0.2.0)
 
 ### Fixed
 - Duplicate system tray icons issue resolved through configuration cleanup
 - Listening functionality working correctly with proper error handling
 - System permissions monitoring and validation implemented
 - Configuration persistence and state management improved
+- Removed dead/uncompiled Rust modules from gestura-gui
 
 ## [0.1.0] - 2025-08-17
 

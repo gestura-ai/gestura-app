@@ -140,4 +140,21 @@ We welcome contributions! Please read our contributing guidelines below.
 - Follow responsible disclosure practices
 
 ## License
-MIT - see LICENSE file for details
+
+Gestura is licensed under the **Gestura Prosperity License 1.0** (GPL-1.0), a source-available license that balances open access with sustainable development.
+
+### Free Use (No Cost)
+- ✅ Personal, hobby, and educational use
+- ✅ Non-profit organizations
+- ✅ Small businesses (<$1M annual revenue)
+- ✅ Commercial evaluation (90 days)
+- ✅ Contributing improvements back to the project
+
+### Commercial Use (>$1M Revenue)
+- 3% of revenue attributable to Gestura, OR
+- 0.5% of total annual revenue (alternative calculation)
+- Enterprise flat-fee licenses available
+
+See [LICENSE](LICENSE) for full terms and [LICENSE-FAQ.md](LICENSE-FAQ.md) for detailed guidance.
+
+**Contact**: licensing@gestura.ai
