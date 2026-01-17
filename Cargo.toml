@@ -1,0 +1,110 @@
+# Gestura Workspace - Voice-first AI Assistant
+# 
+# This workspace contains three crates:
+# - gestura-core: Shared business logic (config, LLM providers, speech, MCP)
+# - gestura-gui: Tauri desktop application (system tray, windows, UI)
+# - gestura-cli: Command-line interface (clap, ratatui)
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/gestura-core",
+    "crates/gestura-gui",
+    "crates/gestura-cli",
+]
+
+# Default members for `cargo build` without specifying a package
+default-members = [
+    "crates/gestura-gui",
+    "crates/gestura-cli",
+]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+license = "LicenseRef-Gestura-Prosperity-1.0"
+authors = ["Gestura LLC <dev@gestura.ai>"]
+repository = "https://github.com/gestura-ai/gestura-app"
+homepage = "https://gestura.ai"
+description = "Voice-first AI assistant with GUI and CLI interfaces"
+
+[workspace.dependencies]
+# Core dependencies shared across crates
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "io-util", "io-std", "sync"] }
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+dirs = "6"
+reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls", "stream"] }
+futures = "0.3"
+futures-util = "0.3"
+bytes = "1"
+
+# Audio processing
+cpal = "0.15"
+hound = "3.5"
+bytemuck = "1"
+
+# Voice processing
+whisper-rs = "0.14"
+
+# CLI-specific
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
+ratatui = "0.29"
+crossterm = "0.28"
+dialoguer = "0.11"
+indicatif = "0.17"
+console = "0.15"
+colored = "2"
+toml = "0.8"
+
+# Tauri (GUI-specific)
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
+tauri-build = { version = "2", features = [] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-dialog = "2"
+
+# BLE integration
+btleplug = "0.11"
+
+# JSON-LD processing
+json-ld = "0.16"
+
+# Security
+ring = "0.17"
+keyring = "2.3"
+
+# NATS messaging
+async-nats = "0.42"
+
+# Utilities
+lazy_static = "1.4"
+tempfile = "3.8"
+hex = "0.4"
+base64 = "0.22"
+rand = "0.8"
+image = { version = "0.25", features = ["png"] }
+regex = "1"
+urlencoding = "2"
+
+# macOS specific
+objc = "0.2"
+cocoa = "0.25"
+
+# Internal crates
+gestura-core = { path = "crates/gestura-core" }
+
+[profile.dev]
+opt-level = 0
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
