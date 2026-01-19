@@ -64,6 +64,18 @@ pub struct SessionToolCall {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
+/// Session-scoped LLM configuration
+/// When set, overrides the global config for this session only
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionLlmConfig {
+    /// Override LLM provider for this session (e.g., "openai", "anthropic", "ollama")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Override model for this session
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
 /// Unified session state for both voice and text inputs
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionState {
@@ -80,6 +92,9 @@ pub struct SessionState {
     /// All file operations and tool calls are scoped to this directory
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_dir: Option<PathBuf>,
+    /// Session-scoped LLM configuration (overrides global config when set)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_config: Option<SessionLlmConfig>,
 }
 
 impl SessionState {
@@ -693,6 +708,49 @@ pub fn set_session_workspace(session_id: &str, workspace_dir: PathBuf) {
         let mut sessions = manager.sessions.lock().unwrap();
         if let Some(session) = sessions.get_mut(session_id) {
             session.state.set_workspace(workspace_dir);
+        }
+    }
+}
+
+/// Get the session LLM config for a session
+pub fn get_session_llm_config(session_id: &str) -> Option<SessionLlmConfig> {
+    get_session_state(session_id).and_then(|s| s.llm_config)
+}
+
+/// Set the session LLM provider (overrides global config for this session)
+pub fn set_session_llm_provider(session_id: &str, provider: String) {
+    if let Some(manager) = get_window_manager() {
+        let mut sessions = manager.sessions.lock().unwrap();
+        if let Some(session) = sessions.get_mut(session_id) {
+            let llm_config = session
+                .state
+                .llm_config
+                .get_or_insert_with(Default::default);
+            llm_config.provider = Some(provider);
+        }
+    }
+}
+
+/// Set the session LLM model (overrides global config for this session)
+pub fn set_session_llm_model(session_id: &str, model: String) {
+    if let Some(manager) = get_window_manager() {
+        let mut sessions = manager.sessions.lock().unwrap();
+        if let Some(session) = sessions.get_mut(session_id) {
+            let llm_config = session
+                .state
+                .llm_config
+                .get_or_insert_with(Default::default);
+            llm_config.model = Some(model);
+        }
+    }
+}
+
+/// Clear session LLM config (revert to global config)
+pub fn clear_session_llm_config(session_id: &str) {
+    if let Some(manager) = get_window_manager() {
+        let mut sessions = manager.sessions.lock().unwrap();
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.state.llm_config = None;
         }
     }
 }

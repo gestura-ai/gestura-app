@@ -1,7 +1,8 @@
 # Gestura App Task Progress
 
 **Started:** 2026-01-19
-**Status:** ✅ All Tasks Completed
+**Phase 1 Status:** ✅ All Tasks Completed (Tasks 1-21)
+**Phase 2 Status:** ⬜ In Progress (Tasks 22-26)
 
 ---
 
@@ -342,9 +343,141 @@ Wire up the 9 voice command methods in speech.rs for hands-free control.
 
 ---
 
-## All Tasks Completed! 🎉
+## Phase 2 Tasks (2026-01-19)
 
-All 21 tasks have been implemented and verified:
+### Task 22: Fix LLM Provider Configuration Issues
+**Priority:** CRITICAL
+**Status:** ✅ COMPLETE
+
+**Problem:** LLM provider configurations (OpenAI, Grok, Anthropic) and model selections are broken across all major providers in both the configuration window and chat window.
+
+**Root cause:** Session-specific configuration updates are being applied to the default/global configuration instead of being isolated to the current session.
+
+**Solution Implemented:**
+- [x] Added `SessionLlmConfig` struct to `SessionState` in window_manager.rs
+- [x] Created new session-scoped Tauri commands:
+  - `get_session_llm_config` - Get session-specific LLM config
+  - `set_session_llm_provider` - Set provider for session only
+  - `set_session_llm_model` - Set model for session only
+  - `clear_session_llm_config` - Revert to global config
+  - `get_effective_llm_config` - Get merged session/global config
+- [x] Updated chat.html to use session-scoped commands
+- [x] Modified `process_chat_message_streaming` to apply session overrides
+
+**Files Modified:**
+- `crates/gestura-gui/src/window_manager.rs` - Added SessionLlmConfig, helper functions
+- `crates/gestura-gui/src/api.rs` - Added 5 new Tauri commands, modified message processing
+- `crates/gestura-gui/src/main.rs` - Registered new commands
+- `crates/gestura-gui/frontend/public/chat.html` - Updated to use session-scoped config
+
+---
+
+### Task 23: Implement Default Working Directory for New Chat Sessions
+**Priority:** HIGH
+**Status:** ⬜ NOT STARTED
+
+**Problem:** New chat sessions from the GUI may not have a default working directory defined.
+
+**Requirements:**
+- [ ] Use minimalist design as the current UI is crowded already
+- [ ] Inspect current implementation for session working directory initialization
+- [ ] Ensure all new chat sessions have a proper default working directory set
+- [ ] Default to user home directory or last used directory if no explicit setting
+- [ ] Fix any missing working directory initialization
+
+**Files to investigate:**
+- `crates/gestura-core/src/session_workspace.rs`
+- `crates/gestura-gui/src/orchestrator.rs`
+- Session creation logic in GUI
+
+---
+
+### Task 24: Add Session Configuration UI in GUI
+**Priority:** HIGH
+**Status:** ⬜ NOT STARTED
+
+**Problem:** No clear way to access session-specific settings in the GUI.
+
+**Requirements:**
+- [ ] Implement UI controls for per-session settings:
+  - Session working directory (with folder picker)
+  - Permission level (sandbox/restricted/full access)
+  - Workflow abilities/tools available (checkboxes or multi-select)
+  - Knowledge base additions/context (text area or file picker)
+- [ ] Determine appropriate placement in GUI:
+  - Option A: Sidebar panel in chat window
+  - Option B: Settings icon/button in chat header
+  - Option C: Dedicated session config dialog (modal)
+- [ ] Persist session settings across app restarts (optional)
+- [ ] Add visual indicator showing current session settings
+
+**Design considerations:**
+- Keep UI unobtrusive but accessible
+- Show most common settings first
+- Allow advanced settings in expandable section
+
+---
+
+### Task 25: Fix GUI Performance - Async Loading
+**Priority:** CRITICAL
+**Status:** ⬜ NOT STARTED
+
+**Problem:** Major lag when opening configuration window, chat window, and during application startup.
+
+**Root cause:** UI elements are not loading asynchronously, causing blocking operations.
+
+**Requirements:**
+- [ ] Profile and identify specific blocking operations
+- [ ] Convert all remaining synchronous operations to async
+- [ ] Implement progressive loading for UI fields
+- [ ] Add loading states/spinners for fields that populate dynamically:
+  - Model dropdowns (OpenAI, Anthropic, Grok, Ollama)
+  - API key validation status
+  - Config page sections
+- [ ] Ensure smooth transitions as data populates
+- [ ] Target: Config window opens in < 100ms, content loads progressively
+
+**Areas to investigate:**
+- Config page initial load (model list fetching)
+- Chat window startup
+- Main application initialization
+- Tauri command response times
+
+**Files to investigate:**
+- `crates/gestura-gui/frontend/public/config.html`
+- `crates/gestura-gui/frontend/public/chat.html`
+- `crates/gestura-gui/src/api.rs`
+- `crates/gestura-gui/src/main.rs`
+
+---
+
+### Task 26: Auto-populate API Keys Across Provider Services
+**Priority:** MEDIUM
+**Status:** ⬜ NOT STARTED
+
+**Problem:** Users must manually enter the same API key for both STT and LLM services from the same provider (e.g., OpenAI API key must be entered twice - once for Whisper STT and once for GPT models).
+
+**Requirements:**
+- [ ] When a provider supports both STT and LLM with the same token, automatically populate the STT API key field when the LLM API key is entered
+- [ ] Implement for OpenAI: Whisper STT + GPT LLM use the same API key
+- [ ] Allow manual override if user wants different keys for some reason
+- [ ] Add visual indicator showing key is synced from another field
+- [ ] Consider other providers as applicable (future: Google, Azure)
+
+**Implementation approach:**
+- Add `input` event listener on LLM API key field
+- Check if corresponding STT field is empty or was auto-populated
+- Copy value if appropriate
+- Track whether value was auto-populated vs manually entered
+
+**Files to modify:**
+- `crates/gestura-gui/frontend/public/config.html`
+
+---
+
+## Phase 1 Completed (Tasks 1-21) 🎉
+
+All 21 Phase 1 tasks have been implemented and verified:
 - ✅ All quality gates pass (`cargo fmt`, `cargo clippy -- -D warnings`)
 - ✅ All 100 tests pass (`cargo test --workspace --all-features`)
 - ✅ Dead code annotations removed where methods are now wired up

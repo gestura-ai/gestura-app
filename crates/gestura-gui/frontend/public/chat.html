@@ -1203,17 +1203,45 @@
             if (!providerSelect || !modelSelect) return;
 
             await refreshConfig();
-            const initialProvider = cachedConfig?.llm?.primary;
+
+            // Load the effective config for this session (session override or global fallback)
+            let initialProvider = cachedConfig?.llm?.primary || 'anthropic';
+            let initialModel = '';
+
+            if (sessionId) {
+                try {
+                    const [provider, model] = await window.__TAURI__.core.invoke('get_effective_llm_config', { sessionId });
+                    initialProvider = provider;
+                    initialModel = model;
+                } catch (e) {
+                    console.warn('Failed to get effective LLM config, using global', e);
+                }
+            }
+
             if (typeof initialProvider === 'string' && initialProvider.length > 0) {
                 providerSelect.value = initialProvider;
             }
 
             await populateModelSelectForProvider(providerSelect.value);
 
+            // If we have a session-specific model, select it
+            if (initialModel && modelSelect.querySelector(`option[value="${initialModel}"]`)) {
+                modelSelect.value = initialModel;
+            }
+
             providerSelect.addEventListener('change', async () => {
                 const provider = providerSelect.value;
                 try {
-                    await window.__TAURI__.core.invoke('update_llm_provider', { provider });
+                    // Use session-scoped config change (doesn't modify global config)
+                    if (sessionId) {
+                        await window.__TAURI__.core.invoke('set_session_llm_provider', {
+                            sessionId,
+                            provider
+                        });
+                    } else {
+                        // Fallback for sessions without ID (shouldn't happen, but be safe)
+                        await window.__TAURI__.core.invoke('update_llm_provider', { provider });
+                    }
                     await refreshConfig();
                     await populateModelSelectForProvider(provider);
                 } catch (e) {
@@ -1223,26 +1251,33 @@
             });
 
             modelSelect.addEventListener('change', async () => {
-                // Only allow saving model selection for Ollama.
-                if (providerSelect.value !== 'ollama') return;
                 const model = modelSelect.value;
                 if (!model) return;
 
                 try {
-                    const cfg = cachedConfig || (await refreshConfig());
-                    if (!cfg) return;
+                    // Use session-scoped model change (doesn't modify global config)
+                    if (sessionId) {
+                        await window.__TAURI__.core.invoke('set_session_llm_model', {
+                            sessionId,
+                            model
+                        });
+                    } else if (providerSelect.value === 'ollama') {
+                        // Legacy fallback: Only save to global config for Ollama if no session
+                        const cfg = cachedConfig || (await refreshConfig());
+                        if (!cfg) return;
 
-                    const endpoint =
-                        cfg?.llm?.ollama?.base_url ||
-                        cfg?.llm?.ollama?.endpoint ||
-                        'http://localhost:11434';
+                        const endpoint =
+                            cfg?.llm?.ollama?.base_url ||
+                            cfg?.llm?.ollama?.endpoint ||
+                            'http://localhost:11434';
 
-                    cfg.llm.ollama = cfg.llm.ollama || { base_url: endpoint, model: model };
-                    cfg.llm.ollama.base_url = cfg.llm.ollama.base_url || endpoint;
-                    cfg.llm.ollama.model = model;
+                        cfg.llm.ollama = cfg.llm.ollama || { base_url: endpoint, model: model };
+                        cfg.llm.ollama.base_url = cfg.llm.ollama.base_url || endpoint;
+                        cfg.llm.ollama.model = model;
 
-                    await window.__TAURI__.core.invoke('save_config', { cfg });
-                    await refreshConfig();
+                        await window.__TAURI__.core.invoke('save_config', { cfg });
+                        await refreshConfig();
+                    }
                 } catch (e) {
                     console.error('Failed to save model', e);
                     addMessage(`Error saving model: ${e}`, 'agent');

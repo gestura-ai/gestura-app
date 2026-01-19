@@ -1191,7 +1191,52 @@ pub async fn process_chat_message_streaming(
     use tauri::Emitter;
     use tokio::sync::mpsc;
 
-    let cfg = AppConfig::load_async().await;
+    let mut cfg = AppConfig::load_async().await;
+
+    // Apply session-specific LLM config overrides (doesn't modify persisted global config)
+    if let Some(ref sid) = session_id
+        && let Some(session_llm) = crate::window_manager::get_session_llm_config(sid)
+    {
+        if let Some(provider) = session_llm.provider {
+            tracing::debug!(
+                session_id = %sid,
+                provider = %provider,
+                "Using session-scoped LLM provider"
+            );
+            cfg.llm.primary = provider.clone();
+        }
+        if let Some(model) = session_llm.model {
+            tracing::debug!(
+                session_id = %sid,
+                model = %model,
+                "Using session-scoped LLM model"
+            );
+            // Apply model to the active provider's config
+            match cfg.llm.primary.as_str() {
+                "openai" => {
+                    if let Some(ref mut openai) = cfg.llm.openai {
+                        openai.model = model;
+                    }
+                }
+                "anthropic" => {
+                    if let Some(ref mut anthropic) = cfg.llm.anthropic {
+                        anthropic.model = model;
+                    }
+                }
+                "grok" => {
+                    if let Some(ref mut grok) = cfg.llm.grok {
+                        grok.model = model;
+                    }
+                }
+                "ollama" => {
+                    if let Some(ref mut ollama) = cfg.llm.ollama {
+                        ollama.model = model;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 
     let message_source = match source.as_deref().map(|s| s.trim().to_ascii_lowercase()) {
         Some(s) if s == "voice" => crate::window_manager::MessageSource::Voice,
@@ -2262,6 +2307,86 @@ pub async fn pick_workspace_directory(app: tauri::AppHandle) -> Result<Option<St
         }
         Ok(None) => Ok(None),
         Err(_) => Err("Dialog was cancelled".to_string()),
+    }
+}
+
+// ============================================================================
+// Session LLM Config Commands (session-scoped, doesn't modify global config)
+// ============================================================================
+
+/// Get the session-scoped LLM config for a chat session
+/// Returns None if no session-specific override is set (uses global config)
+#[tauri::command]
+pub fn get_session_llm_config(
+    session_id: String,
+) -> Option<crate::window_manager::SessionLlmConfig> {
+    crate::window_manager::get_session_llm_config(&session_id)
+}
+
+/// Set the LLM provider for a specific session (doesn't modify global config)
+/// This allows users to switch providers mid-conversation without affecting defaults
+#[tauri::command]
+pub fn set_session_llm_provider(session_id: String, provider: String) -> Result<(), String> {
+    crate::window_manager::set_session_llm_provider(&session_id, provider.clone());
+    tracing::info!(
+        session_id = %session_id,
+        provider = %provider,
+        "Session LLM provider updated (session-scoped)"
+    );
+    Ok(())
+}
+
+/// Set the LLM model for a specific session (doesn't modify global config)
+#[tauri::command]
+pub fn set_session_llm_model(session_id: String, model: String) -> Result<(), String> {
+    crate::window_manager::set_session_llm_model(&session_id, model.clone());
+    tracing::info!(
+        session_id = %session_id,
+        model = %model,
+        "Session LLM model updated (session-scoped)"
+    );
+    Ok(())
+}
+
+/// Clear session LLM config (revert to global config for this session)
+#[tauri::command]
+pub fn clear_session_llm_config(session_id: String) -> Result<(), String> {
+    crate::window_manager::clear_session_llm_config(&session_id);
+    tracing::info!(session_id = %session_id, "Session LLM config cleared (using global config)");
+    Ok(())
+}
+
+/// Get the effective LLM config for a session (session override or global fallback)
+/// Returns (provider, model) tuple
+#[tauri::command]
+pub async fn get_effective_llm_config(session_id: String) -> Result<(String, String), String> {
+    let global_cfg = AppConfig::load_async().await;
+
+    // Check for session-specific override first
+    if let Some(session_llm) = crate::window_manager::get_session_llm_config(&session_id) {
+        let provider = session_llm
+            .provider
+            .unwrap_or_else(|| global_cfg.llm.primary.clone());
+        let model = session_llm
+            .model
+            .unwrap_or_else(|| get_model_for_provider(&global_cfg, &provider).unwrap_or_default());
+        return Ok((provider, model));
+    }
+
+    // Fall back to global config
+    let provider = global_cfg.llm.primary.clone();
+    let model = get_model_for_provider(&global_cfg, &provider).unwrap_or_default();
+    Ok((provider, model))
+}
+
+/// Helper to get the configured model for a provider from global config
+fn get_model_for_provider(cfg: &AppConfig, provider: &str) -> Option<String> {
+    match provider {
+        "openai" => cfg.llm.openai.as_ref().map(|c| c.model.clone()),
+        "anthropic" => cfg.llm.anthropic.as_ref().map(|c| c.model.clone()),
+        "grok" => cfg.llm.grok.as_ref().map(|c| c.model.clone()),
+        "ollama" => cfg.llm.ollama.as_ref().map(|c| c.model.clone()),
+        _ => None,
     }
 }
 

@@ -192,6 +192,12 @@ async fn main() {
             gestura_gui::api::get_session_workspace,
             gestura_gui::api::set_session_workspace,
             gestura_gui::api::pick_workspace_directory,
+            // Session LLM config (session-scoped, doesn't modify global config)
+            gestura_gui::api::get_session_llm_config,
+            gestura_gui::api::set_session_llm_provider,
+            gestura_gui::api::set_session_llm_model,
+            gestura_gui::api::clear_session_llm_config,
+            gestura_gui::api::get_effective_llm_config,
             // Simulator management
             gestura_gui::commands::get_simulators,
             gestura_gui::commands::scan_for_simulators,
