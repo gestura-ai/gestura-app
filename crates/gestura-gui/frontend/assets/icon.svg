@@ -5,9 +5,34 @@
    viewBox="0 0 24 24"
    version="1.1"
    id="svg1"
+   sodipodi:docname="icon.svg"
+   inkscape:version="1.4.2 (ebf0e940, 2025-05-08)"
+   inkscape:export-filename="../../icons/icon.png"
+   inkscape:export-xdpi="4096"
+   inkscape:export-ydpi="4096"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns:xlink="http://www.w3.org/1999/xlink"
    xmlns="http://www.w3.org/2000/svg"
    xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#505050"
+     bordercolor="#eeeeee"
+     borderopacity="1"
+     inkscape:showpageshadow="0"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="18.557971"
+     inkscape:cx="12.0164"
+     inkscape:cy="12.0164"
+     inkscape:window-width="1792"
+     inkscape:window-height="987"
+     inkscape:window-x="0"
+     inkscape:window-y="25"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg1" />
   <defs
      id="defs1">
     <linearGradient
@@ -30,12 +55,12 @@
        fy="14.234991"
        r="12"
        gradientUnits="userSpaceOnUse"
-       gradientTransform="matrix(-4.0341802,2.1707906,-1.5393788,-2.8615514,112.20045,6.2514976)" />
+       gradientTransform="matrix(-3.2552258,1.6541577,-1.2421422,-2.1805223,92.852881,7.6196008)" />
   </defs>
   <path
-     d="M24 3c0-1.657-1.343-3-3-3h-18c-1.657 0-3 1.343-3 3v18c0 1.657 1.343 3 3 3h18c1.657 0 3-1.343 3-3v-18z"
+     d="m 21.682936,5.1419367 c 0,-1.2626456 -1.083682,-2.286021 -2.420734,-2.286021 H 4.7377977 c -1.3370521,0 -2.4207341,1.0233754 -2.4207341,2.286021 V 18.858063 c 0,1.262646 1.083682,2.286021 2.4207341,2.286021 H 19.262202 c 1.337052,0 2.420734,-1.023375 2.420734,-2.286021 z"
      id="path1"
-     style="fill:url(#radialGradient2);fill-opacity:1" />
+     style="fill:url(#radialGradient2);fill-opacity:1;stroke-width:0.784138" />
   <g
      id="g258"
      transform="matrix(0.13531189,0,0,0.12035219,-1.5365008,-5.8602121)">
