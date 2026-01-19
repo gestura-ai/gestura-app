@@ -1,14 +1,34 @@
 //! MCP server implementation with JSON-RPC transport
-//! Provides MCP protocol compliance and tool execution
+//! Provides MCP protocol compliance (Version 2025-11-25) and tool execution
 
 use crate::AppError;
 use crate::haptics::{HapticAuthToken, HapticInterface};
 use crate::security::McpToken;
-use gestura_core::mcp::{McpIntegrator, get_mcp};
+use gestura_core::mcp::{
+    // Types
+    InitializeParams,
+    McpIntegrator,
+    McpLogger,
+    McpNotification,
+    // Notifications
+    ProgressTracker,
+    // Prompts
+    PromptRegistry,
+    PromptsGetParams,
+    PromptsListResult,
+    // Lifecycle
+    SessionManager,
+    create_notification_channel,
+    create_session_manager,
+    error_codes,
+    get_mcp,
+    mcp_error_codes,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::broadcast;
 
 /// JSON-RPC request structure
 #[derive(Debug, Deserialize)]
@@ -57,23 +77,44 @@ pub struct McpResource {
     pub mime_type: Option<String>,
 }
 
-/// MCP server implementation
+/// MCP server implementation with full protocol compliance
 pub struct McpServer {
     tools: HashMap<String, McpTool>,
     resources: HashMap<String, McpResource>,
     haptic_interface: Arc<dyn HapticInterface>,
     #[allow(dead_code)]
     auth_tokens: HashMap<String, McpToken>,
+    /// Session manager for lifecycle handling
+    session: Arc<SessionManager>,
+    /// Prompt registry for prompts/list and prompts/get
+    prompts: PromptRegistry,
+    /// Progress tracker for long-running operations
+    progress_tracker: Arc<ProgressTracker>,
+    /// MCP logger for logging notifications
+    mcp_logger: McpLogger,
+    /// Notification sender for broadcasting MCP notifications
+    notification_sender: broadcast::Sender<McpNotification>,
 }
 
 impl McpServer {
-    /// Create a new MCP server
+    /// Create a new MCP server with full protocol support
     pub fn new(haptic_interface: Arc<dyn HapticInterface>) -> Self {
+        let (notification_sender, _) = create_notification_channel();
+        let session = create_session_manager();
+        let prompts = PromptRegistry::new();
+        let progress_tracker = Arc::new(ProgressTracker::new(notification_sender.clone()));
+        let mcp_logger = McpLogger::new(notification_sender.clone(), Some("gestura".to_string()));
+
         let mut server = Self {
             tools: HashMap::new(),
             resources: HashMap::new(),
             haptic_interface,
             auth_tokens: HashMap::new(),
+            session,
+            prompts,
+            progress_tracker,
+            mcp_logger,
+            notification_sender,
         };
 
         // Register built-in tools
@@ -81,6 +122,21 @@ impl McpServer {
         server.register_ring_resources();
 
         server
+    }
+
+    /// Get the session manager for lifecycle operations
+    pub fn session(&self) -> &Arc<SessionManager> {
+        &self.session
+    }
+
+    /// Get the progress tracker
+    pub fn progress_tracker(&self) -> &Arc<ProgressTracker> {
+        &self.progress_tracker
+    }
+
+    /// Get notification receiver for listening to MCP notifications
+    pub fn subscribe_notifications(&self) -> broadcast::Receiver<McpNotification> {
+        self.notification_sender.subscribe()
     }
 
     /// Register haptic feedback tools
@@ -130,15 +186,28 @@ impl McpServer {
             .with_tag("method".to_string(), request.method.clone());
 
         let response = match request.method.as_str() {
+            // Lifecycle methods
+            "initialize" => self.handle_initialize(request.params, request.id).await,
+            "notifications/initialized" => self.handle_initialized(request.id).await,
+            "ping" => self.handle_ping(request.id).await,
+            "shutdown" => self.handle_shutdown(request.id).await,
+            // Tools
             "tools/list" => self.handle_list_tools(request.id).await,
             "tools/call" => self.handle_call_tool(request.params, request.id).await,
+            // Resources
             "resources/list" => self.handle_list_resources(request.id).await,
             "resources/read" => self.handle_read_resource(request.params, request.id).await,
+            // Prompts
+            "prompts/list" => self.handle_list_prompts(request.params, request.id).await,
+            "prompts/get" => self.handle_get_prompt(request.params, request.id).await,
+            // Cancellation
+            "notifications/cancelled" => self.handle_cancelled(request.params, request.id).await,
+            // Unknown method
             _ => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 result: None,
                 error: Some(JsonRpcError {
-                    code: -32601,
+                    code: error_codes::METHOD_NOT_FOUND,
                     message: "Method not found".to_string(),
                     data: None,
                 }),
@@ -170,6 +239,243 @@ impl McpServer {
 
         response
     }
+
+    // ========================================================================
+    // Lifecycle handlers (MCP 2025-11-25 spec)
+    // ========================================================================
+
+    /// Handle initialize request
+    async fn handle_initialize(
+        &self,
+        params: Option<serde_json::Value>,
+        id: Option<serde_json::Value>,
+    ) -> JsonRpcResponse {
+        let init_params: InitializeParams = match params {
+            Some(p) => match serde_json::from_value(p) {
+                Ok(params) => params,
+                Err(e) => {
+                    return JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: error_codes::INVALID_PARAMS,
+                            message: format!("Invalid initialize params: {}", e),
+                            data: None,
+                        }),
+                        id,
+                    };
+                }
+            },
+            None => {
+                return JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: error_codes::INVALID_PARAMS,
+                        message: "Missing initialize params".to_string(),
+                        data: None,
+                    }),
+                    id,
+                };
+            }
+        };
+
+        match self.session.initialize(init_params) {
+            Ok(result) => {
+                self.mcp_logger.info("MCP session initialized");
+                JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    result: Some(serde_json::to_value(result).unwrap_or_default()),
+                    error: None,
+                    id,
+                }
+            }
+            Err(e) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(JsonRpcError {
+                    code: mcp_error_codes::ALREADY_INITIALIZED,
+                    message: e,
+                    data: None,
+                }),
+                id,
+            },
+        }
+    }
+
+    /// Handle initialized notification (completes handshake)
+    async fn handle_initialized(&self, id: Option<serde_json::Value>) -> JsonRpcResponse {
+        match self.session.initialized() {
+            Ok(()) => {
+                self.mcp_logger.info("MCP session ready");
+                JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    result: Some(serde_json::json!({})),
+                    error: None,
+                    id,
+                }
+            }
+            Err(e) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(JsonRpcError {
+                    code: mcp_error_codes::NOT_INITIALIZED,
+                    message: e,
+                    data: None,
+                }),
+                id,
+            },
+        }
+    }
+
+    /// Handle ping request
+    async fn handle_ping(&self, id: Option<serde_json::Value>) -> JsonRpcResponse {
+        let result = self.session.ping();
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: Some(serde_json::to_value(result).unwrap_or_default()),
+            error: None,
+            id,
+        }
+    }
+
+    /// Handle shutdown request
+    async fn handle_shutdown(&self, id: Option<serde_json::Value>) -> JsonRpcResponse {
+        match self.session.shutdown() {
+            Ok(()) => {
+                self.mcp_logger.info("MCP session shutdown");
+                JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    result: Some(serde_json::json!({})),
+                    error: None,
+                    id,
+                }
+            }
+            Err(e) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(JsonRpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: e,
+                    data: None,
+                }),
+                id,
+            },
+        }
+    }
+
+    // ========================================================================
+    // Prompts handlers (MCP 2025-11-25 spec)
+    // ========================================================================
+
+    /// Handle prompts/list request
+    async fn handle_list_prompts(
+        &self,
+        _params: Option<serde_json::Value>,
+        id: Option<serde_json::Value>,
+    ) -> JsonRpcResponse {
+        let prompts = self.prompts.list();
+        let result = PromptsListResult {
+            prompts,
+            next_cursor: None,
+        };
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: Some(serde_json::to_value(result).unwrap_or_default()),
+            error: None,
+            id,
+        }
+    }
+
+    /// Handle prompts/get request
+    async fn handle_get_prompt(
+        &self,
+        params: Option<serde_json::Value>,
+        id: Option<serde_json::Value>,
+    ) -> JsonRpcResponse {
+        let get_params: PromptsGetParams = match params {
+            Some(p) => match serde_json::from_value(p) {
+                Ok(params) => params,
+                Err(e) => {
+                    return JsonRpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: error_codes::INVALID_PARAMS,
+                            message: format!("Invalid prompts/get params: {}", e),
+                            data: None,
+                        }),
+                        id,
+                    };
+                }
+            },
+            None => {
+                return JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: error_codes::INVALID_PARAMS,
+                        message: "Missing prompts/get params".to_string(),
+                        data: None,
+                    }),
+                    id,
+                };
+            }
+        };
+
+        match self
+            .prompts
+            .get(&get_params.name, get_params.arguments.as_ref())
+        {
+            Some(result) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: Some(serde_json::to_value(result).unwrap_or_default()),
+                error: None,
+                id,
+            },
+            None => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(JsonRpcError {
+                    code: mcp_error_codes::PROMPT_NOT_FOUND,
+                    message: format!("Prompt not found: {}", get_params.name),
+                    data: None,
+                }),
+                id,
+            },
+        }
+    }
+
+    // ========================================================================
+    // Cancellation handler (MCP 2025-11-25 spec)
+    // ========================================================================
+
+    /// Handle notifications/cancelled
+    async fn handle_cancelled(
+        &self,
+        params: Option<serde_json::Value>,
+        id: Option<serde_json::Value>,
+    ) -> JsonRpcResponse {
+        if let Some(p) = params
+            && let Some(request_id) = p.get("requestId").and_then(|v| v.as_str())
+        {
+            let reason = p.get("reason").and_then(|v| v.as_str()).map(String::from);
+            self.progress_tracker.cancel_operation(request_id, reason);
+            self.mcp_logger
+                .info(format!("Request {} cancelled", request_id));
+        }
+        // Notifications don't have responses, but we return empty for consistency
+        JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: Some(serde_json::json!({})),
+            error: None,
+            id,
+        }
+    }
+
+    // ========================================================================
+    // Tools handlers
+    // ========================================================================
 
     /// Handle tools/list request
     async fn handle_list_tools(&self, id: Option<serde_json::Value>) -> JsonRpcResponse {
@@ -219,7 +525,10 @@ impl McpServer {
         };
 
         // Execute tool with auth token
-        match self.execute_tool(&tool_name, args, auth_token.as_deref()).await {
+        match self
+            .execute_tool(&tool_name, args, auth_token.as_deref())
+            .await
+        {
             Ok(result) => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 result: Some(result),
@@ -247,27 +556,27 @@ impl McpServer {
         auth_token: Option<&str>,
     ) -> Result<serde_json::Value, AppError> {
         // Check if tool requires authentication
-        if let Some(tool) = self.tools.get(tool_name) {
-            if tool.requires_auth {
-                // Validate auth token using gestura-core MCP module
-                let token = auth_token.ok_or_else(|| {
-                    AppError::Io(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        "Authentication required: missing auth_token in request params",
-                    ))
-                })?;
+        if let Some(tool) = self.tools.get(tool_name)
+            && tool.requires_auth
+        {
+            // Validate auth token using gestura-core MCP module
+            let token = auth_token.ok_or_else(|| {
+                AppError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "Authentication required: missing auth_token in request params",
+                ))
+            })?;
 
-                let mcp = get_mcp();
-                let is_valid = mcp.validate_token(token).await?;
-                if !is_valid {
-                    return Err(AppError::Io(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        "Invalid or expired authentication token",
-                    )));
-                }
-
-                tracing::info!("MCP tool '{}' authenticated successfully", tool_name);
+            let mcp = get_mcp();
+            let is_valid = mcp.validate_token(token).await?;
+            if !is_valid {
+                return Err(AppError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "Invalid or expired authentication token",
+                )));
             }
+
+            tracing::info!("MCP tool '{}' authenticated successfully", tool_name);
         }
 
         match tool_name {
@@ -544,10 +853,103 @@ impl McpServer {
         Ok(())
     }
 
-    /// Start HTTP server for MCP
-    pub async fn start_http_server(&self, port: u16) -> Result<(), crate::AppError> {
+    /// Start HTTP server for MCP with SSE streaming support
+    pub async fn start_http_server(self: Arc<Self>, port: u16) -> Result<(), crate::AppError> {
+        use axum::{
+            Router,
+            routing::{get, post},
+        };
+        use tower_http::cors::{Any, CorsLayer};
+
         tracing::info!("Starting MCP HTTP server on port {}", port);
-        // TODO: Implement actual HTTP server with warp or axum
+
+        // Clone self for handlers
+        let server = self.clone();
+
+        // Configure CORS for cross-origin MCP clients
+        let cors = CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::OPTIONS,
+            ])
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::AUTHORIZATION,
+                axum::http::header::ACCEPT,
+            ])
+            .expose_headers([axum::http::header::CONTENT_TYPE]);
+
+        // Build router with CORS
+        let app = Router::new()
+            .route("/mcp", post(mcp_handler))
+            .route("/mcp/sse", get(sse_handler))
+            .route("/health", get(health_handler))
+            .layer(cors)
+            .with_state(server);
+
+        // Bind and serve
+        let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .map_err(crate::AppError::Io)?;
+
+        tracing::info!("MCP HTTP server listening on http://{}", addr);
+
+        axum::serve(listener, app).await.map_err(|e| {
+            crate::AppError::Io(std::io::Error::other(format!("Server error: {e}")))
+        })?;
+
         Ok(())
     }
+}
+
+// ============================================================================
+// HTTP Handlers
+// ============================================================================
+
+/// Health check endpoint
+async fn health_handler() -> impl axum::response::IntoResponse {
+    axum::Json(serde_json::json!({
+        "status": "ok",
+        "service": "gestura-mcp",
+        "version": env!("CARGO_PKG_VERSION")
+    }))
+}
+
+/// MCP JSON-RPC handler
+async fn mcp_handler(
+    axum::extract::State(server): axum::extract::State<Arc<McpServer>>,
+    axum::Json(request): axum::Json<JsonRpcRequest>,
+) -> impl axum::response::IntoResponse {
+    let response = server.handle_request(request).await;
+    axum::Json(response)
+}
+
+/// SSE handler for streaming notifications
+async fn sse_handler(
+    axum::extract::State(server): axum::extract::State<Arc<McpServer>>,
+) -> axum::response::sse::Sse<
+    impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+> {
+    use futures::StreamExt;
+    use tokio_stream::wrappers::BroadcastStream;
+
+    let receiver = server.subscribe_notifications();
+    let stream = BroadcastStream::new(receiver).filter_map(|result| async move {
+        match result {
+            Ok(notification) => {
+                let data = serde_json::to_string(&notification).ok()?;
+                Some(Ok(axum::response::sse::Event::default().data(data)))
+            }
+            Err(_) => None,
+        }
+    });
+
+    axum::response::sse::Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(std::time::Duration::from_secs(15))
+            .text("ping"),
+    )
 }

@@ -1,8 +1,6 @@
-//! MCP integration and local MDH (Stage 4 scaffolding)
-//! - McpIntegrator trait for tool exposure and dual auth
-//! - Local MDH translate function: reads a JSON(-LD) file, validates shape, and emits
-//!   an MCP-compatible resource (local-only, offline)
-//! - Token validation with storage and expiration
+//! MCP Integrator - Token management and tool exposure
+//! Provides McpIntegrator trait and LocalMcp implementation for
+//! tool exposure, dual authentication, and MDH translation.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
