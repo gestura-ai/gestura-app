@@ -91,7 +91,8 @@ pub struct TestResult {
 
 /// Code analysis service
 pub struct CodeTools {
-    #[allow(dead_code)]
+    /// Working directory for relative path resolution.
+    /// Used to resolve relative paths in code analysis operations.
     work_dir: Option<PathBuf>,
 }
 
@@ -106,8 +107,27 @@ impl CodeTools {
         Self { work_dir }
     }
 
-    /// Get code statistics for a directory
+    /// Resolve a path, making it absolute if relative and work_dir is set.
+    /// Returns the original path if it's already absolute or no work_dir is configured.
+    pub fn resolve_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else if let Some(ref work_dir) = self.work_dir {
+            work_dir.join(path)
+        } else {
+            path.to_path_buf()
+        }
+    }
+
+    /// Get the configured working directory
+    pub fn work_dir(&self) -> Option<&Path> {
+        self.work_dir.as_deref()
+    }
+
+    /// Get code statistics for a directory.
+    /// Resolves relative paths using the configured work_dir.
     pub fn stats(&self, path: &Path) -> Result<CodeStats> {
+        let resolved_path = self.resolve_path(path);
         let mut stats = CodeStats {
             total_files: 0,
             total_lines: 0,
@@ -117,7 +137,7 @@ impl CodeTools {
             by_language: HashMap::new(),
         };
 
-        self.collect_stats(path, &mut stats)?;
+        self.collect_stats(&resolved_path, &mut stats)?;
         Ok(stats)
     }
 
