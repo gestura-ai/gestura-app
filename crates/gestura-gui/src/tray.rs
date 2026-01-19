@@ -348,6 +348,7 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
 }
 
 /// Helper to open DevTools for a specific window label
+#[cfg(debug_assertions)]
 fn open_window_devtools(app: &AppHandle, window_label: &str) {
     if let Some(window) = app.get_webview_window(window_label) {
         // Ensure window is visible and focused before opening DevTools
@@ -390,6 +391,7 @@ fn open_window_devtools(app: &AppHandle, window_label: &str) {
 }
 
 /// Helper to open DevTools for the most recently active open chat session
+#[cfg(debug_assertions)]
 fn open_last_chat_devtools(app: &AppHandle) {
     let sessions = get_all_sessions();
     let maybe_session = sessions
@@ -522,7 +524,7 @@ fn handle_tray_event(tray: &tauri::tray::TrayIcon, event: TrayIconEvent) {
 pub fn start_listening_with_validation(app: &AppHandle) -> Result<(), String> {
     // Validate configuration first so that tray-initiated starts behave the
     // same way as the chat UI and return user-friendly error messages.
-    let validation = crate::api::validate_voice_and_llm_config();
+    let validation = crate::api::validate_voice_and_llm_config_sync();
     if !validation.is_valid {
         let error_msg = format!(
             "{} {}",

@@ -32,6 +32,9 @@ pub struct AppConfig {
     /// Notification settings for response completion and feedback
     #[serde(default)]
     pub notifications: NotificationSettings,
+    /// Web search configuration
+    #[serde(default)]
+    pub web_search: WebSearchConfig,
 }
 
 /// Notification settings for response completion and MCP feedback
@@ -134,8 +137,11 @@ impl Default for SimulatorSettings {
 /// LLM settings grouping provider-specific configs
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LlmSettings {
-    /// Primary provider id: "openai" | "anthropic" | "grok" | "ollama" | "echo"
+    /// Primary provider id: "openai" | "anthropic" | "grok" | "ollama"
     pub primary: String,
+    /// Fallback provider id (optional): used when primary fails
+    #[serde(default)]
+    pub fallback: Option<String>,
     pub openai: Option<OpenAiConfig>,
     pub anthropic: Option<AnthropicConfig>,
     pub grok: Option<GrokConfig>,
@@ -154,6 +160,13 @@ pub struct AnthropicConfig {
     pub api_key: String,
     pub base_url: Option<String>,
     pub model: String,
+
+    /// Optional: enable Anthropic "extended thinking" streaming.
+    ///
+    /// When set, we send `thinking: { type: "enabled", budget_tokens: N }` in the request body.
+    /// Only certain Claude models support this; if your model does not, Anthropic will reject the request.
+    #[serde(default)]
+    pub thinking_budget_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -194,6 +207,66 @@ pub struct McpTool {
     pub endpoint: String,
 }
 
+// ============================================================================
+// Web Search Configuration
+// ============================================================================
+
+/// Web search provider selection
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WebSearchProvider {
+    /// Local HTTP-based search (no API key required) - DEFAULT
+    /// Uses DuckDuckGo HTML scraping with smart content extraction
+    #[default]
+    Local,
+    /// SerpAPI provider (requires API key)
+    SerpApi,
+    /// DuckDuckGo Instant Answer API (no API key, limited results)
+    DuckDuckGo,
+    /// Brave Search API (requires API key)
+    Brave,
+}
+
+/// Web search configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct WebSearchConfig {
+    /// Primary search provider
+    pub provider: WebSearchProvider,
+    /// SerpAPI API key (optional)
+    pub serpapi_key: Option<String>,
+    /// Brave Search API key (optional)
+    pub brave_key: Option<String>,
+    /// Maximum number of search results to return
+    pub max_results: usize,
+    /// Request timeout in seconds
+    pub timeout_secs: u64,
+    /// User agent string for HTTP requests
+    pub user_agent: String,
+    /// Enable content extraction from search result pages
+    pub extract_content: bool,
+    /// Maximum content length per page (in characters)
+    pub max_content_length: usize,
+    /// Fallback providers if primary fails (in order)
+    pub fallback_providers: Vec<WebSearchProvider>,
+}
+
+impl Default for WebSearchConfig {
+    fn default() -> Self {
+        Self {
+            provider: WebSearchProvider::Local,
+            serpapi_key: None,
+            brave_key: None,
+            max_results: 5,
+            timeout_secs: 30,
+            user_agent: "Gestura/0.2.0 (+https://gestura.ai)".to_string(),
+            extract_content: true,
+            max_content_length: 10_000,
+            fallback_providers: vec![WebSearchProvider::DuckDuckGo],
+        }
+    }
+}
+
 impl Default for DeveloperSettings {
     fn default() -> Self {
         Self {
@@ -212,7 +285,8 @@ impl Default for AppConfig {
             hotkey_listen: "Ctrl+Space".to_string(),
             grace_period_secs: 30,
             llm: LlmSettings {
-                primary: "echo".into(),
+                primary: "anthropic".into(), // Default to Anthropic; user must configure API key
+                fallback: Some("ollama".into()), // Fallback to local Ollama if available
                 openai: None,
                 anthropic: None,
                 grok: None,
@@ -236,6 +310,7 @@ impl Default for AppConfig {
             nats_url: "nats://127.0.0.1:4223".to_string(),
             developer: DeveloperSettings::default(),
             notifications: NotificationSettings::default(),
+            web_search: WebSearchConfig::default(),
         }
     }
 }
@@ -273,7 +348,7 @@ impl AppConfig {
         Self::whisper_models_dir().join("ggml-base.en.bin")
     }
 
-    /// Load configuration from disk, falling back to defaults if missing
+    /// Load configuration from disk, falling back to defaults if missing (sync version)
     pub fn load() -> Self {
         let path = Self::default_path();
         match fs::read_to_string(&path) {
@@ -282,7 +357,18 @@ impl AppConfig {
         }
     }
 
-    /// Save configuration to disk
+    /// Load configuration from disk asynchronously, falling back to defaults if missing
+    ///
+    /// This is the preferred method for GUI/Tauri commands to avoid blocking the UI thread.
+    pub async fn load_async() -> Self {
+        let path = Self::default_path();
+        match tokio::fs::read_to_string(&path).await {
+            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+            Err(_) => Self::default(),
+        }
+    }
+
+    /// Save configuration to disk (sync version)
     pub fn save(&self) -> Result<()> {
         let path = Self::default_path();
         if let Some(parent) = path.parent() {
@@ -291,6 +377,20 @@ impl AppConfig {
         let data = serde_json::to_string_pretty(self)
             .map_err(|e| AppError::Config(format!("Failed to serialize config: {}", e)))?;
         fs::write(path, data)?;
+        Ok(())
+    }
+
+    /// Save configuration to disk asynchronously
+    ///
+    /// This is the preferred method for GUI/Tauri commands to avoid blocking the UI thread.
+    pub async fn save_async(&self) -> Result<()> {
+        let path = Self::default_path();
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let data = serde_json::to_string_pretty(self)
+            .map_err(|e| AppError::Config(format!("Failed to serialize config: {}", e)))?;
+        tokio::fs::write(path, data).await?;
         Ok(())
     }
 
@@ -402,13 +502,14 @@ mod tests {
         let c = AppConfig::default();
         assert_eq!(c.hotkey_listen, "Ctrl+Space");
         assert_eq!(c.grace_period_secs, 30);
-        assert_eq!(c.llm.primary, "echo");
+        assert_eq!(c.llm.primary, "anthropic");
+        assert_eq!(c.llm.fallback, Some("ollama".to_string()));
     }
 
     #[test]
     fn test_config_get() {
         let c = AppConfig::default();
-        assert_eq!(c.get("llm.primary"), Some("echo".to_string()));
+        assert_eq!(c.get("llm.primary"), Some("anthropic".to_string()));
         assert_eq!(c.get("unknown.key"), None);
     }
 

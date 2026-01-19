@@ -6,13 +6,13 @@ use crate::{
 use tauri::{Emitter, Manager};
 
 #[tauri::command]
-pub fn get_config() -> Result<AppConfig, String> {
-    Ok(AppConfig::load())
+pub async fn get_config() -> Result<AppConfig, String> {
+    Ok(AppConfig::load_async().await)
 }
 
 #[tauri::command]
-pub fn save_config(cfg: AppConfig) -> Result<(), String> {
-    cfg.save().map_err(|e| e.to_string())
+pub async fn save_config(cfg: AppConfig) -> Result<(), String> {
+    cfg.save_async().await.map_err(|e| e.to_string())
 }
 
 /// Check if this is the first run of the application (no config file exists yet).
@@ -27,49 +27,180 @@ pub fn get_config_path() -> String {
     AppConfig::default_path().to_string_lossy().to_string()
 }
 
+/// Tool information for the frontend
+#[derive(serde::Serialize)]
+pub struct ToolInfo {
+    pub name: String,
+    pub summary: String,
+    pub inputs: Vec<String>,
+    pub side_effects: Vec<String>,
+    pub examples: Vec<String>,
+}
+
+/// List all built-in tools
 #[tauri::command]
-pub fn list_mcp_tools() -> Result<Vec<crate::config::McpTool>, String> {
-    Ok(AppConfig::load().mcp_tools)
+pub fn list_builtin_tools() -> Vec<ToolInfo> {
+    gestura_core::tools::all_tools()
+        .iter()
+        .map(|t| ToolInfo {
+            name: t.name.to_string(),
+            summary: t.summary.to_string(),
+            inputs: t.inputs.iter().map(|s| s.to_string()).collect(),
+            side_effects: t.side_effects.iter().map(|s| s.to_string()).collect(),
+            examples: t.examples.iter().map(|s| s.to_string()).collect(),
+        })
+        .collect()
 }
 
 #[tauri::command]
-pub fn add_mcp_tool(tool: crate::config::McpTool) -> Result<(), String> {
-    let mut cfg = AppConfig::load();
+pub async fn list_mcp_tools() -> Result<Vec<crate::config::McpTool>, String> {
+    Ok(AppConfig::load_async().await.mcp_tools)
+}
+
+#[tauri::command]
+pub async fn add_mcp_tool(tool: crate::config::McpTool) -> Result<(), String> {
+    let mut cfg = AppConfig::load_async().await;
     if !cfg.mcp_tools.iter().any(|t| t.name == tool.name) {
         cfg.mcp_tools.push(tool);
     }
-    cfg.save().map_err(|e| e.to_string())
+    cfg.save_async().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn remove_mcp_tool(name: String) -> Result<(), String> {
-    let mut cfg = AppConfig::load();
+pub async fn remove_mcp_tool(name: String) -> Result<(), String> {
+    let mut cfg = AppConfig::load_async().await;
     cfg.mcp_tools.retain(|t| t.name != name);
-    cfg.save().map_err(|e| e.to_string())
+    cfg.save_async().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn get_mdh_pointers() -> Result<std::collections::HashMap<String, String>, String> {
-    Ok(AppConfig::load().mdh_pointers)
+pub async fn get_mdh_pointers() -> Result<std::collections::HashMap<String, String>, String> {
+    Ok(AppConfig::load_async().await.mdh_pointers)
 }
 
 #[tauri::command]
-pub fn set_mdh_pointer(key: String, value: String) -> Result<(), String> {
-    let mut cfg = AppConfig::load();
+pub async fn set_mdh_pointer(key: String, value: String) -> Result<(), String> {
+    let mut cfg = AppConfig::load_async().await;
     cfg.mdh_pointers.insert(key, value);
-    cfg.save().map_err(|e| e.to_string())
+    cfg.save_async().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn remove_mdh_pointer(key: String) -> Result<(), String> {
-    let mut cfg = AppConfig::load();
+pub async fn remove_mdh_pointer(key: String) -> Result<(), String> {
+    let mut cfg = AppConfig::load_async().await;
     cfg.mdh_pointers.remove(&key);
-    cfg.save().map_err(|e| e.to_string())
+    cfg.save_async().await.map_err(|e| e.to_string())
+}
+
+// Knowledge Management Commands
+
+/// Add a knowledge entry from chat (saved responses)
+#[tauri::command]
+pub fn add_knowledge_entry(
+    content: String,
+    category: String,
+    tags: Vec<String>,
+) -> Result<String, String> {
+    use gestura_core::knowledge::{KnowledgeItem, KnowledgeStore};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let store = KnowledgeStore::with_default_dir();
+
+    // Generate a unique ID based on timestamp
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let id = format!("saved-{}", timestamp);
+
+    // Create a knowledge item from the saved content
+    let item = KnowledgeItem::new(
+        &id,
+        format!("Saved: {}", &content[..content.len().min(50)]),
+        &content,
+    )
+    .with_category(&category)
+    .with_triggers(tags)
+    .with_content(&content);
+
+    store.register(item);
+
+    tracing::info!("Added knowledge entry: {}", id);
+    Ok(id)
+}
+
+/// List knowledge entries
+#[tauri::command]
+pub fn list_knowledge_entries(category: Option<String>) -> Result<Vec<serde_json::Value>, String> {
+    use gestura_core::knowledge::{KnowledgeQuery, KnowledgeStore, register_builtin_knowledge};
+
+    let store = KnowledgeStore::with_default_dir();
+    register_builtin_knowledge(&store);
+
+    let query = KnowledgeQuery {
+        query: String::new(),
+        categories: category.map(|c| vec![c]),
+        limit: Some(100),
+        min_score: None,
+    };
+
+    let matches = store.find(&query);
+    let entries: Vec<serde_json::Value> = matches
+        .into_iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.item.id,
+                "name": m.item.name,
+                "category": m.item.category,
+                "description": m.item.description,
+                "score": m.score,
+            })
+        })
+        .collect();
+
+    Ok(entries)
+}
+
+/// Search knowledge base
+#[tauri::command]
+pub fn search_knowledge(
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<serde_json::Value>, String> {
+    use gestura_core::knowledge::{KnowledgeQuery, KnowledgeStore, register_builtin_knowledge};
+
+    let store = KnowledgeStore::with_default_dir();
+    register_builtin_knowledge(&store);
+
+    let kquery = KnowledgeQuery {
+        query,
+        categories: None,
+        limit: limit.or(Some(10)),
+        min_score: Some(0.1),
+    };
+
+    let matches = store.find(&kquery);
+    let entries: Vec<serde_json::Value> = matches
+        .into_iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.item.id,
+                "name": m.item.name,
+                "category": m.item.category,
+                "description": m.item.description,
+                "content": m.item.core_content,
+                "score": m.score,
+                "matched_triggers": m.matched_triggers,
+            })
+        })
+        .collect();
+
+    Ok(entries)
 }
 
 #[tauri::command]
 pub async fn test_llm(prompt: String) -> Result<String, String> {
-    let cfg = AppConfig::load();
+    let cfg = AppConfig::load_async().await;
     let provider = select_provider(
         &cfg,
         &AgentContext {
@@ -81,7 +212,7 @@ pub async fn test_llm(prompt: String) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn test_voice() -> Result<String, String> {
-    let cfg = AppConfig::load();
+    let cfg = AppConfig::load_async().await;
     let engine = crate::voice_select::select_voice(&cfg);
     let name = engine.engine_name();
     let sample = engine.process_command(&cfg, None).await.unwrap_or_default();
@@ -155,6 +286,275 @@ pub async fn list_ollama_models(endpoint: String) -> Result<Vec<serde_json::Valu
         .unwrap_or_default();
 
     Ok(models)
+}
+
+/// List available OpenAI models
+#[tauri::command]
+pub async fn list_openai_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
+    let client = reqwest::Client::new();
+    let url = "https://api.openai.com/v1/models";
+
+    let resp = client
+        .get(url)
+        .bearer_auth(&api_key)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to list OpenAI models: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("OpenAI API error {}: {}", status, body));
+    }
+
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Invalid response: {}", e))?;
+
+    // Filter to only chat models (gpt-*) and sort by name
+    let models: Vec<serde_json::Value> = data
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            let mut models: Vec<serde_json::Value> = arr
+                .iter()
+                .filter_map(|m| {
+                    let id = m.get("id")?.as_str()?;
+                    // Only include GPT chat models, exclude embeddings, whisper, tts, dall-e, etc.
+                    if id.starts_with("gpt-") && !id.contains("instruct") {
+                        Some(serde_json::json!({
+                            "id": id,
+                            "name": format_openai_model_name(id),
+                            "created": m.get("created").and_then(|c| c.as_i64()).unwrap_or(0)
+                        }))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            // Sort by created date descending (newest first)
+            models.sort_by(|a, b| {
+                let a_created = a.get("created").and_then(|c| c.as_i64()).unwrap_or(0);
+                let b_created = b.get("created").and_then(|c| c.as_i64()).unwrap_or(0);
+                b_created.cmp(&a_created)
+            });
+            models
+        })
+        .unwrap_or_default();
+
+    Ok(models)
+}
+
+/// Format OpenAI model ID to a human-readable name
+fn format_openai_model_name(id: &str) -> String {
+    match id {
+        "gpt-4o" => "GPT-4o".to_string(),
+        "gpt-4o-mini" => "GPT-4o Mini".to_string(),
+        "gpt-4-turbo" => "GPT-4 Turbo".to_string(),
+        "gpt-4-turbo-preview" => "GPT-4 Turbo Preview".to_string(),
+        "gpt-4" => "GPT-4".to_string(),
+        "gpt-3.5-turbo" => "GPT-3.5 Turbo".to_string(),
+        _ => {
+            // Convert kebab-case to Title Case
+            id.split('-')
+                .map(|part| {
+                    let mut chars = part.chars();
+                    match chars.next() {
+                        None => String::new(),
+                        Some(first) => first.to_uppercase().chain(chars).collect(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+    }
+}
+
+/// List available Anthropic models
+#[tauri::command]
+pub async fn list_anthropic_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
+    let client = reqwest::Client::new();
+    let url = "https://api.anthropic.com/v1/models";
+
+    let resp = client
+        .get(url)
+        .header("x-api-key", &api_key)
+        .header("anthropic-version", "2023-06-01")
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to list Anthropic models: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Anthropic API error {}: {}", status, body));
+    }
+
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Invalid response: {}", e))?;
+
+    // Parse the models list
+    let models: Vec<serde_json::Value> = data
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            let mut models: Vec<serde_json::Value> = arr
+                .iter()
+                .filter_map(|m| {
+                    let id = m.get("id")?.as_str()?;
+                    // Only include Claude chat models
+                    if id.starts_with("claude-") {
+                        Some(serde_json::json!({
+                            "id": id,
+                            "name": format_anthropic_model_name(id),
+                            "created": m.get("created_at").and_then(|c| c.as_str()).unwrap_or("")
+                        }))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            // Sort alphabetically by name for consistency
+            models.sort_by(|a, b| {
+                let a_name = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                let b_name = b.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                a_name.cmp(b_name)
+            });
+            models
+        })
+        .unwrap_or_default();
+
+    Ok(models)
+}
+
+/// Format Anthropic model ID to a human-readable name
+fn format_anthropic_model_name(id: &str) -> String {
+    match id {
+        "claude-sonnet-4-20250514" => "Claude Sonnet 4".to_string(),
+        "claude-3-5-sonnet-20241022" => "Claude 3.5 Sonnet".to_string(),
+        "claude-3-opus-20240229" => "Claude 3 Opus".to_string(),
+        "claude-3-sonnet-20240229" => "Claude 3 Sonnet".to_string(),
+        "claude-3-haiku-20240307" => "Claude 3 Haiku".to_string(),
+        _ => {
+            // Try to parse the model name from the ID
+            // Format: claude-{version}-{variant}-{date}
+            let parts: Vec<&str> = id.split('-').collect();
+            if parts.len() >= 3 {
+                let version = parts[1];
+                let variant = parts[2];
+                format!(
+                    "Claude {} {}",
+                    version,
+                    variant
+                        .chars()
+                        .next()
+                        .map(|c| c.to_uppercase().to_string() + &variant[1..])
+                        .unwrap_or_else(|| variant.to_string())
+                )
+            } else {
+                id.to_string()
+            }
+        }
+    }
+}
+
+/// Fetch available Grok models from xAI API
+/// API Reference: https://docs.x.ai/docs/api-reference#list-models
+#[tauri::command]
+pub async fn list_grok_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
+    if api_key.is_empty() {
+        return Ok(get_static_grok_models());
+    }
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get("https://api.x.ai/v1/models")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch Grok models: {}", e))?;
+
+    if !response.status().is_success() {
+        tracing::warn!(
+            "Grok API returned status {}, falling back to static list",
+            response.status()
+        );
+        return Ok(get_static_grok_models());
+    }
+
+    let data: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Grok models response: {}", e))?;
+
+    let models: Vec<serde_json::Value> = data["data"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|model| {
+            let id = model["id"].as_str()?;
+            // Filter to chat-capable models (exclude image-only models)
+            if id.contains("image") {
+                return None;
+            }
+            Some(serde_json::json!({
+                "id": id,
+                "name": format_grok_model_name(id)
+            }))
+        })
+        .collect();
+
+    if models.is_empty() {
+        Ok(get_static_grok_models())
+    } else {
+        Ok(models)
+    }
+}
+
+/// Format Grok model ID to human-readable name
+fn format_grok_model_name(id: &str) -> String {
+    // grok-4-0709 -> Grok 4 (0709)
+    // grok-3-mini -> Grok 3 Mini
+    let parts: Vec<&str> = id.split('-').collect();
+    let mut name = String::new();
+
+    for (i, part) in parts.iter().enumerate() {
+        if i == 0 {
+            name.push_str(&part.to_uppercase().replace("GROK", "Grok"));
+        } else if part.chars().all(|c| c.is_numeric()) {
+            if i == 1 {
+                name.push_str(&format!(" {}", part));
+            } else {
+                name.push_str(&format!(" ({})", part));
+            }
+        } else {
+            let formatted = match *part {
+                "mini" => "Mini",
+                "fast" => "Fast",
+                "vision" => "Vision",
+                "code" => "Code",
+                _ => part,
+            };
+            name.push_str(&format!(" {}", formatted));
+        }
+    }
+
+    name.trim().to_string()
+}
+
+/// Fallback static list of Grok models
+fn get_static_grok_models() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({ "id": "grok-3", "name": "Grok 3" }),
+        serde_json::json!({ "id": "grok-3-mini", "name": "Grok 3 Mini" }),
+        serde_json::json!({ "id": "grok-2-vision-1212", "name": "Grok 2 Vision" }),
+    ]
 }
 
 /// Test local Whisper model with detailed validation
@@ -384,10 +784,11 @@ pub async fn download_whisper_model(
     );
 
     // Update config with the new model path
-    let mut config = AppConfig::load();
+    let mut config = AppConfig::load_async().await;
     config.voice.local_model_path = Some(output_path.to_string_lossy().to_string());
     config
-        .save()
+        .save_async()
+        .await
         .map_err(|e| format!("Failed to save config: {}", e))?;
 
     tracing::info!(
@@ -399,20 +800,20 @@ pub async fn download_whisper_model(
 }
 
 #[tauri::command]
-pub fn get_ui_prefs() -> Result<crate::config::UiSettings, String> {
-    Ok(AppConfig::load().ui)
+pub async fn get_ui_prefs() -> Result<crate::config::UiSettings, String> {
+    Ok(AppConfig::load_async().await.ui)
 }
 
 #[tauri::command]
-pub fn set_ui_prefs(ui: crate::config::UiSettings) -> Result<(), String> {
-    let mut cfg = AppConfig::load();
+pub async fn set_ui_prefs(ui: crate::config::UiSettings) -> Result<(), String> {
+    let mut cfg = AppConfig::load_async().await;
     cfg.ui = ui;
-    cfg.save().map_err(|e| e.to_string())
+    cfg.save_async().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn run_voice_once() -> Result<String, String> {
-    let cfg = AppConfig::load();
+    let cfg = AppConfig::load_async().await;
     let engine = crate::voice_select::select_voice(&cfg);
     crate::voice_select::validate_voice_config_for_run(&cfg, engine.as_ref())
         .map_err(|e| e.to_string())?;
@@ -502,6 +903,14 @@ pub async fn stop_gesture_monitoring(device_id: String) -> Result<(), String> {
         .stop_gesture_monitoring(&device_id)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Get current NATS connection status.
+///
+/// Returns `true` if the app has an active NATS connection, otherwise `false`.
+#[tauri::command]
+pub fn get_nats_status(state: tauri::State<'_, crate::AppState>) -> Result<bool, String> {
+    Ok(state.nats.is_some())
 }
 
 /// Get system health status
@@ -596,7 +1005,7 @@ pub async fn process_chat_message(
 ) -> Result<String, String> {
     use crate::notifications::{NotificationType, get_notification_manager};
 
-    let cfg = AppConfig::load();
+    let cfg = AppConfig::load_async().await;
     let provider = select_provider(
         &cfg,
         &AgentContext {
@@ -644,35 +1053,76 @@ fn get_cancel_token_store() -> &'static std::sync::Mutex<Option<gestura_core::Ca
 /// Process a chat message with streaming response
 ///
 /// Emits `chat-stream-chunk` events with partial content and `chat-stream-done` when complete.
+///
+/// The optional `source` argument can be used to hint how the message was produced:
+/// - `"voice"` for transcribed speech
+/// - `"text"` for typed input (default)
 #[tauri::command]
 pub async fn process_chat_message_streaming(
     app: tauri::AppHandle,
     message: String,
+    session_id: Option<String>,
+    source: Option<String>,
 ) -> Result<(), String> {
-    use gestura_core::{CancellationToken, StreamChunk, start_streaming};
+    use gestura_core::{CancellationToken, StreamChunk};
     use gestura_core::{
         looks_like_capabilities_question, looks_like_tools_question, render_capabilities,
         render_tool_detail, render_tools_overview,
     };
+    use tauri::Emitter;
     use tokio::sync::mpsc;
 
-    let cfg = AppConfig::load();
+    let cfg = AppConfig::load_async().await;
+
+    let message_source = match source.as_deref().map(|s| s.trim().to_ascii_lowercase()) {
+        Some(s) if s == "voice" => crate::window_manager::MessageSource::Voice,
+        _ => crate::window_manager::MessageSource::Text,
+    };
+    let request_source = match message_source {
+        crate::window_manager::MessageSource::Voice => gestura_core::RequestSource::GuiVoice,
+        _ => gestura_core::RequestSource::GuiText,
+    };
+
+    // Route streaming events to the correct chat window when session_id is provided.
+    // This prevents cross-window event bleed and enables per-session conversation history.
+    let resolved_session_id = session_id.or_else(crate::window_manager::get_active_chat_for_voice);
+    let target_window_label = resolved_session_id
+        .as_deref()
+        .and_then(crate::window_manager::get_session_window_label);
+
+    let emit = |event: &str, payload: serde_json::Value| {
+        if let Some(label) = &target_window_label
+            && let Some(window) = app.get_webview_window(label)
+        {
+            if let Err(e) = window.emit(event, &payload) {
+                tracing::error!("Failed to emit '{}' to window {}: {}", event, label, e);
+            }
+        } else if let Err(e) = app.emit(event, &payload) {
+            tracing::error!("Failed to emit '{}': {}", event, e);
+        }
+    };
 
     // Check if this is a tools/capabilities question and handle it locally without LLM
     let trimmed = message.trim();
+    const LOCAL_STREAM_CHUNK_CHARS: usize = 64;
     let is_tools_cmd = trimmed.starts_with("/tools");
     let is_capabilities_cmd = trimmed.starts_with("/capabilities");
     let is_tools_question = looks_like_tools_question(trimmed);
     let is_capabilities_question = looks_like_capabilities_question(trimmed);
 
     if is_tools_cmd || is_tools_question {
+        let thinking_note =
+            Some("Using local tool catalog (no LLM call) and streaming the result...".to_string());
         let response = if is_tools_cmd {
             // Parse /tools <name> command
             let mut parts = trimmed.split_whitespace();
             let _ = parts.next(); // skip /tools
             if let Some(name) = parts.next() {
                 render_tool_detail(name).unwrap_or_else(|| {
-                    format!("Unknown tool '{}'. Try `/tools` to list all available tools.", name)
+                    format!(
+                        "Unknown tool '{}'. Try `/tools` to list all available tools.",
+                        name
+                    )
                 })
             } else {
                 render_tools_overview()
@@ -681,31 +1131,78 @@ pub async fn process_chat_message_streaming(
             render_tools_overview()
         };
 
-        // Emit the response as a single chunk, then done
-        if let Err(e) = app.emit("chat-stream-chunk", &response) {
-            tracing::error!("Failed to emit tools response: {}", e);
+        // Persist to session (if any)
+        if let Some(ref sid) = resolved_session_id {
+            crate::window_manager::add_user_message(sid, &message, message_source);
+            crate::window_manager::add_assistant_message(sid, &response, thinking_note.clone());
         }
-        if let Err(e) = app.emit("chat-stream-done", ()) {
-            tracing::error!("Failed to emit stream done: {}", e);
+
+        if let Some(note) = thinking_note {
+            emit("chat-stream-thinking", serde_json::json!(note));
+            tokio::task::yield_now().await;
         }
+
+        // Stream the response in chunks so the UX stays consistently "live".
+        let mut rest = response.as_str();
+        while !rest.is_empty() {
+            let split_at = rest
+                .char_indices()
+                .nth(LOCAL_STREAM_CHUNK_CHARS)
+                .map(|(i, _)| i)
+                .unwrap_or(rest.len());
+
+            let (chunk, next) = rest.split_at(split_at);
+            rest = next;
+
+            if !chunk.is_empty() {
+                emit("chat-stream-chunk", serde_json::json!(chunk));
+                tokio::task::yield_now().await;
+            }
+        }
+        emit("chat-stream-done", serde_json::json!(null));
         return Ok(());
     }
 
     // Handle capabilities questions - includes MCP servers, devices, settings
     if is_capabilities_cmd || is_capabilities_question {
+        let thinking_note = Some(
+            "Reading local capabilities (no LLM call) and streaming the result...".to_string(),
+        );
         let response = render_capabilities(&cfg);
 
-        if let Err(e) = app.emit("chat-stream-chunk", &response) {
-            tracing::error!("Failed to emit capabilities response: {}", e);
+        // Persist to session (if any)
+        if let Some(ref sid) = resolved_session_id {
+            crate::window_manager::add_user_message(sid, &message, message_source);
+            crate::window_manager::add_assistant_message(sid, &response, thinking_note.clone());
         }
-        if let Err(e) = app.emit("chat-stream-done", ()) {
-            tracing::error!("Failed to emit stream done: {}", e);
+
+        if let Some(note) = thinking_note {
+            emit("chat-stream-thinking", serde_json::json!(note));
+            tokio::task::yield_now().await;
         }
+
+        let mut rest = response.as_str();
+        while !rest.is_empty() {
+            let split_at = rest
+                .char_indices()
+                .nth(LOCAL_STREAM_CHUNK_CHARS)
+                .map(|(i, _)| i)
+                .unwrap_or(rest.len());
+
+            let (chunk, next) = rest.split_at(split_at);
+            rest = next;
+
+            if !chunk.is_empty() {
+                emit("chat-stream-chunk", serde_json::json!(chunk));
+                tokio::task::yield_now().await;
+            }
+        }
+        emit("chat-stream-done", serde_json::json!(null));
         return Ok(());
     }
 
     tracing::info!(
-        "Starting streaming chat through LLM provider: {}",
+        "Starting streaming chat through AgentPipeline with LLM provider: {}",
         cfg.llm.primary
     );
 
@@ -719,42 +1216,218 @@ pub async fn process_chat_message_streaming(
         *store = Some(cancel_token.clone());
     }
 
-    // Spawn the streaming task
+    // Build the agent request with workspace sandboxing
+    use gestura_core::{AgentPipeline, AgentRequest};
+
+    // Build conversation history for the pipeline (session-scoped) BEFORE adding this new user message.
+    // This mirrors the CLI TUI behavior.
+    let history: Vec<gestura_core::Message> = resolved_session_id
+        .as_deref()
+        .map(|sid| {
+            let msgs = crate::window_manager::get_pipeline_messages(sid);
+            msgs.into_iter()
+                .rev()
+                .take(20)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    // Persist user message to session state now that we've captured the prior history.
+    if let Some(ref sid) = resolved_session_id {
+        crate::window_manager::add_user_message(sid, &message, message_source);
+    }
+
+    let mut request = AgentRequest::new(&message)
+        .with_streaming(true)
+        .with_source(request_source)
+        .with_history(history);
+
+    if let Some(ref sid) = resolved_session_id {
+        request = request.with_session(sid);
+    }
+
+    // Set workspace directory for sandboxed operations
+    if let Some(ref sid) = resolved_session_id {
+        if let Some(workspace) =
+            crate::window_manager::get_session_state(sid).and_then(|s| s.workspace_dir)
+        {
+            request = request.with_workspace(workspace);
+        }
+    } else if let Some(workspace) = crate::window_manager::get_active_session_workspace() {
+        // Backwards-compatible fallback
+        request = request.with_workspace(workspace);
+    }
+
+    // Create the pipeline and spawn the streaming task
     let cfg_clone = cfg.clone();
-    let message_clone = message.clone();
     let cancel_token_clone = cancel_token.clone();
-    tokio::spawn(async move {
-        if let Err(e) = start_streaming(&cfg_clone, &message_clone, tx, cancel_token_clone).await {
-            tracing::error!("Streaming error: {}", e);
+    let pipeline_handle = tokio::spawn(async move {
+        let pipeline = AgentPipeline::new(cfg_clone);
+        if let Err(e) = pipeline
+            .process_streaming(request, tx.clone(), cancel_token_clone)
+            .await
+        {
+            tracing::error!("AgentPipeline streaming error: {}", e);
+            // Ensure the GUI always receives a terminal event.
+            let _ = tx.send(StreamChunk::Error(e.to_string())).await;
+            let _ = tx.send(StreamChunk::Done(None)).await;
         }
     });
 
+    use tokio::time::{Duration, Instant};
+
     // Forward chunks to frontend via Tauri events
-    while let Some(chunk) = rx.recv().await {
-        match chunk {
-            StreamChunk::Text(text) => {
-                if let Err(e) = app.emit("chat-stream-chunk", &text) {
-                    tracing::error!("Failed to emit stream chunk: {}", e);
-                }
+    let mut assistant_text = String::new();
+    let mut assistant_thinking: Option<String> = None;
+    let mut saw_terminal = false;
+    let idle_timeout = Duration::from_secs(90);
+    let idle_timer = tokio::time::sleep(idle_timeout);
+    tokio::pin!(idle_timer);
+
+    loop {
+        tokio::select! {
+            maybe_chunk = rx.recv() => {
+                let Some(chunk) = maybe_chunk else {
+                    break;
+                };
+                idle_timer.as_mut().reset(Instant::now() + idle_timeout);
+                match chunk {
+            StreamChunk::Thinking(text) => {
+                assistant_thinking
+                    .get_or_insert_with(String::new)
+                    .push_str(&text);
+                emit("chat-stream-thinking", serde_json::json!(text));
             }
-            StreamChunk::Done => {
-                if let Err(e) = app.emit("chat-stream-done", ()) {
-                    tracing::error!("Failed to emit stream done: {}", e);
+            StreamChunk::Text(text) => {
+                assistant_text.push_str(&text);
+                emit("chat-stream-chunk", serde_json::json!(text));
+            }
+            StreamChunk::ToolCallStart { id, name } => {
+                let payload = serde_json::json!({ "id": id, "name": name });
+                emit("chat-stream-tool-start", payload);
+            }
+            StreamChunk::ToolCallArgs(args) => {
+                emit("chat-stream-tool-args", serde_json::json!(args));
+            }
+            StreamChunk::ToolCallEnd => {
+                emit("chat-stream-tool-end", serde_json::json!(null));
+            }
+            StreamChunk::Done(usage) => {
+                saw_terminal = true;
+                // Emit token usage if available
+                if let Some(ref usage) = usage {
+                    emit(
+                        "chat-token-usage",
+                    serde_json::to_value(usage).unwrap_or(serde_json::Value::Null),
+                    );
+
+                    if let Some(ref sid) = resolved_session_id {
+                        let total = u64::from(usage.input_tokens)
+                            .saturating_add(u64::from(usage.output_tokens));
+                        crate::window_manager::update_token_count(sid, total);
+                    }
                 }
+
+                    // Persist assistant message to session state
+                    if let Some(ref sid) = resolved_session_id
+                        && (!assistant_text.trim().is_empty()
+                            || assistant_thinking
+                                .as_ref()
+                                .is_some_and(|t| !t.trim().is_empty()))
+                    {
+                        crate::window_manager::add_assistant_message(
+                            sid,
+                            &assistant_text,
+                            assistant_thinking.clone(),
+                        );
+                    }
+
+                emit("chat-stream-done", serde_json::json!(null));
                 break;
             }
             StreamChunk::Cancelled => {
-                if let Err(e) = app.emit("chat-stream-cancelled", ()) {
-                    tracing::error!("Failed to emit stream cancelled: {}", e);
-                }
+                saw_terminal = true;
+                    // Persist any partial assistant output so context isn't lost.
+                    if let Some(ref sid) = resolved_session_id
+                        && (!assistant_text.trim().is_empty()
+                            || assistant_thinking
+                                .as_ref()
+                                .is_some_and(|t| !t.trim().is_empty()))
+                    {
+                        crate::window_manager::add_assistant_message(
+                            sid,
+                            &assistant_text,
+                            assistant_thinking.clone(),
+                        );
+                    }
+                emit("chat-stream-cancelled", serde_json::json!(null));
                 break;
             }
             StreamChunk::Error(err) => {
-                if let Err(e) = app.emit("chat-stream-error", &err) {
-                    tracing::error!("Failed to emit stream error: {}", e);
-                }
+                saw_terminal = true;
+                    // Persist any partial assistant output so context isn't lost.
+                    if let Some(ref sid) = resolved_session_id
+                        && (!assistant_text.trim().is_empty()
+                            || assistant_thinking
+                                .as_ref()
+                                .is_some_and(|t| !t.trim().is_empty()))
+                    {
+                        crate::window_manager::add_assistant_message(
+                            sid,
+                            &assistant_text,
+                            assistant_thinking.clone(),
+                        );
+                    }
+                emit("chat-stream-error", serde_json::json!(err));
                 break;
             }
+                }
+            }
+            _ = &mut idle_timer => {
+                // If we haven't received any stream events in a while, treat this as a backend hang.
+                // Ensure the frontend gets an explicit terminal event.
+                saw_terminal = true;
+                tracing::error!("Streaming chat timed out (no events for {:?})", idle_timeout);
+                cancel_token.cancel();
+                emit(
+                    "chat-stream-error",
+                    serde_json::json!(format!(
+                        "Timed out waiting for agent response (no events for {:?}).",
+                        idle_timeout
+                    )),
+                );
+                break;
+            }
+        }
+    }
+
+    // If the channel closed without any terminal event, surface that as an error.
+    if !saw_terminal {
+        emit(
+            "chat-stream-error",
+            serde_json::json!("Streaming ended unexpectedly (no terminal event received)"),
+        );
+    }
+
+    // Ensure we observe pipeline task failures (panic/abort) and don't silently swallow them.
+    let mut pipeline_handle = pipeline_handle;
+    tokio::select! {
+        res = &mut pipeline_handle => {
+            if let Err(join_err) = res {
+                tracing::error!("AgentPipeline task join error: {}", join_err);
+                if !saw_terminal {
+                    emit("chat-stream-error", serde_json::json!(format!("Agent task failed: {join_err}")));
+                }
+            }
+        }
+        _ = tokio::time::sleep(Duration::from_secs(2)) => {
+            // Pipeline task didn't finish promptly after we stopped listening.
+            // Abort to avoid leaked work.
+            tracing::warn!("AgentPipeline task did not finish after terminal event; aborting");
+            pipeline_handle.abort();
         }
     }
 
@@ -787,7 +1460,7 @@ pub async fn send_agent_message(
     _state: tauri::State<'_, crate::AppState>,
 ) -> Result<String, String> {
     // Use the configured LLM provider for agent communication
-    let cfg = AppConfig::load();
+    let cfg = AppConfig::load_async().await;
     let provider = select_provider(
         &cfg,
         &AgentContext {
@@ -1423,6 +2096,56 @@ pub fn get_session_counts() -> Result<(usize, usize), String> {
     Ok(crate::window_manager::get_session_counts())
 }
 
+/// Get the workspace directory for the current active session
+#[tauri::command]
+pub fn get_session_workspace() -> Option<String> {
+    crate::window_manager::get_active_session_workspace().map(|p| p.display().to_string())
+}
+
+/// Set the workspace directory for a session
+#[tauri::command]
+pub fn set_session_workspace(session_id: String, workspace_path: String) -> Result<(), String> {
+    let path = std::path::PathBuf::from(&workspace_path);
+    if !path.exists() {
+        return Err(format!("Directory does not exist: {}", workspace_path));
+    }
+    if !path.is_dir() {
+        return Err(format!("Path is not a directory: {}", workspace_path));
+    }
+    crate::window_manager::set_session_workspace(&session_id, path);
+    Ok(())
+}
+
+/// Open a directory picker dialog and set it as the workspace for the current session
+#[tauri::command]
+pub async fn pick_workspace_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    use tokio::sync::oneshot;
+
+    let (tx, rx) = oneshot::channel();
+
+    app.dialog()
+        .file()
+        .set_title("Select Workspace Directory")
+        .pick_folder(move |result| {
+            let _ = tx.send(result);
+        });
+
+    match rx.await {
+        Ok(Some(path)) => {
+            let path_str = path.to_string();
+            // Set the workspace for the current active session
+            if let Some(session_id) = crate::window_manager::get_active_chat_for_voice() {
+                let path_buf = std::path::PathBuf::from(&path_str);
+                crate::window_manager::set_session_workspace(&session_id, path_buf);
+            }
+            Ok(Some(path_str))
+        }
+        Ok(None) => Ok(None),
+        Err(_) => Err("Dialog was cancelled".to_string()),
+    }
+}
+
 // ============================================================================
 // Voice Listener Control Commands
 // ============================================================================
@@ -1437,10 +2160,21 @@ pub struct VoiceConfigValidation {
     pub suggestion: Option<String>,
 }
 
+/// Validate voice/STT configuration before starting listener (sync version for internal use)
+pub fn validate_voice_config_sync() -> VoiceConfigValidation {
+    let config = crate::AppConfig::load();
+    validate_voice_config_with_config(&config)
+}
+
 /// Validate voice/STT configuration before starting listener
 #[tauri::command]
-pub fn validate_voice_config() -> VoiceConfigValidation {
-    let config = crate::AppConfig::load();
+pub async fn validate_voice_config() -> VoiceConfigValidation {
+    let config = crate::AppConfig::load_async().await;
+    validate_voice_config_with_config(&config)
+}
+
+/// Internal helper to validate voice config with a given config
+fn validate_voice_config_with_config(config: &crate::AppConfig) -> VoiceConfigValidation {
     let provider = config.voice.provider.as_str();
 
     match provider {
@@ -1541,16 +2275,32 @@ pub fn validate_voice_config() -> VoiceConfigValidation {
 }
 
 /// Extended validation that also ensures a usable LLM provider is configured so
-/// the full voice → STT → LLM agent loop can run.
-pub fn validate_voice_and_llm_config() -> VoiceConfigValidation {
-    // First, validate the speech-to-text configuration using the existing
-    // helper so that we keep a single source of truth for STT checks.
-    let stt_validation = validate_voice_config();
+/// the full voice → STT → LLM agent loop can run (sync version for internal use).
+pub fn validate_voice_and_llm_config_sync() -> VoiceConfigValidation {
+    let config = crate::AppConfig::load();
+    let stt_validation = validate_voice_config_with_config(&config);
     if !stt_validation.is_valid {
         return stt_validation;
     }
+    validate_llm_config_with_config(&config, stt_validation)
+}
 
-    let config = crate::AppConfig::load();
+/// Extended validation that also ensures a usable LLM provider is configured so
+/// the full voice → STT → LLM agent loop can run.
+pub async fn validate_voice_and_llm_config() -> VoiceConfigValidation {
+    let config = crate::AppConfig::load_async().await;
+    let stt_validation = validate_voice_config_with_config(&config);
+    if !stt_validation.is_valid {
+        return stt_validation;
+    }
+    validate_llm_config_with_config(&config, stt_validation)
+}
+
+/// Internal helper to validate LLM config with a given config
+fn validate_llm_config_with_config(
+    config: &crate::AppConfig,
+    stt_validation: VoiceConfigValidation,
+) -> VoiceConfigValidation {
     let llm_primary_raw = config.llm.primary.trim();
     let llm_primary = llm_primary_raw.to_lowercase();
 
@@ -1692,9 +2442,9 @@ pub fn validate_voice_and_llm_config() -> VoiceConfigValidation {
 /// tray module so that both chat and tray use the exact same validation and
 /// speech start pipeline.
 #[tauri::command]
-pub fn start_voice_listening(app: tauri::AppHandle) -> Result<String, String> {
+pub async fn start_voice_listening(app: tauri::AppHandle) -> Result<String, String> {
     crate::tray::start_listening_with_validation(&app)?;
-    let provider = crate::AppConfig::load().voice.provider;
+    let provider = crate::AppConfig::load_async().await.voice.provider;
     Ok(format!("Voice listening started (provider: {})", provider))
 }
 
@@ -1724,11 +2474,11 @@ pub fn stop_voice_listening(app: tauri::AppHandle) -> Result<String, String> {
 
 /// Complete the onboarding process and mark it as done
 #[tauri::command]
-pub fn complete_onboarding() -> Result<(), String> {
+pub async fn complete_onboarding() -> Result<(), String> {
     tracing::info!("Onboarding completed by user");
     // Save a default config to mark first run as complete
-    let config = AppConfig::load();
-    config.save().map_err(|e| e.to_string())?;
+    let config = AppConfig::load_async().await;
+    config.save_async().await.map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1751,70 +2501,71 @@ pub fn open_system_preferences(pane: String) -> Result<(), String> {
 
 /// Update voice provider setting
 #[tauri::command]
-pub fn update_voice_provider(provider: String) -> Result<(), String> {
-    let mut cfg = AppConfig::load();
+pub async fn update_voice_provider(provider: String) -> Result<(), String> {
+    let mut cfg = AppConfig::load_async().await;
     cfg.voice.provider = provider.clone();
-    cfg.save().map_err(|e| e.to_string())?;
+    cfg.save_async().await.map_err(|e| e.to_string())?;
     tracing::info!("Voice provider updated to: {}", provider);
     Ok(())
 }
 
 /// Update whisper model setting
 #[tauri::command]
-pub fn update_whisper_model(model_filename: String) -> Result<(), String> {
-    let mut cfg = AppConfig::load();
+pub async fn update_whisper_model(model_filename: String) -> Result<(), String> {
+    let mut cfg = AppConfig::load_async().await;
     let models_dir = AppConfig::whisper_models_dir();
     let model_path = models_dir.join(&model_filename);
     cfg.voice.local_model_path = Some(model_path.to_string_lossy().to_string());
-    cfg.save().map_err(|e| e.to_string())?;
+    cfg.save_async().await.map_err(|e| e.to_string())?;
     tracing::info!("Whisper model updated to: {}", model_filename);
     Ok(())
 }
 
 /// Update LLM provider setting
 #[tauri::command]
-pub fn update_llm_provider(provider: String) -> Result<(), String> {
-    let mut cfg = AppConfig::load();
+pub async fn update_llm_provider(provider: String) -> Result<(), String> {
+    let mut cfg = AppConfig::load_async().await;
     cfg.llm.primary = provider.clone();
-    cfg.save().map_err(|e| e.to_string())?;
+    cfg.save_async().await.map_err(|e| e.to_string())?;
     tracing::info!("LLM provider updated to: {}", provider);
     Ok(())
 }
 
 /// Update selected audio input device
 #[tauri::command]
-pub fn update_audio_device(device_name: Option<String>) -> Result<(), String> {
-    let mut cfg = AppConfig::load();
+pub async fn update_audio_device(device_name: Option<String>) -> Result<(), String> {
+    let mut cfg = AppConfig::load_async().await;
     cfg.voice.audio_device = device_name.clone();
-    cfg.save().map_err(|e| e.to_string())?;
+    cfg.save_async().await.map_err(|e| e.to_string())?;
     tracing::info!("Audio device updated to: {:?}", device_name);
     Ok(())
 }
 
 /// Update Ollama configuration (URL and model)
 #[tauri::command]
-pub fn update_ollama_config(base_url: String, model: String) -> Result<(), String> {
-    let mut cfg = AppConfig::load();
+pub async fn update_ollama_config(base_url: String, model: String) -> Result<(), String> {
+    let mut cfg = AppConfig::load_async().await;
     cfg.llm.ollama = Some(crate::config::OllamaConfig {
         base_url: base_url.clone(),
         model: model.clone(),
     });
-    cfg.save().map_err(|e| e.to_string())?;
+    cfg.save_async().await.map_err(|e| e.to_string())?;
     tracing::info!("Ollama config updated: url={}, model={}", base_url, model);
     Ok(())
 }
 
 /// Get notification settings
 #[tauri::command]
-pub fn get_notification_settings() -> Result<gestura_core::config::NotificationSettings, String> {
-    let cfg = AppConfig::load();
+pub async fn get_notification_settings()
+-> Result<gestura_core::config::NotificationSettings, String> {
+    let cfg = AppConfig::load_async().await;
     Ok(cfg.notifications)
 }
 
 /// Update notification settings
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri command parameters expanded for fine-grained frontend control
-pub fn update_notification_settings(
+pub async fn update_notification_settings(
     sound_enabled: Option<bool>,
     haptic_enabled: Option<bool>,
     sound_volume: Option<u8>,
@@ -1824,7 +2575,7 @@ pub fn update_notification_settings(
     mcp_feedback_enabled: Option<bool>,
     auto_listen_on_feedback: Option<bool>,
 ) -> Result<(), String> {
-    let mut cfg = AppConfig::load();
+    let mut cfg = AppConfig::load_async().await;
 
     if let Some(v) = sound_enabled {
         cfg.notifications.sound_enabled = v;
@@ -1851,7 +2602,7 @@ pub fn update_notification_settings(
         cfg.notifications.auto_listen_on_feedback = v;
     }
 
-    cfg.save().map_err(|e| e.to_string())?;
+    cfg.save_async().await.map_err(|e| e.to_string())?;
     tracing::info!("Notification settings updated");
     Ok(())
 }

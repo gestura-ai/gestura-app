@@ -192,7 +192,7 @@ impl AutomatedTester {
         let mut command_results = HashMap::new();
 
         // Test get_config command
-        match crate::api::get_config() {
+        match crate::api::get_config().await {
             Ok(_) => {
                 command_results.insert("get_config", true);
                 tracing::info!("✅ get_config command working");
