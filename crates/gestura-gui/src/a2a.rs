@@ -123,6 +123,133 @@ pub struct OAuth2Config {
 }
 
 // ============================================================================
+// A2A Agent Profile (Authentication & Identity)
+// ============================================================================
+
+/// Agent profile for authentication and identity propagation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentProfile {
+    /// Unique agent identifier
+    pub agent_id: String,
+    /// Agent name
+    pub name: String,
+    /// Agent version
+    pub version: String,
+    /// Capabilities this agent has
+    pub capabilities: Vec<String>,
+    /// Authentication token for this agent
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_token: Option<String>,
+    /// Token expiration time
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Metadata for custom properties
+    #[serde(default)]
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+impl AgentProfile {
+    /// Create a new agent profile
+    pub fn new(agent_id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            agent_id: agent_id.into(),
+            name: name.into(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            capabilities: vec![],
+            auth_token: None,
+            token_expires_at: None,
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Add a capability
+    pub fn with_capability(mut self, capability: impl Into<String>) -> Self {
+        self.capabilities.push(capability.into());
+        self
+    }
+
+    /// Set authentication token
+    pub fn with_auth_token(
+        mut self,
+        token: impl Into<String>,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Self {
+        self.auth_token = Some(token.into());
+        self.token_expires_at = expires_at;
+        self
+    }
+
+    /// Check if the token is valid (not expired)
+    pub fn is_token_valid(&self) -> bool {
+        match (&self.auth_token, &self.token_expires_at) {
+            (Some(_), Some(expires)) => chrono::Utc::now() < *expires,
+            (Some(_), None) => true, // No expiration means always valid
+            (None, _) => false,
+        }
+    }
+
+    /// Generate a new token for this agent
+    pub fn generate_token(&mut self, validity_hours: i64) {
+        use rand::Rng;
+        use rand::distributions::Alphanumeric;
+        let token: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(64)
+            .map(char::from)
+            .collect();
+        self.auth_token = Some(token);
+        self.token_expires_at = Some(chrono::Utc::now() + chrono::Duration::hours(validity_hours));
+    }
+}
+
+/// Profile store for managing agent profiles
+#[derive(Debug, Default)]
+pub struct ProfileStore {
+    profiles: std::sync::RwLock<HashMap<String, AgentProfile>>,
+}
+
+impl ProfileStore {
+    /// Create a new profile store
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Store a profile
+    pub fn store(&self, profile: AgentProfile) {
+        let mut profiles = self.profiles.write().unwrap();
+        profiles.insert(profile.agent_id.clone(), profile);
+    }
+
+    /// Get a profile by agent ID
+    pub fn get(&self, agent_id: &str) -> Option<AgentProfile> {
+        let profiles = self.profiles.read().unwrap();
+        profiles.get(agent_id).cloned()
+    }
+
+    /// Validate a token and return the associated profile
+    pub fn validate_token(&self, token: &str) -> Option<AgentProfile> {
+        let profiles = self.profiles.read().unwrap();
+        profiles
+            .values()
+            .find(|p| p.auth_token.as_deref() == Some(token) && p.is_token_valid())
+            .cloned()
+    }
+
+    /// List all profiles
+    pub fn list(&self) -> Vec<AgentProfile> {
+        let profiles = self.profiles.read().unwrap();
+        profiles.values().cloned().collect()
+    }
+
+    /// Remove a profile
+    pub fn remove(&self, agent_id: &str) -> Option<AgentProfile> {
+        let mut profiles = self.profiles.write().unwrap();
+        profiles.remove(agent_id)
+    }
+}
+
+// ============================================================================
 // A2A Task Management
 // ============================================================================
 
@@ -172,7 +299,10 @@ pub enum MessagePart {
     /// Text content
     Text { text: String },
     /// File reference
-    File { uri: String, mime_type: Option<String> },
+    File {
+        uri: String,
+        mime_type: Option<String>,
+    },
     /// Structured data
     Data { data: serde_json::Value },
 }
@@ -272,8 +402,12 @@ pub struct A2AServer {
     pub agent_card: AgentCard,
     /// Registry of known agents
     pub registry: AgentCardRegistry,
+    /// Profile store for authentication
+    pub profile_store: ProfileStore,
     /// Active tasks
     tasks: std::sync::RwLock<HashMap<String, A2ATask>>,
+    /// Task to caller profile mapping
+    task_profiles: std::sync::RwLock<HashMap<String, AgentProfile>>,
 }
 
 impl A2AServer {
@@ -282,17 +416,48 @@ impl A2AServer {
         Self {
             agent_card,
             registry: AgentCardRegistry::new(),
+            profile_store: ProfileStore::new(),
             tasks: std::sync::RwLock::new(HashMap::new()),
+            task_profiles: std::sync::RwLock::new(HashMap::new()),
         }
     }
 
-    /// Handle an incoming JSON-RPC request
+    /// Handle an incoming JSON-RPC request with optional authentication
     pub fn handle_request(&self, request: A2ARequest) -> A2AResponse {
+        self.handle_request_with_auth(request, None)
+    }
+
+    /// Handle an incoming JSON-RPC request with authentication token
+    pub fn handle_request_with_auth(
+        &self,
+        request: A2ARequest,
+        auth_token: Option<&str>,
+    ) -> A2AResponse {
+        // Validate token if provided
+        let caller_profile = auth_token.and_then(|token| self.profile_store.validate_token(token));
+
+        // Check if authentication is required for this method
+        let requires_auth = matches!(request.method.as_str(), "task/create" | "task/cancel");
+        if requires_auth && self.agent_card.authentication.is_some() && caller_profile.is_none() {
+            return A2AResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(A2AError {
+                    code: -32000,
+                    message: "Authentication required".to_string(),
+                    data: None,
+                }),
+                id: request.id,
+            };
+        }
+
         let result = match request.method.as_str() {
             "agent/discover" => self.handle_discover(),
-            "task/create" => self.handle_task_create(&request.params),
+            "task/create" => self.handle_task_create(&request.params, caller_profile.as_ref()),
             "task/status" => self.handle_task_status(&request.params),
             "task/cancel" => self.handle_task_cancel(&request.params),
+            "profile/register" => self.handle_profile_register(&request.params),
+            "profile/validate" => self.handle_profile_validate(&request.params),
             _ => Err(A2AError {
                 code: -32601,
                 message: format!("Method not found: {}", request.method),
@@ -316,6 +481,12 @@ impl A2AServer {
         }
     }
 
+    /// Get the caller profile for a task
+    pub fn get_task_caller(&self, task_id: &str) -> Option<AgentProfile> {
+        let profiles = self.task_profiles.read().unwrap();
+        profiles.get(task_id).cloned()
+    }
+
     /// Handle agent/discover request
     fn handle_discover(&self) -> Result<serde_json::Value, A2AError> {
         serde_json::to_value(&self.agent_card).map_err(|e| A2AError {
@@ -326,7 +497,11 @@ impl A2AServer {
     }
 
     /// Handle task/create request
-    fn handle_task_create(&self, params: &serde_json::Value) -> Result<serde_json::Value, A2AError> {
+    fn handle_task_create(
+        &self,
+        params: &serde_json::Value,
+        caller: Option<&AgentProfile>,
+    ) -> Result<serde_json::Value, A2AError> {
         let message: A2AMessage = serde_json::from_value(params.clone()).map_err(|e| A2AError {
             code: -32602,
             message: format!("Invalid params: {}", e),
@@ -334,12 +509,27 @@ impl A2AServer {
         })?;
 
         let task_id = uuid::Uuid::new_v4().to_string();
+        let mut metadata = HashMap::new();
+
+        // Store caller profile info in task metadata
+        if let Some(profile) = caller {
+            metadata.insert(
+                "caller_agent_id".to_string(),
+                serde_json::json!(profile.agent_id),
+            );
+            metadata.insert("caller_name".to_string(), serde_json::json!(profile.name));
+
+            // Store full profile for later retrieval
+            let mut profiles = self.task_profiles.write().unwrap();
+            profiles.insert(task_id.clone(), profile.clone());
+        }
+
         let task = A2ATask {
             id: task_id.clone(),
             status: TaskStatus::Pending,
             messages: vec![message],
             artifacts: vec![],
-            metadata: HashMap::new(),
+            metadata,
         };
 
         {
@@ -347,7 +537,7 @@ impl A2AServer {
             tasks.insert(task_id.clone(), task.clone());
         }
 
-        tracing::info!(task_id = %task_id, "A2A task created");
+        tracing::info!(task_id = %task_id, caller = ?caller.map(|p| &p.agent_id), "A2A task created");
         serde_json::to_value(&task).map_err(|e| A2AError {
             code: -32603,
             message: format!("Serialization error: {}", e),
@@ -355,8 +545,58 @@ impl A2AServer {
         })
     }
 
+    /// Handle profile/register request
+    fn handle_profile_register(
+        &self,
+        params: &serde_json::Value,
+    ) -> Result<serde_json::Value, A2AError> {
+        let profile: AgentProfile =
+            serde_json::from_value(params.clone()).map_err(|e| A2AError {
+                code: -32602,
+                message: format!("Invalid profile: {}", e),
+                data: None,
+            })?;
+
+        let agent_id = profile.agent_id.clone();
+        self.profile_store.store(profile);
+
+        tracing::info!(agent_id = %agent_id, "A2A profile registered");
+        Ok(serde_json::json!({"success": true, "agentId": agent_id}))
+    }
+
+    /// Handle profile/validate request
+    fn handle_profile_validate(
+        &self,
+        params: &serde_json::Value,
+    ) -> Result<serde_json::Value, A2AError> {
+        let token = params
+            .get("token")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| A2AError {
+                code: -32602,
+                message: "Missing token parameter".to_string(),
+                data: None,
+            })?;
+
+        match self.profile_store.validate_token(token) {
+            Some(profile) => {
+                tracing::debug!(agent_id = %profile.agent_id, "Token validated");
+                Ok(serde_json::json!({
+                    "valid": true,
+                    "agentId": profile.agent_id,
+                    "name": profile.name,
+                    "capabilities": profile.capabilities
+                }))
+            }
+            None => Ok(serde_json::json!({"valid": false})),
+        }
+    }
+
     /// Handle task/status request
-    fn handle_task_status(&self, params: &serde_json::Value) -> Result<serde_json::Value, A2AError> {
+    fn handle_task_status(
+        &self,
+        params: &serde_json::Value,
+    ) -> Result<serde_json::Value, A2AError> {
         let task_id = params
             .get("taskId")
             .and_then(|v| v.as_str())
@@ -381,7 +621,10 @@ impl A2AServer {
     }
 
     /// Handle task/cancel request
-    fn handle_task_cancel(&self, params: &serde_json::Value) -> Result<serde_json::Value, A2AError> {
+    fn handle_task_cancel(
+        &self,
+        params: &serde_json::Value,
+    ) -> Result<serde_json::Value, A2AError> {
         let task_id = params
             .get("taskId")
             .and_then(|v| v.as_str())
@@ -411,7 +654,9 @@ impl A2AServer {
     /// Update task status (for internal use)
     pub fn update_task_status(&self, task_id: &str, status: TaskStatus) -> Result<(), String> {
         let mut tasks = self.tasks.write().unwrap();
-        let task = tasks.get_mut(task_id).ok_or_else(|| format!("Task not found: {}", task_id))?;
+        let task = tasks
+            .get_mut(task_id)
+            .ok_or_else(|| format!("Task not found: {}", task_id))?;
         task.status = status;
         Ok(())
     }
@@ -419,7 +664,9 @@ impl A2AServer {
     /// Add artifact to task (for internal use)
     pub fn add_artifact(&self, task_id: &str, artifact: Artifact) -> Result<(), String> {
         let mut tasks = self.tasks.write().unwrap();
-        let task = tasks.get_mut(task_id).ok_or_else(|| format!("Task not found: {}", task_id))?;
+        let task = tasks
+            .get_mut(task_id)
+            .ok_or_else(|| format!("Task not found: {}", task_id))?;
         task.artifacts.push(artifact);
         Ok(())
     }
@@ -436,6 +683,8 @@ pub struct A2AClient {
     client: reqwest::Client,
     /// Authentication token (if any)
     auth_token: Option<String>,
+    /// Agent profile for this client
+    profile: Option<AgentProfile>,
 }
 
 impl A2AClient {
@@ -444,15 +693,111 @@ impl A2AClient {
         Self {
             client: reqwest::Client::new(),
             auth_token: None,
+            profile: None,
         }
     }
 
-    /// Create a client with authentication
+    /// Create a client with authentication token
     pub fn with_auth(token: String) -> Self {
         Self {
             client: reqwest::Client::new(),
             auth_token: Some(token),
+            profile: None,
         }
+    }
+
+    /// Create a client with a full agent profile
+    pub fn with_profile(profile: AgentProfile) -> Self {
+        let auth_token = profile.auth_token.clone();
+        Self {
+            client: reqwest::Client::new(),
+            auth_token,
+            profile: Some(profile),
+        }
+    }
+
+    /// Get the current profile
+    pub fn profile(&self) -> Option<&AgentProfile> {
+        self.profile.as_ref()
+    }
+
+    /// Set the authentication token
+    pub fn set_auth_token(&mut self, token: String) {
+        self.auth_token = Some(token);
+    }
+
+    /// Register this client's profile with a remote agent
+    pub async fn register_profile(
+        &self,
+        agent_url: &str,
+        profile: &AgentProfile,
+    ) -> Result<(), String> {
+        let request = A2ARequest {
+            jsonrpc: "2.0".to_string(),
+            method: "profile/register".to_string(),
+            params: serde_json::to_value(profile).map_err(|e| e.to_string())?,
+            id: serde_json::json!(1),
+        };
+
+        let response = self.send_request(agent_url, &request).await?;
+
+        if response.error.is_some() {
+            return Err(response.error.unwrap().message);
+        }
+
+        Ok(())
+    }
+
+    /// Validate a token with a remote agent
+    pub async fn validate_token(
+        &self,
+        agent_url: &str,
+        token: &str,
+    ) -> Result<Option<AgentProfile>, String> {
+        let request = A2ARequest {
+            jsonrpc: "2.0".to_string(),
+            method: "profile/validate".to_string(),
+            params: serde_json::json!({"token": token}),
+            id: serde_json::json!(1),
+        };
+
+        let response = self.send_request(agent_url, &request).await?;
+
+        let result = response.result.ok_or_else(|| {
+            response
+                .error
+                .map(|e| e.message)
+                .unwrap_or_else(|| "Unknown error".to_string())
+        })?;
+
+        let valid = result
+            .get("valid")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !valid {
+            return Ok(None);
+        }
+
+        // Reconstruct a minimal profile from the response
+        let agent_id = result
+            .get("agentId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let name = result
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let capabilities: Vec<String> = result
+            .get("capabilities")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        let mut profile = AgentProfile::new(agent_id, name);
+        for cap in capabilities {
+            profile = profile.with_capability(cap);
+        }
+
+        Ok(Some(profile))
     }
 
     /// Discover an agent's capabilities
@@ -474,13 +819,15 @@ impl A2AClient {
                     .map(|e| e.message)
                     .unwrap_or_else(|| "Unknown error".to_string())
             })
-            .and_then(|v| {
-                serde_json::from_value(v).map_err(|e| format!("Parse error: {}", e))
-            })
+            .and_then(|v| serde_json::from_value(v).map_err(|e| format!("Parse error: {}", e)))
     }
 
     /// Create a task on a remote agent
-    pub async fn create_task(&self, agent_url: &str, message: A2AMessage) -> Result<A2ATask, String> {
+    pub async fn create_task(
+        &self,
+        agent_url: &str,
+        message: A2AMessage,
+    ) -> Result<A2ATask, String> {
         let request = A2ARequest {
             jsonrpc: "2.0".to_string(),
             method: "task/create".to_string(),
@@ -498,9 +845,7 @@ impl A2AClient {
                     .map(|e| e.message)
                     .unwrap_or_else(|| "Unknown error".to_string())
             })
-            .and_then(|v| {
-                serde_json::from_value(v).map_err(|e| format!("Parse error: {}", e))
-            })
+            .and_then(|v| serde_json::from_value(v).map_err(|e| format!("Parse error: {}", e)))
     }
 
     /// Get task status from a remote agent
@@ -522,9 +867,7 @@ impl A2AClient {
                     .map(|e| e.message)
                     .unwrap_or_else(|| "Unknown error".to_string())
             })
-            .and_then(|v| {
-                serde_json::from_value(v).map_err(|e| format!("Parse error: {}", e))
-            })
+            .and_then(|v| serde_json::from_value(v).map_err(|e| format!("Parse error: {}", e)))
     }
 
     /// Cancel a task on a remote agent
@@ -546,13 +889,15 @@ impl A2AClient {
                     .map(|e| e.message)
                     .unwrap_or_else(|| "Unknown error".to_string())
             })
-            .and_then(|v| {
-                serde_json::from_value(v).map_err(|e| format!("Parse error: {}", e))
-            })
+            .and_then(|v| serde_json::from_value(v).map_err(|e| format!("Parse error: {}", e)))
     }
 
     /// Send a JSON-RPC request to an agent
-    async fn send_request(&self, agent_url: &str, request: &A2ARequest) -> Result<A2AResponse, String> {
+    async fn send_request(
+        &self,
+        agent_url: &str,
+        request: &A2ARequest,
+    ) -> Result<A2AResponse, String> {
         let mut req = self.client.post(agent_url).json(request);
 
         if let Some(token) = &self.auth_token {
@@ -596,10 +941,7 @@ pub fn create_gestura_agent_card(base_url: &str) -> AgentCard {
                 description: "Process voice commands and execute workflows".to_string(),
                 input_modes: vec!["text".to_string(), "audio".to_string()],
                 output_modes: vec!["text".to_string()],
-                examples: vec![
-                    "Run the build".to_string(),
-                    "Open the settings".to_string(),
-                ],
+                examples: vec!["Run the build".to_string(), "Open the settings".to_string()],
             },
             Skill {
                 id: "tool-execution".to_string(),
@@ -657,7 +999,17 @@ mod tests {
 
     #[test]
     fn test_a2a_server_task_lifecycle() {
-        let card = create_gestura_agent_card("http://localhost:8080");
+        // Create a card without authentication for testing basic lifecycle
+        let card = AgentCard {
+            name: "test-agent".to_string(),
+            description: "Test agent".to_string(),
+            url: "http://localhost:8080/a2a".to_string(),
+            protocol_version: "0.3.0".to_string(),
+            skills: vec![],
+            authentication: None, // No auth required for this test
+            default_input_modes: vec!["text".to_string()],
+            default_output_modes: vec!["text".to_string()],
+        };
         let server = A2AServer::new(card);
 
         // Create task
@@ -699,7 +1051,8 @@ mod tests {
         let cancel_response = server.handle_request(cancel_request);
         assert!(cancel_response.result.is_some());
 
-        let cancelled_task: A2ATask = serde_json::from_value(cancel_response.result.unwrap()).unwrap();
+        let cancelled_task: A2ATask =
+            serde_json::from_value(cancel_response.result.unwrap()).unwrap();
         assert_eq!(cancelled_task.status, TaskStatus::Cancelled);
     }
 
@@ -720,18 +1073,19 @@ mod tests {
 
     #[test]
     fn test_message_part_serialization() {
-        let text_part = MessagePart::Text { text: "Hello".to_string() };
+        let text_part = MessagePart::Text {
+            text: "Hello".to_string(),
+        };
         let json = serde_json::to_string(&text_part).unwrap();
         assert!(json.contains("text"));
         assert!(json.contains("Hello"));
 
         let file_part = MessagePart::File {
             uri: "file:///test.txt".to_string(),
-            mime_type: Some("text/plain".to_string())
+            mime_type: Some("text/plain".to_string()),
         };
         let json = serde_json::to_string(&file_part).unwrap();
         assert!(json.contains("file"));
         assert!(json.contains("file:///test.txt"));
     }
 }
-
