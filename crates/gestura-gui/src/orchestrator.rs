@@ -3,11 +3,11 @@
 //! Wires AgentManager/AgentSpawner into the main workflow with tool calling,
 //! MCP integration, delegated tasks, and observability.
 
-use crate::agents::AgentManager;
-use crate::llm_provider::{AgentContext, select_provider};
-use crate::mcp_server::McpServer;
 use crate::AppConfig;
+use crate::agents::AgentManager;
+use crate::mcp_server::McpServer;
 use gestura_core::tools::PermissionManager;
+use gestura_core::{AgentPipeline, AgentRequest, RequestSource};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -107,7 +107,12 @@ impl AgentOrchestrator {
         );
 
         // Check if agent exists, spawn if needed
-        if self.agent_manager.get_agent_status(&agent_id).await.is_none() {
+        if self
+            .agent_manager
+            .get_agent_status(&agent_id)
+            .await
+            .is_none()
+        {
             self.spawn_subagent(&agent_id, &format!("Subagent-{}", agent_id))
                 .await?;
         }
@@ -201,41 +206,22 @@ impl AgentOrchestrator {
     }
 }
 
-/// Execute a delegated task on the specified agent
+/// Execute a delegated task on the specified agent using the unified AgentPipeline
 /// Returns (result, tool_calls) tuple for tracking tool usage
 async fn execute_delegated_task(
     agent_manager: &AgentManager,
     config: &AppConfig,
     task: &DelegatedTask,
 ) -> (Result<String, String>, Vec<ToolCallRecord>) {
-    let mut tool_calls = Vec::new();
-
-    let provider = select_provider(
-        config,
-        &AgentContext {
-            agent_id: task.agent_id.clone(),
-        },
-    );
-
-    // Build prompt with context and available tools
-    let tools_info = if !task.required_tools.is_empty() {
-        format!(
-            "\n\nAvailable tools: {}\nTo use a tool, respond with: TOOL_CALL: <tool_name> <json_args>",
-            task.required_tools.join(", ")
-        )
-    } else {
-        String::new()
-    };
-
+    // Build prompt with context
     let full_prompt = if let Some(ctx) = &task.context {
         format!(
-            "Context:\n{}\n\nTask:\n{}{}",
+            "Context:\n{}\n\nTask:\n{}",
             serde_json::to_string_pretty(ctx).unwrap_or_default(),
-            task.prompt,
-            tools_info
+            task.prompt
         )
     } else {
-        format!("{}{}", task.prompt, tools_info)
+        task.prompt.clone()
     };
 
     tracing::debug!(
@@ -243,185 +229,82 @@ async fn execute_delegated_task(
         task_id = %task.id,
         prompt_len = full_prompt.len(),
         required_tools = ?task.required_tools,
-        "Executing delegated task"
+        "Executing delegated task via AgentPipeline"
     );
 
     // Update agent activity
     agent_manager.update_activity(&task.agent_id).await;
 
-    // Agentic loop: call LLM, check for tool calls, execute tools, repeat
-    let mut current_prompt = full_prompt;
-    let mut final_response = String::new();
-    let max_iterations = 10; // Prevent infinite loops
+    // Build the agent request with tool filtering
+    let request = AgentRequest::new(&full_prompt)
+        .with_streaming(false)
+        .with_source(RequestSource::Orchestrator)
+        .with_allowed_tools(task.required_tools.clone());
 
-    for iteration in 0..max_iterations {
-        // Call LLM
-        let response = match provider.call(&current_prompt).await {
-            Ok(r) => r,
-            Err(e) => return (Err(format!("LLM error: {}", e)), tool_calls),
-        };
+    // Execute via unified pipeline
+    let pipeline = AgentPipeline::new(config.clone());
+    let result = pipeline.process_blocking(request).await;
 
-        // Check for tool call pattern in response
-        if let Some(tool_call) = parse_tool_call(&response) {
-            // Verify tool is in required_tools list
-            if !task.required_tools.contains(&tool_call.tool_name) {
-                tracing::warn!(
-                    tool = %tool_call.tool_name,
-                    "Agent attempted to use unauthorized tool"
-                );
-                current_prompt = format!(
-                    "{}\n\nError: Tool '{}' is not available. Available tools: {}",
-                    response,
-                    tool_call.tool_name,
-                    task.required_tools.join(", ")
-                );
-                continue;
-            }
+    match result {
+        Ok(response) => {
+            // Convert pipeline tool calls to orchestrator format
+            let tool_calls: Vec<ToolCallRecord> = response
+                .tool_calls
+                .into_iter()
+                .map(|tc| {
+                    // Parse arguments as JSON for input
+                    let input =
+                        serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
 
-            // Execute the tool
-            let tool_start = std::time::Instant::now();
-            let tool_result = execute_tool(&tool_call.tool_name, &tool_call.input).await;
-            let tool_duration = tool_start.elapsed().as_millis() as u64;
+                    // Extract output and success from ToolResult
+                    let (output, success) = match &tc.result {
+                        gestura_core::ToolResult::Success(s) => (
+                            serde_json::from_str(s).unwrap_or(serde_json::json!({"result": s})),
+                            true,
+                        ),
+                        gestura_core::ToolResult::Error(e) => {
+                            (serde_json::json!({"error": e}), false)
+                        }
+                        gestura_core::ToolResult::Skipped(reason) => {
+                            (serde_json::json!({"skipped": reason}), false)
+                        }
+                    };
 
-            let (output, success) = match &tool_result {
-                Ok(out) => (out.clone(), true),
-                Err(e) => (serde_json::json!({"error": e}), false),
-            };
-
-            // Record the tool call
-            tool_calls.push(ToolCallRecord {
-                tool_name: tool_call.tool_name.clone(),
-                input: tool_call.input.clone(),
-                output: output.clone(),
-                success,
-                duration_ms: tool_duration,
-            });
+                    ToolCallRecord {
+                        tool_name: tc.name,
+                        input,
+                        output,
+                        success,
+                        duration_ms: tc.duration_ms,
+                    }
+                })
+                .collect();
 
             tracing::info!(
-                tool = %tool_call.tool_name,
-                success = success,
-                duration_ms = tool_duration,
-                iteration = iteration,
-                "Tool call executed"
+                agent_id = %task.agent_id,
+                task_id = %task.id,
+                response_len = response.content.len(),
+                tool_calls_count = tool_calls.len(),
+                "Task completed via AgentPipeline"
             );
 
-            // Continue conversation with tool result
-            current_prompt = format!(
-                "{}\n\nTool result for {}:\n{}",
-                response,
-                tool_call.tool_name,
-                serde_json::to_string_pretty(&output).unwrap_or_default()
+            (Ok(response.content), tool_calls)
+        }
+        Err(e) => {
+            tracing::error!(
+                agent_id = %task.agent_id,
+                task_id = %task.id,
+                error = %e,
+                "Task failed"
             );
-        } else {
-            // No tool call, this is the final response
-            final_response = response;
-            break;
+            (Err(e.to_string()), Vec::new())
         }
     }
-
-    tracing::info!(
-        agent_id = %task.agent_id,
-        task_id = %task.id,
-        response_len = final_response.len(),
-        tool_calls_count = tool_calls.len(),
-        "Task completed"
-    );
-
-    (Ok(final_response), tool_calls)
 }
 
-/// Parsed tool call from LLM response
-struct ParsedToolCall {
-    tool_name: String,
-    input: serde_json::Value,
-}
-
-/// Parse a tool call from LLM response
-/// Expected format: TOOL_CALL: <tool_name> <json_args>
-fn parse_tool_call(response: &str) -> Option<ParsedToolCall> {
-    let marker = "TOOL_CALL:";
-    let idx = response.find(marker)?;
-    let rest = response[idx + marker.len()..].trim();
-
-    // Split into tool name and args
-    let parts: Vec<&str> = rest.splitn(2, ' ').collect();
-    if parts.is_empty() {
-        return None;
-    }
-
-    let tool_name = parts[0].trim().to_string();
-    let input = if parts.len() > 1 {
-        serde_json::from_str(parts[1].trim()).unwrap_or(serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    Some(ParsedToolCall { tool_name, input })
-}
-
-/// Execute a tool by name with given input
-async fn execute_tool(tool_name: &str, input: &serde_json::Value) -> Result<serde_json::Value, String> {
-    use gestura_core::tools::{shell::ShellTools, file::FileTools};
-
-    match tool_name {
-        "shell" => {
-            let command = input.get("command")
-                .and_then(|v| v.as_str())
-                .ok_or("Missing 'command' argument")?;
-            let timeout = input.get("timeout_secs")
-                .and_then(|v| v.as_u64());
-
-            let shell = ShellTools::new();
-            let result = shell.run(command, timeout)
-                .map_err(|e| format!("Shell error: {}", e))?;
-
-            Ok(serde_json::json!({
-                "stdout": result.stdout,
-                "stderr": result.stderr,
-                "exit_code": result.exit_code,
-                "success": result.success,
-                "duration_ms": result.duration_ms
-            }))
-        }
-        "file" => {
-            let operation = input.get("operation")
-                .and_then(|v| v.as_str())
-                .unwrap_or("read");
-            let path = input.get("path")
-                .and_then(|v| v.as_str())
-                .ok_or("Missing 'path' argument")?;
-
-            let file_tools = FileTools::new();
-
-            match operation {
-                "read" => {
-                    // read(path, start_line, end_line) - None for full file
-                    let content = file_tools.read(std::path::Path::new(path), None, None)
-                        .map_err(|e| format!("File read error: {}", e))?;
-                    Ok(serde_json::json!({"content": content}))
-                }
-                "write" => {
-                    let content = input.get("content")
-                        .and_then(|v| v.as_str())
-                        .ok_or("Missing 'content' for write operation")?;
-                    file_tools.write(std::path::Path::new(path), content)
-                        .map_err(|e| format!("File write error: {}", e))?;
-                    Ok(serde_json::json!({"success": true, "path": path}))
-                }
-                "list" => {
-                    let show_hidden = input.get("show_hidden")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    let entries = file_tools.list(std::path::Path::new(path), show_hidden)
-                        .map_err(|e| format!("File list error: {}", e))?;
-                    Ok(serde_json::json!({"entries": entries}))
-                }
-                _ => Err(format!("Unknown file operation: {}", operation))
-            }
-        }
-        _ => Err(format!("Unknown tool: {}", tool_name))
-    }
-}
+// Note: Tool execution is now handled by AgentPipeline internally.
+// The old parse_tool_call and execute_tool functions have been removed
+// in favor of the unified pipeline approach.
 
 #[cfg(test)]
 mod tests {
@@ -444,7 +327,10 @@ mod tests {
         let config = AppConfig::default();
         let orchestrator = AgentOrchestrator::new(manager, config);
 
-        orchestrator.spawn_subagent("test-1", "Test Agent").await.unwrap();
+        orchestrator
+            .spawn_subagent("test-1", "Test Agent")
+            .await
+            .unwrap();
 
         let agents = orchestrator.list_subagents().await;
         assert_eq!(agents.len(), 1);
@@ -468,4 +354,3 @@ mod tests {
         assert_eq!(parsed.required_tools.len(), 1);
     }
 }
-

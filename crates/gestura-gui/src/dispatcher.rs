@@ -91,9 +91,7 @@ impl EventDispatcher {
             DispatchEvent::Gesture(data) => {
                 tracing::info!("Gesture event: {}", data);
                 // Parse the interaction event and build context
-                if let Ok(interaction_event) =
-                    serde_json::from_str::<InteractionEvent>(&data)
-                {
+                if let Ok(interaction_event) = serde_json::from_str::<InteractionEvent>(&data) {
                     let ctx = InteractionContext::new("gesture-agent")
                         .with_interaction(interaction_event);
                     tracing::debug!(

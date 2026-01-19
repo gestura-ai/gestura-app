@@ -94,16 +94,89 @@ impl ProcessSpawner {
         }
     }
 
+    /// Discover agent binary path
+    fn discover_agent_binary(name: &str) -> Option<std::path::PathBuf> {
+        // Normalize agent name to binary name (e.g., "Code Assistant" -> "code-assistant")
+        let binary_name = name.to_lowercase().replace([' ', '_'], "-");
+
+        // Search paths in order of priority
+        let search_paths = [
+            // 1. Bundled agents in app resources
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.join("agents").join(&binary_name))),
+            // 2. User agents directory
+            dirs::data_local_dir().map(|p| p.join("gestura").join("agents").join(&binary_name)),
+            // 3. System-wide agents
+            Some(std::path::PathBuf::from("/usr/local/share/gestura/agents").join(&binary_name)),
+            // 4. Development path
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.join("target/debug").join(&binary_name)),
+            // 5. PATH lookup
+            which::which(&binary_name).ok(),
+        ];
+
+        for path in search_paths.into_iter().flatten() {
+            if path.exists() && path.is_file() {
+                tracing::info!("Discovered agent binary at: {:?}", path);
+                return Some(path);
+            }
+        }
+
+        None
+    }
+
     /// Spawn agent subprocess with IPC
     async fn spawn_subprocess(&self, id: &str, name: &str) -> Result<ProcessAgent, AppError> {
-        // Create agent subprocess - for now use a simple echo process as placeholder
-        // In production, this would spawn the actual agent binary
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg("while read line; do echo \"Agent response: $line\"; done")
+        // Try to discover actual agent binary
+        let (command, args): (String, Vec<String>) = if let Some(binary_path) =
+            Self::discover_agent_binary(name)
+        {
+            (
+                binary_path.to_string_lossy().to_string(),
+                vec!["--ipc".to_string()],
+            )
+        } else {
+            // Fallback to built-in agent wrapper
+            tracing::info!(
+                "No external binary found for '{}', using built-in wrapper",
+                name
+            );
+            (
+                "sh".to_string(),
+                vec![
+                    "-c".to_string(),
+                    format!(
+                        r#"while IFS= read -r line; do
+                            method=$(echo "$line" | jq -r '.subject // empty')
+                            payload=$(echo "$line" | jq -r '.payload // empty')
+                            case "$method" in
+                                "ping")
+                                    echo '{{"jsonrpc":"2.0","result":{{"status":"ok","agent":"{}"}}}}'
+                                    ;;
+                                "shutdown")
+                                    echo '{{"jsonrpc":"2.0","result":{{"status":"shutting_down"}}}}'
+                                    exit 0
+                                    ;;
+                                *)
+                                    echo '{{"jsonrpc":"2.0","result":{{"echo":"'"$payload"'","agent":"{}"}}}}'
+                                    ;;
+                            esac
+                        done"#,
+                        name, name
+                    ),
+                ],
+            )
+        };
+
+        let mut child = Command::new(&command)
+            .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .env("GESTURA_AGENT_ID", id)
+            .env("GESTURA_AGENT_NAME", name)
             .spawn()
             .map_err(AppError::Io)?;
 

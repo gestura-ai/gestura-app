@@ -149,10 +149,12 @@ pub async fn get_simulator_logs(
 /// Run comprehensive simulator test
 #[tauri::command]
 pub async fn run_simulator_test(
-    _device_id: String,
+    device_id: String,
     state: State<'_, AppState>,
 ) -> Result<TestResults, String> {
     let _app_state = state.inner();
+
+    tracing::debug!(device_id = %device_id, "Running simulator test (mock)");
 
     // For now, return mock test results
     // In a real implementation, this would use SimulatorTester
@@ -254,10 +256,12 @@ pub async fn auto_discover_simulators(state: State<'_, AppState>) -> Result<Vec<
 /// Get simulator performance metrics
 #[tauri::command]
 pub async fn get_simulator_metrics(
-    _device_id: String,
+    device_id: String,
     state: State<'_, AppState>,
 ) -> Result<crate::simulator::SimulatorMetrics, String> {
     let _app_state = state.inner();
+
+    tracing::debug!(device_id = %device_id, "Fetching simulator metrics (mock)");
 
     // Return mock metrics
     Ok(crate::simulator::SimulatorMetrics {

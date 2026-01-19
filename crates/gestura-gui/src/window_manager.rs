@@ -3,9 +3,166 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
+
+/// A message in the conversation history
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationMessage {
+    /// Message role: "user", "assistant", or "tool"
+    pub role: String,
+    /// Message content
+    pub content: String,
+    /// Tool call ID (for tool messages)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Thinking content (for extended thinking)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    /// Message timestamp
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Source of the message: "text" or "voice"
+    pub source: MessageSource,
+}
+
+/// Source of a message
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageSource {
+    /// Text input from chat
+    Text,
+    /// Voice input (transcribed)
+    Voice,
+    /// System-generated
+    System,
+}
+
+impl Default for MessageSource {
+    fn default() -> Self {
+        Self::Text
+    }
+}
+
+/// Tool call record for session history
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionToolCall {
+    /// Tool call ID
+    pub id: String,
+    /// Tool name
+    pub name: String,
+    /// Tool arguments (JSON string)
+    pub arguments: String,
+    /// Tool result
+    pub result: String,
+    /// Whether the call succeeded
+    pub success: bool,
+    /// Duration in milliseconds
+    pub duration_ms: u64,
+    /// Timestamp
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+/// Unified session state for both voice and text inputs
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionState {
+    /// Conversation history (shared between voice and text)
+    pub messages: Vec<ConversationMessage>,
+    /// Tool call history
+    pub tool_calls: Vec<SessionToolCall>,
+    /// Total tokens used in this session
+    pub total_tokens: u64,
+    /// Last context cache key (for smart context reduction)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_cache_key: Option<String>,
+    /// Workspace directory for sandboxed file/shell operations
+    /// All file operations and tool calls are scoped to this directory
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_dir: Option<PathBuf>,
+}
+
+impl SessionState {
+    /// Create a new session state with a workspace directory
+    pub fn with_workspace(workspace_dir: PathBuf) -> Self {
+        Self {
+            workspace_dir: Some(workspace_dir),
+            ..Default::default()
+        }
+    }
+
+    /// Set the workspace directory
+    pub fn set_workspace(&mut self, workspace_dir: PathBuf) {
+        self.workspace_dir = Some(workspace_dir);
+    }
+
+    /// Get the workspace directory
+    pub fn get_workspace(&self) -> Option<&PathBuf> {
+        self.workspace_dir.as_ref()
+    }
+}
+
+impl SessionState {
+    /// Add a user message
+    pub fn add_user_message(&mut self, content: &str, source: MessageSource) {
+        self.messages.push(ConversationMessage {
+            role: "user".to_string(),
+            content: content.to_string(),
+            tool_call_id: None,
+            thinking: None,
+            timestamp: chrono::Utc::now(),
+            source,
+        });
+    }
+
+    /// Add an assistant message
+    pub fn add_assistant_message(&mut self, content: &str, thinking: Option<String>) {
+        self.messages.push(ConversationMessage {
+            role: "assistant".to_string(),
+            content: content.to_string(),
+            tool_call_id: None,
+            thinking,
+            timestamp: chrono::Utc::now(),
+            source: MessageSource::System,
+        });
+    }
+
+    /// Add a tool result message
+    pub fn add_tool_message(&mut self, tool_call_id: &str, content: &str) {
+        self.messages.push(ConversationMessage {
+            role: "tool".to_string(),
+            content: content.to_string(),
+            tool_call_id: Some(tool_call_id.to_string()),
+            thinking: None,
+            timestamp: chrono::Utc::now(),
+            source: MessageSource::System,
+        });
+    }
+
+    /// Record a tool call
+    pub fn record_tool_call(&mut self, call: SessionToolCall) {
+        self.tool_calls.push(call);
+    }
+
+    /// Get recent messages for LLM context
+    pub fn get_recent_messages(&self, limit: usize) -> Vec<&ConversationMessage> {
+        let start = self.messages.len().saturating_sub(limit);
+        self.messages.iter().skip(start).collect()
+    }
+
+    /// Convert to Message format for pipeline
+    pub fn to_pipeline_messages(&self) -> Vec<gestura_core::Message> {
+        self.messages
+            .iter()
+            .map(|m| gestura_core::Message {
+                role: m.role.clone(),
+                content: m.content.clone(),
+                tool_call_id: m.tool_call_id.clone(),
+                thinking: m.thinking.clone(),
+            })
+            .collect()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatSession {
@@ -16,6 +173,9 @@ pub struct ChatSession {
     pub is_open: bool,
     pub window_label: Option<String>,
     pub message_count: usize,
+    /// Unified session state (conversation history, tool calls, etc.)
+    #[serde(default)]
+    pub state: SessionState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +209,14 @@ impl WindowManager {
 
         tracing::info!("Creating new chat session: {}", session_id);
 
+        // Default to a reasonable workspace so file tools can answer questions like
+        // "what's in the project directory" without requiring an explicit workspace pick.
+        // Users can still override this via pick_workspace_directory.
+        let default_workspace = get_project_directory().or_else(dirs::home_dir);
+        let session_state = default_workspace
+            .map(SessionState::with_workspace)
+            .unwrap_or_default();
+
         // Create the session with user-friendly title
         let now = chrono::Utc::now();
         let session = ChatSession {
@@ -59,6 +227,7 @@ impl WindowManager {
             is_open: true,
             window_label: Some(window_label.clone()),
             message_count: 0,
+            state: session_state,
         };
 
         // Store the session
@@ -79,8 +248,12 @@ impl WindowManager {
 
     /// Create a chat window for a session
     fn create_chat_window(&self, session_id: &str, window_label: &str) -> tauri::Result<()> {
+        // Include the session_id in the URL so the frontend can route events/state
+        // correctly per window (avoids cross-window event bleed and enables
+        // session-scoped history).
+        let chat_url = format!("chat.html?session_id={}", session_id);
         let window =
-            WebviewWindowBuilder::new(&self.app, window_label, WebviewUrl::App("chat.html".into()))
+            WebviewWindowBuilder::new(&self.app, window_label, WebviewUrl::App(chat_url.into()))
                 .title("Gestura Chat")
                 .inner_size(800.0, 600.0)
                 .center()
@@ -331,6 +504,68 @@ impl WindowManager {
             .get(session_id)
             .and_then(|s| s.window_label.clone())
     }
+
+    /// Get the session state for a session
+    pub fn get_session_state(&self, session_id: &str) -> Option<SessionState> {
+        let sessions = self.sessions.lock().unwrap();
+        sessions.get(session_id).map(|s| s.state.clone())
+    }
+
+    /// Add a user message to a session (from text or voice)
+    pub fn add_user_message(&self, session_id: &str, content: &str, source: MessageSource) {
+        let mut sessions = self.sessions.lock().unwrap();
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.state.add_user_message(content, source);
+            session.message_count = session.state.messages.len();
+            session.last_active = chrono::Utc::now();
+        }
+    }
+
+    /// Add an assistant message to a session
+    pub fn add_assistant_message(&self, session_id: &str, content: &str, thinking: Option<String>) {
+        let mut sessions = self.sessions.lock().unwrap();
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.state.add_assistant_message(content, thinking);
+            session.message_count = session.state.messages.len();
+            session.last_active = chrono::Utc::now();
+        }
+    }
+
+    /// Add a tool result message to a session
+    pub fn add_tool_message(&self, session_id: &str, tool_call_id: &str, content: &str) {
+        let mut sessions = self.sessions.lock().unwrap();
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.state.add_tool_message(tool_call_id, content);
+            session.message_count = session.state.messages.len();
+            session.last_active = chrono::Utc::now();
+        }
+    }
+
+    /// Record a tool call in a session
+    pub fn record_tool_call(&self, session_id: &str, call: SessionToolCall) {
+        let mut sessions = self.sessions.lock().unwrap();
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.state.record_tool_call(call);
+            session.last_active = chrono::Utc::now();
+        }
+    }
+
+    /// Update token count for a session
+    pub fn update_token_count(&self, session_id: &str, tokens: u64) {
+        let mut sessions = self.sessions.lock().unwrap();
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.state.total_tokens += tokens;
+        }
+    }
+
+    /// Get conversation history for pipeline
+    pub fn get_pipeline_messages(&self, session_id: &str) -> Vec<gestura_core::Message> {
+        let sessions = self.sessions.lock().unwrap();
+        sessions
+            .get(session_id)
+            .map(|s| s.state.to_pipeline_messages())
+            .unwrap_or_default()
+    }
 }
 
 // Global window manager instance
@@ -438,6 +673,70 @@ pub fn get_active_chat_for_voice() -> Option<String> {
 /// Get the window label for a session by its ID
 pub fn get_session_window_label(session_id: &str) -> Option<String> {
     get_window_manager().and_then(|m| m.get_session_window_label(session_id))
+}
+
+/// Get session state for a session
+pub fn get_session_state(session_id: &str) -> Option<SessionState> {
+    get_window_manager().and_then(|m| m.get_session_state(session_id))
+}
+
+/// Get the workspace directory for the current active session
+pub fn get_active_session_workspace() -> Option<PathBuf> {
+    get_active_chat_for_voice()
+        .and_then(|session_id| get_session_state(&session_id))
+        .and_then(|state| state.workspace_dir)
+}
+
+/// Set the workspace directory for a session
+pub fn set_session_workspace(session_id: &str, workspace_dir: PathBuf) {
+    if let Some(manager) = get_window_manager() {
+        let mut sessions = manager.sessions.lock().unwrap();
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.state.set_workspace(workspace_dir);
+        }
+    }
+}
+
+/// Add a user message to a session (from text or voice)
+pub fn add_user_message(session_id: &str, content: &str, source: MessageSource) {
+    if let Some(manager) = get_window_manager() {
+        manager.add_user_message(session_id, content, source);
+    }
+}
+
+/// Add an assistant message to a session
+pub fn add_assistant_message(session_id: &str, content: &str, thinking: Option<String>) {
+    if let Some(manager) = get_window_manager() {
+        manager.add_assistant_message(session_id, content, thinking);
+    }
+}
+
+/// Add a tool result message to a session
+pub fn add_tool_message(session_id: &str, tool_call_id: &str, content: &str) {
+    if let Some(manager) = get_window_manager() {
+        manager.add_tool_message(session_id, tool_call_id, content);
+    }
+}
+
+/// Record a tool call in a session
+pub fn record_tool_call(session_id: &str, call: SessionToolCall) {
+    if let Some(manager) = get_window_manager() {
+        manager.record_tool_call(session_id, call);
+    }
+}
+
+/// Update token count for a session
+pub fn update_token_count(session_id: &str, tokens: u64) {
+    if let Some(manager) = get_window_manager() {
+        manager.update_token_count(session_id, tokens);
+    }
+}
+
+/// Get conversation history for pipeline
+pub fn get_pipeline_messages(session_id: &str) -> Vec<gestura_core::Message> {
+    get_window_manager()
+        .map(|m| m.get_pipeline_messages(session_id))
+        .unwrap_or_default()
 }
 
 /// Open a sandboxed shell session with Gestura CLI access

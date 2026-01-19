@@ -305,11 +305,15 @@ impl TelemetryManager {
                 // Calculate error rate from counters
                 let error_rate = {
                     let counters_guard = counters.read().await;
-                    let errors = counters_guard.get("errors").copied()
+                    let errors = counters_guard
+                        .get("errors")
+                        .copied()
                         .or_else(|| counters_guard.get("error_count").copied())
                         .or_else(|| counters_guard.get("requests.error").copied())
                         .unwrap_or(0.0);
-                    let successes = counters_guard.get("successes").copied()
+                    let successes = counters_guard
+                        .get("successes")
+                        .copied()
                         .or_else(|| counters_guard.get("success_count").copied())
                         .or_else(|| counters_guard.get("requests.success").copied())
                         .unwrap_or(0.0);
