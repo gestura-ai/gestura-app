@@ -34,6 +34,8 @@ mod ui;
 
 pub use app::{Action, TuiApp, TuiMode};
 
+use app::ConfirmAction;
+
 use std::io;
 use std::time::Duration;
 
@@ -42,7 +44,9 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use gestura_core::{AppConfig, CancellationToken, StreamChunk, start_streaming};
+use gestura_core::{
+    AgentPipeline, AgentRequest, AppConfig, CancellationToken, RequestSource, StreamChunk,
+};
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 
@@ -56,6 +60,8 @@ struct StreamingState {
     cancel_token: CancellationToken,
     /// Accumulated content from streaming
     content: String,
+    /// Accumulated thinking content
+    thinking_content: String,
 }
 
 /// Run the TUI chat interface
@@ -65,7 +71,8 @@ pub fn run_tui(opts: ChatOptions<'_>) -> Result<()> {
         if let Some(id) = opts.session {
             ChatSession::load(id)?
         } else {
-            ChatSession::load_last()?.unwrap_or_else(|| ChatSession::new(opts.model.map(String::from)))
+            ChatSession::load_last()?
+                .unwrap_or_else(|| ChatSession::new(opts.model.map(String::from)))
         }
     } else {
         ChatSession::new(opts.model.map(String::from))
@@ -105,6 +112,9 @@ pub fn run_tui(opts: ChatOptions<'_>) -> Result<()> {
     // Create tokio runtime for async LLM calls
     let rt = tokio::runtime::Runtime::new()?;
 
+    // Load initial workflows
+    load_workflows(&mut app);
+
     // Run the main loop
     let result = run_main_loop(&mut terminal, &mut app, &rt);
 
@@ -117,8 +127,10 @@ pub fn run_tui(opts: ChatOptions<'_>) -> Result<()> {
     )?;
     terminal.show_cursor()?;
 
-    // Save session on exit
-    app.session.save()?;
+    // Save session on exit unless explicitly suppressed ("quit without save").
+    if !app.skip_save_on_exit {
+        app.session.save()?;
+    }
 
     result
 }
@@ -133,6 +145,12 @@ fn run_main_loop(
     let mut streaming: Option<StreamingState> = None;
 
     loop {
+        // Check for auto-dismiss of transient errors (15 second timeout)
+        // Skip if user is actively interacting (in Insert or Command mode)
+        if app.mode != TuiMode::Insert && app.mode != TuiMode::Command {
+            app.check_error_timeout();
+        }
+
         // Render
         terminal.draw(|f| ui::render(app, f))?;
 
@@ -142,14 +160,45 @@ fn run_main_loop(
             loop {
                 match stream_state.receiver.try_recv() {
                     Ok(chunk) => match chunk {
+                        StreamChunk::Thinking(text) => {
+                            stream_state.thinking_content.push_str(&text);
+                            app.update_last_message_thinking(&stream_state.thinking_content);
+                        }
                         StreamChunk::Text(text) => {
                             stream_state.content.push_str(&text);
                             app.update_last_message(&stream_state.content);
                         }
-                        StreamChunk::Done => {
+                        StreamChunk::ToolCallStart { id: _, name } => {
+                            stream_state
+                                .content
+                                .push_str(&format!("\n\n🔧 *Using tool: {}*\n", name));
+                            app.update_last_message(&stream_state.content);
+                        }
+                        StreamChunk::ToolCallArgs(args) => {
+                            // Accumulate tool arguments (could display progress)
+                            stream_state.content.push_str(&format!(
+                                "  ⏳ Args: {}...\n",
+                                &args[..args.len().min(50)]
+                            ));
+                            app.update_last_message(&stream_state.content);
+                        }
+                        StreamChunk::ToolCallEnd => {
+                            stream_state.content.push_str("  ✅ Tool call complete\n");
+                            app.update_last_message(&stream_state.content);
+                        }
+                        StreamChunk::Done(usage) => {
+                            // Record token usage if available
+                            if let Some(usage) = usage {
+                                app.record_token_usage(
+                                    usage.input_tokens,
+                                    usage.output_tokens,
+                                    usage.estimated_cost_usd,
+                                );
+                            }
                             app.finalize_streaming_message();
                             app.is_loading = false;
-                            app.set_status("Ready");
+                            // Clear any previous error on successful completion
+                            app.clear_error();
                             streaming = None;
                             break;
                         }
@@ -171,12 +220,19 @@ fn run_main_loop(
                             break;
                         }
                         StreamChunk::Error(err) => {
-                            app.set_error(format!("Stream error: {}", err));
+                            let error_msg = format!("Stream error: {}", err);
+                            app.set_error(&error_msg);
+
+                            // Push critical error as visible message in chat
+                            // (connection failures, API quota exceeded, etc.)
+                            app.push_error_message(format!("⚠️ {}", error_msg));
+
                             if !stream_state.content.is_empty() {
                                 app.update_last_message(&format!(
                                     "{}\n\n[Error: {}]",
                                     stream_state.content, err
                                 ));
+                                app.mark_last_message_error();
                                 app.finalize_streaming_message();
                             } else {
                                 app.messages.pop();
@@ -223,7 +279,9 @@ fn run_main_loop(
                     }
                 }
                 Action::ExecuteCommand(cmd) => {
-                    handle_command(app, &cmd)?;
+                    if let Some(Action::Quit) = handle_command(app, &cmd)? {
+                        break;
+                    }
                 }
                 Action::SwitchTab(idx) => {
                     if idx < app.tabs.len() {
@@ -253,6 +311,10 @@ fn run_main_loop(
                         app.set_status("Cancelling...");
                     }
                 }
+                Action::ToggleRecording => {
+                    // Voice recording toggle - not implemented in CLI TUI
+                    app.set_status("Voice recording not available in CLI mode");
+                }
                 Action::Continue => {}
             }
         }
@@ -261,7 +323,7 @@ fn run_main_loop(
     Ok(())
 }
 
-/// Start streaming a message to the LLM (non-blocking)
+/// Start streaming a message to the LLM (non-blocking) via AgentPipeline
 fn start_streaming_message(
     app: &mut TuiApp,
     rt: &tokio::runtime::Runtime,
@@ -278,44 +340,41 @@ fn start_streaming_message(
     // Add user message
     app.add_message("user", message);
     app.is_loading = true;
-    app.set_status("Streaming...");
+    app.set_status("Streaming via AgentPipeline...");
 
     // Add placeholder for streaming response
     app.add_streaming_message();
 
-    // Build conversation context
-    let mut context = String::new();
-    // Use messages before the streaming placeholder (skip last 2: user msg + streaming placeholder)
+    // Build conversation history for the pipeline
     let msg_count = app.session.messages.len();
-    for msg in app.session.messages.iter().take(msg_count.saturating_sub(1)).rev().take(10).rev() {
-        match msg.role.as_str() {
-            "user" => context.push_str(&format!("User: {}\n", msg.content)),
-            "assistant" => context.push_str(&format!("Assistant: {}\n", msg.content)),
-            _ => {}
-        }
+    let history: Vec<gestura_core::Message> = app
+        .session
+        .messages
+        .iter()
+        .take(msg_count.saturating_sub(1))
+        .rev()
+        .take(10)
+        .rev()
+        .map(|msg| gestura_core::Message {
+            role: msg.role.clone(),
+            content: msg.content.clone(),
+            tool_call_id: None,
+            thinking: None,
+        })
+        .collect();
+
+    // Build the agent request
+    let mut request = AgentRequest::new(message)
+        .with_streaming(true)
+        .with_source(RequestSource::CliTui);
+
+    // Add system prompt if available
+    if let Some(ref sys) = app.system_prompt {
+        request = request.with_system_prompt(sys.clone());
     }
 
-    // Build full prompt
-    let system_prompt = app.system_prompt.clone();
-    let message_owned = message.to_string();
-
-    let full_prompt = if let Some(ref sys) = system_prompt {
-        if context.len() > message_owned.len() + 10 {
-            format!(
-                "System: {}\n\nPrevious conversation:\n{}\nRespond to the latest user message.",
-                sys, context
-            )
-        } else {
-            format!("System: {}\n\nUser: {}", sys, message_owned)
-        }
-    } else if context.len() > message_owned.len() + 10 {
-        format!(
-            "Previous conversation:\n{}\nRespond to the latest user message.",
-            context
-        )
-    } else {
-        message_owned
-    };
+    // Add conversation history
+    request = request.with_history(history);
 
     // Create channel and cancellation token
     let (tx, rx) = mpsc::channel::<StreamChunk>(100);
@@ -323,9 +382,12 @@ fn start_streaming_message(
     let cancel_token_clone = cancel_token.clone();
     let config = app.config.clone();
 
-    // Spawn streaming task
+    // Spawn streaming task using AgentPipeline
     rt.spawn(async move {
-        if let Err(e) = start_streaming(&config, &full_prompt, tx.clone(), cancel_token_clone).await
+        let pipeline = AgentPipeline::new(config);
+        if let Err(e) = pipeline
+            .process_streaming(request, tx.clone(), cancel_token_clone)
+            .await
         {
             let _ = tx.send(StreamChunk::Error(e.to_string())).await;
         }
@@ -335,21 +397,27 @@ fn start_streaming_message(
         receiver: rx,
         cancel_token,
         content: String::new(),
+        thinking_content: String::new(),
     }))
 }
 
-/// Handle slash commands
-fn handle_command(app: &mut TuiApp, command: &str) -> Result<()> {
+/// Handle slash commands.
+///
+/// Returns an optional `Action` for commands that should affect the main loop.
+fn handle_command(app: &mut TuiApp, command: &str) -> Result<Option<Action>> {
     let parts: Vec<&str> = command.split_whitespace().collect();
     let cmd = parts.first().map(|s| s.to_lowercase()).unwrap_or_default();
     let args = &parts[1..];
+    let confirmed = args.contains(&"--confirmed");
 
     match cmd.as_str() {
         "/quit" | "/q" | "/exit" => {
-            // This will be handled by returning Quit action
-            // For now, just save
-            app.session.save()?;
-            app.set_status("Session saved. Use Ctrl+C or q to quit.");
+            // Quit via command (save-on-exit handled by run_tui)
+            return Ok(Some(Action::Quit));
+        }
+        "/quit!" => {
+            // Explicit quit without save requires confirmation.
+            app.show_confirm(ConfirmAction::QuitWithoutSave);
         }
         "/help" | "/?" => {
             app.mode = TuiMode::Help;
@@ -360,6 +428,7 @@ fn handle_command(app: &mut TuiApp, command: &str) -> Result<()> {
                     app.messages.push(app::TuiMessage {
                         role: "system".to_string(),
                         content: detail,
+                        thinking: None,
                         is_streaming: false,
                         is_error: false,
                     });
@@ -367,28 +436,34 @@ fn handle_command(app: &mut TuiApp, command: &str) -> Result<()> {
                     app.set_error(format!("Unknown tool: {}", name));
                 }
             } else {
-                app.active_tab = 1; // Switch to tools tab
+                app.active_tab = 2; // Switch to tools tab
             }
         }
         "/clear" => {
-            app.messages.clear();
-            app.message_list_state.select(None);
-            app.set_status("Messages cleared");
+            app.show_confirm(ConfirmAction::ClearMessages);
         }
         "/save" => {
             app.session.save()?;
             app.set_status("Session saved");
         }
         "/new" => {
-            app.session.save()?;
-            app.session = ChatSession::new(app.session.model.clone());
-            app.messages.clear();
-            app.message_list_state.select(None);
-            app.set_status(format!("New session: {}", &app.session.id[..8]));
+            if confirmed {
+                app.session.save()?;
+                app.session = ChatSession::new(app.session.model.clone());
+                app.messages.clear();
+                app.message_list_state.select(None);
+                app.set_status(format!("New session: {}", &app.session.id[..8]));
+            } else {
+                app.show_confirm(ConfirmAction::NewSession);
+            }
         }
         "/history" => {
             let user_count = app.messages.iter().filter(|m| m.role == "user").count();
-            let asst_count = app.messages.iter().filter(|m| m.role == "assistant").count();
+            let asst_count = app
+                .messages
+                .iter()
+                .filter(|m| m.role == "assistant")
+                .count();
             app.set_status(format!(
                 "Session: {} | Messages: {} (you: {}, AI: {})",
                 &app.session.id[..8],
@@ -398,13 +473,14 @@ fn handle_command(app: &mut TuiApp, command: &str) -> Result<()> {
             ));
         }
         "/settings" => {
-            app.active_tab = 2; // Switch to settings tab
+            app.active_tab = 3; // Switch to settings tab
         }
         "/capabilities" => {
             let caps = crate::tool_registry::render_capabilities();
             app.messages.push(app::TuiMessage {
                 role: "system".to_string(),
                 content: caps,
+                thinking: None,
                 is_streaming: false,
                 is_error: false,
             });
@@ -418,15 +494,35 @@ fn handle_command(app: &mut TuiApp, command: &str) -> Result<()> {
                 app.set_status(format!("Available themes: {} (Ctrl+T to cycle)", themes));
             }
         }
+        "/search" | "/find" => {
+            if args.is_empty() {
+                // Enter interactive search mode
+                app.start_search();
+            } else {
+                // Programmatic search with query
+                let query = args.join(" ");
+                app.update_search(&query);
+                app.mode = TuiMode::Search;
+                let match_count = app.search_matches.len();
+                if match_count > 0 {
+                    app.set_status(format!("Found {} matches for '{}'", match_count, query));
+                } else {
+                    app.set_status(format!("No matches for '{}'", query));
+                }
+            }
+        }
         "/sessions" | "/session" => {
             handle_session_command(app, args)?;
+        }
+        "/workflow" | "/workflows" => {
+            handle_workflow_command(app, args, &get_workflows_dir())?;
         }
         _ => {
             app.set_error(format!("Unknown command: {}", cmd));
         }
     }
 
-    Ok(())
+    Ok(None)
 }
 
 /// Handle session management commands
@@ -435,31 +531,58 @@ fn handle_session_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
 
     match subcommand.as_deref() {
         None | Some("list") => {
-            // List all sessions
-            match super::list_sessions() {
+            // Check for date filter: /session list today|week|month
+            let filter = args.get(1).map(|s| s.to_lowercase());
+            let session_filter = match filter.as_deref() {
+                Some("today") => super::SessionFilter::Today,
+                Some("week") | Some("thisweek") => super::SessionFilter::ThisWeek,
+                Some("month") | Some("thismonth") => super::SessionFilter::ThisMonth,
+                _ => super::SessionFilter::All,
+            };
+
+            let filter_label = match &session_filter {
+                super::SessionFilter::All => String::new(),
+                super::SessionFilter::Today => " (today)".to_string(),
+                super::SessionFilter::ThisWeek => " (this week)".to_string(),
+                super::SessionFilter::ThisMonth => " (this month)".to_string(),
+                super::SessionFilter::DateRange { from, to } => match (from, to) {
+                    (Some(f), Some(t)) => {
+                        format!(" ({} to {})", f.format("%Y-%m-%d"), t.format("%Y-%m-%d"))
+                    }
+                    (Some(f), None) => format!(" (from {})", f.format("%Y-%m-%d")),
+                    (None, Some(t)) => format!(" (until {})", t.format("%Y-%m-%d")),
+                    (None, None) => String::new(),
+                },
+            };
+
+            // List sessions with filter
+            match super::list_sessions_filtered(session_filter) {
                 Ok(sessions) => {
                     if sessions.is_empty() {
-                        app.set_status("No saved sessions found");
+                        app.set_status(format!("No saved sessions found{}", filter_label));
                     } else {
-                        let mut content = String::from("📁 Saved Sessions:\n\n");
+                        let mut content = format!("📁 Saved Sessions{}:\n\n", filter_label);
                         for (i, session) in sessions.iter().take(10).enumerate() {
                             let is_current = session.id == app.session.id;
                             let marker = if is_current { "▶ " } else { "  " };
                             let model_info = session.model.as_deref().unwrap_or("default");
                             content.push_str(&format!(
-                                "{}{}. {} ({} msgs, {})\n   Updated: {}\n\n",
+                                "{}{}. {} ({} msgs, {})\n   Created: {} | Updated: {}\n\n",
                                 marker,
                                 i + 1,
                                 &session.id[..8],
                                 session.message_count,
                                 model_info,
+                                session.created.format("%Y-%m-%d %H:%M"),
                                 session.updated.format("%Y-%m-%d %H:%M")
                             ));
                         }
+                        content.push_str("\nFilters: /session list today|week|month");
                         content.push_str("\nCommands: /session load <id> | /session delete <id> | /session export <id>");
                         app.messages.push(app::TuiMessage {
                             role: "system".to_string(),
                             content,
+                            thinking: None,
                             is_streaming: false,
                             is_error: false,
                         });
@@ -491,6 +614,7 @@ fn handle_session_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
                                     .map(|m| app::TuiMessage {
                                         role: m.role.clone(),
                                         content: m.content.clone(),
+                                        thinking: m.thinking.clone(),
                                         is_streaming: false,
                                         is_error: false,
                                     })
@@ -525,19 +649,17 @@ fn handle_session_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
                 }
 
                 match find_session_by_prefix(id) {
-                    Ok(Some(full_id)) => {
-                        match ChatSession::delete(&full_id) {
-                            Ok(true) => {
-                                app.set_status(format!("Deleted session: {}", &full_id[..8]));
-                            }
-                            Ok(false) => {
-                                app.set_error(format!("Session not found: {}", id));
-                            }
-                            Err(e) => {
-                                app.set_error(format!("Failed to delete session: {}", e));
-                            }
+                    Ok(Some(full_id)) => match ChatSession::delete(&full_id) {
+                        Ok(true) => {
+                            app.set_status(format!("Deleted session: {}", &full_id[..8]));
                         }
-                    }
+                        Ok(false) => {
+                            app.set_error(format!("Session not found: {}", id));
+                        }
+                        Err(e) => {
+                            app.set_error(format!("Failed to delete session: {}", e));
+                        }
+                    },
                     Ok(None) => {
                         app.set_error(format!("Session not found: {}", id));
                     }
@@ -551,29 +673,27 @@ fn handle_session_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
         }
         Some("export") => {
             if let Some(id) = args.get(1) {
-                let export_path = args.get(2).map(|s| std::path::PathBuf::from(s));
+                let export_path = args.get(2).map(std::path::PathBuf::from);
 
                 match find_session_by_prefix(id) {
-                    Ok(Some(full_id)) => {
-                        match ChatSession::load(&full_id) {
-                            Ok(session) => {
-                                let path = export_path.unwrap_or_else(|| {
-                                    std::path::PathBuf::from(format!("session_{}.json", &full_id[..8]))
-                                });
-                                match session.export(&path) {
-                                    Ok(()) => {
-                                        app.set_status(format!("Exported to: {}", path.display()));
-                                    }
-                                    Err(e) => {
-                                        app.set_error(format!("Failed to export: {}", e));
-                                    }
+                    Ok(Some(full_id)) => match ChatSession::load(&full_id) {
+                        Ok(session) => {
+                            let path = export_path.unwrap_or_else(|| {
+                                std::path::PathBuf::from(format!("session_{}.json", &full_id[..8]))
+                            });
+                            match session.export(&path) {
+                                Ok(()) => {
+                                    app.set_status(format!("Exported to: {}", path.display()));
+                                }
+                                Err(e) => {
+                                    app.set_error(format!("Failed to export: {}", e));
                                 }
                             }
-                            Err(e) => {
-                                app.set_error(format!("Failed to load session: {}", e));
-                            }
                         }
-                    }
+                        Err(e) => {
+                            app.set_error(format!("Failed to load session: {}", e));
+                        }
+                    },
                     Ok(None) => {
                         app.set_error(format!("Session not found: {}", id));
                     }
@@ -583,7 +703,8 @@ fn handle_session_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
                 }
             } else {
                 // Export current session
-                let path = std::path::PathBuf::from(format!("session_{}.json", &app.session.id[..8]));
+                let path =
+                    std::path::PathBuf::from(format!("session_{}.json", &app.session.id[..8]));
                 match app.session.export(&path) {
                     Ok(()) => {
                         app.set_status(format!("Exported current session to: {}", path.display()));
@@ -597,7 +718,11 @@ fn handle_session_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
         Some("info") => {
             let session = &app.session;
             let user_count = app.messages.iter().filter(|m| m.role == "user").count();
-            let asst_count = app.messages.iter().filter(|m| m.role == "assistant").count();
+            let asst_count = app
+                .messages
+                .iter()
+                .filter(|m| m.role == "assistant")
+                .count();
             let content = format!(
                 "📋 Current Session Info:\n\n\
                  ID: {}\n\
@@ -616,6 +741,7 @@ fn handle_session_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
             app.messages.push(app::TuiMessage {
                 role: "system".to_string(),
                 content,
+                thinking: None,
                 is_streaming: false,
                 is_error: false,
             });
@@ -643,3 +769,97 @@ fn find_session_by_prefix(prefix: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
+fn get_workflows_dir() -> std::path::PathBuf {
+    // Check .agent/workflows in current directory
+    let current = std::path::PathBuf::from(".agent/workflows");
+    if current.exists() {
+        return current;
+    }
+    // Fallback to gestura config dir
+    dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("gestura")
+        .join("workflows")
+}
+
+fn load_workflows(app: &mut TuiApp) {
+    let dir = get_workflows_dir();
+    app.workflows.clear();
+
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "md")
+                && let Some(name) = path.file_stem().and_then(|s| s.to_str())
+            {
+                // Try to read description from frontmatter
+                let desc = if let Ok(content) = std::fs::read_to_string(&path) {
+                    content
+                        .lines()
+                        .find(|l| l.starts_with("description:"))
+                        .map(|l| l.trim_start_matches("description:").trim().to_string())
+                        .unwrap_or_else(|| "No description".to_string())
+                } else {
+                    "No description".to_string()
+                };
+                app.workflows.push((name.to_string(), desc));
+            }
+        }
+    }
+    app.workflows.sort_by(|a, b| a.0.cmp(&b.0));
+}
+
+fn handle_workflow_command(app: &mut TuiApp, args: &[&str], dir: &std::path::Path) -> Result<()> {
+    match args.first().map(|s| s.to_lowercase()).as_deref() {
+        None | Some("list") => {
+            load_workflows(app);
+            app.active_tab = 1; // Switch to workflows tab
+            app.set_status(format!("Found {} workflows", app.workflows.len()));
+        }
+        Some("run") => {
+            if let Some(name) = args.get(1) {
+                let filename = if name.ends_with(".md") {
+                    name.to_string()
+                } else {
+                    format!("{}.md", name)
+                };
+                let path = dir.join(&filename);
+                if path.exists() {
+                    match std::fs::read_to_string(path) {
+                        Ok(content) => {
+                            // Strip frontmatter if present
+                            let prompt = if let Some(stripped) = content.strip_prefix("---") {
+                                if let Some(end_idx) = stripped.find("---") {
+                                    stripped[end_idx + 3..].trim().to_string()
+                                } else {
+                                    content
+                                }
+                            } else {
+                                content
+                            };
+
+                            app.set_status(format!("Running workflow: {}", name));
+                            app.active_tab = 0; // Switch to chat
+
+                            // Inject as user message
+                            // Note: Real workflow engine might do more, but for now we treat it as a prompt template
+                            app.input = prompt;
+                            // Trigger send automatically (simulated)
+                            // We can't easily trigger Action::SendMessage here as we are inside handle_command
+                            // So we just leave it in input for user to press Enter?
+                            // Or better: Let's populate input and user can verify before running.
+                            app.cursor_pos = app.input.len();
+                        }
+                        Err(e) => app.set_error(format!("Failed to read workflow: {}", e)),
+                    }
+                } else {
+                    app.set_error(format!("Workflow not found: {}", name));
+                }
+            } else {
+                app.set_error("Usage: /workflow run <name>");
+            }
+        }
+        Some(cmd) => app.set_error(format!("Unknown workflow command: {}", cmd)),
+    }
+    Ok(())
+}

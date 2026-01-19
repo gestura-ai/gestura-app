@@ -43,7 +43,7 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::catppuccin_mocha()
+        Self::pro()
     }
 }
 
@@ -176,19 +176,58 @@ impl Theme {
         }
     }
 
+    /// Pro / Claude-like theme (Minimalist Dark)
+    pub fn pro() -> Self {
+        Self {
+            name: "Pro",
+            header_bg: Color::Rgb(20, 20, 20),
+            header_fg: Color::Rgb(200, 200, 200),
+            user_msg: Color::Rgb(255, 255, 255), // White text for user
+            assistant_msg: Color::Rgb(215, 186, 125), // Soft gold/yellow for AI
+            system_msg: Color::Rgb(100, 100, 100),
+            error_msg: Color::Rgb(255, 95, 95),
+            streaming: Color::Rgb(215, 186, 125),
+            border: Color::Rgb(60, 60, 60),
+            border_focused: Color::Rgb(100, 100, 100),
+            status_bg: Color::Rgb(30, 30, 30),
+            status_fg: Color::Rgb(150, 150, 150),
+            mode_normal: Color::Rgb(100, 100, 100),
+            mode_insert: Color::Rgb(215, 186, 125), // Match AI color
+            mode_command: Color::Rgb(255, 255, 255),
+            tab_active: Color::Rgb(255, 255, 255),
+            tab_inactive: Color::Rgb(80, 80, 80),
+            selection_bg: Color::Rgb(40, 40, 40),
+            code_bg: Color::Rgb(20, 20, 20),
+            code_fg: Color::Rgb(200, 200, 200),
+            code_keyword: Color::Rgb(86, 156, 214), // VS Code Blue
+            code_string: Color::Rgb(206, 145, 120), // VS Code Orange
+            code_comment: Color::Rgb(106, 153, 85), // VS Code Green
+            code_number: Color::Rgb(181, 206, 168),
+            code_function: Color::Rgb(220, 220, 170),
+            code_lang_label: Color::Rgb(80, 80, 80),
+        }
+    }
+
     /// Get theme by name
     pub fn by_name(name: &str) -> Self {
         match name.to_lowercase().as_str() {
             "light" => Self::light(),
             "high-contrast" | "highcontrast" | "high_contrast" => Self::high_contrast(),
             "dracula" => Self::dracula(),
+            "pro" | "claude" => Self::pro(),
             _ => Self::catppuccin_mocha(),
         }
     }
 
     /// List available theme names
     pub fn available_themes() -> &'static [&'static str] {
-        &["catppuccin-mocha", "light", "high-contrast", "dracula"]
+        &[
+            "catppuccin-mocha",
+            "light",
+            "high-contrast",
+            "dracula",
+            "pro",
+        ]
     }
 }
 
@@ -244,6 +283,8 @@ pub enum Action {
     ClearInput,
     /// Cancel current operation (streaming, etc.)
     Cancel,
+    /// Toggle voice recording
+    ToggleRecording,
 }
 
 /// Message for TUI display with additional metadata
@@ -251,6 +292,7 @@ pub enum Action {
 pub struct TuiMessage {
     pub role: String,
     pub content: String,
+    pub thinking: Option<String>,
     pub is_streaming: bool,
     pub is_error: bool,
 }
@@ -260,6 +302,7 @@ impl From<&ChatMessage> for TuiMessage {
         Self {
             role: msg.role.clone(),
             content: msg.content.clone(),
+            thinking: msg.thinking.clone(),
             is_streaming: false,
             is_error: false,
         }
@@ -279,7 +322,12 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/settings", "Switch to settings tab"),
     ("/capabilities", "Show AI capabilities"),
     ("/theme", "List available themes"),
-    ("/theme <name>", "Change theme (catppuccin-mocha, light, high-contrast, dracula)"),
+    (
+        "/theme <name>",
+        "Change theme (catppuccin-mocha, light, high-contrast, dracula)",
+    ),
+    ("/search", "Enter interactive search mode"),
+    ("/search <query>", "Search messages for query"),
     ("/sessions", "List all saved sessions"),
     ("/session list", "List all saved sessions"),
     ("/session load <id>", "Load/switch to a session"),
@@ -315,10 +363,22 @@ pub struct TuiApp {
     pub status: String,
     /// Error message (if any)
     pub error: Option<String>,
+    /// Timestamp when the error was set (for auto-dismiss)
+    pub error_timestamp: Option<std::time::Instant>,
+    /// Count of visible error messages in chat (limit 2)
+    pub error_message_count: usize,
+    /// If true, skip saving the session when the TUI exits.
+    ///
+    /// This is used for explicit "quit without saving" flows.
+    pub skip_save_on_exit: bool,
     /// Active tab index
     pub active_tab: usize,
     /// Available tabs
     pub tabs: Vec<&'static str>,
+    /// Available workflows (filename, description)
+    pub workflows: Vec<(String, String)>,
+    /// State for the settings tab
+    pub settings_state: SettingsState,
     /// Command palette: filtered commands based on input
     pub command_suggestions: Vec<(String, String)>,
     /// Command palette: selected suggestion index
@@ -341,6 +401,46 @@ pub struct TuiApp {
     pub current_match_idx: usize,
     /// Whether to filter to show only matching messages
     pub search_filter_mode: bool,
+    /// Session token usage (input tokens)
+    pub session_input_tokens: u64,
+    /// Session token usage (output tokens)
+    pub session_output_tokens: u64,
+    /// Session estimated cost in USD
+    pub session_cost_usd: f64,
+}
+
+/// State for the interactive settings editor
+#[derive(Debug, Clone, Default)]
+pub struct SettingsState {
+    /// Currently selected field index
+    pub selected_field: usize,
+    /// Whether we are currently editing the field
+    pub is_editing: bool,
+    /// Temporary value buffer while editing
+    pub edit_buffer: String,
+}
+
+/// Settings fields available for editing
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum SettingsField {
+    Provider = 0,
+    Model = 1,
+    SystemPrompt = 2,
+    Temperature = 3,
+}
+
+impl SettingsField {
+    pub const COUNT: usize = 4;
+
+    pub fn from_index(idx: usize) -> Option<Self> {
+        match idx {
+            0 => Some(Self::Provider),
+            1 => Some(Self::Model),
+            2 => Some(Self::SystemPrompt),
+            3 => Some(Self::Temperature),
+            _ => None,
+        }
+    }
 }
 
 /// Cached layout areas for mouse click detection
@@ -378,8 +478,13 @@ impl TuiApp {
             is_loading: false,
             status: "Ready".to_string(),
             error: None,
+            error_timestamp: None,
+            error_message_count: 0,
+            skip_save_on_exit: false,
             active_tab: 0,
-            tabs: vec!["Chat", "Tools", "Settings", "Help"],
+            tabs: vec!["Chat", "Workflows", "Tools", "Settings", "Help"],
+            workflows: Vec::new(),
+            settings_state: SettingsState::default(),
             command_suggestions: Vec::new(),
             command_selection: 0,
             command_history: Vec::new(),
@@ -391,6 +496,44 @@ impl TuiApp {
             search_matches: Vec::new(),
             current_match_idx: 0,
             search_filter_mode: false,
+            session_input_tokens: 0,
+            session_output_tokens: 0,
+            session_cost_usd: 0.0,
+        }
+    }
+
+    /// Record token usage from an LLM call
+    pub fn record_token_usage(
+        &mut self,
+        input_tokens: u32,
+        output_tokens: u32,
+        cost_usd: Option<f64>,
+    ) {
+        self.session_input_tokens += input_tokens as u64;
+        self.session_output_tokens += output_tokens as u64;
+        self.session_cost_usd += cost_usd.unwrap_or(0.0);
+    }
+
+    /// Get compact formatted token usage for status bar (format: "1.2K|$0.01")
+    /// Used when terminal width is limited (< 80 columns)
+    pub fn format_token_usage_compact(&self) -> String {
+        let total = self.session_input_tokens + self.session_output_tokens;
+        if total == 0 {
+            return String::new();
+        }
+
+        let formatted_total = if total >= 1_000_000 {
+            format!("{:.1}M", total as f64 / 1_000_000.0)
+        } else if total >= 1_000 {
+            format!("{:.1}K", total as f64 / 1_000.0)
+        } else {
+            total.to_string()
+        };
+
+        if self.session_cost_usd > 0.001 {
+            format!("{}|${:.2}", formatted_total, self.session_cost_usd)
+        } else {
+            formatted_total
         }
     }
 
@@ -435,8 +578,7 @@ impl TuiApp {
         self.command_suggestions = COMMANDS
             .iter()
             .filter(|(cmd, desc)| {
-                cmd.to_lowercase().contains(&query)
-                    || desc.to_lowercase().contains(&query)
+                cmd.to_lowercase().contains(&query) || desc.to_lowercase().contains(&query)
             })
             .map(|(cmd, desc)| (cmd.to_string(), desc.to_string()))
             .collect();
@@ -548,10 +690,11 @@ impl TuiApp {
         self.messages.push(TuiMessage {
             role: role.to_string(),
             content: content.to_string(),
+            thinking: None,
             is_streaming: false,
             is_error: false,
         });
-        self.session.add_message(role, content);
+        self.session.add_message(role, content, None);
 
         // Auto-scroll to bottom unless user has scrolled up
         if !self.user_scrolled {
@@ -564,6 +707,7 @@ impl TuiApp {
         self.messages.push(TuiMessage {
             role: "assistant".to_string(),
             content: String::new(),
+            thinking: None,
             is_streaming: true,
             is_error: false,
         });
@@ -579,12 +723,59 @@ impl TuiApp {
         }
     }
 
+    /// Mark the last message as an error (used when the stream fails).
+    pub fn mark_last_message_error(&mut self) {
+        if let Some(last) = self.messages.last_mut() {
+            last.is_error = true;
+            last.is_streaming = false;
+        }
+    }
+
+    /// Push a non-persisted system error message into the UI.
+    ///
+    /// This does not write into the persisted `ChatSession` history.
+    /// Limited to 2 visible error messages in the session to avoid clutter.
+    /// Critical errors (connection failures, API quota exceeded) are shown as chat messages.
+    pub fn push_error_message(&mut self, content: impl Into<String>) {
+        const MAX_ERROR_MESSAGES: usize = 2;
+
+        // Check if we've hit the limit
+        if self.error_message_count >= MAX_ERROR_MESSAGES {
+            // Remove the oldest error message to make room
+            if let Some(idx) = self.messages.iter().position(|m| m.is_error) {
+                self.messages.remove(idx);
+                self.error_message_count = self.error_message_count.saturating_sub(1);
+            }
+        }
+
+        self.messages.push(TuiMessage {
+            role: "system".to_string(),
+            content: content.into(),
+            thinking: None,
+            is_streaming: false,
+            is_error: true,
+        });
+        self.error_message_count += 1;
+
+        if !self.user_scrolled {
+            self.scroll_to_bottom();
+        }
+    }
+
+    /// Update the last message thinking content
+    pub fn update_last_message_thinking(&mut self, thinking: &str) {
+        if let Some(last) = self.messages.last_mut() {
+            last.thinking = Some(thinking.to_string());
+        }
+    }
+
     /// Finalize the streaming message
     pub fn finalize_streaming_message(&mut self) {
         if let Some(last) = self.messages.last_mut() {
             last.is_streaming = false;
             // Also save to session
-            self.session.add_message(&last.role, &last.content);
+            self.session
+                .add_message(&last.role, &last.content, last.thinking.clone());
         }
     }
 
@@ -614,7 +805,7 @@ impl TuiApp {
             self.message_list_state.select(Some(current + 1));
         }
         // If we're at the bottom, re-enable auto-scroll
-        if current + 1 >= max {
+        if self.is_at_bottom() {
             self.user_scrolled = false;
         }
     }
@@ -750,17 +941,32 @@ impl TuiApp {
         self.error = None;
     }
 
-    /// Set error message
+    /// Set error message with timestamp for auto-dismiss
     pub fn set_error(&mut self, error: impl Into<String>) {
         let err = error.into();
         self.status = format!("Error: {}", &err);
         self.error = Some(err);
+        self.error_timestamp = Some(std::time::Instant::now());
     }
 
-    /// Clear error
+    /// Clear error after successful operation or timeout
     pub fn clear_error(&mut self) {
         self.error = None;
+        self.error_timestamp = None;
         self.status = "Ready".to_string();
+    }
+
+    /// Check if error should be auto-dismissed (15 second timeout)
+    /// Returns true if error was cleared
+    pub fn check_error_timeout(&mut self) -> bool {
+        const AUTO_DISMISS_SECS: u64 = 15;
+        if let Some(timestamp) = self.error_timestamp
+            && timestamp.elapsed().as_secs() >= AUTO_DISMISS_SECS
+        {
+            self.clear_error();
+            return true;
+        }
+        false
     }
 
     /// Get the scroll position indicator (e.g., "5/23")
@@ -791,6 +997,9 @@ impl TuiApp {
     }
 
     /// Update search query and find matches
+    ///
+    /// Programmatic search update - sets query and finds matches.
+    /// Used by `/search <query>` command and Ctrl+Shift+F (search from clipboard).
     pub fn update_search(&mut self, query: &str) {
         self.search_query = query.to_string();
         self.find_matches();
@@ -856,7 +1065,11 @@ impl TuiApp {
                 total_matches,
                 if total_matches == 1 { "" } else { "es" },
                 self.search_matches.len(),
-                if self.search_matches.len() == 1 { "" } else { "s" }
+                if self.search_matches.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
             );
         } else if !self.search_query.is_empty() {
             self.status = "No matches found".to_string();
@@ -945,7 +1158,8 @@ impl TuiApp {
         self.status = "Search cleared".to_string();
     }
 
-    /// Check if a message has search matches
+    /// Check if a message has search matches.
+    /// Used in UI rendering to highlight messages that contain search matches.
     pub fn message_has_match(&self, msg_idx: usize) -> bool {
         self.search_matches.iter().any(|(idx, _)| *idx == msg_idx)
     }
@@ -1240,9 +1454,9 @@ mod tests {
     fn test_theme_switching() {
         let mut app = create_test_app();
 
-        // Default theme is "Catppuccin Mocha" (display name, not slug)
+        // Default theme is "Pro" (display name, not slug)
         let initial_theme = app.theme.name;
-        assert_eq!(initial_theme, "Catppuccin Mocha");
+        assert_eq!(initial_theme, "Pro");
 
         app.set_theme("light");
         assert_eq!(app.theme.name, "Light");
@@ -1253,7 +1467,7 @@ mod tests {
         app.set_theme("dracula");
         assert_eq!(app.theme.name, "Dracula");
 
-        // Invalid theme falls back to default (catppuccin-mocha)
+        // Invalid theme falls back to catppuccin-mocha (the fallback in by_name)
         app.set_theme("nonexistent");
         assert_eq!(app.theme.name, "Catppuccin Mocha");
     }
@@ -1262,12 +1476,16 @@ mod tests {
     fn test_theme_cycling() {
         let mut app = create_test_app();
 
-        // Get initial theme name and verify it's the default
+        // Get initial theme name and verify it's the default (Pro)
+        assert_eq!(app.theme.name, "Pro");
+
+        // Cycle to next theme - Pro is at index 4, so cycling wraps to index 0
+        app.cycle_theme();
+        // After cycling from pro (index 4), should wrap to catppuccin-mocha (index 0)
         assert_eq!(app.theme.name, "Catppuccin Mocha");
 
-        // Cycle to next theme
+        // Cycle again
         app.cycle_theme();
-        // After cycling from catppuccin-mocha (index 0), should be light (index 1)
         assert_eq!(app.theme.name, "Light");
 
         // Cycle again
@@ -1278,9 +1496,9 @@ mod tests {
         app.cycle_theme();
         assert_eq!(app.theme.name, "Dracula");
 
-        // Cycle wraps back to first
+        // Cycle wraps back to Pro
         app.cycle_theme();
-        assert_eq!(app.theme.name, "Catppuccin Mocha");
+        assert_eq!(app.theme.name, "Pro");
     }
 
     // ==================== Command Suggestion Tests ====================
@@ -1294,7 +1512,11 @@ mod tests {
 
         // Should match /help
         assert!(!app.command_suggestions.is_empty());
-        assert!(app.command_suggestions.iter().any(|(cmd, _)| cmd.contains("help")));
+        assert!(
+            app.command_suggestions
+                .iter()
+                .any(|(cmd, _)| cmd.contains("help"))
+        );
     }
 
     #[test]
@@ -1343,6 +1565,8 @@ mod tests {
     fn test_tab_navigation() {
         let mut app = create_test_app();
 
+        // 5 tabs: Chat, Workflows, Tools, Settings, Help (indices 0-4)
+        assert_eq!(app.tabs.len(), 5);
         assert_eq!(app.active_tab, 0);
 
         // Simulate tab switching (done via direct field access in events.rs)
@@ -1355,17 +1579,20 @@ mod tests {
         app.active_tab = (app.active_tab + 1) % app.tabs.len();
         assert_eq!(app.active_tab, 3);
 
-        // Wrap around
+        app.active_tab = (app.active_tab + 1) % app.tabs.len();
+        assert_eq!(app.active_tab, 4);
+
+        // Wrap around from 4 to 0
         app.active_tab = (app.active_tab + 1) % app.tabs.len();
         assert_eq!(app.active_tab, 0);
 
-        // Previous tab
+        // Previous tab (from 0 wraps to 4)
         app.active_tab = if app.active_tab == 0 {
             app.tabs.len() - 1
         } else {
             app.active_tab - 1
         };
-        assert_eq!(app.active_tab, 3);
+        assert_eq!(app.active_tab, 4);
     }
 
     // ==================== Vim Motion Tests ====================

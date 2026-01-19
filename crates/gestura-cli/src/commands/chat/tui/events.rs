@@ -29,12 +29,21 @@ fn handle_key_event(app: &mut TuiApp, key: KeyEvent) -> Action {
         KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             return Action::Quit;
         }
+        // Ctrl+R toggles recording
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return Action::ToggleRecording;
+        }
         // Ctrl+T cycles theme
         KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.cycle_theme();
             return Action::Continue;
         }
         _ => {}
+    }
+
+    // If we are in the Settings tab (index 3), override some keys for navigation
+    if app.mode == TuiMode::Normal && app.active_tab == 3 {
+        return handle_settings_tab(app, key);
     }
 
     // Mode-specific handling
@@ -239,9 +248,7 @@ fn handle_insert_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
             Action::Continue
         }
         // Ctrl+U clear line
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Action::ClearInput
-        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::ClearInput,
         // Ctrl+W delete word before cursor
         KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.delete_word_before();
@@ -358,13 +365,16 @@ fn handle_command_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
             app.update_command_suggestions();
             Action::Continue
         }
-        // Navigate suggestions with arrow keys
+        // Navigate suggestions with arrow keys, or command history if no suggestions
         KeyCode::Down => {
-            app.next_command_suggestion();
+            if app.command_suggestions.is_empty() {
+                app.next_command_history();
+            } else {
+                app.next_command_suggestion();
+            }
             Action::Continue
         }
         KeyCode::Up => {
-            // If no suggestions visible, navigate command history
             if app.command_suggestions.is_empty() {
                 app.prev_command_history();
             } else {
@@ -398,7 +408,10 @@ fn handle_confirm_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
             if let Some(action) = app.take_confirm() {
                 match action {
-                    ConfirmAction::QuitWithoutSave => Action::Quit,
+                    ConfirmAction::QuitWithoutSave => {
+                        app.skip_save_on_exit = true;
+                        Action::Quit
+                    }
                     ConfirmAction::ClearMessages => {
                         app.messages.clear();
                         app.message_list_state.select(None);
@@ -440,38 +453,40 @@ fn handle_mouse_event(app: &mut TuiApp, mouse: MouseEvent) -> Action {
         }
         MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
             // Check if click is in tabs area
-            if let Some(tabs_area) = app.layout_areas.tabs {
-                if y >= tabs_area.y && y < tabs_area.y + tabs_area.height {
-                    // Calculate which tab was clicked based on x position
-                    // Each tab is roughly equal width
-                    let tab_width = tabs_area.width / app.tabs.len() as u16;
-                    let tab_index = ((x.saturating_sub(tabs_area.x)) / tab_width) as usize;
-                    if tab_index < app.tabs.len() {
-                        app.active_tab = tab_index;
-                        return Action::SwitchTab(tab_index);
-                    }
+            if let Some(tabs_area) = app.layout_areas.tabs
+                && y >= tabs_area.y
+                && y < tabs_area.y + tabs_area.height
+                && !app.tabs.is_empty()
+            {
+                // Each tab is roughly equal width; clamp to 1 to avoid division-by-zero.
+                let tab_width = (tabs_area.width / app.tabs.len() as u16).max(1);
+                let tab_index = ((x.saturating_sub(tabs_area.x)) / tab_width) as usize;
+                if tab_index < app.tabs.len() {
+                    app.active_tab = tab_index;
+                    return Action::SwitchTab(tab_index);
                 }
             }
 
             // Check if click is in messages area
-            if let Some(msg_area) = app.layout_areas.messages {
-                if y >= msg_area.y && y < msg_area.y + msg_area.height {
-                    // Calculate which message was clicked
-                    // This is approximate - each message takes ~2 lines
-                    let relative_y = (y - msg_area.y) as usize;
-                    let msg_index = relative_y / 2; // Rough estimate
-                    if msg_index < app.messages.len() {
-                        app.message_list_state.select(Some(msg_index));
-                        app.user_scrolled = true;
-                    }
+            if let Some(msg_area) = app.layout_areas.messages
+                && y >= msg_area.y
+                && y < msg_area.y + msg_area.height
+            {
+                // This is approximate - each message takes ~2 lines
+                let relative_y = (y - msg_area.y) as usize;
+                let msg_index = relative_y / 2; // Rough estimate
+                if msg_index < app.messages.len() {
+                    app.message_list_state.select(Some(msg_index));
+                    app.user_scrolled = true;
                 }
             }
 
             // Check if click is in input area - switch to insert mode
-            if let Some(input_area) = app.layout_areas.input {
-                if y >= input_area.y && y < input_area.y + input_area.height {
-                    app.mode = TuiMode::Insert;
-                }
+            if let Some(input_area) = app.layout_areas.input
+                && y >= input_area.y
+                && y < input_area.y + input_area.height
+            {
+                app.mode = TuiMode::Insert;
             }
 
             Action::Continue
@@ -517,6 +532,89 @@ fn handle_search_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
             app.search_insert_char(c);
             Action::Continue
         }
+        _ => Action::Continue,
+    }
+}
+/// Handle keys when in the Settings tab
+fn handle_settings_tab(app: &mut TuiApp, key: KeyEvent) -> Action {
+    use super::app::SettingsField;
+
+    // If currently editing a field
+    if app.settings_state.is_editing {
+        match key.code {
+            KeyCode::Esc => {
+                app.settings_state.is_editing = false;
+                app.set_status("Cancelled edit");
+            }
+            KeyCode::Enter => {
+                // Save value
+                let new_value = app.settings_state.edit_buffer.clone();
+                if let Some(field) = SettingsField::from_index(app.settings_state.selected_field) {
+                    match field {
+                        SettingsField::Provider => app.config.llm.primary = new_value,
+                        SettingsField::Model => match app.config.llm.primary.as_str() {
+                            "openai" => {
+                                if let Some(ref mut o) = app.config.llm.openai {
+                                    o.model = new_value;
+                                }
+                            }
+                            "anthropic" => {
+                                if let Some(ref mut a) = app.config.llm.anthropic {
+                                    a.model = new_value;
+                                }
+                            }
+                            _ => {}
+                        },
+                        SettingsField::SystemPrompt => app.system_prompt = Some(new_value),
+                        SettingsField::Temperature => {} // Placeholder
+                    }
+                    app.set_status("Settings saved");
+                }
+                app.settings_state.is_editing = false;
+            }
+            KeyCode::Backspace => {
+                app.settings_state.edit_buffer.pop();
+            }
+            KeyCode::Char(c) => {
+                app.settings_state.edit_buffer.push(c);
+            }
+            _ => {}
+        }
+        return Action::Continue;
+    }
+
+    // Navigation mode
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.settings_state.selected_field =
+                (app.settings_state.selected_field + 1) % SettingsField::COUNT;
+            Action::Continue
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.settings_state.selected_field = if app.settings_state.selected_field == 0 {
+                SettingsField::COUNT - 1
+            } else {
+                app.settings_state.selected_field - 1
+            };
+            Action::Continue
+        }
+        KeyCode::Enter => {
+            // Start editing
+            app.settings_state.is_editing = true;
+            // Pre-fill buffer
+            app.settings_state.edit_buffer =
+                match SettingsField::from_index(app.settings_state.selected_field) {
+                    Some(SettingsField::Provider) => app.config.llm.primary.clone(),
+                    Some(SettingsField::Model) => app.model_name().to_string(),
+                    Some(SettingsField::SystemPrompt) => {
+                        app.system_prompt.clone().unwrap_or_default()
+                    }
+                    Some(SettingsField::Temperature) => "0.7".to_string(),
+                    None => String::new(),
+                };
+            Action::Continue
+        }
+        // Passthrough for tab switching etc.
         _ => Action::Continue,
     }
 }

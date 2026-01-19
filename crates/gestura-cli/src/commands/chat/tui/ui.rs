@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
 use super::app::{ConfirmAction, Theme, TuiApp, TuiMode};
@@ -17,7 +17,10 @@ use super::app::{ConfirmAction, Theme, TuiApp, TuiMode};
 #[derive(Debug)]
 enum MessageSegment {
     Text(String),
-    CodeBlock { language: Option<String>, code: String },
+    CodeBlock {
+        language: Option<String>,
+        code: String,
+    },
 }
 
 /// Parse a message into segments (text and code blocks)
@@ -46,7 +49,11 @@ fn parse_message_segments(content: &str) -> Vec<MessageSegment> {
                 }
                 // Extract language if specified
                 let lang = line.trim_start_matches('`').trim();
-                code_language = if lang.is_empty() { None } else { Some(lang.to_string()) };
+                code_language = if lang.is_empty() {
+                    None
+                } else {
+                    Some(lang.to_string())
+                };
                 in_code_block = true;
             }
         } else if in_code_block {
@@ -76,27 +83,53 @@ fn parse_message_segments(content: &str) -> Vec<MessageSegment> {
 }
 
 /// Apply syntax highlighting using theme colors
-fn highlight_code_line_themed(line: &str, language: Option<&str>, theme: &Theme) -> Vec<Span<'static>> {
+fn highlight_code_line_themed(
+    line: &str,
+    language: Option<&str>,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
     // Keywords for common languages
     let keywords: &[&str] = match language {
         Some("rust") | Some("rs") => &[
-            "fn", "let", "mut", "const", "pub", "struct", "enum", "impl", "trait",
-            "use", "mod", "if", "else", "match", "for", "while", "loop", "return",
-            "async", "await", "self", "Self", "true", "false", "Some", "None", "Ok", "Err",
+            "fn", "let", "mut", "const", "pub", "struct", "enum", "impl", "trait", "use", "mod",
+            "if", "else", "match", "for", "while", "loop", "return", "async", "await", "self",
+            "Self", "true", "false", "Some", "None", "Ok", "Err",
         ],
         Some("python") | Some("py") => &[
-            "def", "class", "if", "elif", "else", "for", "while", "return", "import",
-            "from", "as", "try", "except", "finally", "with", "True", "False", "None",
-            "and", "or", "not", "in", "is", "lambda", "yield", "async", "await",
+            "def", "class", "if", "elif", "else", "for", "while", "return", "import", "from", "as",
+            "try", "except", "finally", "with", "True", "False", "None", "and", "or", "not", "in",
+            "is", "lambda", "yield", "async", "await",
         ],
         Some("javascript") | Some("js") | Some("typescript") | Some("ts") => &[
-            "function", "const", "let", "var", "if", "else", "for", "while", "return",
-            "class", "extends", "import", "export", "from", "async", "await", "try",
-            "catch", "finally", "true", "false", "null", "undefined", "new", "this",
+            "function",
+            "const",
+            "let",
+            "var",
+            "if",
+            "else",
+            "for",
+            "while",
+            "return",
+            "class",
+            "extends",
+            "import",
+            "export",
+            "from",
+            "async",
+            "await",
+            "try",
+            "catch",
+            "finally",
+            "true",
+            "false",
+            "null",
+            "undefined",
+            "new",
+            "this",
         ],
         Some("bash") | Some("sh") | Some("shell") => &[
-            "if", "then", "else", "fi", "for", "do", "done", "while", "case", "esac",
-            "function", "return", "export", "local", "echo", "exit", "cd", "pwd",
+            "if", "then", "else", "fi", "for", "do", "done", "while", "case", "esac", "function",
+            "return", "export", "local", "echo", "exit", "cd", "pwd",
         ],
         _ => &[],
     };
@@ -115,14 +148,15 @@ fn highlight_code_line_themed(line: &str, language: Option<&str>, theme: &Theme)
 
         // Check for comment start
         if ch == '#' || (ch == '/' && current_word.ends_with('/')) {
-            if !current_word.is_empty() {
-                if current_word.ends_with('/') {
-                    current_word.pop();
-                    if !current_word.is_empty() {
-                        spans.push(Span::styled(current_word.clone(), Style::default().fg(theme.code_fg)));
-                    }
-                    current_word = "/".to_string();
+            if !current_word.is_empty() && current_word.ends_with('/') {
+                current_word.pop();
+                if !current_word.is_empty() {
+                    spans.push(Span::styled(
+                        current_word.clone(),
+                        Style::default().fg(theme.code_fg).bg(theme.code_bg),
+                    ));
                 }
+                current_word = "/".to_string();
             }
             current_word.push(ch);
             in_comment = true;
@@ -133,11 +167,14 @@ fn highlight_code_line_themed(line: &str, language: Option<&str>, theme: &Theme)
         if (ch == '"' || ch == '\'' || ch == '`') && !in_string {
             if !current_word.is_empty() {
                 let style = if keywords.contains(&current_word.as_str()) {
-                    Style::default().fg(theme.code_keyword).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(theme.code_keyword)
+                        .bg(theme.code_bg)
+                        .add_modifier(Modifier::BOLD)
                 } else if current_word.chars().all(|c| c.is_ascii_digit() || c == '.') {
-                    Style::default().fg(theme.code_number)
+                    Style::default().fg(theme.code_number).bg(theme.code_bg)
                 } else {
-                    Style::default().fg(theme.code_fg)
+                    Style::default().fg(theme.code_fg).bg(theme.code_bg)
                 };
                 spans.push(Span::styled(current_word.clone(), style));
                 current_word.clear();
@@ -151,7 +188,10 @@ fn highlight_code_line_themed(line: &str, language: Option<&str>, theme: &Theme)
         if in_string {
             current_word.push(ch);
             if ch == string_char {
-                spans.push(Span::styled(current_word.clone(), Style::default().fg(theme.code_string)));
+                spans.push(Span::styled(
+                    current_word.clone(),
+                    Style::default().fg(theme.code_string).bg(theme.code_bg),
+                ));
                 current_word.clear();
                 in_string = false;
             }
@@ -159,23 +199,43 @@ fn highlight_code_line_themed(line: &str, language: Option<&str>, theme: &Theme)
         }
 
         // Word boundaries
-        if ch.is_whitespace() || ch == '(' || ch == ')' || ch == '{' || ch == '}'
-            || ch == '[' || ch == ']' || ch == ',' || ch == ';' || ch == ':' || ch == '.'
+        if ch.is_whitespace()
+            || ch == '('
+            || ch == ')'
+            || ch == '{'
+            || ch == '}'
+            || ch == '['
+            || ch == ']'
+            || ch == ','
+            || ch == ';'
+            || ch == ':'
+            || ch == '.'
         {
             if !current_word.is_empty() {
                 let style = if keywords.contains(&current_word.as_str()) {
-                    Style::default().fg(theme.code_keyword).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(theme.code_keyword)
+                        .bg(theme.code_bg)
+                        .add_modifier(Modifier::BOLD)
                 } else if current_word.chars().all(|c| c.is_ascii_digit() || c == '.') {
-                    Style::default().fg(theme.code_number)
-                } else if current_word.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
-                    Style::default().fg(theme.code_function)
+                    Style::default().fg(theme.code_number).bg(theme.code_bg)
+                } else if current_word
+                    .chars()
+                    .next()
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false)
+                {
+                    Style::default().fg(theme.code_function).bg(theme.code_bg)
                 } else {
-                    Style::default().fg(theme.code_fg)
+                    Style::default().fg(theme.code_fg).bg(theme.code_bg)
                 };
                 spans.push(Span::styled(current_word.clone(), style));
                 current_word.clear();
             }
-            spans.push(Span::styled(ch.to_string(), Style::default().fg(theme.code_fg)));
+            spans.push(Span::styled(
+                ch.to_string(),
+                Style::default().fg(theme.code_fg).bg(theme.code_bg),
+            ));
         } else {
             current_word.push(ch);
         }
@@ -184,15 +244,21 @@ fn highlight_code_line_themed(line: &str, language: Option<&str>, theme: &Theme)
     // Handle remaining content
     if !current_word.is_empty() {
         let style = if in_comment {
-            Style::default().fg(theme.code_comment).add_modifier(Modifier::ITALIC)
+            Style::default()
+                .fg(theme.code_comment)
+                .bg(theme.code_bg)
+                .add_modifier(Modifier::ITALIC)
         } else if in_string {
-            Style::default().fg(theme.code_string)
+            Style::default().fg(theme.code_string).bg(theme.code_bg)
         } else if keywords.contains(&current_word.as_str()) {
-            Style::default().fg(theme.code_keyword).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.code_keyword)
+                .bg(theme.code_bg)
+                .add_modifier(Modifier::BOLD)
         } else if current_word.chars().all(|c| c.is_ascii_digit() || c == '.') {
-            Style::default().fg(theme.code_number)
+            Style::default().fg(theme.code_number).bg(theme.code_bg)
         } else {
-            Style::default().fg(theme.code_fg)
+            Style::default().fg(theme.code_fg).bg(theme.code_bg)
         };
         spans.push(Span::styled(current_word, style));
     }
@@ -207,6 +273,85 @@ const MIN_HEIGHT: u16 = 12;
 /// Compact mode threshold (hide tabs, use abbreviated UI)
 const COMPACT_WIDTH: u16 = 60;
 const COMPACT_HEIGHT: u16 = 16;
+
+/// Word wrap text to fit within a given width
+/// Returns a vector of wrapped lines, preserving original line breaks
+fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return vec![text.to_string()];
+    }
+
+    let mut result = Vec::new();
+
+    for line in text.lines() {
+        if line.is_empty() {
+            result.push(String::new());
+            continue;
+        }
+
+        // If line fits, add it directly
+        if line.len() <= max_width {
+            result.push(line.to_string());
+            continue;
+        }
+
+        // Word wrap the line
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let mut current_line = String::new();
+
+        for word in words {
+            // If word itself is longer than max_width, break it
+            if word.len() > max_width {
+                if !current_line.is_empty() {
+                    result.push(current_line);
+                    current_line = String::new();
+                }
+                // Break long word into chunks
+                let mut remaining = word;
+                while remaining.len() > max_width {
+                    let (chunk, rest) = remaining.split_at(max_width.saturating_sub(1));
+                    result.push(format!("{}-", chunk));
+                    remaining = rest;
+                }
+                if !remaining.is_empty() {
+                    current_line = remaining.to_string();
+                }
+                continue;
+            }
+
+            // Check if word fits on current line
+            let new_len = if current_line.is_empty() {
+                word.len()
+            } else {
+                current_line.len() + 1 + word.len() // +1 for space
+            };
+
+            if new_len <= max_width {
+                if !current_line.is_empty() {
+                    current_line.push(' ');
+                }
+                current_line.push_str(word);
+            } else {
+                // Start new line
+                if !current_line.is_empty() {
+                    result.push(current_line);
+                }
+                current_line = word.to_string();
+            }
+        }
+
+        // Don't forget the last line
+        if !current_line.is_empty() {
+            result.push(current_line);
+        }
+    }
+
+    if result.is_empty() {
+        result.push(String::new());
+    }
+
+    result
+}
 
 /// Render the entire TUI
 pub fn render(app: &mut TuiApp, frame: &mut Frame) {
@@ -315,67 +460,75 @@ fn render_compact_header(app: &TuiApp, frame: &mut Frame, area: Rect) {
 
     let header_text = format!(
         " [{}] {} │ {} │ {}x{}",
-        mode_str, tab_str, &app.session.id[..8.min(app.session.id.len())], area.width, area.height
+        mode_str,
+        tab_str,
+        &app.session.id[..8.min(app.session.id.len())],
+        area.width,
+        area.height
     );
 
-    let paragraph = Paragraph::new(header_text)
-        .style(
-            Style::default()
-                .fg(app.theme.header_fg)
-                .bg(app.theme.status_bg),
-        );
+    let paragraph = Paragraph::new(header_text).style(
+        Style::default()
+            .fg(app.theme.header_fg)
+            .bg(app.theme.status_bg),
+    );
 
     frame.render_widget(paragraph, area);
 }
 
 /// Render the header with tabs
 fn render_header(app: &TuiApp, frame: &mut Frame, area: Rect) {
-    let titles: Vec<Line> = app
-        .tabs
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            let style = if i == app.active_tab {
-                Style::default()
-                    .fg(app.theme.tab_active)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(app.theme.tab_inactive)
-            };
-            Line::from(Span::styled(format!(" {} ", t), style))
-        })
-        .collect();
+    let block = Block::default().style(Style::default().bg(app.theme.header_bg));
+    frame.render_widget(block, area);
 
-    let tabs = Tabs::new(titles)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(app.theme.border))
-                .title(Span::styled(
-                    " gestura ",
-                    Style::default()
-                        .fg(app.theme.header_fg)
-                        .add_modifier(Modifier::BOLD),
-                )),
-        )
-        .select(app.active_tab)
-        .style(Style::default().fg(app.theme.header_fg))
-        .highlight_style(
+    // Render "Gestura" logo and context
+    let logo_style = Style::default()
+        .fg(app.theme.header_fg)
+        .bg(app.theme.header_bg)
+        .add_modifier(Modifier::BOLD);
+
+    let normal_style = Style::default()
+        .fg(app.theme.header_fg)
+        .bg(app.theme.header_bg);
+    let arrow = Span::styled(" › ", normal_style);
+
+    let mut spans = vec![
+        Span::styled(" GESTURA ", logo_style),
+        arrow.clone(),
+        Span::styled(
+            format!("{} ", app.session.id.get(0..8).unwrap_or("")),
+            normal_style,
+        ),
+    ];
+
+    // Add Tabs
+    for (i, title) in app.tabs.iter().enumerate() {
+        spans.push(arrow.clone());
+        let style = if i == app.active_tab {
             Style::default()
                 .fg(app.theme.tab_active)
-                .add_modifier(Modifier::BOLD),
-        );
+                .bg(app.theme.header_bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(app.theme.tab_inactive)
+                .bg(app.theme.header_bg)
+        };
+        spans.push(Span::styled(*title, style));
+    }
 
-    frame.render_widget(tabs, area);
+    let p = Paragraph::new(Line::from(spans));
+    frame.render_widget(p, area);
 }
 
 /// Render the main content area (messages or other tab content)
 fn render_content(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     match app.active_tab {
         0 => render_messages(app, frame, area),
-        1 => render_tools_tab(app, frame, area),
-        2 => render_settings_tab(app, frame, area),
-        3 => render_help_tab(app, frame, area),
+        1 => render_workflows_tab(app, frame, area),
+        2 => render_tools_tab(app, frame, area),
+        3 => render_settings_tab(app, frame, area),
+        4 => render_help_tab(app, frame, area),
         _ => render_messages(app, frame, area),
     }
 }
@@ -385,6 +538,10 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     let theme = &app.theme;
     let search_query = &app.search_query;
     let has_search = !search_query.is_empty();
+
+    // Calculate available width for text wrapping
+    // Subtract borders (2) and prefix space (8 for "▶ You: " or "◆ AI: ")
+    let wrap_width = area.width.saturating_sub(10) as usize;
 
     // Filter messages if in filter mode
     let message_indices: Vec<usize> = if app.search_filter_mode && has_search {
@@ -403,8 +560,19 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
                 None
             };
 
+            // Check if this message has search matches for highlighting
+            let has_match = has_search && app.message_has_match(msg_idx);
+
             let (prefix, base_style) = match msg.role.as_str() {
-                "user" => ("▶ You: ", Style::default().fg(theme.user_msg)),
+                "user" => {
+                    // Add search indicator (🔍) for messages with matches
+                    let pfx = if has_match {
+                        "🔍▶ You: "
+                    } else {
+                        "▶ You: "
+                    };
+                    (pfx, Style::default().fg(theme.user_msg))
+                }
                 "assistant" => {
                     if msg.is_streaming {
                         (
@@ -414,21 +582,43 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
                                 .add_modifier(Modifier::ITALIC),
                         )
                     } else {
-                        ("◆ AI: ", Style::default().fg(theme.assistant_msg))
+                        let pfx = if has_match {
+                            "🔍◆ AI: "
+                        } else {
+                            "◆ AI: "
+                        };
+                        (pfx, Style::default().fg(theme.assistant_msg))
                     }
                 }
-                "system" => ("⚙ System: ", Style::default().fg(theme.system_msg)),
+                "system" => {
+                    let pfx = if has_match {
+                        "🔍⚙ System: "
+                    } else {
+                        "⚙ System: "
+                    };
+                    (pfx, Style::default().fg(theme.system_msg))
+                }
                 _ => ("• ", Style::default()),
             };
 
-            // Handle special cases (error, streaming cursor)
-            let content = if msg.is_streaming && msg.content.is_empty() {
-                return vec![ListItem::new(Line::from(Span::styled(
-                    format!("{}▌", prefix),
-                    base_style,
-                )))];
-            } else if msg.is_streaming {
-                format!("{}▌", msg.content)
+            let base_style = if msg.is_error {
+                base_style.fg(theme.error_msg).add_modifier(Modifier::BOLD)
+            } else {
+                base_style
+            };
+
+            let content = if msg.is_streaming {
+                // Determine streaming state
+                if msg.thinking.is_some() {
+                    // We are thinking
+                    if msg.content.is_empty() {
+                        String::new() // Don't show text if only thinking
+                    } else {
+                        format!("{}▌", msg.content)
+                    }
+                } else {
+                    format!("{}▌", msg.content)
+                }
             } else {
                 msg.content.clone()
             };
@@ -436,13 +626,47 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
             // Parse message for code blocks
             let segments = parse_message_segments(&content);
             let mut items = Vec::new();
+
+            // Render Thinking if present (with word wrapping)
+            if let Some(thinking) = &msg.thinking
+                && !thinking.is_empty()
+            {
+                items.push(ListItem::new(Line::from(Span::styled(
+                    "  ┌─ Thinking ",
+                    Style::default()
+                        .fg(theme.code_comment)
+                        .add_modifier(Modifier::ITALIC),
+                ))));
+
+                // Wrap thinking text (subtract 4 for "  │ " prefix)
+                let thinking_wrap_width = wrap_width.saturating_sub(4);
+                let wrapped_thinking = wrap_text(thinking, thinking_wrap_width);
+                for line in wrapped_thinking {
+                    items.push(ListItem::new(Line::from(Span::styled(
+                        format!("  │ {}", line),
+                        Style::default()
+                            .fg(theme.code_comment)
+                            .add_modifier(Modifier::ITALIC),
+                    ))));
+                }
+
+                items.push(ListItem::new(Line::from(Span::styled(
+                    "  └───────────",
+                    Style::default()
+                        .fg(theme.code_comment)
+                        .add_modifier(Modifier::ITALIC),
+                ))));
+            }
             let mut is_first = true;
             let mut char_offset = 0usize; // Track position in original content
 
             for segment in segments {
                 match segment {
                     MessageSegment::Text(text) => {
-                        for line in text.lines() {
+                        // Apply word wrapping to the text
+                        let wrapped_lines = wrap_text(&text, wrap_width);
+
+                        for wrapped_line in wrapped_lines {
                             let display_prefix = if is_first {
                                 is_first = false;
                                 prefix
@@ -454,18 +678,21 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
                             let spans = if let Some(ranges) = match_ranges {
                                 highlight_search_matches(
                                     display_prefix,
-                                    line,
+                                    &wrapped_line,
                                     char_offset,
                                     ranges,
                                     base_style,
                                     theme,
                                 )
                             } else {
-                                vec![Span::styled(format!("{}{}", display_prefix, line), base_style)]
+                                vec![Span::styled(
+                                    format!("{}{}", display_prefix, wrapped_line),
+                                    base_style,
+                                )]
                             };
 
                             items.push(ListItem::new(Line::from(spans)));
-                            char_offset += line.len() + 1; // +1 for newline
+                            char_offset += wrapped_line.len() + 1; // +1 for newline
                         }
                     }
                     MessageSegment::CodeBlock { language, code } => {
@@ -483,7 +710,11 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
                                 "  │ ".to_string(),
                                 Style::default().fg(theme.code_lang_label),
                             )];
-                            spans.extend(highlight_code_line_themed(code_line, language.as_deref(), theme));
+                            spans.extend(highlight_code_line_themed(
+                                code_line,
+                                language.as_deref(),
+                                theme,
+                            ));
                             items.push(ListItem::new(Line::from(spans)));
                         }
 
@@ -500,7 +731,10 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
             }
 
             if items.is_empty() {
-                vec![ListItem::new(Line::from(Span::styled(prefix.to_string(), base_style)))]
+                vec![ListItem::new(Line::from(Span::styled(
+                    prefix.to_string(),
+                    base_style,
+                )))]
             } else {
                 items
             }
@@ -517,32 +751,26 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         " Messages ({}){} {} ",
         app.messages.len(),
         search_info,
-        if app.user_scrolled { scroll_info } else { "".to_string() }
+        if app.user_scrolled {
+            scroll_info
+        } else {
+            "".to_string()
+        }
     );
 
-    let border_style = if app.mode == TuiMode::Insert && app.active_tab == 0 {
-        Style::default().fg(theme.border_focused)
-    } else if app.mode == TuiMode::Search {
-        Style::default().fg(theme.streaming)
-    } else {
-        Style::default().fg(theme.border)
-    };
-
     let messages_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
+        // No borders for cleaner look
+        .borders(Borders::NONE)
         .title(Span::styled(
             title,
-            Style::default().fg(theme.header_fg),
+            Style::default().fg(app.theme.header_fg),
         ));
 
-    let list = List::new(messages)
-        .block(messages_block)
-        .highlight_style(
-            Style::default()
-                .bg(theme.selection_bg)
-                .add_modifier(Modifier::BOLD),
-        );
+    let list = List::new(messages).block(messages_block).highlight_style(
+        Style::default()
+            .bg(theme.selection_bg)
+            .add_modifier(Modifier::BOLD),
+    );
 
     frame.render_stateful_widget(list, area, &mut app.message_list_state.clone());
 }
@@ -623,31 +851,6 @@ fn render_tools_tab(app: &TuiApp, frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-/// Render the settings tab
-fn render_settings_tab(app: &TuiApp, frame: &mut Frame, area: Rect) {
-    let theme_info = format!(
-        "Current Theme: {} (Ctrl+T to cycle)\nAvailable: {}",
-        app.theme.name,
-        Theme::available_themes().join(", ")
-    );
-    let settings = format!(
-        "Provider: {}\nModel: {}\nSession: {}\n\n{}\n\nPress Tab to switch tabs",
-        app.config.llm.primary,
-        app.model_name(),
-        &app.session.id[..8],
-        theme_info
-    );
-    let paragraph = Paragraph::new(settings)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(app.theme.border))
-                .title(" Settings "),
-        )
-        .wrap(Wrap { trim: true });
-    frame.render_widget(paragraph, area);
-}
-
 /// Render the help tab
 fn render_help_tab(app: &TuiApp, frame: &mut Frame, area: Rect) {
     let help_text = r#"Keyboard Shortcuts:
@@ -702,8 +905,14 @@ fn render_input(app: &TuiApp, frame: &mut Frame, area: Rect) {
         TuiMode::Search => ("SEARCH", app.theme.streaming),
     };
 
-    let title = format!(" {} │ {} ", mode_indicator.0,
-        if app.is_loading { "Waiting for response..." } else { "Type a message" }
+    let title = format!(
+        " {} │ {} ",
+        mode_indicator.0,
+        if app.is_loading {
+            "Waiting for response..."
+        } else {
+            "Type a message"
+        }
     );
 
     let border_style = if app.mode == TuiMode::Insert || app.mode == TuiMode::Command {
@@ -715,81 +924,220 @@ fn render_input(app: &TuiApp, frame: &mut Frame, area: Rect) {
     let input = Paragraph::new(app.input.as_str())
         .block(
             Block::default()
-                .borders(Borders::ALL)
+                .borders(Borders::TOP) // Only top border to separate from messages
                 .border_style(border_style)
                 .title(Span::styled(title, Style::default().fg(mode_indicator.1))),
         )
-        .style(Style::default().fg(app.theme.header_fg));
+        .style(Style::default().fg(app.theme.header_fg))
+        .wrap(Wrap { trim: false }); // Enable text wrapping for input
 
     frame.render_widget(input, area);
 
     // Show cursor in insert/command mode
+    // Note: With wrapping, cursor position calculation becomes complex for multi-line input
+    // For now, we show the cursor at the end of visible content
     if app.mode == TuiMode::Insert || app.mode == TuiMode::Command {
+        let input_width = area.width.saturating_sub(2) as usize; // Account for borders
+        let cursor_line = if input_width > 0 {
+            app.cursor_pos / input_width
+        } else {
+            0
+        };
+        let cursor_col = if input_width > 0 {
+            app.cursor_pos % input_width
+        } else {
+            app.cursor_pos
+        };
         frame.set_cursor_position((
-            area.x + app.cursor_pos as u16 + 1,
-            area.y + 1,
+            area.x + cursor_col as u16 + 1,
+            area.y + 1 + cursor_line as u16,
         ));
     }
 }
 
-/// Render the status bar
+/// Render the status bar with adaptive compact format for narrow terminals
 fn render_status_bar(app: &TuiApp, frame: &mut Frame, area: Rect) {
+    let is_compact = area.width < 80;
+
+    let layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50), // Left status
+            Constraint::Percentage(50), // Right stats
+        ])
+        .split(area);
+
+    // Left: Status message
     let status_style = if app.error.is_some() {
-        Style::default().fg(app.theme.error_msg).bg(app.theme.status_bg)
+        Style::default()
+            .fg(app.theme.error_msg)
+            .bg(app.theme.status_bg)
     } else {
-        Style::default().fg(app.theme.status_fg).bg(app.theme.status_bg)
+        Style::default()
+            .fg(app.theme.status_fg)
+            .bg(app.theme.status_bg)
     };
 
-    // Use compact hints for narrow terminals
-    let is_compact = area.width < COMPACT_WIDTH;
+    let status_text = if let Some(e) = &app.error {
+        if is_compact {
+            format!(" ERR: {}", &e[..e.len().min(20)])
+        } else {
+            format!(" ERROR: {}", e)
+        }
+    } else if is_compact {
+        format!(" {:?}", app.mode)
+    } else {
+        format!(" {} [{:?}]", app.status, app.mode)
+    };
 
-    let hints = if is_compact {
-        // Abbreviated hints for compact mode
-        match app.mode {
-            TuiMode::Normal => "q:quit i:ins ?:help",
-            TuiMode::Insert => "Enter:send Esc:exit",
-            TuiMode::Command => "Enter Tab Esc",
-            TuiMode::Help => "Esc:close",
-            TuiMode::Confirm => "Y/N",
-            TuiMode::Search => "Enter Esc n/N",
+    frame.render_widget(Paragraph::new(status_text).style(status_style), layout[0]);
+
+    // Right: Stats - use compact format for narrow terminals
+    let stats_style = Style::default()
+        .fg(app.theme.status_fg)
+        .bg(app.theme.status_bg);
+
+    let model = app.model_name();
+
+    let stats_text = if is_compact {
+        // Compact format: "1.2K|$0.01 | gpt-4"
+        let compact_tokens = app.format_token_usage_compact();
+        let short_model = if model.len() > 10 {
+            &model[..10]
+        } else {
+            model
+        };
+        if compact_tokens.is_empty() {
+            format!("{} ", short_model)
+        } else {
+            format!("{} | {} ", compact_tokens, short_model)
         }
     } else {
-        // Full hints for standard mode
-        match app.mode {
-            TuiMode::Normal => {
-                if !app.search_query.is_empty() {
-                    "n:next  N:prev  Esc:clear  Ctrl+F:search  q:quit  i:insert"
+        // Verbose format: "Tokens: 1.2K | Cost: $0.0100 | Model: gpt-4"
+        let token_total = app.session_input_tokens + app.session_output_tokens;
+        let cost = app.session_cost_usd;
+        format!(
+            "Tokens: {} | Cost: ${:.4} | Model: {} ",
+            gestura_core::token_tracker::format_token_count(token_total),
+            cost,
+            model
+        )
+    };
+
+    frame.render_widget(
+        Paragraph::new(stats_text)
+            .style(stats_style)
+            .alignment(ratatui::layout::Alignment::Right),
+        layout[1],
+    );
+}
+
+/// Render workflows tab
+fn render_workflows_tab(app: &TuiApp, frame: &mut Frame, area: Rect) {
+    if app.workflows.is_empty() {
+        let p = Paragraph::new("\n  No workflows found in .agent/workflows/\n  Create .md files there to define workflows.")
+             .style(Style::default().fg(app.theme.code_comment));
+
+        frame.render_widget(p.block(Block::default().borders(Borders::NONE)), area);
+        return;
+    }
+
+    let items: Vec<ListItem> = app
+        .workflows
+        .iter()
+        .map(|(name, desc)| {
+            let content = vec![
+                Line::from(vec![
+                    Span::styled(
+                        format!("  {}  ", name),
+                        Style::default()
+                            .fg(app.theme.header_fg)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(desc, Style::default().fg(app.theme.status_fg)),
+                ]),
+                Line::from(""), // spacer
+            ];
+            ListItem::new(content)
+        })
+        .collect();
+
+    let list = List::new(items).block(Block::default().borders(Borders::NONE).title(" Workflows "));
+
+    frame.render_widget(list, area);
+}
+
+/// Render the interactive settings tab
+fn render_settings_tab(app: &TuiApp, frame: &mut Frame, area: Rect) {
+    let mut items = Vec::new();
+
+    let selected_style = Style::default()
+        .fg(app.theme.header_fg)
+        .bg(app.theme.selection_bg);
+    let normal_style = Style::default().fg(app.theme.status_fg);
+
+    // Helper to render a field
+    let render_field = |idx: usize, label: &str, value: &str| {
+        let is_selected = app.settings_state.selected_field == idx;
+        let style = if is_selected {
+            selected_style
+        } else {
+            normal_style
+        };
+        let prefix = if is_selected { " > " } else { "   " };
+
+        // If editing this field, show edit buffer
+        let display_value = if is_selected && app.settings_state.is_editing {
+            format!("{}█", app.settings_state.edit_buffer)
+        } else {
+            value.to_string()
+        };
+
+        ListItem::new(Line::from(vec![
+            Span::styled(format!("{}{:<15}", prefix, label), style),
+            Span::styled(
+                display_value,
+                if is_selected {
+                    style.add_modifier(Modifier::BOLD)
                 } else {
-                    "q:quit  i:insert  /:command  ?:help  j/k:scroll  Ctrl+F:search  Ctrl+T:theme"
-                }
-            }
-            TuiMode::Insert => "Enter:send  Shift+Enter:newline  Esc:normal  Ctrl+F:search  Ctrl+T:theme",
-            TuiMode::Command => "Enter:execute  Esc:cancel  Tab:complete",
-            TuiMode::Help => "Esc/q:close  j/k:scroll",
-            TuiMode::Confirm => "Y:confirm  N/Esc:cancel",
-            TuiMode::Search => "Enter:confirm  Esc:cancel  Tab/↓:next  ↑:prev  Ctrl+G:filter",
-        }
+                    style
+                },
+            ),
+        ]))
     };
 
-    let left = format!(" {} ", app.status);
-    let right = format!(" {} ", hints);
+    // 1. Provider
+    items.push(render_field(0, "Provider", &app.config.llm.primary));
 
-    // Truncate status if needed to fit hints
-    let available_width = area.width as usize;
-    let right_len = right.len();
-    let max_left_len = available_width.saturating_sub(right_len + 1);
+    // 2. Model
+    let model = app.model_name();
+    items.push(render_field(1, "Model", model));
 
-    let left_truncated = if left.len() > max_left_len {
-        format!("{}…", &left[..max_left_len.saturating_sub(1)])
+    // 3. System Prompt
+    let sys_prompt = app.system_prompt.as_deref().unwrap_or("Default");
+    let sys_display = if sys_prompt.len() > 40 {
+        format!("{}...", &sys_prompt[..37])
     } else {
-        left
+        sys_prompt.to_string()
+    };
+    items.push(render_field(2, "System Prompt", &sys_display));
+
+    // 4. Temperature (Placeholder)
+    items.push(render_field(3, "Temperature", "0.7"));
+
+    let info_text = if app.settings_state.is_editing {
+        "Press Enter to save, Esc to cancel"
+    } else {
+        "Arrow keys to navigate, Enter to edit, Tab to switch tabs"
     };
 
-    let padding = available_width.saturating_sub(left_truncated.len() + right_len);
-    let status_line = format!("{}{}{}", left_truncated, " ".repeat(padding), right);
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::NONE)
+            .title(format!(" Settings ({}) ", info_text)),
+    );
 
-    let status = Paragraph::new(status_line).style(status_style);
-    frame.render_widget(status, area);
+    frame.render_widget(list, area);
 }
 
 /// Render the help overlay (modal)

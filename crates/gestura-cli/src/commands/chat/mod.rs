@@ -1,18 +1,21 @@
 //! Interactive chat command
 
 use super::Result;
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Datelike, Local};
 use colored::Colorize;
 use gestura_core::{
-    AgentContext, AppConfig, AudioCaptureConfig, get_speech_processor, select_provider,
+    AgentPipeline, AgentRequest, AppConfig, AudioCaptureConfig, CancellationToken, RequestSource,
+    StreamChunk, get_speech_processor,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 mod tui;
@@ -33,6 +36,8 @@ pub struct ChatOptions<'a> {
 struct ChatMessage {
     role: String,
     content: String,
+    #[serde(default)]
+    thinking: Option<String>,
     timestamp: DateTime<Local>,
 }
 
@@ -44,24 +49,31 @@ struct ChatSession {
     updated: DateTime<Local>,
     model: Option<String>,
     messages: Vec<ChatMessage>,
+    /// Workspace directory for sandboxed file/shell operations
+    #[serde(default)]
+    workspace_dir: Option<PathBuf>,
 }
 
 impl ChatSession {
     fn new(model: Option<String>) -> Self {
         let now = Local::now();
+        // Use current working directory as workspace
+        let workspace = std::env::current_dir().ok();
         Self {
             id: Uuid::new_v4().to_string(),
             created: now,
             updated: now,
             model,
             messages: Vec::new(),
+            workspace_dir: workspace,
         }
     }
 
-    fn add_message(&mut self, role: &str, content: &str) {
+    fn add_message(&mut self, role: &str, content: &str, thinking: Option<String>) {
         self.messages.push(ChatMessage {
             role: role.to_string(),
             content: content.to_string(),
+            thinking,
             timestamp: Local::now(),
         });
         self.updated = Local::now();
@@ -135,14 +147,71 @@ impl ChatSession {
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
     pub id: String,
+    /// Creation timestamp - used for session filtering/sorting by date
     pub created: DateTime<Local>,
     pub updated: DateTime<Local>,
     pub message_count: usize,
     pub model: Option<String>,
 }
 
+impl SessionInfo {
+    /// Check if session was created on or after the given date
+    pub fn created_on_or_after(&self, date: DateTime<Local>) -> bool {
+        self.created >= date
+    }
+
+    /// Check if session was created on or before the given date
+    pub fn created_on_or_before(&self, date: DateTime<Local>) -> bool {
+        self.created <= date
+    }
+
+    /// Check if session was created today
+    pub fn created_today(&self) -> bool {
+        self.created.date_naive() == Local::now().date_naive()
+    }
+
+    /// Check if session was created this week
+    pub fn created_this_week(&self) -> bool {
+        let now = Local::now();
+        let week_ago = now - chrono::Duration::days(7);
+        self.created >= week_ago
+    }
+
+    /// Check if session was created this month
+    pub fn created_this_month(&self) -> bool {
+        let now = Local::now();
+        self.created.year() == now.year() && self.created.month() == now.month()
+    }
+}
+
+/// Session filter options for listing
+#[derive(Debug, Clone, Default)]
+pub enum SessionFilter {
+    /// No filter - return all sessions
+    #[default]
+    All,
+    /// Sessions created today
+    Today,
+    /// Sessions created in the last 7 days
+    ThisWeek,
+    /// Sessions created this month
+    ThisMonth,
+    /// Sessions created within a custom date range.
+    /// TODO: Add CLI parsing for custom date ranges (e.g., /session list from:2024-01-01 to:2024-12-31)
+    #[allow(dead_code)]
+    DateRange {
+        from: Option<DateTime<Local>>,
+        to: Option<DateTime<Local>>,
+    },
+}
+
 /// List all available sessions with metadata
 pub fn list_sessions() -> Result<Vec<SessionInfo>> {
+    list_sessions_filtered(SessionFilter::All)
+}
+
+/// List sessions with optional date filtering
+pub fn list_sessions_filtered(filter: SessionFilter) -> Result<Vec<SessionInfo>> {
     let sessions_dir = get_sessions_dir();
     if !sessions_dir.exists() {
         return Ok(Vec::new());
@@ -152,17 +221,33 @@ pub fn list_sessions() -> Result<Vec<SessionInfo>> {
     for entry in fs::read_dir(&sessions_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "json") {
-            if let Ok(json) = fs::read_to_string(&path) {
-                if let Ok(session) = serde_json::from_str::<ChatSession>(&json) {
-                    sessions.push(SessionInfo {
-                        id: session.id,
-                        created: session.created,
-                        updated: session.updated,
-                        message_count: session.messages.len(),
-                        model: session.model,
-                    });
+        if path.extension().is_some_and(|ext| ext == "json")
+            && let Ok(json) = fs::read_to_string(&path)
+            && let Ok(session) = serde_json::from_str::<ChatSession>(&json)
+        {
+            let info = SessionInfo {
+                id: session.id,
+                created: session.created,
+                updated: session.updated,
+                message_count: session.messages.len(),
+                model: session.model,
+            };
+
+            // Apply filter
+            let include = match &filter {
+                SessionFilter::All => true,
+                SessionFilter::Today => info.created_today(),
+                SessionFilter::ThisWeek => info.created_this_week(),
+                SessionFilter::ThisMonth => info.created_this_month(),
+                SessionFilter::DateRange { from, to } => {
+                    let after_from = from.is_none_or(|d| info.created_on_or_after(d));
+                    let before_to = to.is_none_or(|d| info.created_on_or_before(d));
+                    after_from && before_to
                 }
+            };
+
+            if include {
+                sessions.push(info);
             }
         }
     }
@@ -309,6 +394,28 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
         " ".repeat(session_padding),
         "│".dimmed()
     );
+
+    // Workspace directory line
+    if let Some(ref workspace) = chat_session.workspace_dir {
+        let workspace_display = workspace.display().to_string();
+        let workspace_line = format!("workspace: {}", workspace_display);
+        let truncated_line = if workspace_line.chars().count() > inner_width {
+            format!(
+                "workspace: ...{}",
+                &workspace_display[workspace_display.len().saturating_sub(inner_width - 16)..]
+            )
+        } else {
+            workspace_line
+        };
+        let ws_padding = inner_width.saturating_sub(truncated_line.chars().count());
+        println!(
+            "{} {}{} {}",
+            "│".dimmed(),
+            truncated_line.dimmed(),
+            " ".repeat(ws_padding),
+            "│".dimmed()
+        );
+    }
 
     // System prompt if provided
     if let Some(sys) = system {
@@ -636,6 +743,14 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 "AI Responses:".dimmed(),
                                 asst_msgs
                             );
+                            if let Some(ref workspace) = chat_session.workspace_dir {
+                                println!(
+                                    "{}  {} {}",
+                                    "│".dimmed(),
+                                    "Workspace:".dimmed(),
+                                    workspace.display()
+                                );
+                            }
                             println!(
                                 "{}",
                                 "╰───────────────────────────────────────────────────────────────╯"
@@ -672,7 +787,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 }
 
                 // Add user message to session
-                chat_session.add_message("user", &input);
+                chat_session.add_message("user", &input, None);
 
                 // Deterministic response for common tool-inventory questions.
                 if crate::tool_registry::looks_like_tools_question(&input) {
@@ -685,70 +800,126 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                     );
                     println!();
                     println!("{}", text);
-                    chat_session.add_message("assistant", &text);
+                    chat_session.add_message("assistant", &text, None);
                     continue;
                 }
 
-                // Build conversation context for the LLM
-                let mut context = String::new();
-                for msg in chat_session.messages.iter().rev().take(10).rev() {
-                    match msg.role.as_str() {
-                        "user" => context.push_str(&format!("User: {}\n", msg.content)),
-                        "assistant" => context.push_str(&format!("Assistant: {}\n", msg.content)),
-                        _ => {}
-                    }
-                }
+                // Build conversation history for the AgentPipeline
+                let history: Vec<gestura_core::Message> = chat_session
+                    .messages
+                    .iter()
+                    .rev()
+                    .take(10)
+                    .rev()
+                    .map(|msg| gestura_core::Message {
+                        role: msg.role.clone(),
+                        content: msg.content.clone(),
+                        tool_call_id: None,
+                        thinking: msg.thinking.clone(),
+                    })
+                    .collect();
 
                 // ─────────────────────────────────────────────────────────────
                 // AI RESPONSE: Show thinking indicator then response
                 // ─────────────────────────────────────────────────────────────
-                print!("{} {}", "◆".blue().bold(), "Thinking...".dimmed());
-                use std::io::Write;
+                // Build the agent request with workspace sandboxing
+                let mut request = AgentRequest::new(&input)
+                    .with_streaming(true)
+                    .with_source(RequestSource::CliBasic)
+                    .with_history(history);
+
+                // Set workspace directory for sandboxed operations
+                if let Some(ref workspace) = chat_session.workspace_dir {
+                    request = request.with_workspace(workspace.clone());
+                }
+
+                // Add system prompt if available
+                if let Some(ref sys) = system_prompt {
+                    request = request.with_system_prompt(sys.clone());
+                }
+
+                // Stream response chunks as they arrive (CLI basic mode should feel interactive).
+                println!();
+                println!("{}", "◆".blue().bold());
+                print!("  ");
                 let _ = std::io::stdout().flush();
 
-                let sys_prompt = system_prompt.clone();
-                let response = rt.block_on(async {
-                    let provider = select_provider(&config, &AgentContext {
-                        agent_id: format!("chat-{}", chat_session.id),
+                let config_clone = config.clone();
+                let response: Result<gestura_core::AgentResponse> = rt.block_on(async move {
+                    let (tx, mut rx) = mpsc::channel::<StreamChunk>(100);
+                    let cancel_token = CancellationToken::new();
+                    let cancel_for_task = cancel_token.clone();
+
+                    let stream_task = tokio::spawn(async move {
+                        let pipeline = AgentPipeline::new(config_clone);
+                        pipeline
+                            .process_streaming(request, tx, cancel_for_task)
+                            .await
                     });
 
-                    // Build prompt with optional system context
-                    let full_prompt = if let Some(ref sys) = sys_prompt {
-                        if chat_session.messages.len() > 1 {
-                            format!("System: {}\n\nPrevious conversation:\n{}\nRespond to the latest user message.", sys, context)
-                        } else {
-                            format!("System: {}\n\nUser: {}", sys, input)
-                        }
-                    } else if chat_session.messages.len() > 1 {
-                        format!("Previous conversation:\n{}\nRespond to the latest user message.", context)
-                    } else {
-                        input.to_string()
-                    };
-
-                    provider.call(&full_prompt).await
-                });
-
-                // Clear the "Thinking..." line
-                print!("\r\x1B[K");
-
-                match response {
-                    Ok(text) => {
-                        // Format the response with proper line wrapping
-                        let term_width = termsize::get().map(|s| s.cols as usize).unwrap_or(80);
-                        let max_width = term_width.saturating_sub(4).max(40);
-
-                        println!("{}", "◆".blue().bold());
-                        for line in text.lines() {
-                            if line.len() > max_width {
-                                let wrapped = textwrap::wrap(line, max_width);
-                                for part in wrapped {
-                                    println!("  {}", part);
-                                }
-                            } else {
-                                println!("  {}", line);
+                    let mut saw_done = false;
+                    while let Some(chunk) = rx.recv().await {
+                        match chunk {
+                            StreamChunk::Text(t) => {
+                                // Maintain indentation across newlines.
+                                let rendered = t.replace("\n", "\n  ");
+                                print!("{}", rendered);
+                                let _ = std::io::stdout().flush();
+                            }
+                            StreamChunk::Thinking(_) => {
+                                // Thinking is stored in the final AgentResponse; we don't print it by default.
+                            }
+                            StreamChunk::ToolCallStart { name, .. } => {
+                                println!();
+                                println!("  {} {}", "→".cyan(), format!("tool: {name}").dimmed());
+                                print!("  ");
+                                let _ = std::io::stdout().flush();
+                            }
+                            StreamChunk::ToolCallEnd => {
+                                println!();
+                                print!("  ");
+                                let _ = std::io::stdout().flush();
+                            }
+                            StreamChunk::ToolCallArgs(_) => {}
+                            StreamChunk::Done(_) => {
+                                saw_done = true;
+                                break;
+                            }
+                            StreamChunk::Cancelled => break,
+                            StreamChunk::Error(e) => {
+                                return Err(std::io::Error::other(e).into());
                             }
                         }
-                        chat_session.add_message("assistant", &text);
+                    }
+
+                    let agent_response = stream_task.await.map_err(|e| {
+                        std::io::Error::other(format!("Streaming task failed: {e}"))
+                    })??;
+                    if !saw_done {
+                        // The channel can close without an explicit Done; still return whatever we have.
+                    }
+                    Ok(agent_response)
+                });
+
+                match response {
+                    Ok(agent_response) => {
+                        println!();
+
+                        // Show token usage if available
+                        if let Some(usage) = &agent_response.usage {
+                            println!(
+                                "  {} tokens: {} in / {} out",
+                                "ℹ".dimmed(),
+                                usage.input_tokens.to_string().dimmed(),
+                                usage.output_tokens.to_string().dimmed()
+                            );
+                        }
+
+                        chat_session.add_message(
+                            "assistant",
+                            &agent_response.content,
+                            agent_response.thinking,
+                        );
                     }
                     Err(e) => {
                         println!();
