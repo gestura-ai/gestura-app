@@ -5,11 +5,19 @@
 
 use crate::config::AppConfig;
 use crate::error::AppError;
+use crate::llm_provider::TokenUsage;
+use crate::tools::schemas::ProviderToolSchemas;
 use futures_util::StreamExt;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
+
+/// Character chunk size used for the built-in streaming echo fallback.
+///
+/// This intentionally emits *multiple* `StreamChunk::Text` events so the UI behaves like
+/// a true streaming experience even when no provider is configured.
+const ECHO_STREAM_CHUNK_CHARS: usize = 24;
 
 /// Default timeout for streaming LLM API calls
 const STREAMING_TIMEOUT_SECS: u64 = 300;
@@ -17,18 +25,109 @@ const STREAMING_TIMEOUT_SECS: u64 = 300;
 /// A chunk of streaming response
 #[derive(Debug, Clone)]
 pub enum StreamChunk {
+    /// Content from the model's thinking process
+    Thinking(String),
     /// A text chunk from the LLM
     Text(String),
-    /// Stream completed successfully
-    Done,
+    /// Start of a tool call
+    ToolCallStart { id: String, name: String },
+    /// Arguments delta for the current tool call
+    ToolCallArgs(String),
+    /// End of the current tool call
+    ToolCallEnd,
+    /// Stream completed successfully with optional token usage
+    Done(Option<TokenUsage>),
     /// Stream was cancelled
     Cancelled,
     /// An error occurred
     Error(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttemptOutcome {
+    Success,
+    RetryableError,
+    FatalError,
+    Cancelled,
+    UnexpectedEnd,
+}
+
+#[derive(Debug, Clone)]
+struct AttemptForwardResult {
+    outcome: AttemptOutcome,
+    /// Whether we forwarded any non-terminal output chunk (Text/Thinking/tool call) to the caller.
+    forwarded_output: bool,
+    /// Error message when outcome is RetryableError/FatalError.
+    error: Option<String>,
+}
+
+/// Forward chunks from a single provider attempt to the caller.
+///
+/// Design goal: preserve a *true streaming* UX.
+///
+/// Retry policy: we only consider retrying if the attempt fails **before any output is forwarded**.
+async fn forward_attempt_stream(
+    attempt_rx: &mut mpsc::Receiver<StreamChunk>,
+    tx: &mpsc::Sender<StreamChunk>,
+) -> AttemptForwardResult {
+    let mut forwarded_output = false;
+
+    while let Some(chunk) = attempt_rx.recv().await {
+        match &chunk {
+            StreamChunk::Text(_)
+            | StreamChunk::Thinking(_)
+            | StreamChunk::ToolCallStart { .. }
+            | StreamChunk::ToolCallArgs(_)
+            | StreamChunk::ToolCallEnd => {
+                forwarded_output = true;
+                let _ = tx.send(chunk).await;
+            }
+            StreamChunk::Done(_) => {
+                let _ = tx.send(chunk).await;
+                return AttemptForwardResult {
+                    outcome: AttemptOutcome::Success,
+                    forwarded_output,
+                    error: None,
+                };
+            }
+            StreamChunk::Cancelled => {
+                let _ = tx.send(StreamChunk::Cancelled).await;
+                return AttemptForwardResult {
+                    outcome: AttemptOutcome::Cancelled,
+                    forwarded_output,
+                    error: None,
+                };
+            }
+            StreamChunk::Error(e) => {
+                // If we already streamed anything to the caller, we cannot safely retry
+                // without causing duplicated / confusing output.
+                if forwarded_output {
+                    let _ = tx.send(StreamChunk::Error(e.clone())).await;
+                    return AttemptForwardResult {
+                        outcome: AttemptOutcome::FatalError,
+                        forwarded_output,
+                        error: Some(e.clone()),
+                    };
+                }
+
+                return AttemptForwardResult {
+                    outcome: AttemptOutcome::RetryableError,
+                    forwarded_output,
+                    error: Some(e.clone()),
+                };
+            }
+        }
+    }
+
+    AttemptForwardResult {
+        outcome: AttemptOutcome::UnexpectedEnd,
+        forwarded_output,
+        error: None,
+    }
+}
+
 /// Cancellation token for streaming requests
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CancellationToken {
     cancelled: Arc<AtomicBool>,
 }
@@ -67,22 +166,135 @@ fn create_streaming_client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
+/// Helper to parse <think> tags from chunks
+struct ThinkingParser {
+    in_think_block: bool,
+}
+
+impl ThinkingParser {
+    fn new() -> Self {
+        Self {
+            in_think_block: false,
+        }
+    }
+
+    fn process(&mut self, chunk: &str) -> Vec<StreamChunk> {
+        let mut chunks = Vec::new();
+        let mut remaining = chunk;
+
+        while !remaining.is_empty() {
+            if self.in_think_block {
+                if let Some(end_idx) = remaining.find("</think>") {
+                    let thinking_content = &remaining[..end_idx];
+                    if !thinking_content.is_empty() {
+                        chunks.push(StreamChunk::Thinking(thinking_content.to_string()));
+                    }
+                    self.in_think_block = false;
+                    remaining = &remaining[end_idx + 8..];
+                } else {
+                    chunks.push(StreamChunk::Thinking(remaining.to_string()));
+                    break;
+                }
+            } else if let Some(start_idx) = remaining.find("<think>") {
+                let text_content = &remaining[..start_idx];
+                if !text_content.is_empty() {
+                    chunks.push(StreamChunk::Text(text_content.to_string()));
+                }
+                self.in_think_block = true;
+                remaining = &remaining[start_idx + 7..];
+            } else {
+                chunks.push(StreamChunk::Text(remaining.to_string()));
+                break;
+            }
+        }
+        chunks
+    }
+}
+
+/// Split a complete assistant message into (user-facing text, optional thinking) based on
+/// `<think>...</think>` blocks.
+///
+/// This is used by non-streaming callers to keep behavior consistent with streaming.
+pub(crate) fn split_think_blocks(input: &str) -> (String, Option<String>) {
+    let mut parser = ThinkingParser::new();
+    let mut content = String::new();
+    let mut thinking = String::new();
+
+    for chunk in parser.process(input) {
+        match chunk {
+            StreamChunk::Text(t) => content.push_str(&t),
+            StreamChunk::Thinking(t) => thinking.push_str(&t),
+            _ => {}
+        }
+    }
+
+    let thinking = if thinking.trim().is_empty() {
+        None
+    } else {
+        Some(thinking)
+    };
+
+    (content, thinking)
+}
+
+fn collect_complete_lines(buffer: &mut String, incoming: &str) -> Vec<String> {
+    buffer.push_str(incoming);
+    let mut out = Vec::new();
+    let mut start = 0usize;
+
+    {
+        let bytes = buffer.as_bytes();
+        for (i, b) in bytes.iter().enumerate() {
+            if *b == b'\n' {
+                let line = buffer[start..i].trim_end_matches('\r');
+                out.push(line.to_string());
+                start = i + 1;
+            }
+        }
+    }
+
+    if start > 0 {
+        buffer.drain(..start);
+    }
+
+    out
+}
+
 /// Stream a response from OpenAI-compatible API
-pub async fn stream_openai(
-    api_key: &str,
-    base_url: &str,
+fn build_openai_chat_body(
     model: &str,
     prompt: &str,
-    tx: mpsc::Sender<StreamChunk>,
-    cancel_token: CancellationToken,
-) -> Result<(), AppError> {
-    let url = format!("{}/v1/chat/completions", base_url);
-    let body = serde_json::json!({
+    tools: Option<&[serde_json::Value]>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.2,
         "stream": true
     });
+
+    // Enable structured tool calling when schemas are provided.
+    if let Some(tools) = tools
+        && !tools.is_empty()
+    {
+        body["tools"] = serde_json::Value::Array(tools.to_vec());
+        body["tool_choice"] = serde_json::json!("auto");
+    }
+
+    body
+}
+
+pub async fn stream_openai(
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+    prompt: &str,
+    tools: Option<&[serde_json::Value]>,
+    tx: mpsc::Sender<StreamChunk>,
+    cancel_token: CancellationToken,
+) -> Result<(), AppError> {
+    let url = format!("{}/v1/chat/completions", base_url);
+    let body = build_openai_chat_body(model, prompt, tools);
 
     let client = create_streaming_client();
     let response = client
@@ -100,6 +312,8 @@ pub async fn stream_openai(
     }
 
     let mut stream = response.bytes_stream();
+    let mut parser = ThinkingParser::new();
+    let mut line_buffer = String::new();
 
     while let Some(chunk_result) = stream.next().await {
         if cancel_token.is_cancelled() {
@@ -110,19 +324,61 @@ pub async fn stream_openai(
         match chunk_result {
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
-                for line in text.lines() {
+                for line in collect_complete_lines(&mut line_buffer, &text) {
                     let Some(data) = line.strip_prefix("data: ") else {
                         continue;
                     };
                     if data == "[DONE]" {
-                        let _ = tx.send(StreamChunk::Done).await;
+                        let _ = tx.send(StreamChunk::Done(None)).await;
                         return Ok(());
                     }
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(data)
-                        && let Some(content) = json["choices"][0]["delta"]["content"].as_str()
-                        && !content.is_empty()
-                    {
-                        let _ = tx.send(StreamChunk::Text(content.to_string())).await;
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                        // Handle content
+                        if let Some(content) = json["choices"][0]["delta"]["content"].as_str()
+                            && !content.is_empty()
+                        {
+                            let chunks = parser.process(content);
+                            for chunk in chunks {
+                                let _ = tx.send(chunk).await;
+                            }
+                        }
+
+                        // Handle tool calls
+                        if let Some(tool_calls) =
+                            json["choices"][0]["delta"]["tool_calls"].as_array()
+                        {
+                            for call in tool_calls {
+                                // OpenAI-compatible streaming may send `id`, `name`, and a first
+                                // `arguments` fragment in the same delta. Subsequent deltas often
+                                // omit `id` and stream only `arguments`.
+                                let id = call["id"].as_str();
+                                let name = call["function"]["name"].as_str();
+                                let args = call["function"]["arguments"].as_str();
+
+                                if let (Some(id), Some(name)) = (id, name) {
+                                    let _ = tx
+                                        .send(StreamChunk::ToolCallStart {
+                                            id: id.to_string(),
+                                            name: name.to_string(),
+                                        })
+                                        .await;
+                                }
+
+                                if let Some(args) = args
+                                    && !args.is_empty()
+                                {
+                                    let _ =
+                                        tx.send(StreamChunk::ToolCallArgs(args.to_string())).await;
+                                }
+                            }
+                        }
+
+                        // Handle finish reason
+                        if let Some(finish_reason) = json["choices"][0]["finish_reason"].as_str()
+                            && finish_reason == "tool_calls"
+                        {
+                            let _ = tx.send(StreamChunk::ToolCallEnd).await;
+                        }
                     }
                 }
             }
@@ -135,26 +391,68 @@ pub async fn stream_openai(
         }
     }
 
-    let _ = tx.send(StreamChunk::Done).await;
+    let _ = tx.send(StreamChunk::Done(None)).await;
     Ok(())
 }
 
 /// Stream a response from Anthropic Claude API
-pub async fn stream_anthropic(
-    api_key: &str,
-    base_url: &str,
+///
+/// This is an implementation detail used by `start_streaming(..)`.
+/// To keep the API maintainable, we pass arguments via a struct.
+#[derive(Debug)]
+pub struct AnthropicStreamRequest<'a> {
+    pub api_key: &'a str,
+    pub base_url: &'a str,
+    pub model: &'a str,
+    pub thinking_budget_tokens: Option<u32>,
+    pub prompt: &'a str,
+    pub tools: Option<&'a [serde_json::Value]>,
+    pub tx: mpsc::Sender<StreamChunk>,
+    pub cancel_token: CancellationToken,
+}
+
+fn build_anthropic_messages_body(
     model: &str,
     prompt: &str,
-    tx: mpsc::Sender<StreamChunk>,
-    cancel_token: CancellationToken,
-) -> Result<(), AppError> {
-    let url = format!("{}/v1/messages", base_url);
-    let body = serde_json::json!({
+    thinking_budget_tokens: Option<u32>,
+    tools: Option<&[serde_json::Value]>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
         "model": model,
         "max_tokens": 4096,
         "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
         "stream": true
     });
+
+    // Enable structured tool calling when schemas are provided.
+    if let Some(tools) = tools
+        && !tools.is_empty()
+    {
+        body["tools"] = serde_json::Value::Array(tools.to_vec());
+    }
+
+    // Optional provider-native thinking stream (emitted as StreamChunk::Thinking).
+    if let Some(budget_tokens) = thinking_budget_tokens {
+        body["thinking"] = serde_json::json!({ "type": "enabled", "budget_tokens": budget_tokens });
+    }
+
+    body
+}
+
+pub async fn stream_anthropic(req: AnthropicStreamRequest<'_>) -> Result<(), AppError> {
+    let AnthropicStreamRequest {
+        api_key,
+        base_url,
+        model,
+        thinking_budget_tokens,
+        prompt,
+        tools,
+        tx,
+        cancel_token,
+    } = req;
+
+    let url = format!("{}/v1/messages", base_url);
+    let body = build_anthropic_messages_body(model, prompt, thinking_budget_tokens, tools);
 
     let client = create_streaming_client();
     let response = client
@@ -176,6 +474,9 @@ pub async fn stream_anthropic(
     }
 
     let mut stream = response.bytes_stream();
+    let mut line_buffer = String::new();
+    let mut parser = ThinkingParser::new();
+    let mut in_tool_block = false;
 
     while let Some(chunk_result) = stream.next().await {
         if cancel_token.is_cancelled() {
@@ -186,24 +487,69 @@ pub async fn stream_anthropic(
         match chunk_result {
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
-                for line in text.lines() {
+                for line in collect_complete_lines(&mut line_buffer, &text) {
                     let Some(data) = line.strip_prefix("data: ") else {
                         continue;
                     };
                     let Ok(json) = serde_json::from_str::<serde_json::Value>(data) else {
                         continue;
                     };
-                    // Check for message_stop event
-                    if json["type"] == "message_stop" {
-                        let _ = tx.send(StreamChunk::Done).await;
-                        return Ok(());
-                    }
-                    // Extract content from content_block_delta events
-                    if json["type"] == "content_block_delta"
-                        && let Some(content) = json["delta"]["text"].as_str()
-                        && !content.is_empty()
-                    {
-                        let _ = tx.send(StreamChunk::Text(content.to_string())).await;
+                    match json["type"].as_str() {
+                        Some("message_stop") => {
+                            let _ = tx.send(StreamChunk::Done(None)).await;
+                            return Ok(());
+                        }
+                        Some("content_block_delta") => {
+                            if let Some(delta) = json["delta"].as_object() {
+                                // Anthropic can stream both normal text and (optionally) extended thinking.
+                                if let Some(content) = delta.get("text").and_then(|v| v.as_str())
+                                    && !content.is_empty()
+                                {
+                                    for chunk in parser.process(content) {
+                                        let _ = tx.send(chunk).await;
+                                    }
+                                }
+
+                                if let Some(thinking) =
+                                    delta.get("thinking").and_then(|v| v.as_str())
+                                    && !thinking.is_empty()
+                                {
+                                    let _ =
+                                        tx.send(StreamChunk::Thinking(thinking.to_string())).await;
+                                }
+
+                                if in_tool_block
+                                    && let Some(partial_json) =
+                                        delta.get("partial_json").and_then(|v| v.as_str())
+                                    && !partial_json.is_empty()
+                                {
+                                    let _ = tx
+                                        .send(StreamChunk::ToolCallArgs(partial_json.to_string()))
+                                        .await;
+                                }
+                            }
+                        }
+                        Some("content_block_start") => {
+                            if let Some(tool_use) = json["content_block"]["tool_use"].as_object()
+                                && let Some(name) = tool_use["name"].as_str()
+                            {
+                                let id = tool_use["id"].as_str().unwrap_or_default().to_string();
+                                let _ = tx
+                                    .send(StreamChunk::ToolCallStart {
+                                        id,
+                                        name: name.to_string(),
+                                    })
+                                    .await;
+                                in_tool_block = true;
+                            }
+                        }
+                        Some("content_block_stop") => {
+                            if in_tool_block {
+                                let _ = tx.send(StreamChunk::ToolCallEnd).await;
+                                in_tool_block = false;
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -216,7 +562,7 @@ pub async fn stream_anthropic(
         }
     }
 
-    let _ = tx.send(StreamChunk::Done).await;
+    let _ = tx.send(StreamChunk::Done(None)).await;
     Ok(())
 }
 
@@ -250,6 +596,8 @@ pub async fn stream_ollama(
     }
 
     let mut stream = response.bytes_stream();
+    let mut parser = ThinkingParser::new();
+    let mut line_buffer = String::new();
 
     while let Some(chunk_result) = stream.next().await {
         if cancel_token.is_cancelled() {
@@ -260,18 +608,21 @@ pub async fn stream_ollama(
         match chunk_result {
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
-                for line in text.lines() {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                for line in collect_complete_lines(&mut line_buffer, &text) {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
                         // Check if done
                         if json["done"].as_bool() == Some(true) {
-                            let _ = tx.send(StreamChunk::Done).await;
+                            let _ = tx.send(StreamChunk::Done(None)).await;
                             return Ok(());
                         }
                         // Extract content from message
                         if let Some(content) = json["message"]["content"].as_str()
                             && !content.is_empty()
                         {
-                            let _ = tx.send(StreamChunk::Text(content.to_string())).await;
+                            let chunks = parser.process(content);
+                            for chunk in chunks {
+                                let _ = tx.send(chunk).await;
+                            }
                         }
                     }
                 }
@@ -285,7 +636,49 @@ pub async fn stream_ollama(
         }
     }
 
-    let _ = tx.send(StreamChunk::Done).await;
+    let _ = tx.send(StreamChunk::Done(None)).await;
+    Ok(())
+}
+
+async fn stream_echo_fallback(
+    provider_name: &str,
+    prompt: &str,
+    tx: mpsc::Sender<StreamChunk>,
+    cancel_token: CancellationToken,
+) -> Result<(), AppError> {
+    // Put the configuration hint into the *thinking* channel so it doesn't pollute
+    // the assistant's visible answer (but can still be shown in debug/advanced UI).
+    let note = format!(
+        "LLM provider '{provider_name}' is not configured. Configure llm.{provider_name} (api_key/model) to get real streaming + thinking. Falling back to Echo mode."
+    );
+    let _ = tx.send(StreamChunk::Thinking(note)).await;
+    tokio::task::yield_now().await;
+
+    let full = format!("ECHO: {prompt}");
+    let mut rest = full.as_str();
+
+    while !rest.is_empty() {
+        if cancel_token.is_cancelled() {
+            let _ = tx.send(StreamChunk::Cancelled).await;
+            return Ok(());
+        }
+
+        let split_at = rest
+            .char_indices()
+            .nth(ECHO_STREAM_CHUNK_CHARS)
+            .map(|(i, _)| i)
+            .unwrap_or(rest.len());
+
+        let (chunk, next) = rest.split_at(split_at);
+        rest = next;
+
+        if !chunk.is_empty() {
+            let _ = tx.send(StreamChunk::Text(chunk.to_string())).await;
+            tokio::task::yield_now().await;
+        }
+    }
+
+    let _ = tx.send(StreamChunk::Done(None)).await;
     Ok(())
 }
 
@@ -293,6 +686,7 @@ pub async fn stream_ollama(
 pub async fn start_streaming(
     config: &AppConfig,
     prompt: &str,
+    tool_schemas: Option<ProviderToolSchemas>,
     tx: mpsc::Sender<StreamChunk>,
     cancel_token: CancellationToken,
 ) -> Result<(), AppError> {
@@ -301,39 +695,33 @@ pub async fn start_streaming(
             if let Some(c) = &config.llm.openai {
                 stream_openai(
                     &c.api_key,
-                    c.base_url
-                        .as_deref()
-                        .unwrap_or("https://api.openai.com"),
+                    c.base_url.as_deref().unwrap_or("https://api.openai.com"),
                     &c.model,
                     prompt,
+                    tool_schemas.as_ref().map(|s| s.openai.as_slice()),
                     tx,
                     cancel_token,
                 )
                 .await
             } else {
-                // Echo fallback for streaming
-                let _ = tx.send(StreamChunk::Text(format!("ECHO: {}", prompt))).await;
-                let _ = tx.send(StreamChunk::Done).await;
-                Ok(())
+                stream_echo_fallback("openai", prompt, tx, cancel_token).await
             }
         }
         "anthropic" => {
             if let Some(c) = &config.llm.anthropic {
-                stream_anthropic(
-                    &c.api_key,
-                    c.base_url
-                        .as_deref()
-                        .unwrap_or("https://api.anthropic.com"),
-                    &c.model,
+                stream_anthropic(AnthropicStreamRequest {
+                    api_key: &c.api_key,
+                    base_url: c.base_url.as_deref().unwrap_or("https://api.anthropic.com"),
+                    model: &c.model,
+                    thinking_budget_tokens: c.thinking_budget_tokens,
                     prompt,
+                    tools: tool_schemas.as_ref().map(|s| s.anthropic.as_slice()),
                     tx,
                     cancel_token,
-                )
+                })
                 .await
             } else {
-                let _ = tx.send(StreamChunk::Text(format!("ECHO: {}", prompt))).await;
-                let _ = tx.send(StreamChunk::Done).await;
-                Ok(())
+                stream_echo_fallback("anthropic", prompt, tx, cancel_token).await
             }
         }
         "grok" => {
@@ -344,31 +732,157 @@ pub async fn start_streaming(
                     c.base_url.as_deref().unwrap_or("https://api.x.ai"),
                     &c.model,
                     prompt,
+                    tool_schemas.as_ref().map(|s| s.openai.as_slice()),
                     tx,
                     cancel_token,
                 )
                 .await
             } else {
-                let _ = tx.send(StreamChunk::Text(format!("ECHO: {}", prompt))).await;
-                let _ = tx.send(StreamChunk::Done).await;
-                Ok(())
+                stream_echo_fallback("grok", prompt, tx, cancel_token).await
             }
         }
         "ollama" => {
             if let Some(c) = &config.llm.ollama {
                 stream_ollama(&c.base_url, &c.model, prompt, tx, cancel_token).await
             } else {
-                let _ = tx.send(StreamChunk::Text(format!("ECHO: {}", prompt))).await;
-                let _ = tx.send(StreamChunk::Done).await;
-                Ok(())
+                stream_echo_fallback("ollama", prompt, tx, cancel_token).await
             }
         }
-        _ => {
-            // Echo fallback
-            let _ = tx.send(StreamChunk::Text(format!("ECHO: {}", prompt))).await;
-            let _ = tx.send(StreamChunk::Done).await;
-            Ok(())
+        _ => stream_echo_fallback("unknown", prompt, tx, cancel_token).await,
+    }
+}
+
+/// Start streaming with fallback to secondary provider on failure
+/// Implements exponential backoff retry (1s, 2s, 4s) before falling back
+pub async fn start_streaming_with_fallback(
+    config: &AppConfig,
+    prompt: &str,
+    tool_schemas: Option<ProviderToolSchemas>,
+    tx: mpsc::Sender<StreamChunk>,
+    cancel_token: CancellationToken,
+) -> Result<(), AppError> {
+    // Try primary provider with retries
+    let retry_delays = [1, 2, 4]; // seconds
+    let mut last_error: Option<AppError> = None;
+
+    for (attempt, delay) in retry_delays.iter().enumerate() {
+        if cancel_token.is_cancelled() {
+            let _ = tx.send(StreamChunk::Cancelled).await;
+            return Ok(());
         }
+
+        // Create a new channel for this attempt
+        let (attempt_tx, mut attempt_rx) = mpsc::channel::<StreamChunk>(100);
+        let attempt_cancel = cancel_token.clone();
+        let config_clone = config.clone();
+        let prompt_clone = prompt.to_string();
+        let tool_schemas_clone = tool_schemas.clone();
+
+        // Spawn the streaming attempt
+        let handle = tokio::spawn(async move {
+            start_streaming(
+                &config_clone,
+                &prompt_clone,
+                tool_schemas_clone,
+                attempt_tx,
+                attempt_cancel,
+            )
+            .await
+        });
+
+        // Forward chunks to the caller in real-time.
+        // If the attempt fails before producing any output, we can retry.
+        let forward = forward_attempt_stream(&mut attempt_rx, &tx).await;
+
+        // Wait for the task to complete (capture errors that might occur before any chunk arrives).
+        match handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                last_error = Some(e);
+            }
+            Err(e) => {
+                last_error = Some(AppError::Llm(format!("Task failed: {}", e)));
+            }
+        }
+
+        match forward.outcome {
+            AttemptOutcome::Success => return Ok(()),
+            AttemptOutcome::Cancelled => return Ok(()),
+            AttemptOutcome::FatalError => {
+                let err = AppError::Llm(
+                    forward
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "Streaming failed".to_string()),
+                );
+                return Err(err);
+            }
+            AttemptOutcome::RetryableError => {
+                if let Some(ref e) = forward.error {
+                    last_error = Some(AppError::Llm(e.clone()));
+                }
+            }
+            AttemptOutcome::UnexpectedEnd => {
+                if forward.forwarded_output {
+                    // We streamed partial output but never got a terminal event; treat as fatal.
+                    let err = AppError::Llm(
+                        "Streaming ended unexpectedly (no terminal event received)".to_string(),
+                    );
+                    let _ = tx.send(StreamChunk::Error(err.to_string())).await;
+                    return Err(err);
+                }
+                // Otherwise, allow retry (error may be captured from handle.await above).
+            }
+        }
+
+        // Log retry attempt
+        tracing::warn!(
+            attempt = attempt + 1,
+            delay = delay,
+            error = ?last_error,
+            "Primary LLM failed, retrying in {}s",
+            delay
+        );
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(*delay)).await;
+    }
+
+    // Primary failed after retries, try fallback if configured
+    if let Some(ref fallback_provider) = config.llm.fallback {
+        tracing::info!(
+            fallback = fallback_provider,
+            "Primary LLM exhausted retries, trying fallback provider"
+        );
+
+        // Create a modified config with fallback as primary
+        let mut fallback_config = config.clone();
+        fallback_config.llm.primary = fallback_provider.clone();
+
+        // Try fallback provider (no retries for fallback)
+        let result = start_streaming(
+            &fallback_config,
+            prompt,
+            tool_schemas,
+            tx.clone(),
+            cancel_token,
+        )
+        .await;
+
+        if result.is_ok() {
+            return Ok(());
+        }
+
+        tracing::error!("Fallback provider also failed");
+    }
+
+    // All attempts failed
+    if let Some(error) = last_error {
+        let _ = tx.send(StreamChunk::Error(error.to_string())).await;
+        Err(error)
+    } else {
+        let err = AppError::Llm("All LLM providers failed".to_string());
+        let _ = tx.send(StreamChunk::Error(err.to_string())).await;
+        Err(err)
     }
 }
 
@@ -384,6 +898,52 @@ mod tests {
         assert!(token.is_cancelled());
     }
 
+    #[test]
+    fn split_think_blocks_extracts_thinking() {
+        let input = "<think>plan</think>answer";
+        let (content, thinking) = split_think_blocks(input);
+        assert_eq!(content, "answer");
+        assert_eq!(thinking.as_deref(), Some("plan"));
+    }
+
+    #[test]
+    fn openai_body_includes_tools_and_tool_choice_when_provided() {
+        let tools = vec![serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "shell",
+                "description": "Run a command",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        })];
+
+        let body = build_openai_chat_body("gpt-test", "hi", Some(&tools));
+        assert!(body.get("tools").is_some());
+        assert_eq!(
+            body.get("tool_choice").and_then(|v| v.as_str()),
+            Some("auto")
+        );
+    }
+
+    #[test]
+    fn openai_body_omits_tools_when_none() {
+        let body = build_openai_chat_body("gpt-test", "hi", None);
+        assert!(body.get("tools").is_none());
+        assert!(body.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn anthropic_body_includes_tools_when_provided() {
+        let tools = vec![serde_json::json!({
+            "name": "shell",
+            "description": "Run a command",
+            "input_schema": {"type": "object", "properties": {}}
+        })];
+
+        let body = build_anthropic_messages_body("claude-test", "hi", None, Some(&tools));
+        assert!(body.get("tools").is_some());
+    }
+
     #[tokio::test]
     async fn test_stream_chunk_types() {
         let (tx, mut rx) = mpsc::channel(10);
@@ -391,7 +951,7 @@ mod tests {
         tx.send(StreamChunk::Text("Hello".to_string()))
             .await
             .unwrap();
-        tx.send(StreamChunk::Done).await.unwrap();
+        tx.send(StreamChunk::Done(None)).await.unwrap();
 
         if let Some(StreamChunk::Text(text)) = rx.recv().await {
             assert_eq!(text, "Hello");
@@ -399,11 +959,136 @@ mod tests {
             panic!("Expected Text chunk");
         }
 
-        if let Some(StreamChunk::Done) = rx.recv().await {
+        if let Some(StreamChunk::Done(_)) = rx.recv().await {
             // OK
         } else {
             panic!("Expected Done chunk");
         }
     }
-}
 
+    #[tokio::test]
+    async fn start_streaming_unconfigured_provider_still_feels_streaming() {
+        let mut cfg = AppConfig::default();
+        cfg.llm.primary = "openai".to_string();
+        cfg.llm.openai = None;
+
+        let (tx, mut rx) = mpsc::channel(128);
+        let cancel = CancellationToken::new();
+
+        tokio::spawn(async move {
+            let prompt = "hello world this is a deliberately long prompt to force the echo fallback to emit multiple chunks";
+            let _ = start_streaming(&cfg, prompt, None, tx, cancel).await;
+        });
+
+        // First chunk should be a helpful note.
+        match rx.recv().await {
+            Some(StreamChunk::Thinking(t)) => assert!(t.contains("not configured")),
+            other => panic!("Expected Thinking chunk, got: {other:?}"),
+        }
+
+        // Then we should get multiple Text chunks before Done.
+        let mut text_chunks = 0usize;
+        while let Some(chunk) = rx.recv().await {
+            match chunk {
+                StreamChunk::Text(_) => {
+                    text_chunks += 1;
+                    if text_chunks >= 2 {
+                        break;
+                    }
+                }
+                StreamChunk::Done(_) => break,
+                _ => {}
+            }
+        }
+        assert!(
+            text_chunks >= 2,
+            "Expected >=2 text chunks, got {text_chunks}"
+        );
+    }
+
+    #[tokio::test]
+    async fn forward_attempt_stream_forwards_immediately() {
+        let (outer_tx, mut outer_rx) = mpsc::channel::<StreamChunk>(10);
+        let (attempt_tx, mut attempt_rx) = mpsc::channel::<StreamChunk>(10);
+
+        let forward_handle =
+            tokio::spawn(async move { forward_attempt_stream(&mut attempt_rx, &outer_tx).await });
+
+        attempt_tx
+            .send(StreamChunk::Text("A".to_string()))
+            .await
+            .unwrap();
+
+        // If forwarding is real-time, we should observe the text chunk before we send Done.
+        match outer_rx.recv().await {
+            Some(StreamChunk::Text(t)) => assert_eq!(t, "A"),
+            other => panic!("Expected Text chunk, got: {other:?}"),
+        }
+
+        attempt_tx.send(StreamChunk::Done(None)).await.unwrap();
+        match outer_rx.recv().await {
+            Some(StreamChunk::Done(_)) => {}
+            other => panic!("Expected Done chunk, got: {other:?}"),
+        }
+
+        let result = forward_handle.await.unwrap();
+        assert_eq!(result.outcome, AttemptOutcome::Success);
+    }
+
+    #[tokio::test]
+    async fn forward_attempt_stream_retryable_error_before_output_is_not_forwarded() {
+        let (outer_tx, mut outer_rx) = mpsc::channel::<StreamChunk>(10);
+        let (attempt_tx, mut attempt_rx) = mpsc::channel::<StreamChunk>(10);
+
+        let forward_handle =
+            tokio::spawn(async move { forward_attempt_stream(&mut attempt_rx, &outer_tx).await });
+
+        attempt_tx
+            .send(StreamChunk::Error("nope".to_string()))
+            .await
+            .unwrap();
+
+        // Should not forward any chunk if no output has been streamed (enables clean retries).
+        // The receiver may either time out (no activity) or complete with `None` if the sender is dropped.
+        let recv =
+            tokio::time::timeout(std::time::Duration::from_millis(50), outer_rx.recv()).await;
+        match recv {
+            Err(_) => {}   // no activity
+            Ok(None) => {} // sender dropped without sending anything
+            Ok(Some(other)) => panic!("did not expect any forwarded chunk, got: {other:?}"),
+        }
+
+        let result = forward_handle.await.unwrap();
+        assert_eq!(result.outcome, AttemptOutcome::RetryableError);
+    }
+
+    #[tokio::test]
+    async fn forward_attempt_stream_fatal_error_after_output_is_forwarded() {
+        let (outer_tx, mut outer_rx) = mpsc::channel::<StreamChunk>(10);
+        let (attempt_tx, mut attempt_rx) = mpsc::channel::<StreamChunk>(10);
+
+        let forward_handle =
+            tokio::spawn(async move { forward_attempt_stream(&mut attempt_rx, &outer_tx).await });
+
+        attempt_tx
+            .send(StreamChunk::Text("hello".to_string()))
+            .await
+            .unwrap();
+        match outer_rx.recv().await {
+            Some(StreamChunk::Text(t)) => assert_eq!(t, "hello"),
+            other => panic!("Expected Text chunk, got: {other:?}"),
+        }
+
+        attempt_tx
+            .send(StreamChunk::Error("boom".to_string()))
+            .await
+            .unwrap();
+        match outer_rx.recv().await {
+            Some(StreamChunk::Error(e)) => assert_eq!(e, "boom"),
+            other => panic!("Expected Error chunk, got: {other:?}"),
+        }
+
+        let result = forward_handle.await.unwrap();
+        assert_eq!(result.outcome, AttemptOutcome::FatalError);
+    }
+}

@@ -319,15 +319,8 @@ impl SpeechProcessor {
                 })
             }
             "local-whisper" => {
-                // Local Whisper transcription
-                // For now, return a placeholder - full whisper-rs integration would go here
-                tracing::warn!(
-                    "Local Whisper transcription not yet implemented, returning placeholder"
-                );
-                Err(AppError::Voice(
-	                    "Local Whisper transcription not yet implemented. Use --voice with OpenAI provider configured."
-	                        .to_string(),
-	                ))
+                // Local Whisper transcription using whisper-rs
+                self.transcribe_with_local_whisper(audio_path).await
             }
             other => {
                 tracing::warn!(
@@ -337,6 +330,188 @@ impl SpeechProcessor {
                     "Unknown STT provider '{other}'. Supported providers: openai-whisper, local-whisper"
                 )))
             }
+        }
+    }
+
+    /// Transcribe audio using local Whisper model (whisper-rs)
+    #[cfg(feature = "voice-local")]
+    async fn transcribe_with_local_whisper(
+        &self,
+        audio_path: &Path,
+    ) -> Result<TranscriptionResult, AppError> {
+        use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+
+        // Get model path from config or use default
+        let model_path = self.get_whisper_model_path()?;
+
+        tracing::info!("Loading Whisper model from: {:?}", model_path);
+
+        // Load the Whisper context (model)
+        let ctx = WhisperContext::new_with_params(
+            model_path
+                .to_str()
+                .ok_or_else(|| AppError::Voice("Invalid model path encoding".to_string()))?,
+            WhisperContextParameters::default(),
+        )
+        .map_err(|e| AppError::Voice(format!("Failed to load Whisper model: {}", e)))?;
+
+        // Read and convert audio to f32 samples
+        let samples = self.load_audio_samples(audio_path)?;
+        let duration_secs = samples.len() as f32 / 16000.0; // Whisper expects 16kHz
+
+        // Create transcription parameters
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_language(Some("en"));
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        params.set_translate(false);
+        params.set_no_context(true);
+        params.set_single_segment(false);
+
+        // Create state and run transcription
+        let mut state = ctx
+            .create_state()
+            .map_err(|e| AppError::Voice(format!("Failed to create Whisper state: {}", e)))?;
+
+        state
+            .full(params, &samples)
+            .map_err(|e| AppError::Voice(format!("Whisper transcription failed: {}", e)))?;
+
+        // Collect all segments
+        let num_segments = state
+            .full_n_segments()
+            .map_err(|e| AppError::Voice(format!("Failed to get segment count: {}", e)))?;
+
+        let mut text = String::new();
+        for i in 0..num_segments {
+            if let Ok(segment_text) = state.full_get_segment_text(i) {
+                text.push_str(&segment_text);
+                text.push(' ');
+            }
+        }
+
+        let text = text.trim().to_string();
+        tracing::info!("Local Whisper transcription complete: {} chars", text.len());
+
+        Ok(TranscriptionResult {
+            text,
+            duration_secs,
+            audio_path: Some(audio_path.to_path_buf()),
+            provider: "local-whisper".to_string(),
+        })
+    }
+
+    /// Fallback when voice-local feature is not enabled
+    #[cfg(not(feature = "voice-local"))]
+    async fn transcribe_with_local_whisper(
+        &self,
+        _audio_path: &Path,
+    ) -> Result<TranscriptionResult, AppError> {
+        Err(AppError::Voice(
+            "Local Whisper transcription requires the 'whisper' feature. \
+             Build with `cargo build --features whisper` or use OpenAI Whisper API instead."
+                .to_string(),
+        ))
+    }
+
+    /// Get the path to the Whisper model file
+    fn get_whisper_model_path(&self) -> Result<PathBuf, AppError> {
+        // Check environment variable first
+        if let Ok(path) = std::env::var("GESTURA_WHISPER_MODEL") {
+            let path = PathBuf::from(path);
+            if path.exists() {
+                return Ok(path);
+            }
+        }
+
+        // Check standard locations
+        let model_names = ["ggml-base.en.bin", "ggml-small.en.bin", "ggml-tiny.en.bin"];
+        let search_dirs = [
+            // User data directory
+            dirs::data_dir().map(|d| d.join("gestura").join("models")),
+            // Home directory
+            dirs::home_dir().map(|d| d.join(".gestura").join("models")),
+            // Current directory
+            Some(PathBuf::from("models")),
+        ];
+
+        for dir in search_dirs.iter().flatten() {
+            for model_name in &model_names {
+                let model_path = dir.join(model_name);
+                if model_path.exists() {
+                    tracing::info!("Found Whisper model at: {:?}", model_path);
+                    return Ok(model_path);
+                }
+            }
+        }
+
+        Err(AppError::Voice(
+            "Whisper model not found. Please download a model (e.g., ggml-base.en.bin) \
+             and place it in ~/.gestura/models/ or set GESTURA_WHISPER_MODEL environment variable."
+                .to_string(),
+        ))
+    }
+
+    /// Load audio file and convert to f32 samples at 16kHz
+    #[cfg(feature = "voice-local")]
+    fn load_audio_samples(&self, audio_path: &Path) -> Result<Vec<f32>, AppError> {
+        use hound::WavReader;
+
+        let mut reader = WavReader::open(audio_path)
+            .map_err(|e| AppError::Voice(format!("Failed to open audio file: {}", e)))?;
+
+        let spec = reader.spec();
+        let sample_rate = spec.sample_rate;
+        let channels = spec.channels as usize;
+
+        // Read samples based on format
+        let samples: Vec<f32> = match spec.sample_format {
+            hound::SampleFormat::Int => {
+                let max_val = (1 << (spec.bits_per_sample - 1)) as f32;
+                reader
+                    .samples::<i32>()
+                    .filter_map(|s| s.ok())
+                    .map(|s| s as f32 / max_val)
+                    .collect()
+            }
+            hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
+        };
+
+        // Convert to mono if stereo
+        let mono_samples: Vec<f32> = if channels > 1 {
+            samples
+                .chunks(channels)
+                .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
+                .collect()
+        } else {
+            samples
+        };
+
+        // Resample to 16kHz if needed (simple linear interpolation)
+        let target_rate = 16000;
+        if sample_rate != target_rate {
+            let ratio = sample_rate as f32 / target_rate as f32;
+            let new_len = (mono_samples.len() as f32 / ratio) as usize;
+            let mut resampled = Vec::with_capacity(new_len);
+
+            for i in 0..new_len {
+                let src_idx = i as f32 * ratio;
+                let idx = src_idx as usize;
+                let frac = src_idx - idx as f32;
+
+                let sample = if idx + 1 < mono_samples.len() {
+                    mono_samples[idx] * (1.0 - frac) + mono_samples[idx + 1] * frac
+                } else {
+                    mono_samples[idx.min(mono_samples.len() - 1)]
+                };
+                resampled.push(sample);
+            }
+
+            Ok(resampled)
+        } else {
+            Ok(mono_samples)
         }
     }
 

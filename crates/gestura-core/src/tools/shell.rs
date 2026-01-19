@@ -4,6 +4,9 @@
 
 use crate::error::{AppError, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::io::Read;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
@@ -50,28 +53,97 @@ impl ShellTools {
 
     /// Execute a shell command
     pub fn run(&self, command: &str, timeout_secs: Option<u64>) -> Result<CommandResult> {
-        let _timeout = timeout_secs
+        self.run_with_options(command, None, None, timeout_secs)
+    }
+
+    /// Execute a shell command with working directory and environment.
+    ///
+    /// This method enforces a timeout to avoid "hanging" tool calls.
+    pub fn run_with_options(
+        &self,
+        command: &str,
+        cwd: Option<&Path>,
+        env: Option<&HashMap<String, String>>,
+        timeout_secs: Option<u64>,
+    ) -> Result<CommandResult> {
+        let timeout = timeout_secs
             .map(Duration::from_secs)
             .unwrap_or(Duration::from_secs(300));
         let start = Instant::now();
 
-        let output = Command::new("sh")
-            .arg("-c")
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
             .arg(command)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(AppError::Io)?;
+            .stderr(Stdio::piped());
+
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
+        if let Some(env_map) = env {
+            cmd.envs(env_map);
+        }
+
+        let mut child = cmd.spawn().map_err(AppError::Io)?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| AppError::Io(std::io::Error::other("Missing child stdout")))?;
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| AppError::Io(std::io::Error::other("Missing child stderr")))?;
+
+        let out_handle = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stdout.read_to_end(&mut buf);
+            buf
+        });
+        let err_handle = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf);
+            buf
+        });
+
+        let mut timed_out = false;
+        let status = loop {
+            if let Some(status) = child.try_wait().map_err(AppError::Io)? {
+                break status;
+            }
+            if start.elapsed() >= timeout {
+                timed_out = true;
+                // Best-effort termination. Even if kill fails, we still try to wait.
+                let _ = child.kill();
+                break child.wait().map_err(AppError::Io)?;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+
+        let stdout_bytes = out_handle.join().unwrap_or_default();
+        let stderr_bytes = err_handle.join().unwrap_or_default();
 
         let duration = start.elapsed();
-        let exit_code = output.status.code().unwrap_or(-1);
+        let exit_code = if timed_out {
+            // Conventional "timeout" code.
+            124
+        } else {
+            status.code().unwrap_or(-1)
+        };
+
+        let mut stderr_str = String::from_utf8_lossy(&stderr_bytes).to_string();
+        if timed_out {
+            if !stderr_str.ends_with('\n') && !stderr_str.is_empty() {
+                stderr_str.push('\n');
+            }
+            stderr_str.push_str("Command timed out");
+        }
 
         let result = CommandResult {
             command: command.to_string(),
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            stdout: String::from_utf8_lossy(&stdout_bytes).to_string(),
+            stderr: stderr_str,
             exit_code,
-            success: output.status.success(),
+            success: !timed_out && status.success(),
             duration_ms: duration.as_millis() as u64,
         };
 

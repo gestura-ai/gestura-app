@@ -55,11 +55,17 @@ pub enum InteractionType {
     /// Gesture from ring or touch device
     Gesture(GestureType),
     /// Voice command
-    Voice { text: String, language: Option<String> },
+    Voice {
+        text: String,
+        language: Option<String>,
+    },
     /// Hotkey press
     Hotkey { key: String, modifiers: Vec<String> },
     /// Button press on ring
-    Button { button_id: u8, press_type: ButtonPressType },
+    Button {
+        button_id: u8,
+        press_type: ButtonPressType,
+    },
 }
 
 /// Button press types
@@ -249,10 +255,8 @@ impl InteractionContext {
     pub fn with_interaction(mut self, event: InteractionEvent) -> Self {
         self.tool_hints = derive_tool_hints(&event);
         self.suggested_haptic = suggest_haptic_for_interaction(&event);
-        self.expects_voice_response = matches!(
-            event.interaction_type,
-            InteractionType::Voice { .. }
-        );
+        self.expects_voice_response =
+            matches!(event.interaction_type, InteractionType::Voice { .. });
         self.current_interaction = Some(event);
         self
     }
@@ -368,9 +372,10 @@ fn suggest_haptic_for_interaction(event: &InteractionEvent) -> Option<HapticFeed
         }),
         InteractionType::Gesture(GestureType::Hold { .. }) => Some(HapticFeedback::notification()),
         InteractionType::Voice { .. } => Some(HapticFeedback::processing()),
-        InteractionType::Button { press_type: ButtonPressType::Long, .. } => {
-            Some(HapticFeedback::notification())
-        }
+        InteractionType::Button {
+            press_type: ButtonPressType::Long,
+            ..
+        } => Some(HapticFeedback::notification()),
         _ => None,
     }
 }
@@ -420,4 +425,3 @@ mod tests {
         assert_eq!(alert.repeat_count, 2);
     }
 }
-

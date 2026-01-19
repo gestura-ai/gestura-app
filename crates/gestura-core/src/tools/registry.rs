@@ -27,27 +27,51 @@ pub struct ToolDefinition {
 
 /// Return the set of built-in tools.
 pub fn all_tools() -> &'static [ToolDefinition] {
-    static TOOLS: [ToolDefinition; 6] = [
+    static TOOLS: [ToolDefinition; 9] = [
         ToolDefinition {
             name: "file",
             summary: "Read/write/list files and directories (workspace & sandbox-aware)",
-            inputs: &["path", "operation (read/write/list)", "content (for write)", "options"],
+            inputs: &[
+                "path",
+                "operation (read/write/list)",
+                "content (for write)",
+                "options",
+            ],
             side_effects: &["Reads local files", "May write/modify local files"],
-            examples: &["gestura tools file read ./README.md", "gestura tools file write ./notes.txt --content \"hello\""],
+            examples: &[
+                "gestura tools file read ./README.md",
+                "gestura tools file write ./notes.txt --content \"hello\"",
+            ],
         },
         ToolDefinition {
             name: "shell",
             summary: "Run shell commands in a controlled environment",
             inputs: &["command", "cwd", "env"],
-            side_effects: &["Executes local processes", "May modify local state depending on command"],
-            examples: &["gestura tools shell run -- command=\"ls -la\"", "gestura tools shell run -- cwd=. -- command=\"cargo test\""],
+            side_effects: &[
+                "Executes local processes",
+                "May modify local state depending on command",
+            ],
+            examples: &[
+                "gestura tools shell run -- command=\"ls -la\"",
+                "gestura tools shell run -- cwd=. -- command=\"cargo test\"",
+            ],
         },
         ToolDefinition {
             name: "git",
             summary: "Git status/diff/log operations for code workflows",
-            inputs: &["repository path", "operation (status/diff/log/etc)", "options"],
-            side_effects: &["Reads git metadata", "May change repo state for write operations"],
-            examples: &["gestura tools git status", "gestura tools git diff --staged"],
+            inputs: &[
+                "repository path",
+                "operation (status/diff/log/etc)",
+                "options",
+            ],
+            side_effects: &[
+                "Reads git metadata",
+                "May change repo state for write operations",
+            ],
+            examples: &[
+                "gestura tools git status",
+                "gestura tools git diff --staged",
+            ],
         },
         ToolDefinition {
             name: "code",
@@ -64,11 +88,47 @@ pub fn all_tools() -> &'static [ToolDefinition] {
             examples: &["gestura tools web fetch https://example.com"],
         },
         ToolDefinition {
+            name: "web_search",
+            summary: "Search the web using configurable providers (Local/SerpAPI/DuckDuckGo/Brave)",
+            inputs: &["query", "max_results", "provider (optional)"],
+            side_effects: &["Performs network requests", "May use API quotas"],
+            examples: &[
+                "gestura tools web_search \"rust async patterns\"",
+                "gestura tools web_search \"latest AI news\" --max-results 5",
+            ],
+        },
+        ToolDefinition {
+            name: "a2a",
+            summary: "Agent-to-Agent protocol for delegating tasks to remote agents",
+            inputs: &["agent_url", "task_message", "auth_token (optional)"],
+            side_effects: &[
+                "Performs network requests",
+                "May execute tasks on remote agents",
+            ],
+            examples: &[
+                "gestura tools a2a discover https://agent.example.com",
+                "gestura tools a2a send https://agent.example.com \"Summarize this document\"",
+            ],
+        },
+        ToolDefinition {
             name: "permissions",
             summary: "Check/request OS-level permissions (platform-specific)",
             inputs: &["permission kind (microphone, accessibility, etc.)"],
             side_effects: &["May prompt the OS", "May open system settings"],
-            examples: &["gestura tools permissions check", "gestura tools permissions request microphone"],
+            examples: &[
+                "gestura tools permissions check",
+                "gestura tools permissions request microphone",
+            ],
+        },
+        ToolDefinition {
+            name: "mcp",
+            summary: "Model Context Protocol tools from connected MCP servers",
+            inputs: &["server_name", "tool_name", "arguments"],
+            side_effects: &["Depends on the specific MCP tool being invoked"],
+            examples: &[
+                "gestura tools mcp list",
+                "gestura tools mcp call filesystem read_file --path ./README.md",
+            ],
         },
     ];
     &TOOLS
@@ -77,7 +137,9 @@ pub fn all_tools() -> &'static [ToolDefinition] {
 /// Find a tool definition by name (case-insensitive).
 pub fn find_tool(name: &str) -> Option<&'static ToolDefinition> {
     let name = name.trim().to_ascii_lowercase();
-    all_tools().iter().find(|t| t.name.eq_ignore_ascii_case(&name))
+    all_tools()
+        .iter()
+        .find(|t| t.name.eq_ignore_ascii_case(&name))
 }
 
 /// Render a compact table of built-in tools (static, no config needed).
@@ -134,7 +196,10 @@ pub fn render_capabilities(config: &AppConfig) -> String {
         out.push_str(&format!("• **Grok Model:** {}\n", grok.model));
     }
     if let Some(ref ollama) = config.llm.ollama {
-        out.push_str(&format!("• **Ollama:** {} @ {}\n", ollama.model, ollama.base_url));
+        out.push_str(&format!(
+            "• **Ollama:** {} @ {}\n",
+            ollama.model, ollama.base_url
+        ));
     }
 
     // Voice Configuration
@@ -149,17 +214,40 @@ pub fn render_capabilities(config: &AppConfig) -> String {
 
     // Device/Simulator Settings
     out.push_str("\n## Device & Simulator Settings\n\n");
-    out.push_str(&format!("• **Developer Mode:** {}\n", if config.developer.developer_mode { "enabled" } else { "disabled" }));
-    out.push_str(&format!("• **Simulators:** {}\n", if config.developer.enable_simulators { "enabled" } else { "disabled" }));
+    out.push_str(&format!(
+        "• **Developer Mode:** {}\n",
+        if config.developer.developer_mode {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    ));
+    out.push_str(&format!(
+        "• **Simulators:** {}\n",
+        if config.developer.enable_simulators {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    ));
     if config.developer.enable_simulators {
-        out.push_str(&format!("• **Auto-discover Simulators:** {}\n", config.developer.auto_discover_simulators));
-        out.push_str(&format!("• **Simulator Pattern:** {}\n", config.developer.simulator.device_name_pattern));
+        out.push_str(&format!(
+            "• **Auto-discover Simulators:** {}\n",
+            config.developer.auto_discover_simulators
+        ));
+        out.push_str(&format!(
+            "• **Simulator Pattern:** {}\n",
+            config.developer.simulator.device_name_pattern
+        ));
     }
 
     // Hotkey
     out.push_str("\n## System\n\n");
     out.push_str(&format!("• **Hotkey:** {}\n", config.hotkey_listen));
-    out.push_str(&format!("• **Grace Period:** {}s\n", config.grace_period_secs));
+    out.push_str(&format!(
+        "• **Grace Period:** {}s\n",
+        config.grace_period_secs
+    ));
 
     out.push_str("\n---\nUse `/tools <name>` for details on a specific tool.");
     out
@@ -249,4 +337,3 @@ mod tests {
         assert!(!looks_like_tools_question("tell me a joke"));
     }
 }
-

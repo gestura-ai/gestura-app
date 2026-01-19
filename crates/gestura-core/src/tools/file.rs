@@ -253,12 +253,25 @@ impl FileTools {
         Ok(entries)
     }
 
-    /// Build directory tree
-    pub fn tree(&self, path: &Path, max_depth: Option<usize>) -> Result<TreeNode> {
-        Self::build_tree(path, 0, max_depth.unwrap_or(3))
+    /// Build directory tree.
+    ///
+    /// If `show_hidden` is false, dotfiles/directories (names starting with '.')
+    /// are skipped.
+    pub fn tree(
+        &self,
+        path: &Path,
+        max_depth: Option<usize>,
+        show_hidden: bool,
+    ) -> Result<TreeNode> {
+        Self::build_tree(path, 0, max_depth.unwrap_or(3), show_hidden)
     }
 
-    fn build_tree(path: &Path, depth: usize, max_depth: usize) -> Result<TreeNode> {
+    fn build_tree(
+        path: &Path,
+        depth: usize,
+        max_depth: usize,
+        show_hidden: bool,
+    ) -> Result<TreeNode> {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -278,8 +291,12 @@ impl FileTools {
             for entry in entries.flatten() {
                 let entry_path = entry.path();
                 let entry_name = entry.file_name().to_string_lossy().to_string();
-                if !entry_name.starts_with('.')
-                    && let Ok(child) = Self::build_tree(&entry_path, depth + 1, max_depth)
+
+                if !show_hidden && entry_name.starts_with('.') {
+                    continue;
+                }
+
+                if let Ok(child) = Self::build_tree(&entry_path, depth + 1, max_depth, show_hidden)
                 {
                     node.children.push(child);
                 }
@@ -434,8 +451,18 @@ mod tests {
     fn test_tree() {
         let dir = setup_test_dir();
         let tools = FileTools::new();
-        let tree = tools.tree(dir.path(), Some(2)).unwrap();
+        let tree = tools.tree(dir.path(), Some(2), false).unwrap();
         assert!(tree.is_dir);
         assert!(!tree.children.is_empty());
+    }
+
+    #[test]
+    fn test_tree_with_hidden() {
+        let dir = setup_test_dir();
+        std::fs::write(dir.path().join(".hidden.txt"), "secret").unwrap();
+
+        let tools = FileTools::new();
+        let tree = tools.tree(dir.path(), Some(1), true).unwrap();
+        assert!(tree.children.iter().any(|c| c.name == ".hidden.txt"));
     }
 }
