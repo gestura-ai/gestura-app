@@ -227,10 +227,29 @@ impl WindowManager {
         // Default to a reasonable workspace so file tools can answer questions like
         // "what's in the project directory" without requiring an explicit workspace pick.
         // Users can still override this via pick_workspace_directory.
-        let default_workspace = get_project_directory().or_else(dirs::home_dir);
-        let session_state = default_workspace
-            .map(SessionState::with_workspace)
-            .unwrap_or_default();
+        //
+        // Priority order:
+        // 1. Detected project directory (has .git, Cargo.toml, etc.)
+        // 2. User's home directory
+        // 3. System temp directory (last resort)
+        let default_workspace = get_project_directory()
+            .or_else(dirs::home_dir)
+            .or_else(|| std::env::temp_dir().canonicalize().ok());
+
+        let session_state = if let Some(ref workspace) = default_workspace {
+            tracing::info!(
+                session_id = %session_id,
+                workspace = %workspace.display(),
+                "Session initialized with default workspace"
+            );
+            SessionState::with_workspace(workspace.clone())
+        } else {
+            tracing::warn!(
+                session_id = %session_id,
+                "No default workspace available - session will have no working directory"
+            );
+            SessionState::default()
+        };
 
         // Create the session with user-friendly title
         let now = chrono::Utc::now();

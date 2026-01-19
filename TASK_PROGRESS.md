@@ -2,7 +2,7 @@
 
 **Started:** 2026-01-19
 **Phase 1 Status:** ✅ All Tasks Completed (Tasks 1-21)
-**Phase 2 Status:** ⬜ In Progress (Tasks 22-26)
+**Phase 2 Status:** 🔄 In Progress (Tasks 22-28) - 2 of 7 complete
 
 ---
 
@@ -374,21 +374,27 @@ Wire up the 9 voice command methods in speech.rs for hands-free control.
 
 ### Task 23: Implement Default Working Directory for New Chat Sessions
 **Priority:** HIGH
-**Status:** ⬜ NOT STARTED
+**Status:** ✅ COMPLETE
 
 **Problem:** New chat sessions from the GUI may not have a default working directory defined.
 
-**Requirements:**
-- [ ] Use minimalist design as the current UI is crowded already
-- [ ] Inspect current implementation for session working directory initialization
-- [ ] Ensure all new chat sessions have a proper default working directory set
-- [ ] Default to user home directory or last used directory if no explicit setting
-- [ ] Fix any missing working directory initialization
+**Solution Implemented:**
+- [x] Already had default workspace detection in `create_chat_session()`
+- [x] Enhanced fallback chain: project directory → home directory → temp directory
+- [x] Added detailed logging for workspace initialization
+- [x] Added `get_session_workspace_by_id` command for per-session workspace queries
+- [x] Enhanced `pick_workspace_directory` to accept optional `session_id` parameter
+- [x] Added logging when workspace is updated
 
-**Files to investigate:**
-- `crates/gestura-core/src/session_workspace.rs`
-- `crates/gestura-gui/src/orchestrator.rs`
-- Session creation logic in GUI
+**Workspace Priority Order:**
+1. Detected project directory (has .git, Cargo.toml, package.json, etc.)
+2. User's home directory
+3. System temp directory (last resort)
+
+**Files Modified:**
+- `crates/gestura-gui/src/window_manager.rs` - Enhanced workspace initialization with logging
+- `crates/gestura-gui/src/api.rs` - Added `get_session_workspace_by_id`, enhanced workspace commands
+- `crates/gestura-gui/src/main.rs` - Registered new command
 
 ---
 
@@ -472,6 +478,46 @@ Wire up the 9 voice command methods in speech.rs for hands-free control.
 
 **Files to modify:**
 - `crates/gestura-gui/frontend/public/config.html`
+
+---
+
+### Task 27: Optimize LLM Context Management for Token Efficiency
+**Priority:** HIGH
+**Status:** ⬜ NOT STARTED
+
+**Problem:** The echo provider and other LLM providers are submitting excessive tokens by sending all conversation history on each iteration instead of managing context intelligently.
+
+**Requirements:**
+- [ ] Implement smart context window management that only sends relevant recent messages
+- [ ] Add token counting and context trimming logic to stay within model limits
+- [ ] Preserve important context (system prompts, recent exchanges) while removing redundant middle content
+- [ ] Add configuration options for context window size per provider
+- [ ] Log token usage before/after optimization to measure improvement
+
+**Files to investigate:**
+- `crates/gestura-core/src/llm_provider.rs` (echo and other providers)
+- `crates/gestura-core/src/streaming.rs`
+- Context management in agent pipeline
+
+---
+
+### Task 28: Compact Chat Header UI - Single Line Provider/Model Display
+**Priority:** MEDIUM
+**Status:** ⬜ NOT STARTED
+
+**Problem:** The chat window header currently displays provider and model selection on two lines, making it too tall and not compact enough.
+
+**Requirements:**
+- [ ] Redesign header to display provider and model selection on a single line
+- [ ] Add provider icons (OpenAI, Anthropic, Grok, Ollama logos) to the chat display for visual identification
+- [ ] Keep provider names in the dropdown selection list for clarity
+- [ ] Maintain fixed compact layout that doesn't expand/contract
+- [ ] Ensure the design works across different window sizes
+- [ ] Test with all supported providers (OpenAI, Anthropic, Grok, Ollama, Echo)
+
+**Files to modify:**
+- `crates/gestura-gui/frontend/public/chat.html` (header layout and CSS)
+- Add provider icon assets if needed
 
 ---
 

@@ -2266,6 +2266,14 @@ pub fn get_session_workspace() -> Option<String> {
     crate::window_manager::get_active_session_workspace().map(|p| p.display().to_string())
 }
 
+/// Get the workspace directory for a specific session by ID
+#[tauri::command]
+pub fn get_session_workspace_by_id(session_id: String) -> Option<String> {
+    crate::window_manager::get_session_state(&session_id)
+        .and_then(|s| s.workspace_dir)
+        .map(|p| p.display().to_string())
+}
+
 /// Set the workspace directory for a session
 #[tauri::command]
 pub fn set_session_workspace(session_id: String, workspace_path: String) -> Result<(), String> {
@@ -2277,12 +2285,22 @@ pub fn set_session_workspace(session_id: String, workspace_path: String) -> Resu
         return Err(format!("Path is not a directory: {}", workspace_path));
     }
     crate::window_manager::set_session_workspace(&session_id, path);
+    tracing::info!(
+        session_id = %session_id,
+        workspace = %workspace_path,
+        "Workspace directory updated for session"
+    );
     Ok(())
 }
 
-/// Open a directory picker dialog and set it as the workspace for the current session
+/// Open a directory picker dialog and set it as the workspace for a session
+/// If session_id is provided, sets workspace for that session.
+/// Otherwise, sets workspace for the current active session.
 #[tauri::command]
-pub async fn pick_workspace_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
+pub async fn pick_workspace_directory(
+    app: tauri::AppHandle,
+    session_id: Option<String>,
+) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     use tokio::sync::oneshot;
 
@@ -2298,10 +2316,17 @@ pub async fn pick_workspace_directory(app: tauri::AppHandle) -> Result<Option<St
     match rx.await {
         Ok(Some(path)) => {
             let path_str = path.to_string();
-            // Set the workspace for the current active session
-            if let Some(session_id) = crate::window_manager::get_active_chat_for_voice() {
+            // Use provided session_id or fall back to active session
+            let target_session =
+                session_id.or_else(crate::window_manager::get_active_chat_for_voice);
+            if let Some(sid) = target_session {
                 let path_buf = std::path::PathBuf::from(&path_str);
-                crate::window_manager::set_session_workspace(&session_id, path_buf);
+                crate::window_manager::set_session_workspace(&sid, path_buf);
+                tracing::info!(
+                    session_id = %sid,
+                    workspace = %path_str,
+                    "Workspace picked and set for session"
+                );
             }
             Ok(Some(path_str))
         }

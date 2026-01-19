@@ -190,6 +190,7 @@ async fn main() {
             gestura_gui::api::create_chat_session,
             gestura_gui::api::get_session_counts,
             gestura_gui::api::get_session_workspace,
+            gestura_gui::api::get_session_workspace_by_id,
             gestura_gui::api::set_session_workspace,
             gestura_gui::api::pick_workspace_directory,
             // Session LLM config (session-scoped, doesn't modify global config)
