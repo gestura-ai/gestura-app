@@ -347,6 +347,125 @@ pub async fn list_openai_models(api_key: String) -> Result<Vec<serde_json::Value
     Ok(models)
 }
 
+/// List available OpenAI STT (Speech-to-Text) models
+/// Fetches from /v1/models and filters for transcription-capable models
+#[tauri::command]
+pub async fn list_openai_stt_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
+    if api_key.is_empty() {
+        // Return static list with sensible defaults when no API key
+        return Ok(get_static_openai_stt_models());
+    }
+
+    let client = reqwest::Client::new();
+    let url = "https://api.openai.com/v1/models";
+
+    let resp = client
+        .get(url)
+        .bearer_auth(&api_key)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to list OpenAI models: {}", e))?;
+
+    if !resp.status().is_success() {
+        tracing::warn!(
+            "OpenAI API returned status {}, falling back to static STT model list",
+            resp.status()
+        );
+        return Ok(get_static_openai_stt_models());
+    }
+
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Invalid response: {}", e))?;
+
+    // Filter to only STT/transcription models
+    let mut models: Vec<serde_json::Value> = data
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| {
+                    let id = m.get("id")?.as_str()?;
+                    // Include whisper and transcribe models
+                    if id.contains("whisper") || id.contains("transcribe") {
+                        Some(serde_json::json!({
+                            "id": id,
+                            "name": format_openai_stt_model_name(id),
+                            "created": m.get("created").and_then(|c| c.as_i64()).unwrap_or(0)
+                        }))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Sort: prefer newer models (gpt-4o-transcribe) first, then whisper-1
+    models.sort_by(|a, b| {
+        let a_id = a.get("id").and_then(|i| i.as_str()).unwrap_or("");
+        let b_id = b.get("id").and_then(|i| i.as_str()).unwrap_or("");
+        // Prioritize gpt-4o-transcribe models over whisper
+        let a_priority = if a_id.contains("gpt-4o") { 0 } else { 1 };
+        let b_priority = if b_id.contains("gpt-4o") { 0 } else { 1 };
+        a_priority.cmp(&b_priority).then_with(|| a_id.cmp(b_id))
+    });
+
+    // If no models found from API, return static list
+    if models.is_empty() {
+        return Ok(get_static_openai_stt_models());
+    }
+
+    Ok(models)
+}
+
+/// Static list of OpenAI STT models (fallback when API unavailable)
+fn get_static_openai_stt_models() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({
+            "id": "gpt-4o-transcribe",
+            "name": "GPT-4o Transcribe (Best Quality)",
+            "description": "Highest accuracy, lower WER than Whisper"
+        }),
+        serde_json::json!({
+            "id": "gpt-4o-mini-transcribe",
+            "name": "GPT-4o Mini Transcribe (Balanced)",
+            "description": "Good balance of cost and quality"
+        }),
+        serde_json::json!({
+            "id": "whisper-1",
+            "name": "Whisper V2 (Classic)",
+            "description": "Original Whisper model, cost-effective"
+        }),
+    ]
+}
+
+/// Format OpenAI STT model ID to a human-readable name
+fn format_openai_stt_model_name(id: &str) -> String {
+    match id {
+        "whisper-1" => "Whisper V2 (Classic)".to_string(),
+        "gpt-4o-transcribe" => "GPT-4o Transcribe (Best Quality)".to_string(),
+        "gpt-4o-transcribe-latest" => "GPT-4o Transcribe (Latest)".to_string(),
+        "gpt-4o-mini-transcribe" => "GPT-4o Mini Transcribe (Balanced)".to_string(),
+        "gpt-4o-transcribe-diarize" => "GPT-4o Transcribe + Diarization".to_string(),
+        _ => {
+            // Convert kebab-case to Title Case
+            id.split('-')
+                .map(|part| {
+                    let mut chars = part.chars();
+                    match chars.next() {
+                        None => String::new(),
+                        Some(first) => first.to_uppercase().chain(chars).collect(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+    }
+}
+
 /// Format OpenAI model ID to a human-readable name
 fn format_openai_model_name(id: &str) -> String {
     match id {

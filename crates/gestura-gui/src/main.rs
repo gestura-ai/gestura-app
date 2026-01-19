@@ -116,6 +116,7 @@ async fn main() {
             gestura_gui::api::test_ollama_connection,
             gestura_gui::api::list_ollama_models,
             gestura_gui::api::list_openai_models,
+            gestura_gui::api::list_openai_stt_models,
             gestura_gui::api::list_anthropic_models,
             gestura_gui::api::list_grok_models,
             gestura_gui::api::test_local_whisper,

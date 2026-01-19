@@ -1096,9 +1096,9 @@
                                     <input type="radio" name="stt_provider" value="openai-whisper" id="stt-openai"
                                         checked>
                                     <label for="stt-openai" class="provider-label">
-                                        <div class="provider-name">OpenAI Whisper</div>
-                                        <div class="provider-description">Industry-leading speech recognition with high
-                                            accuracy</div>
+                                        <div class="provider-name">OpenAI Speech-to-Text</div>
+                                        <div class="provider-description">Industry-leading speech recognition with
+                                            multiple model options</div>
                                     </label>
                                 </div>
                                 <div class="provider-config">
@@ -1109,6 +1109,24 @@
                                         <div class="help-text">Get your API key from <a
                                                 href="https://platform.openai.com/api-keys" target="_blank">OpenAI
                                                 Platform</a></div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="openaiSttModel">Transcription Model</label>
+                                        <div class="model-select-container">
+                                            <select class="form-input" id="openaiSttModel" name="openai_stt_model">
+                                                <option value="gpt-4o-transcribe">GPT-4o Transcribe (Best Quality)
+                                                </option>
+                                                <option value="gpt-4o-mini-transcribe">GPT-4o Mini Transcribe (Balanced)
+                                                </option>
+                                                <option value="whisper-1">Whisper V2 (Classic)</option>
+                                            </select>
+                                            <button type="button" class="btn btn-secondary btn-sm" id="refreshSttModels"
+                                                title="Refresh models from API">
+                                                <span class="icon icon-refresh"></span>
+                                            </button>
+                                        </div>
+                                        <div class="help-text">GPT-4o models offer improved accuracy over Whisper. <span
+                                                id="sttModelStatus"></span></div>
                                     </div>
                                 </div>
                             </div>
@@ -2392,6 +2410,20 @@
                 const openaiApiKey = document.getElementById('openaiApiKey');
                 if (openaiApiKey) openaiApiKey.value = voiceConfig?.openai_api_key || '';
 
+                // OpenAI STT model selection
+                const savedSttModel = voiceConfig?.openai_model || 'gpt-4o-transcribe';
+                const sttModelSelect = document.getElementById('openaiSttModel');
+                if (sttModelSelect) {
+                    // Store for later selection after models are loaded
+                    window._savedOpenAiSttModel = savedSttModel;
+                    // Try to set immediately if option exists
+                    if ([...sttModelSelect.options].some(o => o.value === savedSttModel)) {
+                        sttModelSelect.value = savedSttModel;
+                    }
+                    // Load models dynamically (will restore saved selection)
+                    loadOpenAISttModels();
+                }
+
                 // Local Whisper model path
                 const localWhisperModelPathInput = document.getElementById('localWhisperModelPath');
                 if (localWhisperModelPathInput) {
@@ -2619,6 +2651,12 @@
                     const localWhisperModelPath = localWhisperModelPathEl ? localWhisperModelPathEl.value : '';
                     if (localWhisperModelPath) {
                         currentConfig.voice.local_model_path = localWhisperModelPath;
+                    }
+
+                    // Save selected OpenAI STT model
+                    const sttModelSelect = document.getElementById('openaiSttModel');
+                    if (sttModelSelect && sttModelSelect.value) {
+                        currentConfig.voice.openai_model = sttModelSelect.value;
                     }
 
                     // Save the updated config
@@ -3126,6 +3164,63 @@
         document.getElementById('openaiLlmApiKey')?.addEventListener('input', debounce(refreshOpenAIModels, 1000));
         document.getElementById('anthropicApiKey')?.addEventListener('input', debounce(refreshAnthropicModels, 1000));
         document.getElementById('grokApiKey')?.addEventListener('input', debouncedGrokRefresh);
+
+        // =====================================================================
+        // OpenAI STT Model Management
+        // =====================================================================
+
+        // Load OpenAI STT models dynamically
+        async function loadOpenAISttModels() {
+            if (!isTauriAvailable()) {
+                return;
+            }
+
+            const modelSelect = document.getElementById('openaiSttModel');
+            const statusSpan = document.getElementById('sttModelStatus');
+            const apiKeyInput = document.getElementById('openaiApiKey') || document.getElementById('openaiLlmApiKey');
+            const currentValue = modelSelect?.value;
+            const apiKey = apiKeyInput?.value || '';
+
+            if (!modelSelect) return;
+
+            try {
+                if (statusSpan) statusSpan.textContent = 'Loading models...';
+                const models = await window.__TAURI__.core.invoke('list_openai_stt_models', { apiKey });
+                modelSelect.innerHTML = '';
+
+                models.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model.id;
+                    option.textContent = model.name || model.id;
+                    if (model.description) {
+                        option.title = model.description;
+                    }
+                    modelSelect.appendChild(option);
+                });
+
+                // Restore previous selection or saved model
+                const savedModel = window._savedOpenAiSttModel;
+                if (savedModel && [...modelSelect.options].some(o => o.value === savedModel)) {
+                    modelSelect.value = savedModel;
+                    window._savedOpenAiSttModel = null;
+                } else if (currentValue && [...modelSelect.options].some(o => o.value === currentValue)) {
+                    modelSelect.value = currentValue;
+                }
+
+                if (statusSpan) statusSpan.textContent = '';
+            } catch (error) {
+                console.error('Failed to load OpenAI STT models:', error);
+                if (statusSpan) statusSpan.textContent = '(Using default models)';
+            }
+        }
+
+        // Refresh STT models button handler
+        document.getElementById('refreshSttModels')?.addEventListener('click', () => {
+            loadOpenAISttModels();
+        });
+
+        // Also refresh STT models when OpenAI API key changes
+        document.getElementById('openaiApiKey')?.addEventListener('input', debounce(loadOpenAISttModels, 1000));
 
         // Temperature slider value display
         document.getElementById('ollamaTemperature')?.addEventListener('input', (e) => {

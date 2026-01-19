@@ -269,6 +269,15 @@ impl SpeechProcessor {
                     return Err(AppError::Voice("OpenAI API key not configured".to_string()));
                 };
 
+                // Get the selected STT model from voice settings, default to gpt-4o-transcribe
+                let stt_model = app_config
+                    .voice
+                    .openai_model
+                    .as_deref()
+                    .unwrap_or("gpt-4o-transcribe");
+
+                tracing::info!("Using OpenAI STT model: {}", stt_model);
+
                 let client = reqwest::Client::new();
                 let bytes = std::fs::read(audio_path)
                     .map_err(|e| AppError::Voice(format!("Failed to read audio file: {}", e)))?;
@@ -285,7 +294,7 @@ impl SpeechProcessor {
                     .map_err(|e| AppError::Voice(format!("Failed to create multipart: {}", e)))?;
 
                 let form = reqwest::multipart::Form::new()
-                    .text("model", "whisper-1")
+                    .text("model", stt_model.to_string())
                     .part("file", part);
 
                 let response = client

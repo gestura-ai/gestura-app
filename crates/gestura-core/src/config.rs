@@ -302,7 +302,8 @@ impl Default for AppConfig {
                 local_model_path: None,
                 openai_api_key: None,
                 openai_base_url: None,
-                openai_model: None,
+                // Default to GPT-4o Transcribe for best accuracy when using OpenAI
+                openai_model: Some("gpt-4o-transcribe".into()),
                 audio_device: None,
             },
             mcp_tools: vec![],
