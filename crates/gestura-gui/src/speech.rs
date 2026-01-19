@@ -6,7 +6,6 @@ use tauri::{AppHandle, Emitter};
 
 use crate::audio_capture::record_audio;
 use crate::config::AppConfig;
-use crate::llm_provider::{AgentContext, select_provider};
 use crate::voice::{OpenAiWhisperVoice, WhisperLocal};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,18 +179,17 @@ impl SpeechProcessor {
         }
 
         // Step 3: Create chat session with transcription
+        // The frontend will handle the LLM call via streaming when it receives the chat-message event
         let session_id = self
             .create_chat_with_transcription(app, &transcribed_text)
             .await?;
-        tracing::info!("Created chat session {} with transcription", session_id);
+        tracing::info!(
+            "Created chat session {} with transcription - frontend will handle LLM streaming",
+            session_id
+        );
 
-        // Step 4: Process with LLM for response
-        let ai_response = self.process_with_llm(&transcribed_text).await?;
-        tracing::info!("AI response: '{}'", ai_response);
-
-        // Step 5: Send AI response to chat
-        self.send_ai_response_to_chat(app, &session_id, &ai_response)
-            .await?;
+        // Note: Steps 4 and 5 (LLM processing and sending AI response) are now handled by the frontend
+        // via process_chat_message_streaming when it receives the chat-message event with type: "user"
 
         Ok(())
     }
@@ -255,32 +253,49 @@ impl SpeechProcessor {
         }
     }
 
-    /// Process transcribed text with configured LLM provider
-    async fn process_with_llm(&self, text: &str) -> Result<String, String> {
+    /// Process transcribed text with configured LLM provider via AgentPipeline.
+    ///
+    /// Note: Currently unused as the frontend handles LLM streaming directly.
+    /// This method is available for backend-driven LLM processing scenarios:
+    /// - Voice-only mode without GUI
+    /// - Batch processing of voice commands
+    /// - Fallback when frontend streaming is unavailable
+    #[allow(dead_code)]
+    pub async fn process_with_llm(&self, text: &str) -> Result<String, String> {
+        use gestura_core::{AgentPipeline, AgentRequest, RequestSource};
+
         let app_config = AppConfig::load();
-        let provider = select_provider(
-            &app_config,
-            &AgentContext {
-                agent_id: "speech".into(),
-            },
+        tracing::info!(
+            "Processing voice input with AgentPipeline, LLM provider: {}",
+            app_config.llm.primary
         );
 
-        tracing::info!("Processing with LLM provider: {}", app_config.llm.primary);
+        // Build the agent request for voice input
+        let request = AgentRequest::new(text)
+            .with_streaming(false)
+            .with_source(RequestSource::GuiVoice);
 
-        provider
-            .call(text)
+        // Create the pipeline and process the request
+        let pipeline = AgentPipeline::new(app_config);
+        let response = pipeline
+            .process_blocking(request)
             .await
-            .map_err(|e| format!("LLM processing failed: {}", e))
+            .map_err(|e| format!("AgentPipeline processing failed: {}", e))?;
+
+        Ok(response.content)
     }
 
-    #[allow(dead_code)]
+    /// Determine if transcribed text is a conversation vs a direct command.
+    /// Returns true for conversational queries that should go to LLM,
+    /// false for direct system commands that can be executed immediately.
     fn is_conversation(&self, text: &str) -> bool {
         // Simple heuristic to determine if this is a conversation vs command
         let conversation_keywords = [
             "help", "what", "how", "can you", "please", "tell me", "explain",
         ];
         let command_keywords = [
-            "open", "close", "start", "stop", "launch", "quit", "show", "hide",
+            "open", "close", "start", "stop", "launch", "quit", "show", "hide", "search", "run",
+            "volume", "mute", "louder", "quieter",
         ];
 
         let text_lower = text.to_lowercase();
@@ -294,6 +309,20 @@ impl SpeechProcessor {
             .count();
 
         conversation_score > command_score
+    }
+
+    /// Route voice input to either system command execution or LLM chat.
+    /// Direct commands (open, search, volume, etc.) are executed immediately.
+    /// Conversational queries are sent to the chat for LLM processing.
+    pub async fn route_voice_input(&self, app: &AppHandle, text: &str) -> Result<(), String> {
+        if self.is_conversation(text) {
+            tracing::info!("Routing voice input to chat: '{}'", text);
+            self.create_chat_with_transcription(app, text).await?;
+        } else {
+            tracing::info!("Routing voice input to system command: '{}'", text);
+            self.execute_system_command(text).await?;
+        }
+        Ok(())
     }
 
     async fn create_chat_with_transcription(
@@ -402,7 +431,15 @@ impl SpeechProcessor {
         Ok(())
     }
 
-    async fn send_ai_response_to_chat(
+    /// Send AI response to chat window.
+    ///
+    /// Note: Currently unused as the frontend handles LLM streaming directly.
+    /// This method is available for backend-driven chat responses:
+    /// - Voice-only mode without GUI interaction
+    /// - Batch processing results
+    /// - Fallback when frontend streaming is unavailable
+    #[allow(dead_code)]
+    pub async fn send_ai_response_to_chat(
         &self,
         app: &AppHandle,
         session_id: &str,
@@ -440,42 +477,50 @@ impl SpeechProcessor {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    /// Execute a system command from voice input.
+    /// Parses the command intent and routes to the appropriate handler.
     async fn execute_system_command(&self, command: &str) -> Result<(), String> {
         tracing::info!("Executing system command: {}", command);
 
         let command_lower = command.to_lowercase();
 
         // Parse command intent and execute appropriate action
-        let result = if command_lower.starts_with("open ") {
+        if command_lower.starts_with("open ") {
             let target = command_lower.strip_prefix("open ").unwrap_or("");
-            self.execute_open_command(target).await
-        } else if command_lower.starts_with("launch ") {
+            return self.execute_open_command(target).await;
+        }
+        if command_lower.starts_with("launch ") {
             let target = command_lower.strip_prefix("launch ").unwrap_or("");
-            self.execute_open_command(target).await
-        } else if command_lower.starts_with("search ") {
+            return self.execute_open_command(target).await;
+        }
+        if command_lower.starts_with("search ") {
             let query = command_lower.strip_prefix("search ").unwrap_or("");
-            self.execute_search_command(query).await
-        } else if command_lower.starts_with("run ") {
-            let cmd = command.strip_prefix("run ").or_else(|| command.strip_prefix("Run ")).unwrap_or("");
-            self.execute_shell_command(cmd).await
-        } else if command_lower.contains("volume up") || command_lower.contains("louder") {
-            self.execute_volume_command(true).await
-        } else if command_lower.contains("volume down") || command_lower.contains("quieter") {
-            self.execute_volume_command(false).await
-        } else if command_lower.contains("mute") {
-            self.execute_mute_command().await
-        } else {
-            // Unknown command - log and return success (don't fail on unrecognized commands)
-            tracing::warn!("Unrecognized system command: {}", command);
-            Ok(())
-        };
+            return self.execute_search_command(query).await;
+        }
+        if command_lower.starts_with("run ") {
+            let cmd = command
+                .strip_prefix("run ")
+                .or_else(|| command.strip_prefix("Run "))
+                .unwrap_or("");
+            return self.execute_shell_command(cmd).await;
+        }
+        if command_lower.contains("volume up") || command_lower.contains("louder") {
+            return self.execute_volume_command(true).await;
+        }
+        if command_lower.contains("volume down") || command_lower.contains("quieter") {
+            return self.execute_volume_command(false).await;
+        }
+        if command_lower.contains("mute") {
+            return self.execute_mute_command().await;
+        }
 
-        result
+        // Unknown command - log and return success (don't fail on unrecognized commands)
+        tracing::warn!("Unrecognized system command: {}", command);
+        Ok(())
     }
 
-    /// Execute an "open" command to launch applications or URLs
-    #[allow(dead_code)]
+    /// Execute an "open" command to launch applications or URLs.
+    /// Maps common voice targets to actual application names.
     async fn execute_open_command(&self, target: &str) -> Result<(), String> {
         use std::process::Command;
 
@@ -505,13 +550,15 @@ impl SpeechProcessor {
 
         #[cfg(target_os = "macos")]
         {
-            let result = if is_url {
-                Command::new("open").arg(app_or_url).spawn()
+            let mut cmd = Command::new("open");
+            if is_url {
+                cmd.arg(app_or_url);
             } else {
-                Command::new("open").arg("-a").arg(app_or_url).spawn()
-            };
+                cmd.arg("-a").arg(app_or_url);
+            }
 
-            result.map_err(|e| format!("Failed to open '{}': {}", app_or_url, e))?;
+            cmd.spawn()
+                .map_err(|e| format!("Failed to open '{}': {}", app_or_url, e))?;
         }
 
         #[cfg(target_os = "windows")]
@@ -533,19 +580,19 @@ impl SpeechProcessor {
         Ok(())
     }
 
-    /// Execute a search command
-    #[allow(dead_code)]
+    /// Execute a search command by opening a web search in the default browser.
     async fn execute_search_command(&self, query: &str) -> Result<(), String> {
         use std::process::Command;
 
         // Simple URL encoding for search query
-        let encoded_query: String = query.chars().map(|c| {
-            match c {
+        let encoded_query: String = query
+            .chars()
+            .map(|c| match c {
                 'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
                 ' ' => "+".to_string(),
                 _ => format!("%{:02X}", c as u8),
-            }
-        }).collect();
+            })
+            .collect();
         let search_url = format!("https://www.google.com/search?q={}", encoded_query);
 
         tracing::info!("Searching for: {}", query);
@@ -577,26 +624,29 @@ impl SpeechProcessor {
         Ok(())
     }
 
-    /// Execute a shell command
-    #[allow(dead_code)]
+    /// Execute a shell command using the ShellTools utility.
     async fn execute_shell_command(&self, command: &str) -> Result<(), String> {
         use gestura_core::tools::shell::ShellTools;
 
         tracing::info!("Running shell command: {}", command);
 
         let shell = ShellTools::new();
-        let result = shell.run(command, Some(30))
+        let result = shell
+            .run(command, Some(30))
             .map_err(|e| format!("Shell command failed: {}", e))?;
 
         if !result.success {
-            tracing::warn!("Shell command exited with code {}: {}", result.exit_code, result.stderr);
+            tracing::warn!(
+                "Shell command exited with code {}: {}",
+                result.exit_code,
+                result.stderr
+            );
         }
 
         Ok(())
     }
 
-    /// Execute volume control command
-    #[allow(dead_code)]
+    /// Execute volume control command (increase or decrease by 10%).
     async fn execute_volume_command(&self, increase: bool) -> Result<(), String> {
         use std::process::Command;
 
@@ -622,9 +672,12 @@ impl SpeechProcessor {
             // Use nircmd or PowerShell for volume control
             let adjustment = if increase { "+10" } else { "-10" };
             Command::new("powershell")
-                .args(["-Command", &format!(
-                    "$obj = New-Object -ComObject WScript.Shell; $obj.SendKeys([char]0xAF)"
-                )])
+                .args([
+                    "-Command",
+                    &format!(
+                        "$obj = New-Object -ComObject WScript.Shell; $obj.SendKeys([char]0xAF)"
+                    ),
+                ])
                 .spawn()
                 .map_err(|e| format!("Failed to adjust volume: {}", e))?;
             let _ = adjustment; // Suppress unused warning
@@ -642,8 +695,7 @@ impl SpeechProcessor {
         Ok(())
     }
 
-    /// Execute mute command
-    #[allow(dead_code)]
+    /// Execute mute command to toggle audio mute state.
     async fn execute_mute_command(&self) -> Result<(), String> {
         use std::process::Command;
 
@@ -660,7 +712,10 @@ impl SpeechProcessor {
         #[cfg(target_os = "windows")]
         {
             Command::new("powershell")
-                .args(["-Command", "$obj = New-Object -ComObject WScript.Shell; $obj.SendKeys([char]0xAD)"])
+                .args([
+                    "-Command",
+                    "$obj = New-Object -ComObject WScript.Shell; $obj.SendKeys([char]0xAD)",
+                ])
                 .spawn()
                 .map_err(|e| format!("Failed to mute: {}", e))?;
         }
