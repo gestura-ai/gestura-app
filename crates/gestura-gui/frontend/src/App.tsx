@@ -2,6 +2,9 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import './App.css';
 import ThemeController from './components/ThemeController';
+import ChatPanel from './components/ChatPanel';
+import ToolsPanel from './components/ToolsPanel';
+import WorkflowsPanel from './components/WorkflowsPanel';
 import VoicePanel from './components/VoicePanel';
 import SettingsPanel from './components/SettingsPanel';
 import RingPanel from './components/RingPanel';
@@ -15,10 +18,11 @@ import { AppConfig, UiSettings } from './types/config';
 
 function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
-  const [activePanel, setActivePanel] = useState('voice');
+  const [activePanel, setActivePanel] = useState('chat'); // Default to chat
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [tokenUsage, setTokenUsage] = useState({ total: 0, session: 0 });
 
   useEffect(() => {
     // Check onboarding BEFORE loading config to preserve first-run state
@@ -145,33 +149,70 @@ function App() {
         <div className="sidebar">
           <nav>
             <button
+              className={`btn ${activePanel === 'chat' ? '' : 'btn-secondary'}`}
+              onClick={() => setActivePanel('chat')}
+            >
+              💬 Chat
+            </button>
+            <button
               className={`btn ${activePanel === 'voice' ? '' : 'btn-secondary'}`}
               onClick={() => setActivePanel('voice')}
             >
-              Voice
+              🎤 Voice
             </button>
             <button
               className={`btn ${activePanel === 'ring' ? '' : 'btn-secondary'}`}
               onClick={() => setActivePanel('ring')}
             >
-              Ring
+              💍 Ring
+            </button>
+            <button
+              className={`btn ${activePanel === 'tools' ? '' : 'btn-secondary'}`}
+              onClick={() => setActivePanel('tools')}
+            >
+              🔧 Tools
+            </button>
+            <button
+              className={`btn ${activePanel === 'workflows' ? '' : 'btn-secondary'}`}
+              onClick={() => setActivePanel('workflows')}
+            >
+              📋 Workflows
             </button>
             <button
               className={`btn ${activePanel === 'simulator' ? '' : 'btn-secondary'}`}
               onClick={() => setActivePanel('simulator')}
             >
-              Simulator
+              🧪 Simulator
             </button>
             <button
               className={`btn ${activePanel === 'settings' ? '' : 'btn-secondary'}`}
               onClick={() => setActivePanel('settings')}
             >
-              Settings
+              ⚙️ Settings
             </button>
           </nav>
+          {tokenUsage.session > 0 && (
+            <div className="token-usage">
+              <small>Tokens: {tokenUsage.session.toLocaleString()}</small>
+            </div>
+          )}
         </div>
 
         <div className="content">
+          {activePanel === 'chat' && (
+            <ChatPanel
+              onTokenUsage={(usage) => setTokenUsage(prev => ({
+                total: prev.total + usage.input_tokens + usage.output_tokens,
+                session: prev.session + usage.input_tokens + usage.output_tokens
+              }))}
+            />
+          )}
+          {activePanel === 'tools' && (
+            <ToolsPanel />
+          )}
+          {activePanel === 'workflows' && (
+            <WorkflowsPanel />
+          )}
           {activePanel === 'voice' && (
             <VoicePanel config={config} onConfigUpdate={saveConfig} />
           )}

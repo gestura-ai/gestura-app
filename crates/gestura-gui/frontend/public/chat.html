@@ -4,39 +4,59 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Avoid stale assets in Tauri/WebView during rapid iteration -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <title>Gestura Chat</title>
     <link rel="stylesheet" href="icons.css">
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
         :root {
-            /* Light mode colors - macOS inspired */
-            --bg-primary: #f5f5f7;
-            --bg-secondary: #ffffff;
-            --bg-tertiary: #e8e8ed;
+            /* Premium Light Palette */
+            --bg-base: #fbfbfd;
+            --bg-glass: rgba(255, 255, 255, 0.7);
+            --bg-glass-strong: rgba(255, 255, 255, 0.85);
+            --glass-border: rgba(0, 0, 0, 0.05);
             --text-primary: #1d1d1f;
             --text-secondary: #86868b;
-            --border-color: #d2d2d7;
-            --accent-color: #0071e3;
-            --accent-hover: #0077ed;
+            --accent-primary: #0071e3;
+            --accent-glow: rgba(0, 113, 227, 0.3);
             --user-bubble: #0071e3;
-            --agent-bubble: #e8e8ed;
-            --system-bubble: #f5a623;
-            --shadow: rgba(0, 0, 0, 0.08);
+            --user-text: #ffffff;
+            --agent-bubble: rgba(0, 0, 0, 0.04);
+            --agent-text: #1d1d1f;
+            --success: #34c759;
+            --error: #ff3b30;
+            --tool-bg: rgba(52, 199, 89, 0.1);
+            --tool-border: rgba(52, 199, 89, 0.3);
+            --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.05);
+            --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.08);
+            --blur: blur(20px);
         }
 
         @media (prefers-color-scheme: dark) {
             :root {
-                --bg-primary: #1d1d1f;
-                --bg-secondary: #2c2c2e;
-                --bg-tertiary: #3a3a3c;
+                /* Premium Dark Palette */
+                --bg-base: #000000;
+                --bg-glass: rgba(28, 28, 30, 0.6);
+                --bg-glass-strong: rgba(44, 44, 46, 0.8);
+                --glass-border: rgba(255, 255, 255, 0.1);
                 --text-primary: #f5f5f7;
-                --text-secondary: #98989d;
-                --border-color: #48484a;
-                --accent-color: #0a84ff;
-                --accent-hover: #409cff;
-                --user-bubble: #0a84ff;
-                --agent-bubble: #3a3a3c;
-                --system-bubble: #ff9f0a;
-                --shadow: rgba(0, 0, 0, 0.3);
+                --text-secondary: #86868b;
+                --accent-primary: #2997ff;
+                --accent-glow: rgba(41, 151, 255, 0.3);
+                --user-bubble: #2997ff;
+                --user-text: #ffffff;
+                --agent-bubble: rgba(255, 255, 255, 0.08);
+                --agent-text: #f5f5f7;
+                --success: #30d158;
+                --error: #ff453a;
+                --tool-bg: rgba(48, 209, 88, 0.15);
+                --tool-border: rgba(48, 209, 88, 0.3);
+                --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.3);
+                --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.5);
             }
         }
 
@@ -46,903 +66,1239 @@
             box-sizing: border-box;
         }
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
+        html {
+            height: 100%;
         }
 
-        .chat-header {
-            background: var(--bg-secondary);
-            padding: 1rem 1.5rem;
-            border-bottom: 1px solid var(--border-color);
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-base);
+            color: var(--text-primary);
+            /* Prefer dynamic viewport units inside WebViews (prevents overlap on resize) */
+            min-height: 100vh;
+            height: 100vh;
+            height: 100dvh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            letter-spacing: -0.01em;
+        }
+
+        /* Glassmorphism Header */
+        .header {
+            min-height: 60px;
+            height: auto;
             display: flex;
             align-items: center;
             justify-content: space-between;
-        }
-
-        .chat-header h2 {
-            font-size: 1.1rem;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-
-        .status {
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-        }
-
-        .chat-container {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            padding: 1rem;
-            overflow: hidden;
-        }
-
-        .messages {
-            flex: 1;
-            overflow-y: auto;
-            padding: 1rem;
-            background: var(--bg-secondary);
-            border-radius: 12px;
-            margin-bottom: 1rem;
-            border: 1px solid var(--border-color);
-        }
-
-        .message {
-            margin-bottom: 1rem;
-            padding: 0.75rem 1rem;
-            border-radius: 18px;
-            max-width: 80%;
-            word-wrap: break-word;
-            line-height: 1.4;
-        }
-
-        .message.user {
-            background: var(--user-bubble);
-            color: white;
-            margin-left: auto;
-            border-bottom-right-radius: 4px;
-        }
-
-        .message.agent {
-            background: var(--agent-bubble);
-            color: var(--text-primary);
-            margin-right: auto;
-            border-bottom-left-radius: 4px;
-        }
-
-        .message.system {
-            background: var(--system-bubble);
-            color: white;
-            margin: 0 auto;
-            text-align: center;
-            font-size: 0.9em;
-            border-radius: 8px;
-        }
-
-        /* Markdown styling for agent messages */
-        .message.agent code {
-            background: rgba(0, 0, 0, 0.1);
-            padding: 0.15em 0.4em;
-            border-radius: 4px;
-            font-family: 'SF Mono', Menlo, Monaco, monospace;
-            font-size: 0.9em;
-        }
-
-        @media (prefers-color-scheme: dark) {
-            .message.agent code {
-                background: rgba(255, 255, 255, 0.1);
-            }
-        }
-
-        .message.agent pre {
-            background: var(--bg-primary);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            padding: 0.75rem;
-            margin: 0.5rem 0;
-            overflow-x: auto;
+            /* macOS WebView safe-area/titlebar inset friendly */
+            padding: calc(10px + env(safe-area-inset-top, 0px)) 16px 10px 16px;
+            flex-wrap: wrap;
+            gap: 10px;
+            background: var(--bg-glass);
+            backdrop-filter: var(--blur);
+            -webkit-backdrop-filter: var(--blur);
+            border-bottom: 1px solid var(--glass-border);
+            /* Keep header in normal flow so it never overlaps content */
+            z-index: 10;
             position: relative;
         }
 
-        .message.agent pre code {
-            background: none;
-            padding: 0;
-            font-size: 0.85em;
-            line-height: 1.5;
-        }
-
-        .message.agent .code-block-header {
+        .header-title {
             display: flex;
-            justify-content: space-between;
             align-items: center;
-            padding: 0.25rem 0.5rem;
-            background: var(--border-color);
-            border-radius: 8px 8px 0 0;
-            margin: 0.5rem 0 0 0;
-            font-size: 0.75em;
-            color: var(--text-secondary);
+            gap: 12px;
+            font-weight: 600;
+            font-size: 15px;
+            opacity: 0.9;
         }
 
-        .message.agent .copy-btn {
-            background: transparent;
-            border: none;
-            color: var(--text-secondary);
-            cursor: pointer;
-            padding: 0.25rem 0.5rem;
-            border-radius: 4px;
-            font-size: 0.85em;
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
         }
 
-        .message.agent .copy-btn:hover {
-            background: var(--bg-tertiary);
+        .model-selector {
+            appearance: none;
+            -webkit-appearance: none;
+            background: var(--bg-glass-strong);
+            border: 1px solid var(--glass-border);
             color: var(--text-primary);
+            border-radius: 12px;
+            padding: 6px 10px;
+            font-size: 12px;
+            font-weight: 500;
+            outline: none;
+            cursor: pointer;
+            max-width: 240px;
+            flex: 1 1 160px;
         }
 
-        .message.agent .message-header {
+        @media (max-width: 560px) {
+            .header {
+                padding: 10px 12px;
+            }
+
+            .header-controls {
+                width: 100%;
+                justify-content: space-between;
+            }
+
+            .model-selector {
+                flex: 1 1 140px;
+                max-width: 100%;
+            }
+        }
+
+        .model-selector:focus {
+            border-color: var(--accent-glow);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+
+        .status-badge {
+            font-size: 11px;
+            font-weight: 500;
+            padding: 4px 10px;
+            border-radius: 20px;
+            background: var(--bg-glass-strong);
+            border: 1px solid var(--glass-border);
+            color: var(--text-secondary);
+            transition: all 0.3s ease;
+        }
+
+        .status-badge.active {
+            color: var(--success);
+            border-color: rgba(52, 199, 89, 0.3);
+            box-shadow: 0 0 10px rgba(52, 199, 89, 0.2);
+        }
+
+        .status-badge.busy {
+            color: var(--accent-primary);
+            border-color: rgba(10, 132, 255, 0.35);
+            box-shadow: 0 0 10px rgba(10, 132, 255, 0.18);
+        }
+
+        .status-badge.error {
+            color: var(--error);
+            border-color: rgba(255, 69, 58, 0.35);
+            box-shadow: 0 0 10px rgba(255, 69, 58, 0.18);
+        }
+
+        /* Chat Area */
+        .chat-container {
+            flex: 1;
+            /* Critical in flex layouts so header/input never overlap messages */
+            min-height: 0;
+            /* Header & input are in-flow; normal padding is enough */
+            padding: 20px 20px;
+            overflow-y: auto;
+            scroll-behavior: smooth;
+        }
+
+        .chat-container::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .chat-container::-webkit-scrollbar-thumb {
+            background-color: var(--text-secondary);
+            border-radius: 3px;
+            opacity: 0.3;
+        }
+
+        /* Message Bubbles */
+        .message {
+            margin-bottom: 24px;
+            max-width: 800px;
+            margin-left: auto;
+            margin-right: auto;
+            opacity: 0;
+            transform: translateY(10px);
+            animation: fadeIn 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+        }
+
+        @keyframes fadeIn {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .message-content {
+            padding: 16px 24px;
+            border-radius: 20px;
+            font-size: 15px;
+            line-height: 1.6;
+            position: relative;
+            box-shadow: var(--shadow-sm);
+        }
+
+        /* User Message */
+        .message.user {
             display: flex;
             justify-content: flex-end;
-            margin: 0 0 0.25rem 0;
         }
 
-        .message.agent ul,
-        .message.agent ol {
-            margin: 0.5rem 0;
-            padding-left: 1.5rem;
+        .message.user .message-content {
+            background: var(--user-bubble);
+            color: var(--user-text);
+            border-bottom-right-radius: 4px;
+            background-image: linear-gradient(135deg, var(--user-bubble), var(--accent-primary));
         }
 
-        .message.agent li {
-            margin: 0.25rem 0;
+        /* Agent Message */
+        .message.agent .message-content {
+            background: var(--agent-bubble);
+            color: var(--agent-text);
+            border-bottom-left-radius: 4px;
+            border: 1px solid var(--glass-border);
         }
 
-        .message.agent blockquote {
-            border-left: 3px solid var(--accent-color);
-            margin: 0.5rem 0;
-            padding-left: 0.75rem;
+        /* Tool Call Card */
+        .tool-call {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 12px 16px;
+            margin: 10px 0;
+            background: var(--tool-bg);
+            border: 1px solid var(--tool-border);
+            border-radius: 12px;
+            font-size: 13px;
+            color: var(--text-primary);
+            max-width: 100%;
+            animation: pulse-border 2s infinite;
+        }
+
+        .tool-call.done {
+            animation: none;
+            opacity: 0.9;
+        }
+
+        .tool-call-body {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            min-width: 0;
+        }
+
+        .tool-args {
+            margin: 0;
+            padding: 8px 10px;
+            border-radius: 10px;
+            border: 1px solid var(--glass-border);
+            background: rgba(0, 0, 0, 0.04);
+            font-size: 12px;
+            line-height: 1.4;
+            overflow-x: auto;
+            max-width: 100%;
+            white-space: pre;
+        }
+
+        @keyframes pulse-border {
+            0% {
+                box-shadow: 0 0 0 0 rgba(52, 199, 89, 0.2);
+            }
+
+            70% {
+                box-shadow: 0 0 0 6px rgba(52, 199, 89, 0);
+            }
+
+            100% {
+                box-shadow: 0 0 0 0 rgba(52, 199, 89, 0);
+            }
+        }
+
+        .tool-icon {
+            width: 16px;
+            height: 16px;
+            fill: var(--success);
+        }
+
+        /* Thinking Block */
+        .thinking-block {
+            margin-bottom: 12px;
+            background: var(--bg-glass-strong);
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid var(--glass-border);
+        }
+
+        .thinking-header {
+            padding: 10px 16px;
+            font-size: 12px;
+            font-weight: 500;
             color: var(--text-secondary);
-            font-style: italic;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.2s;
         }
 
-        .message.agent table {
-            border-collapse: collapse;
-            margin: 0.5rem 0;
-            width: 100%;
-            font-size: 0.9em;
+        .thinking-header:hover {
+            background: rgba(0, 0, 0, 0.03);
         }
 
-        .message.agent th,
-        .message.agent td {
-            border: 1px solid var(--border-color);
-            padding: 0.4rem 0.6rem;
-            text-align: left;
+        .thinking-header::before {
+            content: '';
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--text-secondary);
+            display: inline-block;
         }
 
-        .message.agent th {
-            background: var(--bg-tertiary);
-            font-weight: 600;
+        .thinking-header.animating::before {
+            animation: pulse-dot 1s infinite alternate;
+            background: var(--accent-primary);
         }
 
-        .message.agent strong {
-            font-weight: 600;
+        @keyframes pulse-dot {
+            from {
+                transform: scale(0.8);
+                opacity: 0.6;
+            }
+
+            to {
+                transform: scale(1.2);
+                opacity: 1;
+            }
         }
 
-        .message.agent em {
-            font-style: italic;
+        .thinking-content {
+            padding: 12px 16px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+            background: rgba(0, 0, 0, 0.02);
+            border-top: 1px solid var(--glass-border);
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
         }
 
-        .message.agent h1,
-        .message.agent h2,
-        .message.agent h3 {
-            margin: 0.75rem 0 0.5rem 0;
-            font-weight: 600;
+        .thinking-block.collapsed .thinking-content {
+            display: none;
         }
 
-        .message.agent h1 {
-            font-size: 1.25em;
+        /* Message Queue Indicator */
+        .queue-indicator {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 6px 12px;
+            font-size: 13px;
+            color: var(--accent-primary);
+            background: var(--bg-glass);
+            backdrop-filter: var(--blur);
+            -webkit-backdrop-filter: var(--blur);
+            border-radius: 12px;
+            margin-bottom: 8px;
+            animation: queue-pulse 2s ease-in-out infinite;
+            border: 1px solid var(--glass-border);
         }
 
-        .message.agent h2 {
-            font-size: 1.1em;
-        }
-
-        .message.agent h3 {
-            font-size: 1em;
-        }
-
-        .message.agent p {
-            margin: 0.4rem 0;
-        }
-
-        .message.agent a {
-            color: var(--accent-color);
-            text-decoration: none;
-        }
-
-        .message.agent a:hover {
-            text-decoration: underline;
-        }
-
-        /* Streaming message styles */
-        .message.agent.streaming {
-            border-left: 3px solid var(--accent-color);
-        }
-
-        .message.agent.streaming::after {
-            content: '▋';
-            animation: blink 1s infinite;
-            color: var(--accent-color);
-        }
-
-        @keyframes blink {
+        @keyframes queue-pulse {
 
             0%,
+            100% {
+                opacity: 0.7;
+            }
+
             50% {
                 opacity: 1;
             }
-
-            51%,
-            100% {
-                opacity: 0;
-            }
         }
 
-        .message.agent.cancelled {
-            opacity: 0.7;
-            border-left: 3px solid var(--text-secondary);
-        }
-
-        .message.agent.error {
-            border-left: 3px solid #e74c3c;
+        /* Input Area with Glassmorphism */
+        .input-area {
+            /* Keep input in flow so it can't cover other UI */
+            position: relative;
+            width: 100%;
+            padding: 12px 16px 16px 16px;
+            background: var(--bg-glass);
+            backdrop-filter: var(--blur);
+            -webkit-backdrop-filter: var(--blur);
+            border-top: 1px solid var(--glass-border);
+            display: flex;
+            justify-content: center;
+            flex: 0 0 auto;
+            z-index: 10;
         }
 
         .input-container {
+            background: var(--bg-glass-strong);
+            backdrop-filter: var(--blur);
+            -webkit-backdrop-filter: var(--blur);
+            padding: 10px;
+            border-radius: 24px;
+            border: 1px solid var(--glass-border);
+            box-shadow: var(--shadow-md);
             display: flex;
-            gap: 0.75rem;
-            background: var(--bg-secondary);
-            padding: 1rem;
-            border-radius: 12px;
-            border: 1px solid var(--border-color);
             align-items: center;
+            gap: 10px;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            width: 100%;
+            max-width: 800px;
+        }
+
+        .input-container:focus-within {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12);
+            border-color: var(--accent-glow);
         }
 
         .message-input {
             flex: 1;
-            padding: 0.75rem 1rem;
-            border: 1px solid var(--border-color);
-            border-radius: 20px;
-            font-size: 1rem;
-            outline: none;
-            transition: border-color 0.2s;
-            background: var(--bg-primary);
+            background: transparent;
+            border: none;
+            padding: 12px 16px;
+            font-size: 16px;
             color: var(--text-primary);
-        }
-
-        .message-input:focus {
-            border-color: var(--accent-color);
+            outline: none;
+            font-family: inherit;
         }
 
         .message-input::placeholder {
             color: var(--text-secondary);
+            font-weight: 300;
         }
 
-        .send-button {
-            padding: 0.75rem 1.25rem;
-            background: var(--accent-color);
-            color: white;
-            border: none;
-            border-radius: 20px;
-            font-size: 0.9rem;
-            font-weight: 500;
-            cursor: pointer;
-            transition: background-color 0.2s;
-        }
-
-        .send-button:hover {
-            background: var(--accent-hover);
-        }
-
-        .send-button:disabled {
-            background: var(--text-secondary);
-            cursor: not-allowed;
-        }
-
-        .voice-btn {
-            padding: 0.75rem;
-            border: none;
+        .btn-icon {
+            width: 44px;
+            height: 44px;
             border-radius: 50%;
+            border: none;
+            background: transparent;
+            color: var(--text-secondary);
             cursor: pointer;
             display: flex;
             align-items: center;
             justify-content: center;
-            transition: all 0.2s;
-            width: 44px;
-            height: 44px;
+            transition: all 0.2s ease;
         }
 
-        .voice-btn.inactive {
-            background: #34c759;
+        .btn-icon:hover {
+            background: rgba(0, 0, 0, 0.05);
+            color: var(--text-primary);
+            transform: scale(1.05);
+        }
+
+        .btn-primary {
+            background: var(--accent-primary);
+            color: white;
+            box-shadow: 0 4px 12px var(--accent-glow);
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-primary);
+            transform: scale(1.05);
+            box-shadow: 0 6px 16px var(--accent-glow);
             color: white;
         }
 
-        .voice-btn.active {
-            background: #ff3b30;
-            color: white;
-            animation: pulse 1.5s infinite;
+        .btn-primary:active {
+            transform: scale(0.95);
         }
 
-        @keyframes pulse {
+        .btn-cancel {
+            background: var(--error);
+            color: white;
+        }
+
+        .btn-cancel:hover {
+            background: var(--error);
+            transform: scale(1.05);
+            color: white;
+        }
+
+        /* Voice Button Pulse */
+        .voice-active {
+            color: white;
+            background: var(--error);
+            box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.7);
+            animation: pulse-red 1.5s infinite;
+        }
+
+        @keyframes pulse-red {
+            0% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.7);
+            }
+
+            70% {
+                transform: scale(1);
+                box-shadow: 0 0 0 10px rgba(255, 59, 48, 0);
+            }
+
+            100% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(255, 59, 48, 0);
+            }
+        }
+
+        /* Markdown Styling */
+        .markdown-body pre {
+            background: rgba(0, 0, 0, 0.03);
+            /* Slight contrast */
+            border-radius: 8px;
+            padding: 16px;
+            overflow-x: auto;
+            border: 1px solid var(--glass-border);
+            margin: 12px 0;
+        }
+
+        .markdown-body code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9em;
+            padding: 0.2em 0.4em;
+            border-radius: 4px;
+            background: rgba(127, 127, 127, 0.1);
+        }
+
+        .markdown-body pre code {
+            background: none;
+            padding: 0;
+            color: var(--text-primary);
+        }
+
+        .markdown-body p {
+            margin-bottom: 1em;
+        }
+
+        .markdown-body p:last-child {
+            margin-bottom: 0;
+        }
+
+        /* New Typing Indicator */
+        .typing-dots {
+            display: none;
+            gap: 4px;
+            padding: 12px 16px;
+            background: var(--bg-glass);
+            border-radius: 20px;
+            /* Align with agent bubbles */
+            align-self: flex-start;
+            margin-left: 20px;
+            margin-bottom: 16px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .typing-dots.show {
+            display: inline-flex;
+            opacity: 1;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            background: var(--text-secondary);
+            border-radius: 50%;
+            opacity: 0.4;
+            animation: bounce 1.4s infinite ease-in-out both;
+        }
+
+        .dot:nth-child(1) {
+            animation-delay: -0.32s;
+        }
+
+        .dot:nth-child(2) {
+            animation-delay: -0.16s;
+        }
+
+        @keyframes bounce {
 
             0%,
+            80%,
             100% {
+                transform: scale(0);
+            }
+
+            40% {
                 transform: scale(1);
             }
-
-            50% {
-                transform: scale(1.05);
-            }
-        }
-
-        .typing-indicator {
-            display: none;
-            padding: 0.5rem 1rem;
-            color: var(--text-secondary);
-            font-style: italic;
-            font-size: 0.9rem;
-        }
-
-        .typing-indicator.show {
-            display: block;
-        }
-
-        .voice-status {
-            font-size: 0.75rem;
-            color: var(--text-secondary);
-            text-align: center;
-            padding-top: 0.5rem;
         }
     </style>
 </head>
 
 <body>
-    <div class="chat-header">
-        <h2><span class="icon-message"></span> Gestura Chat</h2>
-        <div class="status" id="status">Ready</div>
+    <!-- Header -->
+    <div class="header">
+        <div class="header-title">
+            <span class="icon-message"></span>
+            Gestura
+        </div>
+        <div class="header-controls">
+            <select class="model-selector" id="providerSelect" title="Select provider">
+                <option value="anthropic">Anthropic</option>
+                <option value="openai">OpenAI</option>
+                <option value="grok">Grok</option>
+                <option value="ollama">Ollama</option>
+                <option value="echo">Echo</option>
+            </select>
+            <select class="model-selector" id="modelSelect" title="Select model" disabled>
+                <option value="">Model</option>
+            </select>
+            <div class="status-badge" id="status">Ready</div>
+        </div>
     </div>
 
-    <div class="chat-container">
-        <div class="messages" id="messages">
-            <div class="message system">
-                Welcome to Gestura! How can I help you today?
+    <!-- Chat Stream -->
+    <div class="chat-container" id="messages">
+        <!-- Welcome Message -->
+        <div class="message agent">
+            <div class="message-content markdown-body">
+                Hello! I'm Gestura. How can I assist you naturally today?
             </div>
         </div>
-
-        <div class="typing-indicator" id="typing">
-            Agent is typing...
-        </div>
-
-        <div class="input-container">
-            <button class="voice-btn inactive" id="voiceBtn" title="Voice input">
-                <span id="voiceIcon" class="icon-microphone"></span>
-            </button>
-            <input type="text" class="message-input" id="messageInput" placeholder="Type your message..."
-                maxlength="1000">
-            <button class="send-button" id="sendButton">Send</button>
-        </div>
-        <div class="voice-status" id="voiceStatus"></div>
     </div>
 
+    <!-- Typing Indicator -->
+    <div class="typing-dots" id="typing">
+        <div class="dot"></div>
+        <div class="dot"></div>
+        <div class="dot"></div>
+    </div>
+
+    <!-- Input Area -->
+    <div class="input-area">
+        <div class="input-container">
+            <button class="btn-icon" id="voiceBtn" title="Voice Input">
+                <span class="icon-microphone"></span>
+            </button>
+            <input type="text" class="message-input" id="messageInput" placeholder="Type a message..."
+                autocomplete="off">
+            <button class="btn-icon btn-primary" id="sendButton" title="Send message">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"></path>
+                </svg>
+            </button>
+            <button class="btn-icon btn-cancel" id="cancelButton" title="Cancel" style="display: none;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M18 6L6 18M6 6l12 12"></path>
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <!-- Script -->
     <script>
+        // Core Elements
         const messagesContainer = document.getElementById('messages');
         const messageInput = document.getElementById('messageInput');
         const sendButton = document.getElementById('sendButton');
+        const cancelButton = document.getElementById('cancelButton');
+        const voiceBtn = document.getElementById('voiceBtn');
         const typingIndicator = document.getElementById('typing');
         const statusElement = document.getElementById('status');
+        const providerSelect = document.getElementById('providerSelect');
+        const modelSelect = document.getElementById('modelSelect');
 
-        // Check if Tauri API is available
-        function isTauriAvailable() {
-            return typeof window.__TAURI__ !== 'undefined' && window.__TAURI__.core;
-        }
+        // Cached config (used for model dropdown)
+        let cachedConfig = null;
 
-        // Wait for Tauri API to be ready
-        async function waitForTauri(maxWait = 5000) {
-            const startTime = Date.now();
-            while (!isTauriAvailable() && (Date.now() - startTime) < maxWait) {
-                await new Promise(resolve => setTimeout(resolve, 100));
-            }
-            return isTauriAvailable();
-        }
-
-        // Safe invoke wrapper that checks Tauri availability
-        async function invoke(command, args = {}) {
-            if (!isTauriAvailable()) {
-                throw new Error('Tauri API not available. Please run in the desktop app.');
-            }
-            return window.__TAURI__.core.invoke(command, args);
-        }
-
+        // State
         let isProcessing = false;
+        let isListening = false;
+        let currentRequestNonce = 0;
+        let lastStreamEventAt = Date.now();
+        let streamWatchdogInterval = null;
+        let streamingMessageElement = null;
+        let streamingContent = '';
+        let currentThinkingDiv = null;
+        let currentToolCard = null;
+        let currentToolArgsEl = null;
+        let messageQueue = []; // Queue for messages sent during processing
+        const defaultPlaceholder = 'Type a message...';
+        const processingPlaceholder = 'Type to queue another message...';
+        const sessionId = new URLSearchParams(window.location.search).get('session_id');
 
-        /**
-         * Safe Markdown parser - sanitizes HTML and renders common Markdown elements
-         * Supports: headers, bold, italic, code blocks, inline code, lists, tables, blockquotes, links
-         */
-        function parseMarkdown(text) {
-            // Escape HTML to prevent XSS
-            const escapeHtml = (str) => str
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#039;');
-
-            // Store code blocks to prevent processing their content
-            const codeBlocks = [];
-            let result = text;
-
-            // Extract fenced code blocks first (```language\ncode\n```)
-            result = result.replace(/```(\w*)\n([\s\S]*?)```/g, (match, lang, code) => {
-                const index = codeBlocks.length;
-                const escapedCode = escapeHtml(code.trim());
-                const langLabel = lang || 'code';
-                codeBlocks.push(`<div class="code-block-header"><span>${langLabel}</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div><pre><code>${escapedCode}</code></pre>`);
-                return `__CODE_BLOCK_${index}__`;
-            });
-
-            // Extract inline code (`code`)
-            const inlineCodes = [];
-            result = result.replace(/`([^`]+)`/g, (match, code) => {
-                const index = inlineCodes.length;
-                inlineCodes.push(`<code>${escapeHtml(code)}</code>`);
-                return `__INLINE_CODE_${index}__`;
-            });
-
-            // Now escape the remaining HTML
-            result = escapeHtml(result);
-
-            // Headers (must be at start of line)
-            result = result.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-            result = result.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-            result = result.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-
-            // Bold and italic
-            result = result.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
-            result = result.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-            result = result.replace(/\*(.+?)\*/g, '<em>$1</em>');
-            result = result.replace(/___(.+?)___/g, '<strong><em>$1</em></strong>');
-            result = result.replace(/__(.+?)__/g, '<strong>$1</strong>');
-            result = result.replace(/_(.+?)_/g, '<em>$1</em>');
-
-            // Blockquotes (must be at start of line)
-            result = result.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
-
-            // Unordered lists
-            result = result.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
-            result = result.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
-
-            // Ordered lists
-            result = result.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
-
-            // Links [text](url) - only allow http/https URLs
-            result = result.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-
-            // Tables (simple pipe-delimited)
-            const tableRegex = /(\|.+\|\n)+/g;
-            result = result.replace(tableRegex, (tableMatch) => {
-                const rows = tableMatch.trim().split('\n');
-                if (rows.length < 2) return tableMatch;
-
-                let tableHtml = '<table>';
-                rows.forEach((row, index) => {
-                    // Skip separator row (|---|---|)
-                    if (/^\|[\s\-:]+\|$/.test(row.replace(/\|/g, '|').trim())) return;
-
-                    const cells = row.split('|').filter(c => c.trim() !== '');
-                    const tag = index === 0 ? 'th' : 'td';
-                    const rowHtml = cells.map(cell => `<${tag}>${cell.trim()}</${tag}>`).join('');
-                    tableHtml += `<tr>${rowHtml}</tr>`;
-                });
-                tableHtml += '</table>';
-                return tableHtml;
-            });
-
-            // Paragraphs - wrap remaining text blocks
-            result = result.split('\n\n').map(para => {
-                para = para.trim();
-                if (!para) return '';
-                // Don't wrap if already wrapped in block elements
-                if (/^<(h[1-6]|ul|ol|table|blockquote|pre|div)/.test(para)) return para;
-                return `<p>${para.replace(/\n/g, '<br>')}</p>`;
-            }).join('');
-
-            // Restore code blocks
-            codeBlocks.forEach((block, index) => {
-                result = result.replace(`__CODE_BLOCK_${index}__`, block);
-            });
-
-            // Restore inline code
-            inlineCodes.forEach((code, index) => {
-                result = result.replace(`__INLINE_CODE_${index}__`, code);
-            });
-
-            return result;
+        function setStatus(text, kind = 'ready') {
+            if (!statusElement) return;
+            statusElement.textContent = text;
+            statusElement.classList.remove('active');
+            statusElement.classList.remove('busy');
+            statusElement.classList.remove('error');
+            if (kind === 'listening') statusElement.classList.add('active');
+            if (kind === 'busy') statusElement.classList.add('busy');
+            if (kind === 'error') statusElement.classList.add('error');
         }
 
-        function copyTextToClipboard(text, button) {
-            const setCopiedState = () => {
-                const originalText = button.textContent;
-                button.textContent = 'Copied!';
-                setTimeout(() => { button.textContent = originalText; }, 2000);
-            };
-
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(text).then(setCopiedState).catch(err => {
-                    console.error('Failed to copy:', err);
-                });
-                return;
+        function finalizeStreamForCurrentRequest(options = {}) {
+            const { statusText = null, statusKind = 'ready', allowQueueAdvance = true } = options;
+            if (streamWatchdogInterval) {
+                clearInterval(streamWatchdogInterval);
+                streamWatchdogInterval = null;
             }
+            hideTyping();
+            isProcessing = false;
+            currentRequestNonce = 0;
+            if (streamingMessageElement) streamingMessageElement.classList.remove('streaming');
+            const thinkingHeaders = document.querySelectorAll('.thinking-header.animating');
+            thinkingHeaders.forEach(h => h.classList.remove('animating'));
+            if (!isListening) setStatus(statusText || 'Ready', statusKind);
 
-            // Fallback
-            try {
-                const textarea = document.createElement('textarea');
-                textarea.value = text;
-                textarea.style.position = 'fixed';
-                textarea.style.opacity = '0';
-                document.body.appendChild(textarea);
-                textarea.focus();
-                textarea.select();
-                const ok = document.execCommand('copy');
-                document.body.removeChild(textarea);
-                if (ok) setCopiedState();
-            } catch (err) {
-                console.error('Failed to copy (fallback):', err);
-            }
-        }
-
-        /**
-         * Copy code block content to clipboard
-         */
-        function copyCode(button) {
-            const header = button.closest('.code-block-header');
-            const pre = header ? header.nextElementSibling : null;
-            const codeBlock = pre ? pre.querySelector('code') : null;
-            if (!codeBlock) return;
-            copyTextToClipboard(codeBlock.textContent, button);
-        }
-
-        function addMessage(content, type = 'user') {
-            const messageDiv = document.createElement('div');
-            messageDiv.className = `message ${type}`;
-
-            // Use Markdown rendering for agent messages, plain text for user/system
-            if (type === 'agent') {
-                const header = document.createElement('div');
-                header.className = 'message-header';
-
-                const copyBtn = document.createElement('button');
-                copyBtn.className = 'copy-btn message-copy-btn';
-                copyBtn.textContent = 'Copy';
-                copyBtn.addEventListener('click', () => copyTextToClipboard(content, copyBtn));
-                header.appendChild(copyBtn);
-
-                const body = document.createElement('div');
-                body.className = 'message-body';
-                body.innerHTML = parseMarkdown(content);
-
-                messageDiv.appendChild(header);
-                messageDiv.appendChild(body);
+            if (messageQueue.length > 0) {
+                // Keep the UI in "processing" mode while we drain the queue.
+                setProcessingUI(true);
+                if (allowQueueAdvance) setTimeout(() => processNextInQueue(), 100);
             } else {
-                messageDiv.textContent = content;
+                setProcessingUI(false);
+            }
+        }
+
+        function touchStreamActivity() {
+            lastStreamEventAt = Date.now();
+        }
+
+        function startStreamWatchdog(nonce) {
+            if (streamWatchdogInterval) clearInterval(streamWatchdogInterval);
+            // Frontend-side safety: if backend never emits any stream events (or invoke never returns),
+            // don't leave the UI stuck forever.
+            const maxIdleMs = 90_000;
+            streamWatchdogInterval = setInterval(() => {
+                if (!isProcessing || currentRequestNonce !== nonce) return;
+                if (Date.now() - lastStreamEventAt > maxIdleMs) {
+                    addMessage(`Error: Timed out waiting for agent response (no events for ${Math.round(maxIdleMs / 1000)}s).`, 'agent');
+                    finalizeStreamForCurrentRequest({ statusText: 'Error', statusKind: 'error' });
+                }
+            }, 1000);
+        }
+
+        // --- Markdown Parsing (Simplified for reliability) ---
+        function parseMarkdown(text) {
+            // Escape HTML
+            const escapeHtml = (str) => str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+            let html = escapeHtml(text);
+
+            // Code blocks
+            html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="language-$1">$2</code></pre>');
+
+            // Inline code
+            html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+            // Bold
+            html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+
+            // Italic
+            html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+
+            // Paragraphs (double newline)
+            html = html.replace(/\n\n/g, '<p></p>');
+
+            // Line breaks
+            html = html.replace(/\n/g, '<br>');
+
+            return html;
+        }
+
+        // --- Message Handling ---
+
+        function addMessage(content, type, isHtml = false) {
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `message ${type}`;
+
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content markdown-body';
+
+            if (isHtml) {
+                contentDiv.innerHTML = content;
+            } else {
+                contentDiv.textContent = content;
             }
 
-            messagesContainer.appendChild(messageDiv);
+            msgDiv.appendChild(contentDiv);
+            messagesContainer.appendChild(msgDiv);
+            scrollToBottom();
+            return msgDiv;
+        }
+
+        function scrollToBottom() {
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
         }
 
         function showTyping() {
             typingIndicator.classList.add('show');
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            scrollToBottom();
         }
 
         function hideTyping() {
             typingIndicator.classList.remove('show');
         }
 
-        // Streaming state
-        let streamingMessageElement = null;
-        let streamingContent = '';
-        let isStreaming = false;
+        // --- Streaming Logic ---
 
-        async function sendMessage() {
-            const message = messageInput.value.trim();
-            if (!message || isProcessing) return;
-
-            isProcessing = true;
-            isStreaming = true;
-            sendButton.disabled = true;
-            messageInput.disabled = true;
-
-            // Add user message
-            addMessage(message, 'user');
-            messageInput.value = '';
-
-            // Show typing indicator
-            showTyping();
-
-            // Reset streaming state
-            streamingContent = '';
-            streamingMessageElement = null;
-
-            try {
-                // Start streaming message processing
-                await invoke('process_chat_message_streaming', { message: message });
-                // The actual response comes via events, not the return value
-            } catch (error) {
+        function ensureStreamingMessage() {
+            if (!streamingMessageElement) {
                 hideTyping();
-                addMessage(`Error: ${error}`, 'system');
-                console.error('Failed to send message:', error);
-                finishStreaming();
+                streamingMessageElement = addMessage('', 'agent', true);
+                streamingMessageElement.classList.add('streaming');
+            }
+            return streamingMessageElement;
+        }
+
+        // Queue a message for later processing
+        function queueMessage() {
+            const text = messageInput.value.trim();
+            if (!text) return;
+
+            messageQueue.push(text);
+            addMessage(`⏳ ${text}`, 'user'); // Show queued message with indicator
+            messageInput.value = '';
+            updateQueueIndicator();
+        }
+
+        // Update the queue indicator UI
+        function updateQueueIndicator() {
+            let indicator = document.getElementById('queueIndicator');
+            if (messageQueue.length > 0) {
+                if (!indicator) {
+                    indicator = document.createElement('div');
+                    indicator.id = 'queueIndicator';
+                    indicator.className = 'queue-indicator';
+                    const inputArea = document.querySelector('.input-area');
+                    inputArea.insertBefore(indicator, inputArea.firstChild);
+                }
+                indicator.innerHTML = `📨 ${messageQueue.length} message${messageQueue.length > 1 ? 's' : ''} queued`;
+                indicator.style.display = 'flex';
+            } else if (indicator) {
+                indicator.style.display = 'none';
             }
         }
 
-        function finishStreaming() {
-            isProcessing = false;
-            isStreaming = false;
-            sendButton.disabled = false;
-            messageInput.disabled = false;
-            messageInput.focus();
-            streamingMessageElement = null;
-            streamingContent = '';
+        // Process the next message in the queue
+        async function processNextInQueue() {
+            if (messageQueue.length === 0 || isProcessing) return;
+
+            const nextMessage = messageQueue.shift();
+            updateQueueIndicator();
+
+            // Update the queued message to remove ⏳ indicator
+            const messages = messagesContainer.querySelectorAll('.message.user .message-content');
+            for (const msg of messages) {
+                if (msg.textContent === `⏳ ${nextMessage}`) {
+                    msg.textContent = nextMessage;
+                    break;
+                }
+            }
+
+            await processMessage(nextMessage);
         }
 
-        async function cancelStreaming() {
-            if (isStreaming) {
-                try {
-                    await invoke('cancel_chat_streaming');
-                } catch (error) {
-                    console.error('Failed to cancel streaming:', error);
+        // Update UI for processing state
+        function setProcessingUI(processing) {
+            if (processing) {
+                messageInput.placeholder = processingPlaceholder;
+                cancelButton.style.display = 'flex';
+                sendButton.title = 'Queue message';
+            } else {
+                messageInput.placeholder = defaultPlaceholder;
+                cancelButton.style.display = 'none';
+                sendButton.title = 'Send message';
+            }
+        }
+
+        // Core message processing function
+        async function processMessage(text) {
+            const nonce = ++currentRequestNonce;
+            touchStreamActivity();
+            startStreamWatchdog(nonce);
+            showTyping();
+            isProcessing = true;
+            setProcessingUI(true);
+            if (!isListening) setStatus('Responding...', 'busy');
+
+            // Reset Stream State
+            streamingMessageElement = null;
+            streamingContent = '';
+            currentThinkingDiv = null;
+            currentToolCard = null;
+            currentToolArgsEl = null;
+
+            try {
+                // Invoke Backend
+                const payload = { message: text };
+                if (sessionId) payload.session_id = sessionId;
+                const p = window.__TAURI__.core.invoke('process_chat_message_streaming', payload);
+                // Don't await: streaming completion is signaled via events, and awaiting can deadlock UI state.
+                p.catch((err) => {
+                    console.error('Send failed:', err);
+                    addMessage(`Error: ${err}`, 'agent');
+                    if (currentRequestNonce === nonce) {
+                        finalizeStreamForCurrentRequest({ statusText: 'Error', statusKind: 'error' });
+                    }
+                });
+            } catch (err) {
+                console.error("Send failed:", err);
+                addMessage(`Error: ${err}`, 'agent');
+                if (currentRequestNonce === nonce) {
+                    finalizeStreamForCurrentRequest({ statusText: 'Error', statusKind: 'error' });
                 }
             }
         }
 
-        // Event listeners
+        async function sendMessage() {
+            const text = messageInput.value.trim();
+            if (!text) return;
+
+            // If already processing, queue the message instead
+            if (isProcessing) {
+                queueMessage();
+                return;
+            }
+
+            // UI Updates
+            addMessage(text, 'user');
+            messageInput.value = '';
+
+            await processMessage(text);
+        }
+
+        // --- Event Listeners (Tauri) ---
+
+        async function setupEvents() {
+            if (!window.__TAURI__) return;
+            const event = window.__TAURI__.event;
+
+            // 1. Thinking Stream
+            await event.listen('chat-stream-thinking', (e) => {
+                touchStreamActivity();
+                ensureStreamingMessage();
+                const contentDiv = streamingMessageElement.querySelector('.message-content');
+
+                // Create Thinking Block if needed
+                if (!currentThinkingDiv) {
+                    currentThinkingDiv = document.createElement('div');
+                    currentThinkingDiv.className = 'thinking-block';
+                    currentThinkingDiv.innerHTML = `
+                        <div class="thinking-header animating" onclick="this.parentElement.classList.toggle('collapsed')">
+                            Thinking Process...
+                        </div>
+                        <div class="thinking-content"></div>
+                    `;
+                    // Prepend to content
+                    contentDiv.insertAdjacentElement('afterbegin', currentThinkingDiv);
+                }
+
+                const textDiv = currentThinkingDiv.querySelector('.thinking-content');
+                textDiv.textContent += e.payload;
+                textDiv.scrollTop = textDiv.scrollHeight;
+            });
+
+            // 2. Text Stream
+            await event.listen('chat-stream-chunk', (e) => {
+                touchStreamActivity();
+                ensureStreamingMessage();
+
+                // Stop thinking animation if it was running
+                if (currentThinkingDiv) {
+                    const header = currentThinkingDiv.querySelector('.thinking-header');
+                    if (header) {
+                        header.classList.remove('animating');
+                        header.textContent = "Thought Process";
+                        // Collapse by default when text starts
+                        if (!currentThinkingDiv.classList.contains('collapsed')) {
+                            currentThinkingDiv.classList.add('collapsed');
+                        }
+                    }
+                    currentThinkingDiv = null; // Reset ensures we don't keep appending to thought
+                }
+
+                streamingContent += e.payload;
+
+                // Update content (preserving thinking block if it exists)
+                const contentDiv = streamingMessageElement.querySelector('.message-content');
+
+                // We need to keep the thinking block element, updates only text content AFTER it
+                // Simple approach: re-render full markdown. 
+                // BUT we must not destroy the thinking block.
+
+                // Let's create a text container if not exists
+                let textContainer = contentDiv.querySelector('.text-content');
+                if (!textContainer) {
+                    textContainer = document.createElement('div');
+                    textContainer.className = 'text-content';
+                    contentDiv.appendChild(textContainer);
+                }
+
+                textContainer.innerHTML = parseMarkdown(streamingContent);
+                scrollToBottom();
+            });
+
+            // 3. Tool Call Events (aligned with backend)
+            await event.listen('chat-stream-tool-start', (e) => {
+                touchStreamActivity();
+                ensureStreamingMessage();
+
+                // Stop thinking animation
+                if (currentThinkingDiv) {
+                    const header = currentThinkingDiv.querySelector('.thinking-header');
+                    if (header) header.classList.remove('animating');
+                }
+
+                const payload = e.payload || {};
+                const toolName = (typeof payload === 'string') ? payload : (payload.name || 'tool');
+                const contentDiv = streamingMessageElement.querySelector('.message-content');
+
+                currentToolCard = document.createElement('div');
+                currentToolCard.className = 'tool-call';
+                currentToolCard.innerHTML = `
+	                    <svg class="tool-icon" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.7-3.7a1 1 0 0 0 0-1.4 1 1 0 0 0-1.4 0L17 7.3l-1.6-1.6a1 1 0 0 0-1.4 0zM20 21h-4c-1 0-2-1-2-2v-4c0-1 1-2 2-2h4c1 0 2 1 2 2v4c0 1-1 2-2 2zM12 21H8c-1 0-2-1-2-2V9c0-1 1-2 2-2h4c1 0 2 1 2 2v10c0 1-1 2-2 2z"/></svg>
+	                    <div class="tool-call-body">
+	                        <div>Using tool: <strong></strong></div>
+	                        <pre class="tool-args" style="display:none"></pre>
+	                    </div>
+	                `;
+                currentToolCard.querySelector('strong').textContent = toolName;
+                currentToolArgsEl = currentToolCard.querySelector('.tool-args');
+
+                contentDiv.appendChild(currentToolCard);
+                scrollToBottom();
+            });
+
+            await event.listen('chat-stream-tool-args', (e) => {
+                touchStreamActivity();
+                if (!currentToolArgsEl) return;
+                const argsText = (typeof e.payload === 'string') ? e.payload : JSON.stringify(e.payload, null, 2);
+                currentToolArgsEl.style.display = 'block';
+                currentToolArgsEl.textContent += argsText;
+                scrollToBottom();
+            });
+
+            await event.listen('chat-stream-tool-end', () => {
+                touchStreamActivity();
+                if (currentToolCard) {
+                    currentToolCard.classList.add('done');
+                }
+                currentToolCard = null;
+                currentToolArgsEl = null;
+            });
+
+            // 4. Stream Done
+            await event.listen('chat-stream-done', () => {
+                touchStreamActivity();
+                finalizeStreamForCurrentRequest({ statusText: 'Ready', statusKind: 'ready' });
+            });
+
+            // 4b. Stream Cancelled / Error
+            await event.listen('chat-stream-cancelled', () => {
+                touchStreamActivity();
+                addMessage('Cancelled.', 'agent');
+                finalizeStreamForCurrentRequest({ statusText: 'Cancelled', statusKind: 'ready' });
+            });
+
+            await event.listen('chat-stream-error', (e) => {
+                touchStreamActivity();
+                const payload = e?.payload;
+                const errText = (typeof payload === 'string')
+                    ? payload
+                    : (payload?.message || JSON.stringify(payload));
+                addMessage(`Error: ${errText}`, 'agent');
+                finalizeStreamForCurrentRequest({ statusText: 'Error', statusKind: 'error' });
+            });
+
+            // 5. Voice Events
+            await event.listen('listening-state-changed', (e) => {
+                const listening = !!(e && e.payload && e.payload.is_listening);
+                if (listening) {
+                    isListening = true;
+                    voiceBtn.classList.add('voice-active');
+                    setStatus('Listening...', 'listening');
+                } else {
+                    isListening = false;
+                    voiceBtn.classList.remove('voice-active');
+                    if (!isProcessing) setStatus('Ready', 'ready');
+                }
+            });
+        }
+
+        async function refreshConfig() {
+            if (!window.__TAURI__) return null;
+            try {
+                cachedConfig = await window.__TAURI__.core.invoke('get_config');
+                return cachedConfig;
+            } catch (e) {
+                console.error('Failed to load config', e);
+                return null;
+            }
+        }
+
+        function setModelSelectOptions(names, selectedName) {
+            modelSelect.innerHTML = '';
+            for (const name of names) {
+                const opt = document.createElement('option');
+                opt.value = name;
+                opt.textContent = name;
+                modelSelect.appendChild(opt);
+            }
+            if (selectedName && names.includes(selectedName)) {
+                modelSelect.value = selectedName;
+            } else if (names.length > 0) {
+                modelSelect.value = names[0];
+            }
+        }
+
+        async function populateModelSelectForProvider(provider) {
+            if (!modelSelect) return;
+
+            // Default: disable model selection unless we can populate something meaningful.
+            modelSelect.disabled = true;
+            modelSelect.title = 'Model selection is available for Ollama';
+            modelSelect.innerHTML = '<option value="">Model</option>';
+
+            if (provider !== 'ollama') {
+                // Show configured model if present, but keep disabled to avoid writing invalid config.
+                const cfg = cachedConfig;
+                const providerCfg = cfg?.llm?.[provider];
+                const model = providerCfg?.model;
+                if (typeof model === 'string' && model.length > 0) {
+                    modelSelect.innerHTML = `<option value="${model}">${model}</option>`;
+                } else {
+                    modelSelect.innerHTML = '<option value="">Model (not configured)</option>';
+                }
+                return;
+            }
+
+            // Ollama: fetch models from local endpoint.
+            modelSelect.title = 'Select Ollama model';
+            modelSelect.innerHTML = '<option value="">Loading models…</option>';
+
+            const cfg = cachedConfig;
+            const endpoint =
+                cfg?.llm?.ollama?.base_url ||
+                cfg?.llm?.ollama?.endpoint ||
+                'http://localhost:11434';
+
+            try {
+                const models = await window.__TAURI__.core.invoke('list_ollama_models', { endpoint });
+                const names = Array.isArray(models)
+                    ? models
+                        .map((m) => m?.name)
+                        .filter((n) => typeof n === 'string' && n.length > 0)
+                    : [];
+
+                if (names.length === 0) {
+                    modelSelect.innerHTML = '<option value="">No models found</option>';
+                    return;
+                }
+
+                const selected = cfg?.llm?.ollama?.model;
+                setModelSelectOptions(names, typeof selected === 'string' ? selected : null);
+                modelSelect.disabled = false;
+            } catch (e) {
+                console.error('Failed to list Ollama models', e);
+                modelSelect.innerHTML = '<option value="">Failed to load models</option>';
+            }
+        }
+
+        async function initHeaderControls() {
+            if (!window.__TAURI__) return;
+            if (!providerSelect || !modelSelect) return;
+
+            await refreshConfig();
+            const initialProvider = cachedConfig?.llm?.primary;
+            if (typeof initialProvider === 'string' && initialProvider.length > 0) {
+                providerSelect.value = initialProvider;
+            }
+
+            await populateModelSelectForProvider(providerSelect.value);
+
+            providerSelect.addEventListener('change', async () => {
+                const provider = providerSelect.value;
+                try {
+                    await window.__TAURI__.core.invoke('update_llm_provider', { provider });
+                    await refreshConfig();
+                    await populateModelSelectForProvider(provider);
+                } catch (e) {
+                    console.error('Failed to update provider', e);
+                    addMessage(`Error updating provider: ${e}`, 'agent');
+                }
+            });
+
+            modelSelect.addEventListener('change', async () => {
+                // Only allow saving model selection for Ollama.
+                if (providerSelect.value !== 'ollama') return;
+                const model = modelSelect.value;
+                if (!model) return;
+
+                try {
+                    const cfg = cachedConfig || (await refreshConfig());
+                    if (!cfg) return;
+
+                    const endpoint =
+                        cfg?.llm?.ollama?.base_url ||
+                        cfg?.llm?.ollama?.endpoint ||
+                        'http://localhost:11434';
+
+                    cfg.llm.ollama = cfg.llm.ollama || { base_url: endpoint, model: model };
+                    cfg.llm.ollama.base_url = cfg.llm.ollama.base_url || endpoint;
+                    cfg.llm.ollama.model = model;
+
+                    await window.__TAURI__.core.invoke('save_config', { cfg });
+                    await refreshConfig();
+                } catch (e) {
+                    console.error('Failed to save model', e);
+                    addMessage(`Error saving model: ${e}`, 'agent');
+                }
+            });
+        }
+
+        // --- Interaction ---
+
         sendButton.addEventListener('click', sendMessage);
-        messageInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
+
+        messageInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        // Cancel button cancels in-flight streaming (if any) and clears the queue.
+        cancelButton.addEventListener('click', async () => {
+            messageQueue = [];
+            updateQueueIndicator();
+
+            if (!window.__TAURI__) return;
+            if (!isProcessing) return;
+
+            cancelButton.disabled = true;
+            try {
+                if (!isListening) setStatus('Cancelling...', 'busy');
+                await window.__TAURI__.core.invoke('cancel_chat_streaming');
+            } catch (e) {
+                console.error('Failed to cancel streaming', e);
+                addMessage(`Cancel failed: ${e}`, 'agent');
+                // If backend says there's no active stream, don't leave UI stuck.
+                finalizeStreamForCurrentRequest({ statusText: 'Ready', statusKind: 'ready' });
+            } finally {
+                cancelButton.disabled = false;
             }
         });
 
-        // Focus input on load
+        voiceBtn.addEventListener('click', async () => {
+            // Voice toggle logic (simplified)
+            const isActive = voiceBtn.classList.contains('voice-active');
+            try {
+                if (isActive) {
+                    await window.__TAURI__.core.invoke('stop_voice_listening');
+                } else {
+                    await window.__TAURI__.core.invoke('start_voice_listening');
+                }
+            } catch (e) {
+                console.error("Voice error", e);
+            }
+        });
+
+        // Initialize
+        initHeaderControls();
+        setupEvents();
         messageInput.focus();
 
-        // Listen for speech-to-text messages from the backend
-        async function setupEventListeners() {
-            if (!isTauriAvailable()) {
-                console.warn('Tauri API not available - event listeners not set up');
-                return;
-            }
-
-            try {
-                // Listen for voice session start events
-                await window.__TAURI__.event.listen('voice-session-started', (event) => {
-                    const data = event.payload;
-                    console.log('Voice session started:', data);
-                    statusElement.innerHTML = '<span class="icon-microphone"></span> Processing voice input...';
-                    showTyping();
-                });
-
-                // Listen for chat messages from speech processing via global Tauri
-                await window.__TAURI__.event.listen('chat-message', (event) => {
-                    const data = event.payload;
-                    console.log('Received chat message:', data);
-
-                    if (data.type === 'user') {
-                        // Voice input received - hide typing indicator
-                        hideTyping();
-                        addMessage(data.message, 'user');
-                        // Show typing indicator for AI response
-                        showTyping();
-                        statusElement.textContent = 'Agent is thinking...';
-                    } else if (data.type === 'assistant') {
-                        hideTyping();
-                        addMessage(data.message, 'agent');
-                        statusElement.textContent = 'Voice command completed';
-                        // Reset status after a moment
-                        setTimeout(() => checkAgentStatus(), 3000);
-                    }
-                });
-
-                // Listen for listening state changes from tray/backend
-                await window.__TAURI__.event.listen('listening-state-changed', (event) => {
-                    const data = event.payload;
-                    console.log('Listening state changed:', data);
-
-                    if (data.is_listening) {
-                        setVoiceActive();
-                    } else {
-                        setVoiceInactive();
-                    }
-                });
-
-                // Listen for streaming chat chunks
-                await window.__TAURI__.event.listen('chat-stream-chunk', (event) => {
-                    const chunk = event.payload;
-                    console.log('Stream chunk:', chunk);
-
-                    // Hide typing indicator on first chunk
-                    if (!streamingMessageElement) {
-                        hideTyping();
-                        // Create a new message element for streaming
-                        streamingMessageElement = document.createElement('div');
-                        streamingMessageElement.className = 'message agent streaming';
-                        streamingMessageElement.innerHTML = '<div class="message-content"></div>';
-                        messagesContainer.appendChild(streamingMessageElement);
-                        messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                    }
-
-                    // Append chunk to streaming content
-                    streamingContent += chunk;
-                    const contentEl = streamingMessageElement.querySelector('.message-content');
-                    if (contentEl) {
-                        contentEl.innerHTML = parseMarkdown(streamingContent);
-                    }
-                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                });
-
-                // Listen for streaming completion
-                await window.__TAURI__.event.listen('chat-stream-done', () => {
-                    console.log('Stream done');
-                    if (streamingMessageElement) {
-                        streamingMessageElement.classList.remove('streaming');
-                    }
-                    finishStreaming();
-                });
-
-                // Listen for streaming cancellation
-                await window.__TAURI__.event.listen('chat-stream-cancelled', () => {
-                    console.log('Stream cancelled');
-                    if (streamingMessageElement) {
-                        streamingMessageElement.classList.remove('streaming');
-                        streamingMessageElement.classList.add('cancelled');
-                        const contentEl = streamingMessageElement.querySelector('.message-content');
-                        if (contentEl && streamingContent) {
-                            contentEl.innerHTML = parseMarkdown(streamingContent + '\n\n*[Cancelled]*');
-                        }
-                    }
-                    finishStreaming();
-                });
-
-                // Listen for streaming errors
-                await window.__TAURI__.event.listen('chat-stream-error', (event) => {
-                    const error = event.payload;
-                    console.error('Stream error:', error);
-                    hideTyping();
-                    if (streamingMessageElement) {
-                        streamingMessageElement.classList.remove('streaming');
-                        streamingMessageElement.classList.add('error');
-                    } else {
-                        addMessage(`Error: ${error}`, 'system');
-                    }
-                    finishStreaming();
-                });
-
-                console.log('Event listeners set up successfully');
-            } catch (error) {
-                console.error('Failed to set up event listeners:', error);
-            }
-        }
-
-        // Check agent status and LLM configuration
-        async function checkAgentStatus() {
-            try {
-                const config = await invoke('get_config');
-                const llmProvider = config.llm?.primary || 'echo';
-                statusElement.textContent = `Connected via ${llmProvider.toUpperCase()} - Ready for input`;
-            } catch (error) {
-                statusElement.textContent = 'Ready for voice and text input';
-                console.error('Failed to get config:', error);
-            }
-        }
-
-        // Voice control elements
-        const voiceBtn = document.getElementById('voiceBtn');
-        const voiceIcon = document.getElementById('voiceIcon');
-        const voiceStatus = document.getElementById('voiceStatus');
-
-        let isListening = false;
-        let voiceStatusInterval = null;
-
-        // Voice control functions
-        // NOTE: State is ONLY changed via 'listening-state-changed' events from the backend
-        // This ensures tray menu and chat button are always in sync
-        async function toggleVoiceListening() {
-            // Prevent double-clicks while processing
-            if (voiceBtn.disabled) return;
-            voiceBtn.disabled = true;
-
-            try {
-                if (isListening) {
-                    console.log('Stopping voice listening...');
-                    await invoke('stop_voice_listening');
-                    // Don't call setVoiceInactive() here - wait for backend event
-                } else {
-                    console.log('Starting voice listening...');
-                    await invoke('start_voice_listening');
-                    // Don't call setVoiceActive() here - wait for backend event
-                }
-            } catch (error) {
-                console.error('Failed to toggle voice listening:', error);
-                const message = typeof error === 'string' ? error : String(error);
-                voiceStatus.textContent = `Error: ${message}`;
-                addMessage(`Voice error: ${message}`, 'system');
-                // On error, sync state from backend
-                await checkInitialVoiceState();
-            } finally {
-                // Re-enable button after a short delay to prevent rapid clicks
-                setTimeout(() => { voiceBtn.disabled = false; }, 300);
-            }
-        }
-
-        function setVoiceActive() {
-            console.log('setVoiceActive() called');
-            isListening = true;
-            voiceBtn.className = 'voice-btn active';
-            voiceIcon.className = 'icon-recording';
-            voiceStatus.textContent = 'Listening...';
-            voiceBtn.title = 'Stop listening';
-        }
-
-        function setVoiceInactive() {
-            console.log('setVoiceInactive() called');
-            isListening = false;
-            voiceBtn.className = 'voice-btn inactive';
-            voiceIcon.className = 'icon-microphone';
-            voiceStatus.textContent = '';
-            voiceBtn.title = 'Voice input';
-        }
-
-        voiceBtn.addEventListener('click', toggleVoiceListening);
-
-        // Check and sync voice state with backend
-        async function checkInitialVoiceState() {
-            try {
-                const [listening, _] = await invoke('get_listening_state');
-                console.log('Initial voice state from backend:', listening);
-                if (listening) {
-                    setVoiceActive();
-                } else {
-                    setVoiceInactive();
-                }
-            } catch (error) {
-                console.error('Failed to check initial voice state:', error);
-            }
-        }
-
-        // Initialize the app with Tauri readiness check
-        async function initializeApp() {
-            const tauriReady = await waitForTauri();
-            if (!tauriReady) {
-                console.warn('Tauri API not available - running in standalone browser mode');
-                statusElement.textContent = 'Desktop app not connected';
-                addMessage('Chat requires the Gestura desktop app to function. Please launch the app.', 'system');
-                return;
-            }
-
-            setupEventListeners();
-            checkAgentStatus();
-            checkInitialVoiceState();
-        }
-
-        // Start initialization
-        initializeApp();
     </script>
 </body>
 

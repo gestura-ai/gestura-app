@@ -288,7 +288,7 @@ const RingSetupStep: React.FC<OnboardingStepProps> = ({ onNext, onPrevious, onCo
     if (!selectedRing) return;
 
     try {
-      await invoke('pair_ring', { deviceId: selectedRing });
+      await invoke('pair_ring', { device_id: selectedRing });
       onComplete({ ringId: selectedRing });
     } catch (error) {
       console.error('Ring pairing failed:', error);

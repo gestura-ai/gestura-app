@@ -82,7 +82,7 @@ const SimulatorPanel: React.FC<SimulatorPanelProps> = ({ onClose }) => {
 
   const resetSimulator = async (deviceId: string) => {
     try {
-      await invoke('reset_simulator', { deviceId });
+      await invoke('reset_simulator', { device_id: deviceId });
       await loadSimulators();
     } catch (error) {
       console.error('Failed to reset simulator:', error);
@@ -91,7 +91,7 @@ const SimulatorPanel: React.FC<SimulatorPanelProps> = ({ onClose }) => {
 
   const sendTestHaptic = async (deviceId: string, patternType: string) => {
     try {
-      await invoke('send_test_haptic', { deviceId, patternType });
+      await invoke('send_test_haptic', { device_id: deviceId, pattern_type: patternType });
     } catch (error) {
       console.error('Failed to send test haptic:', error);
     }
@@ -99,7 +99,7 @@ const SimulatorPanel: React.FC<SimulatorPanelProps> = ({ onClose }) => {
 
   const runComprehensiveTest = async (deviceId: string) => {
     try {
-      const results = await invoke<TestResults>('run_simulator_test', { deviceId });
+      const results = await invoke<TestResults>('run_simulator_test', { device_id: deviceId });
       setTestResults(results);
     } catch (error) {
       console.error('Failed to run comprehensive test:', error);
@@ -108,7 +108,7 @@ const SimulatorPanel: React.FC<SimulatorPanelProps> = ({ onClose }) => {
 
   const loadLogs = async (deviceId: string) => {
     try {
-      const logEntries = await invoke<string[]>('get_simulator_logs', { deviceId });
+      const logEntries = await invoke<string[]>('get_simulator_logs', { device_id: deviceId });
       setLogs(logEntries);
     } catch (error) {
       console.error('Failed to load logs:', error);
@@ -156,11 +156,10 @@ const SimulatorPanel: React.FC<SimulatorPanelProps> = ({ onClose }) => {
         <div className="flex gap-2">
           <button
             onClick={toggleDeveloperMode}
-            className={`px-4 py-2 rounded-lg ${
-              developerMode 
-                ? 'bg-green-600 text-white' 
+            className={`px-4 py-2 rounded-lg ${developerMode
+                ? 'bg-green-600 text-white'
                 : 'bg-gray-200 text-gray-700'
-            }`}
+              }`}
           >
             Developer Mode: {developerMode ? 'ON' : 'OFF'}
           </button>
@@ -202,9 +201,8 @@ const SimulatorPanel: React.FC<SimulatorPanelProps> = ({ onClose }) => {
               {Object.entries(simulators).map(([id, sim]) => (
                 <div
                   key={id}
-                  className={`p-3 border rounded-lg cursor-pointer ${
-                    selectedSimulator === id ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
-                  }`}
+                  className={`p-3 border rounded-lg cursor-pointer ${selectedSimulator === id ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
+                    }`}
                   onClick={() => setSelectedSimulator(id)}
                 >
                   <div className="flex items-center justify-between">
@@ -318,7 +316,7 @@ const SimulatorPanel: React.FC<SimulatorPanelProps> = ({ onClose }) => {
             <h3 className="text-lg font-semibold mb-4">
               {testResults ? 'Test Results' : 'Connection Logs'}
             </h3>
-            
+
             {testResults ? (
               <div className="space-y-2">
                 <div className="flex justify-between">

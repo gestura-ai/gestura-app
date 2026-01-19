@@ -33,9 +33,9 @@ const RingPanel: React.FC = () => {
 
   const pairRing = async () => {
     if (!selectedRing) return;
-    
+
     try {
-      await invoke('pair_ring', { deviceId: selectedRing });
+      await invoke('pair_ring', { device_id: selectedRing });
       await updateRingStatus();
     } catch (error) {
       console.error('Failed to pair ring:', error);
@@ -44,9 +44,9 @@ const RingPanel: React.FC = () => {
 
   const updateRingStatus = async () => {
     if (!selectedRing) return;
-    
+
     try {
-      const status = await invoke<RingStatus | null>('get_ring_status', { deviceId: selectedRing });
+      const status = await invoke<RingStatus | null>('get_ring_status', { device_id: selectedRing });
       setRingStatus(status);
     } catch (error) {
       console.error('Failed to get ring status:', error);
@@ -55,13 +55,13 @@ const RingPanel: React.FC = () => {
 
   const sendHaptic = async (pattern: string, intensity: number = 0.7, duration: number = 100) => {
     if (!selectedRing) return;
-    
+
     try {
       await invoke('send_haptic_feedback', {
-        deviceId: selectedRing,
+        device_id: selectedRing,
         pattern,
         intensity,
-        durationMs: duration
+        duration_ms: duration
       });
     } catch (error) {
       console.error('Failed to send haptic:', error);
@@ -70,12 +70,12 @@ const RingPanel: React.FC = () => {
 
   const toggleGestureMonitoring = async () => {
     if (!selectedRing) return;
-    
+
     try {
       if (monitoring) {
-        await invoke('stop_gesture_monitoring', { deviceId: selectedRing });
+        await invoke('stop_gesture_monitoring', { device_id: selectedRing });
       } else {
-        await invoke('start_gesture_monitoring', { deviceId: selectedRing });
+        await invoke('start_gesture_monitoring', { device_id: selectedRing });
       }
       setMonitoring(!monitoring);
     } catch (error) {
@@ -92,13 +92,13 @@ const RingPanel: React.FC = () => {
   return (
     <div>
       <h2>Haptic Harmony Ring</h2>
-      
+
       <div className="panel">
         <h3>Device Discovery</h3>
-        
+
         <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
-          <button 
-            className="btn" 
+          <button
+            className="btn"
             onClick={scanForRings}
             disabled={scanning}
           >
@@ -109,8 +109,8 @@ const RingPanel: React.FC = () => {
         {rings.length > 0 && (
           <div className="form-group">
             <label>Available Rings</label>
-            <select 
-              value={selectedRing} 
+            <select
+              value={selectedRing}
               onChange={(e) => setSelectedRing(e.target.value)}
             >
               {rings.map(ring => (
@@ -125,12 +125,12 @@ const RingPanel: React.FC = () => {
         <>
           <div className="panel">
             <h3>Ring Status</h3>
-            
+
             {ringStatus ? (
               <div>
                 <p><strong>Device ID:</strong> {ringStatus.device_id}</p>
                 <p>
-                  <strong>Status:</strong> 
+                  <strong>Status:</strong>
                   <span className={`status-indicator ${ringStatus.is_connected ? 'status-connected' : 'status-disconnected'}`}></span>
                   {ringStatus.is_connected ? 'Connected' : 'Disconnected'}
                 </p>
@@ -145,7 +145,7 @@ const RingPanel: React.FC = () => {
             ) : (
               <p>Loading status...</p>
             )}
-            
+
             <div style={{ marginTop: '1rem' }}>
               <button className="btn" onClick={pairRing}>
                 Pair Ring
@@ -158,7 +158,7 @@ const RingPanel: React.FC = () => {
 
           <div className="panel">
             <h3>Haptic Testing</h3>
-            
+
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem', marginBottom: '1rem' }}>
               <button className="btn btn-secondary" onClick={() => sendHaptic('click')}>
                 Click
@@ -170,9 +170,9 @@ const RingPanel: React.FC = () => {
                 Ramp
               </button>
             </div>
-            
+
             <div style={{ display: 'flex', gap: '0.5rem' }}>
-              <button 
+              <button
                 className={`btn ${monitoring ? 'btn-secondary' : ''}`}
                 onClick={toggleGestureMonitoring}
               >

@@ -157,28 +157,72 @@
         async function loadStatus() {
             statusGrid.innerHTML = '';
 
-            for (const item of statusItems) {
-                try {
-                    // Mock status for now - replace with actual system checks
-                    const status = {
-                        value: item.id === 'agents' ? '1 Active' :
-                            item.id === 'memory' ? '45 MB' :
-                                item.id === 'nats' ? 'Disconnected' : 'Healthy',
-                        level: item.id === 'nats' ? 'warning' : 'healthy',
-                        description: item.id === 'nats' ? 'Using memory bus fallback' : item.description
-                    };
+            const [health, agents, natsConnected, permissions, isRecording, rings] = await Promise.all([
+                invoke('get_system_health').catch(() => null),
+                invoke('list_agents').catch(() => null),
+                invoke('get_nats_status').catch(() => false),
+                invoke('check_system_permissions').catch(() => null),
+                invoke('get_speech_status').catch(() => false),
+                invoke('scan_for_rings').catch(() => [])
+            ]);
 
-                    const card = createStatusCard(item, status);
-                    statusGrid.appendChild(card);
-                } catch (error) {
-                    console.error(`Failed to get status for ${item.id}:`, error);
-                    const card = createStatusCard(item, {
-                        value: 'Error',
-                        level: 'error',
-                        description: 'Failed to retrieve status'
-                    });
-                    statusGrid.appendChild(card);
+            // Determine ring connection (best-effort)
+            let ringConnected = false;
+            if (Array.isArray(rings) && rings.length > 0) {
+                const statuses = await Promise.all(
+                    rings.map((deviceId) => invoke('get_ring_status', { device_id: deviceId }).catch(() => null))
+                );
+                ringConnected = statuses.some((s) => s && s.is_connected === true);
+            }
+
+            const agentCount = agents && typeof agents.count === 'number' ? agents.count : 0;
+            const missingRequired = permissions?.summary?.missing_required ?? permissions?.missing_required_count;
+            const missingRequiredCount = typeof missingRequired === 'number' ? missingRequired : 0;
+
+            const memUsage = health && typeof health.memory_usage === 'number' ? health.memory_usage : null;
+            const memLevel = memUsage === null ? 'warning' : memUsage > 95 ? 'error' : memUsage > 80 ? 'warning' : 'healthy';
+
+            const computed = {
+                voice: {
+                    value: isRecording ? 'Listening' : 'Idle',
+                    level: 'healthy',
+                    description: isRecording ? 'Speech capture is active' : 'Speech capture is idle'
+                },
+                nats: {
+                    value: natsConnected ? 'Connected' : 'Disconnected',
+                    level: natsConnected ? 'healthy' : 'warning',
+                    description: natsConnected ? 'Message bus connected' : 'Using in-memory fallback'
+                },
+                agents: {
+                    value: `${agentCount} Active`,
+                    level: agentCount > 0 ? 'healthy' : 'warning',
+                    description: 'Running agent instances'
+                },
+                bluetooth: {
+                    value: ringConnected ? 'Connected' : (Array.isArray(rings) && rings.length > 0 ? 'Detected' : 'Not Detected'),
+                    level: ringConnected ? 'healthy' : 'warning',
+                    description: ringConnected ? 'Ring connection is active' : 'No active ring connection'
+                },
+                permissions: {
+                    value: missingRequiredCount === 0 ? 'OK' : 'Missing',
+                    level: missingRequiredCount === 0 ? 'healthy' : 'warning',
+                    description: missingRequiredCount === 0 ? 'Required permissions granted' : `${missingRequiredCount} required permission(s) missing`
+                },
+                memory: {
+                    value: memUsage === null ? 'Unknown' : `${memUsage.toFixed(1)}%`,
+                    level: memLevel,
+                    description: memUsage === null ? 'Unable to read memory usage' : 'System memory usage'
                 }
+            };
+
+            for (const item of statusItems) {
+                const status = computed[item.id] || {
+                    value: 'Unknown',
+                    level: 'warning',
+                    description: item.description
+                };
+                const card = createStatusCard(item, status);
+                statusGrid.appendChild(card);
             }
         }
 
