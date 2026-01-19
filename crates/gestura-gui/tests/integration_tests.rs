@@ -82,7 +82,11 @@ async fn test_mcp_server_functionality() {
 
     let response = mcp_server.handle_request(haptic_request).await;
     assert_eq!(response.jsonrpc, "2.0");
-    assert!(response.result.is_some(), "Expected result but got error: {:?}", response.error);
+    assert!(
+        response.result.is_some(),
+        "Expected result but got error: {:?}",
+        response.error
+    );
     assert!(response.error.is_none());
 }
 

@@ -27,7 +27,9 @@ fn stage4_llm_echo_provider() {
     );
     let rt = tokio::runtime::Runtime::new().unwrap();
     // In dev mode, EchoProvider is available via cfg(feature = "dev") in gestura-core
-    let out = rt.block_on(provider.call("hello")).expect("echo works in dev mode");
+    let out = rt
+        .block_on(provider.call("hello"))
+        .expect("echo works in dev mode");
     assert!(out.contains("ECHO: hello"));
 }
 
@@ -49,7 +51,10 @@ fn stage4_llm_unconfigured_provider() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     // In production mode, this should return an error
     let result = rt.block_on(provider.call("hello"));
-    assert!(result.is_err(), "Expected error for unconfigured provider in production");
+    assert!(
+        result.is_err(),
+        "Expected error for unconfigured provider in production"
+    );
 }
 
 #[tokio::test]
