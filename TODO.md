@@ -1,5 +1,16 @@
 # Gestura.app TODO
 
+## Current: Release hardening + “no TODOs in code” policy
+
+**Rule:** track remaining work *here* (this file). Do **not** leave `TODO`/`FIXME`/`XXX` markers (or Rust `todo!()`/`unimplemented!()`) in shipped code.
+
+- [x] Fix Tauri `invoke(...)` payload keys to match Rust `#[tauri::command]` arg names (snake_case)
+- [x] Fix clippy hard error in core agentic loop (`execute_agentic_loop_blocking` “loop never actually loops”)
+- [x] Verify no `TODO`/`FIXME`/`XXX` markers (or `todo!()`/`unimplemented!()`) remain in `crates/` or `crates/gestura-gui/frontend/`
+- [x] Run Rust quality gates: `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`, `cargo test --workspace --all-features`
+- [ ] (Optional, recommended) Add an automated check (CI/`just`) that fails if `TODO`/`FIXME`/`XXX`/`todo!()`/`unimplemented!()` appear in code
+- [ ] Decide whether we want to enforce `cargo clippy --workspace --all-targets --all-features -- -D warnings` (currently there are warnings)
+
 ## Phase 1: Core Infrastructure (High Priority)
 
 ### NATS & Messaging

@@ -3,14 +3,39 @@
 An always‑ready, local‑first companion app for the Gestura Haptic Harmony ring. Built in Rust with Tauri 2, it integrates voice (local ASR), MCP agents, NATS MQ, and haptic/gesture tooling with a focus on privacy, performance, and extensibility.
 
 ## Features (Current)
-- Local‑first voice: whisper.cpp via whisper‑rs (feature `voice-local`), with OpenAI Whisper HTTP fallback
-- LLM provider abstraction: OpenAI, Anthropic (Claude), Grok (xAI), Ollama (local); choose via config
-- Embedded MQ (client): async‑nats with JetStream KV wrappers; event subjects scaffolded
-- Agents: lightweight task manager with shutdown + persisted state to KV (scaffold)
-- MCP/MDH: config hooks for tools and MDH pointers; local translation stub
-- System Tray + Global Hotkey: background ready, hotkey triggers
-- UI Preferences: theme mode (system/light/dark) + accent via Tauri commands
-- Packaged scripts: Makefile + Justfile for build/run across platforms
+
+### Voice & LLM
+- **Local‑first voice**: whisper.cpp via whisper‑rs (feature `voice-local`), with OpenAI Whisper HTTP fallback
+- **LLM provider abstraction**: OpenAI, Anthropic (Claude), Grok (xAI), Ollama (local); choose via config
+- **Token tracking**: Real-time tracking of prompt, completion, and total tokens with usage statistics
+
+### CLI (gestura-cli)
+- **Modern TUI**: Professional ratatui-based terminal interface
+  - Tabbed views: Chat, Tools, Settings, Help
+  - Streaming responses with real-time token display
+  - Vim-style modal editing (optional)
+  - Command palette (`/`) with fuzzy search
+  - Syntax highlighting for code blocks
+  - Mouse support and responsive layouts
+- **Commands**: chat, exec, listen, config, model, device, mcp, a2a, session, agent, privacy, health, completion, init, tools
+
+### MCP (Model Context Protocol)
+- **Full 2025-11-25 spec compliance**: lifecycle, prompts, notifications, capabilities
+- **MCP Server**: Embedded server with tool registration and execution
+- **CLI commands**: `gestura mcp status`, `gestura mcp prompts`, `gestura mcp capabilities`
+
+### A2A (Agent-to-Agent Protocol)
+- **Agent discovery**: via Agent Cards with skills and authentication info
+- **Profile management**: Identity propagation with bearer token authentication
+- **Task communication**: JSON-RPC 2.0 based task create/status/cancel
+- **CLI commands**: `gestura a2a status`, `gestura a2a profiles`, `gestura a2a discover`, `gestura a2a token`
+
+### Infrastructure
+- **Embedded MQ (client)**: async‑nats with JetStream KV wrappers; event subjects scaffolded
+- **Agents**: lightweight task manager with shutdown + persisted state to KV
+- **System Tray + Global Hotkey**: background ready, hotkey triggers
+- **UI Preferences**: theme mode (system/light/dark) + accent via Tauri commands
+- **Cross-platform**: macOS (Intel + Apple Silicon), Windows, Linux builds
 
 ## Features (Planned / Roadmap)
 - Faster‑Whisper (feature `voice-faster-whisper`) preferred when enabled
@@ -46,6 +71,7 @@ Key sections:
 - `ui`: `{ theme_mode: "system"|"light"|"dark", accent: "blue" | hex }`
 - `voice`: `{ provider: "local"|"openai"|"none", input_path, local_model_path, openai_* }`
 - `llm.primary`: "openai"|"anthropic"|"grok"|"ollama"|"echo"
+- `llm.anthropic.thinking_budget_tokens`: optional number; enables Claude "extended thinking" (provider-native) when supported by the selected model
 - `mcp_tools`: array of `{name, endpoint}`
 - `mdh_pointers`: map of dataset aliases to URIs
 - `nats_url`: default `nats://127.0.0.1:4222`
@@ -63,9 +89,30 @@ Tauri commands:
 - Planned: Faster‑Whisper (`voice-faster-whisper`) with selection preference
 
 ## MCP & MDH
+- **MCP Server**: Full 2025-11-25 specification compliance
+  - Lifecycle: initialize, ping, shutdown with capability negotiation
+  - Prompts: List and retrieve prompt templates
+  - Notifications: Progress tracking, logging, cancellation
+  - Tools: Register and execute MCP tools
+- **CLI Commands**:
+  - `gestura mcp status` - Show server status and connections
+  - `gestura mcp prompts` - List available prompts
+  - `gestura mcp capabilities` - Show server capabilities
 - Add tools via config; MDH pointers map JSON‑LD datasets
-- Agents can call MDH translate to expose MCP URIs
-- Dual auth planned: app approval + MCP token per tool
+- Dual auth: app approval + MCP token per tool
+
+## A2A (Agent-to-Agent Protocol)
+- **Protocol**: Google's Agent2Agent open protocol (Linux Foundation)
+- **Agent Cards**: Discovery with skills, authentication requirements, I/O modes
+- **Authentication**: Bearer token with expiration and profile propagation
+- **Task Communication**: JSON-RPC 2.0 for task/create, task/status, task/cancel
+- **CLI Commands**:
+  - `gestura a2a status` - Show protocol status and features
+  - `gestura a2a profiles` - List registered agent profiles
+  - `gestura a2a discover <url>` - Discover remote agent
+  - `gestura a2a register` - Register new agent profile
+  - `gestura a2a token <agent_id>` - Generate auth token
+  - `gestura a2a send` - Send task to remote agent
 
 ## Agents & NATS
 - AgentManager spawns agent tasks; events forwarded from NATS subjects (scaffold)

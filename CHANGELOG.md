@@ -8,10 +8,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+#### Modern TUI Implementation
+- **Advanced TUI Architecture**: Complete ratatui-based terminal UI with professional features
+  - Tabbed interface (Chat, Tools, Settings, Help) with keyboard/mouse navigation
+  - Stateful scrollable message list with visual scroll indicators
+  - Real-time streaming response display with cancellation support (Escape key)
+  - Enhanced input field with full cursor control and multi-line support (Shift+Enter)
+  - Command palette system (`/` prefix) with fuzzy filtering and tab completion
+  - Popup and modal system for help screens and confirmations
+  - Mouse support for scrolling, tab switching, and message selection
+  - Vim-style modal editing (optional) with Normal/Insert/Command modes
+  - Syntax highlighting for code blocks using syntect
+  - Theme customization (default, dark, light, high-contrast)
+  - Search and filter within messages (Ctrl+F)
+  - Session management UI for listing, switching, and exporting sessions
+  - Responsive layout adapting to terminal size (80x24 minimum)
+
+#### MCP Protocol Alignment (2025-11-25 Specification)
+- **Lifecycle Management**: Initialize/ping/shutdown handlers with capability negotiation
+- **Prompts Feature**: List and get prompts with voice command templates
+- **Notifications System**: Progress tracking, structured logging, cancellation notifications
+- **CLI Commands**: `gestura mcp status`, `gestura mcp prompts`, `gestura mcp capabilities`
+- **Modular Architecture**: Restructured into types.rs, lifecycle.rs, prompts.rs, notifications.rs, integrator.rs
+
+#### A2A Protocol (Agent-to-Agent)
+- **AgentProfile**: Identity and authentication for cross-agent interactions
+- **ProfileStore**: Thread-safe storage for agent profiles with token validation
+- **Enhanced A2AServer**: Authentication enforcement, profile registration, token validation
+- **Enhanced A2AClient**: Profile-aware client with registration and validation methods
+- **CLI Commands**: `gestura a2a status`, `gestura a2a profiles`, `gestura a2a discover`, `gestura a2a register`, `gestura a2a token`, `gestura a2a validate`, `gestura a2a agents`, `gestura a2a send`
+
+#### Token Tracking
+- **TokenTracker Module**: Real-time tracking of prompt, completion, and total tokens
+- **Usage Statistics**: Per-request and session-wide token accounting
+- **GUI Integration**: Token display in chat interface with usage breakdown
+- **CLI Integration**: Token counts in TUI status bar and streaming responses
+
+#### Infrastructure
 - **gestura-cli**: Full-featured CLI binary with all commands (chat, exec, listen, config, model, device, mcp, session, agent, privacy, health, completion, init, tools)
 - **gestura-core**: Shared library crate with all business logic (config, error, llm_provider, mcp, gdpr, session_manager, telemetry, audio_capture, speech, tools)
-- **CLI TUI mode**: Interactive terminal UI with ratatui for chat sessions (`gestura chat --tui`)
-- **CLI tools**: Built-in system tools (file, shell, git, code, web, permissions) accessible via `gestura tools`
 - **Universal macOS binary**: CLI and GUI both build as universal binaries (Intel + Apple Silicon)
 - **PKG installer**: macOS installer that places Gestura.app in /Applications and gestura CLI in /usr/local/bin
 - **Signed releases**: Full code signing support for .app, .pkg, and CLI binary with notarization
@@ -22,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - AppImage creation for universal Linux compatibility
 - Professional release notes with comprehensive feature descriptions
 - Version synchronization across Cargo.toml, package.json, and tauri.conf.json
+- System tray icon generation script (`scripts/generate-tray-icons.sh`)
 
 ### Changed
 - **BREAKING**: Workspace restructured to Core-First architecture

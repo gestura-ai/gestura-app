@@ -79,6 +79,53 @@ The bm-agents `docs/SRS_GESTURA_APP.md` describes a **mobile-focused app** with 
 | FR-AGENT-002 | Agent Orchestrator | ❌ Missing | ✅ **COMPLETE** | Task delegation |
 | FR-AGENT-004 | Message Bus | ❌ Missing | ✅ **COMPLETE** | NATS + Memory fallback |
 
+### MCP Protocol Requirements (2025-11-25 Specification)
+
+| Req ID | Requirement | bm-agents SRS | Implementation Status | Notes |
+|--------|-------------|---------------|----------------------|-------|
+| FR-MCP-001 | Lifecycle Management | ❌ Missing | ✅ **COMPLETE** | initialize, ping, shutdown |
+| FR-MCP-002 | Capability Negotiation | ❌ Missing | ✅ **COMPLETE** | Server/client caps exchange |
+| FR-MCP-003 | Prompts Feature | ❌ Missing | ✅ **COMPLETE** | list/get prompts |
+| FR-MCP-004 | Progress Notifications | ❌ Missing | ✅ **COMPLETE** | ProgressTracker |
+| FR-MCP-005 | Logging Notifications | ❌ Missing | ✅ **COMPLETE** | McpLogger structured logs |
+| FR-MCP-006 | Cancellation Support | ❌ Missing | ✅ **COMPLETE** | cancelled notification |
+| FR-MCP-007 | CLI Commands | ❌ Missing | ✅ **COMPLETE** | status, prompts, capabilities |
+
+### A2A Protocol Requirements (Agent-to-Agent)
+
+| Req ID | Requirement | bm-agents SRS | Implementation Status | Notes |
+|--------|-------------|---------------|----------------------|-------|
+| FR-A2A-001 | Agent Cards | ❌ Missing | ✅ **COMPLETE** | Discovery with skills |
+| FR-A2A-002 | Agent Profiles | ❌ Missing | ✅ **COMPLETE** | Identity propagation |
+| FR-A2A-003 | Token Authentication | ❌ Missing | ✅ **COMPLETE** | Bearer tokens with expiry |
+| FR-A2A-004 | Profile Store | ❌ Missing | ✅ **COMPLETE** | Thread-safe storage |
+| FR-A2A-005 | Task Communication | ❌ Missing | ✅ **COMPLETE** | JSON-RPC 2.0 create/status/cancel |
+| FR-A2A-006 | CLI Commands | ❌ Missing | ✅ **COMPLETE** | 8 subcommands |
+
+### TUI Requirements (Modern Terminal Interface)
+
+| Req ID | Requirement | bm-agents SRS | Implementation Status | Notes |
+|--------|-------------|---------------|----------------------|-------|
+| FR-TUI-001 | Tabbed Interface | ❌ Missing | ✅ **COMPLETE** | Chat, Tools, Settings, Help |
+| FR-TUI-002 | Stateful Scrolling | ❌ Missing | ✅ **COMPLETE** | ListState with indicators |
+| FR-TUI-003 | Streaming Display | ❌ Missing | ✅ **COMPLETE** | Real-time token display |
+| FR-TUI-004 | Command Palette | ❌ Missing | ✅ **COMPLETE** | / prefix with fuzzy filter |
+| FR-TUI-005 | Vim Mode | ❌ Missing | ✅ **COMPLETE** | Optional modal editing |
+| FR-TUI-006 | Syntax Highlighting | ❌ Missing | ✅ **COMPLETE** | syntect for code blocks |
+| FR-TUI-007 | Theme Support | ❌ Missing | ✅ **COMPLETE** | 4 built-in themes |
+| FR-TUI-008 | Mouse Support | ❌ Missing | ✅ **COMPLETE** | Scroll, click, right-click |
+| FR-TUI-009 | Session Management UI | ❌ Missing | ✅ **COMPLETE** | List, switch, export |
+
+### Token Tracking Requirements
+
+| Req ID | Requirement | bm-agents SRS | Implementation Status | Notes |
+|--------|-------------|---------------|----------------------|-------|
+| FR-TOKEN-001 | Usage Tracking | ❌ Missing | ✅ **COMPLETE** | TokenTracker module |
+| FR-TOKEN-002 | Per-Request Stats | ❌ Missing | ✅ **COMPLETE** | Prompt/completion breakdown |
+| FR-TOKEN-003 | Session Stats | ❌ Missing | ✅ **COMPLETE** | Cumulative tracking |
+| FR-TOKEN-004 | GUI Display | ❌ Missing | ✅ **COMPLETE** | Chat interface integration |
+| FR-TOKEN-005 | CLI Display | ❌ Missing | ✅ **COMPLETE** | TUI status bar |
+
 ---
 
 ## Milestone Status Comparison
@@ -157,10 +204,10 @@ software_applications:
 
 ### High Priority
 
-3. **🟡 Create `AGENT.md` in gestura-app**
-   - Provide development guidance for agents
-   - Reference correct documentation
-   - Include CLI/GUI architecture overview
+3. **🟡 Maintain `AGENTS.md` in gestura-app**
+   - Canonical development guidance for agents (Gestura standard; replaces `CLAUDE.md`)
+   - Reference correct documentation (especially `docs/SRS-gestura-app.md`)
+   - Keep Claude Code migration mapping up to date (permissions, command templates, headless mode)
 
 4. **🟡 Verify milestone alignment**
    - Ensure bm-agents milestones match actual project timeline
