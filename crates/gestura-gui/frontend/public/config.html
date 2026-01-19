@@ -2281,9 +2281,15 @@
                     }
                 }
 
-                // If Ollama is selected, try to refresh models
+                // Refresh models for the selected provider
                 if (provider === 'ollama') {
                     refreshOllamaModels();
+                } else if (provider === 'openai') {
+                    refreshOpenAIModels();
+                } else if (provider === 'anthropic') {
+                    refreshAnthropicModels();
+                } else if (provider === 'grok') {
+                    loadGrokModels();
                 }
             }
 
@@ -2336,18 +2342,30 @@
                 if (openaiLlmApiKey) openaiLlmApiKey.value = llmConfig?.openai?.api_key || '';
                 const openaiLlmModel = document.getElementById('openaiLlmModel');
                 if (openaiLlmModel) openaiLlmModel.value = llmConfig?.openai?.model || 'gpt-4o';
+                // Store for later selection after dynamic models are loaded
+                if (llmConfig?.openai?.model) {
+                    window._savedOpenAIModel = llmConfig.openai.model;
+                }
 
                 // Anthropic settings
                 const anthropicApiKey = document.getElementById('anthropicApiKey');
                 if (anthropicApiKey) anthropicApiKey.value = llmConfig?.anthropic?.api_key || '';
                 const anthropicLlmModel = document.getElementById('anthropicLlmModel');
                 if (anthropicLlmModel) anthropicLlmModel.value = llmConfig?.anthropic?.model || 'claude-sonnet-4-20250514';
+                // Store for later selection after dynamic models are loaded
+                if (llmConfig?.anthropic?.model) {
+                    window._savedAnthropicModel = llmConfig.anthropic.model;
+                }
 
                 // Grok settings
                 const grokApiKey = document.getElementById('grokApiKey');
                 if (grokApiKey) grokApiKey.value = llmConfig?.grok?.api_key || '';
                 const grokLlmModel = document.getElementById('grokLlmModel');
-                if (grokLlmModel) grokLlmModel.value = llmConfig?.grok?.model || 'grok-2';
+                if (grokLlmModel) grokLlmModel.value = llmConfig?.grok?.model || 'grok-3';
+                // Store saved model for restoration after dynamic loading
+                if (llmConfig?.grok?.model) {
+                    window._savedGrokModel = llmConfig.grok.model;
+                }
 
                 // Ollama settings
                 document.getElementById('localLlmEndpoint').value = llmConfig?.ollama?.base_url || 'http://localhost:11434';
@@ -2514,45 +2532,49 @@
                     ollama: null
                 };
 
-                // Set provider-specific config based on selection
-                if (llmProvider === 'openai') {
-                    const apiKey = document.getElementById('openaiLlmApiKey')?.value || '';
-                    const model = document.getElementById('openaiLlmModel')?.value || 'gpt-4o';
-                    if (apiKey) {
-                        llmSettings.openai = {
-                            api_key: apiKey,
-                            base_url: null,
-                            model: model
-                        };
-                    }
-                } else if (llmProvider === 'anthropic') {
-                    const apiKey = document.getElementById('anthropicApiKey')?.value || '';
-                    const model = document.getElementById('anthropicLlmModel')?.value || 'claude-sonnet-4-20250514';
-                    if (apiKey) {
-                        llmSettings.anthropic = {
-                            api_key: apiKey,
-                            base_url: null,
-                            model: model
-                        };
-                    }
-                } else if (llmProvider === 'grok') {
-                    const apiKey = document.getElementById('grokApiKey')?.value || '';
-                    const model = document.getElementById('grokLlmModel')?.value || 'grok-2';
-                    if (apiKey) {
-                        llmSettings.grok = {
-                            api_key: apiKey,
-                            base_url: null,
-                            model: model
-                        };
-                    }
-                } else if (llmProvider === 'ollama') {
-                    const baseUrl = document.getElementById('localLlmEndpoint')?.value || 'http://localhost:11434';
-                    const model = document.getElementById('ollamaModel')?.value || 'llama3.2';
-                    llmSettings.ollama = {
-                        base_url: baseUrl,
-                        model: model
+                // Save ALL provider configs, not just the selected one
+                // This ensures API keys are preserved when switching providers
+
+                // OpenAI config
+                const openaiApiKey = document.getElementById('openaiLlmApiKey')?.value || '';
+                const openaiModel = document.getElementById('openaiLlmModel')?.value || 'gpt-4o';
+                if (openaiApiKey) {
+                    llmSettings.openai = {
+                        api_key: openaiApiKey,
+                        base_url: null,
+                        model: openaiModel
                     };
                 }
+
+                // Anthropic config
+                const anthropicApiKey = document.getElementById('anthropicApiKey')?.value || '';
+                const anthropicModel = document.getElementById('anthropicLlmModel')?.value || 'claude-sonnet-4-20250514';
+                if (anthropicApiKey) {
+                    llmSettings.anthropic = {
+                        api_key: anthropicApiKey,
+                        base_url: null,
+                        model: anthropicModel
+                    };
+                }
+
+                // Grok config
+                const grokApiKey = document.getElementById('grokApiKey')?.value || '';
+                const grokModel = document.getElementById('grokLlmModel')?.value || 'grok-2';
+                if (grokApiKey) {
+                    llmSettings.grok = {
+                        api_key: grokApiKey,
+                        base_url: null,
+                        model: grokModel
+                    };
+                }
+
+                // Ollama config (always save since it doesn't require API key)
+                const ollamaBaseUrl = document.getElementById('localLlmEndpoint')?.value || 'http://localhost:11434';
+                const ollamaModel = document.getElementById('ollamaModel')?.value || 'llama3.2';
+                llmSettings.ollama = {
+                    base_url: ollamaBaseUrl,
+                    model: ollamaModel
+                };
 
                 // Handle speech configuration separately
                 const speechConfig = {
@@ -2740,25 +2762,66 @@
         };
 
         // Device management functions
+        const deviceKindById = new Map();
+
+        function renderDevices(deviceList, devices) {
+            if (devices.length === 0) {
+                deviceList.innerHTML = '<div class="device-item"><div class="device-info"><div class="device-name">No devices found</div><div class="device-status">Click "Scan for Devices" to discover available devices</div></div></div>';
+                return;
+            }
+            deviceList.innerHTML = devices.join('');
+        }
+
         window.scanForDevices = async function () {
             const deviceList = document.getElementById('deviceList');
             deviceList.innerHTML = '<div class="device-item"><div class="device-info"><div class="device-name">Scanning...</div><div class="device-status">Looking for available devices</div></div></div>';
 
             try {
-                // TODO: Implement actual device scanning
-                setTimeout(() => {
-                    deviceList.innerHTML = `
-                        <div class="device-item">
-                            <div class="device-info">
-                                <div class="device-name">Haptic Harmony Ring Simulator</div>
-                                <div class="device-status">Available - Not connected</div>
-                            </div>
-                            <div class="device-actions">
-                                <button class="device-button" onclick="connectDevice('simulator-1')">Connect</button>
-                            </div>
-                        </div>
-                    `;
-                }, 2000);
+                if (!isTauriAvailable()) {
+                    deviceList.innerHTML = '<div class="device-item"><div class="device-info"><div class="device-name">Tauri API not available</div><div class="device-status">Please run in the desktop app to scan for devices</div></div></div>';
+                    return;
+                }
+
+                const invoke = window.__TAURI__.core.invoke;
+                const [rings, simulators] = await Promise.all([
+                    invoke('scan_for_rings').catch(() => []),
+                    invoke('scan_for_simulators').catch(() => [])
+                ]);
+
+                deviceKindById.clear();
+                (rings || []).forEach((id) => deviceKindById.set(id, 'ring'));
+                (simulators || []).forEach((id) => deviceKindById.set(id, 'simulator'));
+
+                const deviceIds = [...new Set([...(rings || []), ...(simulators || [])])];
+                const cards = [];
+
+                for (const deviceId of deviceIds) {
+                    const status = await invoke('get_ring_status', { device_id: deviceId }).catch(() => null);
+                    const isSim = (deviceKindById.get(deviceId) === 'simulator') || (status && status.is_simulator === true);
+                    const connected = status && status.is_connected === true;
+                    const name = isSim ? 'Haptic Harmony Ring Simulator' : 'Haptic Harmony Ring';
+                    const fw = status && status.firmware_version ? ` • ${status.firmware_version}` : '';
+                    const battery = status && typeof status.battery_level === 'number' ? ` • ${status.battery_level}%` : '';
+
+                    cards.push(`
+	                        <div class="device-item">
+	                            <div class="device-info">
+	                                <div class="device-name">${name}</div>
+	                                <div class="device-status">${connected ? 'Connected' : 'Available - Not connected'}${fw}${battery}</div>
+	                            </div>
+	                            <div class="device-actions">
+	                                ${connected
+                            ? `<button class="device-button" onclick="testDevice('${deviceId}')">Test</button>
+	                                       <button class="device-button danger" onclick="disconnectDevice('${deviceId}')">Disconnect</button>`
+                            : `<button class="device-button" onclick="connectDevice('${deviceId}')">Connect</button>`
+                        }
+	                            </div>
+	                        </div>
+	                    `);
+                }
+
+                renderDevices(deviceList, cards);
+                showStatus(`Scan complete: ${deviceIds.length} device(s) found`);
             } catch (error) {
                 console.error('Device scan failed:', error);
                 deviceList.innerHTML = '<div class="device-item"><div class="device-info"><div class="device-name">Scan failed</div><div class="device-status">Unable to scan for devices</div></div></div>';
@@ -2773,40 +2836,63 @@
             console.log('Connecting to device:', deviceId);
             showStatus('Connecting to device...', 'info');
 
-            // TODO: Implement actual device connection
-            setTimeout(() => {
-                const deviceList = document.getElementById('deviceList');
-                deviceList.innerHTML = `
-                    <div class="device-item">
-                        <div class="device-info">
-                            <div class="device-name">Haptic Harmony Ring Simulator</div>
-                            <div class="device-status">Connected - Authenticated</div>
-                        </div>
-                        <div class="device-actions">
-                            <button class="device-button" onclick="testDevice('${deviceId}')">Test</button>
-                            <button class="device-button danger" onclick="disconnectDevice('${deviceId}')">Disconnect</button>
-                        </div>
-                    </div>
-                `;
+            try {
+                if (!isTauriAvailable()) {
+                    showStatus('✗ Tauri API not available. Please run in the desktop app.', 'error');
+                    return;
+                }
+
+                const invoke = window.__TAURI__.core.invoke;
+                await invoke('pair_ring', { device_id: deviceId });
                 showStatus('Device connected successfully');
-            }, 1500);
+                await window.scanForDevices();
+            } catch (error) {
+                console.error('Connect failed:', error);
+                showStatus(`✗ Failed to connect: ${error}`, 'error');
+            }
         };
 
-        window.disconnectDevice = function (deviceId) {
+        window.disconnectDevice = async function (deviceId) {
             console.log('Disconnecting device:', deviceId);
-            const deviceList = document.getElementById('deviceList');
-            deviceList.innerHTML = '<div class="device-item"><div class="device-info"><div class="device-name">No devices connected</div><div class="device-status">Click "Scan for Devices" to discover available devices</div></div></div>';
-            showStatus('Device disconnected');
+            try {
+                if (isTauriAvailable()) {
+                    const kind = deviceKindById.get(deviceId);
+                    if (kind === 'simulator') {
+                        await window.__TAURI__.core.invoke('reset_simulator', { device_id: deviceId }).catch(() => null);
+                    }
+                }
+            } finally {
+                showStatus('Device disconnected');
+                await window.scanForDevices();
+            }
         };
 
-        window.testDevice = function (deviceId) {
+        window.testDevice = async function (deviceId) {
             console.log('Testing device:', deviceId);
             showStatus('Sending test haptic feedback...', 'info');
 
-            // TODO: Implement actual device testing
-            setTimeout(() => {
+            try {
+                if (!isTauriAvailable()) {
+                    showStatus('✗ Tauri API not available. Please run in the desktop app.', 'error');
+                    return;
+                }
+                const invoke = window.__TAURI__.core.invoke;
+                const kind = deviceKindById.get(deviceId);
+                if (kind === 'simulator') {
+                    await invoke('send_test_haptic', { device_id: deviceId, pattern_type: 'connectivity' });
+                } else {
+                    await invoke('send_haptic_feedback', {
+                        device_id: deviceId,
+                        pattern: 'click',
+                        intensity: 0.8,
+                        duration_ms: 200
+                    });
+                }
                 showStatus('Test haptic feedback sent successfully');
-            }, 1000);
+            } catch (error) {
+                console.error('Test failed:', error);
+                showStatus(`✗ Test failed: ${error}`, 'error');
+            }
         };
 
         // Ollama connection testing
@@ -2870,6 +2956,176 @@
         }
 
         document.getElementById('refreshOllamaModels')?.addEventListener('click', refreshOllamaModels);
+
+        // Refresh OpenAI models dynamically
+        async function refreshOpenAIModels() {
+            if (!isTauriAvailable()) {
+                console.warn('Tauri API not available - cannot refresh OpenAI models');
+                return;
+            }
+
+            const apiKey = document.getElementById('openaiLlmApiKey')?.value;
+            if (!apiKey || apiKey.trim() === '') {
+                console.log('No OpenAI API key provided - using static model list');
+                return;
+            }
+
+            const modelSelect = document.getElementById('openaiLlmModel');
+            const currentValue = modelSelect.value;
+
+            try {
+                modelSelect.innerHTML = '<option value="">Loading models...</option>';
+                modelSelect.disabled = true;
+
+                const models = await window.__TAURI__.core.invoke('list_openai_models', { apiKey });
+                modelSelect.innerHTML = '';
+
+                if (models.length === 0) {
+                    modelSelect.innerHTML = '<option value="gpt-4o">GPT-4o</option>';
+                } else {
+                    models.forEach(model => {
+                        const option = document.createElement('option');
+                        option.value = model.id;
+                        option.textContent = model.name;
+                        modelSelect.appendChild(option);
+                    });
+                }
+
+                // Restore previous selection if still available
+                if (currentValue && [...modelSelect.options].some(o => o.value === currentValue)) {
+                    modelSelect.value = currentValue;
+                } else if (window._savedOpenAIModel && [...modelSelect.options].some(o => o.value === window._savedOpenAIModel)) {
+                    modelSelect.value = window._savedOpenAIModel;
+                    delete window._savedOpenAIModel;
+                }
+            } catch (error) {
+                console.error('Failed to list OpenAI models:', error);
+                // Restore static list on error
+                modelSelect.innerHTML = `
+                    <option value="gpt-4o">GPT-4o</option>
+                    <option value="gpt-4o-mini">GPT-4o Mini</option>
+                    <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                    <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                `;
+                if (currentValue) modelSelect.value = currentValue;
+            } finally {
+                modelSelect.disabled = false;
+            }
+        }
+
+        // Refresh Anthropic models dynamically
+        async function refreshAnthropicModels() {
+            if (!isTauriAvailable()) {
+                console.warn('Tauri API not available - cannot refresh Anthropic models');
+                return;
+            }
+
+            const apiKey = document.getElementById('anthropicApiKey')?.value;
+            if (!apiKey || apiKey.trim() === '') {
+                console.log('No Anthropic API key provided - using static model list');
+                return;
+            }
+
+            const modelSelect = document.getElementById('anthropicLlmModel');
+            const currentValue = modelSelect.value;
+
+            try {
+                modelSelect.innerHTML = '<option value="">Loading models...</option>';
+                modelSelect.disabled = true;
+
+                const models = await window.__TAURI__.core.invoke('list_anthropic_models', { apiKey });
+                modelSelect.innerHTML = '';
+
+                if (models.length === 0) {
+                    modelSelect.innerHTML = '<option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>';
+                } else {
+                    models.forEach(model => {
+                        const option = document.createElement('option');
+                        option.value = model.id;
+                        option.textContent = model.name;
+                        modelSelect.appendChild(option);
+                    });
+                }
+
+                // Restore previous selection if still available
+                if (currentValue && [...modelSelect.options].some(o => o.value === currentValue)) {
+                    modelSelect.value = currentValue;
+                } else if (window._savedAnthropicModel && [...modelSelect.options].some(o => o.value === window._savedAnthropicModel)) {
+                    modelSelect.value = window._savedAnthropicModel;
+                    delete window._savedAnthropicModel;
+                }
+            } catch (error) {
+                console.error('Failed to list Anthropic models:', error);
+                // Restore static list on error
+                modelSelect.innerHTML = `
+                    <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
+                    <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</option>
+                    <option value="claude-3-opus-20240229">Claude 3 Opus</option>
+                    <option value="claude-3-haiku-20240307">Claude 3 Haiku</option>
+                `;
+                if (currentValue) modelSelect.value = currentValue;
+            } finally {
+                modelSelect.disabled = false;
+            }
+        }
+
+        // Load Grok models dynamically from xAI API
+        async function loadGrokModels() {
+            if (!isTauriAvailable()) {
+                return;
+            }
+
+            const modelSelect = document.getElementById('grokLlmModel');
+            const apiKeyInput = document.getElementById('grokApiKey');
+            const currentValue = modelSelect.value;
+            const apiKey = apiKeyInput?.value || '';
+
+            try {
+                const models = await window.__TAURI__.core.invoke('list_grok_models', { apiKey });
+                modelSelect.innerHTML = '';
+
+                models.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model.id;
+                    option.textContent = model.name;
+                    modelSelect.appendChild(option);
+                });
+
+                // Restore previous selection or saved model
+                const savedModel = window._savedGrokModel;
+                if (savedModel && [...modelSelect.options].some(o => o.value === savedModel)) {
+                    modelSelect.value = savedModel;
+                    window._savedGrokModel = null;
+                } else if (currentValue && [...modelSelect.options].some(o => o.value === currentValue)) {
+                    modelSelect.value = currentValue;
+                }
+            } catch (error) {
+                console.error('Failed to load Grok models:', error);
+            }
+        }
+
+        // Debounced Grok model refresh on API key change
+        const debouncedGrokRefresh = debounce(() => {
+            loadGrokModels();
+        }, 1000);
+
+        // Debounce helper for API key input
+        function debounce(func, wait) {
+            let timeout;
+            return function executedFunction(...args) {
+                const later = () => {
+                    clearTimeout(timeout);
+                    func(...args);
+                };
+                clearTimeout(timeout);
+                timeout = setTimeout(later, wait);
+            };
+        }
+
+        // Add event listeners for API key changes to refresh models
+        document.getElementById('openaiLlmApiKey')?.addEventListener('input', debounce(refreshOpenAIModels, 1000));
+        document.getElementById('anthropicApiKey')?.addEventListener('input', debounce(refreshAnthropicModels, 1000));
+        document.getElementById('grokApiKey')?.addEventListener('input', debouncedGrokRefresh);
 
         // Temperature slider value display
         document.getElementById('ollamaTemperature')?.addEventListener('input', (e) => {
