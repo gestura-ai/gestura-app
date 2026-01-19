@@ -216,10 +216,7 @@ fn test_config_set_help() {
 #[test]
 fn test_exec_empty_command() {
     // Exec with no command should fail gracefully
-    gestura()
-        .args(["exec"])
-        .assert()
-        .failure();
+    gestura().args(["exec"]).assert().failure();
 }
 
 #[test]

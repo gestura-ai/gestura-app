@@ -2,14 +2,17 @@
 //!
 //! Each subcommand has its own module with a `run` function.
 
+pub mod a2a;
 pub mod agent;
 pub mod chat;
 pub mod completion;
 pub mod config;
+pub mod context;
 pub mod device;
 pub mod exec;
 pub mod health;
 pub mod init;
+pub mod knowledge;
 pub mod listen;
 pub mod mcp;
 pub mod model;

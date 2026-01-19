@@ -233,7 +233,8 @@ fn format_size(bytes: u64) -> String {
 fn run_tree(path: Option<&Path>, max_depth: Option<usize>) -> Result<()> {
     let root = path.unwrap_or(Path::new("."));
 
-    let tree = get_file_tools().tree(root, max_depth)?;
+    // CLI defaults to hiding dotfiles for parity with `list` unless a flag is added.
+    let tree = get_file_tools().tree(root, max_depth, false)?;
 
     println!("{}", tree.name.cyan().bold());
     print_tree_node(&tree, "");

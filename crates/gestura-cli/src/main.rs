@@ -54,9 +54,9 @@ enum Commands {
         #[arg(long)]
         session: Option<String>,
 
-        /// Use TUI mode with split panes
+        /// Use basic readline mode instead of TUI
         #[arg(long)]
-        tui: bool,
+        basic: bool,
 
         /// Enable voice input
         #[arg(long)]
@@ -114,6 +114,24 @@ enum Commands {
     Mcp {
         #[command(subcommand)]
         action: McpAction,
+    },
+
+    /// A2A (Agent-to-Agent) protocol management
+    A2a {
+        #[command(subcommand)]
+        action: A2aAction,
+    },
+
+    /// Knowledge system for agent expertise
+    Knowledge {
+        #[command(subcommand)]
+        action: KnowledgeAction,
+    },
+
+    /// Smart context management
+    Context {
+        #[command(subcommand)]
+        action: ContextAction,
     },
 
     /// Session management
@@ -225,6 +243,102 @@ enum McpAction {
     Enable { name: String },
     /// Disable an MCP server
     Disable { name: String },
+    /// Show MCP protocol status and capabilities
+    Status,
+    /// List available prompts
+    Prompts,
+    /// Show server capabilities
+    Capabilities,
+}
+
+#[derive(Subcommand)]
+enum A2aAction {
+    /// Show A2A protocol status
+    Status,
+    /// List registered agent profiles
+    Profiles,
+    /// Discover a remote agent
+    Discover {
+        /// Agent URL to discover
+        url: String,
+    },
+    /// Register a new agent profile
+    Register {
+        /// Agent ID
+        #[arg(long)]
+        id: String,
+        /// Agent name
+        #[arg(long)]
+        name: String,
+        /// Capabilities (comma-separated)
+        #[arg(long)]
+        capabilities: Option<String>,
+    },
+    /// Generate a new auth token for an agent
+    Token {
+        /// Agent ID to generate token for
+        agent_id: String,
+        /// Token validity in hours
+        #[arg(long, default_value = "24")]
+        hours: i64,
+    },
+    /// Validate a token
+    Validate {
+        /// Token to validate
+        token: String,
+    },
+    /// List known remote agents
+    Agents,
+    /// Send a task to a remote agent
+    Send {
+        /// Agent URL
+        #[arg(short, long)]
+        url: String,
+        /// Message to send
+        message: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum KnowledgeAction {
+    /// List all knowledge items
+    List {
+        /// Filter by category
+        #[arg(short = 'C', long)]
+        category: Option<String>,
+    },
+    /// Show details of a knowledge item
+    Show {
+        /// Knowledge item ID
+        id: String,
+    },
+    /// Search for knowledge items
+    Search {
+        /// Search query
+        query: String,
+        /// Maximum results
+        #[arg(short, long, default_value = "5")]
+        limit: usize,
+    },
+    /// List all categories
+    Categories,
+    /// Show knowledge system status
+    Status,
+}
+
+#[derive(Subcommand)]
+enum ContextAction {
+    /// Analyze a request to determine needed context
+    Analyze {
+        /// The request to analyze
+        request: String,
+    },
+    /// Show context system status
+    Status,
+    /// List available context categories
+    Categories,
+    /// Clear all context caches
+    Clear,
 }
 
 #[derive(Subcommand)]
@@ -636,14 +750,14 @@ fn main() {
             model,
             resume,
             session,
-            tui,
+            basic,
             voice,
             system,
         }) => commands::chat::run(commands::chat::ChatOptions {
             model: model.as_deref(),
             resume: *resume,
             session: session.as_deref(),
-            tui: *tui,
+            tui: !*basic, // TUI is default, --basic disables it
             voice: *voice,
             system: system.as_deref(),
         }),
@@ -660,6 +774,20 @@ fn main() {
         Some(Commands::Model { action }) => commands::model::run(action),
         Some(Commands::Device { action }) => commands::device::run(action),
         Some(Commands::Mcp { action }) => commands::mcp::run(action),
+        Some(Commands::A2a { action }) => commands::a2a::run(action),
+        Some(Commands::Knowledge { action }) => commands::knowledge::run(action),
+        Some(Commands::Context { action }) => {
+            use commands::context::ContextAction as CA;
+            let ctx_action = match action {
+                ContextAction::Analyze { request } => CA::Analyze {
+                    request: request.clone(),
+                },
+                ContextAction::Status => CA::Status,
+                ContextAction::Categories => CA::Categories,
+                ContextAction::Clear => CA::Clear,
+            };
+            commands::context::run(ctx_action)
+        }
         Some(Commands::Session { action }) => commands::session::run(action),
         Some(Commands::Agent { action }) => {
             let subcommand = match action {
@@ -907,8 +1035,29 @@ fn main() {
         }
         Some(Commands::Init) => commands::init::run(),
         None => {
-            // Default to interactive chat if no command specified
-            commands::chat::run(commands::chat::ChatOptions::default())
+            // Check if this is the first run - if so, run onboarding first
+            if gestura_core::AppConfig::is_first_run() {
+                println!(
+                    "{}",
+                    "Welcome! It looks like this is your first time running Gestura."
+                        .cyan()
+                        .bold()
+                );
+                println!();
+
+                // Run the onboarding wizard
+                if let Err(e) = commands::init::run() {
+                    eprintln!("{} Failed to complete setup: {}", "warning:".yellow(), e);
+                    eprintln!("You can run 'gestura init' later to complete setup.");
+                    println!();
+                }
+            }
+
+            // Default to interactive TUI chat if no command specified
+            commands::chat::run(commands::chat::ChatOptions {
+                tui: true,
+                ..Default::default()
+            })
         }
     };
 
