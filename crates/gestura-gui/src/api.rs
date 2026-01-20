@@ -1566,6 +1566,18 @@ pub async fn process_chat_message_streaming(
             crate::window_manager::SessionPermissionLevel::Full => "full",
         };
         request = request.with_permission_level(perm_str);
+
+        // Pass enabled tools to the pipeline so the agent knows what tools are available.
+        // Only include tools that are explicitly enabled (value == true).
+        let enabled_tools: Vec<String> = tool_settings
+            .enabled_tools
+            .iter()
+            .filter_map(|(name, enabled)| if *enabled { Some(name.clone()) } else { None })
+            .collect();
+        if !enabled_tools.is_empty() {
+            tracing::debug!("Session {} enabled tools: {:?}", sid, enabled_tools);
+            request = request.with_allowed_tools(enabled_tools);
+        }
     }
 
     // Create the pipeline with provider-optimized configuration and spawn the streaming task.

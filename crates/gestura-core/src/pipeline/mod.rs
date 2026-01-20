@@ -534,6 +534,10 @@ impl AgentPipeline {
                     if let Some(t) = crate::tools::registry::find_tool("web") {
                         tools.push(t);
                     }
+                    // Also include web_search for search-related queries
+                    if let Some(t) = crate::tools::registry::find_tool("web_search") {
+                        tools.push(t);
+                    }
                 }
                 _ => {}
             }

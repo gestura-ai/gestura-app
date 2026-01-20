@@ -117,12 +117,18 @@ pub struct SessionToolSettings {
 impl Default for SessionToolSettings {
     fn default() -> Self {
         let mut enabled_tools = std::collections::HashMap::new();
-        // Default enabled tools
-        enabled_tools.insert("file_read".to_string(), true);
-        enabled_tools.insert("file_write".to_string(), true);
+        // Default enabled tools - names must match gestura_core::tools::registry
+        // Registry tools: file, shell, git, code, web, web_search, a2a, permissions, mcp
+        enabled_tools.insert("file".to_string(), true);
         enabled_tools.insert("shell".to_string(), true);
-        enabled_tools.insert("web_search".to_string(), false);
-        enabled_tools.insert("code_analysis".to_string(), true);
+        enabled_tools.insert("git".to_string(), true);
+        enabled_tools.insert("code".to_string(), true);
+        enabled_tools.insert("web".to_string(), true);
+        enabled_tools.insert("web_search".to_string(), true);
+        // Advanced tools disabled by default
+        enabled_tools.insert("a2a".to_string(), false);
+        enabled_tools.insert("permissions".to_string(), false);
+        enabled_tools.insert("mcp".to_string(), false);
         Self {
             permission_level: SessionPermissionLevel::default(),
             enabled_tools,
