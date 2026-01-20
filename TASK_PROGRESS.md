@@ -1187,11 +1187,20 @@ All 4 sub-tasks completed:
 - Automatic env var override on reload
 - 4 unit tests
 
-#### 40.3 Secure Secret Management
-- [ ] Add support for reading secrets from environment variables
-- [ ] Implement secret redaction in logs and debug output
-- [ ] Add validation for API key formats
-- [ ] Support keychain/credential store integration (future)
+#### 40.3 Secure Secret Management ✅ COMPLETE
+- [x] Add support for reading secrets from environment variables
+- [x] Implement secret redaction in logs and debug output
+- [x] Add validation for API key formats
+- [ ] Support keychain/credential store integration (future - uses `security` feature)
+
+**Implementation:**
+- Environment variable support via `config_env.rs` (25+ mappings)
+- `is_secret_key()` detects API keys, tokens, passwords, secrets
+- `redact_secret()` for safe logging (shows first/last 4 chars)
+- `ApiKeyValidation` enum with detailed error variants
+- Provider-specific validators: `validate_openai_key()`, `validate_anthropic_key()`, `validate_grok_key()`
+- Generic `validate_api_key()` for any provider
+- 5 new unit tests for validation
 
 #### 40.4 Configuration Validation
 - [ ] Add schema validation for config.json
