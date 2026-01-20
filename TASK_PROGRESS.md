@@ -1233,9 +1233,9 @@ All 4 sub-tasks completed:
 
 ---
 
-### Task 41: Complete Deferred Features and Wire Up Remaining Code
+### Task 41: Complete Deferred Features and Wire Up Remaining Code ✅ COMPLETE
 **Priority:** HIGH
-**Status:** 🔄 IN PROGRESS
+**Status:** ✅ COMPLETE
 
 **Problem:** Several features were marked as "future work", "deferred", or "TODO" across the codebase. These need to be completed to ensure no dead-end code and all features are fully delivered.
 
@@ -1285,12 +1285,26 @@ Consolidate and implement all deferred/future work items identified in previous 
 
 **Reference:** Task 30 - remaining next steps
 
-#### 41.4 Accessibility and Keyboard Shortcuts (Deferred Items)
-- [ ] Add keyboard shortcut Ctrl/Cmd+C on focused response for copy
-- [ ] Add screen reader announcements for copy actions
-- [ ] Add retry option UI for failed tool operations
+#### 41.4 Accessibility and Keyboard Shortcuts (Deferred Items) ✅ COMPLETE
+- [x] Add keyboard shortcut Ctrl/Cmd+C on focused response for copy
+- [x] Add screen reader announcements for copy actions (ARIA live region)
+- [x] Add retry option UI for failed tool operations
+- [x] Add focus styling for keyboard navigation on agent messages
+- [x] Make messages focusable with tabindex=0 and role=article
+
+**Commit:** `a02fa49` - feat: Add accessibility features for chat interface
 
 **Reference:** Tasks 36.3, 37 - deferred accessibility items
+
+---
+
+### Task 41 Summary: ✅ ALL SUB-TASKS COMPLETE
+
+All deferred/future work items have been implemented:
+- 41.1 ✅ Keychain/Credential Store Integration
+- 41.2 ✅ Session Settings Backend Integration
+- 41.3 ✅ Provider/Model Changes (on-demand config creation)
+- 41.4 ✅ Accessibility and Keyboard Shortcuts
 
 ---
 
