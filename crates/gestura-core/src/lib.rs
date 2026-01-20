@@ -38,6 +38,7 @@ pub mod compaction;
 pub mod config;
 pub mod context;
 pub mod error;
+pub mod events;
 pub mod gdpr;
 pub mod interaction;
 pub mod knowledge;
@@ -69,6 +70,10 @@ pub use context::{
     ExtractedEntity, FileContext, RequestAnalysis, RequestAnalyzer, ResolvedContext, ToolContext,
 };
 pub use error::{AppError, Result};
+pub use events::{
+    AgentEvent, EventBufferConfig, EventEmitter, EventReceiver, EventSender, ProgressStage,
+    ProgressTracker, create_event_channel,
+};
 pub use gdpr::{
     ConsentRecord, ConsentStatus, DataAuditEntry, DataCategory, DataOperation, GdprManager,
     get_gdpr_manager,

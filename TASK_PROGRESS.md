@@ -776,11 +776,22 @@ Break down research findings into actionable implementation tasks for both GUI a
 - Added CSS styling for compaction notices in chat interface
 - All tests pass (136 tests in gestura-core)
 
-#### 35.5 Event Streaming Architecture
-- [ ] Review current streaming implementation
-- [ ] Add typed event system for real-time UI updates
-- [ ] Implement progress indicators for long-running operations
-- [ ] Create event buffering for rate limiting
+#### 35.5 Event Streaming Architecture ✅ COMPLETE
+- [x] Review current streaming implementation
+- [x] Add typed event system for real-time UI updates
+- [x] Implement progress indicators for long-running operations
+- [x] Create event buffering for rate limiting
+
+**Implementation Details:**
+- Created `crates/gestura-core/src/events.rs` module with:
+  - `AgentEvent` enum - typed events (PipelineStarted, Progress, TokenStream, ToolStarted, ToolProgress, ToolCompleted, ContextCompacted, RetryAttempt, PipelineCompleted, PipelineFailed, PipelineCancelled)
+  - `ProgressStage` enum - pipeline stages (Analyzing, ResolvingContext, WaitingForLlm, ExecutingTools, GeneratingResponse, Finalizing)
+  - `EventBufferConfig` - configurable buffering (min_interval, max_buffer_size, coalesce_similar)
+  - `EventEmitter` - event emitter with rate limiting and token buffering
+  - `ProgressTracker` - tracks pipeline progress with timing
+  - `create_event_channel()` - factory for event channel pairs
+- All events are serializable with serde for frontend consumption
+- All tests pass (140 tests in gestura-core)
 
 #### 35.6 Execution Mode Support
 - [ ] Implement Auto vs Chat mode switching
