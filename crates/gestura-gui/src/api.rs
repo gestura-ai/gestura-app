@@ -5,6 +5,29 @@ use crate::{
 };
 use tauri::{Emitter, Manager};
 
+/// Try to get an API key from the keychain (synchronous, for use in config creation).
+/// Returns empty string if not found or keychain unavailable.
+fn try_get_api_key_from_keychain(provider: &str) -> String {
+    let key = format!("gestura_api_key_{}", provider.to_lowercase());
+    let storage = crate::security::create_secure_storage();
+
+    // Use a blocking runtime to call the async method
+    // This is safe because we're in a sync context and the keychain operation is fast
+    match std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok()?;
+        rt.block_on(async { storage.get_secret(&key).await.ok().flatten() })
+    })
+    .join()
+    {
+        Ok(Some(key)) => key,
+        Ok(None) => String::new(),
+        Err(_) => String::new(),
+    }
+}
+
 #[tauri::command]
 pub async fn get_config() -> Result<AppConfig, String> {
     Ok(AppConfig::load_async().await)
@@ -1226,34 +1249,53 @@ pub async fn process_chat_message_streaming(
                     "Applying session-scoped LLM model override"
                 );
                 // Apply model to the active provider's config
-                // Create provider config if it doesn't exist (for providers without API keys yet)
+                // Create provider config if it doesn't exist, trying keychain for API keys
                 match cfg.llm.primary.as_str() {
                     "openai" => {
-                        if let Some(ref mut openai) = cfg.llm.openai {
-                            openai.model = model;
-                        } else {
-                            tracing::warn!(
-                                "OpenAI provider selected but not configured - model override ignored"
-                            );
-                        }
+                        let openai = cfg.llm.openai.get_or_insert_with(|| {
+                            // Try to get API key from keychain
+                            let api_key = try_get_api_key_from_keychain("openai");
+                            if api_key.is_empty() {
+                                tracing::warn!("OpenAI provider selected but no API key found");
+                            }
+                            gestura_core::config::OpenAiConfig {
+                                api_key,
+                                model: model.clone(),
+                                base_url: None,
+                            }
+                        });
+                        openai.model = model;
                     }
                     "anthropic" => {
-                        if let Some(ref mut anthropic) = cfg.llm.anthropic {
-                            anthropic.model = model;
-                        } else {
-                            tracing::warn!(
-                                "Anthropic provider selected but not configured - model override ignored"
-                            );
-                        }
+                        let anthropic = cfg.llm.anthropic.get_or_insert_with(|| {
+                            // Try to get API key from keychain
+                            let api_key = try_get_api_key_from_keychain("anthropic");
+                            if api_key.is_empty() {
+                                tracing::warn!("Anthropic provider selected but no API key found");
+                            }
+                            gestura_core::config::AnthropicConfig {
+                                api_key,
+                                model: model.clone(),
+                                base_url: None,
+                                thinking_budget_tokens: None,
+                            }
+                        });
+                        anthropic.model = model;
                     }
                     "grok" => {
-                        if let Some(ref mut grok) = cfg.llm.grok {
-                            grok.model = model;
-                        } else {
-                            tracing::warn!(
-                                "Grok provider selected but not configured - model override ignored"
-                            );
-                        }
+                        let grok = cfg.llm.grok.get_or_insert_with(|| {
+                            // Try to get API key from keychain
+                            let api_key = try_get_api_key_from_keychain("grok");
+                            if api_key.is_empty() {
+                                tracing::warn!("Grok provider selected but no API key found");
+                            }
+                            gestura_core::config::GrokConfig {
+                                api_key,
+                                model: model.clone(),
+                                base_url: None,
+                            }
+                        });
+                        grok.model = model;
                     }
                     "ollama" => {
                         // Ollama doesn't require API key, so create default config if missing
