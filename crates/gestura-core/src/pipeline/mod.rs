@@ -1009,6 +1009,10 @@ impl AgentPipeline {
                         // Forward retry notifications to frontend
                         let _ = tx.send(chunk).await;
                     }
+                    StreamChunk::ContextCompacted { .. } => {
+                        // Forward compaction notifications to frontend
+                        let _ = tx.send(chunk).await;
+                    }
                     StreamChunk::Done(usage) => {
                         // Some providers (or buggy intermediaries) may terminate the stream
                         // without emitting a ToolCallEnd. If we have a pending tool call, treat

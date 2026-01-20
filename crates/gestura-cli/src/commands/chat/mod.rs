@@ -931,6 +931,26 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 print!("  ");
                                 let _ = std::io::stdout().flush();
                             }
+                            StreamChunk::ContextCompacted {
+                                messages_before,
+                                messages_after,
+                                tokens_saved,
+                                summary,
+                            } => {
+                                println!();
+                                println!(
+                                    "  {} Context compacted: {} → {} messages ({} tokens saved)",
+                                    "📦".cyan(),
+                                    messages_before,
+                                    messages_after,
+                                    tokens_saved
+                                );
+                                if !summary.is_empty() {
+                                    println!("     {}", summary.dimmed());
+                                }
+                                print!("  ");
+                                let _ = std::io::stdout().flush();
+                            }
                             StreamChunk::Done(_) => {
                                 saw_done = true;
                                 break;

@@ -678,6 +678,35 @@
             }
         }
 
+        /* Compaction Notice */
+        .compaction-notice {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding: 8px 12px;
+            margin: 8px 0;
+            border-radius: 8px;
+            background: rgba(10, 132, 255, 0.1);
+            border: 1px solid rgba(10, 132, 255, 0.3);
+            font-size: 12px;
+            color: var(--text-primary);
+        }
+
+        .compaction-icon {
+            font-size: 14px;
+        }
+
+        .compaction-text {
+            font-weight: 500;
+            color: #0a84ff;
+        }
+
+        .compaction-summary {
+            color: var(--text-secondary);
+            font-size: 11px;
+            font-style: italic;
+        }
+
         .tool-icon {
             width: 16px;
             height: 16px;
@@ -1782,6 +1811,32 @@
                 }
 
                 setStatus(`Retrying (${attempt}/${max_attempts})...`, 'processing');
+                scrollToBottom();
+            });
+
+            // 3d. Context Compaction Event - shows compaction notification
+            await event.listen('chat-context-compacted', (e) => {
+                touchStreamActivity();
+                const payload = e?.payload || {};
+                const { messages_before, messages_after, tokens_saved, summary } = payload;
+
+                // Create a compaction notification element
+                const compactNotice = document.createElement('div');
+                compactNotice.className = 'compaction-notice';
+                compactNotice.innerHTML = `
+                    <span class="compaction-icon">📦</span>
+                    <span class="compaction-text">Context compacted: ${messages_before} → ${messages_after} messages (${tokens_saved} tokens saved)</span>
+                    ${summary ? `<span class="compaction-summary">${summary}</span>` : ''}
+                `;
+
+                // Add to current streaming message or create new one
+                if (currentStreamingEl) {
+                    currentStreamingEl.appendChild(compactNotice);
+                } else {
+                    addMessage(`📦 Context compacted: ${messages_before} → ${messages_after} messages`, 'agent');
+                }
+
+                setStatus('Context compacted', 'processing');
                 scrollToBottom();
             });
 

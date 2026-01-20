@@ -1572,6 +1572,20 @@ pub async fn process_chat_message_streaming(
                 });
                 emit("chat-stream-retry", payload);
             }
+            StreamChunk::ContextCompacted {
+                messages_before,
+                messages_after,
+                tokens_saved,
+                summary,
+            } => {
+                let payload = serde_json::json!({
+                    "messages_before": messages_before,
+                    "messages_after": messages_after,
+                    "tokens_saved": tokens_saved,
+                    "summary": summary
+                });
+                emit("chat-context-compacted", payload);
+            }
             StreamChunk::Done(usage) => {
                 saw_terminal = true;
                 // Emit token usage if available

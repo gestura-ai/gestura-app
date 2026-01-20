@@ -225,6 +225,23 @@ fn run_main_loop(
                             app.update_last_message(&stream_state.content);
                             app.set_status(format!("Retrying ({}/{})", attempt, max_attempts));
                         }
+                        StreamChunk::ContextCompacted {
+                            messages_before,
+                            messages_after,
+                            tokens_saved,
+                            summary,
+                        } => {
+                            // Show compaction notification in the stream
+                            stream_state.content.push_str(&format!(
+                                "\n📦 Context compacted: {} → {} messages ({} tokens saved)\n",
+                                messages_before, messages_after, tokens_saved
+                            ));
+                            if !summary.is_empty() {
+                                stream_state.content.push_str(&format!("   {}\n", summary));
+                            }
+                            app.update_last_message(&stream_state.content);
+                            app.set_status("Context compacted".to_string());
+                        }
                         StreamChunk::Done(usage) => {
                             // Record token usage if available
                             if let Some(usage) = usage {

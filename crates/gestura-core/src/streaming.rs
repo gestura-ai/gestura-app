@@ -57,6 +57,17 @@ pub enum StreamChunk {
         /// Error that triggered the retry
         error_message: String,
     },
+    /// Context compaction notification for user feedback
+    ContextCompacted {
+        /// Number of messages before compaction
+        messages_before: usize,
+        /// Number of messages after compaction
+        messages_after: usize,
+        /// Tokens saved by compaction
+        tokens_saved: usize,
+        /// Summary of what was compacted
+        summary: String,
+    },
     /// Stream completed successfully with optional token usage
     Done(Option<TokenUsage>),
     /// Stream was cancelled
@@ -107,6 +118,10 @@ async fn forward_attempt_stream(
             }
             StreamChunk::RetryAttempt { .. } => {
                 // Forward retry notifications without marking as output
+                let _ = tx.send(chunk).await;
+            }
+            StreamChunk::ContextCompacted { .. } => {
+                // Forward compaction notifications without marking as output
                 let _ = tx.send(chunk).await;
             }
             StreamChunk::Done(_) => {

@@ -34,6 +34,7 @@ pub const NAME: &str = env!("CARGO_PKG_NAME");
 
 pub mod a2a;
 pub mod audio_capture;
+pub mod compaction;
 pub mod config;
 pub mod context;
 pub mod error;
@@ -57,6 +58,10 @@ pub mod tools;
 pub use audio_capture::{
     AudioCaptureConfig, AudioDeviceInfo, is_microphone_available, list_audio_input_devices,
     record_audio, request_stop_recording, reset_stop_flag,
+};
+pub use compaction::{
+    CompactionConfig, CompactionEvent, CompactionEventType, CompactionResult, CompactionStrategy,
+    ContextCompactor,
 };
 pub use config::AppConfig;
 pub use context::{

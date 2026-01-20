@@ -754,11 +754,27 @@ Break down research findings into actionable implementation tasks for both GUI a
 - Updated GUI, CLI, and TUI to display retry notifications
 - Added CSS styling for retry notices in chat interface
 
-#### 35.4 Context Compaction
-- [ ] Implement automatic history trimming on context overflow
-- [ ] Add smart summarization of older messages
-- [ ] Create configurable compaction thresholds
-- [ ] Preserve critical context during compaction
+#### 35.4 Context Compaction ✅ COMPLETE
+- [x] Implement automatic history trimming on context overflow
+- [x] Add smart summarization of older messages
+- [x] Create configurable compaction thresholds
+- [x] Preserve critical context during compaction
+
+**Implementation Details:**
+- Created `crates/gestura-core/src/compaction.rs` module with:
+  - `CompactionConfig` - configurable thresholds (max_context_tokens, target_context_tokens, min_recent_messages)
+  - `CompactionStrategy` enum - SlidingWindow, Summarize, ImportanceBased strategies
+  - `ContextCompactor` struct with methods:
+    - `needs_compaction()` - check if compaction is needed
+    - `approaching_limit()` - warning at 90% threshold
+    - `compact()` / `compact_messages()` - perform compaction
+    - `score_importance()` - importance-based message scoring
+  - `CompactionResult` - detailed result with before/after metrics
+  - `CompactionEvent` / `CompactionEventType` - for user notification
+- Added `StreamChunk::ContextCompacted` variant for frontend notification
+- Updated GUI, CLI, and TUI to display compaction notifications
+- Added CSS styling for compaction notices in chat interface
+- All tests pass (136 tests in gestura-core)
 
 #### 35.5 Event Streaming Architecture
 - [ ] Review current streaming implementation
