@@ -2,7 +2,7 @@
 
 **Started:** 2026-01-19
 **Phase 1 Status:** ✅ All Tasks Completed (Tasks 1-21)
-**Phase 2 Status:** 🔄 In Progress (Tasks 22-28) - 6 of 7 complete
+**Phase 2 Status:** ✅ All Tasks Completed (Tasks 22-28) - 7 of 7 complete
 
 ---
 
@@ -523,21 +523,40 @@ Wire up the 9 voice command methods in speech.rs for hands-free control.
 
 ### Task 28: Compact Chat Header UI - Single Line Provider/Model Display
 **Priority:** MEDIUM
-**Status:** ⬜ NOT STARTED
+**Status:** ✅ COMPLETE
 
 **Problem:** The chat window header currently displays provider and model selection on two lines, making it too tall and not compact enough.
 
 **Requirements:**
-- [ ] Redesign header to display provider and model selection on a single line
-- [ ] Add provider icons (OpenAI, Anthropic, Grok, Ollama logos) to the chat display for visual identification
-- [ ] Keep provider names in the dropdown selection list for clarity
-- [ ] Maintain fixed compact layout that doesn't expand/contract
-- [ ] Ensure the design works across different window sizes
-- [ ] Test with all supported providers (OpenAI, Anthropic, Grok, Ollama)
+- [x] Redesign header to display provider and model selection on a single line
+- [x] Add provider icons (OpenAI, Anthropic, Grok, Ollama logos) to the chat display for visual identification
+- [x] Keep provider names in the dropdown selection list for clarity
+- [x] Maintain fixed compact layout that doesn't expand/contract
+- [x] Ensure the design works across different window sizes
+- [x] Test with all supported providers (OpenAI, Anthropic, Grok, Ollama, Echo)
 
-**Files to modify:**
-- `crates/gestura-gui/frontend/public/chat.html` (header layout and CSS)
-- Add provider icon assets if needed
+**Implementation:**
+1. **New CSS classes** (`chat.html`):
+   - `.provider-selector-wrapper`: Flex container with icon + dropdown
+   - `.provider-icon`: 28x28px icon container with glassmorphism styling
+   - `.model-selector`: Compact dropdown inside wrapper (no border)
+   - `.model-selector-standalone`: Standalone model dropdown with border
+   - Responsive styles for mobile (480px breakpoint)
+
+2. **Provider icons** (inline SVG):
+   - Anthropic: Stylized "A" logo
+   - OpenAI: Hexagonal logo
+   - Grok: Globe icon
+   - Ollama: Friendly face icon
+   - Echo: Checkmark icon (test provider)
+
+3. **JavaScript updates**:
+   - Added `providerIcons` object with SVG strings for each provider
+   - Added `updateProviderIcon(provider)` function
+   - Icon updates on provider change and initial load
+
+**Files modified:**
+- `crates/gestura-gui/frontend/public/chat.html` (CSS, HTML, JavaScript)
 
 ---
 
