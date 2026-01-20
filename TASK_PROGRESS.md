@@ -3,7 +3,7 @@
 **Started:** 2026-01-19
 **Phase 1 Status:** ✅ All Tasks Completed (Tasks 1-21)
 **Phase 2 Status:** ✅ All Tasks Completed (Tasks 22-28) - 7 of 7 complete
-**Phase 3 Status:** 🔄 In Progress (Tasks 29+) - 1 of 5 complete
+**Phase 3 Status:** 🔄 In Progress (Tasks 29+) - 2 of 5 complete
 
 ---
 
@@ -642,7 +642,7 @@ New feature requests and bug fixes beyond Phase 2.
 
 ### Task 32: Research Agent Loop Architectures
 **Priority:** MEDIUM
-**Status:** ⬜ NOT STARTED
+**Status:** ✅ COMPLETE
 
 **Objective:** Analyze agent execution patterns from leading open-source projects:
 - OpenAI Codex: https://github.com/openai/codex
@@ -655,7 +655,20 @@ New feature requests and bug fixes beyond Phase 2.
 - Error recovery and retry strategies
 - Tool orchestration approaches
 
-**Deliverable:** Document in `docs/` with recommendations
+**Deliverable:** `docs/AGENT_ARCHITECTURE_RESEARCH.md`
+
+**Key Findings:**
+1. **MCP Integration** - All three projects use Model Context Protocol for tool extensibility
+2. **Tool Inspection** - Permission checks before tool execution (Goose's `ToolInspectionManager`)
+3. **Retry Logic** - Configurable retry policies with exponential backoff
+4. **Context Compaction** - Automatic history trimming on context overflow
+5. **Event Streaming** - Async event-based architecture for real-time UI updates
+6. **Execution Modes** - Auto vs Chat modes for different interaction patterns
+
+**Recommendations for Gestura:**
+- Adopt: MCP integration, Tool inspection, Retry manager, Context compaction
+- Avoid: Monolithic agent class, Synchronous tool execution, Global mutable state
+- See full document for implementation roadmap
 
 ---
 
