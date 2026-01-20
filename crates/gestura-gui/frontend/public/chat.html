@@ -2338,6 +2338,24 @@
                 const workDir = await window.__TAURI__.core.invoke('get_session_workspace_by_id', { sessionId });
                 sessionWorkDir.value = workDir || '';
                 workDirInfo.textContent = workDir ? `Commands run in: ${workDir}` : 'No directory selected';
+
+                // Load tool settings (permission level and enabled tools)
+                const toolSettings = await window.__TAURI__.core.invoke('get_session_tool_settings', { sessionId });
+                if (toolSettings) {
+                    // Set permission level dropdown
+                    if (toolSettings.permission_level) {
+                        sessionPermission.value = toolSettings.permission_level;
+                    }
+                    // Set tool checkboxes
+                    if (toolSettings.enabled_tools) {
+                        document.querySelectorAll('#sessionToolsList input[type="checkbox"]').forEach(checkbox => {
+                            const toolName = checkbox.value;
+                            if (toolSettings.enabled_tools[toolName] !== undefined) {
+                                checkbox.checked = toolSettings.enabled_tools[toolName];
+                            }
+                        });
+                    }
+                }
             } catch (e) {
                 console.warn('Failed to load session settings:', e);
             }
@@ -2370,15 +2388,32 @@
 
         // Permission level change
         sessionPermission?.addEventListener('change', async () => {
-            // TODO: Implement permission level storage when backend supports it
-            console.log('Permission level changed to:', sessionPermission.value);
+            if (!sessionId) return;
+            try {
+                await window.__TAURI__.core.invoke('set_session_permission_level', {
+                    sessionId,
+                    level: sessionPermission.value
+                });
+                console.log('Permission level updated to:', sessionPermission.value);
+            } catch (e) {
+                console.error('Failed to update permission level:', e);
+            }
         });
 
         // Tool checkbox changes
         document.querySelectorAll('#sessionToolsList input[type="checkbox"]').forEach(checkbox => {
-            checkbox.addEventListener('change', () => {
-                // TODO: Implement tool enable/disable when backend supports it
-                console.log('Tool toggled:', checkbox.value, checkbox.checked);
+            checkbox.addEventListener('change', async () => {
+                if (!sessionId) return;
+                try {
+                    await window.__TAURI__.core.invoke('set_session_tool_enabled', {
+                        sessionId,
+                        toolName: checkbox.value,
+                        enabled: checkbox.checked
+                    });
+                    console.log('Tool toggled:', checkbox.value, checkbox.checked);
+                } catch (e) {
+                    console.error('Failed to update tool setting:', e);
+                }
             });
         });
 

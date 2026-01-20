@@ -2523,6 +2523,75 @@ fn get_model_for_provider(cfg: &AppConfig, provider: &str) -> Option<String> {
 }
 
 // ============================================================================
+// Session Tool and Permission Settings Commands
+// ============================================================================
+
+/// Get the tool settings for a session (permission level and enabled tools)
+#[tauri::command]
+pub fn get_session_tool_settings(session_id: String) -> crate::window_manager::SessionToolSettings {
+    crate::window_manager::get_session_tool_settings(&session_id)
+}
+
+/// Set the permission level for a session
+/// Valid levels: "sandbox", "restricted", "full"
+#[tauri::command]
+pub fn set_session_permission_level(session_id: String, level: String) -> Result<(), String> {
+    let permission_level = match level.to_lowercase().as_str() {
+        "sandbox" => crate::window_manager::SessionPermissionLevel::Sandbox,
+        "restricted" => crate::window_manager::SessionPermissionLevel::Restricted,
+        "full" => crate::window_manager::SessionPermissionLevel::Full,
+        _ => {
+            return Err(format!(
+                "Invalid permission level: {}. Use 'sandbox', 'restricted', or 'full'",
+                level
+            ));
+        }
+    };
+    crate::window_manager::set_session_permission_level(&session_id, permission_level);
+    tracing::info!(
+        session_id = %session_id,
+        level = %level,
+        "Session permission level updated"
+    );
+    Ok(())
+}
+
+/// Enable or disable a tool for a session
+#[tauri::command]
+pub fn set_session_tool_enabled(
+    session_id: String,
+    tool_name: String,
+    enabled: bool,
+) -> Result<(), String> {
+    crate::window_manager::set_session_tool_enabled(&session_id, &tool_name, enabled);
+    tracing::info!(
+        session_id = %session_id,
+        tool = %tool_name,
+        enabled = %enabled,
+        "Session tool availability updated"
+    );
+    Ok(())
+}
+
+/// Check if a tool is enabled for a session
+#[tauri::command]
+pub fn is_session_tool_enabled(session_id: String, tool_name: String) -> bool {
+    crate::window_manager::is_session_tool_enabled(&session_id, &tool_name)
+}
+
+/// Check if an action is allowed based on session permission level
+#[tauri::command]
+pub fn is_session_action_allowed(session_id: String, is_write_operation: bool) -> bool {
+    crate::window_manager::is_action_allowed(&session_id, is_write_operation)
+}
+
+/// Check if confirmation is required for an action based on session permission level
+#[tauri::command]
+pub fn session_requires_confirmation(session_id: String, is_write_operation: bool) -> bool {
+    crate::window_manager::requires_confirmation(&session_id, is_write_operation)
+}
+
+// ============================================================================
 // Voice Listener Control Commands
 // ============================================================================
 

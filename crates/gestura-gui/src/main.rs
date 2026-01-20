@@ -199,6 +199,13 @@ async fn main() {
             gestura_gui::api::set_session_llm_model,
             gestura_gui::api::clear_session_llm_config,
             gestura_gui::api::get_effective_llm_config,
+            // Session tool and permission settings
+            gestura_gui::api::get_session_tool_settings,
+            gestura_gui::api::set_session_permission_level,
+            gestura_gui::api::set_session_tool_enabled,
+            gestura_gui::api::is_session_tool_enabled,
+            gestura_gui::api::is_session_action_allowed,
+            gestura_gui::api::session_requires_confirmation,
             // Simulator management
             gestura_gui::commands::get_simulators,
             gestura_gui::commands::scan_for_simulators,

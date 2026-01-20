@@ -90,6 +90,46 @@ pub struct SessionLlmConfig {
     pub model: Option<String>,
 }
 
+/// Permission level for session tool execution
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionPermissionLevel {
+    /// Read-only access - no file writes, no shell commands
+    Sandbox,
+    /// Ask before write operations (default)
+    #[default]
+    Restricted,
+    /// Full access - all operations allowed without confirmation
+    Full,
+}
+
+/// Session-scoped tool availability settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionToolSettings {
+    /// Permission level for this session
+    #[serde(default)]
+    pub permission_level: SessionPermissionLevel,
+    /// Enabled tools for this session (tool name -> enabled)
+    #[serde(default)]
+    pub enabled_tools: std::collections::HashMap<String, bool>,
+}
+
+impl Default for SessionToolSettings {
+    fn default() -> Self {
+        let mut enabled_tools = std::collections::HashMap::new();
+        // Default enabled tools
+        enabled_tools.insert("file_read".to_string(), true);
+        enabled_tools.insert("file_write".to_string(), true);
+        enabled_tools.insert("shell".to_string(), true);
+        enabled_tools.insert("web_search".to_string(), false);
+        enabled_tools.insert("code_analysis".to_string(), true);
+        Self {
+            permission_level: SessionPermissionLevel::default(),
+            enabled_tools,
+        }
+    }
+}
+
 /// Unified session state for both voice and text inputs
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionState {
@@ -109,6 +149,9 @@ pub struct SessionState {
     /// Session-scoped LLM configuration (overrides global config when set)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm_config: Option<SessionLlmConfig>,
+    /// Session-scoped tool and permission settings
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_settings: Option<SessionToolSettings>,
 }
 
 impl SessionState {
@@ -898,6 +941,72 @@ pub fn clear_session_llm_config(session_id: &str) {
         if let Some(session) = sessions.get_mut(session_id) {
             session.state.llm_config = None;
         }
+    }
+}
+
+/// Get the session tool settings for a session
+pub fn get_session_tool_settings(session_id: &str) -> SessionToolSettings {
+    get_session_state(session_id)
+        .and_then(|s| s.tool_settings)
+        .unwrap_or_default()
+}
+
+/// Set the session permission level
+pub fn set_session_permission_level(session_id: &str, level: SessionPermissionLevel) {
+    if let Some(manager) = get_window_manager() {
+        let mut sessions = manager.sessions.lock().unwrap();
+        if let Some(session) = sessions.get_mut(session_id) {
+            let tool_settings = session
+                .state
+                .tool_settings
+                .get_or_insert_with(Default::default);
+            tool_settings.permission_level = level;
+        }
+    }
+}
+
+/// Set whether a tool is enabled for a session
+pub fn set_session_tool_enabled(session_id: &str, tool_name: &str, enabled: bool) {
+    if let Some(manager) = get_window_manager() {
+        let mut sessions = manager.sessions.lock().unwrap();
+        if let Some(session) = sessions.get_mut(session_id) {
+            let tool_settings = session
+                .state
+                .tool_settings
+                .get_or_insert_with(Default::default);
+            tool_settings
+                .enabled_tools
+                .insert(tool_name.to_string(), enabled);
+        }
+    }
+}
+
+/// Check if a tool is enabled for a session
+pub fn is_session_tool_enabled(session_id: &str, tool_name: &str) -> bool {
+    get_session_tool_settings(session_id)
+        .enabled_tools
+        .get(tool_name)
+        .copied()
+        .unwrap_or(true) // Default to enabled if not explicitly set
+}
+
+/// Check if an action is allowed based on session permission level
+pub fn is_action_allowed(session_id: &str, is_write_operation: bool) -> bool {
+    let settings = get_session_tool_settings(session_id);
+    match settings.permission_level {
+        SessionPermissionLevel::Sandbox => !is_write_operation,
+        SessionPermissionLevel::Restricted => true, // Will prompt for confirmation
+        SessionPermissionLevel::Full => true,
+    }
+}
+
+/// Check if confirmation is required for an action
+pub fn requires_confirmation(session_id: &str, is_write_operation: bool) -> bool {
+    let settings = get_session_tool_settings(session_id);
+    match settings.permission_level {
+        SessionPermissionLevel::Sandbox => false, // Blocked, no confirmation needed
+        SessionPermissionLevel::Restricted => is_write_operation,
+        SessionPermissionLevel::Full => false,
     }
 }
 
