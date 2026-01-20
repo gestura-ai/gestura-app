@@ -1005,6 +1005,10 @@ impl AgentPipeline {
                         // Forward tool result to frontend (already emitted by finalize_pending_tool_call)
                         let _ = tx.send(chunk).await;
                     }
+                    StreamChunk::RetryAttempt { .. } => {
+                        // Forward retry notifications to frontend
+                        let _ = tx.send(chunk).await;
+                    }
                     StreamChunk::Done(usage) => {
                         // Some providers (or buggy intermediaries) may terminate the stream
                         // without emitting a ToolCallEnd. If we have a pending tool call, treat

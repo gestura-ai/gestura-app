@@ -1558,6 +1558,20 @@ pub async fn process_chat_message_streaming(
                 });
                 emit("chat-stream-tool-result", payload);
             }
+            StreamChunk::RetryAttempt {
+                attempt,
+                max_attempts,
+                delay_ms,
+                error_message,
+            } => {
+                let payload = serde_json::json!({
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "delay_ms": delay_ms,
+                    "error_message": error_message
+                });
+                emit("chat-stream-retry", payload);
+            }
             StreamChunk::Done(usage) => {
                 saw_terminal = true;
                 // Emit token usage if available

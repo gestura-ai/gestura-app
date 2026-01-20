@@ -211,6 +211,20 @@ fn run_main_loop(
                             }
                             app.update_last_message(&stream_state.content);
                         }
+                        StreamChunk::RetryAttempt {
+                            attempt,
+                            max_attempts,
+                            delay_ms,
+                            error_message,
+                        } => {
+                            // Show retry notification in the stream
+                            stream_state.content.push_str(&format!(
+                                "\n⟳ Retry {}/{} in {}ms: {}\n",
+                                attempt, max_attempts, delay_ms, error_message
+                            ));
+                            app.update_last_message(&stream_state.content);
+                            app.set_status(format!("Retrying ({}/{})", attempt, max_attempts));
+                        }
                         StreamChunk::Done(usage) => {
                             // Record token usage if available
                             if let Some(usage) = usage {

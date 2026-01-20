@@ -913,6 +913,24 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 print!("  ");
                                 let _ = std::io::stdout().flush();
                             }
+                            StreamChunk::RetryAttempt {
+                                attempt,
+                                max_attempts,
+                                delay_ms,
+                                error_message,
+                            } => {
+                                println!();
+                                println!(
+                                    "  {} Retry {}/{} in {}ms: {}",
+                                    "⟳".yellow(),
+                                    attempt,
+                                    max_attempts,
+                                    delay_ms,
+                                    error_message.dimmed()
+                                );
+                                print!("  ");
+                                let _ = std::io::stdout().flush();
+                            }
                             StreamChunk::Done(_) => {
                                 saw_done = true;
                                 break;

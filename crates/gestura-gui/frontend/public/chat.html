@@ -608,6 +608,62 @@
             margin-top: 4px;
         }
 
+        /* Retry Notice */
+        .retry-notice {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            margin: 8px 0;
+            border-radius: 8px;
+            background: rgba(255, 159, 10, 0.1);
+            border: 1px solid rgba(255, 159, 10, 0.3);
+            font-size: 12px;
+            color: var(--text-primary);
+            animation: pulse-retry 1.5s ease-in-out infinite;
+        }
+
+        .retry-icon {
+            font-size: 14px;
+            animation: spin 1s linear infinite;
+        }
+
+        .retry-text {
+            font-weight: 500;
+            color: #ff9f0a;
+        }
+
+        .retry-error {
+            color: var(--text-secondary);
+            font-size: 11px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 200px;
+        }
+
+        @keyframes spin {
+            from {
+                transform: rotate(0deg);
+            }
+
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        @keyframes pulse-retry {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.7;
+            }
+        }
+
         @keyframes pulse-border {
             0% {
                 box-shadow: 0 0 0 0 rgba(52, 199, 89, 0.2);
@@ -1700,6 +1756,32 @@
                 // Clear the current tool card reference
                 currentToolCard = null;
                 currentToolArgsEl = null;
+                scrollToBottom();
+            });
+
+            // 3c. Retry Attempt Event - shows retry notification
+            await event.listen('chat-stream-retry', (e) => {
+                touchStreamActivity();
+                const payload = e?.payload || {};
+                const { attempt, max_attempts, delay_ms, error_message } = payload;
+
+                // Create a retry notification element
+                const retryNotice = document.createElement('div');
+                retryNotice.className = 'retry-notice';
+                retryNotice.innerHTML = `
+                    <span class="retry-icon">⟳</span>
+                    <span class="retry-text">Retry ${attempt}/${max_attempts} in ${delay_ms}ms</span>
+                    <span class="retry-error">${error_message || 'Connection issue'}</span>
+                `;
+
+                // Add to current streaming message or create new one
+                if (currentStreamingEl) {
+                    currentStreamingEl.appendChild(retryNotice);
+                } else {
+                    addMessage(`⟳ Retry ${attempt}/${max_attempts}: ${error_message}`, 'agent');
+                }
+
+                setStatus(`Retrying (${attempt}/${max_attempts})...`, 'processing');
                 scrollToBottom();
             });
 

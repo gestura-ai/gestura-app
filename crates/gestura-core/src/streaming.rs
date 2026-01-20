@@ -46,6 +46,17 @@ pub enum StreamChunk {
         /// Execution duration in milliseconds
         duration_ms: u64,
     },
+    /// Retry attempt notification for user feedback
+    RetryAttempt {
+        /// Current attempt number (1-indexed)
+        attempt: u32,
+        /// Maximum attempts configured
+        max_attempts: u32,
+        /// Delay before next retry in milliseconds
+        delay_ms: u64,
+        /// Error that triggered the retry
+        error_message: String,
+    },
     /// Stream completed successfully with optional token usage
     Done(Option<TokenUsage>),
     /// Stream was cancelled
@@ -92,6 +103,10 @@ async fn forward_attempt_stream(
             | StreamChunk::ToolCallEnd
             | StreamChunk::ToolCallResult { .. } => {
                 forwarded_output = true;
+                let _ = tx.send(chunk).await;
+            }
+            StreamChunk::RetryAttempt { .. } => {
+                // Forward retry notifications without marking as output
                 let _ = tx.send(chunk).await;
             }
             StreamChunk::Done(_) => {
@@ -847,14 +862,29 @@ pub async fn start_streaming_with_fallback(
             }
         }
 
-        // Log retry attempt
+        // Log retry attempt and notify frontend
+        let error_msg = last_error
+            .as_ref()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "Unknown error".to_string());
+
         tracing::warn!(
             attempt = attempt + 1,
             delay = delay,
-            error = ?last_error,
+            error = %error_msg,
             "Primary LLM failed, retrying in {}s",
             delay
         );
+
+        // Emit retry notification to frontend
+        let _ = tx
+            .send(StreamChunk::RetryAttempt {
+                attempt: attempt as u32 + 1,
+                max_attempts: retry_delays.len() as u32,
+                delay_ms: *delay * 1000,
+                error_message: error_msg,
+            })
+            .await;
 
         tokio::time::sleep(tokio::time::Duration::from_secs(*delay)).await;
     }

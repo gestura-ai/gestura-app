@@ -716,7 +716,7 @@ New feature requests and bug fixes beyond Phase 2.
 
 ### Task 35: Implement Agent Loop Architecture Recommendations
 **Priority:** HIGH
-**Status:** ⬜ NOT STARTED
+**Status:** 🔄 IN PROGRESS
 
 **Problem:** Task 32 research identified key architectural patterns from OpenAI Codex, Block Goose, and Kilo Code, but these haven't been implemented yet.
 
@@ -737,11 +737,22 @@ Break down research findings into actionable implementation tasks for both GUI a
 - [ ] Create user confirmation flow for dangerous operations
 - [ ] Add permission persistence across sessions
 
-#### 35.3 Retry Logic and Error Recovery
-- [ ] Implement configurable retry manager with exponential backoff
-- [ ] Add context-aware retry strategies (different for API errors vs tool errors)
-- [ ] Create error classification system (transient vs permanent)
-- [ ] Add user notification for retry attempts
+#### 35.3 Retry Logic and Error Recovery ✅ COMPLETE
+- [x] Implement configurable retry manager with exponential backoff
+- [x] Add context-aware retry strategies (different for API errors vs tool errors)
+- [x] Create error classification system (transient vs permanent)
+- [x] Add user notification for retry attempts
+
+**Implementation Details (35.3):**
+- Created `crates/gestura-core/src/retry.rs` with:
+  - `ErrorClass` enum: `Transient`, `Permanent`, `Unknown` for error classification
+  - `RetryPolicy` struct with configurable settings (max_attempts, delays, backoff, jitter)
+  - Factory methods: `for_api()`, `for_tools()`, `for_streaming()` with context-specific defaults
+  - `RetryManager` with async `execute()` method for automatic retry logic
+  - `delay_for_attempt()` implementing exponential backoff with jitter
+- Added `StreamChunk::RetryAttempt` variant for user notification
+- Updated GUI, CLI, and TUI to display retry notifications
+- Added CSS styling for retry notices in chat interface
 
 #### 35.4 Context Compaction
 - [ ] Implement automatic history trimming on context overflow

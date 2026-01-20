@@ -44,6 +44,7 @@ pub mod llm_provider;
 pub mod mcp;
 mod persona;
 pub mod pipeline;
+pub mod retry;
 pub mod session_manager;
 pub mod session_workspace;
 pub mod speech;
@@ -85,6 +86,7 @@ pub use pipeline::{
     AgentPipeline, AgentRequest, AgentResponse, Message, PipelineConfig, RequestMetadata,
     RequestSource, ToolCallRecord, ToolResult,
 };
+pub use retry::{ErrorClass, RetryCallback, RetryEvent, RetryManager, RetryPolicy};
 pub use session_manager::{AuthToken, SessionManager, TokenType, UserSession, get_session_manager};
 pub use session_workspace::{
     SessionWorkspace, WorkspaceError, WorkspaceResult, cleanup_old_sessions, get_sessions_base_dir,
