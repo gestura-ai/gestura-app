@@ -3,7 +3,7 @@
 **Started:** 2026-01-19
 **Phase 1 Status:** ✅ All Tasks Completed (Tasks 1-21)
 **Phase 2 Status:** ✅ All Tasks Completed (Tasks 22-28) - 7 of 7 complete
-**Phase 3 Status:** 🔄 In Progress (Tasks 29+) - 0 of 1 complete
+**Phase 3 Status:** 🔄 In Progress (Tasks 29+) - 1 of 2 complete
 
 ---
 
@@ -583,7 +583,40 @@ Wire up the 9 voice command methods in speech.rs for hands-free control.
 
 ---
 
-## Phase 3: Tasks 29+ (Complete)
+### Task 30: Fix Provider/Model Changes Not Affecting LLM in Chat Window
+**Priority:** HIGH
+**Status:** 🔄 IN PROGRESS
+
+**Problem:** When the user changes the LLM provider or model in the chat window dropdown, the agent continues to use the previous provider/model instead of the newly selected one.
+
+**Root Cause Analysis:**
+1. Session LLM config is stored correctly via `set_session_llm_provider` and `set_session_llm_model`
+2. The `process_chat_message_streaming` function retrieves session config correctly
+3. Provider override is applied to `cfg.llm.primary`
+4. Model override may fail silently if provider config is `None` (e.g., OpenAI not configured)
+
+**Solution Implemented:**
+- [x] Added detailed debug logging to trace session LLM config flow
+- [x] Log initial global provider and session ID at start of processing
+- [x] Log retrieved session LLM config (shows if None or has values)
+- [x] Log when provider/model overrides are applied
+- [x] Log final provider being used for the request
+- [x] Added warnings when model override is ignored due to missing provider config
+- [x] Ollama creates default config if missing (doesn't require API key)
+
+**Files Modified:**
+- `crates/gestura-gui/src/api.rs` - Added debug logging for session LLM config
+
+**Commit:** `230fd32` - fix: Add debug logging for session LLM config
+
+**Next Steps:**
+- [ ] Test with app to verify logging shows correct flow
+- [ ] If session config is None, investigate why session state isn't being found
+- [ ] If provider config is None, consider creating minimal config for testing
+
+---
+
+## Phase 3: Tasks 29+ (In Progress)
 
 New feature requests and bug fixes beyond Phase 2.
 
