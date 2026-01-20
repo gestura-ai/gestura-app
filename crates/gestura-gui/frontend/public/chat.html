@@ -608,6 +608,39 @@
             margin-top: 4px;
         }
 
+        /* Retry Tool Button */
+        .retry-tool-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 8px;
+            padding: 6px 12px;
+            border: 1px solid rgba(255, 159, 10, 0.5);
+            background: rgba(255, 159, 10, 0.15);
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            color: #ff9f0a;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .retry-tool-btn:hover {
+            background: rgba(255, 159, 10, 0.25);
+            border-color: #ff9f0a;
+        }
+
+        .retry-tool-btn:focus {
+            outline: 2px solid #ff9f0a;
+            outline-offset: 2px;
+        }
+
+        .retry-tool-btn svg {
+            width: 14px;
+            height: 14px;
+            fill: currentColor;
+        }
+
         /* Retry Notice */
         .retry-notice {
             display: flex;
@@ -1076,8 +1109,20 @@
         }
 
         .message.agent:hover .copy-response-btn,
+        .message.agent:focus .copy-response-btn,
         .copy-response-btn:focus {
             opacity: 1;
+        }
+
+        /* Focus styling for keyboard navigation */
+        .message.agent:focus {
+            outline: 2px solid var(--accent-primary);
+            outline-offset: 2px;
+            border-radius: 12px;
+        }
+
+        .message.agent:focus .message-content {
+            box-shadow: 0 0 0 2px var(--accent-primary);
         }
 
         .copy-response-btn:hover {
@@ -1500,18 +1545,39 @@
         // SVG icons for copy buttons
         const copyIcon = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>`;
         const checkIcon = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
+        const retryIcon = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>`;
+
+        // Screen reader announcement element (ARIA live region)
+        let srAnnouncer = document.getElementById('sr-announcer');
+        if (!srAnnouncer) {
+            srAnnouncer = document.createElement('div');
+            srAnnouncer.id = 'sr-announcer';
+            srAnnouncer.setAttribute('role', 'status');
+            srAnnouncer.setAttribute('aria-live', 'polite');
+            srAnnouncer.setAttribute('aria-atomic', 'true');
+            srAnnouncer.style.cssText = 'position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden;';
+            document.body.appendChild(srAnnouncer);
+        }
+
+        function announceToScreenReader(message) {
+            srAnnouncer.textContent = '';
+            // Small delay to ensure announcement is triggered
+            setTimeout(() => { srAnnouncer.textContent = message; }, 50);
+        }
 
         async function copyToClipboard(text, button) {
             try {
                 await navigator.clipboard.writeText(text);
                 button.innerHTML = checkIcon;
                 button.classList.add('copied');
+                announceToScreenReader('Copied to clipboard');
                 setTimeout(() => {
                     button.innerHTML = copyIcon;
                     button.classList.remove('copied');
                 }, 2000);
             } catch (err) {
                 console.error('Failed to copy:', err);
+                announceToScreenReader('Failed to copy to clipboard');
             }
         }
 
@@ -1520,6 +1586,7 @@
             btn.className = className;
             btn.innerHTML = copyIcon;
             btn.title = 'Copy to clipboard';
+            btn.setAttribute('aria-label', 'Copy to clipboard');
             return btn;
         }
 
@@ -1527,15 +1594,31 @@
             const contentDiv = msgDiv.querySelector('.message-content');
             if (!contentDiv) return;
 
+            // Make message focusable for keyboard navigation
+            msgDiv.setAttribute('tabindex', '0');
+            msgDiv.setAttribute('role', 'article');
+            msgDiv.setAttribute('aria-label', 'Assistant response');
+
             const copyBtn = createCopyButton('copy-response-btn');
             copyBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 // Get text content excluding copy buttons
                 const clone = contentDiv.cloneNode(true);
-                clone.querySelectorAll('.copy-response-btn, .copy-code-btn').forEach(btn => btn.remove());
+                clone.querySelectorAll('.copy-response-btn, .copy-code-btn, .retry-tool-btn').forEach(btn => btn.remove());
                 copyToClipboard(clone.textContent.trim(), copyBtn);
             });
             contentDiv.appendChild(copyBtn);
+
+            // Add keyboard shortcut for copy (Ctrl/Cmd+C when focused)
+            msgDiv.addEventListener('keydown', (e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === 'c' && !window.getSelection().toString()) {
+                    // Only copy if no text is selected (let native selection copy work)
+                    e.preventDefault();
+                    const clone = contentDiv.cloneNode(true);
+                    clone.querySelectorAll('.copy-response-btn, .copy-code-btn, .retry-tool-btn').forEach(btn => btn.remove());
+                    copyToClipboard(clone.textContent.trim(), copyBtn);
+                }
+            });
         }
 
         function enhanceCodeBlocks(container) {
@@ -1854,6 +1937,27 @@
                             durationDiv.className = 'tool-duration';
                             durationDiv.textContent = `Completed in ${duration_ms}ms`;
                             body.appendChild(durationDiv);
+                        }
+
+                        // Add retry button for failed tool operations
+                        if (!success && name) {
+                            const retryBtn = document.createElement('button');
+                            retryBtn.className = 'retry-tool-btn';
+                            retryBtn.innerHTML = retryIcon + ' Retry';
+                            retryBtn.title = 'Retry this tool operation';
+                            retryBtn.setAttribute('aria-label', `Retry ${name} tool operation`);
+                            retryBtn.addEventListener('click', async (e) => {
+                                e.stopPropagation();
+                                // Get the tool args from the card
+                                const argsEl = targetCard.querySelector('.tool-args');
+                                const argsText = argsEl ? argsEl.textContent : '';
+                                // Send a retry message to the chat
+                                const retryMessage = `Please retry the ${name} tool operation${argsText ? ' with the same arguments' : ''}`;
+                                messageInput.value = retryMessage;
+                                sendMessage();
+                                announceToScreenReader(`Retrying ${name} tool operation`);
+                            });
+                            body.appendChild(retryBtn);
                         }
                     }
                 }

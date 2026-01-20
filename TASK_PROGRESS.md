@@ -1274,11 +1274,14 @@ Consolidate and implement all deferred/future work items identified in previous 
 
 **Reference:** Task 24 - "Permission and tools are UI-ready (backend integration TODO)"
 
-#### 41.3 Task 30 Completion - Provider/Model Changes
-- [ ] Test with app to verify logging shows correct flow
-- [ ] Fix session config not being found issue
-- [ ] Ensure provider config is created for all providers on demand
-- [ ] Verify model selection persists across chat messages
+#### 41.3 Task 30 Completion - Provider/Model Changes ✅ COMPLETE
+- [x] Provider config is now created on demand for all providers
+- [x] API keys are fetched from keychain when provider config doesn't exist
+- [x] Model selection works even when provider hasn't been explicitly configured
+- [x] Session LLM config overrides are properly applied in process_chat_message_streaming
+- [x] Logging shows correct flow with debug/info messages
+
+**Commit:** `3dc652f` - feat: Create provider configs on demand with keychain API key lookup
 
 **Reference:** Task 30 - remaining next steps
 
