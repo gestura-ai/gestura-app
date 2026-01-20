@@ -3,7 +3,7 @@
 **Started:** 2026-01-19
 **Phase 1 Status:** ✅ All Tasks Completed (Tasks 1-21)
 **Phase 2 Status:** ✅ All Tasks Completed (Tasks 22-28) - 7 of 7 complete
-**Phase 3 Status:** 🔄 In Progress (Tasks 29+) - 6 of 9 complete
+**Phase 3 Status:** 🔄 In Progress (Tasks 29+) - 11 of 12 complete
 
 ---
 
@@ -1058,7 +1058,7 @@ Added a new `StreamChunk::ToolCallResult` variant to the streaming pipeline that
 
 ### Task 39: Implement Streaming API Improvements
 **Priority:** HIGH
-**Status:** 🔄 IN PROGRESS
+**Status:** ✅ COMPLETE
 
 **Problem:** Current streaming implementation has several issues:
 1. Streaming responses sometimes stall or fail silently
@@ -1148,7 +1148,7 @@ All 4 sub-tasks completed:
 
 ---
 
-### Task 40: Environment Variable and Configuration Improvements 🔄 IN PROGRESS
+### Task 40: Environment Variable and Configuration Improvements ✅ COMPLETE
 
 **Problem:** Current configuration handling may not follow best practices for:
 - Hierarchical configuration (env vars → config file → defaults)
@@ -1202,13 +1202,34 @@ All 4 sub-tasks completed:
 - Generic `validate_api_key()` for any provider
 - 5 new unit tests for validation
 
-#### 40.4 Configuration Validation
-- [ ] Add schema validation for config.json
-- [ ] Implement config migration for version upgrades
-- [ ] Add helpful error messages for invalid configuration
-- [ ] Add config health check command
+#### 40.4 Configuration Validation ✅ COMPLETE
+- [x] Add schema validation for config.json
+- [x] Implement config migration for version upgrades (handled via serde defaults)
+- [x] Add helpful error messages for invalid configuration
+- [x] Add config health check command
+
+**Implementation:**
+- Created `crates/gestura-core/src/config_validation.rs` module
+- `ConfigValidationResult` with errors and warnings tracking
+- `ConfigError` with field path, message, and suggestion
+- `ConfigHealthCheck` for full config status report
+- Provider-specific validation (OpenAI, Anthropic, Grok, Ollama)
+- UI settings validation (theme, volume, intensity)
+- Hotkey and voice provider validation
+- Human-readable report formatting with emojis
+- 6 unit tests
 
 **Reference:** `docs/AGENT_ARCHITECTURE_RESEARCH.md` - Configuration patterns
+
+---
+
+### Task 40: Environment Variable and Configuration Improvements ✅ COMPLETE
+
+All 4 sub-tasks completed:
+- ✅ 40.1 Hierarchical Configuration Loading
+- ✅ 40.2 Runtime Configuration Reloading
+- ✅ 40.3 Secure Secret Management
+- ✅ 40.4 Configuration Validation
 
 ---
 
