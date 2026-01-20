@@ -3,7 +3,7 @@
 **Started:** 2026-01-19
 **Phase 1 Status:** ✅ All Tasks Completed (Tasks 1-21)
 **Phase 2 Status:** ✅ All Tasks Completed (Tasks 22-28) - 7 of 7 complete
-**Phase 3 Status:** 🔄 In Progress (Tasks 29+) - 3 of 5 complete
+**Phase 3 Status:** 🔄 In Progress (Tasks 29+) - 3 of 9 complete
 
 ---
 
@@ -702,13 +702,201 @@ New feature requests and bug fixes beyond Phase 2.
 
 **Requirements:**
 - [ ] Create separate UI components for thought process vs. final response
-- [ ] Thought component should be collapsible/expandable
+- [ ] Thought component should be collapsible/expandable. They may already exist
 - [ ] Thought content visually distinct but reviewable
 - [ ] Final response has primary focus in UI
 - [ ] Handle provider-specific thought formatting (Anthropic `<thinking>`, OpenAI reasoning)
 
 **Files to Modify:**
 - `crates/gestura-gui/frontend/public/chat.html` - Thought bubble UI
+
+---
+
+---
+
+### Task 35: Implement Agent Loop Architecture Recommendations
+**Priority:** HIGH
+**Status:** ⬜ NOT STARTED
+
+**Problem:** Task 32 research identified key architectural patterns from OpenAI Codex, Block Goose, and Kilo Code, but these haven't been implemented yet.
+
+**Requirements:**
+Break down research findings into actionable implementation tasks for both GUI and CLI:
+
+**Sub-tasks:**
+
+#### 35.1 MCP Integration Enhancement
+- [ ] Review current MCP implementation in `crates/gestura-core/`
+- [ ] Implement unified MCP tool discovery and registration
+- [ ] Add MCP capability negotiation for dynamic tool availability
+- [ ] Create MCP tool metadata caching for performance
+
+#### 35.2 Tool Inspection and Permission System
+- [ ] Implement `ToolInspectionManager` pattern (from Goose architecture)
+- [ ] Add permission checks before tool execution
+- [ ] Create user confirmation flow for dangerous operations
+- [ ] Add permission persistence across sessions
+
+#### 35.3 Retry Logic and Error Recovery
+- [ ] Implement configurable retry manager with exponential backoff
+- [ ] Add context-aware retry strategies (different for API errors vs tool errors)
+- [ ] Create error classification system (transient vs permanent)
+- [ ] Add user notification for retry attempts
+
+#### 35.4 Context Compaction
+- [ ] Implement automatic history trimming on context overflow
+- [ ] Add smart summarization of older messages
+- [ ] Create configurable compaction thresholds
+- [ ] Preserve critical context during compaction
+
+#### 35.5 Event Streaming Architecture
+- [ ] Review current streaming implementation
+- [ ] Add typed event system for real-time UI updates
+- [ ] Implement progress indicators for long-running operations
+- [ ] Create event buffering for rate limiting
+
+#### 35.6 Execution Mode Support
+- [ ] Implement Auto vs Chat mode switching
+- [ ] Add mode-specific tool permissions
+- [ ] Create mode persistence per session
+- [ ] Add UI indicators for current mode
+
+**Files to Modify:**
+- `crates/gestura-core/src/` - Core agent logic
+- `crates/gestura-cli/src/` - CLI tool integration
+- `crates/gestura-gui/src/` - GUI event handling
+
+**Reference:** `docs/AGENT_ARCHITECTURE_RESEARCH.md`
+
+---
+
+### Task 36: Fix Missing Copy Buttons in Chat Interface
+**Priority:** MEDIUM
+**Status:** ⬜ NOT STARTED
+
+**Problem:** Copy response button doesn't appear when hovering over agent response components, and code blocks within responses lack their own copy buttons.
+
+**Requirements:**
+
+#### 36.1 Response-Level Copy Button
+- [ ] Add hover state detection for agent response messages
+- [ ] Implement copy button component that appears on hover
+- [ ] Position button consistently (top-right corner of response)
+- [ ] Add visual feedback on successful copy (checkmark/toast)
+- [ ] Copy entire response content (excluding UI elements)
+
+#### 36.2 Code Block Copy Buttons
+- [ ] Detect code blocks within markdown responses
+- [ ] Add individual copy button to each code block
+- [ ] Position button in code block header area
+- [ ] Copy only the code content (excluding language tag)
+- [ ] Add syntax-aware copy formatting
+
+#### 36.3 UI/UX Considerations
+- [ ] Ensure buttons don't interfere with text selection
+- [ ] Add keyboard shortcuts (Ctrl/Cmd+C on focused response)
+- [ ] Handle edge cases (empty responses, very long content)
+- [ ] Test accessibility (screen reader announcements)
+
+**Files to Modify:**
+- `crates/gestura-gui/frontend/public/chat.html` - Main chat interface
+- CSS styles for hover states and button positioning
+
+**Expected Behavior:**
+1. Hover over any agent response → copy button appears in top-right
+2. Click copy button → response copied to clipboard, visual feedback shown
+3. Hover over code block → separate copy button appears
+4. Click code block copy → code copied without language tag
+
+---
+
+### Task 37: Fix Internal Tool Error Handling and User Feedback
+**Priority:** HIGH
+**Status:** ⬜ NOT STARTED
+
+**Problem:** When using internal tools, the system fails to respond to the user with either a response or error message, leaving users confused about tool execution status.
+
+**Requirements:**
+
+#### 37.1 Error Capture and Classification
+- [ ] Identify all tool execution entry points
+- [ ] Implement comprehensive error catching around tool calls
+- [ ] Create error classification (permission denied, timeout, invalid input, etc.)
+- [ ] Log errors with sufficient context for debugging
+
+#### 37.2 User Feedback System
+- [ ] Display error messages in chat interface when tool fails
+- [ ] Add progress indicators for tool execution
+- [ ] Show success confirmation for completed tool operations
+- [ ] Provide actionable error messages (not just technical details)
+
+#### 37.3 Tool Execution Pipeline
+- [ ] Review current tool execution flow in `crates/gestura-core/`
+- [ ] Ensure all code paths return either success or error
+- [ ] Add timeout handling for long-running tools
+- [ ] Implement graceful degradation on partial failures
+
+#### 37.4 Frontend Integration
+- [ ] Display tool execution status in real-time
+- [ ] Show tool name and operation type during execution
+- [ ] Render error details in user-friendly format
+- [ ] Add retry option for failed tool operations
+
+**Files to Investigate:**
+- `crates/gestura-core/src/pipeline/` - Tool execution pipeline
+- `crates/gestura-core/src/tools/` - Tool implementations
+- `crates/gestura-gui/src/api.rs` - API handlers
+- `crates/gestura-gui/frontend/public/chat.html` - Error display
+
+**Expected Behavior:**
+1. Tool execution starts → progress indicator shown
+2. Tool succeeds → result displayed in chat
+3. Tool fails → clear error message with details and possible actions
+4. All tool operations are logged for debugging
+
+---
+
+### Task 38: Fix Model Dropdown Population Issues
+**Priority:** HIGH
+**Status:** ⬜ NOT STARTED
+
+**Problem:** Chat window loads faster now, but model dropdowns for all providers except Ollama are not populating. This may be related to recent performance improvements that broke model fetching.
+
+**Requirements:**
+
+#### 38.1 Diagnose Root Cause
+- [ ] Check if model fetch APIs are being called on provider selection
+- [ ] Verify API responses are received correctly
+- [ ] Check if race condition exists between window load and API calls
+- [ ] Review recent changes that may have affected model loading
+
+#### 38.2 Model Fetching for Each Provider
+- [ ] OpenAI: Verify `list_openai_models` is called and populates dropdown
+- [ ] Anthropic: Verify `list_anthropic_models` is called and populates dropdown
+- [ ] Grok/xAI: Verify `list_grok_models` is called and populates dropdown
+- [ ] Ollama: Confirm current working implementation for reference
+
+#### 38.3 Fix Model Population Flow
+- [ ] Ensure model fetch happens after API keys are loaded
+- [ ] Add loading state to dropdowns while fetching
+- [ ] Handle API errors gracefully with fallback models
+- [ ] Cache fetched models to avoid repeated API calls
+
+#### 38.4 Frontend Integration
+- [ ] Update provider selection handler to trigger model fetch
+- [ ] Populate dropdown with fetched models
+- [ ] Restore previously selected model if available
+- [ ] Add error state when model fetch fails
+
+**Files to Modify:**
+- `crates/gestura-gui/frontend/public/chat.html` - Model dropdown handlers
+- `crates/gestura-gui/src/api.rs` - Model fetch API commands
+
+**Expected Behavior:**
+1. Select provider → model dropdown shows loading state
+2. API returns models → dropdown populated with options
+3. Previously selected model restored (if still available)
+4. API error → dropdown shows error or fallback models
 
 ---
 
