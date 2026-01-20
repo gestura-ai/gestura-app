@@ -1483,17 +1483,98 @@ All 21 Phase 1 tasks have been implemented and verified:
 
 ---
 
+### Task 43.1: Fix Agent Tool Awareness Bug
+**Priority:** CRITICAL
+**Status:** ✅ COMPLETE
+
+**Problem:** Agent would say "I don't see any web browsing tools" even when tools were available with full permissions.
+
+**Root Causes Identified and Fixed:**
+1. **ContextCategory::Web only added "web" tool, not "web_search"** - User query "look up langchain's landing page" triggered `ContextCategory::Web` but pipeline only added "web" (page fetch) tool, not "web_search". Fixed: Now adds both.
+2. **SessionToolSettings::default() used wrong tool names** - Default had: "file_read", "file_write", "code_analysis" but registry uses: "file", "code". Fixed: Updated defaults to match registry names (file, shell, git, code, web, web_search, a2a, permissions, mcp).
+3. **GUI never passed enabled_tools to pipeline** - `request.metadata.allowed_tools` was always empty from GUI. Fixed: Added code to extract enabled tools and call `request.with_allowed_tools()`.
+
+**Files Modified:**
+- `crates/gestura-core/src/pipeline/mod.rs` - Add web_search when Web category detected
+- `crates/gestura-gui/src/window_manager.rs` - Fix SessionToolSettings::default() tool names
+- `crates/gestura-gui/src/api.rs` - Pass enabled_tools to pipeline via with_allowed_tools()
+
+**Verification:**
+- ✅ `cargo fmt`
+- ✅ `cargo clippy --all-targets --all-features -- -D warnings`
+- ✅ `cargo test --workspace --all-features` (216 tests pass)
+
+**Commit:** `4e79590` - fix(core,gui): agent now aware of enabled tools
+
+---
+
 ### Task 48: Issue 4 — Tool/config changes require acceptance unless permissive + global default
 **Priority:** HIGH
-**Status:** ⏳ NOT STARTED
+**Status:** ✅ COMPLETE
 
 **Goal:** Tool/config changes must require user acceptance unless the session is in a permissive mode, and new sessions must inherit a global default permission level.
+
+**Implementation:**
+
+1. **Core Permission System** (`crates/gestura-core/src/pipeline/types.rs`):
+   - Added `PermissionLevel` enum: `Sandbox`, `Restricted` (default), `Full`
+   - Added helper methods: `parse()`, `allows_without_confirmation()`, `blocks()`, `requires_confirmation()`
+   - Changed `RequestMetadata.permission_level` from `Option<String>` to `PermissionLevel`
+   - Updated `AgentRequest` builder with `with_permission_level(PermissionLevel)` and `with_permission_level_str(&str)`
+
+2. **Global Default Permission** (`crates/gestura-core/src/config.rs`):
+   - Added `GlobalPermissionLevel` enum: `Sandbox`, `Restricted`, `Full`
+   - Added `default_permission_level` field to `AppConfig`
+   - New sessions inherit this global default
+
+3. **Tool Permission Gating** (`crates/gestura-core/src/pipeline/mod.rs`):
+   - Added `is_write_operation()` helper to classify tools as read-only vs write
+   - Updated `finalize_pending_tool_call()` to check permissions before execution:
+     - **Sandbox mode**: Blocks all write operations
+     - **Restricted mode**: Requires confirmation for write operations
+     - **Full mode**: Executes all tools without confirmation
+   - Read-only operations (file read, web search, code analysis) always allowed
+
+4. **New StreamChunk Variants** (`crates/gestura-core/src/streaming.rs`):
+   - `ToolConfirmationRequired { confirmation_id, tool_name, tool_args, description, risk_level, category }`
+   - `ToolBlocked { tool_name, reason }`
+   - Updated `forward_attempt_stream` to handle new variants
+
+5. **GUI Integration** (`crates/gestura-gui/src/api.rs`, `crates/gestura-gui/src/window_manager.rs`):
+   - Sessions now store `permission_level: SessionPermissionLevel`
+   - New sessions inherit from global config default
+   - Emits `chat-stream-tool-confirmation` and `chat-stream-tool-blocked` events
+
+6. **CLI Integration** (`crates/gestura-cli/src/commands/chat/mod.rs`, `tui/mod.rs`):
+   - Updated to use `PermissionLevel::Restricted` as default
+   - Added handlers for `ToolConfirmationRequired` and `ToolBlocked` chunks
+   - Visual indicators: ⚠️ for confirmation required, 🚫 for blocked
+
+7. **Persona Awareness** (`crates/gestura-core/src/persona.rs`):
+   - Updated to use `PermissionLevel` enum directly (no longer Option<String>)
+   - Agent system prompt now includes permission level context
+
+**Files Modified:**
+- `crates/gestura-core/src/pipeline/types.rs` - PermissionLevel enum and RequestMetadata changes
+- `crates/gestura-core/src/pipeline/mod.rs` - Permission gating in tool execution
+- `crates/gestura-core/src/streaming.rs` - New StreamChunk variants
+- `crates/gestura-core/src/config.rs` - GlobalPermissionLevel and default config
+- `crates/gestura-core/src/persona.rs` - Updated permission level handling
+- `crates/gestura-gui/src/api.rs` - GUI event emission for tool confirmation/blocked
+- `crates/gestura-gui/src/window_manager.rs` - Session permission level storage
+- `crates/gestura-cli/src/commands/chat/mod.rs` - CLI permission handling
+- `crates/gestura-cli/src/commands/chat/tui/mod.rs` - TUI permission handling
+
+**Verification:**
+- ✅ `cargo fmt`
+- ✅ `cargo clippy --all-targets --all-features -- -D warnings`
+- ✅ `cargo test --workspace --all-features` (374 tests pass)
 
 ---
 
 ### Task 49: Issue 5 — Tray menu session restore + minimalist timestamps
 **Priority:** HIGH
-**Status:** ⏳ NOT STARTED
+**Status:** ⏳ IN PROGRESS
 
 **Goal:** Tray menu must restore the correct chat session on click; tray labels should use minimalist formatting like `Jan 20 @ 9am`.
 
