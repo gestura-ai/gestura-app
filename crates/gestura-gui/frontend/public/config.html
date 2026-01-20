@@ -684,6 +684,20 @@
             flex: 1;
         }
 
+        /* Loading state for dropdowns */
+        .form-select.loading {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='10' stroke-dasharray='31.4' stroke-dashoffset='31.4'%3E%3Canimate attributeName='stroke-dashoffset' values='31.4;0' dur='1s' repeatCount='indefinite'/%3E%3C/circle%3E%3C/svg%3E");
+            background-position: right 0.5rem center;
+            background-size: 1rem;
+            color: var(--text-muted);
+            cursor: wait;
+        }
+
+        .form-select:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
         .model-ready-indicator {
             display: inline-flex;
             align-items: center;
@@ -2970,6 +2984,7 @@
             const currentValue = modelSelect.value;
 
             try {
+                setDropdownLoading('ollamaModel', true);
                 const models = await window.__TAURI__.core.invoke('list_ollama_models', { endpoint });
                 modelSelect.innerHTML = '<option value="">Select a model...</option>';
                 models.forEach(model => {
@@ -2990,6 +3005,9 @@
                 }
             } catch (error) {
                 console.error('Failed to list Ollama models:', error);
+                modelSelect.innerHTML = '<option value="">Failed to load models</option>';
+            } finally {
+                setDropdownLoading('ollamaModel', false);
             }
         }
 
@@ -2999,12 +3017,14 @@
         async function refreshOpenAIModels() {
             if (!isTauriAvailable()) {
                 console.warn('Tauri API not available - cannot refresh OpenAI models');
+                setDropdownLoading('openaiLlmModel', false);
                 return;
             }
 
             const apiKey = document.getElementById('openaiLlmApiKey')?.value;
             if (!apiKey || apiKey.trim() === '') {
                 console.log('No OpenAI API key provided - using static model list');
+                setDropdownLoading('openaiLlmModel', false);
                 return;
             }
 
@@ -3012,8 +3032,7 @@
             const currentValue = modelSelect.value;
 
             try {
-                modelSelect.innerHTML = '<option value="">Loading models...</option>';
-                modelSelect.disabled = true;
+                setDropdownLoading('openaiLlmModel', true);
 
                 const models = await window.__TAURI__.core.invoke('list_openai_models', { apiKey });
                 modelSelect.innerHTML = '';
@@ -3047,7 +3066,7 @@
                 `;
                 if (currentValue) modelSelect.value = currentValue;
             } finally {
-                modelSelect.disabled = false;
+                setDropdownLoading('openaiLlmModel', false);
             }
         }
 
@@ -3055,12 +3074,14 @@
         async function refreshAnthropicModels() {
             if (!isTauriAvailable()) {
                 console.warn('Tauri API not available - cannot refresh Anthropic models');
+                setDropdownLoading('anthropicLlmModel', false);
                 return;
             }
 
             const apiKey = document.getElementById('anthropicApiKey')?.value;
             if (!apiKey || apiKey.trim() === '') {
                 console.log('No Anthropic API key provided - using static model list');
+                setDropdownLoading('anthropicLlmModel', false);
                 return;
             }
 
@@ -3068,8 +3089,7 @@
             const currentValue = modelSelect.value;
 
             try {
-                modelSelect.innerHTML = '<option value="">Loading models...</option>';
-                modelSelect.disabled = true;
+                setDropdownLoading('anthropicLlmModel', true);
 
                 const models = await window.__TAURI__.core.invoke('list_anthropic_models', { apiKey });
                 modelSelect.innerHTML = '';
@@ -3103,13 +3123,14 @@
                 `;
                 if (currentValue) modelSelect.value = currentValue;
             } finally {
-                modelSelect.disabled = false;
+                setDropdownLoading('anthropicLlmModel', false);
             }
         }
 
         // Load Grok models dynamically from xAI API
         async function loadGrokModels() {
             if (!isTauriAvailable()) {
+                setDropdownLoading('grokLlmModel', false);
                 return;
             }
 
@@ -3119,6 +3140,7 @@
             const apiKey = apiKeyInput?.value || '';
 
             try {
+                setDropdownLoading('grokLlmModel', true);
                 const models = await window.__TAURI__.core.invoke('list_grok_models', { apiKey });
                 modelSelect.innerHTML = '';
 
@@ -3139,6 +3161,10 @@
                 }
             } catch (error) {
                 console.error('Failed to load Grok models:', error);
+                // Fallback to static list
+                modelSelect.innerHTML = '<option value="grok-3">Grok 3</option>';
+            } finally {
+                setDropdownLoading('grokLlmModel', false);
             }
         }
 
@@ -3172,6 +3198,7 @@
         // Load OpenAI STT models dynamically
         async function loadOpenAISttModels() {
             if (!isTauriAvailable()) {
+                setDropdownLoading('openaiSttModel', false);
                 return;
             }
 
@@ -3184,6 +3211,7 @@
             if (!modelSelect) return;
 
             try {
+                setDropdownLoading('openaiSttModel', true);
                 if (statusSpan) statusSpan.textContent = 'Loading models...';
                 const models = await window.__TAURI__.core.invoke('list_openai_stt_models', { apiKey });
                 modelSelect.innerHTML = '';
@@ -3211,6 +3239,14 @@
             } catch (error) {
                 console.error('Failed to load OpenAI STT models:', error);
                 if (statusSpan) statusSpan.textContent = '(Using default models)';
+                // Fallback to static list
+                modelSelect.innerHTML = `
+                    <option value="gpt-4o-transcribe">GPT-4o Transcribe (Best)</option>
+                    <option value="gpt-4o-mini-transcribe">GPT-4o Mini Transcribe</option>
+                    <option value="whisper-1">Whisper V2</option>
+                `;
+            } finally {
+                setDropdownLoading('openaiSttModel', false);
             }
         }
 
@@ -3237,10 +3273,11 @@
         // Load available Whisper models
         async function loadWhisperModels() {
             console.log('📥 Loading Whisper models...');
+            const select = document.getElementById('whisperModelSelect');
             try {
+                setDropdownLoading('whisperModelSelect', true);
                 whisperModels = await window.__TAURI__.core.invoke('get_whisper_models');
                 console.log('✅ Loaded Whisper models:', whisperModels);
-                const select = document.getElementById('whisperModelSelect');
                 select.innerHTML = '<option value="">-- Select a model --</option>';
 
                 let recommendedFilename = null;
@@ -3265,6 +3302,9 @@
                 }
             } catch (error) {
                 console.error('Failed to load Whisper models:', error);
+                select.innerHTML = '<option value="">Failed to load models</option>';
+            } finally {
+                setDropdownLoading('whisperModelSelect', false);
             }
         }
 
@@ -3769,13 +3809,37 @@
             }
         }
 
+        // Show loading state on a dropdown
+        function setDropdownLoading(selectId, loading) {
+            const select = document.getElementById(selectId);
+            if (!select) return;
+            if (loading) {
+                select.dataset.originalHtml = select.innerHTML;
+                select.innerHTML = '<option value="">Loading...</option>';
+                select.disabled = true;
+                select.classList.add('loading');
+            } else {
+                select.disabled = false;
+                select.classList.remove('loading');
+            }
+        }
+
         // Initialize everything with Tauri API check
         async function initializeApp() {
             setupProviderSelection();
 
+            // Show loading states immediately for all model dropdowns
+            const modelDropdowns = [
+                'ollamaModel', 'openaiLlmModel', 'anthropicLlmModel',
+                'grokLlmModel', 'openaiSttModel', 'whisperModelSelect'
+            ];
+            modelDropdowns.forEach(id => setDropdownLoading(id, true));
+
             const tauriReady = await waitForTauri();
             if (!tauriReady) {
                 console.warn('⚠️ Tauri API not available - running in standalone browser mode');
+                // Clear loading states
+                modelDropdowns.forEach(id => setDropdownLoading(id, false));
                 // Show a warning banner
                 const mainContent = document.querySelector('.main-content');
                 if (mainContent) {
@@ -3793,12 +3857,27 @@
                 return;
             }
 
-            // Tauri is available, initialize all features
-            loadPermissions();
-            loadConfig();
+            // Tauri is available - use parallel initialization for better performance
+            // Start all independent operations in parallel
+            const initPromises = [
+                loadPermissions().catch(e => console.warn('Permission load failed:', e)),
+                loadAudioDevices().catch(e => console.warn('Audio devices load failed:', e)),
+                initWhisperModelUI().catch(e => console.warn('Whisper UI init failed:', e)),
+            ];
+
+            // Config loading is special - it sets up provider visibility which triggers model loads
+            // Run it and then parallelize model refreshes
+            try {
+                await loadConfig();
+            } catch (e) {
+                console.warn('Config load failed:', e);
+            }
+
             setupNotificationSoundPreview();
-            initWhisperModelUI();
-            loadAudioDevices();
+
+            // Wait for all parallel operations to complete
+            await Promise.allSettled(initPromises);
+
             console.log('⚙️ Enhanced configuration interface initialized');
         }
 

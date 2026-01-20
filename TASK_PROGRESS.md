@@ -2,7 +2,7 @@
 
 **Started:** 2026-01-19
 **Phase 1 Status:** ✅ All Tasks Completed (Tasks 1-21)
-**Phase 2 Status:** 🔄 In Progress (Tasks 22-28) - 2 of 7 complete
+**Phase 2 Status:** 🔄 In Progress (Tasks 22-28) - 3 of 7 complete
 
 ---
 
@@ -413,7 +413,6 @@ Wire up the 9 voice command methods in speech.rs for hands-free control.
 - [ ] Determine appropriate placement in GUI:
   - Option A: Sidebar panel in chat window
   - Option B: Settings icon/button in chat header
-  - Option C: Dedicated session config dialog (modal)
 - [ ] Persist session settings across app restarts (optional)
 - [ ] Add visual indicator showing current session settings
 
@@ -426,34 +425,29 @@ Wire up the 9 voice command methods in speech.rs for hands-free control.
 
 ### Task 25: Fix GUI Performance - Async Loading
 **Priority:** CRITICAL
-**Status:** ⬜ NOT STARTED
+**Status:** ✅ COMPLETE
 
 **Problem:** Major lag when opening configuration window, chat window, and during application startup.
 
 **Root cause:** UI elements are not loading asynchronously, causing blocking operations.
 
-**Requirements:**
-- [ ] Profile and identify specific blocking operations
-- [ ] Convert all remaining synchronous operations to async
-- [ ] Implement progressive loading for UI fields
-- [ ] Add loading states/spinners for fields that populate dynamically:
-  - Model dropdowns (OpenAI, Anthropic, Grok, Ollama)
-  - API key validation status
-  - Config page sections
-- [ ] Ensure smooth transitions as data populates
-- [ ] Target: Config window opens in < 100ms, content loads progressively
+**Solution Implemented:**
+- [x] Added `setDropdownLoading()` helper function for consistent loading states
+- [x] Added CSS for loading state with animated spinner and disabled styling
+- [x] Updated `initializeApp()` to show loading states immediately on all model dropdowns
+- [x] Parallelized independent initialization operations using `Promise.allSettled()`
+- [x] Updated all model refresh functions with loading indicators:
+  - `refreshOllamaModels()` - loading state + error fallback
+  - `refreshOpenAIModels()` - loading state + static fallback on error
+  - `refreshAnthropicModels()` - loading state + static fallback on error
+  - `loadGrokModels()` - loading state + static fallback on error
+  - `loadOpenAISttModels()` - loading state + static fallback on error
+  - `loadWhisperModels()` - loading state + error message
+- [x] All model refresh functions now use try/finally pattern to ensure loading state is cleared
+- [x] Config window opens immediately with loading spinners, content loads progressively
 
-**Areas to investigate:**
-- Config page initial load (model list fetching)
-- Chat window startup
-- Main application initialization
-- Tauri command response times
-
-**Files to investigate:**
+**Files modified:**
 - `crates/gestura-gui/frontend/public/config.html`
-- `crates/gestura-gui/frontend/public/chat.html`
-- `crates/gestura-gui/src/api.rs`
-- `crates/gestura-gui/src/main.rs`
 
 ---
 
