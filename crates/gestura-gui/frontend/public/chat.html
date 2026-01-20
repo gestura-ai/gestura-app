@@ -1482,53 +1482,81 @@
         async function populateModelSelectForProvider(provider) {
             if (!modelSelect) return;
 
-            // Default: disable model selection unless we can populate something meaningful.
+            const cfg = cachedConfig;
+            const providerCfg = cfg?.llm?.[provider];
+            const currentModel = providerCfg?.model;
+
+            // Show loading state
             modelSelect.disabled = true;
-            modelSelect.title = 'Model selection is available for Ollama';
-            modelSelect.innerHTML = '<option value="">Model</option>';
-
-            if (provider !== 'ollama') {
-                // Show configured model if present, but keep disabled to avoid writing invalid config.
-                const cfg = cachedConfig;
-                const providerCfg = cfg?.llm?.[provider];
-                const model = providerCfg?.model;
-                if (typeof model === 'string' && model.length > 0) {
-                    modelSelect.innerHTML = `<option value="${model}">${model}</option>`;
-                } else {
-                    modelSelect.innerHTML = '<option value="">Model (not configured)</option>';
-                }
-                return;
-            }
-
-            // Ollama: fetch models from local endpoint.
-            modelSelect.title = 'Select Ollama model';
+            modelSelect.title = `Loading ${provider} models...`;
             modelSelect.innerHTML = '<option value="">Loading models…</option>';
 
-            const cfg = cachedConfig;
-            const endpoint =
-                cfg?.llm?.ollama?.base_url ||
-                cfg?.llm?.ollama?.endpoint ||
-                'http://localhost:11434';
-
             try {
-                const models = await window.__TAURI__.core.invoke('list_ollama_models', { endpoint });
-                const names = Array.isArray(models)
-                    ? models
-                        .map((m) => m?.name)
-                        .filter((n) => typeof n === 'string' && n.length > 0)
-                    : [];
+                let models = [];
 
-                if (names.length === 0) {
-                    modelSelect.innerHTML = '<option value="">No models found</option>';
+                if (provider === 'ollama') {
+                    // Ollama: fetch from local endpoint
+                    const endpoint =
+                        providerCfg?.base_url ||
+                        providerCfg?.endpoint ||
+                        'http://localhost:11434';
+                    const result = await window.__TAURI__.core.invoke('list_ollama_models', { endpoint });
+                    models = Array.isArray(result)
+                        ? result.map((m) => m?.name).filter((n) => typeof n === 'string' && n.length > 0)
+                        : [];
+                } else if (provider === 'openai') {
+                    // OpenAI: fetch from API
+                    const apiKey = providerCfg?.api_key || '';
+                    if (apiKey) {
+                        const result = await window.__TAURI__.core.invoke('list_openai_models', { apiKey });
+                        models = Array.isArray(result)
+                            ? result.map((m) => m?.id).filter((n) => typeof n === 'string' && n.length > 0)
+                            : [];
+                    }
+                } else if (provider === 'anthropic') {
+                    // Anthropic: fetch from API
+                    const apiKey = providerCfg?.api_key || '';
+                    if (apiKey) {
+                        const result = await window.__TAURI__.core.invoke('list_anthropic_models', { apiKey });
+                        models = Array.isArray(result)
+                            ? result.map((m) => m?.id).filter((n) => typeof n === 'string' && n.length > 0)
+                            : [];
+                    }
+                } else if (provider === 'grok') {
+                    // Grok: fetch from xAI API
+                    const apiKey = providerCfg?.api_key || '';
+                    const result = await window.__TAURI__.core.invoke('list_grok_models', { apiKey });
+                    models = Array.isArray(result)
+                        ? result.map((m) => m?.id).filter((n) => typeof n === 'string' && n.length > 0)
+                        : [];
+                }
+
+                if (models.length === 0) {
+                    // No models found - show current model if configured, or placeholder
+                    if (typeof currentModel === 'string' && currentModel.length > 0) {
+                        modelSelect.innerHTML = `<option value="${currentModel}">${currentModel}</option>`;
+                        modelSelect.title = `${provider} model (API key may be missing)`;
+                    } else {
+                        modelSelect.innerHTML = '<option value="">No models found</option>';
+                        modelSelect.title = 'Configure API key in settings';
+                    }
                     return;
                 }
 
-                const selected = cfg?.llm?.ollama?.model;
-                setModelSelectOptions(names, typeof selected === 'string' ? selected : null);
+                // Populate with fetched models
+                setModelSelectOptions(models, typeof currentModel === 'string' ? currentModel : null);
                 modelSelect.disabled = false;
+                modelSelect.title = `Select ${provider} model`;
             } catch (e) {
-                console.error('Failed to list Ollama models', e);
-                modelSelect.innerHTML = '<option value="">Failed to load models</option>';
+                console.error(`Failed to list ${provider} models`, e);
+                // Fallback: show current model if configured
+                if (typeof currentModel === 'string' && currentModel.length > 0) {
+                    modelSelect.innerHTML = `<option value="${currentModel}">${currentModel}</option>`;
+                    modelSelect.title = `${provider} model (failed to fetch list)`;
+                } else {
+                    modelSelect.innerHTML = '<option value="">Failed to load models</option>';
+                    modelSelect.title = 'Error loading models';
+                }
             }
         }
 
