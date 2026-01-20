@@ -1341,6 +1341,60 @@ All deferred/future work items have been implemented:
 
 ---
 
+### Task 43: Fix Session-Scoped LLM Provider/Model Switching
+**Priority:** HIGH
+**Status:** ✅ COMPLETE
+
+**Problem:** When user changes the LLM provider or model via the header dropdowns in the chat window, the agent continues using the previous provider/model instead of the newly selected one. The session-scoped configuration changes don't appear to take effect for subsequent messages.
+
+**Root Cause Found:** JavaScript to Rust parameter name mismatch!
+- Frontend JavaScript was using camelCase: `{ sessionId }`
+- Rust Tauri commands expect snake_case: `session_id: String`
+- Tauri doesn't auto-convert parameter names, so `session_id` was undefined in Rust
+
+**Solution Implemented:**
+- [x] 43.1 Fixed all frontend Tauri invoke calls to use snake_case parameter names:
+  - `set_session_llm_provider`: `sessionId` → `session_id`
+  - `set_session_llm_model`: `sessionId` → `session_id`
+  - `get_effective_llm_config`: `sessionId` → `session_id`
+  - `get_session_workspace_by_id`: `sessionId` → `session_id`
+  - `get_session_tool_settings`: `sessionId` → `session_id`
+  - `pick_workspace_directory`: `sessionId` → `session_id`
+  - `set_session_permission_level`: `sessionId` → `session_id`
+  - `set_session_tool_enabled`: `sessionId` → `session_id`, `toolName` → `tool_name`
+- [x] 43.2 Added detailed debug logging to window_manager functions
+- [x] 43.3 Added debug console.log statements to frontend dropdown handlers
+
+**Files Modified:**
+- `crates/gestura-gui/frontend/public/chat.html` - Fixed all parameter names in Tauri invoke calls
+- `crates/gestura-gui/src/window_manager.rs` - Added debug logging to session LLM config functions
+
+**Verification:**
+- ✅ `cargo fmt` - passed
+- ✅ `cargo clippy --workspace --all-targets --all-features -- -D warnings` - passed
+- ✅ All tests pass
+
+---
+
+### Task 44: Agent Configuration Query and Update Capability
+**Priority:** MEDIUM
+**Status:** ⏳ NOT STARTED
+
+**Requirements:**
+1. Agent should be able to report session and global configuration when asked
+2. Agent should be able to modify session configuration with user permission
+3. Permission confirmation required unless in "Full" permission mode
+4. Default permission level for new sessions should be configurable globally
+
+**Sub-tasks:**
+- [ ] 44.1 Add Tauri commands for agent to read session/global config
+- [ ] 44.2 Add Tauri commands for agent to update session config
+- [ ] 44.3 Implement permission confirmation flow for config changes
+- [ ] 44.4 Add global default permission level setting
+- [ ] 44.5 Expose config query capabilities to the agent's tool set
+
+---
+
 ## Phase 1 Completed (Tasks 1-21) 🎉
 
 All 21 Phase 1 tasks have been implemented and verified:

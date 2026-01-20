@@ -903,11 +903,23 @@ pub fn set_session_workspace(session_id: &str, workspace_dir: PathBuf) {
 
 /// Get the session LLM config for a session
 pub fn get_session_llm_config(session_id: &str) -> Option<SessionLlmConfig> {
-    get_session_state(session_id).and_then(|s| s.llm_config)
+    let result = get_session_state(session_id).and_then(|s| s.llm_config);
+    tracing::debug!(
+        session_id = %session_id,
+        config = ?result,
+        "get_session_llm_config returning"
+    );
+    result
 }
 
 /// Set the session LLM provider (overrides global config for this session)
 pub fn set_session_llm_provider(session_id: &str, provider: String) {
+    tracing::info!(
+        session_id = %session_id,
+        provider = %provider,
+        "set_session_llm_provider called"
+    );
+
     if let Some(manager) = get_window_manager() {
         let mut sessions = manager.sessions.lock().unwrap();
         if let Some(session) = sessions.get_mut(session_id) {
@@ -915,13 +927,32 @@ pub fn set_session_llm_provider(session_id: &str, provider: String) {
                 .state
                 .llm_config
                 .get_or_insert_with(Default::default);
-            llm_config.provider = Some(provider);
+            llm_config.provider = Some(provider.clone());
+            tracing::info!(
+                session_id = %session_id,
+                provider = %provider,
+                final_config = ?session.state.llm_config,
+                "Session LLM provider set successfully"
+            );
+        } else {
+            tracing::warn!(
+                session_id = %session_id,
+                "Session not found when setting LLM provider"
+            );
         }
+    } else {
+        tracing::error!("Window manager not available when setting session LLM provider");
     }
 }
 
 /// Set the session LLM model (overrides global config for this session)
 pub fn set_session_llm_model(session_id: &str, model: String) {
+    tracing::info!(
+        session_id = %session_id,
+        model = %model,
+        "set_session_llm_model called"
+    );
+
     if let Some(manager) = get_window_manager() {
         let mut sessions = manager.sessions.lock().unwrap();
         if let Some(session) = sessions.get_mut(session_id) {
@@ -929,8 +960,21 @@ pub fn set_session_llm_model(session_id: &str, model: String) {
                 .state
                 .llm_config
                 .get_or_insert_with(Default::default);
-            llm_config.model = Some(model);
+            llm_config.model = Some(model.clone());
+            tracing::info!(
+                session_id = %session_id,
+                model = %model,
+                final_config = ?session.state.llm_config,
+                "Session LLM model set successfully"
+            );
+        } else {
+            tracing::warn!(
+                session_id = %session_id,
+                "Session not found when setting LLM model"
+            );
         }
+    } else {
+        tracing::error!("Window manager not available when setting session LLM model");
     }
 }
 

@@ -2292,7 +2292,7 @@
 
             if (sessionId) {
                 try {
-                    const [provider, model] = await window.__TAURI__.core.invoke('get_effective_llm_config', { sessionId });
+                    const [provider, model] = await window.__TAURI__.core.invoke('get_effective_llm_config', { session_id: sessionId });
                     initialProvider = provider;
                     initialModel = model;
                 } catch (e) {
@@ -2315,15 +2315,19 @@
             providerSelect.addEventListener('change', async () => {
                 const provider = providerSelect.value;
                 updateProviderIcon(provider);
+                console.log('[DEBUG] Provider dropdown changed:', { sessionId, provider });
                 try {
                     // Use session-scoped config change (doesn't modify global config)
                     if (sessionId) {
+                        console.log('[DEBUG] Calling set_session_llm_provider with session_id:', sessionId);
                         await window.__TAURI__.core.invoke('set_session_llm_provider', {
-                            sessionId,
+                            session_id: sessionId,  // Use snake_case for Rust parameter
                             provider
                         });
+                        console.log('[DEBUG] set_session_llm_provider completed successfully');
                     } else {
                         // Fallback for sessions without ID (shouldn't happen, but be safe)
+                        console.warn('[DEBUG] No sessionId, using global update_llm_provider');
                         await window.__TAURI__.core.invoke('update_llm_provider', { provider });
                     }
                     await refreshConfig();
@@ -2338,15 +2342,19 @@
                 const model = modelSelect.value;
                 if (!model) return;
 
+                console.log('[DEBUG] Model dropdown changed:', { sessionId, model });
                 try {
                     // Use session-scoped model change (doesn't modify global config)
                     if (sessionId) {
+                        console.log('[DEBUG] Calling set_session_llm_model with session_id:', sessionId);
                         await window.__TAURI__.core.invoke('set_session_llm_model', {
-                            sessionId,
+                            session_id: sessionId,  // Use snake_case for Rust parameter
                             model
                         });
+                        console.log('[DEBUG] set_session_llm_model completed successfully');
                     } else if (providerSelect.value === 'ollama') {
                         // Legacy fallback: Only save to global config for Ollama if no session
+                        console.warn('[DEBUG] No sessionId, using global config for Ollama');
                         const cfg = cachedConfig || (await refreshConfig());
                         if (!cfg) return;
 
@@ -2442,12 +2450,12 @@
             if (!sessionId) return;
             try {
                 // Load workspace directory
-                const workDir = await window.__TAURI__.core.invoke('get_session_workspace_by_id', { sessionId });
+                const workDir = await window.__TAURI__.core.invoke('get_session_workspace_by_id', { session_id: sessionId });
                 sessionWorkDir.value = workDir || '';
                 workDirInfo.textContent = workDir ? `Commands run in: ${workDir}` : 'No directory selected';
 
                 // Load tool settings (permission level and enabled tools)
-                const toolSettings = await window.__TAURI__.core.invoke('get_session_tool_settings', { sessionId });
+                const toolSettings = await window.__TAURI__.core.invoke('get_session_tool_settings', { session_id: sessionId });
                 if (toolSettings) {
                     // Set permission level dropdown
                     if (toolSettings.permission_level) {
@@ -2483,7 +2491,7 @@
         pickWorkDirBtn?.addEventListener('click', async () => {
             if (!sessionId) return;
             try {
-                const result = await window.__TAURI__.core.invoke('pick_workspace_directory', { sessionId });
+                const result = await window.__TAURI__.core.invoke('pick_workspace_directory', { session_id: sessionId });
                 if (result) {
                     sessionWorkDir.value = result;
                     workDirInfo.textContent = `Commands run in: ${result}`;
@@ -2498,7 +2506,7 @@
             if (!sessionId) return;
             try {
                 await window.__TAURI__.core.invoke('set_session_permission_level', {
-                    sessionId,
+                    session_id: sessionId,
                     level: sessionPermission.value
                 });
                 console.log('Permission level updated to:', sessionPermission.value);
@@ -2513,8 +2521,8 @@
                 if (!sessionId) return;
                 try {
                     await window.__TAURI__.core.invoke('set_session_tool_enabled', {
-                        sessionId,
-                        toolName: checkbox.value,
+                        session_id: sessionId,
+                        tool_name: checkbox.value,
                         enabled: checkbox.checked
                     });
                     console.log('Tool toggled:', checkbox.value, checkbox.checked);
