@@ -1574,9 +1574,34 @@ All 21 Phase 1 tasks have been implemented and verified:
 
 ### Task 49: Issue 5 — Tray menu session restore + minimalist timestamps
 **Priority:** HIGH
-**Status:** ⏳ IN PROGRESS
+**Status:** ✅ COMPLETE
 
 **Goal:** Tray menu must restore the correct chat session on click; tray labels should use minimalist formatting like `Jan 20 @ 9am`.
+
+**Implementation:**
+
+1. **Session Restore Fix** (`crates/gestura-gui/src/window_manager.rs`):
+   - Updated `restore_session()` to handle both closed and already-open sessions
+   - For closed sessions: creates new window and restores session state
+   - For already-open sessions: focuses the existing window (show + set_focus)
+   - Previously, clicking on an active session in the tray menu did nothing
+
+2. **Minimalist Timestamp Formatting** (`crates/gestura-gui/src/tray.rs`):
+   - Added `format_minimalist_timestamp()` helper function
+   - For today's sessions: shows just time (e.g., "9am", "2:30pm")
+   - For older sessions: shows "Jan 20 @ 9am" format
+   - Uses 12-hour format with am/pm
+   - Omits minutes when they are :00 (e.g., "9am" instead of "9:00am")
+   - Updated both active and closed session menu items to use new format
+
+**Files Modified:**
+- `crates/gestura-gui/src/window_manager.rs` - Session restore now focuses already-open windows
+- `crates/gestura-gui/src/tray.rs` - Added minimalist timestamp formatting
+
+**Verification:**
+- ✅ `cargo fmt`
+- ✅ `cargo clippy --all-targets --all-features -- -D warnings`
+- ✅ `cargo test --workspace --all-features` (374 tests pass)
 
 ---
 
