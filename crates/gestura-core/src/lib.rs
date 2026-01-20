@@ -51,6 +51,7 @@ pub mod retry;
 pub mod session_manager;
 pub mod session_workspace;
 pub mod speech;
+pub mod stream_error;
 pub mod stream_health;
 pub mod stream_reconnect;
 pub mod streaming;
@@ -115,6 +116,7 @@ pub use speech::{
     LlmResponse, SpeechConfig, SpeechProcessor, TranscriptionResult, get_speech_processor,
     is_speech_recording, update_speech_config,
 };
+pub use stream_error::{StreamError, StreamErrorCategory, StreamResult};
 pub use stream_health::{
     StreamHealthConfig, StreamHealthEvent, StreamHealthHandle, StreamHealthMonitor,
     StreamHealthStatus,

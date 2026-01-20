@@ -1086,11 +1086,21 @@ Improve streaming reliability and add proper error handling:
 - `StreamHealthHandle` - lightweight handle for sharing across async tasks
 - 8 unit tests for stream health functionality
 
-#### 39.2 Reconnection Logic
-- [ ] Implement automatic reconnection for dropped connections
-- [ ] Add exponential backoff for reconnection attempts
-- [ ] Preserve stream state for seamless recovery
-- [ ] Add user notification for reconnection events
+#### 39.2 Reconnection Logic ✅ COMPLETE
+- [x] Implement automatic reconnection for dropped connections
+- [x] Add exponential backoff for reconnection attempts
+- [x] Preserve stream state for seamless recovery
+- [x] Add user notification for reconnection events
+
+**Implementation:**
+- Created `crates/gestura-core/src/stream_reconnect.rs` module
+- `ReconnectManager` - manages reconnection attempts with backoff
+- `ReconnectState` enum - Idle, Waiting, Connecting, Connected, Failed
+- `ReconnectEvent` - events for frontend notification
+- `ReconnectConfig` - configurable backoff settings (initial delay, max delay, multiplier, jitter)
+- `StreamState` - preserves stream state for safe resume decisions
+- Exponential backoff with optional jitter for reconnection delays
+- 10 unit tests for reconnection functionality
 
 #### 39.3 Error Handling Improvements
 - [ ] Standardize error types across streaming APIs
