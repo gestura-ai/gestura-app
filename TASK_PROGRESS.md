@@ -1157,11 +1157,20 @@ All 4 sub-tasks completed:
 
 **Requirements:** Enhance configuration system based on patterns from researched projects
 
-#### 40.1 Hierarchical Configuration Loading
-- [ ] Add environment variable support for all config fields
-- [ ] Implement proper precedence: env vars > config file > defaults
-- [ ] Add GESTURA_ prefix for all environment variables
-- [ ] Document all supported environment variables
+#### 40.1 Hierarchical Configuration Loading ✅ COMPLETE
+- [x] Add environment variable support for all config fields
+- [x] Implement proper precedence: env vars > config file > defaults
+- [x] Add GESTURA_ prefix for all environment variables
+- [x] Document all supported environment variables
+
+**Implementation:**
+- Created `crates/gestura-core/src/config_env.rs` module
+- `ENV_MAPPINGS` constant with 25+ supported environment variables
+- `get_env()`, `get_env_bool()`, `get_env_u32()` helper functions
+- `is_secret_key()` and `redact_secret()` for secure logging
+- `apply_env_overrides()` method on AppConfig
+- `load_with_env()` and `load_with_env_async()` convenience methods
+- 7 unit tests for environment variable handling
 
 #### 40.2 Runtime Configuration Reloading
 - [ ] Add file watcher for config.json changes

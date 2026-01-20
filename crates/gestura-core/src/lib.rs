@@ -37,6 +37,7 @@ pub mod audio_capture;
 pub mod compaction;
 pub mod config;
 pub mod config_env;
+pub mod config_watcher;
 pub mod context;
 pub mod error;
 pub mod events;
