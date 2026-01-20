@@ -26,6 +26,7 @@
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 
+pub mod discovery;
 pub mod integrator;
 pub mod lifecycle;
 pub mod notifications;
@@ -33,6 +34,10 @@ pub mod prompts;
 pub mod types;
 
 // Re-export commonly used types
+pub use discovery::{
+    CacheStats as McpCacheStats, CachedTool, McpDiscoveryManager, McpServerConfig,
+    ServerInfo as McpServerInfo, ServerState,
+};
 pub use integrator::{LocalMcp, McpIntegrator, MdhResource, TokenInfo, get_mcp, mdh_translate};
 pub use lifecycle::{SessionManager, create_session_manager};
 pub use notifications::{

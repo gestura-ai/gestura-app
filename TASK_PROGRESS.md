@@ -766,11 +766,25 @@ Break down research findings into actionable implementation tasks for both GUI a
 - [ ] Add MCP capability negotiation for dynamic tool availability
 - [ ] Create MCP tool metadata caching for performance
 
-#### 35.2 Tool Inspection and Permission System
-- [ ] Implement `ToolInspectionManager` pattern (from Goose architecture)
-- [ ] Add permission checks before tool execution
-- [ ] Create user confirmation flow for dangerous operations
-- [ ] Add permission persistence across sessions
+#### 35.2 Tool Inspection and Permission System ✅ COMPLETE
+- [x] Implement `ToolInspectionManager` pattern (from Goose architecture)
+- [x] Add permission checks before tool execution
+- [x] Create user confirmation flow for dangerous operations
+- [x] Add permission persistence across sessions
+
+**Implementation Details:**
+- Created `crates/gestura-core/src/tool_inspection.rs` module with:
+  - `ToolMetadata` struct - tool categorization with risk levels (0-10)
+  - `InspectionResult` - inspection outcomes (allowed/confirmation/blocked)
+  - `ConfirmationRequest` / `ConfirmationResponse` - user approval flow
+  - `ToolInspectionManager` - unified manager integrating:
+    - `ModeManager` for execution mode-based permissions
+    - `PermissionManager` for persistent permission storage
+    - Tool metadata registry for categorization
+- Built-in tools registered: read_file, write_file, shell, git, web_search, etc.
+- Confirmation responses: Allow, AllowSession, AllowAlways, Deny, DenySession
+- 9 unit tests for tool inspection functionality
+- All 155 tests pass in gestura-core
 
 #### 35.3 Retry Logic and Error Recovery ✅ COMPLETE
 - [x] Implement configurable retry manager with exponential backoff

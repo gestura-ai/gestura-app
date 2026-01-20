@@ -96,7 +96,10 @@ pub use llm_provider::EchoProvider;
 pub use llm_provider::{
     AgentContext, LlmCallResponse, LlmProvider, TokenUsage, UnconfiguredProvider, select_provider,
 };
-pub use mcp::{LocalMcp, McpIntegrator, MdhResource, TokenInfo, get_mcp, mdh_translate};
+pub use mcp::{
+    CachedTool, LocalMcp, McpCacheStats, McpDiscoveryManager, McpIntegrator, McpServerConfig,
+    McpServerInfo, MdhResource, ServerState, TokenInfo, get_mcp, mdh_translate,
+};
 pub use pipeline::{
     AgentPipeline, AgentRequest, AgentResponse, Message, PipelineConfig, RequestMetadata,
     RequestSource, ToolCallRecord, ToolResult,
