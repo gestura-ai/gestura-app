@@ -680,35 +680,70 @@ New feature requests and bug fixes beyond Phase 2.
 
 ### Task 33: Implement Session-Aware Configuration
 **Priority:** HIGH
-**Status:** ⬜ NOT STARTED
+**Status:** ✅ COMPLETE (Already Implemented)
 
 **Problem:** Chat sessions need persistent awareness of their specific configurations.
 
 **Requirements:**
-- [ ] Session state persists across app restarts (LLM provider/model overrides)
-- [ ] Session workspace and tool permissions preserved
-- [ ] Each session maintains independent configuration
+- [x] Session state persists across app restarts (LLM provider/model overrides)
+- [x] Session workspace and tool permissions preserved
+- [x] Each session maintains independent configuration
 
-**Files to Modify:**
+**Implementation Details (Already Present):**
+- **SessionLlmConfig** struct with `provider` and `model` overrides
+- **SessionState** includes:
+  - `llm_config: Option<SessionLlmConfig>` - per-session LLM overrides
+  - `workspace_dir: Option<PathBuf>` - sandboxed workspace directory
+  - `messages`, `tool_calls`, `total_tokens` - conversation state
+- **Persistence** via `gui_sessions.json`:
+  - `save_sessions_to_disk()` - saves all sessions on state changes
+  - `load_persisted_sessions()` - restores sessions on app startup
+  - Auto-save after session creation, window close, assistant response
+- **API Functions**:
+  - `get_session_llm_config()` - retrieve session config
+  - `set_session_llm_provider()` / `set_session_llm_model()` - set overrides
+  - `clear_session_llm_config()` - revert to global config
+
+**Files:**
 - `crates/gestura-gui/src/window_manager.rs` - Session state management
 
 ---
 
 ### Task 34: Implement Streaming Thought Process UI Components
 **Priority:** MEDIUM
-**Status:** ⬜ NOT STARTED
+**Status:** ✅ COMPLETE (Already Implemented)
 
 **Problem:** Different LLM providers stream "thinking" content differently (e.g., Claude's `<thinking>` tags, OpenAI's reasoning tokens).
 
 **Requirements:**
-- [ ] Create separate UI components for thought process vs. final response
-- [ ] Thought component should be collapsible/expandable. They may already exist
-- [ ] Thought content visually distinct but reviewable
-- [ ] Final response has primary focus in UI
-- [ ] Handle provider-specific thought formatting (Anthropic `<thinking>`, OpenAI reasoning)
+- [x] Create separate UI components for thought process vs. final response
+- [x] Thought component should be collapsible/expandable
+- [x] Thought content visually distinct but reviewable
+- [x] Final response has primary focus in UI
+- [x] Handle provider-specific thought formatting (Anthropic `<thinking>`, OpenAI reasoning)
 
-**Files to Modify:**
+**Implementation Details (Already Present):**
+- **Streaming Module** (`crates/gestura-core/src/streaming.rs`):
+  - `StreamChunk::Thinking(String)` variant for thinking content
+  - `ThinkingParser` struct parses `<think>...</think>` tags from all providers
+  - `split_think_blocks()` function for non-streaming callers
+  - Anthropic native `thinking` field support in `content_block_delta` events
+  - OpenAI reasoning tokens via `<think>` tag parsing
+- **GUI** (`crates/gestura-gui/frontend/public/chat.html`):
+  - `.thinking-block` CSS with collapsible styling
+  - `.thinking-header` with animated pulse dot during thinking
+  - `.thinking-content` with monospace font and scroll
+  - `chat-stream-thinking` event listener creates/updates thinking block
+  - Auto-collapse when text streaming starts
+  - Header changes from "Thinking Process..." to "Thought Process" when complete
+- **LLM Provider** (`crates/gestura-core/src/llm_provider.rs`):
+  - `thinking_budget_tokens` config for Anthropic extended thinking
+  - `anthropic_extract_text_and_thinking()` for non-streaming responses
+
+**Files:**
 - `crates/gestura-gui/frontend/public/chat.html` - Thought bubble UI
+- `crates/gestura-core/src/streaming.rs` - ThinkingParser and StreamChunk::Thinking
+- `crates/gestura-core/src/llm_provider.rs` - Provider-specific thinking support
 
 ---
 
@@ -716,7 +751,7 @@ New feature requests and bug fixes beyond Phase 2.
 
 ### Task 35: Implement Agent Loop Architecture Recommendations
 **Priority:** HIGH
-**Status:** 🔄 IN PROGRESS
+**Status:** 🔄 IN PROGRESS (4/6 sub-tasks complete)
 
 **Problem:** Task 32 research identified key architectural patterns from OpenAI Codex, Block Goose, and Kilo Code, but these haven't been implemented yet.
 

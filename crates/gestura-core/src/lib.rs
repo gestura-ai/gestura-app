@@ -54,6 +54,7 @@ pub mod speech;
 pub mod streaming;
 pub mod telemetry;
 pub mod token_tracker;
+pub mod tool_inspection;
 pub mod tools;
 
 // Re-export common types for convenience
@@ -115,6 +116,10 @@ pub use telemetry::{
 };
 pub use token_tracker::{
     BudgetStatus, TokenTracker, UsageRecord, UsageStats, format_token_count, get_token_tracker,
+};
+pub use tool_inspection::{
+    ConfirmationRequest, ConfirmationResponse, InspectionResult, ToolInspectionManager,
+    ToolMetadata,
 };
 pub use tools::{
     ToolDefinition, all_tools, find_tool, looks_like_capabilities_question,
