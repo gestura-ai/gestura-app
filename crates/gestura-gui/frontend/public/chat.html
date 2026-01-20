@@ -839,6 +839,113 @@
             margin-bottom: 0;
         }
 
+        /* Copy Button Styling */
+        .message.agent {
+            position: relative;
+        }
+
+        .message.agent .message-content {
+            position: relative;
+        }
+
+        .copy-response-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: 28px;
+            height: 28px;
+            border: none;
+            background: var(--bg-glass-strong);
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            transition: opacity 0.2s, background 0.2s, transform 0.1s;
+            z-index: 10;
+            border: 1px solid var(--glass-border);
+        }
+
+        .message.agent:hover .copy-response-btn,
+        .copy-response-btn:focus {
+            opacity: 1;
+        }
+
+        .copy-response-btn:hover {
+            background: var(--accent-primary);
+        }
+
+        .copy-response-btn:active {
+            transform: scale(0.95);
+        }
+
+        .copy-response-btn svg {
+            width: 14px;
+            height: 14px;
+            fill: var(--text-secondary);
+        }
+
+        .copy-response-btn:hover svg {
+            fill: white;
+        }
+
+        .copy-response-btn.copied {
+            background: var(--success);
+        }
+
+        .copy-response-btn.copied svg {
+            fill: white;
+        }
+
+        /* Code Block with Copy Button */
+        .code-block-wrapper {
+            position: relative;
+        }
+
+        .code-block-wrapper pre {
+            margin: 0;
+        }
+
+        .copy-code-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: 24px;
+            height: 24px;
+            border: none;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            transition: opacity 0.2s, background 0.2s;
+        }
+
+        .code-block-wrapper:hover .copy-code-btn {
+            opacity: 1;
+        }
+
+        .copy-code-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .copy-code-btn svg {
+            width: 12px;
+            height: 12px;
+            fill: var(--text-secondary);
+        }
+
+        .copy-code-btn.copied {
+            background: var(--success);
+        }
+
+        .copy-code-btn.copied svg {
+            fill: white;
+        }
+
         /* New Typing Indicator */
         .typing-dots {
             display: none;
@@ -1073,7 +1180,13 @@
             hideTyping();
             isProcessing = false;
             currentRequestNonce = 0;
-            if (streamingMessageElement) streamingMessageElement.classList.remove('streaming');
+            if (streamingMessageElement) {
+                streamingMessageElement.classList.remove('streaming');
+                // Add copy button and enhance code blocks for completed streaming message
+                addCopyButtonToMessage(streamingMessageElement);
+                const contentDiv = streamingMessageElement.querySelector('.message-content');
+                if (contentDiv) enhanceCodeBlocks(contentDiv);
+            }
             const thinkingHeaders = document.querySelectorAll('.thinking-header.animating');
             thinkingHeaders.forEach(h => h.classList.remove('animating'));
             if (!isListening) setStatus(statusText || 'Ready', statusKind);
@@ -1150,6 +1263,13 @@
 
             msgDiv.appendChild(contentDiv);
             messagesContainer.appendChild(msgDiv);
+
+            // Add copy button for agent messages
+            if (type === 'agent') {
+                addCopyButtonToMessage(msgDiv);
+                enhanceCodeBlocks(contentDiv);
+            }
+
             scrollToBottom();
             return msgDiv;
         }
@@ -1165,6 +1285,71 @@
 
         function hideTyping() {
             typingIndicator.classList.remove('show');
+        }
+
+        // --- Copy Functionality ---
+
+        // SVG icons for copy buttons
+        const copyIcon = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>`;
+        const checkIcon = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
+
+        async function copyToClipboard(text, button) {
+            try {
+                await navigator.clipboard.writeText(text);
+                button.innerHTML = checkIcon;
+                button.classList.add('copied');
+                setTimeout(() => {
+                    button.innerHTML = copyIcon;
+                    button.classList.remove('copied');
+                }, 2000);
+            } catch (err) {
+                console.error('Failed to copy:', err);
+            }
+        }
+
+        function createCopyButton(className) {
+            const btn = document.createElement('button');
+            btn.className = className;
+            btn.innerHTML = copyIcon;
+            btn.title = 'Copy to clipboard';
+            return btn;
+        }
+
+        function addCopyButtonToMessage(msgDiv) {
+            const contentDiv = msgDiv.querySelector('.message-content');
+            if (!contentDiv) return;
+
+            const copyBtn = createCopyButton('copy-response-btn');
+            copyBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                // Get text content excluding copy buttons
+                const clone = contentDiv.cloneNode(true);
+                clone.querySelectorAll('.copy-response-btn, .copy-code-btn').forEach(btn => btn.remove());
+                copyToClipboard(clone.textContent.trim(), copyBtn);
+            });
+            contentDiv.appendChild(copyBtn);
+        }
+
+        function enhanceCodeBlocks(container) {
+            const codeBlocks = container.querySelectorAll('pre:not(.code-block-enhanced)');
+            codeBlocks.forEach(pre => {
+                pre.classList.add('code-block-enhanced');
+
+                // Wrap in a container for positioning
+                const wrapper = document.createElement('div');
+                wrapper.className = 'code-block-wrapper';
+                pre.parentNode.insertBefore(wrapper, pre);
+                wrapper.appendChild(pre);
+
+                const copyBtn = createCopyButton('copy-code-btn');
+                copyBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const code = pre.querySelector('code');
+                    const text = code ? code.textContent : pre.textContent;
+                    copyToClipboard(text.trim(), copyBtn);
+                });
+                wrapper.appendChild(copyBtn);
+            });
         }
 
         // --- Streaming Logic ---
