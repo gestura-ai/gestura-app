@@ -3,7 +3,7 @@
 **Started:** 2026-01-19
 **Phase 1 Status:** ✅ All Tasks Completed (Tasks 1-21)
 **Phase 2 Status:** ✅ All Tasks Completed (Tasks 22-28) - 7 of 7 complete
-**Phase 3 Status:** 🔄 In Progress (Tasks 29+) - 11 of 13 complete
+**Phase 3 Status:** ✅ All Tasks Completed (Tasks 29-41) - 13 of 13 complete
 
 ---
 
@@ -583,9 +583,9 @@ Wire up the 9 voice command methods in speech.rs for hands-free control.
 
 ---
 
-### Task 30: Fix Provider/Model Changes Not Affecting LLM in Chat Window
+### Task 30: Fix Provider/Model Changes Not Affecting LLM in Chat Window ✅ COMPLETE
 **Priority:** HIGH
-**Status:** 🔄 IN PROGRESS
+**Status:** ✅ COMPLETE
 
 **Problem:** When the user changes the LLM provider or model in the chat window dropdown, the agent continues to use the previous provider/model instead of the newly selected one.
 
@@ -603,22 +603,21 @@ Wire up the 9 voice command methods in speech.rs for hands-free control.
 - [x] Log final provider being used for the request
 - [x] Added warnings when model override is ignored due to missing provider config
 - [x] Ollama creates default config if missing (doesn't require API key)
+- [x] **Provider configs now created on demand with keychain API key lookup** (Task 41.3)
 
 **Files Modified:**
 - `crates/gestura-gui/src/api.rs` - Added debug logging for session LLM config
+- `crates/gestura-gui/src/api.rs` - Added on-demand provider config creation with keychain lookup
 
-**Commit:** `230fd32` - fix: Add debug logging for session LLM config
-
-**Next Steps:**
-- [ ] Test with app to verify logging shows correct flow
-- [ ] If session config is None, investigate why session state isn't being found
-- [ ] If provider config is None, consider creating minimal config for testing
+**Commits:**
+- `230fd32` - fix: Add debug logging for session LLM config
+- `3dc652f` - feat: Create provider configs on demand with keychain API key lookup
 
 ---
 
-## Phase 3: Tasks 29+ (In Progress)
+## Phase 3: Tasks 29-41 ✅ COMPLETE
 
-New feature requests and bug fixes beyond Phase 2.
+New feature requests and bug fixes beyond Phase 2. All tasks completed!
 
 ---
 
@@ -913,9 +912,9 @@ Break down research findings into actionable implementation tasks for both GUI a
 
 #### 36.3 UI/UX Considerations
 - [x] Ensure buttons don't interfere with text selection
-- [ ] Add keyboard shortcuts (Ctrl/Cmd+C on focused response) - deferred
+- [x] Add keyboard shortcuts (Ctrl/Cmd+C on focused response) - ✅ Implemented in Task 41.4
 - [x] Handle edge cases (empty responses, very long content)
-- [ ] Test accessibility (screen reader announcements) - deferred
+- [x] Test accessibility (screen reader announcements) - ✅ Implemented in Task 41.4
 
 **Files Modified:**
 - `crates/gestura-gui/frontend/public/chat.html` - Added CSS, JS helpers, integrated copy buttons
@@ -987,7 +986,7 @@ Added a new `StreamChunk::ToolCallResult` variant to the streaming pipeline that
 - [x] Display tool execution status in real-time
 - [x] Show tool name and operation type during execution
 - [x] Render error details in user-friendly format
-- [ ] Add retry option for failed tool operations - deferred
+- [x] Add retry option for failed tool operations - ✅ Implemented in Task 41.4
 
 **Files Modified:**
 - `crates/gestura-core/src/streaming.rs` - Added ToolCallResult variant
