@@ -678,6 +678,82 @@
             }
         }
 
+        /* Reconnection Notice Styles */
+        .reconnect-notice {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            margin: 8px 0;
+            border-radius: 8px;
+            background: rgba(10, 132, 255, 0.1);
+            border: 1px solid rgba(10, 132, 255, 0.3);
+            font-size: 12px;
+            color: var(--text-primary);
+            animation: pulse-reconnect 1.5s ease-in-out infinite;
+        }
+
+        .reconnect-notice.success {
+            background: rgba(52, 199, 89, 0.1);
+            border-color: rgba(52, 199, 89, 0.3);
+            animation: none;
+        }
+
+        .reconnect-icon {
+            font-size: 14px;
+        }
+
+        .reconnect-notice:not(.success) .reconnect-icon {
+            animation: spin 1s linear infinite;
+        }
+
+        .reconnect-text {
+            font-weight: 500;
+            color: var(--accent-primary);
+        }
+
+        .reconnect-notice.success .reconnect-text {
+            color: var(--success);
+        }
+
+        @keyframes pulse-reconnect {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.7;
+            }
+        }
+
+        /* Stream Health Indicator */
+        .stream-health-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 500;
+        }
+
+        .stream-health-indicator.healthy {
+            background: rgba(52, 199, 89, 0.15);
+            color: var(--success);
+        }
+
+        .stream-health-indicator.stalled {
+            background: rgba(255, 159, 10, 0.15);
+            color: #ff9f0a;
+        }
+
+        .stream-health-indicator.error {
+            background: rgba(255, 59, 48, 0.15);
+            color: var(--error);
+        }
+
         /* Compaction Notice */
         .compaction-notice {
             display: flex;
@@ -1861,6 +1937,90 @@
                     : (payload?.message || JSON.stringify(payload));
                 addMessage(`Error: ${errText}`, 'agent');
                 finalizeStreamForCurrentRequest({ statusText: 'Error', statusKind: 'error' });
+            });
+
+            // 4c. Stream Health Events
+            await event.listen('stream-health-status', (e) => {
+                touchStreamActivity();
+                const payload = e?.payload || {};
+                const { status, message } = payload;
+
+                // Update status indicator based on health
+                switch (status) {
+                    case 'Stalled':
+                        setStatus('Stream stalled...', 'busy');
+                        break;
+                    case 'TimedOut':
+                        setStatus('Stream timed out', 'error');
+                        break;
+                    case 'Recovered':
+                        setStatus('Stream recovered', 'busy');
+                        break;
+                    case 'Failed':
+                        setStatus('Stream failed', 'error');
+                        break;
+                }
+            });
+
+            await event.listen('stream-health-warning', (e) => {
+                touchStreamActivity();
+                const payload = e?.payload || {};
+                const { idle_seconds, threshold_seconds } = payload;
+
+                // Show warning in status
+                setStatus(`Slow response (${idle_seconds}s)...`, 'busy');
+            });
+
+            // 4d. Stream Reconnection Events
+            await event.listen('stream-reconnect-attempt', (e) => {
+                touchStreamActivity();
+                const payload = e?.payload || {};
+                const { attempt, max_attempts, delay_ms } = payload;
+
+                setStatus(`Reconnecting (${attempt}/${max_attempts})...`, 'busy');
+
+                // Add reconnection notice to current message
+                if (streamingMessageElement) {
+                    const contentDiv = streamingMessageElement.querySelector('.message-content');
+                    if (contentDiv) {
+                        const notice = document.createElement('div');
+                        notice.className = 'reconnect-notice';
+                        notice.innerHTML = `
+                            <span class="reconnect-icon">🔄</span>
+                            <span class="reconnect-text">Reconnecting (${attempt}/${max_attempts})...</span>
+                        `;
+                        contentDiv.appendChild(notice);
+                        scrollToBottom();
+                    }
+                }
+            });
+
+            await event.listen('stream-reconnect-success', (e) => {
+                touchStreamActivity();
+                setStatus('Reconnected', 'busy');
+
+                // Update reconnection notice to show success
+                if (streamingMessageElement) {
+                    const notices = streamingMessageElement.querySelectorAll('.reconnect-notice');
+                    if (notices.length > 0) {
+                        const lastNotice = notices[notices.length - 1];
+                        lastNotice.classList.add('success');
+                        lastNotice.innerHTML = `
+                            <span class="reconnect-icon">✓</span>
+                            <span class="reconnect-text">Reconnected successfully</span>
+                        `;
+                    }
+                }
+            });
+
+            await event.listen('stream-reconnect-failed', (e) => {
+                touchStreamActivity();
+                const payload = e?.payload || {};
+                const { error } = payload;
+
+                setStatus('Reconnection failed', 'error');
+                addMessage(`Connection lost: ${error || 'Unable to reconnect'}`, 'agent');
+                finalizeStreamForCurrentRequest({ statusText: 'Connection lost', statusKind: 'error' });
             });
 
             // 5. Voice Events

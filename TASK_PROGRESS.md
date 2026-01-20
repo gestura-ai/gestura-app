@@ -1102,11 +1102,22 @@ Improve streaming reliability and add proper error handling:
 - Exponential backoff with optional jitter for reconnection delays
 - 10 unit tests for reconnection functionality
 
-#### 39.3 Error Handling Improvements
-- [ ] Standardize error types across streaming APIs
-- [ ] Add proper error propagation to frontend
-- [ ] Implement graceful degradation on stream failures
-- [ ] Add detailed error logging for debugging
+#### 39.3 Error Handling Improvements ✅ COMPLETE
+- [x] Standardize error types across streaming APIs
+- [x] Add proper error propagation to frontend
+- [x] Implement graceful degradation on stream failures
+- [x] Add detailed error logging for debugging
+
+**Implementation:**
+- Created `crates/gestura-core/src/stream_error.rs` module
+- `StreamError` - rich error type with category, code, message, provider, HTTP status
+- `StreamErrorCategory` enum - Network, Auth, RateLimit, Provider, Format, Resource, Internal, Cancelled
+- Factory methods for common errors (network, timeout, auth, rate_limit, provider, etc.)
+- `from_http_response()` - parses provider error responses
+- Builder pattern for adding context (with_provider, with_http_status, with_context)
+- Structured logging with appropriate log levels per category
+- `StreamResult<T>` type alias for streaming operations
+- 12 unit tests for error handling functionality
 
 #### 39.4 Frontend Integration
 - [ ] Update GUI to handle stream reconnection events
