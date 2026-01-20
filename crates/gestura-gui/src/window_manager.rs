@@ -8,6 +8,20 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
+/// Returns the path for storing GUI session history: ~/.gestura/gui_sessions.json
+fn sessions_file_path() -> PathBuf {
+    gestura_core::config::AppConfig::data_dir().join("gui_sessions.json")
+}
+
+/// Persisted session data (excludes window state which is ephemeral)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedSessions {
+    /// All sessions (open flag is reset on load since windows close on app exit)
+    sessions: Vec<ChatSession>,
+    /// Version for future migration support
+    version: u32,
+}
+
 /// A message in the conversation history
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationMessage {
@@ -217,6 +231,86 @@ impl WindowManager {
         }
     }
 
+    /// Load persisted sessions from disk
+    /// Called during initialization to restore session history
+    pub fn load_persisted_sessions(&self) {
+        let path = sessions_file_path();
+        if !path.exists() {
+            tracing::info!("No persisted sessions file found at {:?}", path);
+            return;
+        }
+
+        match std::fs::read_to_string(&path) {
+            Ok(json) => match serde_json::from_str::<PersistedSessions>(&json) {
+                Ok(persisted) => {
+                    let mut sessions = self.sessions.lock().unwrap();
+                    for mut session in persisted.sessions {
+                        // Mark all loaded sessions as closed (windows don't survive app restart)
+                        session.is_open = false;
+                        session.window_label = None;
+                        sessions.insert(session.id.clone(), session);
+                    }
+                    let count = sessions.len();
+                    drop(sessions);
+
+                    tracing::info!("Loaded {} persisted sessions from {:?}", count, path);
+
+                    // Notify tray to rebuild menu with loaded sessions
+                    let _ = self.app.emit("sessions-changed", ());
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to parse persisted sessions: {}", e);
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Failed to read persisted sessions file: {}", e);
+            }
+        }
+    }
+
+    /// Save all sessions to disk for persistence across app restarts
+    pub fn save_sessions_to_disk(&self) {
+        let sessions = self.sessions.lock().unwrap();
+        let session_list: Vec<ChatSession> = sessions.values().cloned().collect();
+        drop(sessions);
+
+        if session_list.is_empty() {
+            // Don't create empty file; remove existing one if present
+            let path = sessions_file_path();
+            if path.exists() {
+                let _ = std::fs::remove_file(&path);
+                tracing::debug!("Removed empty sessions file");
+            }
+            return;
+        }
+
+        let persisted = PersistedSessions {
+            sessions: session_list,
+            version: 1,
+        };
+
+        let path = sessions_file_path();
+        if let Some(parent) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            tracing::error!("Failed to create sessions directory: {}", e);
+            return;
+        }
+
+        match serde_json::to_string_pretty(&persisted) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    tracing::error!("Failed to write sessions file: {}", e);
+                } else {
+                    tracing::debug!("Saved {} sessions to {:?}", persisted.sessions.len(), path);
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to serialize sessions: {}", e);
+            }
+        }
+    }
+
     /// Create a new chat session and window
     pub fn create_chat_session(&self) -> tauri::Result<String> {
         let session_id = Uuid::new_v4().to_string();
@@ -272,6 +366,9 @@ impl WindowManager {
 
         // Create the window
         self.create_chat_window(&session_id, &window_label)?;
+
+        // Persist sessions to disk
+        self.save_sessions_to_disk();
 
         // Emit event to notify tray that sessions changed
         let _ = self.app.emit("sessions-changed", ());
@@ -340,6 +437,9 @@ impl WindowManager {
                 if let Ok(mut windows) = windows.lock() {
                     windows.remove(&window_label_clone);
                 }
+
+                // Persist sessions to disk (session is now marked as closed)
+                save_sessions();
 
                 // Emit event to notify tray that sessions changed
                 let _ = app_handle.emit("sessions-changed", ());
@@ -443,7 +543,13 @@ impl WindowManager {
 
             let mut sessions = self.sessions.lock().unwrap();
             sessions.insert(session_id.to_string(), session);
+            drop(sessions);
 
+            // Persist the restored session state
+            self.save_sessions_to_disk();
+
+            // Emit event to notify tray that sessions changed
+            let _ = self.app.emit("sessions-changed", ());
             tracing::info!("Restored session: {}", session_id);
         }
 
@@ -563,6 +669,10 @@ impl WindowManager {
             session.message_count = session.state.messages.len();
             session.last_active = chrono::Utc::now();
         }
+        drop(sessions);
+
+        // Persist after assistant response (marks end of a conversation turn)
+        self.save_sessions_to_disk();
     }
 
     /// Add a tool result message to a session
@@ -610,9 +720,20 @@ lazy_static::lazy_static! {
 /// Initialize the global window manager
 pub fn init_window_manager(app: AppHandle) {
     let manager = WindowManager::new(app);
+
+    // Load persisted sessions from disk before making manager available
+    manager.load_persisted_sessions();
+
     let mut global_manager = WINDOW_MANAGER.lock().unwrap();
     *global_manager = Some(manager);
-    tracing::info!("Window manager initialized");
+    tracing::info!("Window manager initialized with persisted sessions");
+}
+
+/// Save all sessions to disk (public function for use from closures/callbacks)
+pub fn save_sessions() {
+    if let Some(manager) = get_window_manager() {
+        manager.save_sessions_to_disk();
+    }
 }
 
 /// Get the global window manager
