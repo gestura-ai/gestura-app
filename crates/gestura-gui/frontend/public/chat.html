@@ -816,6 +816,94 @@
             font-style: italic;
         }
 
+        /* Config Confirmation Dialog */
+        .config-confirm-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+            backdrop-filter: blur(4px);
+        }
+
+        .config-confirm-dialog {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 24px;
+            max-width: 400px;
+            width: 90%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+        }
+
+        .config-confirm-dialog h3 {
+            margin: 0 0 16px 0;
+            font-size: 18px;
+            color: var(--text-primary);
+        }
+
+        .config-confirm-dialog p {
+            margin: 0 0 12px 0;
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        .config-change-details {
+            background: var(--bg-glass);
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin: 12px 0;
+            font-size: 14px;
+        }
+
+        .config-change-details code {
+            background: rgba(10, 132, 255, 0.2);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #0a84ff;
+        }
+
+        .config-confirm-buttons {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+
+        .config-confirm-buttons button {
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .config-confirm-buttons .btn-cancel {
+            background: var(--bg-glass);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+
+        .config-confirm-buttons .btn-cancel:hover {
+            background: var(--bg-glass-strong);
+        }
+
+        .config-confirm-buttons .btn-confirm {
+            background: #0a84ff;
+            border: none;
+            color: white;
+        }
+
+        .config-confirm-buttons .btn-confirm:hover {
+            background: #0077ed;
+        }
+
         .tool-icon {
             width: 16px;
             height: 16px;
@@ -1540,6 +1628,56 @@
             typingIndicator.classList.remove('show');
         }
 
+        // --- Config Confirmation Dialog ---
+
+        async function showConfigConfirmation(key, value) {
+            return new Promise((resolve) => {
+                // Create modal overlay
+                const overlay = document.createElement('div');
+                overlay.className = 'config-confirm-overlay';
+                overlay.innerHTML = `
+                    <div class="config-confirm-dialog">
+                        <h3>Configuration Change Request</h3>
+                        <p>The agent is requesting to change:</p>
+                        <div class="config-change-details">
+                            <strong>${key}</strong> → <code>${value}</code>
+                        </div>
+                        <p>Do you want to allow this change?</p>
+                        <div class="config-confirm-buttons">
+                            <button class="btn-cancel">Decline</button>
+                            <button class="btn-confirm">Allow</button>
+                        </div>
+                    </div>
+                `;
+
+                document.body.appendChild(overlay);
+
+                const confirmBtn = overlay.querySelector('.btn-confirm');
+                const cancelBtn = overlay.querySelector('.btn-cancel');
+
+                confirmBtn.addEventListener('click', () => {
+                    overlay.remove();
+                    resolve(true);
+                });
+
+                cancelBtn.addEventListener('click', () => {
+                    overlay.remove();
+                    resolve(false);
+                });
+
+                // Close on overlay click
+                overlay.addEventListener('click', (e) => {
+                    if (e.target === overlay) {
+                        overlay.remove();
+                        resolve(false);
+                    }
+                });
+
+                // Focus the confirm button
+                confirmBtn.focus();
+            });
+        }
+
         // --- Copy Functionality ---
 
         // SVG icons for copy buttons
@@ -2023,6 +2161,60 @@
                 scrollToBottom();
             });
 
+            // 3e. Config Request Event - agent requests config change
+            await event.listen('chat-config-request', async (e) => {
+                touchStreamActivity();
+                const payload = e?.payload || {};
+                const { operation, key, value, requires_confirmation, session_id } = payload;
+
+                console.log('[DEBUG] Config request received:', payload);
+
+                if (operation === 'set' && requires_confirmation) {
+                    // Show confirmation dialog
+                    const confirmed = await showConfigConfirmation(key, value);
+                    if (confirmed) {
+                        // Apply the config change
+                        try {
+                            const sid = session_id || currentSessionId;
+                            if (key === 'provider') {
+                                await invoke('set_session_llm_provider', { session_id: sid, provider: value });
+                                // Update UI dropdown
+                                const providerSelect = document.getElementById('provider-select');
+                                if (providerSelect) providerSelect.value = value;
+                            } else if (key === 'model') {
+                                await invoke('set_session_llm_model', { session_id: sid, model: value });
+                                // Update UI dropdown
+                                const modelSelect = document.getElementById('model-select');
+                                if (modelSelect) modelSelect.value = value;
+                            } else if (key === 'permission_level') {
+                                await invoke('set_session_permission_level', { session_id: sid, level: value });
+                            }
+                            addMessage(`✅ Configuration updated: ${key} = ${value}`, 'agent');
+                        } catch (err) {
+                            addMessage(`❌ Failed to update configuration: ${err}`, 'agent');
+                        }
+                    } else {
+                        addMessage(`⚠️ Configuration change declined: ${key} = ${value}`, 'agent');
+                    }
+                } else if (operation === 'set') {
+                    // No confirmation needed (permissive mode)
+                    try {
+                        const sid = session_id || currentSessionId;
+                        if (key === 'provider') {
+                            await invoke('set_session_llm_provider', { session_id: sid, provider: value });
+                        } else if (key === 'model') {
+                            await invoke('set_session_llm_model', { session_id: sid, model: value });
+                        } else if (key === 'permission_level') {
+                            await invoke('set_session_permission_level', { session_id: sid, level: value });
+                        }
+                        addMessage(`✅ Configuration updated: ${key} = ${value}`, 'agent');
+                    } catch (err) {
+                        addMessage(`❌ Failed to update configuration: ${err}`, 'agent');
+                    }
+                }
+                scrollToBottom();
+            });
+
             // 4. Stream Done
             await event.listen('chat-stream-done', () => {
                 touchStreamActivity();
@@ -2200,7 +2392,7 @@
                     // OpenAI: fetch from API
                     const apiKey = providerCfg?.api_key || '';
                     if (apiKey) {
-                        const result = await window.__TAURI__.core.invoke('list_openai_models', { apiKey });
+                        const result = await window.__TAURI__.core.invoke('list_openai_models', { api_key: apiKey });
                         models = Array.isArray(result)
                             ? result.map((m) => m?.id).filter((n) => typeof n === 'string' && n.length > 0)
                             : [];
@@ -2209,7 +2401,7 @@
                     // Anthropic: fetch from API
                     const apiKey = providerCfg?.api_key || '';
                     if (apiKey) {
-                        const result = await window.__TAURI__.core.invoke('list_anthropic_models', { apiKey });
+                        const result = await window.__TAURI__.core.invoke('list_anthropic_models', { api_key: apiKey });
                         models = Array.isArray(result)
                             ? result.map((m) => m?.id).filter((n) => typeof n === 'string' && n.length > 0)
                             : [];
@@ -2217,7 +2409,7 @@
                 } else if (provider === 'grok') {
                     // Grok: fetch from xAI API
                     const apiKey = providerCfg?.api_key || '';
-                    const result = await window.__TAURI__.core.invoke('list_grok_models', { apiKey });
+                    const result = await window.__TAURI__.core.invoke('list_grok_models', { api_key: apiKey });
                     models = Array.isArray(result)
                         ? result.map((m) => m?.id).filter((n) => typeof n === 'string' && n.length > 0)
                         : [];

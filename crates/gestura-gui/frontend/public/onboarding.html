@@ -628,7 +628,7 @@
                     const modelFilename = modelPath ? modelPath.split('/').pop() : 'ggml-base.en.bin';
 
                     // Check if model already exists
-                    const modelStatus = await invoke('is_whisper_model_downloaded', { modelFilename });
+                    const modelStatus = await invoke('is_whisper_model_downloaded', { model_filename: modelFilename });
 
                     if (!modelStatus.exists || !modelStatus.is_valid) {
                         // Show download progress UI
@@ -716,7 +716,7 @@
 
             // Start the download
             try {
-                await invoke('download_whisper_model', { modelFilename });
+                await invoke('download_whisper_model', { model_filename: modelFilename });
             } catch (error) {
                 console.error('Download failed:', error);
                 const statusText = document.getElementById('downloadStatus');
@@ -741,7 +741,7 @@
 
         async function updateWhisperModel(model) {
             try {
-                await invoke('update_whisper_model', { modelFilename: model });
+                await invoke('update_whisper_model', { model_filename: model });
             } catch (error) {
                 console.error('Error updating whisper model:', error);
             }
@@ -810,7 +810,7 @@
 
         async function updateMicrophone(deviceName) {
             try {
-                await invoke('update_audio_device', { deviceName: deviceName || null });
+                await invoke('update_audio_device', { device_name: deviceName || null });
                 console.log('Microphone updated to:', deviceName || 'System Default');
             } catch (error) {
                 console.error('Error updating microphone:', error);

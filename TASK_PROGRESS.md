@@ -1402,3 +1402,29 @@ All 21 Phase 1 tasks have been implemented and verified:
 - ✅ All 100 tests pass (`cargo test --workspace --all-features`)
 - ✅ Dead code annotations removed where methods are now wired up
 - ✅ Documentation updated for methods kept as future APIs
+
+---
+
+## Phase 2: Critical Issues (Issues 1-6)
+
+### Task 45: Issue 1 — Snake_case vs camelCase Parameter Consistency (Tauri invoke)
+**Priority:** CRITICAL
+**Status:** ✅ COMPLETE
+
+**Goal:** Ensure every `window.__TAURI__.core.invoke(...)` payload key matches the corresponding Rust `#[tauri::command]` parameter name (snake_case). Tauri does not auto-convert.
+
+**Sub-tasks:**
+- [x] 45.1 Fix `chat.html` invoke args (`api_key`)
+- [x] 45.2 Fix `config.html` invoke args (`api_key`, `model_filename`, `model_path`, `device_name`)
+- [x] 45.3 Fix `onboarding.html` invoke args (`model_filename`, `device_name`)
+- [x] 45.4 Verify no remaining mismatched camelCase invoke args + run quality gates
+
+**Notes:**
+- Fixed `apiKey` → `api_key`, `modelFilename` → `model_filename`, `modelPath` → `model_path`, `deviceName` → `device_name` in all active GUI pages.
+
+**Verification:**
+- ✅ Grep checks show no remaining `modelFilename:` and no remaining camelCase payload keys for the commands fixed above under `crates/gestura-gui/frontend/public/`.
+- ✅ `cargo fmt` - passed
+- ✅ `cargo clippy --workspace --all-targets --all-features -- -D warnings` - passed
+- ✅ `cargo test --workspace --all-features` - passed
+

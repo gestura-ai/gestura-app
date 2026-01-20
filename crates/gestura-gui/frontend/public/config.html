@@ -3057,7 +3057,7 @@
             try {
                 setDropdownLoading('openaiLlmModel', true);
 
-                const models = await window.__TAURI__.core.invoke('list_openai_models', { apiKey });
+                const models = await window.__TAURI__.core.invoke('list_openai_models', { api_key: apiKey });
                 modelSelect.innerHTML = '';
 
                 if (models.length === 0) {
@@ -3114,7 +3114,7 @@
             try {
                 setDropdownLoading('anthropicLlmModel', true);
 
-                const models = await window.__TAURI__.core.invoke('list_anthropic_models', { apiKey });
+                const models = await window.__TAURI__.core.invoke('list_anthropic_models', { api_key: apiKey });
                 modelSelect.innerHTML = '';
 
                 if (models.length === 0) {
@@ -3164,7 +3164,7 @@
 
             try {
                 setDropdownLoading('grokLlmModel', true);
-                const models = await window.__TAURI__.core.invoke('list_grok_models', { apiKey });
+                const models = await window.__TAURI__.core.invoke('list_grok_models', { api_key: apiKey });
                 modelSelect.innerHTML = '';
 
                 models.forEach(model => {
@@ -3310,7 +3310,7 @@
             try {
                 setDropdownLoading('openaiSttModel', true);
                 if (statusSpan) statusSpan.textContent = 'Loading models...';
-                const models = await window.__TAURI__.core.invoke('list_openai_stt_models', { apiKey });
+                const models = await window.__TAURI__.core.invoke('list_openai_stt_models', { api_key: apiKey });
                 modelSelect.innerHTML = '';
 
                 models.forEach(model => {
@@ -3412,7 +3412,7 @@
             }
             try {
                 const status = await window.__TAURI__.core.invoke('is_whisper_model_downloaded', {
-                    modelFilename: filename
+                    model_filename: filename
                 });
                 console.log(`📁 Model status for ${filename}:`, status);
                 return status;
@@ -3627,7 +3627,7 @@
 
                 console.log('🚀 Invoking download_whisper_model with filename:', filename);
                 const result = await window.__TAURI__.core.invoke('download_whisper_model', {
-                    modelFilename: filename
+                    model_filename: filename
                 });
                 console.log('✅ Download result:', result);
 
@@ -3720,7 +3720,7 @@
             resultSpan.className = 'test-result testing';
 
             try {
-                const result = await window.__TAURI__.core.invoke('test_local_whisper', { modelPath });
+                const result = await window.__TAURI__.core.invoke('test_local_whisper', { model_path: modelPath });
                 resultSpan.innerHTML = `<span class="icon-check"></span> ${result}`;
                 resultSpan.className = 'test-result success';
             } catch (error) {
@@ -4022,7 +4022,7 @@
                 select.addEventListener('change', async (e) => {
                     const deviceName = e.target.value === 'default' ? null : e.target.value;
                     try {
-                        await window.__TAURI__.core.invoke('update_audio_device', { deviceName });
+                        await window.__TAURI__.core.invoke('update_audio_device', { device_name: deviceName });
                         console.log('🎤 Audio device saved:', deviceName || 'System Default');
                     } catch (err) {
                         console.error('Failed to save audio device:', err);
