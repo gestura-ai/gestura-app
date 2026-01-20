@@ -302,7 +302,7 @@ impl WindowManager {
                 if let Err(e) = std::fs::write(&path, json) {
                     tracing::error!("Failed to write sessions file: {}", e);
                 } else {
-                    tracing::debug!("Saved {} sessions to {:?}", persisted.sessions.len(), path);
+                    tracing::info!("Saved {} sessions to {:?}", persisted.sessions.len(), path);
                 }
             }
             Err(e) => {
@@ -724,9 +724,15 @@ pub fn init_window_manager(app: AppHandle) {
     // Load persisted sessions from disk before making manager available
     manager.load_persisted_sessions();
 
+    // Get count before moving into global
+    let session_count = manager.sessions.lock().unwrap().len();
+
     let mut global_manager = WINDOW_MANAGER.lock().unwrap();
     *global_manager = Some(manager);
-    tracing::info!("Window manager initialized with persisted sessions");
+    tracing::info!(
+        "Window manager initialized with {} persisted sessions",
+        session_count
+    );
 }
 
 /// Save all sessions to disk (public function for use from closures/callbacks)

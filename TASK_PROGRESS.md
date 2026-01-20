@@ -3,7 +3,7 @@
 **Started:** 2026-01-19
 **Phase 1 Status:** ✅ All Tasks Completed (Tasks 1-21)
 **Phase 2 Status:** ✅ All Tasks Completed (Tasks 22-28) - 7 of 7 complete
-**Phase 3 Status:** 🔄 In Progress (Tasks 29+) - 1 of 2 complete
+**Phase 3 Status:** 🔄 In Progress (Tasks 29+) - 1 of 5 complete
 
 ---
 
@@ -619,6 +619,77 @@ Wire up the 9 voice command methods in speech.rs for hands-free control.
 ## Phase 3: Tasks 29+ (In Progress)
 
 New feature requests and bug fixes beyond Phase 2.
+
+---
+
+### Task 31: Fix System Tray Session History Display
+**Priority:** HIGH
+**Status:** 🔄 IN PROGRESS
+
+**Problem:** The system tray menu is not populating with chat session history.
+
+**Investigation:**
+- [x] Verified session persistence to `~/.gestura/gui_sessions.json` works correctly
+- [x] Verified `get_all_sessions()` returns sessions after initialization
+- [x] Added debug logging to trace session loading and tray menu building
+- [ ] Test with app to verify sessions appear in tray menu
+
+**Files Modified:**
+- `crates/gestura-gui/src/tray.rs` - Added logging in `build_sessions_submenu`
+- `crates/gestura-gui/src/window_manager.rs` - Added logging for session loading/saving
+
+---
+
+### Task 32: Research Agent Loop Architectures
+**Priority:** MEDIUM
+**Status:** ⬜ NOT STARTED
+
+**Objective:** Analyze agent execution patterns from leading open-source projects:
+- OpenAI Codex: https://github.com/openai/codex
+- Block Goose: https://github.com/block/goose
+- Kilo: https://github.com/Kilo-Org/kilocode
+
+**Focus Areas:**
+- How they handle autonomous end-to-end task completion
+- Coding, research, and general task handling patterns
+- Error recovery and retry strategies
+- Tool orchestration approaches
+
+**Deliverable:** Document in `docs/` with recommendations
+
+---
+
+### Task 33: Implement Session-Aware Configuration
+**Priority:** HIGH
+**Status:** ⬜ NOT STARTED
+
+**Problem:** Chat sessions need persistent awareness of their specific configurations.
+
+**Requirements:**
+- [ ] Session state persists across app restarts (LLM provider/model overrides)
+- [ ] Session workspace and tool permissions preserved
+- [ ] Each session maintains independent configuration
+
+**Files to Modify:**
+- `crates/gestura-gui/src/window_manager.rs` - Session state management
+
+---
+
+### Task 34: Implement Streaming Thought Process UI Components
+**Priority:** MEDIUM
+**Status:** ⬜ NOT STARTED
+
+**Problem:** Different LLM providers stream "thinking" content differently (e.g., Claude's `<thinking>` tags, OpenAI's reasoning tokens).
+
+**Requirements:**
+- [ ] Create separate UI components for thought process vs. final response
+- [ ] Thought component should be collapsible/expandable
+- [ ] Thought content visually distinct but reviewable
+- [ ] Final response has primary focus in UI
+- [ ] Handle provider-specific thought formatting (Anthropic `<thinking>`, OpenAI reasoning)
+
+**Files to Modify:**
+- `crates/gestura-gui/frontend/public/chat.html` - Thought bubble UI
 
 ---
 

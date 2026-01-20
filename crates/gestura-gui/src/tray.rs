@@ -252,8 +252,20 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>> {
     let sessions_menu = Menu::new(app)?;
     let all_sessions = get_all_sessions();
+
+    tracing::info!(
+        "Building sessions submenu: {} total sessions retrieved",
+        all_sessions.len()
+    );
+
     let active_sessions: Vec<_> = all_sessions.iter().filter(|s| s.is_open).collect();
     let closed_sessions: Vec<_> = all_sessions.iter().filter(|s| !s.is_open).collect();
+
+    tracing::info!(
+        "Session breakdown: {} active, {} closed",
+        active_sessions.len(),
+        closed_sessions.len()
+    );
 
     if active_sessions.is_empty() && closed_sessions.is_empty() {
         let no_sessions = MenuItem::with_id(
