@@ -38,8 +38,23 @@ pub(crate) fn default_system_prompt(meta: &RequestMetadata) -> String {
         "- File/shell operations may be sandboxed to a workspace directory; if a request is out of scope, explain and ask for a safer alternative.\n",
     );
     s.push_str(
-        "- Never claim you executed a tool or verified something unless you actually did so.\n\n",
+        "- Never claim you executed a tool or verified something unless you actually did so.\n",
     );
+
+    // Session configuration awareness
+    if let Some(ref llm_info) = meta.session_llm_config {
+        s.push_str(&format!(
+            "- Current LLM: {} (model: {})\n",
+            llm_info.provider, llm_info.model
+        ));
+    }
+    if let Some(ref perm) = meta.permission_level {
+        s.push_str(&format!("- Permission level: {}\n", perm));
+    }
+    if let Some(ref workspace) = meta.workspace_dir {
+        s.push_str(&format!("- Workspace directory: {}\n", workspace.display()));
+    }
+    s.push('\n');
 
     s.push_str("Core capabilities:\n");
     s.push_str("- Ask clarifying questions when necessary.\n");

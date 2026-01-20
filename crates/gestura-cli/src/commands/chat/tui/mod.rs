@@ -258,6 +258,15 @@ fn run_main_loop(
                             streaming = None;
                             break;
                         }
+                        StreamChunk::ConfigRequest { key, value, .. } => {
+                            // In CLI TUI, just show config request as info
+                            let msg = if let Some(v) = value {
+                                format!("📋 Config request: {} → {}", key, v)
+                            } else {
+                                format!("📋 Config query: {}", key)
+                            };
+                            app.set_status(msg);
+                        }
                         StreamChunk::Cancelled => {
                             // Keep partial content but mark as cancelled
                             if !stream_state.content.is_empty() {
@@ -428,6 +437,22 @@ fn start_streaming_message(
     if let Some(ref sys) = app.system_prompt {
         request = request.with_system_prompt(sys.clone());
     }
+
+    // Attach session environment metadata for agent awareness.
+    request = request.with_session(app.session.id.clone());
+    if let Some(ref ws) = app.session.workspace_dir {
+        request = request.with_workspace(ws.clone());
+    }
+    let provider_name = app.config.llm.primary.clone();
+    let model_name = app
+        .session
+        .model
+        .clone()
+        .or_else(|| model_for_provider(&app.config, &provider_name))
+        .unwrap_or_default();
+    request = request
+        .with_session_llm_config(provider_name, model_name)
+        .with_permission_level("restricted");
 
     // Add conversation history
     request = request.with_history(history);
@@ -836,6 +861,16 @@ fn get_workflows_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("gestura")
         .join("workflows")
+}
+
+fn model_for_provider(cfg: &gestura_core::AppConfig, provider: &str) -> Option<String> {
+    match provider {
+        "openai" => cfg.llm.openai.as_ref().map(|c| c.model.clone()),
+        "anthropic" => cfg.llm.anthropic.as_ref().map(|c| c.model.clone()),
+        "grok" => cfg.llm.grok.as_ref().map(|c| c.model.clone()),
+        "ollama" => cfg.llm.ollama.as_ref().map(|c| c.model.clone()),
+        _ => None,
+    }
 }
 
 fn load_workflows(app: &mut TuiApp) {

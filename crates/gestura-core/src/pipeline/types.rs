@@ -62,6 +62,19 @@ pub struct RequestMetadata {
     /// Workspace directory for sandboxed file/shell operations
     /// If None, operations are unrestricted (legacy behavior)
     pub workspace_dir: Option<PathBuf>,
+    /// Session-scoped LLM configuration (for agent awareness)
+    pub session_llm_config: Option<SessionLlmInfo>,
+    /// Session permission level (for agent awareness)
+    pub permission_level: Option<String>,
+}
+
+/// Session-scoped LLM configuration info (for agent awareness)
+#[derive(Debug, Clone, Default)]
+pub struct SessionLlmInfo {
+    /// Current LLM provider (e.g., "anthropic", "openai", "ollama")
+    pub provider: String,
+    /// Current model name
+    pub model: String,
 }
 
 /// Source of the request
@@ -260,6 +273,25 @@ impl AgentRequest {
     /// Set workspace directory for sandboxed operations
     pub fn with_workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
         self.metadata.workspace_dir = Some(workspace.into());
+        self
+    }
+
+    /// Set session LLM configuration (for agent awareness)
+    pub fn with_session_llm_config(
+        mut self,
+        provider: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        self.metadata.session_llm_config = Some(SessionLlmInfo {
+            provider: provider.into(),
+            model: model.into(),
+        });
+        self
+    }
+
+    /// Set session permission level (for agent awareness)
+    pub fn with_permission_level(mut self, level: impl Into<String>) -> Self {
+        self.metadata.permission_level = Some(level.into());
         self
     }
 }

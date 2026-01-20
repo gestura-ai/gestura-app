@@ -271,6 +271,16 @@ fn get_history_path() -> PathBuf {
         .join("chat_history.txt")
 }
 
+fn model_for_provider(cfg: &AppConfig, provider: &str) -> Option<String> {
+    match provider {
+        "openai" => cfg.llm.openai.as_ref().map(|c| c.model.clone()),
+        "anthropic" => cfg.llm.anthropic.as_ref().map(|c| c.model.clone()),
+        "grok" => cfg.llm.grok.as_ref().map(|c| c.model.clone()),
+        "ollama" => cfg.llm.ollama.as_ref().map(|c| c.model.clone()),
+        _ => None,
+    }
+}
+
 pub fn run(opts: ChatOptions<'_>) -> Result<()> {
     // If TUI mode is requested, launch the TUI
     if opts.tui {
@@ -838,6 +848,19 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                     request = request.with_system_prompt(sys.clone());
                 }
 
+                // Ensure the agent is aware of the effective environment for this session.
+                // Note: this is informational metadata used by the system prompt.
+                let provider_name = config.llm.primary.clone();
+                let model_name = chat_session
+                    .model
+                    .clone()
+                    .or_else(|| model_for_provider(&config, &provider_name))
+                    .unwrap_or_default();
+                request = request
+                    .with_session_llm_config(provider_name, model_name)
+                    // CLI currently has no per-session permission UI; default to a conservative label.
+                    .with_permission_level("restricted");
+
                 // Stream response chunks as they arrive (CLI basic mode should feel interactive).
                 println!();
                 println!("{}", "◆".blue().bold());
@@ -954,6 +977,14 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                             StreamChunk::Done(_) => {
                                 saw_done = true;
                                 break;
+                            }
+                            StreamChunk::ConfigRequest { key, value, .. } => {
+                                // In CLI, just show config request as info
+                                if let Some(v) = value {
+                                    println!("\n📋 Config request: {} → {}", key, v);
+                                } else {
+                                    println!("\n📋 Config query: {}", key);
+                                }
                             }
                             StreamChunk::Cancelled => break,
                             StreamChunk::Error(e) => {

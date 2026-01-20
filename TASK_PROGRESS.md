@@ -1428,3 +1428,57 @@ All 21 Phase 1 tasks have been implemented and verified:
 - ✅ `cargo clippy --workspace --all-targets --all-features -- -D warnings` - passed
 - ✅ `cargo test --workspace --all-features` - passed
 
+---
+
+### Task 46: Issue 2 — Core vs GUI Feature Alignment (provider/model/workspace/permissions)
+**Priority:** CRITICAL
+**Status:** ✅ COMPLETE
+
+**Goal:** Ensure the agent is explicitly aware (via system prompt metadata) of the effective session configuration used by the GUI: provider, model, workspace directory sandbox, and permission level.
+
+**Sub-tasks:**
+- [x] 46.1 Core: Extend `RequestMetadata` to include session LLM info + permission level (already present in `crates/gestura-core/src/pipeline/types.rs`)
+- [x] 46.2 Core: Include session config + workspace directory in system prompt (“Environment awareness”) (already present in `crates/gestura-core/src/persona.rs`)
+- [x] 46.3 GUI: Populate request metadata from current session state for each message
+  - Updated `crates/gestura-gui/src/api.rs` to:
+    - compute **effective provider/model** from session overrides
+    - set `request.with_session_llm_config(effective_provider, effective_model)`
+    - size history via `PipelineConfig::context_tokens_for_provider(effective_provider)`
+    - apply the same effective provider/model to the **pipeline config clone** so the actual provider switches per-session
+  - CLI parity: updated `crates/gestura-cli/src/commands/chat/mod.rs` + `crates/gestura-cli/src/commands/chat/tui/mod.rs` to attach `session_llm_config` and `permission_level` for agent awareness
+- [x] 46.4 Verify quality gates + commit
+  - ✅ `cargo fmt && cargo clippy --workspace --all-targets --all-features -- -D warnings`
+  - ✅ `cargo test --workspace --all-features`
+
+---
+
+### Task 47: Issue 3 — Session-scoped provider/model switching reliability
+**Priority:** HIGH
+**Status:** ⏳ NOT STARTED
+
+**Goal:** Switching provider/model via header dropdowns must apply to subsequent messages within the same session (no stale provider/model usage).
+
+---
+
+### Task 48: Issue 4 — Tool/config changes require acceptance unless permissive + global default
+**Priority:** HIGH
+**Status:** ⏳ NOT STARTED
+
+**Goal:** Tool/config changes must require user acceptance unless the session is in a permissive mode, and new sessions must inherit a global default permission level.
+
+---
+
+### Task 49: Issue 5 — Tray menu session restore + minimalist timestamps
+**Priority:** HIGH
+**Status:** ⏳ NOT STARTED
+
+**Goal:** Tray menu must restore the correct chat session on click; tray labels should use minimalist formatting like `Jan 20 @ 9am`.
+
+---
+
+### Task 50: Issue 6 — SRS documentation updates (bm-agents)
+**Priority:** MEDIUM
+**Status:** ⏳ NOT STARTED
+
+**Goal:** Update the bm-agents SRS requirements doc to reflect all new/changed behavior being implemented in gestura-app (Issues 1–5).
+

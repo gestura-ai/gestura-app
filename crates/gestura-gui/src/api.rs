@@ -1472,10 +1472,31 @@ pub async fn process_chat_message_streaming(
     // Build the agent request with workspace sandboxing
     use gestura_core::{AgentPipeline, AgentRequest, PipelineConfig};
 
-    // Get the provider-specific history limit for token efficiency
+    // Resolve the effective provider/model for this session (session override or global fallback).
+    // IMPORTANT: We must use this for BOTH agent awareness metadata and for the actual pipeline config,
+    // otherwise the agent may report one provider/model while the pipeline uses another.
+    let (effective_provider, effective_model) = resolved_session_id
+        .as_deref()
+        .and_then(|sid| crate::window_manager::get_session_llm_config(sid).map(|c| (sid, c)))
+        .map(|(_sid, session_llm)| {
+            let provider = session_llm
+                .provider
+                .unwrap_or_else(|| cfg.llm.primary.clone());
+            let model = session_llm
+                .model
+                .unwrap_or_else(|| get_model_for_provider(&cfg, &provider).unwrap_or_default());
+            (provider, model)
+        })
+        .unwrap_or_else(|| {
+            let provider = cfg.llm.primary.clone();
+            let model = get_model_for_provider(&cfg, &provider).unwrap_or_default();
+            (provider, model)
+        });
+
+    // Get the provider-specific history limit for token efficiency.
     // The pipeline will further limit based on its config, but we pre-filter here
-    // to avoid loading excessive messages into memory
-    let provider = cfg.llm.primary.as_str();
+    // to avoid loading excessive messages into memory.
+    let provider = effective_provider.as_str();
     let max_history = PipelineConfig::context_tokens_for_provider(provider) / 1000; // Rough estimate
     let max_history = max_history.clamp(10, 50); // Between 10 and 50 messages
 
@@ -1531,8 +1552,49 @@ pub async fn process_chat_message_streaming(
         request = request.with_workspace(workspace);
     }
 
-    // Create the pipeline with provider-optimized configuration and spawn the streaming task
-    let cfg_clone = cfg.clone();
+    // Set session LLM config and permission level for agent awareness.
+    // The agent can use this info to report its current configuration.
+    request = request.with_session_llm_config(&effective_provider, &effective_model);
+
+    if let Some(ref sid) = resolved_session_id
+        && let Some(state) = crate::window_manager::get_session_state(sid)
+        && let Some(ref tool_settings) = state.tool_settings
+    {
+        let perm_str = match tool_settings.permission_level {
+            crate::window_manager::SessionPermissionLevel::Sandbox => "sandbox",
+            crate::window_manager::SessionPermissionLevel::Restricted => "restricted",
+            crate::window_manager::SessionPermissionLevel::Full => "full",
+        };
+        request = request.with_permission_level(perm_str);
+    }
+
+    // Create the pipeline with provider-optimized configuration and spawn the streaming task.
+    // We must apply the effective (session-scoped) provider/model to the pipeline config.
+    let mut cfg_clone = cfg.clone();
+    cfg_clone.llm.primary = effective_provider.clone();
+    match effective_provider.as_str() {
+        "openai" => {
+            if let Some(ref mut c) = cfg_clone.llm.openai {
+                c.model = effective_model.clone();
+            }
+        }
+        "anthropic" => {
+            if let Some(ref mut c) = cfg_clone.llm.anthropic {
+                c.model = effective_model.clone();
+            }
+        }
+        "grok" => {
+            if let Some(ref mut c) = cfg_clone.llm.grok {
+                c.model = effective_model.clone();
+            }
+        }
+        "ollama" => {
+            if let Some(ref mut c) = cfg_clone.llm.ollama {
+                c.model = effective_model.clone();
+            }
+        }
+        _ => {}
+    }
     let cancel_token_clone = cancel_token.clone();
     let pipeline_handle = tokio::spawn(async move {
         // Use provider-optimized config for better token management
@@ -1629,6 +1691,21 @@ pub async fn process_chat_message_streaming(
                     "summary": summary
                 });
                 emit("chat-context-compacted", payload);
+            }
+            StreamChunk::ConfigRequest {
+                operation,
+                key,
+                value,
+                requires_confirmation,
+            } => {
+                let payload = serde_json::json!({
+                    "operation": operation,
+                    "key": key,
+                    "value": value,
+                    "requires_confirmation": requires_confirmation,
+                    "session_id": resolved_session_id
+                });
+                emit("chat-config-request", payload);
             }
             StreamChunk::Done(usage) => {
                 saw_terminal = true;
