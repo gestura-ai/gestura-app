@@ -1478,7 +1478,15 @@ All 21 Phase 1 tasks have been implemented and verified:
 
 ### Task 50: Issue 6 — SRS documentation updates (bm-agents)
 **Priority:** MEDIUM
-**Status:** ⏳ NOT STARTED
+**Status:** ✅ COMPLETE
 
 **Goal:** Update the bm-agents SRS requirements doc to reflect all new/changed behavior being implemented in gestura-app (Issues 1–5).
+
+**Notes:**
+- Updated `bm-agents/docs/SRS_GESTURA_APP.md` to v2.4 with an appendix capturing unpushed gestura-app deltas (streaming thinking parsing, Tauri invoke key consistency, session-scoped provider/model overrides, and pending permissions/tray work).
+- bm-agents commit: `a4b0668`
+
+**Verification:**
+- ✅ bm-agents documentation commit created (`a4b0668`)
+
 
