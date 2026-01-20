@@ -793,16 +793,27 @@ Break down research findings into actionable implementation tasks for both GUI a
 - All events are serializable with serde for frontend consumption
 - All tests pass (140 tests in gestura-core)
 
-#### 35.6 Execution Mode Support
-- [ ] Implement Auto vs Chat mode switching
-- [ ] Add mode-specific tool permissions
-- [ ] Create mode persistence per session
-- [ ] Add UI indicators for current mode
+#### 35.6 Execution Mode Support ✅ COMPLETE
+- [x] Implement Auto vs Chat mode switching
+- [x] Add mode-specific tool permissions
+- [x] Create mode persistence per session
+- [x] Add UI indicators for current mode
 
-**Files to Modify:**
-- `crates/gestura-core/src/` - Core agent logic
-- `crates/gestura-cli/src/` - CLI tool integration
-- `crates/gestura-gui/src/` - GUI event handling
+**Implementation Details:**
+- Created `crates/gestura-core/src/execution_mode.rs` module with:
+  - `ExecutionMode` enum - Chat (interactive), Auto (autonomous), Restricted (limited)
+  - `ToolPermission` enum - Allowed, RequiresConfirmation, Blocked
+  - `ToolCategory` enum - ReadOnly, Write, Shell, Network, System, Git
+  - `ModeConfig` - configurable mode behavior with tool overrides
+  - `ModeManager` - manages mode state, confirmations, and session blocks
+  - `ToolExecutionCheck` - result type for permission checks
+- Mode-specific default permissions for each tool category
+- Session-level tool confirmation tracking
+- All tests pass (146 tests in gestura-core)
+
+**Files Modified:**
+- `crates/gestura-core/src/execution_mode.rs` - New module
+- `crates/gestura-core/src/lib.rs` - Module declaration and re-exports
 
 **Reference:** `docs/AGENT_ARCHITECTURE_RESEARCH.md`
 

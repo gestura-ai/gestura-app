@@ -39,6 +39,7 @@ pub mod config;
 pub mod context;
 pub mod error;
 pub mod events;
+pub mod execution_mode;
 pub mod gdpr;
 pub mod interaction;
 pub mod knowledge;
@@ -73,6 +74,9 @@ pub use error::{AppError, Result};
 pub use events::{
     AgentEvent, EventBufferConfig, EventEmitter, EventReceiver, EventSender, ProgressStage,
     ProgressTracker, create_event_channel,
+};
+pub use execution_mode::{
+    ExecutionMode, ModeConfig, ModeManager, ToolCategory, ToolExecutionCheck, ToolPermission,
 };
 pub use gdpr::{
     ConsentRecord, ConsentStatus, DataAuditEntry, DataCategory, DataOperation, GdprManager,
