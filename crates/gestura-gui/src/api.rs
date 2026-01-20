@@ -1193,50 +1193,97 @@ pub async fn process_chat_message_streaming(
 
     let mut cfg = AppConfig::load_async().await;
 
+    // Log initial config state
+    tracing::debug!(
+        global_provider = %cfg.llm.primary,
+        session_id = ?session_id,
+        "Starting chat message processing"
+    );
+
     // Apply session-specific LLM config overrides (doesn't modify persisted global config)
-    if let Some(ref sid) = session_id
-        && let Some(session_llm) = crate::window_manager::get_session_llm_config(sid)
-    {
-        if let Some(provider) = session_llm.provider {
-            tracing::debug!(
-                session_id = %sid,
-                provider = %provider,
-                "Using session-scoped LLM provider"
-            );
-            cfg.llm.primary = provider.clone();
-        }
-        if let Some(model) = session_llm.model {
-            tracing::debug!(
-                session_id = %sid,
-                model = %model,
-                "Using session-scoped LLM model"
-            );
-            // Apply model to the active provider's config
-            match cfg.llm.primary.as_str() {
-                "openai" => {
-                    if let Some(ref mut openai) = cfg.llm.openai {
-                        openai.model = model;
+    if let Some(ref sid) = session_id {
+        let session_llm = crate::window_manager::get_session_llm_config(sid);
+        tracing::debug!(
+            session_id = %sid,
+            session_llm_config = ?session_llm,
+            "Retrieved session LLM config"
+        );
+
+        if let Some(session_llm) = session_llm {
+            if let Some(provider) = session_llm.provider {
+                tracing::info!(
+                    session_id = %sid,
+                    provider = %provider,
+                    "Applying session-scoped LLM provider override"
+                );
+                cfg.llm.primary = provider.clone();
+            }
+            if let Some(model) = session_llm.model {
+                tracing::info!(
+                    session_id = %sid,
+                    model = %model,
+                    provider = %cfg.llm.primary,
+                    "Applying session-scoped LLM model override"
+                );
+                // Apply model to the active provider's config
+                // Create provider config if it doesn't exist (for providers without API keys yet)
+                match cfg.llm.primary.as_str() {
+                    "openai" => {
+                        if let Some(ref mut openai) = cfg.llm.openai {
+                            openai.model = model;
+                        } else {
+                            tracing::warn!(
+                                "OpenAI provider selected but not configured - model override ignored"
+                            );
+                        }
                     }
-                }
-                "anthropic" => {
-                    if let Some(ref mut anthropic) = cfg.llm.anthropic {
-                        anthropic.model = model;
+                    "anthropic" => {
+                        if let Some(ref mut anthropic) = cfg.llm.anthropic {
+                            anthropic.model = model;
+                        } else {
+                            tracing::warn!(
+                                "Anthropic provider selected but not configured - model override ignored"
+                            );
+                        }
                     }
-                }
-                "grok" => {
-                    if let Some(ref mut grok) = cfg.llm.grok {
-                        grok.model = model;
+                    "grok" => {
+                        if let Some(ref mut grok) = cfg.llm.grok {
+                            grok.model = model;
+                        } else {
+                            tracing::warn!(
+                                "Grok provider selected but not configured - model override ignored"
+                            );
+                        }
                     }
-                }
-                "ollama" => {
-                    if let Some(ref mut ollama) = cfg.llm.ollama {
+                    "ollama" => {
+                        // Ollama doesn't require API key, so create default config if missing
+                        let ollama = cfg.llm.ollama.get_or_insert_with(|| {
+                            gestura_core::config::OllamaConfig {
+                                base_url: "http://localhost:11434".into(),
+                                model: model.clone(),
+                            }
+                        });
                         ollama.model = model;
                     }
+                    "echo" => {
+                        // Echo provider doesn't need config, model is ignored
+                        tracing::debug!("Echo provider selected - model override not applicable");
+                    }
+                    other => {
+                        tracing::warn!(
+                            provider = other,
+                            "Unknown provider - model override ignored"
+                        );
+                    }
                 }
-                _ => {}
             }
         }
     }
+
+    tracing::info!(
+        final_provider = %cfg.llm.primary,
+        "Processing chat message with LLM provider"
+    );
 
     let message_source = match source.as_deref().map(|s| s.trim().to_ascii_lowercase()) {
         Some(s) if s == "voice" => crate::window_manager::MessageSource::Voice,
