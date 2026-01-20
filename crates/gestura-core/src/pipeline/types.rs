@@ -10,6 +10,59 @@ use std::path::PathBuf;
 use crate::context::{ContextCategory, ResolvedContext};
 use crate::llm_provider::TokenUsage;
 
+/// Permission level for tool execution in a session.
+///
+/// This determines whether tools require confirmation before execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PermissionLevel {
+    /// Read-only access - write operations are blocked
+    Sandbox,
+    /// Ask before write operations (default)
+    #[default]
+    Restricted,
+    /// Full access - no confirmation required
+    Full,
+}
+
+impl PermissionLevel {
+    /// Parse permission level from string (case-insensitive)
+    pub fn parse(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "sandbox" => Self::Sandbox,
+            "restricted" => Self::Restricted,
+            "full" => Self::Full,
+            _ => Self::default(),
+        }
+    }
+
+    /// Check if a tool operation is allowed without confirmation
+    pub fn allows_without_confirmation(&self, is_write_operation: bool) -> bool {
+        match self {
+            Self::Sandbox => !is_write_operation,
+            Self::Restricted => !is_write_operation,
+            Self::Full => true,
+        }
+    }
+
+    /// Check if a tool operation is blocked entirely
+    pub fn blocks(&self, is_write_operation: bool) -> bool {
+        match self {
+            Self::Sandbox => is_write_operation,
+            Self::Restricted => false,
+            Self::Full => false,
+        }
+    }
+
+    /// Check if a tool operation requires confirmation
+    pub fn requires_confirmation(&self, is_write_operation: bool) -> bool {
+        match self {
+            Self::Sandbox => false, // Blocked, not confirmation
+            Self::Restricted => is_write_operation,
+            Self::Full => false,
+        }
+    }
+}
+
 /// A request to be processed by the agent pipeline
 #[derive(Debug, Clone)]
 pub struct AgentRequest {
@@ -64,8 +117,8 @@ pub struct RequestMetadata {
     pub workspace_dir: Option<PathBuf>,
     /// Session-scoped LLM configuration (for agent awareness)
     pub session_llm_config: Option<SessionLlmInfo>,
-    /// Session permission level (for agent awareness)
-    pub permission_level: Option<String>,
+    /// Session permission level for tool execution
+    pub permission_level: PermissionLevel,
 }
 
 /// Session-scoped LLM configuration info (for agent awareness)
@@ -289,9 +342,15 @@ impl AgentRequest {
         self
     }
 
-    /// Set session permission level (for agent awareness)
-    pub fn with_permission_level(mut self, level: impl Into<String>) -> Self {
-        self.metadata.permission_level = Some(level.into());
+    /// Set session permission level for tool execution
+    pub fn with_permission_level(mut self, level: PermissionLevel) -> Self {
+        self.metadata.permission_level = level;
+        self
+    }
+
+    /// Set session permission level from string (for backwards compatibility)
+    pub fn with_permission_level_str(mut self, level: &str) -> Self {
+        self.metadata.permission_level = PermissionLevel::parse(level);
         self
     }
 }

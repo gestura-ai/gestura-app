@@ -18,6 +18,57 @@ use std::{collections::HashMap, fs, path::PathBuf};
 use crate::config_env::{get_env, get_env_bool, get_env_u32};
 use crate::error::{AppError, Result};
 
+/// Global permission level for new sessions.
+///
+/// This determines the default permission level that new chat sessions inherit.
+/// Users can override this per-session in the session settings panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum GlobalPermissionLevel {
+    /// Read-only access - no file writes, no shell commands
+    Sandbox,
+    /// Ask before write operations (default)
+    #[default]
+    Restricted,
+    /// Full access - no confirmation required
+    Full,
+}
+
+/// Global permission settings for tool execution.
+///
+/// These settings define the default permission behavior for new sessions.
+/// Individual sessions can override these settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct GlobalPermissionSettings {
+    /// Default permission level for new sessions
+    pub default_level: GlobalPermissionLevel,
+    /// Default enabled tools for new sessions (tool name -> enabled)
+    pub default_enabled_tools: HashMap<String, bool>,
+}
+
+impl Default for GlobalPermissionSettings {
+    fn default() -> Self {
+        let mut default_enabled_tools = HashMap::new();
+        // Default enabled tools - names must match gestura_core::tools::registry
+        default_enabled_tools.insert("file".to_string(), true);
+        default_enabled_tools.insert("shell".to_string(), true);
+        default_enabled_tools.insert("git".to_string(), true);
+        default_enabled_tools.insert("code".to_string(), true);
+        default_enabled_tools.insert("web".to_string(), true);
+        default_enabled_tools.insert("web_search".to_string(), true);
+        // Advanced tools disabled by default
+        default_enabled_tools.insert("a2a".to_string(), false);
+        default_enabled_tools.insert("permissions".to_string(), false);
+        default_enabled_tools.insert("mcp".to_string(), false);
+
+        Self {
+            default_level: GlobalPermissionLevel::default(),
+            default_enabled_tools,
+        }
+    }
+}
+
 /// Application configuration persisted to a JSON file.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppConfig {
@@ -45,6 +96,9 @@ pub struct AppConfig {
     /// Web search configuration
     #[serde(default)]
     pub web_search: WebSearchConfig,
+    /// Global permission settings for tool execution
+    #[serde(default)]
+    pub permissions: GlobalPermissionSettings,
 }
 
 /// Notification settings for response completion and MCP feedback
@@ -344,6 +398,7 @@ impl Default for AppConfig {
             developer: DeveloperSettings::default(),
             notifications: NotificationSettings::default(),
             web_search: WebSearchConfig::default(),
+            permissions: GlobalPermissionSettings::default(),
         }
     }
 }

@@ -1560,12 +1560,15 @@ pub async fn process_chat_message_streaming(
         && let Some(state) = crate::window_manager::get_session_state(sid)
         && let Some(ref tool_settings) = state.tool_settings
     {
-        let perm_str = match tool_settings.permission_level {
-            crate::window_manager::SessionPermissionLevel::Sandbox => "sandbox",
-            crate::window_manager::SessionPermissionLevel::Restricted => "restricted",
-            crate::window_manager::SessionPermissionLevel::Full => "full",
+        use gestura_core::pipeline::PermissionLevel;
+        let perm_level = match tool_settings.permission_level {
+            crate::window_manager::SessionPermissionLevel::Sandbox => PermissionLevel::Sandbox,
+            crate::window_manager::SessionPermissionLevel::Restricted => {
+                PermissionLevel::Restricted
+            }
+            crate::window_manager::SessionPermissionLevel::Full => PermissionLevel::Full,
         };
-        request = request.with_permission_level(perm_str);
+        request = request.with_permission_level(perm_level);
 
         // Pass enabled tools to the pipeline so the agent knows what tools are available.
         // Only include tools that are explicitly enabled (value == true).
@@ -1718,6 +1721,33 @@ pub async fn process_chat_message_streaming(
                     "session_id": resolved_session_id
                 });
                 emit("chat-config-request", payload);
+            }
+            StreamChunk::ToolConfirmationRequired {
+                confirmation_id,
+                tool_name,
+                tool_args,
+                description,
+                risk_level,
+                category,
+            } => {
+                let payload = serde_json::json!({
+                    "confirmation_id": confirmation_id,
+                    "tool_name": tool_name,
+                    "tool_args": tool_args,
+                    "description": description,
+                    "risk_level": risk_level,
+                    "category": category,
+                    "session_id": resolved_session_id
+                });
+                emit("chat-stream-tool-confirmation", payload);
+            }
+            StreamChunk::ToolBlocked { tool_name, reason } => {
+                let payload = serde_json::json!({
+                    "tool_name": tool_name,
+                    "reason": reason,
+                    "session_id": resolved_session_id
+                });
+                emit("chat-stream-tool-blocked", payload);
             }
             StreamChunk::Done(usage) => {
                 saw_terminal = true;

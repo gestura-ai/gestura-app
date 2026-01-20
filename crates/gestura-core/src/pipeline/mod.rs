@@ -172,6 +172,7 @@ impl AgentPipeline {
                 tx,
                 cancel_token,
                 workspace.as_ref(),
+                request.metadata.permission_level,
             )
             .await?;
 
@@ -875,6 +876,7 @@ impl AgentPipeline {
     ///
     /// If `workspace` is provided, all tool operations (shell, file, git) will be
     /// sandboxed to that directory. Paths outside the workspace will be rejected.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_agentic_loop_streaming(
         &self,
         initial_prompt: String,
@@ -883,6 +885,7 @@ impl AgentPipeline {
         tx: mpsc::Sender<StreamChunk>,
         cancel_token: CancellationToken,
         workspace: Option<&SessionWorkspace>,
+        permission_level: PermissionLevel,
     ) -> Result<AgentResponse, AppError> {
         let mut response = AgentResponse {
             content: String::new(),
@@ -971,6 +974,7 @@ impl AgentPipeline {
                             self.finalize_pending_tool_call(
                                 pending,
                                 workspace,
+                                permission_level,
                                 &mut tool_calls_in_iteration,
                                 &mut response,
                                 &tx,
@@ -997,6 +1001,7 @@ impl AgentPipeline {
                             self.finalize_pending_tool_call(
                                 pending,
                                 workspace,
+                                permission_level,
                                 &mut tool_calls_in_iteration,
                                 &mut response,
                                 &tx,
@@ -1021,6 +1026,14 @@ impl AgentPipeline {
                         // Forward config requests to frontend
                         let _ = tx.send(chunk).await;
                     }
+                    StreamChunk::ToolConfirmationRequired { .. } => {
+                        // Forward tool confirmation requests to frontend
+                        let _ = tx.send(chunk).await;
+                    }
+                    StreamChunk::ToolBlocked { .. } => {
+                        // Forward tool blocked notifications to frontend
+                        let _ = tx.send(chunk).await;
+                    }
                     StreamChunk::Done(usage) => {
                         // Some providers (or buggy intermediaries) may terminate the stream
                         // without emitting a ToolCallEnd. If we have a pending tool call, treat
@@ -1029,6 +1042,7 @@ impl AgentPipeline {
                             self.finalize_pending_tool_call(
                                 pending,
                                 workspace,
+                                permission_level,
                                 &mut tool_calls_in_iteration,
                                 &mut response,
                                 &tx,
@@ -1061,6 +1075,7 @@ impl AgentPipeline {
                 self.finalize_pending_tool_call(
                     pending,
                     workspace,
+                    permission_level,
                     &mut tool_calls_in_iteration,
                     &mut response,
                     &tx,
@@ -1201,10 +1216,74 @@ impl AgentPipeline {
         &self,
         pending: PendingToolCall,
         workspace: Option<&SessionWorkspace>,
+        permission_level: PermissionLevel,
         tool_calls_in_iteration: &mut Vec<ToolCallRecord>,
         response: &mut AgentResponse,
         tx: &mpsc::Sender<StreamChunk>,
     ) {
+        // Check if this is a write operation
+        let is_write = Self::is_write_operation(&pending.name, &pending.arguments);
+
+        // Check permission level
+        if permission_level.blocks(is_write) {
+            // Tool is blocked entirely (e.g., write operation in Sandbox mode)
+            let reason = format!(
+                "Tool '{}' blocked: write operations are not allowed in Sandbox mode",
+                pending.name
+            );
+            let _ = tx
+                .send(StreamChunk::ToolBlocked {
+                    tool_name: pending.name.clone(),
+                    reason: reason.clone(),
+                })
+                .await;
+
+            let record = ToolCallRecord {
+                id: pending.id,
+                name: pending.name,
+                arguments: pending.arguments,
+                result: ToolResult::Skipped(reason),
+                duration_ms: 0,
+            };
+            tool_calls_in_iteration.push(record.clone());
+            response.tool_calls.push(record);
+            return;
+        }
+
+        if permission_level.requires_confirmation(is_write) {
+            // Tool requires confirmation (write operation in Restricted mode)
+            let confirmation_id = uuid::Uuid::new_v4().to_string();
+            let _ = tx
+                .send(StreamChunk::ToolConfirmationRequired {
+                    confirmation_id: confirmation_id.clone(),
+                    tool_name: pending.name.clone(),
+                    tool_args: pending.arguments.clone(),
+                    description: format!(
+                        "Tool '{}' wants to perform a write operation",
+                        pending.name
+                    ),
+                    risk_level: 2, // Medium risk for write operations
+                    category: "write".to_string(),
+                })
+                .await;
+
+            // For now, we skip the tool and let the UI handle confirmation
+            // In a full implementation, we would wait for user confirmation
+            let record = ToolCallRecord {
+                id: pending.id,
+                name: pending.name,
+                arguments: pending.arguments,
+                result: ToolResult::Skipped(format!(
+                    "Awaiting user confirmation (id: {})",
+                    confirmation_id
+                )),
+                duration_ms: 0,
+            };
+            tool_calls_in_iteration.push(record.clone());
+            response.tool_calls.push(record);
+            return;
+        }
+
         // Execute the tool with workspace sandboxing
         let result = self
             .execute_tool(&pending.name, &pending.arguments, workspace)
@@ -1236,6 +1315,64 @@ impl AgentPipeline {
 
         tool_calls_in_iteration.push(record.clone());
         response.tool_calls.push(record);
+    }
+
+    /// Determine if a tool operation is a write operation based on tool name and arguments.
+    ///
+    /// Write operations include:
+    /// - shell/bash/execute: Always considered write (can modify system state)
+    /// - file with write operation
+    /// - git with modifying operations (commit, push, checkout, etc.)
+    fn is_write_operation(tool_name: &str, arguments: &str) -> bool {
+        match tool_name {
+            // Shell commands are always considered write operations
+            "shell" | "bash" | "execute" => true,
+
+            // File operations depend on the operation type
+            "file" | "write_file" => {
+                // Check if it's a write operation
+                if let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) {
+                    let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("");
+                    matches!(
+                        op,
+                        "write" | "delete" | "create" | "append" | "move" | "copy"
+                    )
+                } else {
+                    // If we can't parse, assume write for safety
+                    tool_name == "write_file"
+                }
+            }
+            "read_file" => false,
+
+            // Git operations depend on the operation type
+            "git" => {
+                if let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) {
+                    let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("");
+                    matches!(
+                        op,
+                        "commit"
+                            | "push"
+                            | "pull"
+                            | "checkout"
+                            | "merge"
+                            | "rebase"
+                            | "reset"
+                            | "stash"
+                            | "branch"
+                            | "add"
+                            | "rm"
+                    )
+                } else {
+                    false
+                }
+            }
+
+            // Web and code tools are read-only
+            "web" | "web_search" | "code" => false,
+
+            // Unknown tools are considered read-only by default
+            _ => false,
+        }
     }
 
     async fn execute_tool(

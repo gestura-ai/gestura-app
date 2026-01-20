@@ -82,6 +82,35 @@ pub enum StreamChunk {
         /// Whether the UI must request explicit confirmation before applying.
         requires_confirmation: bool,
     },
+    /// Tool execution requires user confirmation before proceeding.
+    ///
+    /// This is emitted when a tool call is detected but the session's permission
+    /// level requires user approval before execution. The UI should display a
+    /// confirmation dialog and respond via the confirmation channel.
+    ToolConfirmationRequired {
+        /// Unique ID for this confirmation request
+        confirmation_id: String,
+        /// Tool name that requires confirmation
+        tool_name: String,
+        /// Tool arguments (JSON string)
+        tool_args: String,
+        /// Human-readable description of what the tool will do
+        description: String,
+        /// Risk level (0-10, higher = more dangerous)
+        risk_level: u8,
+        /// Category of the tool (e.g., "write", "shell", "network")
+        category: String,
+    },
+    /// Tool execution was blocked by permission settings.
+    ///
+    /// This is emitted when a tool call is detected but the session's permission
+    /// level blocks the operation entirely (e.g., Sandbox mode blocking writes).
+    ToolBlocked {
+        /// Tool name that was blocked
+        tool_name: String,
+        /// Reason for blocking
+        reason: String,
+    },
     /// Stream completed successfully with optional token usage
     Done(Option<TokenUsage>),
     /// Stream was cancelled
@@ -140,6 +169,14 @@ async fn forward_attempt_stream(
             }
             StreamChunk::ConfigRequest { .. } => {
                 // Forward config requests without marking as output
+                let _ = tx.send(chunk).await;
+            }
+            StreamChunk::ToolConfirmationRequired { .. } => {
+                // Forward tool confirmation requests without marking as output
+                let _ = tx.send(chunk).await;
+            }
+            StreamChunk::ToolBlocked { .. } => {
+                // Forward tool blocked notifications without marking as output
                 let _ = tx.send(chunk).await;
             }
             StreamChunk::Done(_) => {

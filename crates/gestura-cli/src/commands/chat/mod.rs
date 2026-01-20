@@ -859,7 +859,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 request = request
                     .with_session_llm_config(provider_name, model_name)
                     // CLI currently has no per-session permission UI; default to a conservative label.
-                    .with_permission_level("restricted");
+                    .with_permission_level(gestura_core::pipeline::PermissionLevel::Restricted);
 
                 // Stream response chunks as they arrive (CLI basic mode should feel interactive).
                 println!();
@@ -985,6 +985,32 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 } else {
                                     println!("\n📋 Config query: {}", key);
                                 }
+                            }
+                            StreamChunk::ToolConfirmationRequired {
+                                tool_name,
+                                description,
+                                ..
+                            } => {
+                                println!();
+                                println!(
+                                    "  {} Tool '{}' requires confirmation: {}",
+                                    "⚠️".yellow(),
+                                    tool_name,
+                                    description
+                                );
+                                print!("  ");
+                                let _ = std::io::stdout().flush();
+                            }
+                            StreamChunk::ToolBlocked { tool_name, reason } => {
+                                println!();
+                                println!(
+                                    "  {} Tool '{}' blocked: {}",
+                                    "🚫".red(),
+                                    tool_name,
+                                    reason
+                                );
+                                print!("  ");
+                                let _ = std::io::stdout().flush();
                             }
                             StreamChunk::Cancelled => break,
                             StreamChunk::Error(e) => {

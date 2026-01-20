@@ -114,25 +114,33 @@ pub struct SessionToolSettings {
     pub enabled_tools: std::collections::HashMap<String, bool>,
 }
 
+impl SessionToolSettings {
+    /// Create session tool settings from global config.
+    ///
+    /// New sessions inherit their permission level and enabled tools from the
+    /// global configuration, allowing users to set a default that applies to
+    /// all new sessions.
+    pub fn from_global_config(config: &gestura_core::config::AppConfig) -> Self {
+        use gestura_core::config::GlobalPermissionLevel;
+
+        let permission_level = match config.permissions.default_level {
+            GlobalPermissionLevel::Sandbox => SessionPermissionLevel::Sandbox,
+            GlobalPermissionLevel::Restricted => SessionPermissionLevel::Restricted,
+            GlobalPermissionLevel::Full => SessionPermissionLevel::Full,
+        };
+
+        Self {
+            permission_level,
+            enabled_tools: config.permissions.default_enabled_tools.clone(),
+        }
+    }
+}
+
 impl Default for SessionToolSettings {
     fn default() -> Self {
-        let mut enabled_tools = std::collections::HashMap::new();
-        // Default enabled tools - names must match gestura_core::tools::registry
-        // Registry tools: file, shell, git, code, web, web_search, a2a, permissions, mcp
-        enabled_tools.insert("file".to_string(), true);
-        enabled_tools.insert("shell".to_string(), true);
-        enabled_tools.insert("git".to_string(), true);
-        enabled_tools.insert("code".to_string(), true);
-        enabled_tools.insert("web".to_string(), true);
-        enabled_tools.insert("web_search".to_string(), true);
-        // Advanced tools disabled by default
-        enabled_tools.insert("a2a".to_string(), false);
-        enabled_tools.insert("permissions".to_string(), false);
-        enabled_tools.insert("mcp".to_string(), false);
-        Self {
-            permission_level: SessionPermissionLevel::default(),
-            enabled_tools,
-        }
+        // Try to load from global config, fall back to hardcoded defaults
+        let config = gestura_core::config::AppConfig::load();
+        Self::from_global_config(&config)
     }
 }
 

@@ -267,6 +267,28 @@ fn run_main_loop(
                             };
                             app.set_status(msg);
                         }
+                        StreamChunk::ToolConfirmationRequired {
+                            tool_name,
+                            description,
+                            ..
+                        } => {
+                            // In CLI TUI, show confirmation request as status
+                            stream_state.content.push_str(&format!(
+                                "\n⚠️ Tool '{}' requires confirmation: {}\n",
+                                tool_name, description
+                            ));
+                            app.update_last_message(&stream_state.content);
+                            app.set_status(format!("Confirmation required: {}", tool_name));
+                        }
+                        StreamChunk::ToolBlocked { tool_name, reason } => {
+                            // In CLI TUI, show blocked tool as error
+                            stream_state.content.push_str(&format!(
+                                "\n🚫 Tool '{}' blocked: {}\n",
+                                tool_name, reason
+                            ));
+                            app.update_last_message(&stream_state.content);
+                            app.set_status(format!("Tool blocked: {}", tool_name));
+                        }
                         StreamChunk::Cancelled => {
                             // Keep partial content but mark as cancelled
                             if !stream_state.content.is_empty() {
@@ -452,7 +474,7 @@ fn start_streaming_message(
         .unwrap_or_default();
     request = request
         .with_session_llm_config(provider_name, model_name)
-        .with_permission_level("restricted");
+        .with_permission_level(gestura_core::pipeline::PermissionLevel::Restricted);
 
     // Add conversation history
     request = request.with_history(history);

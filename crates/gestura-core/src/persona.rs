@@ -48,9 +48,13 @@ pub(crate) fn default_system_prompt(meta: &RequestMetadata) -> String {
             llm_info.provider, llm_info.model
         ));
     }
-    if let Some(ref perm) = meta.permission_level {
-        s.push_str(&format!("- Permission level: {}\n", perm));
-    }
+    // Always show permission level since it's no longer optional
+    let perm_str = match meta.permission_level {
+        crate::pipeline::PermissionLevel::Sandbox => "sandbox",
+        crate::pipeline::PermissionLevel::Restricted => "restricted",
+        crate::pipeline::PermissionLevel::Full => "full",
+    };
+    s.push_str(&format!("- Permission level: {}\n", perm_str));
     if let Some(ref workspace) = meta.workspace_dir {
         s.push_str(&format!("- Workspace directory: {}\n", workspace.display()));
     }
