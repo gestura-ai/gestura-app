@@ -698,6 +698,24 @@
             cursor: not-allowed;
         }
 
+        /* API Key Sync Indicator */
+        .sync-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+            font-size: 0.75rem;
+            color: var(--accent);
+            margin-top: 0.35rem;
+            padding: 0.25rem 0.5rem;
+            background: rgba(99, 102, 241, 0.1);
+            border-radius: 4px;
+            width: fit-content;
+        }
+
+        .sync-indicator .sync-icon {
+            font-size: 0.7rem;
+        }
+
         .model-ready-indicator {
             display: inline-flex;
             align-items: center;
@@ -2344,6 +2362,11 @@
 
         async function loadConfig() {
             try {
+                // Reset API key sync flags before loading config
+                if (typeof resetApiKeySyncFlags === 'function') {
+                    resetApiKeySyncFlags();
+                }
+
                 // Try to load config from backend if Tauri is available
                 let backendConfig = null;
                 if (isTauriAvailable()) {
@@ -3190,6 +3213,80 @@
         document.getElementById('openaiLlmApiKey')?.addEventListener('input', debounce(refreshOpenAIModels, 1000));
         document.getElementById('anthropicApiKey')?.addEventListener('input', debounce(refreshAnthropicModels, 1000));
         document.getElementById('grokApiKey')?.addEventListener('input', debouncedGrokRefresh);
+
+        // =====================================================================
+        // API Key Auto-Sync (OpenAI LLM <-> STT)
+        // =====================================================================
+        // Track whether STT key was manually entered or auto-synced
+        let sttKeyManuallyEntered = false;
+        let llmKeyManuallyEntered = false;
+
+        const openaiLlmApiKeyInput = document.getElementById('openaiLlmApiKey');
+        const openaiSttApiKeyInput = document.getElementById('openaiApiKey');
+
+        // Helper to show sync indicator
+        function showSyncIndicator(inputId, message) {
+            const input = document.getElementById(inputId);
+            if (!input) return;
+
+            // Remove existing indicator
+            const existingIndicator = input.parentElement.querySelector('.sync-indicator');
+            if (existingIndicator) existingIndicator.remove();
+
+            // Add new indicator
+            const indicator = document.createElement('div');
+            indicator.className = 'sync-indicator';
+            indicator.innerHTML = `<span class="sync-icon">🔗</span> ${message}`;
+            input.parentElement.appendChild(indicator);
+        }
+
+        function removeSyncIndicator(inputId) {
+            const input = document.getElementById(inputId);
+            if (!input) return;
+            const indicator = input.parentElement.querySelector('.sync-indicator');
+            if (indicator) indicator.remove();
+        }
+
+        // Sync LLM key to STT when LLM key changes
+        openaiLlmApiKeyInput?.addEventListener('input', (e) => {
+            llmKeyManuallyEntered = true;
+            const llmKey = e.target.value;
+
+            // Only auto-populate STT if it's empty or was auto-synced (not manually entered)
+            if (openaiSttApiKeyInput && !sttKeyManuallyEntered) {
+                if (llmKey && (openaiSttApiKeyInput.value === '' || !sttKeyManuallyEntered)) {
+                    openaiSttApiKeyInput.value = llmKey;
+                    showSyncIndicator('openaiApiKey', 'Synced from LLM key');
+                    // Trigger STT model refresh
+                    loadOpenAISttModels();
+                }
+            }
+        });
+
+        // Sync STT key to LLM when STT key changes
+        openaiSttApiKeyInput?.addEventListener('input', (e) => {
+            sttKeyManuallyEntered = true;
+            removeSyncIndicator('openaiApiKey'); // User is manually editing
+            const sttKey = e.target.value;
+
+            // Only auto-populate LLM if it's empty or was auto-synced (not manually entered)
+            if (openaiLlmApiKeyInput && !llmKeyManuallyEntered) {
+                if (sttKey && (openaiLlmApiKeyInput.value === '' || !llmKeyManuallyEntered)) {
+                    openaiLlmApiKeyInput.value = sttKey;
+                    showSyncIndicator('openaiLlmApiKey', 'Synced from STT key');
+                    // Trigger LLM model refresh
+                    refreshOpenAIModels();
+                }
+            }
+        });
+
+        // Reset manual flags when loading config (so auto-sync works on fresh load)
+        function resetApiKeySyncFlags() {
+            sttKeyManuallyEntered = false;
+            llmKeyManuallyEntered = false;
+            removeSyncIndicator('openaiApiKey');
+            removeSyncIndicator('openaiLlmApiKey');
+        }
 
         // =====================================================================
         // OpenAI STT Model Management

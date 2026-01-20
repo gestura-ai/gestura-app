@@ -2,7 +2,7 @@
 
 **Started:** 2026-01-19
 **Phase 1 Status:** ✅ All Tasks Completed (Tasks 1-21)
-**Phase 2 Status:** 🔄 In Progress (Tasks 22-28) - 4 of 7 complete
+**Phase 2 Status:** 🔄 In Progress (Tasks 22-28) - 5 of 7 complete
 
 ---
 
@@ -457,24 +457,26 @@ Wire up the 9 voice command methods in speech.rs for hands-free control.
 
 ### Task 26: Auto-populate API Keys Across Provider Services
 **Priority:** MEDIUM
-**Status:** ⬜ NOT STARTED
+**Status:** ✅ COMPLETE
 
 **Problem:** Users must manually enter the same API key for both STT and LLM services from the same provider (e.g., OpenAI API key must be entered twice - once for Whisper STT and once for GPT models).
 
-**Requirements:**
-- [ ] When a provider supports both STT and LLM use the same API token, automatically populate the STT API key field when the LLM API key is entered
-- [ ] Implement for OpenAI: Whisper STT + GPT LLM use the same API key
-- [ ] Allow manual override if user wants different keys for some reason
-- [ ] Add visual indicator showing key is synced from another field
-- [ ] Consider other providers as applicable (future: Google, Azure)
+**Solution Implemented:**
+- [x] Bi-directional sync between OpenAI LLM and STT API key fields
+- [x] When LLM key is entered, auto-populates STT key (if not manually entered)
+- [x] When STT key is entered, auto-populates LLM key (if not manually entered)
+- [x] Visual "🔗 Synced from LLM/STT key" indicator shows when key is auto-synced
+- [x] Manual override supported - once user edits a field, it's marked as manually entered
+- [x] Sync flags reset when config is reloaded
+- [x] Auto-triggers model refresh when key is synced
 
-**Implementation approach:**
-- Add `input` event listener on LLM API key field
-- Check if corresponding STT field is empty or was auto-populated
-- Copy value if appropriate
-- Track whether value was auto-populated vs manually entered
+**Implementation details:**
+- Track `sttKeyManuallyEntered` and `llmKeyManuallyEntered` flags
+- Show/hide sync indicator with styled badge
+- Reset flags on config load for fresh sync behavior
+- CSS styling for sync indicator with accent color
 
-**Files to modify:**
+**Files modified:**
 - `crates/gestura-gui/frontend/public/config.html`
 
 ---
