@@ -751,7 +751,7 @@ New feature requests and bug fixes beyond Phase 2.
 
 ### Task 35: Implement Agent Loop Architecture Recommendations
 **Priority:** HIGH
-**Status:** 🔄 IN PROGRESS (4/6 sub-tasks complete)
+**Status:** ✅ COMPLETE (6/6 sub-tasks complete)
 
 **Problem:** Task 32 research identified key architectural patterns from OpenAI Codex, Block Goose, and Kilo Code, but these haven't been implemented yet.
 
@@ -760,11 +760,25 @@ Break down research findings into actionable implementation tasks for both GUI a
 
 **Sub-tasks:**
 
-#### 35.1 MCP Integration Enhancement
-- [ ] Review current MCP implementation in `crates/gestura-core/`
-- [ ] Implement unified MCP tool discovery and registration
-- [ ] Add MCP capability negotiation for dynamic tool availability
-- [ ] Create MCP tool metadata caching for performance
+#### 35.1 MCP Integration Enhancement ✅ COMPLETE
+- [x] Review current MCP implementation in `crates/gestura-core/`
+- [x] Implement unified MCP tool discovery and registration
+- [x] Add MCP capability negotiation for dynamic tool availability
+- [x] Create MCP tool metadata caching for performance
+
+**Implementation Details:**
+- Created `crates/gestura-core/src/mcp/discovery.rs` module with:
+  - `McpServerConfig` - server connection configuration (name, URI, timeout, auto-reconnect)
+  - `McpDiscoveryManager` - unified tool discovery from external MCP servers
+  - `CachedTool` - cached tool with derived `ToolMetadata` for permission checking
+  - `ServerState` - connection state tracking (Disconnected/Connecting/Connected/Failed)
+  - `ServerInfo` - server info with capabilities and tool count
+- Tool category inference from MCP tool definitions (name/description analysis)
+- Risk level calculation based on annotations (destructive_hint, idempotent_hint)
+- Cache TTL and expiration management (default 5 minutes)
+- Integration with `ToolInspectionManager` for permission checking
+- 4 unit tests for discovery functionality
+- All 159 tests pass in gestura-core
 
 #### 35.2 Tool Inspection and Permission System ✅ COMPLETE
 - [x] Implement `ToolInspectionManager` pattern (from Goose architecture)
@@ -1039,6 +1053,49 @@ Added a new `StreamChunk::ToolCallResult` variant to the streaming pipeline that
 **Verification:**
 - ✅ `cargo fmt` - passed
 - ✅ `cargo clippy --workspace --all-targets --all-features -- -D warnings` - passed
+
+---
+
+### Task 39: Implement Streaming API Improvements
+**Priority:** HIGH
+**Status:** 🔄 IN PROGRESS
+
+**Problem:** Current streaming implementation has several issues:
+1. Streaming responses sometimes stall or fail silently
+2. No proper backpressure handling for slow consumers
+3. Missing reconnection logic for dropped connections
+4. Inconsistent error handling across streaming APIs
+
+**Requirements:**
+Improve streaming reliability and add proper error handling:
+
+**Sub-tasks:**
+
+#### 39.1 Streaming Reliability Improvements
+- [ ] Add heartbeat/keepalive mechanism for long-running streams
+- [ ] Implement proper backpressure handling for slow consumers
+- [ ] Add stream timeout detection and recovery
+- [ ] Create stream health monitoring
+
+#### 39.2 Reconnection Logic
+- [ ] Implement automatic reconnection for dropped connections
+- [ ] Add exponential backoff for reconnection attempts
+- [ ] Preserve stream state for seamless recovery
+- [ ] Add user notification for reconnection events
+
+#### 39.3 Error Handling Improvements
+- [ ] Standardize error types across streaming APIs
+- [ ] Add proper error propagation to frontend
+- [ ] Implement graceful degradation on stream failures
+- [ ] Add detailed error logging for debugging
+
+#### 39.4 Frontend Integration
+- [ ] Update GUI to handle stream reconnection events
+- [ ] Add visual indicators for stream health
+- [ ] Implement proper cleanup on stream termination
+- [ ] Add retry UI for failed streams
+
+**Reference:** `docs/AGENT_ARCHITECTURE_RESEARCH.md` - Event Streaming section
 
 ---
 
