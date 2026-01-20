@@ -51,6 +51,7 @@ pub mod retry;
 pub mod session_manager;
 pub mod session_workspace;
 pub mod speech;
+pub mod stream_health;
 pub mod streaming;
 pub mod telemetry;
 pub mod token_tracker;
@@ -112,6 +113,10 @@ pub use session_workspace::{
 pub use speech::{
     LlmResponse, SpeechConfig, SpeechProcessor, TranscriptionResult, get_speech_processor,
     is_speech_recording, update_speech_config,
+};
+pub use stream_health::{
+    StreamHealthConfig, StreamHealthEvent, StreamHealthHandle, StreamHealthMonitor,
+    StreamHealthStatus,
 };
 pub use streaming::{CancellationToken, StreamChunk, start_streaming};
 pub use telemetry::{
