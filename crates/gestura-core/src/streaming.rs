@@ -208,21 +208,33 @@ fn create_streaming_client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
-/// Helper to parse <think> tags from chunks
+/// Helper to parse <think> tags from chunks.
+/// Handles tags that may be split across multiple chunks by buffering partial matches.
 struct ThinkingParser {
     in_think_block: bool,
+    /// Buffer for potential partial tag at end of chunk
+    buffer: String,
 }
 
 impl ThinkingParser {
     fn new() -> Self {
         Self {
             in_think_block: false,
+            buffer: String::new(),
         }
     }
 
     fn process(&mut self, chunk: &str) -> Vec<StreamChunk> {
         let mut chunks = Vec::new();
-        let mut remaining = chunk;
+
+        // Prepend any buffered content from previous chunk
+        let input = if self.buffer.is_empty() {
+            chunk.to_string()
+        } else {
+            std::mem::take(&mut self.buffer) + chunk
+        };
+
+        let mut remaining = input.as_str();
 
         while !remaining.is_empty() {
             if self.in_think_block {
@@ -234,7 +246,17 @@ impl ThinkingParser {
                     self.in_think_block = false;
                     remaining = &remaining[end_idx + 8..];
                 } else {
-                    chunks.push(StreamChunk::Thinking(remaining.to_string()));
+                    // Check for partial </think> at end
+                    let partial = Self::find_partial_end_tag(remaining);
+                    if partial > 0 {
+                        let safe_len = remaining.len() - partial;
+                        if safe_len > 0 {
+                            chunks.push(StreamChunk::Thinking(remaining[..safe_len].to_string()));
+                        }
+                        self.buffer = remaining[safe_len..].to_string();
+                    } else {
+                        chunks.push(StreamChunk::Thinking(remaining.to_string()));
+                    }
                     break;
                 }
             } else if let Some(start_idx) = remaining.find("<think>") {
@@ -245,11 +267,43 @@ impl ThinkingParser {
                 self.in_think_block = true;
                 remaining = &remaining[start_idx + 7..];
             } else {
-                chunks.push(StreamChunk::Text(remaining.to_string()));
+                // Check for partial <think> at end
+                let partial = Self::find_partial_start_tag(remaining);
+                if partial > 0 {
+                    let safe_len = remaining.len() - partial;
+                    if safe_len > 0 {
+                        chunks.push(StreamChunk::Text(remaining[..safe_len].to_string()));
+                    }
+                    self.buffer = remaining[safe_len..].to_string();
+                } else {
+                    chunks.push(StreamChunk::Text(remaining.to_string()));
+                }
                 break;
             }
         }
         chunks
+    }
+
+    /// Find length of partial "<think>" at end of string
+    fn find_partial_start_tag(s: &str) -> usize {
+        const TAG: &str = "<think>";
+        for len in (1..TAG.len()).rev() {
+            if s.ends_with(&TAG[..len]) {
+                return len;
+            }
+        }
+        0
+    }
+
+    /// Find length of partial "</think>" at end of string
+    fn find_partial_end_tag(s: &str) -> usize {
+        const TAG: &str = "</think>";
+        for len in (1..TAG.len()).rev() {
+            if s.ends_with(&TAG[..len]) {
+                return len;
+            }
+        }
+        0
     }
 }
 
@@ -961,6 +1015,67 @@ mod tests {
         let (content, thinking) = split_think_blocks(input);
         assert_eq!(content, "answer");
         assert_eq!(thinking.as_deref(), Some("plan"));
+    }
+
+    #[test]
+    fn thinking_parser_handles_complete_tags() {
+        let mut parser = ThinkingParser::new();
+        let chunks = parser.process("<think>thinking content</think>response text");
+
+        assert_eq!(chunks.len(), 2);
+        assert!(matches!(&chunks[0], StreamChunk::Thinking(t) if t == "thinking content"));
+        assert!(matches!(&chunks[1], StreamChunk::Text(t) if t == "response text"));
+    }
+
+    #[test]
+    fn thinking_parser_handles_split_start_tag() {
+        let mut parser = ThinkingParser::new();
+
+        // First chunk ends with partial "<think>"
+        let chunks1 = parser.process("Hello <thi");
+        assert_eq!(chunks1.len(), 1);
+        assert!(matches!(&chunks1[0], StreamChunk::Text(t) if t == "Hello "));
+
+        // Second chunk completes the tag
+        let chunks2 = parser.process("nk>thinking</think>done");
+        assert_eq!(chunks2.len(), 2);
+        assert!(matches!(&chunks2[0], StreamChunk::Thinking(t) if t == "thinking"));
+        assert!(matches!(&chunks2[1], StreamChunk::Text(t) if t == "done"));
+    }
+
+    #[test]
+    fn thinking_parser_handles_split_end_tag() {
+        let mut parser = ThinkingParser::new();
+
+        // First chunk has start tag and partial end tag
+        let chunks1 = parser.process("<think>thinking content</th");
+        assert_eq!(chunks1.len(), 1);
+        assert!(matches!(&chunks1[0], StreamChunk::Thinking(t) if t == "thinking content"));
+
+        // Second chunk completes the end tag
+        let chunks2 = parser.process("ink>response");
+        assert_eq!(chunks2.len(), 1);
+        assert!(matches!(&chunks2[0], StreamChunk::Text(t) if t == "response"));
+    }
+
+    #[test]
+    fn thinking_parser_handles_text_before_think() {
+        let mut parser = ThinkingParser::new();
+        let chunks = parser.process("prefix<think>thought</think>suffix");
+
+        assert_eq!(chunks.len(), 3);
+        assert!(matches!(&chunks[0], StreamChunk::Text(t) if t == "prefix"));
+        assert!(matches!(&chunks[1], StreamChunk::Thinking(t) if t == "thought"));
+        assert!(matches!(&chunks[2], StreamChunk::Text(t) if t == "suffix"));
+    }
+
+    #[test]
+    fn thinking_parser_handles_no_think_tags() {
+        let mut parser = ThinkingParser::new();
+        let chunks = parser.process("just regular text");
+
+        assert_eq!(chunks.len(), 1);
+        assert!(matches!(&chunks[0], StreamChunk::Text(t) if t == "just regular text"));
     }
 
     #[test]

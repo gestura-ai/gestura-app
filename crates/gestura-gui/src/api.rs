@@ -1567,12 +1567,14 @@ pub async fn process_chat_message_streaming(
                 idle_timer.as_mut().reset(Instant::now() + idle_timeout);
                 match chunk {
             StreamChunk::Thinking(text) => {
+                tracing::debug!("[Stream] Thinking chunk: {}", &text.chars().take(100).collect::<String>());
                 assistant_thinking
                     .get_or_insert_with(String::new)
                     .push_str(&text);
                 emit("chat-stream-thinking", serde_json::json!(text));
             }
             StreamChunk::Text(text) => {
+                tracing::debug!("[Stream] Text chunk: {}", &text.chars().take(100).collect::<String>());
                 assistant_text.push_str(&text);
                 emit("chat-stream-chunk", serde_json::json!(text));
             }

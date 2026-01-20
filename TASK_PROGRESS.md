@@ -1307,6 +1307,34 @@ All deferred/future work items have been implemented:
 
 ---
 
+## Phase 4: New Issues and Improvements
+
+### Task 42: Fix Thinking vs Response Separation in Chat UI
+**Priority:** HIGH
+**Status:** 🔄 IN PROGRESS
+
+**Problem:** Agent thinking/reasoning content isn't properly separated from the response text in the chat interface. The thinking should appear in a collapsible component while the actual response should be in a separate visible section.
+
+**Symptoms:**
+- Thinking content may appear as regular response text instead of collapsible block
+- Response content may be missing when there's no thinking
+- The `<think>` tag parsing may not be working correctly for some providers
+
+**Investigation Areas:**
+- [ ] Check if `<think>` tags are being properly emitted by the LLM provider
+- [ ] Verify `ThinkingParser` is correctly parsing thinking blocks
+- [ ] Check if `chat-stream-thinking` events are being emitted
+- [ ] Verify frontend correctly creates separate thinking block and response sections
+- [ ] Check if thinking block is properly collapsed when response starts
+
+**Sub-tasks:**
+- [ ] 42.1 Diagnose why thinking content not appearing in collapsible
+- [ ] 42.2 Ensure response always appears in separate section from thinking
+- [ ] 42.3 Add debug logging to track thinking/response flow
+- [ ] 42.4 Test with different providers (Anthropic, OpenAI, Ollama)
+
+---
+
 ## Phase 1 Completed (Tasks 1-21) 🎉
 
 All 21 Phase 1 tasks have been implemented and verified:

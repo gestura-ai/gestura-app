@@ -1779,12 +1779,14 @@
 
             // 1. Thinking Stream
             await event.listen('chat-stream-thinking', (e) => {
+                console.log('[DEBUG] chat-stream-thinking received:', e.payload?.substring(0, 100));
                 touchStreamActivity();
                 ensureStreamingMessage();
                 const contentDiv = streamingMessageElement.querySelector('.message-content');
 
                 // Create Thinking Block if needed
                 if (!currentThinkingDiv) {
+                    console.log('[DEBUG] Creating new thinking block');
                     currentThinkingDiv = document.createElement('div');
                     currentThinkingDiv.className = 'thinking-block';
                     currentThinkingDiv.innerHTML = `
@@ -1804,6 +1806,7 @@
 
             // 2. Text Stream
             await event.listen('chat-stream-chunk', (e) => {
+                console.log('[DEBUG] chat-stream-chunk received:', e.payload?.substring(0, 100));
                 touchStreamActivity();
                 ensureStreamingMessage();
 
