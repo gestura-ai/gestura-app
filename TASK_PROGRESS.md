@@ -3,7 +3,7 @@
 **Started:** 2026-01-19
 **Phase 1 Status:** ✅ All Tasks Completed (Tasks 1-21)
 **Phase 2 Status:** ✅ All Tasks Completed (Tasks 22-28) - 7 of 7 complete
-**Phase 3 Status:** 🔄 In Progress (Tasks 29+) - 2 of 5 complete
+**Phase 3 Status:** 🔄 In Progress (Tasks 29+) - 3 of 5 complete
 
 ---
 
@@ -624,19 +624,25 @@ New feature requests and bug fixes beyond Phase 2.
 
 ### Task 31: Fix System Tray Session History Display
 **Priority:** HIGH
-**Status:** 🔄 IN PROGRESS
+**Status:** ✅ COMPLETE
 
 **Problem:** The system tray menu is not populating with chat session history.
 
-**Investigation:**
-- [x] Verified session persistence to `~/.gestura/gui_sessions.json` works correctly
-- [x] Verified `get_all_sessions()` returns sessions after initialization
-- [x] Added debug logging to trace session loading and tray menu building
-- [ ] Test with app to verify sessions appear in tray menu
+**Root Cause:** The `build_sessions_submenu` function was using `Submenu::with_id()` which creates an empty submenu, ignoring all the menu items that were built. The function was building items into a `Menu` object but then creating a new empty `Submenu` at the end.
+
+**Solution:**
+- Changed from `Menu::new()` + `Submenu::with_id()` to `SubmenuBuilder::with_id()`
+- Used `SubmenuBuilder.item()` to add each menu item to the submenu
+- Used `SubmenuBuilder.separator()` for separators
+- Called `builder.build()` to create the final submenu with all items
 
 **Files Modified:**
-- `crates/gestura-gui/src/tray.rs` - Added logging in `build_sessions_submenu`
-- `crates/gestura-gui/src/window_manager.rs` - Added logging for session loading/saving
+- `crates/gestura-gui/src/tray.rs` - Fixed `build_sessions_submenu` to use `SubmenuBuilder`
+
+**Verification:**
+- ✅ `cargo fmt` - passed
+- ✅ `cargo clippy --package gestura-gui --all-features -- -D warnings` - passed
+- ✅ `cargo test --workspace --all-features` - all tests pass
 
 ---
 

@@ -250,7 +250,8 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 
 /// Build sessions submenu with active and closed sessions
 fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>> {
-    let sessions_menu = Menu::new(app)?;
+    use tauri::menu::SubmenuBuilder;
+
     let all_sessions = get_all_sessions();
 
     tracing::info!(
@@ -267,6 +268,9 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
         closed_sessions.len()
     );
 
+    // Use SubmenuBuilder to properly create submenu with items
+    let mut builder = SubmenuBuilder::with_id(app, "sessions", "📋 Chat Sessions");
+
     if active_sessions.is_empty() && closed_sessions.is_empty() {
         let no_sessions = MenuItem::with_id(
             app,
@@ -275,7 +279,7 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
             false,
             Option::<&str>::None,
         )?;
-        sessions_menu.append(&no_sessions)?;
+        builder = builder.item(&no_sessions);
     } else {
         // Add active sessions
         if !active_sessions.is_empty() {
@@ -286,7 +290,7 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
                 false,
                 Option::<&str>::None,
             )?;
-            sessions_menu.append(&active_header)?;
+            builder = builder.item(&active_header);
 
             // Add individual active sessions (limit to 10)
             for session in active_sessions.iter().take(10) {
@@ -302,15 +306,14 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
                     true,
                     Option::<&str>::None,
                 )?;
-                sessions_menu.append(&session_item)?;
+                builder = builder.item(&session_item);
             }
         }
 
         // Add closed sessions
         if !closed_sessions.is_empty() {
             if !active_sessions.is_empty() {
-                let separator = PredefinedMenuItem::separator(app)?;
-                sessions_menu.append(&separator)?;
+                builder = builder.separator();
             }
 
             let closed_header = MenuItem::with_id(
@@ -320,7 +323,7 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
                 false,
                 Option::<&str>::None,
             )?;
-            sessions_menu.append(&closed_header)?;
+            builder = builder.item(&closed_header);
 
             // Add individual closed sessions (limit to 5)
             for session in closed_sessions.iter().take(5) {
@@ -336,13 +339,12 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
                     true,
                     Option::<&str>::None,
                 )?;
-                sessions_menu.append(&session_item)?;
+                builder = builder.item(&session_item);
             }
 
             // Add "Restore All" option if more than one closed session
             if closed_sessions.len() > 1 {
-                let separator = PredefinedMenuItem::separator(app)?;
-                sessions_menu.append(&separator)?;
+                builder = builder.separator();
 
                 let restore_all = MenuItem::with_id(
                     app,
@@ -351,12 +353,12 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
                     true,
                     Option::<&str>::None,
                 )?;
-                sessions_menu.append(&restore_all)?;
+                builder = builder.item(&restore_all);
             }
         }
     }
 
-    Submenu::with_id(app, "sessions", "📋 Chat Sessions", true)
+    builder.build()
 }
 
 /// Helper to open DevTools for a specific window label
