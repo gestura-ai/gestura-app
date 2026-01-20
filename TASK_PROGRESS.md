@@ -3,6 +3,7 @@
 **Started:** 2026-01-19
 **Phase 1 Status:** ✅ All Tasks Completed (Tasks 1-21)
 **Phase 2 Status:** ✅ All Tasks Completed (Tasks 22-28) - 7 of 7 complete
+**Phase 3 Status:** 🔄 In Progress (Tasks 29+) - 0 of 1 complete
 
 ---
 
@@ -557,6 +558,34 @@ Wire up the 9 voice command methods in speech.rs for hands-free control.
 
 **Files modified:**
 - `crates/gestura-gui/frontend/public/chat.html` (CSS, HTML, JavaScript)
+
+---
+
+### Task 29: Fix System Tray Session History Population and Persistence
+**Priority:** HIGH
+**Status:** ✅ COMPLETE
+
+**Problem:** The system tray session history menu never populates with sessions, and session history does not persist across app restarts.
+
+**Solution Implemented:**
+- [x] Added `PersistedSessions` struct for serializing session data with version field
+- [x] Added `sessions_file_path()` returning `~/.gestura/gui_sessions.json`
+- [x] Added `load_persisted_sessions()` to restore sessions on app startup
+- [x] Added `save_sessions_to_disk()` to persist sessions after changes
+- [x] Sessions are saved on: create, window close, restore, assistant message
+- [x] Emit `sessions-changed` event after loading to update tray menu
+- [x] Loaded sessions are marked as closed (windows don't survive restart)
+
+**Files Modified:**
+- `crates/gestura-gui/src/window_manager.rs` - Added persistence layer
+
+**Commit:** `a84bdee` - fix: Add session persistence for system tray history
+
+---
+
+## Phase 3: Tasks 29+ (Complete)
+
+New feature requests and bug fixes beyond Phase 2.
 
 ---
 
