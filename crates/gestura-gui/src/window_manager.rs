@@ -580,34 +580,44 @@ impl WindowManager {
         Ok(())
     }
 
-    /// Restore a closed chat session
+    /// Restore a closed chat session or focus an already-open session
     pub fn restore_session(&self, session_id: &str) -> tauri::Result<()> {
         let session = {
             let sessions = self.sessions.lock().unwrap();
             sessions.get(session_id).cloned()
         };
 
-        if let Some(mut session) = session
-            && !session.is_open
-        {
-            let window_label = format!("chat-{}", session_id);
-            self.create_chat_window(session_id, &window_label)?;
+        if let Some(mut session) = session {
+            if session.is_open {
+                // Session is already open - focus its window
+                if let Some(ref window_label) = session.window_label
+                    && let Some(window) = self.app.get_webview_window(window_label)
+                {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                    tracing::info!("Focused existing session window: {}", session_id);
+                }
+            } else {
+                // Session is closed - restore it
+                let window_label = format!("chat-{}", session_id);
+                self.create_chat_window(session_id, &window_label)?;
 
-            // Update session
-            session.is_open = true;
-            session.window_label = Some(window_label);
-            session.last_active = chrono::Utc::now();
+                // Update session
+                session.is_open = true;
+                session.window_label = Some(window_label);
+                session.last_active = chrono::Utc::now();
 
-            let mut sessions = self.sessions.lock().unwrap();
-            sessions.insert(session_id.to_string(), session);
-            drop(sessions);
+                let mut sessions = self.sessions.lock().unwrap();
+                sessions.insert(session_id.to_string(), session);
+                drop(sessions);
 
-            // Persist the restored session state
-            self.save_sessions_to_disk();
+                // Persist the restored session state
+                self.save_sessions_to_disk();
 
-            // Emit event to notify tray that sessions changed
-            let _ = self.app.emit("sessions-changed", ());
-            tracing::info!("Restored session: {}", session_id);
+                // Emit event to notify tray that sessions changed
+                let _ = self.app.emit("sessions-changed", ());
+                tracing::info!("Restored session: {}", session_id);
+            }
         }
 
         Ok(())

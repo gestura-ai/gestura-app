@@ -1,11 +1,45 @@
 //! System tray utilities for Gestura
 use crate::window_manager::{self, get_all_sessions};
+use chrono::{DateTime, Local, Timelike, Utc};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Listener, Manager};
+
+/// Format a timestamp in minimalist style: "Jan 20 @ 9am" or "9:30am" for today
+fn format_minimalist_timestamp(dt: &DateTime<Utc>) -> String {
+    let local: DateTime<Local> = dt.with_timezone(&Local);
+    let now = Local::now();
+
+    // Format hour in 12-hour format with am/pm
+    let hour = local.hour();
+    let (hour12, ampm) = if hour == 0 {
+        (12, "am")
+    } else if hour < 12 {
+        (hour, "am")
+    } else if hour == 12 {
+        (12, "pm")
+    } else {
+        (hour - 12, "pm")
+    };
+
+    let minute = local.minute();
+    let time_str = if minute == 0 {
+        format!("{}{}", hour12, ampm)
+    } else {
+        format!("{}:{:02}{}", hour12, minute, ampm)
+    };
+
+    // If same day, just show time
+    if local.date_naive() == now.date_naive() {
+        time_str
+    } else {
+        // Show "Jan 20 @ 9am" format
+        format!("{} @ {}", local.format("%b %-d"), time_str)
+    }
+}
 
 // Global listening state and tray management
 lazy_static::lazy_static! {
@@ -297,7 +331,7 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
                 let label = format!(
                     "💬 {} ({})",
                     session.title,
-                    session.last_active.format("%H:%M")
+                    format_minimalist_timestamp(&session.last_active)
                 );
                 let session_item = MenuItem::with_id(
                     app,
@@ -330,7 +364,7 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
                 let label = format!(
                     "📁 {} ({})",
                     session.title,
-                    session.last_active.format("%b %d")
+                    format_minimalist_timestamp(&session.last_active)
                 );
                 let session_item = MenuItem::with_id(
                     app,
