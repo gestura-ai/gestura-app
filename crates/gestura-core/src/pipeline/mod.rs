@@ -259,6 +259,21 @@ impl AgentPipeline {
 
         let _ = tx.send(StreamChunk::ToolCallEnd).await;
 
+        // Emit structured tool result for frontend display
+        let (success, output) = match &result {
+            ToolResult::Success(out) => (true, out.trim_end().to_string()),
+            ToolResult::Error(e) => (false, e.clone()),
+            ToolResult::Skipped(msg) => (false, format!("Skipped: {}", msg)),
+        };
+        let _ = tx
+            .send(StreamChunk::ToolCallResult {
+                name: tool_name.clone(),
+                success,
+                output: output.clone(),
+                duration_ms,
+            })
+            .await;
+
         let user_text = match &result {
             ToolResult::Success(out) => {
                 let out = out.trim_end();
@@ -954,6 +969,7 @@ impl AgentPipeline {
                                 workspace,
                                 &mut tool_calls_in_iteration,
                                 &mut response,
+                                &tx,
                             )
                             .await;
                         }
@@ -979,9 +995,14 @@ impl AgentPipeline {
                                 workspace,
                                 &mut tool_calls_in_iteration,
                                 &mut response,
+                                &tx,
                             )
                             .await;
                         }
+                        let _ = tx.send(chunk).await;
+                    }
+                    StreamChunk::ToolCallResult { .. } => {
+                        // Forward tool result to frontend (already emitted by finalize_pending_tool_call)
                         let _ = tx.send(chunk).await;
                     }
                     StreamChunk::Done(usage) => {
@@ -994,6 +1015,7 @@ impl AgentPipeline {
                                 workspace,
                                 &mut tool_calls_in_iteration,
                                 &mut response,
+                                &tx,
                             )
                             .await;
                         }
@@ -1025,6 +1047,7 @@ impl AgentPipeline {
                     workspace,
                     &mut tool_calls_in_iteration,
                     &mut response,
+                    &tx,
                 )
                 .await;
             }
@@ -1164,12 +1187,28 @@ impl AgentPipeline {
         workspace: Option<&SessionWorkspace>,
         tool_calls_in_iteration: &mut Vec<ToolCallRecord>,
         response: &mut AgentResponse,
+        tx: &mpsc::Sender<StreamChunk>,
     ) {
         // Execute the tool with workspace sandboxing
         let result = self
             .execute_tool(&pending.name, &pending.arguments, workspace)
             .await;
         let duration_ms = pending.start_time.elapsed().as_millis() as u64;
+
+        // Emit structured tool result for frontend display
+        let (success, output) = match &result {
+            ToolResult::Success(out) => (true, out.trim_end().to_string()),
+            ToolResult::Error(e) => (false, e.clone()),
+            ToolResult::Skipped(msg) => (false, format!("Skipped: {}", msg)),
+        };
+        let _ = tx
+            .send(StreamChunk::ToolCallResult {
+                name: pending.name.clone(),
+                success,
+                output,
+                duration_ms,
+            })
+            .await;
 
         let record = ToolCallRecord {
             id: pending.id,

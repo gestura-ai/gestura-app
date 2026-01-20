@@ -183,7 +183,32 @@ fn run_main_loop(
                             app.update_last_message(&stream_state.content);
                         }
                         StreamChunk::ToolCallEnd => {
-                            stream_state.content.push_str("  ✅ Tool call complete\n");
+                            // Tool specification ended, waiting for result
+                        }
+                        StreamChunk::ToolCallResult {
+                            name,
+                            success,
+                            output,
+                            duration_ms,
+                        } => {
+                            if success {
+                                let preview = if output.len() > 100 {
+                                    format!("{}...", &output[..100])
+                                } else if output.is_empty() {
+                                    "(completed)".to_string()
+                                } else {
+                                    output.clone()
+                                };
+                                stream_state.content.push_str(&format!(
+                                    "  ✅ {} ({}ms): {}\n",
+                                    name, duration_ms, preview
+                                ));
+                            } else {
+                                stream_state.content.push_str(&format!(
+                                    "  ❌ {} failed ({}ms): {}\n",
+                                    name, duration_ms, output
+                                ));
+                            }
                             app.update_last_message(&stream_state.content);
                         }
                         StreamChunk::Done(usage) => {

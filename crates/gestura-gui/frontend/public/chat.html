@@ -541,11 +541,28 @@
             opacity: 0.9;
         }
 
+        .tool-call.success {
+            animation: none;
+            border-color: var(--success);
+            background: rgba(52, 199, 89, 0.08);
+        }
+
+        .tool-call.error {
+            animation: none;
+            border-color: var(--error);
+            background: rgba(255, 59, 48, 0.08);
+        }
+
+        .tool-call.error .tool-icon {
+            fill: var(--error);
+        }
+
         .tool-call-body {
             display: flex;
             flex-direction: column;
             gap: 6px;
             min-width: 0;
+            flex: 1;
         }
 
         .tool-args {
@@ -559,6 +576,36 @@
             overflow-x: auto;
             max-width: 100%;
             white-space: pre;
+        }
+
+        .tool-result {
+            margin-top: 8px;
+            padding: 8px 10px;
+            border-radius: 8px;
+            font-size: 12px;
+            line-height: 1.4;
+            max-height: 200px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .tool-result.success {
+            background: rgba(52, 199, 89, 0.1);
+            border: 1px solid rgba(52, 199, 89, 0.3);
+            color: var(--text-primary);
+        }
+
+        .tool-result.error {
+            background: rgba(255, 59, 48, 0.1);
+            border: 1px solid rgba(255, 59, 48, 0.3);
+            color: var(--error);
+        }
+
+        .tool-duration {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 4px;
         }
 
         @keyframes pulse-border {
@@ -1593,11 +1640,67 @@
 
             await event.listen('chat-stream-tool-end', () => {
                 touchStreamActivity();
+                // Don't clear currentToolCard yet - wait for tool-result to update it
+                // Just mark it as "executing" state
                 if (currentToolCard) {
-                    currentToolCard.classList.add('done');
+                    currentToolCard.classList.add('executing');
                 }
+            });
+
+            // 3b. Tool Result Event - shows success/error status and output
+            await event.listen('chat-stream-tool-result', (e) => {
+                touchStreamActivity();
+                const payload = e?.payload || {};
+                const { name, success, output, duration_ms } = payload;
+
+                // Find the tool card to update (currentToolCard or last one in the message)
+                let targetCard = currentToolCard;
+                if (!targetCard && streamingMessageElement) {
+                    const cards = streamingMessageElement.querySelectorAll('.tool-call');
+                    if (cards.length > 0) {
+                        targetCard = cards[cards.length - 1];
+                    }
+                }
+
+                if (targetCard) {
+                    // Remove executing state and add success/error
+                    targetCard.classList.remove('executing', 'done');
+                    targetCard.classList.add(success ? 'success' : 'error');
+
+                    // Add result display
+                    const body = targetCard.querySelector('.tool-call-body');
+                    if (body) {
+                        // Remove any existing result
+                        const existingResult = body.querySelector('.tool-result');
+                        if (existingResult) existingResult.remove();
+
+                        // Add result section
+                        const resultDiv = document.createElement('div');
+                        resultDiv.className = `tool-result ${success ? 'success' : 'error'}`;
+
+                        // Truncate long output for display
+                        const maxLen = 500;
+                        let displayOutput = output || (success ? '(completed)' : '(no details)');
+                        if (displayOutput.length > maxLen) {
+                            displayOutput = displayOutput.substring(0, maxLen) + '... (truncated)';
+                        }
+                        resultDiv.textContent = displayOutput;
+                        body.appendChild(resultDiv);
+
+                        // Add duration
+                        if (duration_ms !== undefined) {
+                            const durationDiv = document.createElement('div');
+                            durationDiv.className = 'tool-duration';
+                            durationDiv.textContent = `Completed in ${duration_ms}ms`;
+                            body.appendChild(durationDiv);
+                        }
+                    }
+                }
+
+                // Clear the current tool card reference
                 currentToolCard = null;
                 currentToolArgsEl = null;
+                scrollToBottom();
             });
 
             // 4. Stream Done

@@ -876,11 +876,43 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 let _ = std::io::stdout().flush();
                             }
                             StreamChunk::ToolCallEnd => {
-                                println!();
+                                // Tool call specification ended, execution starting
+                            }
+                            StreamChunk::ToolCallArgs(_) => {}
+                            StreamChunk::ToolCallResult {
+                                name,
+                                success,
+                                output,
+                                duration_ms,
+                            } => {
+                                if success {
+                                    println!(
+                                        "  {} {} ({}ms)",
+                                        "✓".green(),
+                                        name.dimmed(),
+                                        duration_ms
+                                    );
+                                    // Show truncated output for success
+                                    if !output.is_empty() {
+                                        let preview = if output.len() > 100 {
+                                            format!("{}...", &output[..100])
+                                        } else {
+                                            output.clone()
+                                        };
+                                        println!("    {}", preview.dimmed());
+                                    }
+                                } else {
+                                    println!(
+                                        "  {} {} failed ({}ms): {}",
+                                        "✗".red(),
+                                        name,
+                                        duration_ms,
+                                        output.red()
+                                    );
+                                }
                                 print!("  ");
                                 let _ = std::io::stdout().flush();
                             }
-                            StreamChunk::ToolCallArgs(_) => {}
                             StreamChunk::Done(_) => {
                                 saw_done = true;
                                 break;

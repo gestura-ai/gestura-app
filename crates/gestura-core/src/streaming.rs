@@ -33,8 +33,19 @@ pub enum StreamChunk {
     ToolCallStart { id: String, name: String },
     /// Arguments delta for the current tool call
     ToolCallArgs(String),
-    /// End of the current tool call
+    /// End of the current tool call (LLM finished specifying the call)
     ToolCallEnd,
+    /// Result of tool execution with status and output
+    ToolCallResult {
+        /// Tool name
+        name: String,
+        /// Whether the tool succeeded
+        success: bool,
+        /// Output or error message
+        output: String,
+        /// Execution duration in milliseconds
+        duration_ms: u64,
+    },
     /// Stream completed successfully with optional token usage
     Done(Option<TokenUsage>),
     /// Stream was cancelled
@@ -78,7 +89,8 @@ async fn forward_attempt_stream(
             | StreamChunk::Thinking(_)
             | StreamChunk::ToolCallStart { .. }
             | StreamChunk::ToolCallArgs(_)
-            | StreamChunk::ToolCallEnd => {
+            | StreamChunk::ToolCallEnd
+            | StreamChunk::ToolCallResult { .. } => {
                 forwarded_output = true;
                 let _ = tx.send(chunk).await;
             }

@@ -1,6 +1,6 @@
 # gestura.app
 
-An always‑ready, local‑first companion app for the Gestura Haptic Harmony ring. Built in Rust with Tauri 2, it integrates voice (local ASR), MCP agents, NATS MQ, and haptic/gesture tooling with a focus on privacy, performance, and extensibility.
+An always‑ready, local‑first companion app for the Gestura Haptic Harmony ring. Built in Rust, it integrates voice (local ASR), MCP agents, NATS MQ, and haptic/gesture tooling with a focus on privacy, performance, and extensibility.
 
 ## Features (Current)
 

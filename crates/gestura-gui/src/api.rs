@@ -1544,6 +1544,20 @@ pub async fn process_chat_message_streaming(
             StreamChunk::ToolCallEnd => {
                 emit("chat-stream-tool-end", serde_json::json!(null));
             }
+            StreamChunk::ToolCallResult {
+                name,
+                success,
+                output,
+                duration_ms,
+            } => {
+                let payload = serde_json::json!({
+                    "name": name,
+                    "success": success,
+                    "output": output,
+                    "duration_ms": duration_ms
+                });
+                emit("chat-stream-tool-result", payload);
+            }
             StreamChunk::Done(usage) => {
                 saw_terminal = true;
                 // Emit token usage if available
