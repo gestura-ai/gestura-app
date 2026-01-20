@@ -1454,9 +1454,32 @@ All 21 Phase 1 tasks have been implemented and verified:
 
 ### Task 47: Issue 3 — Session-scoped provider/model switching reliability
 **Priority:** HIGH
-**Status:** ⏳ NOT STARTED
+**Status:** ✅ COMPLETE
 
 **Goal:** Switching provider/model via header dropdowns must apply to subsequent messages within the same session (no stale provider/model usage).
+
+**Sub-tasks:**
+- [x] 47.1 Backend: when changing session provider, clear any stale session model override
+- [x] 47.2 Frontend: after provider change + model repopulation, persist the selected model to the session override
+- [x] 47.3 Build consistency: restore `StreamChunk::ConfigRequest` variant expected by GUI/CLI (forwarded through pipeline)
+- [x] 47.4 Verify quality gates + commit
+
+**Notes:**
+- Root cause: provider changes could leave a stale session-scoped model override behind, so subsequent messages could use an invalid provider+model combination (or appear to “not switch”).
+- Fix:
+  - `crates/gestura-gui/src/window_manager.rs`: `set_session_llm_provider` now clears `llm_config.model` when provider changes.
+  - `crates/gestura-gui/frontend/public/chat.html`: after provider change, repopulate the model list then explicitly call `set_session_llm_model` with the currently selected model.
+- Build fix (enables existing GUI/CLI handlers to compile):
+  - `crates/gestura-core/src/streaming.rs`: re-added `StreamChunk::ConfigRequest { operation, key, value, requires_confirmation }`.
+  - `crates/gestura-core/src/pipeline/mod.rs`: forward `ConfigRequest` chunks.
+- Commits:
+  - `c57b78c` (GUI/provider-model session switching reliability)
+  - `ab8b417` (core `StreamChunk::ConfigRequest` restore)
+
+**Verification:**
+- ✅ `cargo fmt`
+- ✅ `cargo clippy --all-targets --all-features -- -D warnings`
+- ✅ `cargo test --workspace --all-features`
 
 ---
 
