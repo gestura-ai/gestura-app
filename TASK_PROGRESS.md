@@ -1119,13 +1119,69 @@ Improve streaming reliability and add proper error handling:
 - `StreamResult<T>` type alias for streaming operations
 - 12 unit tests for error handling functionality
 
-#### 39.4 Frontend Integration
-- [ ] Update GUI to handle stream reconnection events
-- [ ] Add visual indicators for stream health
-- [ ] Implement proper cleanup on stream termination
-- [ ] Add retry UI for failed streams
+#### 39.4 Frontend Integration ✅ COMPLETE
+- [x] Update GUI to handle stream reconnection events
+- [x] Add visual indicators for stream health
+- [x] Implement proper cleanup on stream termination
+- [x] Add retry UI for failed streams
+
+**Implementation:**
+- Added event listeners for `stream-health-status` and `stream-health-warning`
+- Added event listeners for `stream-reconnect-attempt/success/failed`
+- Added visual reconnection notices with animated icons
+- Added CSS styles for `.reconnect-notice` and `.stream-health-indicator`
+- Updated status bar to reflect stream health states (Stalled, TimedOut, Recovered, Failed)
+- Show reconnection progress in streaming messages
+- Handle reconnection failures with proper error display
 
 **Reference:** `docs/AGENT_ARCHITECTURE_RESEARCH.md` - Event Streaming section
+
+---
+
+### Task 39 Summary ✅ COMPLETE
+
+All 4 sub-tasks completed:
+- ✅ 39.1 Streaming Reliability Improvements - StreamHealthMonitor (8 tests)
+- ✅ 39.2 Reconnection Logic - ReconnectManager (10 tests)
+- ✅ 39.3 Error Handling Improvements - StreamError (12 tests)
+- ✅ 39.4 Frontend Integration - Event handlers and UI components
+
+---
+
+### Task 40: Environment Variable and Configuration Improvements 🔄 IN PROGRESS
+
+**Problem:** Current configuration handling may not follow best practices for:
+- Hierarchical configuration (env vars → config file → defaults)
+- Runtime configuration reloading
+- Secure secret management integration
+
+**Requirements:** Enhance configuration system based on patterns from researched projects
+
+#### 40.1 Hierarchical Configuration Loading
+- [ ] Add environment variable support for all config fields
+- [ ] Implement proper precedence: env vars > config file > defaults
+- [ ] Add GESTURA_ prefix for all environment variables
+- [ ] Document all supported environment variables
+
+#### 40.2 Runtime Configuration Reloading
+- [ ] Add file watcher for config.json changes
+- [ ] Implement config change notification system
+- [ ] Add hot-reload support for non-critical settings
+- [ ] Emit events when configuration changes
+
+#### 40.3 Secure Secret Management
+- [ ] Add support for reading secrets from environment variables
+- [ ] Implement secret redaction in logs and debug output
+- [ ] Add validation for API key formats
+- [ ] Support keychain/credential store integration (future)
+
+#### 40.4 Configuration Validation
+- [ ] Add schema validation for config.json
+- [ ] Implement config migration for version upgrades
+- [ ] Add helpful error messages for invalid configuration
+- [ ] Add config health check command
+
+**Reference:** `docs/AGENT_ARCHITECTURE_RESEARCH.md` - Configuration patterns
 
 ---
 

@@ -2,10 +2,20 @@
 //!
 //! This module defines the AppConfig struct and load/save helpers.
 //! Configuration is stored as JSON in ~/.gestura/config.json
+//!
+//! ## Configuration Precedence
+//!
+//! Configuration values are loaded with the following precedence (highest first):
+//! 1. Environment variables (GESTURA_* prefix)
+//! 2. Config file (~/.gestura/config.json)
+//! 3. Default values
+//!
+//! See [`crate::config_env`] for environment variable documentation.
 
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fs, path::PathBuf};
 
+use crate::config_env::{get_env, get_env_bool, get_env_u32};
 use crate::error::{AppError, Result};
 
 /// Application configuration persisted to a JSON file.
@@ -148,17 +158,25 @@ pub struct LlmSettings {
     pub ollama: Option<OllamaConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct OpenAiConfig {
+    #[serde(default)]
     pub api_key: String,
     pub base_url: Option<String>,
+    #[serde(default = "default_openai_model")]
     pub model: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+fn default_openai_model() -> String {
+    "gpt-4o".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct AnthropicConfig {
+    #[serde(default)]
     pub api_key: String,
     pub base_url: Option<String>,
+    #[serde(default = "default_anthropic_model")]
     pub model: String,
 
     /// Optional: enable Anthropic "extended thinking" streaming.
@@ -169,11 +187,21 @@ pub struct AnthropicConfig {
     pub thinking_budget_tokens: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+fn default_anthropic_model() -> String {
+    "claude-sonnet-4-20250514".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct GrokConfig {
+    #[serde(default)]
     pub api_key: String,
     pub base_url: Option<String>,
+    #[serde(default = "default_grok_model")]
     pub model: String,
+}
+
+fn default_grok_model() -> String {
+    "grok-3".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -410,6 +438,167 @@ impl AppConfig {
             "nats_url" => Some(self.nats_url.clone()),
             _ => None,
         }
+    }
+
+    /// Apply environment variable overrides to the configuration
+    ///
+    /// This method applies GESTURA_* environment variables on top of the
+    /// current configuration. Environment variables take precedence over
+    /// config file values.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Set environment variable
+    /// std::env::set_var("GESTURA_LLM_PRIMARY", "openai");
+    ///
+    /// // Load config with env overrides
+    /// let config = AppConfig::load().apply_env_overrides();
+    /// assert_eq!(config.llm.primary, "openai");
+    /// ```
+    pub fn apply_env_overrides(mut self) -> Self {
+        // Core settings
+        if let Some(v) = get_env("HOTKEY_LISTEN") {
+            self.hotkey_listen = v;
+        }
+        if let Some(v) = get_env_u32("GRACE_PERIOD_SECS") {
+            self.grace_period_secs = v;
+        }
+        if let Some(v) = get_env("NATS_URL") {
+            self.nats_url = v;
+        }
+
+        // LLM settings
+        if let Some(v) = get_env("LLM_PRIMARY") {
+            self.llm.primary = v;
+        }
+        if let Some(v) = get_env("LLM_FALLBACK") {
+            self.llm.fallback = Some(v);
+        }
+
+        // OpenAI
+        if get_env("OPENAI_API_KEY").is_some()
+            || get_env("OPENAI_MODEL").is_some()
+            || get_env("OPENAI_BASE_URL").is_some()
+        {
+            let openai = self.llm.openai.get_or_insert_with(Default::default);
+            if let Some(v) = get_env("OPENAI_API_KEY") {
+                openai.api_key = v;
+            }
+            if let Some(v) = get_env("OPENAI_MODEL") {
+                openai.model = v;
+            }
+            if let Some(v) = get_env("OPENAI_BASE_URL") {
+                openai.base_url = Some(v);
+            }
+        }
+
+        // Anthropic
+        if get_env("ANTHROPIC_API_KEY").is_some()
+            || get_env("ANTHROPIC_MODEL").is_some()
+            || get_env("ANTHROPIC_BASE_URL").is_some()
+        {
+            let anthropic = self.llm.anthropic.get_or_insert_with(Default::default);
+            if let Some(v) = get_env("ANTHROPIC_API_KEY") {
+                anthropic.api_key = v;
+            }
+            if let Some(v) = get_env("ANTHROPIC_MODEL") {
+                anthropic.model = v;
+            }
+            if let Some(v) = get_env("ANTHROPIC_BASE_URL") {
+                anthropic.base_url = Some(v);
+            }
+        }
+
+        // Grok
+        if get_env("GROK_API_KEY").is_some()
+            || get_env("GROK_MODEL").is_some()
+            || get_env("GROK_BASE_URL").is_some()
+        {
+            let grok = self.llm.grok.get_or_insert_with(Default::default);
+            if let Some(v) = get_env("GROK_API_KEY") {
+                grok.api_key = v;
+            }
+            if let Some(v) = get_env("GROK_MODEL") {
+                grok.model = v;
+            }
+            if let Some(v) = get_env("GROK_BASE_URL") {
+                grok.base_url = Some(v);
+            }
+        }
+
+        // Ollama
+        if get_env("OLLAMA_BASE_URL").is_some() || get_env("OLLAMA_MODEL").is_some() {
+            let ollama = self.llm.ollama.get_or_insert_with(|| OllamaConfig {
+                base_url: "http://localhost:11434".to_string(),
+                model: "llama3.2".to_string(),
+            });
+            if let Some(v) = get_env("OLLAMA_BASE_URL") {
+                ollama.base_url = v;
+            }
+            if let Some(v) = get_env("OLLAMA_MODEL") {
+                ollama.model = v;
+            }
+        }
+
+        // Voice settings
+        if let Some(v) = get_env("VOICE_PROVIDER") {
+            self.voice.provider = v;
+        }
+        if let Some(v) = get_env("VOICE_LOCAL_MODEL_PATH") {
+            self.voice.local_model_path = Some(v);
+        }
+        if let Some(v) = get_env("VOICE_OPENAI_API_KEY") {
+            self.voice.openai_api_key = Some(v);
+        }
+        if let Some(v) = get_env("VOICE_OPENAI_MODEL") {
+            self.voice.openai_model = Some(v);
+        }
+        if let Some(v) = get_env("VOICE_AUDIO_DEVICE") {
+            self.voice.audio_device = Some(v);
+        }
+
+        // UI settings
+        if let Some(v) = get_env("UI_THEME_MODE") {
+            self.ui.theme_mode = v;
+        }
+        if let Some(v) = get_env("UI_ACCENT") {
+            self.ui.accent = Some(v);
+        }
+
+        // Developer settings
+        if let Some(v) = get_env_bool("DEVELOPER_MODE") {
+            self.developer.developer_mode = v;
+        }
+        if let Some(v) = get_env_bool("ENABLE_SIMULATORS") {
+            self.developer.enable_simulators = v;
+        }
+        if let Some(v) = get_env_bool("VERBOSE_BLE_LOGGING") {
+            self.developer.verbose_ble_logging = v;
+        }
+
+        // Web search settings
+        if let Some(v) = get_env("SERPAPI_KEY") {
+            self.web_search.serpapi_key = Some(v);
+        }
+        if let Some(v) = get_env("BRAVE_SEARCH_KEY") {
+            self.web_search.brave_key = Some(v);
+        }
+
+        self
+    }
+
+    /// Load configuration with environment variable overrides applied
+    ///
+    /// This is the recommended way to load configuration as it respects
+    /// the full precedence hierarchy: env vars > config file > defaults
+    pub fn load_with_env() -> Self {
+        Self::load().apply_env_overrides()
+    }
+
+    /// Load configuration asynchronously with environment variable overrides
+    pub async fn load_with_env_async() -> Self {
+        Self::load_async().await.apply_env_overrides()
     }
 }
 
