@@ -1071,11 +1071,20 @@ Improve streaming reliability and add proper error handling:
 
 **Sub-tasks:**
 
-#### 39.1 Streaming Reliability Improvements
-- [ ] Add heartbeat/keepalive mechanism for long-running streams
-- [ ] Implement proper backpressure handling for slow consumers
-- [ ] Add stream timeout detection and recovery
-- [ ] Create stream health monitoring
+#### 39.1 Streaming Reliability Improvements ✅ COMPLETE
+- [x] Add heartbeat/keepalive mechanism for long-running streams
+- [x] Implement proper backpressure handling for slow consumers
+- [x] Add stream timeout detection and recovery
+- [x] Create stream health monitoring
+
+**Implementation:**
+- Created `crates/gestura-core/src/stream_health.rs` module
+- `StreamHealthMonitor` - tracks stream activity and health status
+- `StreamHealthStatus` enum - Healthy, Idle, Stalled, TimedOut, Cancelled, Completed, Failed
+- `StreamHealthEvent` - events for frontend notification (Heartbeat, StatusChanged, TimeoutWarning, Recovered)
+- `StreamHealthConfig` - configurable timeouts and thresholds
+- `StreamHealthHandle` - lightweight handle for sharing across async tasks
+- 8 unit tests for stream health functionality
 
 #### 39.2 Reconnection Logic
 - [ ] Implement automatic reconnection for dropped connections

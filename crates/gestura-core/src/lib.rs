@@ -52,6 +52,7 @@ pub mod session_manager;
 pub mod session_workspace;
 pub mod speech;
 pub mod stream_health;
+pub mod stream_reconnect;
 pub mod streaming;
 pub mod telemetry;
 pub mod token_tracker;
@@ -117,6 +118,9 @@ pub use speech::{
 pub use stream_health::{
     StreamHealthConfig, StreamHealthEvent, StreamHealthHandle, StreamHealthMonitor,
     StreamHealthStatus,
+};
+pub use stream_reconnect::{
+    ReconnectConfig, ReconnectEvent, ReconnectManager, ReconnectState, StreamState,
 };
 pub use streaming::{CancellationToken, StreamChunk, start_streaming};
 pub use telemetry::{
