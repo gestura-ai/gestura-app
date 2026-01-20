@@ -68,6 +68,20 @@ pub enum StreamChunk {
         /// Summary of what was compacted
         summary: String,
     },
+    /// A request from the agent to change configuration.
+    ///
+    /// This is surfaced to UIs (GUI/TUI) so they can prompt for confirmation or
+    /// apply changes immediately in permissive mode.
+    ConfigRequest {
+        /// Operation type (e.g. "set")
+        operation: String,
+        /// Config key (e.g. "provider", "model", "permission_level")
+        key: String,
+        /// Requested value. When `None`, this represents a "query"/"show" style request.
+        value: Option<String>,
+        /// Whether the UI must request explicit confirmation before applying.
+        requires_confirmation: bool,
+    },
     /// Stream completed successfully with optional token usage
     Done(Option<TokenUsage>),
     /// Stream was cancelled
@@ -122,6 +136,10 @@ async fn forward_attempt_stream(
             }
             StreamChunk::ContextCompacted { .. } => {
                 // Forward compaction notifications without marking as output
+                let _ = tx.send(chunk).await;
+            }
+            StreamChunk::ConfigRequest { .. } => {
+                // Forward config requests without marking as output
                 let _ = tx.send(chunk).await;
             }
             StreamChunk::Done(_) => {
