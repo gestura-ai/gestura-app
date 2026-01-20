@@ -163,6 +163,11 @@ pub struct PipelineConfig {
     pub enable_fallback: bool,
     /// Categories to always include
     pub always_include_categories: Vec<ContextCategory>,
+    /// Maximum number of history messages to include in prompt
+    /// Older messages are dropped to save tokens
+    pub max_history_messages: usize,
+    /// Log token usage before/after optimization
+    pub log_token_usage: bool,
 }
 
 impl Default for PipelineConfig {
@@ -175,6 +180,30 @@ impl Default for PipelineConfig {
             enable_context_reduction: true,
             enable_fallback: true,
             always_include_categories: vec![ContextCategory::General],
+            max_history_messages: 10, // Keep last 10 messages by default
+            log_token_usage: true,    // Log token usage for debugging
+        }
+    }
+}
+
+impl PipelineConfig {
+    /// Get recommended context tokens for a specific provider
+    pub fn context_tokens_for_provider(provider: &str) -> usize {
+        match provider {
+            "anthropic" => 200_000, // Claude 3.5 Sonnet supports 200k
+            "openai" => 128_000,    // GPT-4o supports 128k
+            "grok" => 131_072,      // Grok-2 supports 131k
+            "ollama" => 32_000,     // Conservative default for local models
+            "echo" => 8_000,        // Echo provider (testing)
+            _ => 32_000,            // Conservative default
+        }
+    }
+
+    /// Create config optimized for a specific provider
+    pub fn for_provider(provider: &str) -> Self {
+        Self {
+            max_context_tokens: Self::context_tokens_for_provider(provider),
+            ..Default::default()
         }
     }
 }

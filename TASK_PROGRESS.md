@@ -2,7 +2,7 @@
 
 **Started:** 2026-01-19
 **Phase 1 Status:** ✅ All Tasks Completed (Tasks 1-21)
-**Phase 2 Status:** 🔄 In Progress (Tasks 22-28) - 5 of 7 complete
+**Phase 2 Status:** 🔄 In Progress (Tasks 22-28) - 6 of 7 complete
 
 ---
 
@@ -483,21 +483,41 @@ Wire up the 9 voice command methods in speech.rs for hands-free control.
 
 ### Task 27: Optimize LLM Context Management for Token Efficiency
 **Priority:** HIGH
-**Status:** ⬜ NOT STARTED
+**Status:** ✅ COMPLETE
 
 **Problem:** LLM providers are submitting excessive tokens by sending all conversation history on each iteration instead of managing context intelligently.
 
 **Requirements:**
-- [ ] Implement smart context window management that only sends relevant recent messages
-- [ ] Add token counting and context trimming logic to stay within model limits
-- [ ] Preserve important context (system prompts, recent exchanges) while removing redundant middle content
-- [ ] Add configuration options for context window size per provider
-- [ ] Log token usage before/after optimization to measure improvement
+- [x] Implement smart context window management that only sends relevant recent messages
+- [x] Add token counting and context trimming logic to stay within model limits
+- [x] Preserve important context (system prompts, recent exchanges) while removing redundant middle content
+- [x] Add configuration options for context window size per provider
+- [x] Log token usage before/after optimization to measure improvement
 
-**Files to investigate:**
-- `crates/gestura-core/src/llm_provider.rs` 
-- `crates/gestura-core/src/streaming.rs`
-- Context management in agent pipeline
+**Implementation:**
+1. **PipelineConfig enhancements** (`crates/gestura-core/src/pipeline/types.rs`):
+   - Added `max_history_messages` field (default: 10) for configurable history limit
+   - Added `log_token_usage` field (default: true) for debugging
+   - Added `context_tokens_for_provider()` method with provider-specific limits:
+     - Anthropic: 200,000 tokens (Claude 3.5 Sonnet)
+     - OpenAI: 128,000 tokens (GPT-4o)
+     - Grok: 131,072 tokens
+     - Ollama: 32,000 tokens (conservative for local models)
+   - Added `for_provider()` constructor for provider-optimized configs
+
+2. **Fixed duplicate history bug** (`crates/gestura-core/src/pipeline/mod.rs`):
+   - Removed duplicate history inclusion in `build_prompt()`
+   - Now uses configurable `max_history_messages` instead of hardcoded values
+   - Added debug logging for context management decisions
+
+3. **Token usage logging** (`crates/gestura-core/src/pipeline/mod.rs`):
+   - Added logging before optimization (estimated tokens, max input, history count, file contexts)
+   - Added logging after optimization (tokens before/after, tokens saved)
+
+4. **Provider-optimized pipeline** (`crates/gestura-gui/src/api.rs`):
+   - Changed to use `AgentPipeline::with_provider_optimized_config()`
+   - Pre-filters history based on provider context limits
+   - Added debug logging for history pre-filtering
 
 ---
 

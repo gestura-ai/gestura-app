@@ -1381,7 +1381,14 @@ pub async fn process_chat_message_streaming(
     }
 
     // Build the agent request with workspace sandboxing
-    use gestura_core::{AgentPipeline, AgentRequest};
+    use gestura_core::{AgentPipeline, AgentRequest, PipelineConfig};
+
+    // Get the provider-specific history limit for token efficiency
+    // The pipeline will further limit based on its config, but we pre-filter here
+    // to avoid loading excessive messages into memory
+    let provider = cfg.llm.primary.as_str();
+    let max_history = PipelineConfig::context_tokens_for_provider(provider) / 1000; // Rough estimate
+    let max_history = max_history.clamp(10, 50); // Between 10 and 50 messages
 
     // Build conversation history for the pipeline (session-scoped) BEFORE adding this new user message.
     // This mirrors the CLI TUI behavior.
@@ -1389,13 +1396,23 @@ pub async fn process_chat_message_streaming(
         .as_deref()
         .map(|sid| {
             let msgs = crate::window_manager::get_pipeline_messages(sid);
-            msgs.into_iter()
+            let total_msgs = msgs.len();
+            let result: Vec<_> = msgs
+                .into_iter()
                 .rev()
-                .take(20)
+                .take(max_history)
                 .collect::<Vec<_>>()
                 .into_iter()
                 .rev()
-                .collect::<Vec<_>>()
+                .collect();
+            tracing::debug!(
+                total_messages = total_msgs,
+                included = result.len(),
+                max_history = max_history,
+                provider = provider,
+                "Pre-filtered conversation history for token efficiency"
+            );
+            result
         })
         .unwrap_or_default();
 
@@ -1425,11 +1442,12 @@ pub async fn process_chat_message_streaming(
         request = request.with_workspace(workspace);
     }
 
-    // Create the pipeline and spawn the streaming task
+    // Create the pipeline with provider-optimized configuration and spawn the streaming task
     let cfg_clone = cfg.clone();
     let cancel_token_clone = cancel_token.clone();
     let pipeline_handle = tokio::spawn(async move {
-        let pipeline = AgentPipeline::new(cfg_clone);
+        // Use provider-optimized config for better token management
+        let pipeline = AgentPipeline::with_provider_optimized_config(cfg_clone);
         if let Err(e) = pipeline
             .process_streaming(request, tx.clone(), cancel_token_clone)
             .await

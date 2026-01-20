@@ -62,6 +62,28 @@ impl AgentPipeline {
         }
     }
 
+    /// Create a pipeline with configuration optimized for the current LLM provider
+    ///
+    /// This automatically sets the context token limit based on the provider's capabilities.
+    pub fn with_provider_optimized_config(config: AppConfig) -> Self {
+        let provider = config.llm.primary.as_str();
+        let pipeline_config = PipelineConfig::for_provider(provider);
+
+        tracing::info!(
+            provider = provider,
+            max_context_tokens = pipeline_config.max_context_tokens,
+            max_history_messages = pipeline_config.max_history_messages,
+            "Created pipeline with provider-optimized configuration"
+        );
+
+        Self {
+            config,
+            context_manager: ContextManager::new(),
+            analyzer: RequestAnalyzer::new(),
+            pipeline_config,
+        }
+    }
+
     /// Process a request with streaming response
     ///
     /// This is the main entry point for streaming LLM interactions.
@@ -657,34 +679,35 @@ impl AgentPipeline {
             }
         }
 
-        // Add history summary if available
+        // Add history summary if available (for older context)
         if let Some(ref summary) = context.history_summary {
             prompt.push_str(&format!("Conversation summary: {}\n\n", summary));
         }
 
-        // Always include a small window of recent messages with roles.
+        // Add recent conversation history (last N messages based on config)
         // This is critical for follow-ups like "ok, proceed" where the action
         // is described in the previous assistant message.
+        let history_limit = self.pipeline_config.max_history_messages;
         if !request.history.is_empty() {
-            prompt.push_str("Recent conversation:\n");
-            let start = request.history.len().saturating_sub(8);
-            for msg in &request.history[start..] {
-                prompt.push_str(&format!("{}: {}\n", msg.role, msg.content));
-            }
-            prompt.push('\n');
-        }
+            let history_start = request.history.len().saturating_sub(history_limit);
+            let included_count = request.history.len() - history_start;
 
-        // Add recent conversation history (last N messages)
-        let history_limit = 10;
-        let history_start = request.history.len().saturating_sub(history_limit);
-        if history_start < request.history.len() {
+            if self.pipeline_config.log_token_usage {
+                tracing::debug!(
+                    total_history = request.history.len(),
+                    included = included_count,
+                    limit = history_limit,
+                    "Context management: including recent history messages"
+                );
+            }
+
             prompt.push_str("Recent conversation:\n");
             for msg in request.history.iter().skip(history_start) {
                 match msg.role.as_str() {
                     "user" => prompt.push_str(&format!("User: {}\n", msg.content)),
                     "assistant" => prompt.push_str(&format!("Assistant: {}\n", msg.content)),
                     "tool" => prompt.push_str(&format!("Tool result: {}\n", msg.content)),
-                    _ => {}
+                    _ => prompt.push_str(&format!("{}: {}\n", msg.role, msg.content)),
                 }
             }
             prompt.push('\n');
@@ -754,6 +777,23 @@ impl AgentPipeline {
         let mut prompt = self.build_prompt(request, context, tools);
         let mut truncated = false;
 
+        // Log initial token estimate if enabled
+        let initial_tokens = Self::estimate_tokens(&prompt);
+        if self.pipeline_config.log_token_usage {
+            let max_input = self
+                .pipeline_config
+                .max_context_tokens
+                .saturating_sub(self.pipeline_config.max_output_tokens);
+            tracing::info!(
+                estimated_tokens = initial_tokens,
+                max_input_tokens = max_input,
+                max_context_tokens = self.pipeline_config.max_context_tokens,
+                history_messages = request.history.len(),
+                file_contexts = context.files.len(),
+                "Token usage before optimization"
+            );
+        }
+
         // Check if we need to truncate
         if let TokenLimitStatus::Exceeded { overage, .. } = self.check_token_limit(&prompt) {
             truncated = true;
@@ -784,6 +824,17 @@ impl AgentPipeline {
 
             // Rebuild prompt with truncated context
             prompt = self.build_prompt(request, context, tools);
+
+            // Log token usage after optimization
+            let final_tokens = Self::estimate_tokens(&prompt);
+            if self.pipeline_config.log_token_usage {
+                tracing::info!(
+                    tokens_before = initial_tokens,
+                    tokens_after = final_tokens,
+                    tokens_saved = initial_tokens.saturating_sub(final_tokens),
+                    "Token usage after optimization"
+                );
+            }
 
             // If still over, log a warning (we've done what we can)
             if let TokenLimitStatus::Exceeded {
