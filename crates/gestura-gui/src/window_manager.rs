@@ -928,6 +928,14 @@ pub fn set_session_llm_provider(session_id: &str, provider: String) {
                 .llm_config
                 .get_or_insert_with(Default::default);
             llm_config.provider = Some(provider.clone());
+            // Provider and model are tightly coupled. If the user switches providers but we keep a
+            // session-scoped model override from the previous provider, the next request can
+            // silently keep using the stale model (or error) even though the UI shows the new
+            // provider.
+            //
+            // Clearing the model override ensures the effective model falls back to the global
+            // default for the selected provider (or the UI can immediately set a new session model).
+            llm_config.model = None;
             tracing::info!(
                 session_id = %session_id,
                 provider = %provider,

@@ -2524,6 +2524,19 @@
                     }
                     await refreshConfig();
                     await populateModelSelectForProvider(provider);
+
+                    // Ensure the session model stays consistent with the newly-selected provider.
+                    // Without this, a previous session-scoped model override can linger and be
+                    // applied to subsequent messages even after switching providers.
+                    if (sessionId) {
+                        const selectedModel = modelSelect?.value;
+                        if (selectedModel) {
+                            await window.__TAURI__.core.invoke('set_session_llm_model', {
+                                session_id: sessionId,
+                                model: selectedModel,
+                            });
+                        }
+                    }
                 } catch (e) {
                     console.error('Failed to update provider', e);
                     addMessage(`Error updating provider: ${e}`, 'agent');
