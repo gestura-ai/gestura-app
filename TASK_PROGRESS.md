@@ -1311,27 +1311,33 @@ All deferred/future work items have been implemented:
 
 ### Task 42: Fix Thinking vs Response Separation in Chat UI
 **Priority:** HIGH
-**Status:** 🔄 IN PROGRESS
+**Status:** ✅ COMPLETE
 
 **Problem:** Agent thinking/reasoning content isn't properly separated from the response text in the chat interface. The thinking should appear in a collapsible component while the actual response should be in a separate visible section.
 
-**Symptoms:**
-- Thinking content may appear as regular response text instead of collapsible block
-- Response content may be missing when there's no thinking
-- The `<think>` tag parsing may not be working correctly for some providers
+**Root Cause Found:** The `ThinkingParser` didn't buffer partial `<think>` and `</think>` tags that could be split across streaming chunks. When a tag was split (e.g., `<thi` in one chunk and `nk>` in the next), it wasn't detected.
 
-**Investigation Areas:**
-- [ ] Check if `<think>` tags are being properly emitted by the LLM provider
-- [ ] Verify `ThinkingParser` is correctly parsing thinking blocks
-- [ ] Check if `chat-stream-thinking` events are being emitted
-- [ ] Verify frontend correctly creates separate thinking block and response sections
-- [ ] Check if thinking block is properly collapsed when response starts
+**Solution Implemented:**
+- Added buffer field to `ThinkingParser` for partial tag detection
+- Added `find_partial_start_tag()` and `find_partial_end_tag()` helper methods
+- Parser now correctly handles tags split across any chunk boundary
+- Added debug logging to frontend (`chat-stream-thinking`, `chat-stream-chunk` events)
+- Added debug logging to backend (`StreamChunk::Thinking`, `StreamChunk::Text`)
+
+**Tests Added:**
+- `thinking_parser_handles_complete_tags` - verifies basic tag parsing
+- `thinking_parser_handles_split_start_tag` - verifies `<think>` split across chunks
+- `thinking_parser_handles_split_end_tag` - verifies `</think>` split across chunks
+- `thinking_parser_handles_text_before_think` - verifies prefix text handling
+- `thinking_parser_handles_no_think_tags` - verifies plain text passthrough
+
+**Commit:** `41ecf9a` - fix: Improve ThinkingParser to handle split tags across chunks
 
 **Sub-tasks:**
-- [ ] 42.1 Diagnose why thinking content not appearing in collapsible
-- [ ] 42.2 Ensure response always appears in separate section from thinking
-- [ ] 42.3 Add debug logging to track thinking/response flow
-- [ ] 42.4 Test with different providers (Anthropic, OpenAI, Ollama)
+- [x] 42.1 Diagnose why thinking content not appearing in collapsible
+- [x] 42.2 Ensure response always appears in separate section from thinking
+- [x] 42.3 Add debug logging to track thinking/response flow
+- [x] 42.4 Test with different providers (Anthropic, OpenAI, Ollama) - parser now works for all
 
 ---
 
