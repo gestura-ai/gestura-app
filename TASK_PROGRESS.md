@@ -1172,11 +1172,20 @@ All 4 sub-tasks completed:
 - `load_with_env()` and `load_with_env_async()` convenience methods
 - 7 unit tests for environment variable handling
 
-#### 40.2 Runtime Configuration Reloading
-- [ ] Add file watcher for config.json changes
-- [ ] Implement config change notification system
-- [ ] Add hot-reload support for non-critical settings
-- [ ] Emit events when configuration changes
+#### 40.2 Runtime Configuration Reloading ✅ COMPLETE
+- [x] Add file watcher for config.json changes
+- [x] Implement config change notification system
+- [x] Add hot-reload support for non-critical settings
+- [x] Emit events when configuration changes
+
+**Implementation:**
+- Created `crates/gestura-core/src/config_watcher.rs` module
+- `ConfigWatcher` struct using notify crate (macOS FSEvents backend)
+- `ConfigChangeEvent` enum (Updated, Error, Deleted)
+- Debouncing to prevent rapid reload on file edits
+- `HotReloadableSettings` struct for safe hot-reload fields
+- Automatic env var override on reload
+- 4 unit tests
 
 #### 40.3 Secure Secret Management
 - [ ] Add support for reading secrets from environment variables

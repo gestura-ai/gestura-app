@@ -179,6 +179,121 @@ pub fn redact_secret(value: &str) -> String {
     }
 }
 
+/// API key validation result
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApiKeyValidation {
+    /// Key is valid
+    Valid,
+    /// Key is empty
+    Empty,
+    /// Key is too short
+    TooShort { min_length: usize, actual: usize },
+    /// Key has invalid format
+    InvalidFormat { expected: &'static str },
+    /// Key has invalid prefix
+    InvalidPrefix { expected: &'static str },
+}
+
+impl ApiKeyValidation {
+    /// Check if validation passed
+    pub fn is_valid(&self) -> bool {
+        matches!(self, ApiKeyValidation::Valid)
+    }
+
+    /// Get error message if invalid
+    pub fn error_message(&self) -> Option<String> {
+        match self {
+            ApiKeyValidation::Valid => None,
+            ApiKeyValidation::Empty => Some("API key is empty".to_string()),
+            ApiKeyValidation::TooShort { min_length, actual } => Some(format!(
+                "API key is too short (expected at least {} characters, got {})",
+                min_length, actual
+            )),
+            ApiKeyValidation::InvalidFormat { expected } => {
+                Some(format!("Invalid API key format. Expected: {}", expected))
+            }
+            ApiKeyValidation::InvalidPrefix { expected } => {
+                Some(format!("Invalid API key prefix. Expected: {}", expected))
+            }
+        }
+    }
+}
+
+/// Validate an OpenAI API key
+pub fn validate_openai_key(key: &str) -> ApiKeyValidation {
+    if key.is_empty() {
+        return ApiKeyValidation::Empty;
+    }
+    if key.len() < 20 {
+        return ApiKeyValidation::TooShort {
+            min_length: 20,
+            actual: key.len(),
+        };
+    }
+    if !key.starts_with("sk-") {
+        return ApiKeyValidation::InvalidPrefix { expected: "sk-" };
+    }
+    ApiKeyValidation::Valid
+}
+
+/// Validate an Anthropic API key
+pub fn validate_anthropic_key(key: &str) -> ApiKeyValidation {
+    if key.is_empty() {
+        return ApiKeyValidation::Empty;
+    }
+    if key.len() < 20 {
+        return ApiKeyValidation::TooShort {
+            min_length: 20,
+            actual: key.len(),
+        };
+    }
+    if !key.starts_with("sk-ant-") {
+        return ApiKeyValidation::InvalidPrefix {
+            expected: "sk-ant-",
+        };
+    }
+    ApiKeyValidation::Valid
+}
+
+/// Validate a Grok API key
+pub fn validate_grok_key(key: &str) -> ApiKeyValidation {
+    if key.is_empty() {
+        return ApiKeyValidation::Empty;
+    }
+    if key.len() < 20 {
+        return ApiKeyValidation::TooShort {
+            min_length: 20,
+            actual: key.len(),
+        };
+    }
+    if !key.starts_with("xai-") {
+        return ApiKeyValidation::InvalidPrefix { expected: "xai-" };
+    }
+    ApiKeyValidation::Valid
+}
+
+/// Validate any API key by provider name
+pub fn validate_api_key(provider: &str, key: &str) -> ApiKeyValidation {
+    match provider.to_lowercase().as_str() {
+        "openai" => validate_openai_key(key),
+        "anthropic" => validate_anthropic_key(key),
+        "grok" => validate_grok_key(key),
+        _ => {
+            // Generic validation for unknown providers
+            if key.is_empty() {
+                ApiKeyValidation::Empty
+            } else if key.len() < 10 {
+                ApiKeyValidation::TooShort {
+                    min_length: 10,
+                    actual: key.len(),
+                }
+            } else {
+                ApiKeyValidation::Valid
+            }
+        }
+    }
+}
+
 /// Get all environment variables that are set
 ///
 /// Returns a list of (env_var_suffix, display_value, is_secret) tuples
@@ -296,5 +411,83 @@ mod tests {
                 suffix
             );
         }
+    }
+
+    #[test]
+    fn test_validate_openai_key() {
+        assert_eq!(validate_openai_key(""), ApiKeyValidation::Empty);
+        assert_eq!(
+            validate_openai_key("short"),
+            ApiKeyValidation::TooShort {
+                min_length: 20,
+                actual: 5
+            }
+        );
+        assert_eq!(
+            validate_openai_key("invalid-key-format-12345"),
+            ApiKeyValidation::InvalidPrefix { expected: "sk-" }
+        );
+        assert_eq!(
+            validate_openai_key("sk-proj-1234567890abcdefgh"),
+            ApiKeyValidation::Valid
+        );
+    }
+
+    #[test]
+    fn test_validate_anthropic_key() {
+        assert_eq!(validate_anthropic_key(""), ApiKeyValidation::Empty);
+        assert_eq!(
+            validate_anthropic_key("sk-12345678901234567890"),
+            ApiKeyValidation::InvalidPrefix {
+                expected: "sk-ant-"
+            }
+        );
+        assert_eq!(
+            validate_anthropic_key("sk-ant-api03-1234567890abcdef"),
+            ApiKeyValidation::Valid
+        );
+    }
+
+    #[test]
+    fn test_validate_grok_key() {
+        assert_eq!(validate_grok_key(""), ApiKeyValidation::Empty);
+        assert_eq!(
+            validate_grok_key("sk-12345678901234567890"),
+            ApiKeyValidation::InvalidPrefix { expected: "xai-" }
+        );
+        assert_eq!(
+            validate_grok_key("xai-1234567890abcdefghij"),
+            ApiKeyValidation::Valid
+        );
+    }
+
+    #[test]
+    fn test_validate_api_key_by_provider() {
+        assert!(validate_api_key("openai", "sk-proj-12345678901234567890").is_valid());
+        assert!(validate_api_key("anthropic", "sk-ant-12345678901234567890").is_valid());
+        assert!(validate_api_key("grok", "xai-12345678901234567890").is_valid());
+        assert!(validate_api_key("unknown", "some-valid-key-here").is_valid());
+        assert!(!validate_api_key("unknown", "short").is_valid());
+    }
+
+    #[test]
+    fn test_api_key_validation_error_messages() {
+        assert!(ApiKeyValidation::Valid.error_message().is_none());
+        assert!(ApiKeyValidation::Empty.error_message().is_some());
+        assert!(
+            ApiKeyValidation::TooShort {
+                min_length: 20,
+                actual: 5
+            }
+            .error_message()
+            .unwrap()
+            .contains("too short")
+        );
+        assert!(
+            ApiKeyValidation::InvalidPrefix { expected: "sk-" }
+                .error_message()
+                .unwrap()
+                .contains("prefix")
+        );
     }
 }
