@@ -3040,3 +3040,146 @@ pub async fn test_notification(
 
     Ok(())
 }
+
+// ============================================================================
+// Secure Secret Management Commands
+// ============================================================================
+
+/// Store a secret in secure storage (keychain on macOS, credential store on Windows/Linux)
+/// Falls back to mock storage if security feature is disabled.
+#[tauri::command]
+pub async fn store_secret(key: String, value: String) -> Result<(), String> {
+    let storage = crate::security::create_secure_storage();
+    storage
+        .store_secret(&key, &value)
+        .await
+        .map_err(|e| e.to_string())?;
+    tracing::info!("Secret stored: {}", key);
+    Ok(())
+}
+
+/// Retrieve a secret from secure storage.
+/// Returns None if the secret doesn't exist.
+#[tauri::command]
+pub async fn get_secret(key: String) -> Result<Option<String>, String> {
+    let storage = crate::security::create_secure_storage();
+    storage.get_secret(&key).await.map_err(|e| e.to_string())
+}
+
+/// Delete a secret from secure storage.
+#[tauri::command]
+pub async fn delete_secret(key: String) -> Result<(), String> {
+    let storage = crate::security::create_secure_storage();
+    storage
+        .delete_secret(&key)
+        .await
+        .map_err(|e| e.to_string())?;
+    tracing::info!("Secret deleted: {}", key);
+    Ok(())
+}
+
+/// Check if the security feature (keychain integration) is available.
+#[tauri::command]
+pub fn is_keychain_available() -> bool {
+    #[cfg(feature = "security")]
+    {
+        true
+    }
+    #[cfg(not(feature = "security"))]
+    {
+        false
+    }
+}
+
+/// Store an API key securely. Convenience wrapper that uses provider-specific key names.
+/// Provider can be: "openai", "anthropic", "grok", "serpapi", "brave"
+#[tauri::command]
+pub async fn store_api_key(provider: String, api_key: String) -> Result<(), String> {
+    let key = format!("gestura_api_key_{}", provider.to_lowercase());
+    store_secret(key, api_key).await
+}
+
+/// Retrieve an API key from secure storage.
+#[tauri::command]
+pub async fn get_api_key(provider: String) -> Result<Option<String>, String> {
+    let key = format!("gestura_api_key_{}", provider.to_lowercase());
+    get_secret(key).await
+}
+
+/// Delete an API key from secure storage.
+#[tauri::command]
+pub async fn delete_api_key(provider: String) -> Result<(), String> {
+    let key = format!("gestura_api_key_{}", provider.to_lowercase());
+    delete_secret(key).await
+}
+
+/// Migrate API keys from config file to secure storage.
+/// This is a one-time operation for existing users.
+#[tauri::command]
+pub async fn migrate_api_keys_to_keychain() -> Result<serde_json::Value, String> {
+    let cfg = AppConfig::load_async().await;
+    let storage = crate::security::create_secure_storage();
+    let mut migrated: Vec<String> = Vec::new();
+
+    // Migrate OpenAI key
+    if let Some(ref openai) = cfg.llm.openai
+        && !openai.api_key.is_empty()
+    {
+        storage
+            .store_secret("gestura_api_key_openai", &openai.api_key)
+            .await
+            .map_err(|e| e.to_string())?;
+        migrated.push("openai".to_string());
+    }
+
+    // Migrate Anthropic key
+    if let Some(ref anthropic) = cfg.llm.anthropic
+        && !anthropic.api_key.is_empty()
+    {
+        storage
+            .store_secret("gestura_api_key_anthropic", &anthropic.api_key)
+            .await
+            .map_err(|e| e.to_string())?;
+        migrated.push("anthropic".to_string());
+    }
+
+    // Migrate Grok key
+    if let Some(ref grok) = cfg.llm.grok
+        && !grok.api_key.is_empty()
+    {
+        storage
+            .store_secret("gestura_api_key_grok", &grok.api_key)
+            .await
+            .map_err(|e| e.to_string())?;
+        migrated.push("grok".to_string());
+    }
+
+    // Migrate SerpAPI key
+    if let Some(ref key) = cfg.web_search.serpapi_key
+        && !key.is_empty()
+    {
+        storage
+            .store_secret("gestura_api_key_serpapi", key)
+            .await
+            .map_err(|e| e.to_string())?;
+        migrated.push("serpapi".to_string());
+    }
+
+    // Migrate Brave key
+    if let Some(ref key) = cfg.web_search.brave_key
+        && !key.is_empty()
+    {
+        storage
+            .store_secret("gestura_api_key_brave", key)
+            .await
+            .map_err(|e| e.to_string())?;
+        migrated.push("brave".to_string());
+    }
+
+    tracing::info!("Migrated {} API keys to secure storage", migrated.len());
+
+    Ok(serde_json::json!({
+        "migrated": migrated,
+        "count": migrated.len()
+    }))
+}

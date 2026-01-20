@@ -232,7 +232,16 @@ async fn main() {
             gestura_gui::api::update_notification_settings,
             gestura_gui::api::preview_notification_sound,
             gestura_gui::api::set_notification_ring,
-            gestura_gui::api::test_notification
+            gestura_gui::api::test_notification,
+            // Secure secret management
+            gestura_gui::api::store_secret,
+            gestura_gui::api::get_secret,
+            gestura_gui::api::delete_secret,
+            gestura_gui::api::is_keychain_available,
+            gestura_gui::api::store_api_key,
+            gestura_gui::api::get_api_key,
+            gestura_gui::api::delete_api_key,
+            gestura_gui::api::migrate_api_keys_to_keychain
         ])
         .setup(move |app| {
             gestura_gui::tray::init_tray(app.handle())?;

@@ -3,7 +3,7 @@
 **Started:** 2026-01-19
 **Phase 1 Status:** ✅ All Tasks Completed (Tasks 1-21)
 **Phase 2 Status:** ✅ All Tasks Completed (Tasks 22-28) - 7 of 7 complete
-**Phase 3 Status:** 🔄 In Progress (Tasks 29+) - 11 of 12 complete
+**Phase 3 Status:** 🔄 In Progress (Tasks 29+) - 11 of 13 complete
 
 ---
 
@@ -1230,6 +1230,53 @@ All 4 sub-tasks completed:
 - ✅ 40.2 Runtime Configuration Reloading
 - ✅ 40.3 Secure Secret Management
 - ✅ 40.4 Configuration Validation
+
+---
+
+### Task 41: Complete Deferred Features and Wire Up Remaining Code
+**Priority:** HIGH
+**Status:** 🔄 IN PROGRESS
+
+**Problem:** Several features were marked as "future work", "deferred", or "TODO" across the codebase. These need to be completed to ensure no dead-end code and all features are fully delivered.
+
+**Requirements:**
+Consolidate and implement all deferred/future work items identified in previous tasks.
+
+**Sub-tasks:**
+
+#### 41.1 Keychain/Credential Store Integration
+- [ ] Implement macOS Keychain integration for secure API key storage
+- [ ] Add `store_secret()` function to save API keys to keychain
+- [ ] Add `retrieve_secret()` function to load API keys from keychain
+- [ ] Fall back to config file if keychain unavailable
+- [ ] Add Tauri commands for GUI secret management
+- [ ] Update settings UI to use keychain storage
+
+**Reference:** Task 40.3 - "Support keychain/credential store integration (future - uses `security` feature)"
+
+#### 41.2 Session Settings Backend Integration
+- [ ] Wire up Permission Level dropdown to backend (`set_session_permission_level`)
+- [ ] Wire up Tool Availability checkboxes to backend (`set_session_tool_availability`)
+- [ ] Implement permission enforcement in tool execution
+- [ ] Add Tauri commands for permission/tool settings
+- [ ] Persist session tool/permission settings
+
+**Reference:** Task 24 - "Permission and tools are UI-ready (backend integration TODO)"
+
+#### 41.3 Task 30 Completion - Provider/Model Changes
+- [ ] Test with app to verify logging shows correct flow
+- [ ] Fix session config not being found issue
+- [ ] Ensure provider config is created for all providers on demand
+- [ ] Verify model selection persists across chat messages
+
+**Reference:** Task 30 - remaining next steps
+
+#### 41.4 Accessibility and Keyboard Shortcuts (Deferred Items)
+- [ ] Add keyboard shortcut Ctrl/Cmd+C on focused response for copy
+- [ ] Add screen reader announcements for copy actions
+- [ ] Add retry option UI for failed tool operations
+
+**Reference:** Tasks 36.3, 37 - deferred accessibility items
 
 ---
 
