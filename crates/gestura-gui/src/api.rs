@@ -8,6 +8,19 @@ use tauri::{Emitter, Manager};
 /// Try to get an API key from the keychain (synchronous, for use in config creation).
 /// Returns empty string if not found or keychain unavailable.
 fn try_get_api_key_from_keychain(provider: &str) -> String {
+    try_get_api_key_from_keychain_sync(provider)
+}
+
+/// Public synchronous keychain API key retrieval.
+///
+/// This is used by other modules (e.g., speech.rs) to retrieve API keys from the
+/// system keychain with a fallback to empty string if not found.
+///
+/// Provider names are case-insensitive and match the keychain key format:
+/// - `"openai"` → `gestura_api_key_openai`
+/// - `"voice_openai"` → `gestura_api_key_voice_openai`
+/// - `"anthropic"` → `gestura_api_key_anthropic`
+pub fn try_get_api_key_from_keychain_sync(provider: &str) -> String {
     let key = format!("gestura_api_key_{}", provider.to_lowercase());
     let storage = crate::security::create_secure_storage();
 
@@ -231,6 +244,83 @@ pub async fn test_llm(prompt: String) -> Result<String, String> {
         },
     );
     provider.call(&prompt).await.map_err(|e| format!("{e}"))
+}
+
+/// Enhance a user prompt using LLM to make it more effective
+///
+/// This command takes a user's prompt and uses the configured LLM provider
+/// to improve it by adding context, structure, and clarity while preserving
+/// the original intent.
+///
+/// # Arguments
+///
+/// * `prompt` - The original user prompt to enhance
+/// * `session_id` - Optional session ID to include conversation history as context
+///
+/// # Returns
+///
+/// Returns the enhanced prompt as a String, or an error message if enhancement fails.
+#[tauri::command]
+pub async fn enhance_prompt(prompt: String, session_id: Option<String>) -> Result<String, String> {
+    use gestura_core::prompt_enhancement::{PromptContext, enhance_prompt_with_llm};
+
+    // Validate input
+    if prompt.trim().is_empty() {
+        return Err("Prompt cannot be empty".to_string());
+    }
+
+    // Load config
+    let cfg = AppConfig::load_async().await;
+
+    // Build context from session history if session_id provided
+    let context = if let Some(sid) = session_id {
+        // Get session state using public API
+        if let Some(state) = crate::window_manager::get_session_state(&sid) {
+            // Get last 5 messages for context (to avoid token overflow)
+            let history: Vec<(String, String)> = state
+                .messages
+                .iter()
+                .rev()
+                .take(5)
+                .rev()
+                .map(|msg| (msg.role.clone(), msg.content.clone()))
+                .collect();
+
+            if !history.is_empty() {
+                tracing::debug!(
+                    session_id = %sid,
+                    history_count = history.len(),
+                    "Including session history in prompt enhancement"
+                );
+                Some(PromptContext::new().with_session_history(history))
+            } else {
+                None
+            }
+        } else {
+            tracing::warn!(session_id = %sid, "Session not found for prompt enhancement");
+            None
+        }
+    } else {
+        None
+    };
+
+    tracing::info!(
+        prompt_length = prompt.len(),
+        has_context = context.is_some(),
+        "Enhancing user prompt"
+    );
+
+    let enhanced = enhance_prompt_with_llm(&prompt, &cfg, context)
+        .await
+        .map_err(|e| format!("Enhancement failed: {}", e))?;
+
+    tracing::info!(
+        original_length = prompt.len(),
+        enhanced_length = enhanced.len(),
+        "Prompt enhancement successful"
+    );
+
+    Ok(enhanced)
 }
 
 #[tauri::command]
@@ -1183,13 +1273,37 @@ pub async fn process_chat_message(
     response.map_err(|e| format!("LLM error: {}", e))
 }
 
-/// Global cancellation token for streaming requests
-static STREAMING_CANCEL_TOKEN: std::sync::OnceLock<
-    std::sync::Mutex<Option<gestura_core::CancellationToken>>,
+/// Cancellation token key used when a chat stream is not associated with a session.
+///
+/// This primarily supports the legacy/non-session chat surfaces (e.g., single-window UI).
+const GLOBAL_STREAM_CANCEL_KEY: &str = "__global_stream__";
+
+/// Per-session cancellation tokens for streaming requests.
+///
+/// Why: a single global token can cancel the wrong stream when multiple sessions
+/// are running concurrently.
+static STREAMING_CANCEL_TOKENS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, gestura_core::CancellationToken>>,
 > = std::sync::OnceLock::new();
 
-fn get_cancel_token_store() -> &'static std::sync::Mutex<Option<gestura_core::CancellationToken>> {
-    STREAMING_CANCEL_TOKEN.get_or_init(|| std::sync::Mutex::new(None))
+/// Get the global store of active streaming cancellation tokens.
+///
+/// The map is keyed by a per-window cancel key derived from the calling webview's
+/// window label (e.g., `window:chat-<uuid>`).
+///
+/// Why: keying by session alone can cause cross-window cancellation when multiple
+/// windows exist or when session inference falls back incorrectly.
+fn get_cancel_token_store()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, gestura_core::CancellationToken>> {
+    STREAMING_CANCEL_TOKENS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Build the cancellation token key for a particular window label.
+///
+/// This intentionally scopes cancellation to a single window so concurrent streams
+/// in different chat windows do not cancel each other.
+fn cancel_key_for_window_label(window_label: &str) -> String {
+    format!("window:{window_label}")
 }
 
 /// Process a chat message with streaming response
@@ -1201,17 +1315,14 @@ fn get_cancel_token_store() -> &'static std::sync::Mutex<Option<gestura_core::Ca
 /// - `"text"` for typed input (default)
 #[tauri::command]
 pub async fn process_chat_message_streaming(
+    webview_window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     message: String,
     session_id: Option<String>,
     source: Option<String>,
 ) -> Result<(), String> {
     use gestura_core::{CancellationToken, StreamChunk};
-    use gestura_core::{
-        looks_like_capabilities_question, looks_like_tools_question, render_capabilities,
-        render_tool_detail, render_tools_overview,
-    };
-    use tauri::Emitter;
+    use gestura_core::{render_capabilities, render_tool_detail, render_tools_overview};
     use tokio::sync::mpsc;
 
     let mut cfg = AppConfig::load_async().await;
@@ -1336,34 +1447,82 @@ pub async fn process_chat_message_streaming(
         _ => gestura_core::RequestSource::GuiText,
     };
 
-    // Route streaming events to the correct chat window when session_id is provided.
-    // This prevents cross-window event bleed and enables per-session conversation history.
-    let resolved_session_id = session_id.or_else(crate::window_manager::get_active_chat_for_voice);
-    let target_window_label = resolved_session_id
-        .as_deref()
-        .and_then(crate::window_manager::get_session_window_label);
+    // --- Secure window/session isolation ---
+    //
+    // We always emit streaming events to a single target window. We never broadcast
+    // (`app.emit`) because that can leak content across chat windows.
+    let calling_window_label = webview_window.label().to_string();
+    let calling_session_id =
+        crate::window_manager::get_session_id_for_window_label(&calling_window_label);
 
-    let emit = |event: &str, payload: serde_json::Value| {
-        if let Some(label) = &target_window_label
-            && let Some(window) = app.get_webview_window(label)
-        {
-            if let Err(e) = window.emit(event, &payload) {
-                tracing::error!("Failed to emit '{}' to window {}: {}", event, label, e);
-            }
-        } else if let Err(e) = app.emit(event, &payload) {
-            tracing::error!("Failed to emit '{}': {}", event, e);
+    // Defense-in-depth: if the caller is a chat window with a known session, do not
+    // allow it to stream into a different session by passing a mismatched session id.
+    if let (Some(calling_sid), Some(request_sid)) = (&calling_session_id, &session_id) {
+        if calling_sid != request_sid {
+            return Err(format!(
+                "Session mismatch for window '{}': caller session '{}' != requested session '{}'",
+                calling_window_label, calling_sid, request_sid
+            ));
         }
+    }
+
+    // Resolve session id (typed input: use the calling window; voice: optionally route to active chat).
+    let resolved_session_id = session_id
+        .or_else(|| calling_session_id.clone())
+        .or_else(|| {
+            if matches!(message_source, crate::window_manager::MessageSource::Voice) {
+                crate::window_manager::get_active_chat_for_voice()
+            } else {
+                None
+            }
+        });
+
+    // Choose the window to receive stream events.
+    // - Text: the calling window.
+    // - Voice: the resolved active chat window if available; otherwise the calling window.
+    let target_window_label = if matches!(message_source, crate::window_manager::MessageSource::Voice)
+    {
+        resolved_session_id
+            .as_deref()
+            .and_then(crate::window_manager::get_session_window_label)
+            .unwrap_or_else(|| calling_window_label.clone())
+    } else {
+        calling_window_label.clone()
     };
 
-    // Check if this is a tools/capabilities question and handle it locally without LLM
+	// Centralized, window-scoped emission (never broadcast): emits via `emit_to` and
+	// attaches `session_id` for frontend filtering.
+	let emit = |event: &str, payload: serde_json::Value| {
+	    let payload = crate::chat_events::attach_session_id(payload, resolved_session_id.as_deref());
+	    if let Err(err) = crate::chat_events::emit_chat_event_to_window(
+	        &app,
+	        &target_window_label,
+	        &calling_window_label,
+	        event,
+	        &payload,
+	        resolved_session_id.as_deref(),
+	    ) {
+	        tracing::error!(
+	            event = %event,
+	            target_window_label = %target_window_label,
+	            calling_window_label = %calling_window_label,
+	            error = %err,
+	            "Failed to emit chat event"
+	        );
+	    }
+	};
+
+    // Check if this is a tools/capabilities/summarize/memory command (explicit slash command) and handle it locally without LLM
+    // Natural language questions like "what tools do you have?" should go through the LLM for dynamic, session-aware responses
     let trimmed = message.trim();
     const LOCAL_STREAM_CHUNK_CHARS: usize = 64;
     let is_tools_cmd = trimmed.starts_with("/tools");
     let is_capabilities_cmd = trimmed.starts_with("/capabilities");
-    let is_tools_question = looks_like_tools_question(trimmed);
-    let is_capabilities_question = looks_like_capabilities_question(trimmed);
+    let is_summarize_cmd = trimmed.starts_with("/summarize");
+    let is_memory_cmd = trimmed.starts_with("/memory");
 
-    if is_tools_cmd || is_tools_question {
+    // Only handle explicit /tools command, not natural language questions
+    if is_tools_cmd {
         let thinking_note =
             Some("Using local tool catalog (no LLM call) and streaming the result...".to_string());
         let response = if is_tools_cmd {
@@ -1416,12 +1575,245 @@ pub async fn process_chat_message_streaming(
         return Ok(());
     }
 
-    // Handle capabilities questions - includes MCP servers, devices, settings
-    if is_capabilities_cmd || is_capabilities_question {
+    // Handle capabilities command (explicit slash command only)
+    // Natural language questions should go through the LLM for dynamic responses
+    if is_capabilities_cmd {
         let thinking_note = Some(
             "Reading local capabilities (no LLM call) and streaming the result...".to_string(),
         );
         let response = render_capabilities(&cfg);
+
+        // Persist to session (if any)
+        if let Some(ref sid) = resolved_session_id {
+            crate::window_manager::add_user_message(sid, &message, message_source);
+            crate::window_manager::add_assistant_message(sid, &response, thinking_note.clone());
+        }
+
+        if let Some(note) = thinking_note {
+            emit("chat-stream-thinking", serde_json::json!(note));
+            tokio::task::yield_now().await;
+        }
+
+        let mut rest = response.as_str();
+        while !rest.is_empty() {
+            let split_at = rest
+                .char_indices()
+                .nth(LOCAL_STREAM_CHUNK_CHARS)
+                .map(|(i, _)| i)
+                .unwrap_or(rest.len());
+
+            let (chunk, next) = rest.split_at(split_at);
+            rest = next;
+
+            if !chunk.is_empty() {
+                emit("chat-stream-chunk", serde_json::json!(chunk));
+                tokio::task::yield_now().await;
+            }
+        }
+        emit("chat-stream-done", serde_json::json!(null));
+        return Ok(());
+    }
+
+    // Handle /summarize command - summarize conversation history without calling LLM
+    if is_summarize_cmd {
+        let thinking_note = Some("Summarizing conversation history (no LLM call)...".to_string());
+
+        // Get conversation history from session
+        let history = if let Some(ref sid) = resolved_session_id {
+            crate::window_manager::get_session_state(sid)
+                .map(|state| {
+                    state
+                        .messages
+                        .into_iter()
+                        .map(|msg| msg.content)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        // Use context manager to summarize
+        use gestura_core::context::ContextManager;
+        let context_manager = ContextManager::new();
+        let summary = if history.is_empty() {
+            "No conversation history to summarize.".to_string()
+        } else {
+            let summary_text = context_manager.summarize_history(&history);
+            format!(
+                "## Conversation Summary\n\n{}\n\n---\n\n*Summarized {} messages*",
+                summary_text,
+                history.len()
+            )
+        };
+
+        // Persist to session (if any)
+        if let Some(ref sid) = resolved_session_id {
+            crate::window_manager::add_user_message(sid, &message, message_source);
+            crate::window_manager::add_assistant_message(sid, &summary, thinking_note.clone());
+        }
+
+        if let Some(note) = thinking_note {
+            emit("chat-stream-thinking", serde_json::json!(note));
+            tokio::task::yield_now().await;
+        }
+
+        let mut rest = summary.as_str();
+        while !rest.is_empty() {
+            let split_at = rest
+                .char_indices()
+                .nth(LOCAL_STREAM_CHUNK_CHARS)
+                .map(|(i, _)| i)
+                .unwrap_or(rest.len());
+
+            let (chunk, next) = rest.split_at(split_at);
+            rest = next;
+
+            if !chunk.is_empty() {
+                emit("chat-stream-chunk", serde_json::json!(chunk));
+                tokio::task::yield_now().await;
+            }
+        }
+        emit("chat-stream-done", serde_json::json!(null));
+        return Ok(());
+    }
+
+    // Handle /memory command - manage memory bank without calling LLM
+    if is_memory_cmd {
+        let thinking_note = Some("Managing memory bank (no LLM call)...".to_string());
+
+        // Parse subcommand: /memory list|save|clear
+        let mut parts = trimmed.split_whitespace();
+        let _ = parts.next(); // skip /memory
+        let subcommand = parts.next().unwrap_or("list");
+
+        let response = match subcommand {
+            "list" => {
+                // List all memory bank entries
+                // Retrieve workspace from session state
+                let workspace_dir = if let Some(ref sid) = resolved_session_id {
+                    crate::window_manager::get_session_state(sid).and_then(|s| s.workspace_dir)
+                } else {
+                    crate::window_manager::get_active_session_workspace()
+                };
+
+                if let Some(workspace_dir) = workspace_dir.as_ref() {
+                    match gestura_core::memory_bank::list_memory_bank(workspace_dir).await {
+                        Ok(entries) if !entries.is_empty() => {
+                            let mut output =
+                                format!("## Memory Bank Entries ({} total)\n\n", entries.len());
+                            for entry in entries {
+                                output.push_str(&format!(
+                                    "### {} (Session: {})\n",
+                                    entry.timestamp.format("%Y-%m-%d %H:%M UTC"),
+                                    entry.session_id
+                                ));
+                                output.push_str(&format!("**Summary**: {}\n\n", entry.summary));
+                                if let Some(path) = entry.file_path {
+                                    output.push_str(&format!("**File**: `{}`\n\n", path.display()));
+                                }
+                                output.push_str("---\n\n");
+                            }
+                            output
+                        }
+                        Ok(_) => "No memory bank entries found.".to_string(),
+                        Err(e) => format!("Error listing memory bank: {}", e),
+                    }
+                } else {
+                    "No workspace directory configured. Cannot access memory bank.".to_string()
+                }
+            }
+            "save" => {
+                // Save current context to memory bank
+                // Retrieve workspace from session state
+                let workspace_dir = if let Some(ref sid) = resolved_session_id {
+                    crate::window_manager::get_session_state(sid).and_then(|s| s.workspace_dir)
+                } else {
+                    crate::window_manager::get_active_session_workspace()
+                };
+
+                if let Some(workspace_dir) = workspace_dir.as_ref() {
+                    let history = if let Some(ref sid) = resolved_session_id {
+                        crate::window_manager::get_session_state(sid)
+                            .map(|state| {
+                                state
+                                    .messages
+                                    .into_iter()
+                                    .map(|msg| msg.content)
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+
+                    if history.is_empty() {
+                        "No conversation history to save.".to_string()
+                    } else {
+                        use gestura_core::context::ContextManager;
+                        let context_manager = ContextManager::new();
+                        let summary = context_manager.summarize_history(&history);
+                        let content = history.join("\n\n");
+
+                        let entry = gestura_core::memory_bank::MemoryBankEntry {
+                            timestamp: chrono::Utc::now(),
+                            session_id: resolved_session_id
+                                .clone()
+                                .unwrap_or_else(|| "unknown".to_string()),
+                            summary: summary.clone(),
+                            content,
+                            file_path: None,
+                        };
+
+                        match gestura_core::memory_bank::save_to_memory_bank(workspace_dir, &entry)
+                            .await
+                        {
+                            Ok(path) => format!(
+                                "✅ Saved {} messages to memory bank\n\n**File**: `{}`\n\n**Summary**: {}",
+                                history.len(),
+                                path.display(),
+                                summary
+                            ),
+                            Err(e) => format!("Error saving to memory bank: {}", e),
+                        }
+                    }
+                } else {
+                    "No workspace directory configured. Cannot save to memory bank.".to_string()
+                }
+            }
+            "clear" => {
+                // Clear all memory bank entries
+                // Retrieve workspace from session state
+                let workspace_dir = if let Some(ref sid) = resolved_session_id {
+                    crate::window_manager::get_session_state(sid).and_then(|s| s.workspace_dir)
+                } else {
+                    crate::window_manager::get_active_session_workspace()
+                };
+
+                if let Some(workspace_dir) = workspace_dir.as_ref() {
+                    let memory_dir = workspace_dir.join(".gestura").join("memory");
+                    match std::fs::remove_dir_all(&memory_dir) {
+                        Ok(_) => {
+                            // Recreate the directory
+                            let _ = std::fs::create_dir_all(&memory_dir);
+                            "✅ Cleared all memory bank entries.".to_string()
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            "Memory bank is already empty.".to_string()
+                        }
+                        Err(e) => format!("Error clearing memory bank: {}", e),
+                    }
+                } else {
+                    "No workspace directory configured. Cannot clear memory bank.".to_string()
+                }
+            }
+            _ => {
+                format!(
+                    "Unknown /memory subcommand: '{}'\n\nUsage:\n- `/memory list` - Show all memory bank entries\n- `/memory save` - Save current conversation to memory bank\n- `/memory clear` - Delete all memory bank entries",
+                    subcommand
+                )
+            }
+        };
 
         // Persist to session (if any)
         if let Some(ref sid) = resolved_session_id {
@@ -1462,15 +1854,23 @@ pub async fn process_chat_message_streaming(
     // Create channel for streaming chunks
     let (tx, mut rx) = mpsc::channel::<StreamChunk>(100);
 
-    // Create cancellation token and store it
+    // Create cancellation token and store it (window-scoped)
     let cancel_token = CancellationToken::new();
+    let cancel_key = if !target_window_label.is_empty() {
+        cancel_key_for_window_label(&target_window_label)
+    } else {
+        GLOBAL_STREAM_CANCEL_KEY.to_string()
+    };
     {
         let mut store = get_cancel_token_store().lock().unwrap();
-        *store = Some(cancel_token.clone());
+        // If an old stream is still recorded for this key, cancel it to avoid overlap.
+        if let Some(prev) = store.insert(cancel_key.clone(), cancel_token.clone()) {
+            prev.cancel();
+        }
     }
 
     // Build the agent request with workspace sandboxing
-    use gestura_core::{AgentPipeline, AgentRequest, PipelineConfig};
+    use gestura_core::{AgentPipeline, AgentRequest};
 
     // Resolve the effective provider/model for this session (session override or global fallback).
     // IMPORTANT: We must use this for BOTH agent awareness metadata and for the actual pipeline config,
@@ -1493,12 +1893,10 @@ pub async fn process_chat_message_streaming(
             (provider, model)
         });
 
-    // Get the provider-specific history limit for token efficiency.
-    // The pipeline will further limit based on its config, but we pre-filter here
-    // to avoid loading excessive messages into memory.
-    let provider = effective_provider.as_str();
-    let max_history = PipelineConfig::context_tokens_for_provider(provider) / 1000; // Rough estimate
-    let max_history = max_history.clamp(10, 50); // Between 10 and 50 messages
+    // Use a conservative default history limit to prevent token explosion.
+    // This matches the PipelineConfig default and prevents excessive context buildup.
+    // Users can adjust this via the pipeline configuration if needed.
+    let max_history = 10; // Conservative default to prevent token explosion
 
     // Build conversation history for the pipeline (session-scoped) BEFORE adding this new user message.
     // This mirrors the CLI TUI behavior.
@@ -1519,7 +1917,6 @@ pub async fn process_chat_message_streaming(
                 total_messages = total_msgs,
                 included = result.len(),
                 max_history = max_history,
-                provider = provider,
                 "Pre-filtered conversation history for token efficiency"
             );
             result
@@ -1577,9 +1974,22 @@ pub async fn process_chat_message_streaming(
             .iter()
             .filter_map(|(name, enabled)| if *enabled { Some(name.clone()) } else { None })
             .collect();
+
+        // Log all tool settings for debugging
+        tracing::debug!(
+            session_id = sid,
+            all_tool_settings = ?tool_settings.enabled_tools,
+            enabled_tools = ?enabled_tools,
+            "Session tool configuration"
+        );
+
         if !enabled_tools.is_empty() {
-            tracing::debug!("Session {} enabled tools: {:?}", sid, enabled_tools);
             request = request.with_allowed_tools(enabled_tools);
+        } else {
+            tracing::warn!(
+                session_id = sid,
+                "No tools enabled in session - LLM will receive category-based tool list"
+            );
         }
     }
 
@@ -1613,7 +2023,9 @@ pub async fn process_chat_message_streaming(
     let cancel_token_clone = cancel_token.clone();
     let pipeline_handle = tokio::spawn(async move {
         // Use provider-optimized config for better token management
-        let pipeline = AgentPipeline::with_provider_optimized_config(cfg_clone);
+        // and integrate with knowledge system
+        let pipeline = AgentPipeline::with_provider_optimized_config(cfg_clone)
+            .with_knowledge(get_knowledge_store(), get_knowledge_settings());
         if let Err(e) = pipeline
             .process_streaming(request, tx.clone(), cancel_token_clone)
             .await
@@ -1706,6 +2118,41 @@ pub async fn process_chat_message_streaming(
                     "summary": summary
                 });
                 emit("chat-context-compacted", payload);
+            }
+            StreamChunk::MemoryBankSaved {
+                file_path,
+                session_id,
+                summary,
+                messages_saved,
+            } => {
+                let payload = serde_json::json!({
+                    "file_path": file_path,
+                    "session_id": session_id,
+                    "summary": summary,
+                    "messages_saved": messages_saved
+                });
+                emit("chat-memory-bank-saved", payload);
+            }
+            StreamChunk::TokenUsageUpdate {
+                estimated,
+                limit,
+                percentage,
+                status,
+                estimated_cost,
+            } => {
+                let status_str = match status {
+                    gestura_core::streaming::TokenUsageStatus::Green => "green",
+                    gestura_core::streaming::TokenUsageStatus::Yellow => "yellow",
+                    gestura_core::streaming::TokenUsageStatus::Red => "red",
+                };
+                let payload = serde_json::json!({
+                    "estimated": estimated,
+                    "limit": limit,
+                    "percentage": percentage,
+                    "status": status_str,
+                    "estimated_cost": estimated_cost
+                });
+                emit("chat-token-usage", payload);
             }
             StreamChunk::ConfigRequest {
                 operation,
@@ -1865,25 +2312,168 @@ pub async fn process_chat_message_streaming(
         }
     }
 
-    // Clear the cancellation token
+    // Clear the cancellation token for this stream
     {
         let mut store = get_cancel_token_store().lock().unwrap();
-        *store = None;
+        store.remove(&cancel_key);
     }
 
     Ok(())
 }
 
-/// Cancel an ongoing streaming chat request
+/// Cancel an ongoing streaming chat request.
+///
+/// Cancellation is scoped to a single webview window.
+///
+/// - If `session_id` is provided, we resolve the session's current chat window label and
+///   cancel that window's stream.
+/// - If `session_id` is omitted, we cancel the stream for the **calling window**.
+///
+/// This prevents a cancel action in one chat window from cancelling another window's
+/// in-flight stream.
 #[tauri::command]
-pub fn cancel_chat_streaming() -> Result<(), String> {
-    let store = get_cancel_token_store().lock().unwrap();
-    if let Some(token) = store.as_ref() {
+pub fn cancel_chat_streaming(
+    webview_window: tauri::WebviewWindow,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    let calling_window_label = webview_window.label().to_string();
+    cancel_chat_streaming_internal(Some(calling_window_label), session_id)
+}
+
+/// Returns recent chat event emission trace entries.
+///
+/// This is a diagnostics-only command used to debug cross-window event leakage.
+/// The trace is an in-memory ring buffer recorded by `crate::chat_events`.
+#[tauri::command]
+pub fn get_chat_event_trace(
+    max: Option<usize>,
+) -> Vec<crate::chat_events::ChatEventTraceEntry> {
+    crate::chat_events::get_chat_event_trace(max)
+}
+
+/// Clears the in-memory chat event emission trace.
+#[tauri::command]
+pub fn clear_chat_event_trace() -> Result<(), String> {
+    crate::chat_events::clear_chat_event_trace();
+    Ok(())
+}
+
+/// Records a frontend "receipt" payload into an in-memory trace.
+///
+/// This is diagnostics-only and best-effort.
+///
+/// The frontend should send a JSON string containing at least:
+/// - `eventName`
+/// - `windowLabel` (optional)
+/// - `sessionId` (optional)
+/// - `incomingSessionId` (optional)
+/// - `accept` + `reason` (optional)
+#[tauri::command]
+pub fn record_chat_receipt(payload: String) -> Result<(), String> {
+    crate::chat_receipts::record_chat_receipt_payload(&payload);
+    Ok(())
+}
+
+/// Returns recent chat receipt trace entries.
+///
+/// This is a diagnostics-only command used to debug cross-window event leakage.
+#[tauri::command]
+pub fn get_chat_receipt_trace(
+    max: Option<usize>,
+) -> Vec<crate::chat_receipts::ChatReceiptTraceEntry> {
+    crate::chat_receipts::get_chat_receipt_trace(max)
+}
+
+/// Clears the in-memory chat receipt trace.
+#[tauri::command]
+pub fn clear_chat_receipt_trace() -> Result<(), String> {
+    crate::chat_receipts::clear_chat_receipt_trace();
+    Ok(())
+}
+
+/// Run a deterministic cross-window isolation probe.
+///
+/// This does not call any external LLM providers. It emits a `chat-probe` event to
+/// two open chat windows and returns an analysis based on backend traces.
+#[tauri::command]
+pub async fn run_chat_isolation_probe(app: tauri::AppHandle) -> Result<crate::chat_probe::ChatIsolationProbeReport, String> {
+    crate::chat_probe::run_chat_isolation_probe(app).await
+}
+
+/// Internal cancellation implementation shared by `cancel_chat_streaming`.
+///
+/// This helper keeps the key-resolution logic testable without requiring an actual
+/// Tauri [`tauri::WebviewWindow`] instance.
+fn cancel_chat_streaming_internal(
+    calling_window_label: Option<String>,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    let mut store = get_cancel_token_store().lock().unwrap();
+
+    let cancel_key = if let Some(sid) = session_id {
+        let label = crate::window_manager::get_session_window_label(&sid).ok_or_else(|| {
+            format!(
+                "Cannot cancel stream: no window label found for session {}",
+                sid
+            )
+        })?;
+        cancel_key_for_window_label(&label)
+    } else if let Some(label) = calling_window_label {
+        cancel_key_for_window_label(&label)
+    } else {
+        return Err(
+            "Cannot cancel stream: no session_id provided and no calling window context".to_string(),
+        );
+    };
+
+    if let Some(token) = store.remove(&cancel_key) {
         token.cancel();
-        tracing::info!("Streaming chat cancelled");
+        tracing::info!(cancel_key = %cancel_key, "Streaming chat cancelled");
         Ok(())
     } else {
-        Err("No active streaming request to cancel".to_string())
+        Err(format!(
+            "No active streaming request to cancel for key {}",
+            cancel_key
+        ))
+    }
+}
+
+#[cfg(test)]
+mod streaming_cancellation_tests {
+    use super::*;
+
+    #[test]
+    fn cancel_key_is_window_scoped() {
+        assert_eq!(cancel_key_for_window_label("chat-abc"), "window:chat-abc");
+    }
+
+    #[test]
+    fn cancel_internal_cancels_calling_window_when_no_session_id() {
+        let label = "chat-test-cancel-internal";
+        let key = cancel_key_for_window_label(label);
+
+        let token = gestura_core::CancellationToken::new();
+        {
+            let mut store = get_cancel_token_store().lock().unwrap();
+            store.remove(&key);
+            store.insert(key.clone(), token.clone());
+        }
+
+        cancel_chat_streaming_internal(Some(label.to_string()), None)
+            .expect("expected cancellation to succeed");
+
+        assert!(token.is_cancelled(), "token should be cancelled");
+        let store = get_cancel_token_store().lock().unwrap();
+        assert!(
+            !store.contains_key(&key),
+            "token entry should be removed after cancellation"
+        );
+    }
+
+    #[test]
+    fn cancel_internal_requires_context() {
+        let err = cancel_chat_streaming_internal(None, None).expect_err("expected error");
+        assert!(err.contains("no session_id") || err.contains("no calling window"));
     }
 }
 
@@ -2530,6 +3120,16 @@ pub fn get_session_counts() -> Result<(usize, usize), String> {
     Ok(crate::window_manager::get_session_counts())
 }
 
+/// Get the conversation history for a session
+#[tauri::command]
+pub fn get_session_history(
+    session_id: String,
+) -> Result<Vec<crate::window_manager::ConversationMessage>, String> {
+    crate::window_manager::get_session_state(&session_id)
+        .map(|state| state.messages)
+        .ok_or_else(|| format!("Session not found: {}", session_id))
+}
+
 /// Get the workspace directory for the current active session
 #[tauri::command]
 pub fn get_session_workspace() -> Option<String> {
@@ -2752,6 +3352,170 @@ pub fn is_session_action_allowed(session_id: String, is_write_operation: bool) -
 #[tauri::command]
 pub fn session_requires_confirmation(session_id: String, is_write_operation: bool) -> bool {
     crate::window_manager::requires_confirmation(&session_id, is_write_operation)
+}
+
+// ============================================================================
+// Task Management Commands
+// ============================================================================
+
+use gestura_core::{Task, TaskManager, TaskStatus};
+use std::sync::OnceLock;
+
+/// Global task manager instance
+static TASK_MANAGER: OnceLock<TaskManager> = OnceLock::new();
+
+/// Get or initialize the global task manager
+fn get_task_manager() -> &'static TaskManager {
+    TASK_MANAGER.get_or_init(|| {
+        // Use the user's home directory for task storage
+        let base_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        TaskManager::new(base_dir)
+    })
+}
+
+/// Create a new task
+#[tauri::command]
+pub fn create_task(
+    session_id: String,
+    name: String,
+    description: String,
+    parent_id: Option<String>,
+) -> Result<Task, String> {
+    let manager = get_task_manager();
+    manager
+        .create_task(&session_id, name, description, parent_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Update a task's status
+#[tauri::command]
+pub fn update_task_status(
+    session_id: String,
+    task_id: String,
+    status: String,
+) -> Result<(), String> {
+    let manager = get_task_manager();
+    let task_status = match status.to_lowercase().as_str() {
+        "notstarted" | "not_started" => TaskStatus::NotStarted,
+        "inprogress" | "in_progress" => TaskStatus::InProgress,
+        "completed" => TaskStatus::Completed,
+        "cancelled" => TaskStatus::Cancelled,
+        _ => {
+            return Err(format!(
+                "Invalid task status: {}. Use 'notstarted', 'inprogress', 'completed', or 'cancelled'",
+                status
+            ));
+        }
+    };
+    manager
+        .update_task_status(&session_id, &task_id, task_status)
+        .map_err(|e| e.to_string())
+}
+
+/// Update a task's name and/or description
+#[tauri::command]
+pub fn update_task(
+    session_id: String,
+    task_id: String,
+    name: Option<String>,
+    description: Option<String>,
+) -> Result<(), String> {
+    let manager = get_task_manager();
+    manager
+        .update_task(&session_id, &task_id, name, description)
+        .map_err(|e| e.to_string())
+}
+
+/// Delete a task
+#[tauri::command]
+pub fn delete_task(session_id: String, task_id: String) -> Result<Task, String> {
+    let manager = get_task_manager();
+    manager
+        .delete_task(&session_id, &task_id)
+        .map_err(|e| e.to_string())
+}
+
+/// List all tasks for a session
+#[tauri::command]
+pub fn list_tasks(session_id: String) -> Result<Vec<Task>, String> {
+    let manager = get_task_manager();
+    manager.list_tasks(&session_id).map_err(|e| e.to_string())
+}
+
+/// Get task hierarchy for a session (root tasks with their subtasks)
+#[tauri::command]
+pub fn get_task_hierarchy(session_id: String) -> Result<Vec<(Task, Vec<Task>)>, String> {
+    let manager = get_task_manager();
+    manager
+        .get_hierarchy(&session_id)
+        .map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// Knowledge Management Commands
+// ============================================================================
+
+use gestura_core::{
+    KnowledgeItem, KnowledgeSettingsManager, KnowledgeStore, register_builtin_knowledge,
+};
+
+/// Global knowledge store instance
+static KNOWLEDGE_STORE: OnceLock<KnowledgeStore> = OnceLock::new();
+
+/// Global knowledge settings manager instance
+static KNOWLEDGE_SETTINGS: OnceLock<KnowledgeSettingsManager> = OnceLock::new();
+
+/// Get or initialize the global knowledge store
+fn get_knowledge_store() -> &'static KnowledgeStore {
+    KNOWLEDGE_STORE.get_or_init(|| {
+        let store = KnowledgeStore::with_default_dir();
+        register_builtin_knowledge(&store);
+        store
+    })
+}
+
+/// Get or initialize the global knowledge settings manager
+fn get_knowledge_settings() -> &'static KnowledgeSettingsManager {
+    KNOWLEDGE_SETTINGS.get_or_init(|| {
+        let base_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        KnowledgeSettingsManager::new(base_dir)
+    })
+}
+
+/// List all available knowledge items
+#[tauri::command]
+pub fn list_knowledge_items() -> Result<Vec<KnowledgeItem>, String> {
+    let store = get_knowledge_store();
+    Ok(store.list())
+}
+
+/// Get a specific knowledge item by ID
+#[tauri::command]
+pub fn get_knowledge_item(knowledge_id: String) -> Result<Option<KnowledgeItem>, String> {
+    let store = get_knowledge_store();
+    Ok(store.get(&knowledge_id))
+}
+
+/// Set knowledge enabled/disabled for a session
+#[tauri::command]
+pub fn set_knowledge_enabled(
+    session_id: String,
+    knowledge_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    let settings = get_knowledge_settings();
+    settings
+        .set_knowledge_enabled(&session_id, &knowledge_id, enabled)
+        .map_err(|e| e.to_string())
+}
+
+/// Get list of enabled knowledge IDs for a session
+#[tauri::command]
+pub fn get_enabled_knowledge(session_id: String) -> Result<Vec<String>, String> {
+    let settings = get_knowledge_settings();
+    settings
+        .get_enabled_knowledge(&session_id)
+        .map_err(|e| e.to_string())
 }
 
 // ============================================================================
@@ -3408,10 +4172,62 @@ pub async fn migrate_api_keys_to_keychain() -> Result<serde_json::Value, String>
         migrated.push("brave".to_string());
     }
 
+    // Migrate Voice/STT OpenAI key (separate from LLM OpenAI key)
+    if let Some(ref key) = cfg.voice.openai_api_key
+        && !key.is_empty()
+    {
+        storage
+            .store_secret("gestura_api_key_voice_openai", key)
+            .await
+            .map_err(|e| e.to_string())?;
+        migrated.push("voice_openai".to_string());
+    }
+
     tracing::info!("Migrated {} API keys to secure storage", migrated.len());
 
     Ok(serde_json::json!({
         "migrated": migrated,
         "count": migrated.len()
     }))
+}
+
+/// Get the current system theme (light or dark).
+/// Returns "light" or "dark" based on the system's appearance settings.
+#[tauri::command]
+pub fn get_system_theme() -> String {
+    if is_system_dark_mode() {
+        "dark".to_string()
+    } else {
+        "light".to_string()
+    }
+}
+
+/// Detect if the system is using dark mode (macOS-specific).
+#[cfg(target_os = "macos")]
+fn is_system_dark_mode() -> bool {
+    use std::process::Command;
+
+    // Query macOS for the current appearance setting
+    let output = Command::new("defaults")
+        .args(["read", "-g", "AppleInterfaceStyle"])
+        .output();
+
+    match output {
+        Ok(output) => {
+            let result = String::from_utf8_lossy(&output.stdout);
+            result.trim().eq_ignore_ascii_case("dark")
+        }
+        Err(_) => {
+            // If the command fails or the key doesn't exist, assume light mode
+            false
+        }
+    }
+}
+
+/// Detect if the system is using dark mode (non-macOS platforms).
+#[cfg(not(target_os = "macos"))]
+fn is_system_dark_mode() -> bool {
+    // Default to light mode on non-macOS platforms
+    // TODO: Add Windows/Linux dark mode detection
+    false
 }

@@ -105,6 +105,18 @@ pub mod window_manager;
 pub mod kv;
 pub mod voice_select;
 
+/// Chat event utilities (window-scoped emission + optional diagnostics trace).
+pub mod chat_events;
+
+/// Small shared utilities.
+pub(crate) mod text_utils;
+
+/// Frontend receipt tracing utilities (diagnostics-only).
+pub mod chat_receipts;
+
+/// Multi-window chat isolation probe utilities (diagnostics-only).
+pub mod chat_probe;
+
 pub mod api;
 
 // ============================================================================
