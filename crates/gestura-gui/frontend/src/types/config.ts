@@ -44,6 +44,14 @@ export interface McpTool {
   endpoint: string;
 }
 
+export interface PipelineSettings {
+  max_history_messages: number;
+  auto_compact_threshold_percent: number;
+  compaction_strategy: string;
+  max_context_tokens: number;
+  log_token_usage: boolean;
+}
+
 export interface AppConfig {
   hotkey_listen: string;
   grace_period_secs: number;
@@ -54,4 +62,5 @@ export interface AppConfig {
   mdh_pointers: Record<string, string>;
   nats_url: string;
   developer: DeveloperSettings;
+  pipeline: PipelineSettings;
 }

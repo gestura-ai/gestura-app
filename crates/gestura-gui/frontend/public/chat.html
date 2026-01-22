@@ -36,6 +36,7 @@
             --blur: blur(20px);
         }
 
+        /* Auto mode: respect system preference */
         @media (prefers-color-scheme: dark) {
             :root {
                 /* Premium Dark Palette */
@@ -58,6 +59,50 @@
                 --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.3);
                 --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.5);
             }
+        }
+
+        /* Force light mode (overrides system preference) */
+        html[data-theme="light"] {
+            --bg-base: #fbfbfd;
+            --bg-glass: rgba(255, 255, 255, 0.7);
+            --bg-glass-strong: rgba(255, 255, 255, 0.85);
+            --glass-border: rgba(0, 0, 0, 0.05);
+            --text-primary: #1d1d1f;
+            --text-secondary: #86868b;
+            --accent-primary: #0071e3;
+            --accent-glow: rgba(0, 113, 227, 0.3);
+            --user-bubble: #0071e3;
+            --user-text: #ffffff;
+            --agent-bubble: rgba(0, 0, 0, 0.04);
+            --agent-text: #1d1d1f;
+            --success: #34c759;
+            --error: #ff3b30;
+            --tool-bg: rgba(52, 199, 89, 0.1);
+            --tool-border: rgba(52, 199, 89, 0.3);
+            --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.05);
+            --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.08);
+        }
+
+        /* Force dark mode (overrides system preference) */
+        html[data-theme="dark"] {
+            --bg-base: #000000;
+            --bg-glass: rgba(28, 28, 30, 0.6);
+            --bg-glass-strong: rgba(44, 44, 46, 0.8);
+            --glass-border: rgba(255, 255, 255, 0.1);
+            --text-primary: #f5f5f7;
+            --text-secondary: #86868b;
+            --accent-primary: #2997ff;
+            --accent-glow: rgba(41, 151, 255, 0.3);
+            --user-bubble: #2997ff;
+            --user-text: #ffffff;
+            --agent-bubble: rgba(255, 255, 255, 0.08);
+            --agent-text: #f5f5f7;
+            --success: #30d158;
+            --error: #ff453a;
+            --tool-bg: rgba(48, 209, 88, 0.15);
+            --tool-border: rgba(48, 209, 88, 0.3);
+            --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.3);
+            --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.5);
         }
 
         * {
@@ -451,6 +496,274 @@
             accent-color: var(--accent-primary);
         }
 
+        /* Task Panel Styles */
+        .task-actions {
+            margin-bottom: 16px;
+        }
+
+        .btn-task-add {
+            width: 100%;
+            padding: 10px 16px;
+            background: var(--accent-primary);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            transition: all 0.2s ease;
+        }
+
+        .btn-task-add:hover {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+
+        .task-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .task-empty {
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 13px;
+            padding: 32px 16px;
+        }
+
+        .task-item {
+            background: var(--bg-glass);
+            border: 1px solid var(--glass-border);
+            border-radius: 8px;
+            padding: 12px;
+            transition: all 0.2s ease;
+        }
+
+        .task-item:hover {
+            background: var(--bg-glass-strong);
+            border-color: var(--accent-primary);
+        }
+
+        .task-item.subtask {
+            margin-left: 20px;
+            border-left: 2px solid var(--accent-primary);
+        }
+
+        .task-header {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+
+        .task-status-icon {
+            flex-shrink: 0;
+            width: 18px;
+            height: 18px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .task-status-icon.not-started {
+            background: rgba(128, 128, 128, 0.2);
+            color: var(--text-secondary);
+        }
+
+        .task-status-icon.in-progress {
+            background: rgba(10, 132, 255, 0.2);
+            color: #0a84ff;
+        }
+
+        .task-status-icon.completed {
+            background: rgba(52, 199, 89, 0.2);
+            color: var(--success);
+        }
+
+        .task-status-icon.cancelled {
+            background: rgba(255, 59, 48, 0.2);
+            color: var(--error);
+        }
+
+        .task-name {
+            flex: 1;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-primary);
+            word-break: break-word;
+        }
+
+        .task-description {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-left: 26px;
+            line-height: 1.4;
+        }
+
+        .task-actions-row {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+            margin-left: 26px;
+        }
+
+        .task-btn {
+            padding: 4px 8px;
+            font-size: 11px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            background: var(--bg-glass);
+            color: var(--text-secondary);
+        }
+
+        .task-btn:hover {
+            background: var(--bg-glass-strong);
+            color: var(--text-primary);
+        }
+
+        .task-btn.delete {
+            color: var(--error);
+        }
+
+        .task-btn.delete:hover {
+            background: rgba(255, 59, 48, 0.1);
+        }
+
+	        /* Knowledge Panel */
+        .knowledge-info {
+            padding: 12px;
+            background: var(--bg-glass);
+            border: 1px solid var(--glass-border);
+            border-radius: 8px;
+            margin-bottom: 16px;
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+
+	        .knowledge-toolbar {
+	            display: flex;
+	            align-items: center;
+	            gap: 10px;
+	            margin-bottom: 12px;
+	        }
+
+	        .knowledge-search {
+	            flex: 1;
+	            min-width: 0;
+	            padding: 10px 12px;
+	            border-radius: 10px;
+	            background: var(--bg-glass);
+	            border: 1px solid var(--glass-border);
+	            color: var(--text-primary);
+	            outline: none;
+	        }
+
+	        .knowledge-enabled-count {
+	            font-size: 12px;
+	            color: var(--text-secondary);
+	            white-space: nowrap;
+	        }
+
+        .knowledge-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .knowledge-empty {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        .knowledge-item {
+            background: var(--bg-glass);
+            border: 1px solid var(--glass-border);
+            border-radius: 8px;
+            padding: 12px;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+        }
+
+        .knowledge-item:hover {
+            background: var(--bg-glass-strong);
+            border-color: var(--accent-primary);
+        }
+
+        .knowledge-checkbox {
+            margin-top: 2px;
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            accent-color: var(--accent-primary);
+        }
+
+        .knowledge-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .knowledge-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 4px;
+        }
+
+        .knowledge-name {
+            font-weight: 500;
+            color: var(--text-primary);
+            font-size: 14px;
+        }
+
+        .knowledge-category {
+            padding: 2px 8px;
+            background: var(--bg-glass-strong);
+            border: 1px solid var(--glass-border);
+            border-radius: 4px;
+            font-size: 11px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .knowledge-description {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.4;
+        }
+
+        .knowledge-triggers {
+            margin-top: 6px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+
+        .knowledge-trigger {
+            padding: 2px 6px;
+            background: rgba(var(--accent-primary-rgb), 0.1);
+            border-radius: 3px;
+            font-size: 11px;
+            color: var(--accent-primary);
+            font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+        }
+
         /* Chat Area */
         .chat-container {
             flex: 1;
@@ -588,6 +901,35 @@
             overflow-y: auto;
             white-space: pre-wrap;
             word-break: break-word;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .tool-result.truncated::after {
+            content: '▼ Click to expand';
+            display: block;
+            margin-top: 8px;
+            font-size: 11px;
+            opacity: 0.6;
+            font-style: italic;
+        }
+
+        .tool-result.expanded::after {
+            content: '▲ Click to collapse';
+            display: block;
+            margin-top: 8px;
+            font-size: 11px;
+            opacity: 0.6;
+            font-style: italic;
+        }
+
+        .tool-result.expanded {
+            max-height: none;
+        }
+
+        .tool-result:hover {
+            opacity: 0.9;
         }
 
         .tool-result.success {
@@ -1099,6 +1441,33 @@
             transform: scale(0.95);
         }
 
+        .btn-enhance {
+            background: linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%);
+            color: white;
+            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+        }
+
+        .btn-enhance:hover {
+            background: linear-gradient(135deg, #7C3AED 0%, #6D28D9 100%);
+            transform: scale(1.05);
+            box-shadow: 0 6px 16px rgba(139, 92, 246, 0.4);
+            color: white;
+        }
+
+        .btn-enhance:active {
+            transform: scale(0.95);
+        }
+
+        .btn-enhance.loading {
+            animation: pulse 1.5s ease-in-out infinite;
+            pointer-events: none;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
         .btn-cancel {
             background: var(--error);
             color: white;
@@ -1366,10 +1735,64 @@
             <select class="model-selector-standalone" id="modelSelect" title="Select model" disabled>
                 <option value="">Model</option>
             </select>
+            <button class="btn-settings" id="taskPanelBtn" title="Tasks (Ctrl/Cmd+T)">
+                <span class="icon-checklist"></span>
+            </button>
+	    	    <button class="btn-settings" id="knowledgePanelBtn" title="Skills (Ctrl/Cmd+Shift+K)">
+                <span class="icon-knowledge"></span>
+            </button>
             <button class="btn-settings" id="sessionSettingsBtn" title="Session Settings">
                 <span class="icon-settings"></span>
             </button>
             <div class="status-badge" id="status">Ready</div>
+        </div>
+    </div>
+
+    <!-- Task Panel Overlay -->
+    <div class="session-panel-overlay" id="taskPanelOverlay"></div>
+
+    <!-- Task Panel -->
+    <div class="session-panel" id="taskPanel">
+        <div class="session-panel-header">
+            <h3>Tasks</h3>
+            <button class="session-panel-close" id="taskPanelClose">
+                <span class="icon-close"></span>
+            </button>
+        </div>
+        <div class="session-panel-content">
+            <div class="task-actions">
+                <button class="btn-task-add" id="addTaskBtn" title="Add Task">
+                    <span class="icon-plus"></span> New Task
+                </button>
+            </div>
+            <div class="task-list" id="taskList">
+                <div class="task-empty">No tasks yet. Click "New Task" to get started.</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Knowledge Panel Overlay -->
+    <div class="session-panel-overlay" id="knowledgePanelOverlay"></div>
+
+	    <!-- Knowledge Panel -->
+    <div class="session-panel" id="knowledgePanel">
+        <div class="session-panel-header">
+	            <h3>Skills</h3>
+            <button class="session-panel-close" id="knowledgePanelClose">
+                <span class="icon-close"></span>
+            </button>
+        </div>
+        <div class="session-panel-content">
+            <div class="knowledge-info">
+	                Enable session skills (knowledge packs). Enabled items will be included in the agent's context for this chat.
+            </div>
+	            <div class="knowledge-toolbar">
+	                <input class="knowledge-search" id="knowledgeSearch" type="text" placeholder="Search skills…" autocomplete="off" />
+	                <div class="knowledge-enabled-count" id="knowledgeEnabledCount"></div>
+	            </div>
+            <div class="knowledge-list" id="knowledgeList">
+                <div class="knowledge-empty">Loading knowledge...</div>
+            </div>
         </div>
     </div>
 
@@ -1456,6 +1879,16 @@
             </button>
             <input type="text" class="message-input" id="messageInput" placeholder="Type a message..."
                 autocomplete="off">
+            <button class="btn-icon btn-enhance" id="enhanceButton" title="Enhance prompt (Cmd+K)">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2L13.5 8.5L20 10L13.5 11.5L12 18L10.5 11.5L4 10L10.5 8.5L12 2Z"
+                          fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M19 15L19.5 17L21.5 17.5L19.5 18L19 20L18.5 18L16.5 17.5L18.5 17L19 15Z"
+                          fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M5 4L5.5 5.5L7 6L5.5 6.5L5 8L4.5 6.5L3 6L4.5 5.5L5 4Z"
+                          fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </button>
             <button class="btn-icon btn-primary" id="sendButton" title="Send message">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"></path>
@@ -1471,10 +1904,64 @@
 
     <!-- Script -->
     <script>
+        // =====================================================================
+        // Theme Management
+        // =====================================================================
+        async function initTheme() {
+            try {
+                // Load config to get theme preference
+                const config = await window.__TAURI__.core.invoke('get_config');
+                const themeMode = config?.ui?.theme_mode || 'system';
+
+                console.log('[Theme] Loaded theme mode from config:', themeMode);
+
+                // Apply theme based on preference
+                applyTheme(themeMode);
+
+                // Listen for system theme changes (only when in "system" mode)
+                if (themeMode === 'system') {
+                    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+                    mediaQuery.addEventListener('change', (e) => {
+                        console.log('[Theme] System theme changed to:', e.matches ? 'dark' : 'light');
+                        applyTheme('system');
+                    });
+                }
+            } catch (e) {
+                console.error('[Theme] Failed to initialize theme:', e);
+                // Fallback to system preference
+                applyTheme('system');
+            }
+        }
+
+        function applyTheme(mode) {
+            const html = document.documentElement;
+
+            if (mode === 'light') {
+                html.setAttribute('data-theme', 'light');
+                console.log('[Theme] Applied: light (forced)');
+            } else if (mode === 'dark') {
+                html.setAttribute('data-theme', 'dark');
+                console.log('[Theme] Applied: dark (forced)');
+            } else {
+                // System mode: remove data-theme to let CSS media query handle it
+                html.removeAttribute('data-theme');
+                const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                console.log('[Theme] Applied: system (detected:', isDark ? 'dark' : 'light', ')');
+            }
+        }
+
+        // Initialize theme immediately (before DOM ready)
+        if (window.__TAURI__) {
+            initTheme();
+        }
+
+        // =====================================================================
         // Core Elements
+        // =====================================================================
         const messagesContainer = document.getElementById('messages');
         const messageInput = document.getElementById('messageInput');
         const sendButton = document.getElementById('sendButton');
+        const enhanceButton = document.getElementById('enhanceButton');
         const cancelButton = document.getElementById('cancelButton');
         const voiceBtn = document.getElementById('voiceBtn');
         const typingIndicator = document.getElementById('typing');
@@ -1495,11 +1982,312 @@
         let streamingContent = '';
         let currentThinkingDiv = null;
         let currentToolCard = null;
-        let currentToolArgsEl = null;
-        let messageQueue = []; // Queue for messages sent during processing
+	        let currentToolArgsEl = null;
+	        /**
+	         * Queue of messages received/sent while a stream is in-flight.
+	         *
+	         * We keep this small and explicit so both typed text and voice (STT)
+	         * can be queued without leaking UI-only prefixes into the LLM input.
+	         *
+	         * @typedef {{ kind: 'text'|'voice', text: string }} QueuedMessage
+	         * @type {QueuedMessage[]}
+	         */
+	        let messageQueue = [];
         const defaultPlaceholder = 'Type a message...';
         const processingPlaceholder = 'Type to queue another message...';
-        const sessionId = new URLSearchParams(window.location.search).get('session_id');
+		        const sessionId = new URLSearchParams(window.location.search).get('session_id');
+
+	        /**
+	         * Debug instrumentation (disabled by default).
+	         *
+	         * Enable via:
+	         * - query param `?debug=1`
+	         * - localStorage key `gestura_debug=1`
+	         *
+	         * This is used to diagnose cross-window event leakage by:
+	         * - showing the current webview label + session id
+	         * - showing whether we are listening with `webview.listen` or `event.listen`
+	         * - displaying a local ring buffer of accepted/ignored events
+	         * - fetching the backend chat event trace (emit_to target/fallback)
+	         */
+	        const LOCAL_EVENT_TRACE_MAX = 200;
+	        const localEventTrace = [];
+	        const debugMeta = {
+	            windowLabel: null,
+	            listenerMode: null,
+	        };
+
+	        /** @returns {boolean} */
+	        function isDebugEnabled() {
+	            try {
+	                const qp = new URLSearchParams(window.location.search).get('debug');
+	                if (qp === '1') return true;
+	                return localStorage.getItem('gestura_debug') === '1';
+	            } catch {
+	                return false;
+	            }
+	        }
+
+	        /**
+	         * Persist debug enablement.
+	         * @param {boolean} enabled
+	         */
+	        function setDebugEnabled(enabled) {
+	            try {
+	                localStorage.setItem('gestura_debug', enabled ? '1' : '0');
+	            } catch {
+	                // ignore
+	            }
+	            renderDebugPanel();
+	        }
+
+	        /**
+	         * Record a small, local (frontend) event trace entry.
+	         * @param {any} entry
+	         */
+	        function pushLocalEventTrace(entry) {
+	            if (!isDebugEnabled()) return;
+	            localEventTrace.push(entry);
+	            while (localEventTrace.length > LOCAL_EVENT_TRACE_MAX) localEventTrace.shift();
+	            renderDebugPanel();
+	        }
+
+	        /**
+	         * Update debug metadata shown in the debug panel.
+	         * @param {{windowLabel?: string|null, listenerMode?: string|null}} partial
+	         */
+	        function updateDebugMeta(partial) {
+	            if (!partial) return;
+	            if (Object.prototype.hasOwnProperty.call(partial, 'windowLabel')) debugMeta.windowLabel = partial.windowLabel;
+	            if (Object.prototype.hasOwnProperty.call(partial, 'listenerMode')) debugMeta.listenerMode = partial.listenerMode;
+	            renderDebugPanel();
+	        }
+
+	        /** @returns {HTMLElement|null} */
+	        function ensureDebugPanel() {
+	            if (!isDebugEnabled()) return null;
+	            let panel = document.getElementById('gestura-debug-panel');
+	            if (panel) return panel;
+	
+	            panel = document.createElement('div');
+	            panel.id = 'gestura-debug-panel';
+	            panel.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:99999;width:420px;max-height:60vh;overflow:auto;background:rgba(20,20,20,0.92);color:#fff;border:1px solid rgba(255,255,255,0.15);border-radius:10px;padding:10px;font:12px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;';
+		            panel.innerHTML = `
+	                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+	                    <div><strong>Debug</strong> <span style="opacity:0.75">(Ctrl+Shift+D toggles)</span></div>
+	                    <button id="gestura-debug-close" style="cursor:pointer;border:1px solid rgba(255,255,255,0.2);background:transparent;color:#fff;border-radius:6px;padding:2px 8px;">Close</button>
+	                </div>
+	                <div id="gestura-debug-meta" style="margin-top:8px;opacity:0.95"></div>
+	                <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">
+	                    <button id="gestura-debug-clear-local" style="cursor:pointer;border:1px solid rgba(255,255,255,0.2);background:transparent;color:#fff;border-radius:6px;padding:4px 8px;">Clear local</button>
+	                    <button id="gestura-debug-clear-backend" style="cursor:pointer;border:1px solid rgba(255,255,255,0.2);background:transparent;color:#fff;border-radius:6px;padding:4px 8px;">Clear backend trace</button>
+	                    <button id="gestura-debug-fetch-backend" style="cursor:pointer;border:1px solid rgba(255,255,255,0.2);background:transparent;color:#fff;border-radius:6px;padding:4px 8px;">Fetch backend trace</button>
+		                    <button id="gestura-debug-clear-backend-receipts" style="cursor:pointer;border:1px solid rgba(255,255,255,0.2);background:transparent;color:#fff;border-radius:6px;padding:4px 8px;">Clear receipts</button>
+		                    <button id="gestura-debug-fetch-backend-receipts" style="cursor:pointer;border:1px solid rgba(255,255,255,0.2);background:transparent;color:#fff;border-radius:6px;padding:4px 8px;">Fetch receipts</button>
+	                </div>
+	                <div style="margin-top:8px;">
+	                    <div style="opacity:0.8;margin-bottom:4px;">Local accepted/ignored events (most recent last)</div>
+	                    <pre id="gestura-debug-local" style="white-space:pre-wrap;word-break:break-word;background:rgba(255,255,255,0.06);padding:8px;border-radius:8px;max-height:18vh;overflow:auto;margin:0;"></pre>
+	                </div>
+	                <div style="margin-top:8px;">
+	                    <div style="opacity:0.8;margin-bottom:4px;">Backend emit trace</div>
+	                    <pre id="gestura-debug-backend" style="white-space:pre-wrap;word-break:break-word;background:rgba(255,255,255,0.06);padding:8px;border-radius:8px;max-height:18vh;overflow:auto;margin:0;"></pre>
+	                </div>
+		                <div style="margin-top:8px;">
+		                    <div style="opacity:0.8;margin-bottom:4px;">Backend receipt trace (what each window accepted/ignored)</div>
+		                    <pre id="gestura-debug-backend-receipts" style="white-space:pre-wrap;word-break:break-word;background:rgba(255,255,255,0.06);padding:8px;border-radius:8px;max-height:18vh;overflow:auto;margin:0;"></pre>
+		                </div>
+	            `;
+	
+	            document.body.appendChild(panel);
+
+	            const closeBtn = panel.querySelector('#gestura-debug-close');
+	            closeBtn?.addEventListener('click', () => setDebugEnabled(false));
+	
+	            panel.querySelector('#gestura-debug-clear-local')?.addEventListener('click', () => {
+	                localEventTrace.length = 0;
+	                renderDebugPanel();
+	            });
+	
+	            panel.querySelector('#gestura-debug-clear-backend')?.addEventListener('click', async () => {
+	                try {
+	                    if (!window.__TAURI__) throw new Error('Tauri not available');
+	                    await window.__TAURI__.core.invoke('clear_chat_event_trace', {});
+	                    const out = panel.querySelector('#gestura-debug-backend');
+	                    if (out) out.textContent = '[cleared]';
+	                } catch (e) {
+	                    const out = panel.querySelector('#gestura-debug-backend');
+	                    if (out) out.textContent = `clear_chat_event_trace failed: ${e}`;
+	                }
+	            });
+	
+	            panel.querySelector('#gestura-debug-fetch-backend')?.addEventListener('click', async () => {
+	                try {
+	                    if (!window.__TAURI__) throw new Error('Tauri not available');
+	                    const trace = await window.__TAURI__.core.invoke('get_chat_event_trace', { max: 200 });
+	                    const out = panel.querySelector('#gestura-debug-backend');
+	                    if (out) out.textContent = JSON.stringify(trace, null, 2);
+	                } catch (e) {
+	                    const out = panel.querySelector('#gestura-debug-backend');
+	                    if (out) out.textContent = `get_chat_event_trace failed: ${e}`;
+	                }
+	            });
+
+		            panel.querySelector('#gestura-debug-clear-backend-receipts')?.addEventListener('click', async () => {
+		                try {
+		                    if (!window.__TAURI__) throw new Error('Tauri not available');
+		                    await window.__TAURI__.core.invoke('clear_chat_receipt_trace', {});
+		                    const out = panel.querySelector('#gestura-debug-backend-receipts');
+		                    if (out) out.textContent = '[cleared]';
+		                } catch (e) {
+		                    const out = panel.querySelector('#gestura-debug-backend-receipts');
+		                    if (out) out.textContent = `clear_chat_receipt_trace failed: ${e}`;
+		                }
+		            });
+
+		            panel.querySelector('#gestura-debug-fetch-backend-receipts')?.addEventListener('click', async () => {
+		                try {
+		                    if (!window.__TAURI__) throw new Error('Tauri not available');
+		                    const trace = await window.__TAURI__.core.invoke('get_chat_receipt_trace', { max: 200 });
+		                    const out = panel.querySelector('#gestura-debug-backend-receipts');
+		                    if (out) out.textContent = JSON.stringify(trace, null, 2);
+		                } catch (e) {
+		                    const out = panel.querySelector('#gestura-debug-backend-receipts');
+		                    if (out) out.textContent = `get_chat_receipt_trace failed: ${e}`;
+		                }
+		            });
+
+	            return panel;
+	        }
+
+	        /**
+	         * Render (or hide) the debug panel.
+	         */
+	        function renderDebugPanel() {
+	            const enabled = isDebugEnabled();
+	            const panel = document.getElementById('gestura-debug-panel');
+	            if (!enabled) {
+	                if (panel) panel.remove();
+	                return;
+	            }
+	            const p = ensureDebugPanel();
+	            if (!p) return;
+	
+	            const metaEl = p.querySelector('#gestura-debug-meta');
+	            if (metaEl) {
+	                metaEl.innerHTML = [
+	                    `sessionId: <strong>${sessionId || '(none)'}</strong>`,
+	                    `windowLabel: <strong>${debugMeta.windowLabel || '(unknown)'}</strong>`,
+	                    `listenerMode: <strong>${debugMeta.listenerMode || '(unknown)'}</strong>`,
+	                ].join('<br/>');
+	            }
+
+	            const localEl = p.querySelector('#gestura-debug-local');
+	            if (localEl) {
+	                const compact = localEventTrace.slice(-60).map((e) => {
+	                    const ts = e.ts_ms ? new Date(e.ts_ms).toISOString() : '';
+	                    const sIn = e.incomingSessionId || '(none)';
+	                    const ok = e.accept ? 'ACCEPT' : 'IGNORE';
+	                    const reason = e.reason ? ` (${e.reason})` : '';
+	                    return `${ts} ${ok}${reason} ${e.eventName} incomingSessionId=${sIn}`;
+	                });
+	                localEl.textContent = compact.join('\n');
+	            }
+	        }
+
+	        /**
+	         * Resolve the current webview window instance when available (Tauri v2).
+	         * @returns {Promise<any|null>}
+	         */
+	        async function resolveCurrentWebviewWindow() {
+	            try {
+	                const t = window.__TAURI__;
+	                if (!t) return null;
+	                const fn = t.webviewWindow && t.webviewWindow.getCurrentWebviewWindow;
+	                if (typeof fn !== 'function') return null;
+	                const maybe = fn();
+	                return (maybe && typeof maybe.then === 'function') ? await maybe : maybe;
+	            } catch {
+	                return null;
+	            }
+	        }
+
+	        /**
+	         * Best-effort window label lookup for correlation.
+	         * @param {any|null} webview
+	         * @returns {Promise<string|null>}
+	         */
+	        async function resolveWindowLabel(webview) {
+	            try {
+	                if (!webview) return null;
+	                // WebviewWindow.label is typically a property in Tauri v2.
+	                if (typeof webview.label === 'string') return webview.label;
+	                if (typeof webview.label === 'function') {
+	                    const maybe = webview.label();
+	                    return (maybe && typeof maybe.then === 'function') ? await maybe : maybe;
+	                }
+	                return null;
+	            } catch {
+	                return null;
+	            }
+	        }
+
+	        // Toggle debug panel hotkey
+	        document.addEventListener('keydown', (e) => {
+	            if (e && e.ctrlKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
+	                e.preventDefault();
+	                setDebugEnabled(!isDebugEnabled());
+	            }
+	        });
+
+	        /**
+	         * Format a user-visible message string (optionally queued + voice-tagged).
+	         *
+	         * @param {'text'|'voice'} kind
+	         * @param {string} text
+	         * @param {boolean} queued
+	         * @returns {string}
+	         */
+	        function formatUserDisplayText(kind, text, queued) {
+	            const q = queued ? '⏳ ' : '';
+	            const v = kind === 'voice' ? '🎤 ' : '';
+	            return `${q}${v}${text}`;
+	        }
+
+	        /**
+	         * Enhance a prompt using the backend prompt enhancer (session-aware).
+	         * Falls back to the original text on error.
+	         *
+	         * @param {string} text
+	         * @returns {Promise<string>}
+	         */
+	        async function enhanceTextForSession(text) {
+	            const original = (text || '').trim();
+	            if (!original) return '';
+	            if (!window.__TAURI__) return original;
+	            try {
+	                /** @type {any} */
+					const payload = { prompt: original };
+					if (sessionId) payload.sessionId = sessionId;
+	                const enhanced = await window.__TAURI__.core.invoke('enhance_prompt', payload);
+	                if (typeof enhanced === 'string' && enhanced.trim().length > 0) return enhanced;
+	            } catch (e) {
+	                console.warn('[Voice] Prompt enhancement failed; sending original transcript', e);
+	            }
+	            return original;
+	        }
+
+	        /**
+	         * Send a voice transcript to the agent streaming pipeline.
+	         * This function does NOT add a user message to the chat UI; callers should
+	         * render the transcript themselves (so the UI reflects what was heard).
+	         *
+	         * @param {string} transcript
+	         */
+	        async function sendVoiceTranscriptToAgent(transcript) {
+	            const enhanced = await enhanceTextForSession(transcript);
+	            await processMessage(enhanced);
+	        }
 
         function setStatus(text, kind = 'ready') {
             if (!statusElement) return;
@@ -1797,11 +2585,24 @@
             const text = messageInput.value.trim();
             if (!text) return;
 
-            messageQueue.push(text);
-            addMessage(`⏳ ${text}`, 'user'); // Show queued message with indicator
+	            messageQueue.push({ kind: 'text', text });
+	            addMessage(formatUserDisplayText('text', text, true), 'user'); // Show queued message with indicator
             messageInput.value = '';
             updateQueueIndicator();
         }
+
+	        /**
+	         * Queue a voice transcript for later processing.
+	         *
+	         * @param {string} transcript
+	         */
+	        function queueVoiceTranscript(transcript) {
+	            const text = (transcript || '').trim();
+	            if (!text) return;
+	            messageQueue.push({ kind: 'voice', text });
+	            addMessage(formatUserDisplayText('voice', text, true), 'user');
+	            updateQueueIndicator();
+	        }
 
         // Update the queue indicator UI
         function updateQueueIndicator() {
@@ -1825,19 +2626,25 @@
         async function processNextInQueue() {
             if (messageQueue.length === 0 || isProcessing) return;
 
-            const nextMessage = messageQueue.shift();
+	            const nextItem = messageQueue.shift();
             updateQueueIndicator();
+	            if (!nextItem || !nextItem.text) return;
 
             // Update the queued message to remove ⏳ indicator
             const messages = messagesContainer.querySelectorAll('.message.user .message-content');
             for (const msg of messages) {
-                if (msg.textContent === `⏳ ${nextMessage}`) {
-                    msg.textContent = nextMessage;
+	                const queuedText = formatUserDisplayText(nextItem.kind, nextItem.text, true);
+	                if (msg.textContent === queuedText) {
+	                    msg.textContent = formatUserDisplayText(nextItem.kind, nextItem.text, false);
                     break;
                 }
             }
 
-            await processMessage(nextMessage);
+	            if (nextItem.kind === 'voice') {
+	                await sendVoiceTranscriptToAgent(nextItem.text);
+	            } else {
+	                await processMessage(nextItem.text);
+	            }
         }
 
         // Update UI for processing state
@@ -1872,8 +2679,8 @@
 
             try {
                 // Invoke Backend
-                const payload = { message: text };
-                if (sessionId) payload.session_id = sessionId;
+				const payload = { message: text };
+				if (sessionId) payload.sessionId = sessionId;
                 const p = window.__TAURI__.core.invoke('process_chat_message_streaming', payload);
                 // Don't await: streaming completion is signaled via events, and awaiting can deadlock UI state.
                 p.catch((err) => {
@@ -1911,13 +2718,178 @@
 
         // --- Event Listeners (Tauri) ---
 
-        async function setupEvents() {
+		        async function setupEvents() {
             if (!window.__TAURI__) return;
-            const event = window.__TAURI__.event;
+	            const event = window.__TAURI__.event;
+		            const webview = await resolveCurrentWebviewWindow();
+				            // If this window is session-scoped, we can reliably derive its label.
+				            // This enables a safe targeted fallback even if we can't get the webview handle.
+				            const expectedWindowLabel = sessionId ? `chat-${sessionId}` : null;
+				            const resolvedWindowLabel = await resolveWindowLabel(webview);
+				            const targetWindowLabel = resolvedWindowLabel || expectedWindowLabel;
+				            const listenerMode = (webview && typeof webview.listen === 'function')
+				                ? 'webview.listen'
+				                : (targetWindowLabel
+				                    ? `event.listen(target=WebviewWindow:${targetWindowLabel})`
+				                    : 'event.listen(DISABLED-no-target)');
+		            updateDebugMeta({
+				                windowLabel: targetWindowLabel,
+		                listenerMode,
+		            });
 
-            // 1. Thinking Stream
-            await event.listen('chat-stream-thinking', (e) => {
-                console.log('[DEBUG] chat-stream-thinking received:', e.payload?.substring(0, 100));
+	            /**
+	             * Listen for events in the safest possible scope.
+	             *
+	             * Tauri v2 best practice is to use `getCurrentWebviewWindow().listen` so events emitted
+	             * with `emit_to(label, ...)` are delivered only to that webview.
+	             *
+	             * We keep a fallback to `event.listen` for compatibility, but prefer webview-scoped.
+	             *
+	             * @param {string} eventName
+	             * @param {(e: any) => void} handler
+	             */
+			            const listen = async (eventName, handler) => {
+			                if (webview && typeof webview.listen === 'function') {
+			                    return await webview.listen(eventName, handler);
+			                }
+				                // IMPORTANT (Tauri v2): global event.listen behaves like listen_any unless you set a target.
+				                // We therefore FAIL-CLOSED here: if we can't scope the listener to a window label,
+				                // we refuse to attach the listener rather than risk cross-window leakage.
+				                if (targetWindowLabel) {
+				                    return await event.listen(eventName, handler, {
+				                        target: { kind: 'WebviewWindow', label: targetWindowLabel },
+				                    });
+				                }
+				                console.error('[chat] Refusing to attach unscoped event listener (no webview.listen and no window label target)', { eventName });
+				                return () => {};
+			            };
+
+	            /**
+	             * Unpack a backend event payload and extract a `session_id` when present.
+	             *
+	             * The backend may send:
+	             * - raw primitives (legacy)
+	             * - objects that include `session_id`
+	             * - wrappers like `{ session_id, value }` for non-object payloads
+	             */
+	            function unpackSessionPayload(raw) {
+	                let incomingSessionId = null;
+	                let value = raw;
+	                if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+	                    incomingSessionId = raw.session_id || raw.sessionId || null;
+	                    if (Object.prototype.hasOwnProperty.call(raw, 'value')) {
+	                        value = raw.value;
+	                    }
+	                }
+	                return { incomingSessionId, value };
+	            }
+
+		            /**
+		             * Record what this window actually received and whether it accepted/ignored it.
+		             *
+		             * This is best-effort diagnostics only. It is disabled unless debug mode is enabled.
+		             *
+		             * @param {string} eventName
+		             * @param {any} rawPayload
+		             * @param {string|null} incomingSessionId
+		             * @param {boolean} accept
+		             * @param {string} reason
+		             */
+		            function recordBackendReceipt(eventName, rawPayload, incomingSessionId, accept, reason) {
+		                /**
+		                 * Allow receipt tracing for probe events even when debug mode is off.
+		                 *
+		                 * @param {any} payload
+		                 * @returns {boolean}
+		                 */
+		                function isProbePayload(payload) {
+		                    try {
+		                        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+		                        return typeof payload.probe_id === 'string' || (payload.value && typeof payload.value === 'object' && typeof payload.value.probe_id === 'string');
+		                    } catch {
+		                        return false;
+		                    }
+		                }
+		
+		                if (!isDebugEnabled() && !isProbePayload(rawPayload)) return;
+		                if (!window.__TAURI__ || !window.__TAURI__.core || !window.__TAURI__.core.invoke) return;
+
+		                /**
+		                 * Create a small debug-friendly preview of the raw payload.
+		                 * @param {any} v
+		                 * @returns {string}
+		                 */
+		                function payloadPreview(v) {
+		                    try {
+		                        if (typeof v === 'string') return v.slice(0, 240);
+		                        return JSON.stringify(v).slice(0, 240);
+		                    } catch {
+		                        try { return String(v).slice(0, 240); } catch { return '(unprintable)'; }
+		                    }
+		                }
+
+		                const receipt = {
+		                    windowLabel: debugMeta.windowLabel,
+		                    sessionId: sessionId || null,
+		                    eventName,
+		                    incomingSessionId: incomingSessionId || null,
+		                    accept: !!accept,
+		                    reason: reason || null,
+		                    listenerMode: debugMeta.listenerMode,
+		                    payloadPreview: payloadPreview(rawPayload),
+		                };
+
+		                // Best-effort fire-and-forget.
+		                window.__TAURI__.core.invoke('record_chat_receipt', { payload: JSON.stringify(receipt) }).catch(() => {});
+		            }
+
+	            /**
+	             * Enforce session isolation (defense in depth).
+	             * If this window is session-scoped (`sessionId` in URL), ignore events that:
+	             * - lack a session id, or
+	             * - have a different session id.
+	             */
+	            function acceptSessionEvent(eventName, rawPayload) {
+	                const { incomingSessionId, value } = unpackSessionPayload(rawPayload);
+	                let accept = true;
+	                let reason = 'ok';
+	                if (sessionId) {
+	                    if (!incomingSessionId) {
+	                        accept = false;
+	                        reason = 'missing_session_id';
+	                        console.warn(`[Stream] Ignoring ${eventName} without session_id in a session-scoped window`, { sessionId, rawPayload });
+	                    } else if (incomingSessionId !== sessionId) {
+	                        accept = false;
+	                        reason = 'session_mismatch';
+	                    }
+	                } else {
+	                    reason = 'unscoped_window';
+	                }
+	
+	                pushLocalEventTrace({
+	                    ts_ms: Date.now(),
+	                    eventName,
+	                    accept,
+	                    reason,
+	                    incomingSessionId,
+	                });
+		                recordBackendReceipt(eventName, rawPayload, incomingSessionId, accept, reason);
+	
+	                return { accept, value, incomingSessionId, reason };
+	            }
+
+		            // 0. Diagnostics probe events (does not affect chat UI state)
+		            await listen('chat-probe', (e) => {
+		                // Always pass through session isolation logic to record accept/ignore receipts.
+		                acceptSessionEvent('chat-probe', e?.payload);
+		            });
+
+		            // 1. Thinking Stream
+	            await listen('chat-stream-thinking', (e) => {
+	                const res = acceptSessionEvent('chat-stream-thinking', e?.payload);
+	                if (!res.accept) return;
+	                const chunk = (typeof res.value === 'string') ? res.value : JSON.stringify(res.value);
+	                console.log('[DEBUG] chat-stream-thinking received:', chunk?.substring(0, 100));
                 touchStreamActivity();
                 ensureStreamingMessage();
                 const contentDiv = streamingMessageElement.querySelector('.message-content');
@@ -1937,14 +2909,17 @@
                     contentDiv.insertAdjacentElement('afterbegin', currentThinkingDiv);
                 }
 
-                const textDiv = currentThinkingDiv.querySelector('.thinking-content');
-                textDiv.textContent += e.payload;
+	                const textDiv = currentThinkingDiv.querySelector('.thinking-content');
+	                textDiv.textContent += chunk;
                 textDiv.scrollTop = textDiv.scrollHeight;
             });
 
             // 2. Text Stream
-            await event.listen('chat-stream-chunk', (e) => {
-                console.log('[DEBUG] chat-stream-chunk received:', e.payload?.substring(0, 100));
+	            await listen('chat-stream-chunk', (e) => {
+	                const res = acceptSessionEvent('chat-stream-chunk', e?.payload);
+	                if (!res.accept) return;
+	                const chunk = (typeof res.value === 'string') ? res.value : JSON.stringify(res.value);
+	                console.log('[DEBUG] chat-stream-chunk received:', chunk?.substring(0, 100));
                 touchStreamActivity();
                 ensureStreamingMessage();
 
@@ -1962,7 +2937,7 @@
                     currentThinkingDiv = null; // Reset ensures we don't keep appending to thought
                 }
 
-                streamingContent += e.payload;
+	                streamingContent += chunk;
 
                 // Update content (preserving thinking block if it exists)
                 const contentDiv = streamingMessageElement.querySelector('.message-content');
@@ -1984,7 +2959,9 @@
             });
 
             // 3. Tool Call Events (aligned with backend)
-            await event.listen('chat-stream-tool-start', (e) => {
+	            await listen('chat-stream-tool-start', (e) => {
+	                const res = acceptSessionEvent('chat-stream-tool-start', e?.payload);
+	                if (!res.accept) return;
                 touchStreamActivity();
                 ensureStreamingMessage();
 
@@ -1994,7 +2971,7 @@
                     if (header) header.classList.remove('animating');
                 }
 
-                const payload = e.payload || {};
+	                const payload = res.value || {};
                 const toolName = (typeof payload === 'string') ? payload : (payload.name || 'tool');
                 const contentDiv = streamingMessageElement.querySelector('.message-content');
 
@@ -2014,16 +2991,20 @@
                 scrollToBottom();
             });
 
-            await event.listen('chat-stream-tool-args', (e) => {
+	            await listen('chat-stream-tool-args', (e) => {
+	                const res = acceptSessionEvent('chat-stream-tool-args', e?.payload);
+	                if (!res.accept) return;
                 touchStreamActivity();
                 if (!currentToolArgsEl) return;
-                const argsText = (typeof e.payload === 'string') ? e.payload : JSON.stringify(e.payload, null, 2);
+	                const argsText = (typeof res.value === 'string') ? res.value : JSON.stringify(res.value, null, 2);
                 currentToolArgsEl.style.display = 'block';
                 currentToolArgsEl.textContent += argsText;
                 scrollToBottom();
             });
 
-            await event.listen('chat-stream-tool-end', () => {
+	            await listen('chat-stream-tool-end', (e) => {
+	                const res = acceptSessionEvent('chat-stream-tool-end', e?.payload);
+	                if (!res.accept) return;
                 touchStreamActivity();
                 // Don't clear currentToolCard yet - wait for tool-result to update it
                 // Just mark it as "executing" state
@@ -2033,9 +3014,11 @@
             });
 
             // 3b. Tool Result Event - shows success/error status and output
-            await event.listen('chat-stream-tool-result', (e) => {
+	            await listen('chat-stream-tool-result', (e) => {
+	                const res = acceptSessionEvent('chat-stream-tool-result', e?.payload);
+	                if (!res.accept) return;
                 touchStreamActivity();
-                const payload = e?.payload || {};
+	                const payload = res.value || {};
                 const { name, success, output, duration_ms } = payload;
 
                 // Find the tool card to update (currentToolCard or last one in the message)
@@ -2063,13 +3046,37 @@
                         const resultDiv = document.createElement('div');
                         resultDiv.className = `tool-result ${success ? 'success' : 'error'}`;
 
-                        // Truncate long output for display
+                        // Store full output and determine if truncation is needed
                         const maxLen = 500;
-                        let displayOutput = output || (success ? '(completed)' : '(no details)');
-                        if (displayOutput.length > maxLen) {
-                            displayOutput = displayOutput.substring(0, maxLen) + '... (truncated)';
+                        const fullOutput = output || (success ? '(completed)' : '(no details)');
+                        const isTruncated = fullOutput.length > maxLen;
+
+                        if (isTruncated) {
+                            // Store full output in data attribute
+                            resultDiv.dataset.fullOutput = fullOutput;
+                            resultDiv.dataset.truncatedOutput = fullOutput.substring(0, maxLen);
+                            resultDiv.textContent = resultDiv.dataset.truncatedOutput;
+                            resultDiv.classList.add('truncated');
+
+                            // Add click handler to toggle expand/collapse
+                            resultDiv.addEventListener('click', function() {
+                                if (this.classList.contains('expanded')) {
+                                    // Collapse
+                                    this.textContent = this.dataset.truncatedOutput;
+                                    this.classList.remove('expanded');
+                                    this.classList.add('truncated');
+                                } else {
+                                    // Expand
+                                    this.textContent = this.dataset.fullOutput;
+                                    this.classList.remove('truncated');
+                                    this.classList.add('expanded');
+                                }
+                            });
+                        } else {
+                            // No truncation needed
+                            resultDiv.textContent = fullOutput;
                         }
-                        resultDiv.textContent = displayOutput;
+
                         body.appendChild(resultDiv);
 
                         // Add duration
@@ -2110,9 +3117,11 @@
             });
 
             // 3c. Retry Attempt Event - shows retry notification
-            await event.listen('chat-stream-retry', (e) => {
+	            await listen('chat-stream-retry', (e) => {
+	                const res = acceptSessionEvent('chat-stream-retry', e?.payload);
+	                if (!res.accept) return;
                 touchStreamActivity();
-                const payload = e?.payload || {};
+	                const payload = res.value || {};
                 const { attempt, max_attempts, delay_ms, error_message } = payload;
 
                 // Create a retry notification element
@@ -2136,9 +3145,11 @@
             });
 
             // 3d. Context Compaction Event - shows compaction notification
-            await event.listen('chat-context-compacted', (e) => {
+	            await listen('chat-context-compacted', (e) => {
+	                const res = acceptSessionEvent('chat-context-compacted', e?.payload);
+	                if (!res.accept) return;
                 touchStreamActivity();
-                const payload = e?.payload || {};
+	                const payload = res.value || {};
                 const { messages_before, messages_after, tokens_saved, summary } = payload;
 
                 // Create a compaction notification element
@@ -2162,9 +3173,11 @@
             });
 
             // 3e. Config Request Event - agent requests config change
-            await event.listen('chat-config-request', async (e) => {
+	            await listen('chat-config-request', async (e) => {
+	                const res = acceptSessionEvent('chat-config-request', e?.payload);
+	                if (!res.accept) return;
                 touchStreamActivity();
-                const payload = e?.payload || {};
+	                const payload = res.value || {};
                 const { operation, key, value, requires_confirmation, session_id } = payload;
 
                 console.log('[DEBUG] Config request received:', payload);
@@ -2174,20 +3187,24 @@
                     const confirmed = await showConfigConfirmation(key, value);
                     if (confirmed) {
                         // Apply the config change
-                        try {
-                            const sid = session_id || currentSessionId;
-                            if (key === 'provider') {
-                                await invoke('set_session_llm_provider', { session_id: sid, provider: value });
+			                        try {
+			                            const sid = session_id || sessionId;
+			                            if (!sid) {
+			                                console.warn('[chat] Ignoring chat-config-request: missing session id', { payload });
+			                                return;
+			                            }
+	                            if (key === 'provider') {
+	                                await invoke('set_session_llm_provider', { sessionId: sid, provider: value });
                                 // Update UI dropdown
                                 const providerSelect = document.getElementById('provider-select');
                                 if (providerSelect) providerSelect.value = value;
                             } else if (key === 'model') {
-                                await invoke('set_session_llm_model', { session_id: sid, model: value });
+	                                await invoke('set_session_llm_model', { sessionId: sid, model: value });
                                 // Update UI dropdown
                                 const modelSelect = document.getElementById('model-select');
                                 if (modelSelect) modelSelect.value = value;
                             } else if (key === 'permission_level') {
-                                await invoke('set_session_permission_level', { session_id: sid, level: value });
+	                                await invoke('set_session_permission_level', { sessionId: sid, level: value });
                             }
                             addMessage(`✅ Configuration updated: ${key} = ${value}`, 'agent');
                         } catch (err) {
@@ -2198,15 +3215,19 @@
                     }
                 } else if (operation === 'set') {
                     // No confirmation needed (permissive mode)
-                    try {
-                        const sid = session_id || currentSessionId;
-                        if (key === 'provider') {
-                            await invoke('set_session_llm_provider', { session_id: sid, provider: value });
-                        } else if (key === 'model') {
-                            await invoke('set_session_llm_model', { session_id: sid, model: value });
-                        } else if (key === 'permission_level') {
-                            await invoke('set_session_permission_level', { session_id: sid, level: value });
-                        }
+			                    try {
+			                        const sid = session_id || sessionId;
+			                        if (!sid) {
+			                            console.warn('[chat] Ignoring chat-config-request: missing session id', { payload });
+			                            return;
+			                        }
+	                        if (key === 'provider') {
+	                            await invoke('set_session_llm_provider', { sessionId: sid, provider: value });
+	                        } else if (key === 'model') {
+	                            await invoke('set_session_llm_model', { sessionId: sid, model: value });
+	                        } else if (key === 'permission_level') {
+	                            await invoke('set_session_permission_level', { sessionId: sid, level: value });
+	                        }
                         addMessage(`✅ Configuration updated: ${key} = ${value}`, 'agent');
                     } catch (err) {
                         addMessage(`❌ Failed to update configuration: ${err}`, 'agent');
@@ -2216,21 +3237,27 @@
             });
 
             // 4. Stream Done
-            await event.listen('chat-stream-done', () => {
+	            await listen('chat-stream-done', (e) => {
+	                const res = acceptSessionEvent('chat-stream-done', e?.payload);
+	                if (!res.accept) return;
                 touchStreamActivity();
                 finalizeStreamForCurrentRequest({ statusText: 'Ready', statusKind: 'ready' });
             });
 
             // 4b. Stream Cancelled / Error
-            await event.listen('chat-stream-cancelled', () => {
+	            await listen('chat-stream-cancelled', (e) => {
+	                const res = acceptSessionEvent('chat-stream-cancelled', e?.payload);
+	                if (!res.accept) return;
                 touchStreamActivity();
                 addMessage('Cancelled.', 'agent');
                 finalizeStreamForCurrentRequest({ statusText: 'Cancelled', statusKind: 'ready' });
             });
 
-            await event.listen('chat-stream-error', (e) => {
+	            await listen('chat-stream-error', (e) => {
+	                const res = acceptSessionEvent('chat-stream-error', e?.payload);
+	                if (!res.accept) return;
                 touchStreamActivity();
-                const payload = e?.payload;
+	                const payload = res.value;
                 const errText = (typeof payload === 'string')
                     ? payload
                     : (payload?.message || JSON.stringify(payload));
@@ -2239,7 +3266,7 @@
             });
 
             // 4c. Stream Health Events
-            await event.listen('stream-health-status', (e) => {
+	            await listen('stream-health-status', (e) => {
                 touchStreamActivity();
                 const payload = e?.payload || {};
                 const { status, message } = payload;
@@ -2261,7 +3288,7 @@
                 }
             });
 
-            await event.listen('stream-health-warning', (e) => {
+	            await listen('stream-health-warning', (e) => {
                 touchStreamActivity();
                 const payload = e?.payload || {};
                 const { idle_seconds, threshold_seconds } = payload;
@@ -2271,7 +3298,7 @@
             });
 
             // 4d. Stream Reconnection Events
-            await event.listen('stream-reconnect-attempt', (e) => {
+	            await listen('stream-reconnect-attempt', (e) => {
                 touchStreamActivity();
                 const payload = e?.payload || {};
                 const { attempt, max_attempts, delay_ms } = payload;
@@ -2294,7 +3321,7 @@
                 }
             });
 
-            await event.listen('stream-reconnect-success', (e) => {
+	            await listen('stream-reconnect-success', (e) => {
                 touchStreamActivity();
                 setStatus('Reconnected', 'busy');
 
@@ -2312,7 +3339,7 @@
                 }
             });
 
-            await event.listen('stream-reconnect-failed', (e) => {
+	            await listen('stream-reconnect-failed', (e) => {
                 touchStreamActivity();
                 const payload = e?.payload || {};
                 const { error } = payload;
@@ -2322,8 +3349,48 @@
                 finalizeStreamForCurrentRequest({ statusText: 'Connection lost', statusKind: 'error' });
             });
 
-            // 5. Voice Events
-            await event.listen('listening-state-changed', (e) => {
+	            // 5. Voice Events
+	            await listen('chat-message', async (e) => {
+	                // Backend emits chat-message for STT transcriptions (type: "user")
+	                // and (optionally) non-streaming assistant responses.
+	                const rawPayload = e?.payload;
+	                let payload = rawPayload;
+	                if (typeof rawPayload === 'string') {
+	                    try { payload = JSON.parse(rawPayload); } catch { payload = { type: 'unknown', message: rawPayload }; }
+	                }
+	                payload = payload || {};
+	
+	                const incomingSessionId = payload.session_id || payload.sessionId || null;
+	                if (sessionId) {
+	                    if (!incomingSessionId) {
+	                        console.warn('[Voice] Ignoring chat-message without session_id in a session-scoped window', { sessionId, payload });
+	                        return;
+	                    }
+	                    if (incomingSessionId !== sessionId) {
+	                        console.warn('[Voice] Ignoring chat-message for different session', { sessionId, incomingSessionId });
+	                        return;
+	                    }
+	                }
+	
+	                const kind = payload.type;
+	                const message = (payload.message || '').toString();
+	                if (!message.trim()) return;
+
+	                if (kind === 'user') {
+	                    // Display the transcript and auto-send (with prompt enhancement) via streaming.
+	                    if (isProcessing) {
+	                        queueVoiceTranscript(message);
+	                        return;
+	                    }
+	                    addMessage(formatUserDisplayText('voice', message.trim(), false), 'user');
+	                    await sendVoiceTranscriptToAgent(message);
+	                } else {
+	                    // Avoid duplicating streaming output; keep this as a safe fallback.
+	                    console.log('[chat-message] Received non-user chat-message:', payload);
+	                }
+	            });
+
+	            await listen('listening-state-changed', (e) => {
                 const listening = !!(e && e.payload && e.payload.is_listening);
                 if (listening) {
                     isListening = true;
@@ -2348,27 +3415,66 @@
             }
         }
 
-        function setModelSelectOptions(names, selectedName) {
-            modelSelect.innerHTML = '';
-            for (const name of names) {
-                const opt = document.createElement('option');
-                opt.value = name;
-                opt.textContent = name;
-                modelSelect.appendChild(opt);
-            }
-            if (selectedName && names.includes(selectedName)) {
-                modelSelect.value = selectedName;
-            } else if (names.length > 0) {
-                modelSelect.value = names[0];
-            }
-        }
+	        /**
+	         * Populate the model dropdown.
+	         *
+	         * Accepts either a list of IDs (strings) or objects with `{ id, label }`.
+	         *
+	         * @param {Array<string|{id: string, label?: string}>} models
+	         * @param {string|null|undefined} selectedId
+	         */
+	        function setModelSelectOptions(models, selectedId) {
+	            modelSelect.innerHTML = '';
+	
+	            const normalized = (Array.isArray(models) ? models : [])
+	                .map((m) => {
+	                    if (typeof m === 'string') {
+	                        return { id: m, label: m };
+	                    }
+	                    if (m && typeof m.id === 'string' && m.id.length > 0) {
+	                        return { id: m.id, label: typeof m.label === 'string' && m.label.length > 0 ? m.label : m.id };
+	                    }
+	                    return null;
+	                })
+	                .filter((m) => !!m);
+	
+	            for (const m of normalized) {
+	                const opt = document.createElement('option');
+	                opt.value = m.id;
+	                opt.textContent = m.label;
+	                modelSelect.appendChild(opt);
+	            }
+
+	            const values = normalized.map((m) => m.id);
+	            if (selectedId && values.includes(selectedId)) {
+	                modelSelect.value = selectedId;
+	            } else if (normalized.length > 0) {
+	                modelSelect.value = normalized[0].id;
+	            }
+	        }
 
         async function populateModelSelectForProvider(provider) {
             if (!modelSelect) return;
 
+            // IMPORTANT: API keys are stored in the keychain, not in the config file
+            // We need to fetch them separately using get_api_key command
             const cfg = cachedConfig;
-            const providerCfg = cfg?.llm?.[provider];
+            if (!cfg) {
+                console.error('[ERROR] No cached config available');
+                modelSelect.innerHTML = '<option value="">Config not loaded</option>';
+                modelSelect.disabled = true;
+                return;
+            }
+
+            const providerCfg = cfg.llm?.[provider];
             const currentModel = providerCfg?.model;
+
+            console.log('[DEBUG] populateModelSelectForProvider:', {
+                provider,
+                hasCachedConfig: !!cfg,
+                hasProviderCfg: !!providerCfg,
+                currentModel
+            });
 
             // Show loading state
             modelSelect.disabled = true;
@@ -2379,67 +3485,158 @@
                 let models = [];
 
                 if (provider === 'ollama') {
-                    // Ollama: fetch from local endpoint
+                    // Ollama: fetch from local endpoint (no API key needed)
                     const endpoint =
                         providerCfg?.base_url ||
                         providerCfg?.endpoint ||
                         'http://localhost:11434';
-                    const result = await window.__TAURI__.core.invoke('list_ollama_models', { endpoint });
-                    models = Array.isArray(result)
-                        ? result.map((m) => m?.name).filter((n) => typeof n === 'string' && n.length > 0)
-                        : [];
+                    console.log('[DEBUG] Fetching Ollama models from:', endpoint);
+	                    const result = await window.__TAURI__.core.invoke('list_ollama_models', { endpoint });
+	                    models = Array.isArray(result)
+	                        ? result.map((m) => m?.name).filter((n) => typeof n === 'string' && n.length > 0)
+	                        : [];
+                    console.log('[DEBUG] Ollama models fetched:', models.length);
                 } else if (provider === 'openai') {
-                    // OpenAI: fetch from API
-                    const apiKey = providerCfg?.api_key || '';
+                    // OpenAI: fetch API key from keychain first, then fallback to config file
+                    console.log('[DEBUG] Fetching OpenAI API key from keychain...');
+                    let apiKey = await window.__TAURI__.core.invoke('get_api_key', { provider: 'openai' });
+                    console.log('[DEBUG] OpenAI API key from keychain:', {
+                        present: !!apiKey,
+                        length: apiKey ? apiKey.length : 0,
+                        type: typeof apiKey
+                    });
+
+                    // Fallback: try config file if keychain is empty
+                    if (!apiKey && providerCfg?.api_key) {
+                        apiKey = providerCfg.api_key;
+                        console.log('[DEBUG] OpenAI API key from config file:', {
+                            present: !!apiKey,
+                            length: apiKey ? apiKey.length : 0
+                        });
+                    }
+
                     if (apiKey) {
-                        const result = await window.__TAURI__.core.invoke('list_openai_models', { api_key: apiKey });
-                        models = Array.isArray(result)
-                            ? result.map((m) => m?.id).filter((n) => typeof n === 'string' && n.length > 0)
-                            : [];
+                        console.log('[DEBUG] Calling list_openai_models with API key...');
+							const result = await window.__TAURI__.core.invoke('list_openai_models', { apiKey });
+	                        models = Array.isArray(result)
+	                            ? result
+	                                .map((m) => ({ id: m?.id, label: m?.name || m?.id }))
+	                                .filter((m) => typeof m.id === 'string' && m.id.length > 0)
+	                            : [];
+                        console.log('[DEBUG] ✅ OpenAI models fetched from API:', models.length, 'models');
+                    } else {
+                        console.warn('[DEBUG] ⚠️ OpenAI API key missing from both keychain and config, using static fallback');
+                        // Use static fallback when no API key
+	                        models = [
+	                            { id: 'gpt-4o', label: 'gpt-4o' },
+	                            { id: 'gpt-4o-mini', label: 'gpt-4o-mini' },
+	                            { id: 'gpt-4-turbo', label: 'gpt-4-turbo' },
+	                            { id: 'gpt-3.5-turbo', label: 'gpt-3.5-turbo' }
+	                        ];
+                        console.log('[DEBUG] Using static OpenAI models:', models.length);
                     }
                 } else if (provider === 'anthropic') {
-                    // Anthropic: fetch from API
-                    const apiKey = providerCfg?.api_key || '';
+                    // Anthropic: fetch API key from keychain first, then fallback to config file
+                    console.log('[DEBUG] Fetching Anthropic API key from keychain...');
+                    let apiKey = await window.__TAURI__.core.invoke('get_api_key', { provider: 'anthropic' });
+                    console.log('[DEBUG] Anthropic API key from keychain:', {
+                        present: !!apiKey,
+                        length: apiKey ? apiKey.length : 0,
+                        type: typeof apiKey
+                    });
+
+                    // Fallback: try config file if keychain is empty
+                    if (!apiKey && providerCfg?.api_key) {
+                        apiKey = providerCfg.api_key;
+                        console.log('[DEBUG] Anthropic API key from config file:', {
+                            present: !!apiKey,
+                            length: apiKey ? apiKey.length : 0
+                        });
+                    }
+
                     if (apiKey) {
-                        const result = await window.__TAURI__.core.invoke('list_anthropic_models', { api_key: apiKey });
-                        models = Array.isArray(result)
-                            ? result.map((m) => m?.id).filter((n) => typeof n === 'string' && n.length > 0)
-                            : [];
+                        console.log('[DEBUG] Calling list_anthropic_models with API key...');
+							const result = await window.__TAURI__.core.invoke('list_anthropic_models', { apiKey });
+	                        models = Array.isArray(result)
+	                            ? result
+	                                .map((m) => ({ id: m?.id, label: m?.name || m?.id }))
+	                                .filter((m) => typeof m.id === 'string' && m.id.length > 0)
+	                            : [];
+                        console.log('[DEBUG] ✅ Anthropic models fetched from API:', models.length, 'models');
+                    } else {
+                        console.warn('[DEBUG] ⚠️ Anthropic API key missing from both keychain and config, using static fallback');
+                        // Use static fallback when no API key
+	                        models = [
+	                            { id: 'claude-sonnet-4-20250514', label: 'claude-sonnet-4-20250514' },
+	                            { id: 'claude-3-5-sonnet-20241022', label: 'claude-3-5-sonnet-20241022' },
+	                            { id: 'claude-3-opus-20240229', label: 'claude-3-opus-20240229' },
+	                            { id: 'claude-3-haiku-20240307', label: 'claude-3-haiku-20240307' }
+	                        ];
+                        console.log('[DEBUG] Using static Anthropic models:', models.length);
                     }
                 } else if (provider === 'grok') {
-                    // Grok: fetch from xAI API
-                    const apiKey = providerCfg?.api_key || '';
-                    const result = await window.__TAURI__.core.invoke('list_grok_models', { api_key: apiKey });
-                    models = Array.isArray(result)
-                        ? result.map((m) => m?.id).filter((n) => typeof n === 'string' && n.length > 0)
-                        : [];
+                    // Grok: fetch API key from keychain first, then fallback to config file
+                    console.log('[DEBUG] Fetching Grok API key from keychain...');
+                    let apiKey = await window.__TAURI__.core.invoke('get_api_key', { provider: 'grok' });
+                    console.log('[DEBUG] Grok API key from keychain:', {
+                        present: !!apiKey,
+                        length: apiKey ? apiKey.length : 0,
+                        type: typeof apiKey
+                    });
+
+                    // Fallback: try config file if keychain is empty
+                    if (!apiKey && providerCfg?.api_key) {
+                        apiKey = providerCfg.api_key;
+                        console.log('[DEBUG] Grok API key from config file:', {
+                            present: !!apiKey,
+                            length: apiKey ? apiKey.length : 0
+                        });
+                    }
+
+                    // Grok backend command has built-in static fallback, so we can pass empty string
+                    console.log('[DEBUG] Calling list_grok_models...');
+						const result = await window.__TAURI__.core.invoke('list_grok_models', { apiKey: apiKey || '' });
+	                    models = Array.isArray(result)
+	                        ? result
+	                            .map((m) => ({ id: m?.id, label: m?.name || m?.id }))
+	                            .filter((m) => typeof m.id === 'string' && m.id.length > 0)
+	                        : [];
+                    console.log('[DEBUG] ✅ Grok models fetched:', models.length, 'models', apiKey ? '(from API)' : '(static fallback)');
                 }
+
+                console.log('[DEBUG] Total models after fetch:', models.length);
 
                 if (models.length === 0) {
                     // No models found - show current model if configured, or placeholder
+                    console.warn('[DEBUG] No models fetched, showing fallback');
                     if (typeof currentModel === 'string' && currentModel.length > 0) {
                         modelSelect.innerHTML = `<option value="${currentModel}">${currentModel}</option>`;
-                        modelSelect.title = `${provider} model (API key may be missing)`;
+                        modelSelect.title = `${provider} model (configure API key in settings for full list)`;
+                        modelSelect.disabled = false;
                     } else {
-                        modelSelect.innerHTML = '<option value="">No models found</option>';
+                        modelSelect.innerHTML = '<option value="">No models available</option>';
                         modelSelect.title = 'Configure API key in settings';
+                        modelSelect.disabled = true;
                     }
                     return;
                 }
 
                 // Populate with fetched models
+                console.log('[DEBUG] Populating model select with', models.length, 'models');
                 setModelSelectOptions(models, typeof currentModel === 'string' ? currentModel : null);
                 modelSelect.disabled = false;
                 modelSelect.title = `Select ${provider} model`;
             } catch (e) {
-                console.error(`Failed to list ${provider} models`, e);
+                console.error(`[ERROR] Failed to list ${provider} models:`, e);
                 // Fallback: show current model if configured
                 if (typeof currentModel === 'string' && currentModel.length > 0) {
                     modelSelect.innerHTML = `<option value="${currentModel}">${currentModel}</option>`;
                     modelSelect.title = `${provider} model (failed to fetch list)`;
+                    modelSelect.disabled = false;
                 } else {
                     modelSelect.innerHTML = '<option value="">Failed to load models</option>';
                     modelSelect.title = 'Error loading models';
+                    modelSelect.disabled = true;
                 }
             }
         }
@@ -2484,7 +3681,7 @@
 
             if (sessionId) {
                 try {
-                    const [provider, model] = await window.__TAURI__.core.invoke('get_effective_llm_config', { session_id: sessionId });
+						const [provider, model] = await window.__TAURI__.core.invoke('get_effective_llm_config', { sessionId });
                     initialProvider = provider;
                     initialModel = model;
                 } catch (e) {
@@ -2507,13 +3704,13 @@
             providerSelect.addEventListener('change', async () => {
                 const provider = providerSelect.value;
                 updateProviderIcon(provider);
-                console.log('[DEBUG] Provider dropdown changed:', { sessionId, provider });
+	            console.log('[DEBUG] Provider dropdown changed:', { sessionId, provider });
                 try {
                     // Use session-scoped config change (doesn't modify global config)
                     if (sessionId) {
-                        console.log('[DEBUG] Calling set_session_llm_provider with session_id:', sessionId);
-                        await window.__TAURI__.core.invoke('set_session_llm_provider', {
-                            session_id: sessionId,  // Use snake_case for Rust parameter
+                        console.log('[DEBUG] Calling set_session_llm_provider with sessionId:', sessionId);
+	                        await window.__TAURI__.core.invoke('set_session_llm_provider', {
+	                        	sessionId: sessionId,
                             provider
                         });
                         console.log('[DEBUG] set_session_llm_provider completed successfully');
@@ -2528,11 +3725,11 @@
                     // Ensure the session model stays consistent with the newly-selected provider.
                     // Without this, a previous session-scoped model override can linger and be
                     // applied to subsequent messages even after switching providers.
-                    if (sessionId) {
+	                    if (sessionId) {
                         const selectedModel = modelSelect?.value;
                         if (selectedModel) {
-                            await window.__TAURI__.core.invoke('set_session_llm_model', {
-                                session_id: sessionId,
+	                            await window.__TAURI__.core.invoke('set_session_llm_model', {
+	                                sessionId: sessionId,
                                 model: selectedModel,
                             });
                         }
@@ -2547,13 +3744,13 @@
                 const model = modelSelect.value;
                 if (!model) return;
 
-                console.log('[DEBUG] Model dropdown changed:', { sessionId, model });
+	            console.log('[DEBUG] Model dropdown changed:', { sessionId, model });
                 try {
                     // Use session-scoped model change (doesn't modify global config)
                     if (sessionId) {
-                        console.log('[DEBUG] Calling set_session_llm_model with session_id:', sessionId);
-                        await window.__TAURI__.core.invoke('set_session_llm_model', {
-                            session_id: sessionId,  // Use snake_case for Rust parameter
+                        console.log('[DEBUG] Calling set_session_llm_model with sessionId:', sessionId);
+	                        await window.__TAURI__.core.invoke('set_session_llm_model', {
+	                        	sessionId: sessionId,
                             model
                         });
                         console.log('[DEBUG] set_session_llm_model completed successfully');
@@ -2582,11 +3779,127 @@
             });
         }
 
+        // --- Prompt Enhancement ---
+
+        /**
+         * Debounce utility function
+         * Returns a function that delays invoking func until after wait milliseconds
+         */
+        function debounce(func, wait) {
+            let timeout;
+            return function executedFunction(...args) {
+                const later = () => {
+                    clearTimeout(timeout);
+                    func(...args);
+                };
+                clearTimeout(timeout);
+                timeout = setTimeout(later, wait);
+            };
+        }
+
+        // Debounced enhancement for auto-enhance feature
+        let enhancementInProgress = false;
+        const debouncedAutoEnhance = debounce(async () => {
+            // Only auto-enhance if enabled in settings and not already enhancing
+            if (!enhancementInProgress && messageInput.value.trim().length > 10) {
+                // Auto-enhance is opt-in, so we'll skip for now
+                // This will be enabled when user preferences are implemented
+            }
+        }, 500);
+
+        /**
+         * Enhance the current prompt using LLM
+         * Includes session history as context for better enhancement
+         */
+        async function enhancePrompt() {
+            const originalPrompt = messageInput.value.trim();
+            if (!originalPrompt) {
+                showToast('Please enter a prompt first', 'warning');
+                return;
+            }
+
+            // Prevent concurrent enhancements
+            if (enhancementInProgress) {
+                showToast('Enhancement already in progress', 'warning');
+                return;
+            }
+
+            // Show loading state
+            enhanceButton.classList.add('loading');
+            enhanceButton.disabled = true;
+            enhancementInProgress = true;
+
+            try {
+                console.log('[Enhance] Enhancing prompt:', originalPrompt.substring(0, 50) + '...');
+	                console.log('[Enhance] Session ID:', sessionId);
+
+				const enhanced = await window.__TAURI__.core.invoke('enhance_prompt', {
+					prompt: originalPrompt,
+					sessionId: sessionId || null
+				});
+
+                console.log('[Enhance] Enhancement successful, length:', enhanced.length);
+
+                // Store original for undo
+                messageInput.dataset.originalPrompt = originalPrompt;
+
+                // Replace with enhanced prompt
+                messageInput.value = enhanced;
+                messageInput.focus();
+
+                // Show success feedback
+                showToast('✨ Prompt enhanced! Press Cmd+Z to undo.', 'success');
+            } catch (error) {
+                console.error('[Enhance] Enhancement failed:', error);
+                showToast('Failed to enhance prompt: ' + error, 'error');
+            } finally {
+                enhanceButton.classList.remove('loading');
+                enhanceButton.disabled = false;
+                enhancementInProgress = false;
+            }
+        }
+
+        /**
+         * Restore original prompt (undo enhancement)
+         */
+        function undoEnhancement() {
+            if (messageInput.dataset.originalPrompt) {
+                messageInput.value = messageInput.dataset.originalPrompt;
+                delete messageInput.dataset.originalPrompt;
+                showToast('Prompt restored', 'info');
+                return true;
+            }
+            return false;
+        }
+
+        // Enhance button click handler
+        enhanceButton?.addEventListener('click', async () => {
+            await enhancePrompt();
+        });
+
         // --- Interaction ---
 
         sendButton.addEventListener('click', sendMessage);
 
-        messageInput.addEventListener('keydown', (e) => {
+	        messageInput.addEventListener('keydown', (e) => {
+            // Cmd+K / Ctrl+K: Enhance prompt
+            if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+                e.preventDefault();
+	                // Prevent the global (document-level) shortcut handler from also
+	                // firing when the user triggers Cmd/Ctrl+K inside the input.
+	                e.stopPropagation();
+                enhancePrompt();
+                return;
+            }
+
+            // Cmd+Z / Ctrl+Z: Undo enhancement
+            if ((e.metaKey || e.ctrlKey) && e.key === 'z' && messageInput.dataset.originalPrompt) {
+                e.preventDefault();
+                undoEnhancement();
+                return;
+            }
+
+            // Enter: Send message
             if (e.key === 'Enter') sendMessage();
         });
 
@@ -2601,7 +3914,9 @@
             cancelButton.disabled = true;
             try {
                 if (!isListening) setStatus('Cancelling...', 'busy');
-                await window.__TAURI__.core.invoke('cancel_chat_streaming');
+			const cancelPayload = {};
+			if (sessionId) cancelPayload.sessionId = sessionId;
+	            await window.__TAURI__.core.invoke('cancel_chat_streaming', cancelPayload);
             } catch (e) {
                 console.error('Failed to cancel streaming', e);
                 addMessage(`Cancel failed: ${e}`, 'agent');
@@ -2651,16 +3966,16 @@
             sessionSettingsBtn.classList.remove('active');
         }
 
-        async function loadSessionSettings() {
+	        async function loadSessionSettings() {
             if (!sessionId) return;
             try {
                 // Load workspace directory
-                const workDir = await window.__TAURI__.core.invoke('get_session_workspace_by_id', { session_id: sessionId });
+				const workDir = await window.__TAURI__.core.invoke('get_session_workspace_by_id', { sessionId });
                 sessionWorkDir.value = workDir || '';
                 workDirInfo.textContent = workDir ? `Commands run in: ${workDir}` : 'No directory selected';
 
                 // Load tool settings (permission level and enabled tools)
-                const toolSettings = await window.__TAURI__.core.invoke('get_session_tool_settings', { session_id: sessionId });
+				const toolSettings = await window.__TAURI__.core.invoke('get_session_tool_settings', { sessionId });
                 if (toolSettings) {
                     // Set permission level dropdown
                     if (toolSettings.permission_level) {
@@ -2681,6 +3996,72 @@
             }
         }
 
+	        async function loadSessionHistory() {
+            if (!sessionId) return;
+            try {
+				const messages = await window.__TAURI__.core.invoke('get_session_history', { sessionId });
+                if (messages && messages.length > 0) {
+                    console.log(`Loading ${messages.length} messages from session history`);
+
+	                    /**
+	                     * Render markdown to HTML when a markdown renderer is available.
+	                     * Falls back to plain text when `marked` is not present or parsing fails.
+	                     *
+	                     * @param {unknown} content
+	                     * @returns {{ isHtml: boolean, value: string }}
+	                     */
+	                    function renderMarkdownSafe(content) {
+	                        const text = (content ?? '').toString();
+	                        try {
+	                            const m = (typeof marked !== 'undefined' && marked && typeof marked.parse === 'function')
+	                                ? marked
+	                                : (typeof window !== 'undefined' && window.marked && typeof window.marked.parse === 'function')
+	                                    ? window.marked
+	                                    : null;
+	                            if (m) {
+	                                return { isHtml: true, value: m.parse(text) };
+	                            }
+	                        } catch (e) {
+	                            console.warn('Markdown render failed; falling back to plain text', e);
+	                        }
+	                        return { isHtml: false, value: text };
+	                    }
+
+                    for (const msg of messages) {
+	                        try {
+	                            if (msg.role === 'user') {
+	                                addMessage(msg.content, 'user');
+	                            } else if (msg.role === 'assistant' || msg.role === 'agent') {
+	                                // Render assistant message; markdown when available, plain text fallback.
+	                                const msgDiv = document.createElement('div');
+	                                msgDiv.className = 'message agent';
+	                                const contentDiv = document.createElement('div');
+	                                contentDiv.className = 'message-content markdown-body';
+	                                const rendered = renderMarkdownSafe(msg.content);
+	                                if (rendered.isHtml) {
+	                                    contentDiv.innerHTML = rendered.value;
+	                                } else {
+	                                    contentDiv.textContent = rendered.value;
+	                                }
+	                                msgDiv.appendChild(contentDiv);
+	                                messagesContainer.appendChild(msgDiv);
+	                                addCopyButtonToMessage(msgDiv);
+	                                enhanceCodeBlocks(contentDiv);
+	                            } else if (msg.role === 'tool') {
+	                                // Preserve tool messages in history for context/debugging.
+	                                addMessage(msg.content, 'tool');
+	                            }
+	                        } catch (err) {
+	                            console.warn('Failed to render a history message; continuing', err, msg);
+	                        }
+                    }
+                    scrollToBottom();
+                }
+            } catch (e) {
+                console.warn('Failed to load session history:', e);
+            }
+        }
+
         sessionSettingsBtn?.addEventListener('click', () => {
             if (sessionPanel.classList.contains('open')) {
                 closeSessionPanel();
@@ -2696,7 +4077,7 @@
         pickWorkDirBtn?.addEventListener('click', async () => {
             if (!sessionId) return;
             try {
-                const result = await window.__TAURI__.core.invoke('pick_workspace_directory', { session_id: sessionId });
+				const result = await window.__TAURI__.core.invoke('pick_workspace_directory', { sessionId });
                 if (result) {
                     sessionWorkDir.value = result;
                     workDirInfo.textContent = `Commands run in: ${result}`;
@@ -2710,10 +4091,10 @@
         sessionPermission?.addEventListener('change', async () => {
             if (!sessionId) return;
             try {
-                await window.__TAURI__.core.invoke('set_session_permission_level', {
-                    session_id: sessionId,
-                    level: sessionPermission.value
-                });
+	                await window.__TAURI__.core.invoke('set_session_permission_level', {
+	                    sessionId: sessionId,
+	                    level: sessionPermission.value
+	                });
                 console.log('Permission level updated to:', sessionPermission.value);
             } catch (e) {
                 console.error('Failed to update permission level:', e);
@@ -2725,11 +4106,11 @@
             checkbox.addEventListener('change', async () => {
                 if (!sessionId) return;
                 try {
-                    await window.__TAURI__.core.invoke('set_session_tool_enabled', {
-                        session_id: sessionId,
-                        tool_name: checkbox.value,
-                        enabled: checkbox.checked
-                    });
+	                    await window.__TAURI__.core.invoke('set_session_tool_enabled', {
+	                        sessionId: sessionId,
+	                        toolName: checkbox.value,
+	                        enabled: checkbox.checked
+	                    });
                     console.log('Tool toggled:', checkbox.value, checkbox.checked);
                 } catch (e) {
                     console.error('Failed to update tool setting:', e);
@@ -2737,9 +4118,438 @@
             });
         });
 
+        // =====================================================================
+        // Task Panel
+        // =====================================================================
+        const taskPanel = document.getElementById('taskPanel');
+        const taskPanelOverlay = document.getElementById('taskPanelOverlay');
+        const taskPanelBtn = document.getElementById('taskPanelBtn');
+        const taskPanelClose = document.getElementById('taskPanelClose');
+        const addTaskBtn = document.getElementById('addTaskBtn');
+        const taskList = document.getElementById('taskList');
+
+        function openTaskPanel() {
+            taskPanel.classList.add('open');
+            taskPanelOverlay.classList.add('visible');
+            taskPanelBtn.classList.add('active');
+            loadTasks();
+        }
+
+        function closeTaskPanel() {
+            taskPanel.classList.remove('open');
+            taskPanelOverlay.classList.remove('visible');
+            taskPanelBtn.classList.remove('active');
+        }
+
+        async function loadTasks() {
+            if (!sessionId) return;
+            try {
+	                const hierarchy = await window.__TAURI__.core.invoke('get_task_hierarchy', { sessionId: sessionId });
+                renderTasks(hierarchy);
+            } catch (e) {
+                console.error('Failed to load tasks:', e);
+                taskList.innerHTML = '<div class="task-empty">Failed to load tasks</div>';
+            }
+        }
+
+        function renderTasks(hierarchy) {
+            if (!hierarchy || hierarchy.length === 0) {
+                taskList.innerHTML = '<div class="task-empty">No tasks yet. Click "New Task" to get started.</div>';
+                return;
+            }
+
+            taskList.innerHTML = '';
+            hierarchy.forEach(([rootTask, subtasks]) => {
+                taskList.appendChild(createTaskElement(rootTask, false));
+                subtasks.forEach(subtask => {
+                    taskList.appendChild(createTaskElement(subtask, true));
+                });
+            });
+        }
+
+        function createTaskElement(task, isSubtask) {
+            const div = document.createElement('div');
+            div.className = 'task-item' + (isSubtask ? ' subtask' : '');
+            div.dataset.taskId = task.id;
+
+            const statusClass = task.status.toLowerCase().replace('_', '-');
+            const statusIcon = getStatusIcon(task.status);
+
+            div.innerHTML = `
+                <div class="task-header">
+                    <div class="task-status-icon ${statusClass}" data-task-id="${task.id}" title="Click to change status">
+                        ${statusIcon}
+                    </div>
+                    <div class="task-name">${escapeHtml(task.name)}</div>
+                </div>
+                ${task.description ? `<div class="task-description">${escapeHtml(task.description)}</div>` : ''}
+                <div class="task-actions-row">
+                    <button class="task-btn" data-action="edit" data-task-id="${task.id}">Edit</button>
+                    <button class="task-btn delete" data-action="delete" data-task-id="${task.id}">Delete</button>
+                </div>
+            `;
+
+            // Status icon click handler
+            div.querySelector('.task-status-icon').addEventListener('click', () => cycleTaskStatus(task));
+
+            // Action button handlers
+            div.querySelectorAll('.task-btn').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    const action = e.target.dataset.action;
+                    const taskId = e.target.dataset.taskId;
+                    if (action === 'edit') {
+                        editTask(task);
+                    } else if (action === 'delete') {
+                        await deleteTask(taskId);
+                    }
+                });
+            });
+
+            return div;
+        }
+
+        function getStatusIcon(status) {
+            switch (status) {
+                case 'NotStarted': return '○';
+                case 'InProgress': return '◐';
+                case 'Completed': return '✓';
+                case 'Cancelled': return '✕';
+                default: return '○';
+            }
+        }
+
+        async function cycleTaskStatus(task) {
+            const statusCycle = ['NotStarted', 'InProgress', 'Completed', 'Cancelled'];
+            const currentIndex = statusCycle.indexOf(task.status);
+            const nextStatus = statusCycle[(currentIndex + 1) % statusCycle.length];
+
+            try {
+	                await window.__TAURI__.core.invoke('update_task_status', {
+	                    sessionId: sessionId,
+	                    taskId: task.id,
+	                    status: nextStatus
+	                });
+                await loadTasks();
+            } catch (e) {
+                console.error('Failed to update task status:', e);
+            }
+        }
+
+        async function deleteTask(taskId) {
+            if (!confirm('Delete this task?')) return;
+            try {
+	                await window.__TAURI__.core.invoke('delete_task', {
+	                    sessionId: sessionId,
+	                    taskId: taskId
+	                });
+                await loadTasks();
+            } catch (e) {
+                console.error('Failed to delete task:', e);
+            }
+        }
+
+        function editTask(task) {
+            const newName = prompt('Task name:', task.name);
+            if (newName === null) return;
+            const newDescription = prompt('Task description:', task.description);
+            if (newDescription === null) return;
+
+            updateTask(task.id, newName, newDescription);
+        }
+
+        async function updateTask(taskId, name, description) {
+            try {
+	                await window.__TAURI__.core.invoke('update_task', {
+	                    sessionId: sessionId,
+	                    taskId: taskId,
+	                    name: name || null,
+	                    description: description || null
+	                });
+                await loadTasks();
+            } catch (e) {
+                console.error('Failed to update task:', e);
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Event listeners
+        taskPanelBtn?.addEventListener('click', () => {
+            if (taskPanel.classList.contains('open')) {
+                closeTaskPanel();
+            } else {
+                openTaskPanel();
+            }
+        });
+
+        taskPanelClose?.addEventListener('click', closeTaskPanel);
+        taskPanelOverlay?.addEventListener('click', closeTaskPanel);
+
+        addTaskBtn?.addEventListener('click', async () => {
+            const name = prompt('Task name:');
+            if (!name) return;
+            const description = prompt('Task description (optional):');
+
+            try {
+	                await window.__TAURI__.core.invoke('create_task', {
+	                    sessionId: sessionId,
+	                    name,
+	                    description: description || '',
+	                    parentId: null
+	                });
+                await loadTasks();
+            } catch (e) {
+                console.error('Failed to create task:', e);
+                alert('Failed to create task: ' + e);
+            }
+        });
+
+        // Keyboard shortcut: Ctrl/Cmd + T
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 't') {
+                e.preventDefault();
+                if (taskPanel.classList.contains('open')) {
+                    closeTaskPanel();
+                } else {
+                    openTaskPanel();
+                }
+            }
+        });
+
+        // =====================================================================
+        // Knowledge Panel
+        // =====================================================================
+        const knowledgePanel = document.getElementById('knowledgePanel');
+        const knowledgePanelOverlay = document.getElementById('knowledgePanelOverlay');
+        const knowledgePanelBtn = document.getElementById('knowledgePanelBtn');
+        const knowledgePanelClose = document.getElementById('knowledgePanelClose');
+        const knowledgeList = document.getElementById('knowledgeList');
+	        const knowledgeSearch = document.getElementById('knowledgeSearch');
+	        const knowledgeEnabledCount = document.getElementById('knowledgeEnabledCount');
+
+	        // Cached state so the search box can filter without refetching.
+	        let latestKnowledgeItems = [];
+	        let latestEnabledKnowledgeIds = new Set();
+
+        function openKnowledgePanel() {
+            knowledgePanel.classList.add('open');
+            knowledgePanelOverlay.classList.add('visible');
+            knowledgePanelBtn.classList.add('active');
+	            // Make the “skills” search immediately usable.
+	            try { knowledgeSearch?.focus(); } catch (_) {}
+            loadKnowledge();
+        }
+
+        function closeKnowledgePanel() {
+            knowledgePanel.classList.remove('open');
+            knowledgePanelOverlay.classList.remove('visible');
+            knowledgePanelBtn.classList.remove('active');
+        }
+
+	        async function loadKnowledge() {
+            if (!sessionId) return;
+            try {
+                const items = await window.__TAURI__.core.invoke('list_knowledge_items');
+	                const enabled = await window.__TAURI__.core.invoke('get_enabled_knowledge', { sessionId: sessionId });
+                renderKnowledge(items, enabled);
+            } catch (e) {
+                console.error('Failed to load knowledge:', e);
+                knowledgeList.innerHTML = '<div class="knowledge-empty">Failed to load knowledge</div>';
+            }
+        }
+
+	        /**
+	         * Update the little “enabled” counter shown next to the knowledge/skills search box.
+	         * @param {Set<string>} enabledSet
+	         */
+	        function updateKnowledgeEnabledCount(enabledSet) {
+	            if (!knowledgeEnabledCount) return;
+	            const count = enabledSet ? enabledSet.size : 0;
+	            knowledgeEnabledCount.textContent = `${count} enabled`;
+	        }
+
+	        /**
+	         * Render knowledge items, honoring the current search query (if any).
+	         */
+	        function renderKnowledgeFiltered() {
+	            const items = Array.isArray(latestKnowledgeItems) ? latestKnowledgeItems : [];
+	            if (!items || items.length === 0) {
+	                knowledgeList.innerHTML = '<div class="knowledge-empty">No knowledge items available</div>';
+	                updateKnowledgeEnabledCount(latestEnabledKnowledgeIds);
+	                return;
+	            }
+
+	            const query = (knowledgeSearch?.value || '').trim().toLowerCase();
+	            const filtered = query.length === 0
+	                ? items
+	                : items.filter((item) => {
+	                    const id = (item?.id || '').toLowerCase();
+	                    const category = (item?.category || '').toLowerCase();
+	                    const triggers = Array.isArray(item?.triggers) ? item.triggers.join(' ').toLowerCase() : '';
+	                    const firstLine = (item?.core_content || '').split('\n')[0].toLowerCase();
+	                    return id.includes(query) || category.includes(query) || triggers.includes(query) || firstLine.includes(query);
+	                });
+
+	            updateKnowledgeEnabledCount(latestEnabledKnowledgeIds);
+	
+	            knowledgeList.innerHTML = '';
+	            if (filtered.length === 0) {
+	                knowledgeList.innerHTML = '<div class="knowledge-empty">No matching skills</div>';
+	                return;
+	            }
+	
+	            filtered.forEach((item) => {
+	                const div = createKnowledgeElement(item, latestEnabledKnowledgeIds.has(item.id));
+	                knowledgeList.appendChild(div);
+	            });
+	        }
+
+	        function renderKnowledge(items, enabledIds) {
+	            latestKnowledgeItems = Array.isArray(items) ? items : [];
+	            latestEnabledKnowledgeIds = new Set(enabledIds || []);
+	            renderKnowledgeFiltered();
+	        }
+
+	        function createKnowledgeElement(item, isEnabled) {
+            const div = document.createElement('div');
+            div.className = 'knowledge-item';
+            div.dataset.knowledgeId = item.id;
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.className = 'knowledge-checkbox';
+            checkbox.checked = isEnabled;
+	            checkbox.addEventListener('change', async (e) => {
+	                const desired = !!e.target.checked;
+	                checkbox.disabled = true;
+	                try {
+	                    const ok = await toggleKnowledge(item.id, desired);
+	                    if (!ok) checkbox.checked = !desired;
+	                } finally {
+	                    checkbox.disabled = false;
+	                }
+	            });
+
+            const content = document.createElement('div');
+            content.className = 'knowledge-content';
+
+            const header = document.createElement('div');
+            header.className = 'knowledge-header';
+
+            const name = document.createElement('span');
+            name.className = 'knowledge-name';
+            name.textContent = item.id.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+
+            const category = document.createElement('span');
+            category.className = 'knowledge-category';
+            category.textContent = item.category || 'general';
+
+            header.appendChild(name);
+            header.appendChild(category);
+
+            const description = document.createElement('div');
+            description.className = 'knowledge-description';
+            description.textContent = item.core_content.split('\n')[0] || 'Specialized knowledge';
+
+            content.appendChild(header);
+            content.appendChild(description);
+
+            if (item.triggers && item.triggers.length > 0) {
+                const triggersDiv = document.createElement('div');
+                triggersDiv.className = 'knowledge-triggers';
+                item.triggers.forEach(trigger => {
+                    const triggerSpan = document.createElement('span');
+                    triggerSpan.className = 'knowledge-trigger';
+                    triggerSpan.textContent = trigger;
+                    triggersDiv.appendChild(triggerSpan);
+                });
+                content.appendChild(triggersDiv);
+            }
+
+            div.appendChild(checkbox);
+            div.appendChild(content);
+
+            return div;
+        }
+
+	        /**
+	         * Enable/disable a knowledge item for the current session.
+	         * Keeps the local cached enabled set in sync so the enabled counter stays correct
+	         * without needing a refetch.
+	         *
+	         * @param {string} knowledgeId
+	         * @param {boolean} enabled
+	         * @returns {Promise<boolean>} true on success
+	         */
+	        async function toggleKnowledge(knowledgeId, enabled) {
+            if (!sessionId) return;
+            try {
+                await window.__TAURI__.core.invoke('set_knowledge_enabled', {
+	                    sessionId: sessionId,
+	                    knowledgeId: knowledgeId,
+                    enabled: enabled
+                });
+
+	                if (typeof knowledgeId === 'string' && knowledgeId.length > 0) {
+	                    if (enabled) latestEnabledKnowledgeIds.add(knowledgeId);
+	                    else latestEnabledKnowledgeIds.delete(knowledgeId);
+	                    updateKnowledgeEnabledCount(latestEnabledKnowledgeIds);
+	                }
+	                return true;
+            } catch (e) {
+                console.error('Failed to toggle knowledge:', e);
+                alert('Failed to update knowledge: ' + e);
+                // Reload to reset checkbox state
+                await loadKnowledge();
+	                return false;
+            }
+        }
+
+        // Event listeners
+        knowledgePanelBtn?.addEventListener('click', () => {
+            if (knowledgePanel.classList.contains('open')) {
+                closeKnowledgePanel();
+            } else {
+                openKnowledgePanel();
+            }
+        });
+
+        knowledgePanelClose?.addEventListener('click', closeKnowledgePanel);
+        knowledgePanelOverlay?.addEventListener('click', closeKnowledgePanel);
+	
+	        // “Skills” search
+	        knowledgeSearch?.addEventListener('input', () => {
+	            renderKnowledgeFiltered();
+	        });
+	        knowledgeSearch?.addEventListener('keydown', (e) => {
+	            if (e.key === 'Escape') {
+	                e.preventDefault();
+	                knowledgeSearch.value = '';
+	                renderKnowledgeFiltered();
+	            }
+	        });
+
+	        // Keyboard shortcut: Ctrl/Cmd + Shift + K
+        document.addEventListener('keydown', (e) => {
+	            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'k') {
+                e.preventDefault();
+                if (knowledgePanel.classList.contains('open')) {
+                    closeKnowledgePanel();
+                } else {
+                    openKnowledgePanel();
+                }
+            }
+        });
+
         // Initialize
         initHeaderControls();
         setupEvents();
+        loadSessionSettings(); // Load session settings on page load
+        loadSessionHistory(); // Load conversation history when restoring a session
         messageInput.focus();
 
     </script>

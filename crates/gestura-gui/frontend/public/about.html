@@ -7,6 +7,57 @@
     <title>About Gestura</title>
     <link rel="stylesheet" href="icons.css">
     <style>
+        :root {
+            /* Light theme variables */
+            --bg-gradient-start: #667eea;
+            --bg-gradient-end: #764ba2;
+            --container-bg: rgba(255, 255, 255, 0.95);
+            --text-primary: #1D1D1F;
+            --text-secondary: #8E8E93;
+            --surface-bg: #F2F2F7;
+            --button-bg: #007AFF;
+            --button-text: white;
+        }
+
+        /* Auto mode: respect system preference */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                /* Dark theme variables */
+                --bg-gradient-start: #1a1a2e;
+                --bg-gradient-end: #16213e;
+                --container-bg: rgba(30, 30, 30, 0.95);
+                --text-primary: #f5f5f7;
+                --text-secondary: #b0b0b0;
+                --surface-bg: #2d2d2d;
+                --button-bg: #0a84ff;
+                --button-text: white;
+            }
+        }
+
+        /* Force light mode (overrides system preference) */
+        html[data-theme="light"] {
+            --bg-gradient-start: #667eea;
+            --bg-gradient-end: #764ba2;
+            --container-bg: rgba(255, 255, 255, 0.95);
+            --text-primary: #1D1D1F;
+            --text-secondary: #8E8E93;
+            --surface-bg: #F2F2F7;
+            --button-bg: #007AFF;
+            --button-text: white;
+        }
+
+        /* Force dark mode (overrides system preference) */
+        html[data-theme="dark"] {
+            --bg-gradient-start: #1a1a2e;
+            --bg-gradient-end: #16213e;
+            --container-bg: rgba(30, 30, 30, 0.95);
+            --text-primary: #f5f5f7;
+            --text-secondary: #b0b0b0;
+            --surface-bg: #2d2d2d;
+            --button-bg: #0a84ff;
+            --button-text: white;
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -15,7 +66,7 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, var(--bg-gradient-start) 0%, var(--bg-gradient-end) 100%);
             min-height: 100vh;
             padding: 2rem;
             display: flex;
@@ -25,7 +76,7 @@
 
         .container {
             max-width: 500px;
-            background: rgba(255, 255, 255, 0.95);
+            background: var(--container-bg);
             border-radius: 16px;
             padding: 2rem;
             box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
@@ -40,18 +91,18 @@
         .app-name {
             font-size: 2rem;
             font-weight: bold;
-            color: #1D1D1F;
+            color: var(--text-primary);
             margin-bottom: 0.5rem;
         }
 
         .version {
-            color: #8E8E93;
+            color: var(--text-secondary);
             font-size: 1.1rem;
             margin-bottom: 2rem;
         }
 
         .description {
-            color: #1D1D1F;
+            color: var(--text-primary);
             line-height: 1.6;
             margin-bottom: 2rem;
         }
@@ -65,19 +116,19 @@
         }
 
         .info-item {
-            background: #F2F2F7;
+            background: var(--surface-bg);
             padding: 1rem;
             border-radius: 8px;
         }
 
         .info-label {
             font-weight: 600;
-            color: #1D1D1F;
+            color: var(--text-primary);
             margin-bottom: 0.25rem;
         }
 
         .info-value {
-            color: #8E8E93;
+            color: var(--text-secondary);
             font-size: 0.9rem;
         }
 
@@ -89,8 +140,8 @@
 
         .link-button {
             padding: 0.5rem 1rem;
-            background: #007AFF;
-            color: white;
+            background: var(--button-bg);
+            color: var(--button-text);
             text-decoration: none;
             border-radius: 8px;
             font-size: 0.9rem;
@@ -149,6 +200,39 @@
     </div>
 
     <script>
+        // Theme initialization
+        async function initTheme() {
+            if (!window.__TAURI__) return;
+            try {
+                const config = await window.__TAURI__.core.invoke('get_config');
+                const themeMode = config?.ui?.theme_mode || 'system';
+                applyTheme(themeMode);
+
+                if (themeMode === 'system') {
+                    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+                    mediaQuery.addEventListener('change', () => applyTheme('system'));
+                }
+            } catch (e) {
+                console.error('[Theme] Failed to initialize:', e);
+                applyTheme('system');
+            }
+        }
+
+        function applyTheme(mode) {
+            const html = document.documentElement;
+            if (mode === 'light') {
+                html.setAttribute('data-theme', 'light');
+            } else if (mode === 'dark') {
+                html.setAttribute('data-theme', 'dark');
+            } else {
+                html.removeAttribute('data-theme');
+            }
+        }
+
+        if (window.__TAURI__) {
+            initTheme();
+        }
+
         function openDocs() {
             // Open documentation in default browser
             // This would be implemented with Tauri's shell API
