@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import ReactMarkdown from 'react-markdown';
 
 /**
  * Extract the current chat `session_id` from the window querystring.
@@ -800,23 +801,61 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
     );
   };
 
+  /**
+   * Render markdown content with proper formatting.
+   *
+   * Uses ReactMarkdown for full markdown support including:
+   * - Headers, bold, italic, strikethrough
+   * - Lists (ordered and unordered)
+   * - Tables
+   * - Links
+   * - Code blocks with syntax highlighting
+   * - Inline code
+   *
+   * The raw markdown is preserved for copy operations.
+   */
   const renderFormattedContent = (content: string) => {
-    // Simple markdown-like rendering for code blocks
-    const parts = content.split(/(```[\s\S]*?```)/g);
-    return parts.map((part, idx) => {
-      if (part.startsWith('```')) {
-        const lines = part.slice(3, -3).split('\n');
-        const lang = lines[0] || 'code';
-        const code = lines.slice(1).join('\n');
-        return (
-          <pre key={idx} className="code-block">
-            <div className="code-header">{lang}</div>
-            <code>{code}</code>
-          </pre>
-        );
-      }
-      return <span key={idx}>{part}</span>;
-    });
+    return (
+      <ReactMarkdown
+        components={{
+          // Custom code block rendering with language header
+          code({ className, children, ...props }) {
+            const match = /language-(\w+)/.exec(className || '');
+            const isInline = !match && !className;
+            if (isInline) {
+              return (
+                <code className="inline-code" {...props}>
+                  {children}
+                </code>
+              );
+            }
+            const lang = match ? match[1] : 'code';
+            return (
+              <pre className="code-block">
+                <div className="code-header">{lang}</div>
+                <code className={className} {...props}>
+                  {children}
+                </code>
+              </pre>
+            );
+          },
+          // Style tables properly
+          table({ children }) {
+            return <table className="markdown-table">{children}</table>;
+          },
+          // Style links to open in new tab
+          a({ href, children }) {
+            return (
+              <a href={href} target="_blank" rel="noopener noreferrer">
+                {children}
+              </a>
+            );
+          },
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    );
   };
 
   return (
