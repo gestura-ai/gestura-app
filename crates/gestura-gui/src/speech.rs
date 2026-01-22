@@ -210,7 +210,16 @@ impl SpeechProcessor {
 
                 let voice_processor = OpenAiWhisperVoice {
                     api_key: config.openai_api_key.clone(),
-                    base_url: "https://api.openai.com".to_string(),
+                    base_url: app_config
+                        .voice
+                        .openai_base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.openai.com".to_string()),
+                    model: app_config
+                        .voice
+                        .openai_model
+                        .clone()
+                        .unwrap_or_else(|| "gpt-4o-transcribe".to_string()),
                 };
 
                 voice_processor

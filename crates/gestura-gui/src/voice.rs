@@ -176,12 +176,13 @@ impl WhisperLocal {
             .create_state()
             .map_err(|e| AppError::Voice(format!("Failed to create whisper state: {e}")))?;
 
-        // Read audio samples from WAV
+        // Read audio samples from WAV, propagating decode errors
         let mut rdr =
             hound::WavReader::open(audio_path).map_err(|e| AppError::Voice(e.to_string()))?;
-        let samples: Vec<f32> = rdr
-            .samples::<i16>()
-            .filter_map(Result::ok)
+        let raw_samples: Result<Vec<i16>, _> = rdr.samples::<i16>().collect();
+        let samples: Vec<f32> = raw_samples
+            .map_err(|e| AppError::Voice(format!("Failed to decode audio samples: {}", e)))?
+            .into_iter()
             .map(|s| s as f32 / i16::MAX as f32)
             .collect();
 
@@ -238,11 +239,12 @@ impl VoiceProcessor for WhisperLocal {
         let mut state = ctx
             .create_state()
             .map_err(|e| AppError::Voice(format!("state: {e}")))?;
-        // Read audio samples from WAV
+        // Read audio samples from WAV, propagating decode errors
         let mut rdr = hound::WavReader::open(&input).map_err(|e| AppError::Voice(e.to_string()))?;
-        let samples: Vec<f32> = rdr
-            .samples::<i16>()
-            .filter_map(Result::ok)
+        let raw_samples: Result<Vec<i16>, _> = rdr.samples::<i16>().collect();
+        let samples: Vec<f32> = raw_samples
+            .map_err(|e| AppError::Voice(format!("Failed to decode audio samples: {}", e)))?
+            .into_iter()
             .map(|s| s as f32 / i16::MAX as f32)
             .collect();
         // Run full transcribe
@@ -281,6 +283,8 @@ impl VoiceProcessor for WhisperLocal {
 pub struct OpenAiWhisperVoice {
     pub api_key: String,
     pub base_url: String,
+    /// The model to use for transcription (e.g., "whisper-1", "gpt-4o-transcribe").
+    pub model: String,
 }
 
 impl OpenAiWhisperVoice {
@@ -302,7 +306,7 @@ impl OpenAiWhisperVoice {
             .map_err(|e| AppError::Voice(e.to_string()))?;
 
         let form = reqwest::multipart::Form::new()
-            .text("model", "whisper-1")
+            .text("model", self.model.clone())
             .part("file", part);
 
         let resp = client
@@ -324,7 +328,7 @@ impl OpenAiWhisperVoice {
         let v: serde_json::Value = resp.json().await?;
         let text = v["text"].as_str().unwrap_or("").to_string();
 
-        tracing::info!("Transcribed audio: '{}'", text);
+        tracing::info!("Transcribed audio using model '{}': '{}'", self.model, text);
         Ok(text)
     }
 }
@@ -357,7 +361,7 @@ impl VoiceProcessor for OpenAiWhisperVoice {
             .mime_str("audio/wav")
             .map_err(|e| AppError::Voice(e.to_string()))?;
         let form = reqwest::multipart::Form::new()
-            .text("model", "whisper-1")
+            .text("model", self.model.clone())
             .part("file", part);
         let resp = client
             .post(url)
@@ -366,7 +370,8 @@ impl VoiceProcessor for OpenAiWhisperVoice {
             .send()
             .await?;
         if !resp.status().is_success() {
-            return Err(AppError::Voice(format!("whisper http {}", resp.status())));
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AppError::Voice(format!("whisper http error: {}", body)));
         }
         let v: serde_json::Value = resp.json().await?;
         let text = v["text"].as_str().unwrap_or("").to_string();

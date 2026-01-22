@@ -32,9 +32,15 @@ pub fn select_voice(config: &AppConfig) -> Box<dyn VoiceProcessor> {
             .openai_base_url
             .clone()
             .unwrap_or_else(|| "https://api.openai.com".into());
+        let model = config
+            .voice
+            .openai_model
+            .clone()
+            .unwrap_or_else(|| "gpt-4o-transcribe".into());
         return Box::new(OpenAiWhisperVoice {
             api_key: api_key.clone(),
             base_url: base,
+            model,
         });
     }
 
