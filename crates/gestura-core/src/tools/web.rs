@@ -445,6 +445,9 @@ impl LocalSearchProvider {
         // DuckDuckGo HTML structure: .result class contains search results
         // Each result has .result__a (link) and .result__snippet (description)
         if let Ok(result_selector) = Selector::parse(".result, .web-result") {
+            let result_count = document.select(&result_selector).count();
+            tracing::debug!("Found {} result containers in DDG HTML", result_count);
+
             for result_el in document.select(&result_selector) {
                 // Get title and URL from the link
                 let (title, url) = if let Ok(link_sel) =
@@ -455,6 +458,7 @@ impl LocalSearchProvider {
                         let url = link.value().attr("href").unwrap_or("").to_string();
                         (title, url)
                     } else {
+                        tracing::debug!("No link found in result container");
                         continue;
                     }
                 } else {
@@ -477,6 +481,7 @@ impl LocalSearchProvider {
                 let resolved_url = self.resolve_ddg_url(&url);
 
                 if !title.is_empty() && !resolved_url.is_empty() {
+                    tracing::debug!("Parsed result: {} -> {}", title, resolved_url);
                     results.push(SearchItem {
                         title,
                         url: resolved_url,
@@ -488,22 +493,40 @@ impl LocalSearchProvider {
         }
 
         // Fallback: try to extract from simpler structure
-        if results.is_empty()
-            && let Ok(link_sel) = Selector::parse("a.result__a, .results a[href*=\"http\"]")
-        {
-            for link in document.select(&link_sel).take(10) {
-                let title = link.text().collect::<String>().trim().to_string();
-                let url = link.value().attr("href").unwrap_or("").to_string();
-                if !title.is_empty() && url.contains("http") {
-                    let resolved_url = self.resolve_ddg_url(&url);
-                    results.push(SearchItem {
-                        title,
-                        url: resolved_url,
-                        snippet: format!("Search result for: {}", query),
-                        content: None,
-                    });
+        if results.is_empty() {
+            tracing::warn!("Primary DDG parser returned no results, trying fallback parser");
+
+            if let Ok(link_sel) = Selector::parse("a.result__a, .results a[href*=\"http\"]") {
+                let link_count = document.select(&link_sel).count();
+                tracing::debug!("Fallback parser found {} links", link_count);
+
+                for link in document.select(&link_sel).take(10) {
+                    let title = link.text().collect::<String>().trim().to_string();
+                    let url = link.value().attr("href").unwrap_or("").to_string();
+                    if !title.is_empty() && url.contains("http") {
+                        let resolved_url = self.resolve_ddg_url(&url);
+                        tracing::debug!("Fallback result: {} -> {}", title, resolved_url);
+                        results.push(SearchItem {
+                            title,
+                            url: resolved_url,
+                            snippet: format!("Search result for: {}", query),
+                            content: None,
+                        });
+                    }
                 }
             }
+        }
+
+        if results.is_empty() {
+            tracing::error!(
+                "DDG HTML parsing failed - no results found. HTML length: {} bytes. This likely means DuckDuckGo changed their HTML structure.",
+                html.len()
+            );
+        } else {
+            tracing::info!(
+                "Successfully parsed {} results from DDG HTML",
+                results.len()
+            );
         }
 
         results
@@ -963,12 +986,36 @@ impl WebSearchService {
 
         for provider_type in &providers {
             let provider = self.create_provider(provider_type);
-            tracing::debug!("Trying search provider: {}", provider.name());
+            tracing::info!(
+                "Trying search provider '{}' for query: {}",
+                provider.name(),
+                query
+            );
 
             match provider.search(query, max_results).await {
                 Ok(mut results) => {
+                    if results.is_empty() {
+                        tracing::warn!(
+                            "Provider '{}' returned 0 results for query: {}. This may indicate HTML structure changes or API issues.",
+                            provider.name(),
+                            query
+                        );
+                        // Don't treat empty results as an error - continue to next provider
+                        last_error = Some(AppError::Io(std::io::Error::other(format!(
+                            "Provider '{}' returned no results",
+                            provider.name()
+                        ))));
+                        continue;
+                    }
+
+                    tracing::info!(
+                        "Provider '{}' returned {} results",
+                        provider.name(),
+                        results.len()
+                    );
+
                     // Optionally extract content from result pages
-                    if self.config.extract_content && !results.is_empty() {
+                    if self.config.extract_content {
                         results = self.enrich_with_content(results).await;
                     }
 
@@ -979,14 +1026,20 @@ impl WebSearchService {
                     });
                 }
                 Err(e) => {
-                    tracing::warn!("Provider {} failed: {}", provider.name(), e);
+                    tracing::warn!("Provider '{}' failed with error: {}", provider.name(), e);
                     last_error = Some(e);
                 }
             }
         }
 
-        Err(last_error
-            .unwrap_or_else(|| AppError::Io(std::io::Error::other("All search providers failed"))))
+        // All providers failed or returned empty results
+        Err(last_error.unwrap_or_else(|| {
+            AppError::Io(std::io::Error::other(
+                "All search providers failed or returned no results. \
+                Consider configuring a search API (Brave or SerpAPI) in your config file. \
+                The default Local provider uses DuckDuckGo HTML scraping which may be unreliable.",
+            ))
+        }))
     }
 
     /// Enrich search results with extracted content from top results
@@ -1114,6 +1167,13 @@ impl WebTools {
     /// Extract structured content from HTML
     pub fn extract_content(&self, html: &str, url: &str) -> ExtractedContent {
         self.service.extractor.extract(html, url)
+    }
+
+    /// Fetch a web page and extract structured content
+    /// This is more efficient than fetch() for LLM consumption as it returns
+    /// only the extracted content instead of raw HTML
+    pub async fn fetch_and_extract(&self, url: &str) -> Result<ExtractedContent> {
+        self.service.fetch_and_extract(url).await
     }
 }
 

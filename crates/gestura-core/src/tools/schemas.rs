@@ -60,21 +60,57 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value)> {
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "description": "File operation",
+                        "description": "File operation to perform. 'write' requires 'path' and 'content'. 'edit' requires 'path', 'old', and 'new'. 'search' requires 'path' and 'pattern'. 'read', 'list', and 'tree' require 'path' (defaults to '.' if omitted).",
                         "enum": ["read", "write", "edit", "list", "tree", "search"]
                     },
-                    "path": {"type": "string", "description": "Path to file or directory"},
-                    "content": {"type": "string", "description": "Content to write (for write)"},
-                    "old": {"type": "string", "description": "Old string to replace (for edit)"},
-                    "new": {"type": "string", "description": "New string (for edit)"},
-                    "pattern": {"type": "string", "description": "Search pattern (for search)"},
-                    "recursive": {"type": "boolean", "description": "Recursive search (for search)"},
-                    "max_matches": {"type": "integer", "description": "Limit matches (for search)"},
-                    "show_hidden": {"type": "boolean", "description": "Include dotfiles (for list/tree)"},
-                    "max_entries": {"type": "integer", "description": "Limit entries (for list)"},
-                    "max_depth": {"type": "integer", "description": "Max depth (for tree)"},
-                    "start": {"type": "integer", "description": "Start line (for read)"},
-                    "end": {"type": "integer", "description": "End line (for read)"}
+                    "path": {
+                        "type": "string",
+                        "description": "Path to file or directory. REQUIRED for most operations (defaults to '.' for list/tree/search if omitted)."
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Content to write to file. REQUIRED when operation='write'."
+                    },
+                    "old": {
+                        "type": "string",
+                        "description": "Old string to find and replace. REQUIRED when operation='edit'."
+                    },
+                    "new": {
+                        "type": "string",
+                        "description": "New string to replace with. REQUIRED when operation='edit'."
+                    },
+                    "pattern": {
+                        "type": "string",
+                        "description": "Search pattern (regex). REQUIRED when operation='search'."
+                    },
+                    "recursive": {
+                        "type": "boolean",
+                        "description": "Whether to search recursively in subdirectories (optional, for search operation, default true)"
+                    },
+                    "max_matches": {
+                        "type": "integer",
+                        "description": "Maximum number of matches to return (optional, for search operation)"
+                    },
+                    "show_hidden": {
+                        "type": "boolean",
+                        "description": "Whether to include hidden files/directories (optional, for list/tree operations, default false)"
+                    },
+                    "max_entries": {
+                        "type": "integer",
+                        "description": "Maximum number of entries to return (optional, for list operation)"
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Maximum directory depth to traverse (optional, for tree operation)"
+                    },
+                    "start": {
+                        "type": "integer",
+                        "description": "Starting line number for partial file read (optional, for read operation, 1-based)"
+                    },
+                    "end": {
+                        "type": "integer",
+                        "description": "Ending line number for partial file read (optional, for read operation, 1-based, inclusive)"
+                    }
                 },
                 "required": ["operation"],
                 "additionalProperties": true
@@ -101,11 +137,27 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value)> {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "operation": {"type": "string", "enum": ["fetch", "search"]},
-                    "url": {"type": "string", "description": "URL to fetch (for fetch)"},
-                    "query": {"type": "string", "description": "Search query (for search)"},
-                    "num_results": {"type": "integer", "description": "Number of results (for search)"},
-                    "max_results": {"type": "integer", "description": "Alias for num_results"}
+                    "operation": {
+                        "type": "string",
+                        "enum": ["fetch", "search"],
+                        "description": "Operation to perform. 'fetch' requires 'url' parameter. 'search' requires 'query' parameter."
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "URL to fetch. REQUIRED when operation='fetch'."
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Search query. REQUIRED when operation='search'."
+                    },
+                    "num_results": {
+                        "type": "integer",
+                        "description": "Number of search results to return (optional, for search operation, default varies by provider)"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Alias for num_results (optional, for search operation)"
+                    }
                 },
                 "required": ["operation"],
                 "additionalProperties": true
@@ -118,6 +170,42 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value)> {
                 "properties": {
                     "operation": {"type": "string", "enum": ["stats"]},
                     "path": {"type": "string", "description": "Directory to analyze (optional, default '.')"}
+                },
+                "required": ["operation"],
+                "additionalProperties": true
+            }),
+        ),
+        "task" | "tasks" => (
+            summary,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "operation": {
+                        "type": "string",
+                        "enum": ["create", "update_status", "update", "delete", "list", "get_hierarchy"],
+                        "description": "Task operation to perform"
+                    },
+                    "task_id": {
+                        "type": "string",
+                        "description": "Task ID. REQUIRED for update_status, update, delete operations."
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Task name. REQUIRED for create operation."
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Task description. Optional for create and update operations."
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["notstarted", "inprogress", "completed", "cancelled"],
+                        "description": "Task status. REQUIRED for update_status operation. Use 'notstarted', 'inprogress', 'completed', or 'cancelled'."
+                    },
+                    "parent_id": {
+                        "type": "string",
+                        "description": "Parent task ID for creating subtasks. Optional for create operation."
+                    }
                 },
                 "required": ["operation"],
                 "additionalProperties": true
