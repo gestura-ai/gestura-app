@@ -40,6 +40,7 @@
 //! }
 //! ```
 
+mod session_settings;
 mod store;
 mod types;
 
@@ -48,6 +49,7 @@ mod builtin {
     // Builtin knowledge content is included at compile time
 }
 
+pub use session_settings::{KnowledgeSettingsManager, SessionKnowledgeSettings};
 pub use store::{KnowledgeError, KnowledgeStore, register_builtin_knowledge};
 pub use types::{KnowledgeItem, KnowledgeMatch, KnowledgeQuery, KnowledgeReference, LoadCondition};
 
