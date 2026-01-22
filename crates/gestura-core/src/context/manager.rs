@@ -67,7 +67,7 @@ impl ContextManager {
             response_cache: Arc::new(RwLock::new(Vec::new())),
             max_context_tokens: 8000, // Conservative default
             include_tool_schemas: true,
-            history_threshold: 20,    // Summarize after 20 messages (LOW-1)
+            history_threshold: 10, // Summarize after 10 messages (matches max_history_messages)
             max_cached_responses: 10, // Keep last 10 responses (LOW-3)
         }
     }
@@ -206,14 +206,28 @@ impl ContextManager {
                 .rev()
                 .collect();
 
+            let summarized_count = history.len() - 8;
+            tracing::debug!(
+                total_messages = history.len(),
+                threshold = self.history_threshold,
+                summarized_messages = summarized_count,
+                "Context manager: applying history summarization"
+            );
+
             format!(
                 "[Conversation start]\n{}\n[...{} messages summarized...]\n[Recent]\n{}",
                 first_msgs.join("\n---\n"),
-                history.len() - 8,
+                summarized_count,
                 last_msgs.join("\n---\n")
             )
         } else if history.len() > 5 {
             // Medium history: take last 5 messages
+            tracing::debug!(
+                total_messages = history.len(),
+                threshold = self.history_threshold,
+                "Context manager: medium history, taking last 5 messages"
+            );
+
             history
                 .iter()
                 .rev()
@@ -226,6 +240,11 @@ impl ContextManager {
                 .join("\n---\n")
         } else {
             // Short history: include all
+            tracing::debug!(
+                total_messages = history.len(),
+                "Context manager: short history, including all messages"
+            );
+
             history
                 .iter()
                 .map(|m| m.as_ref())

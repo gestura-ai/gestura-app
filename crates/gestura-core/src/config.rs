@@ -13,7 +13,7 @@
 //! See [`crate::config_env`] for environment variable documentation.
 
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{collections::HashMap, fs, path::Path, path::PathBuf};
 
 use crate::config_env::{get_env, get_env_bool, get_env_u32};
 use crate::error::{AppError, Result};
@@ -69,6 +69,167 @@ impl Default for GlobalPermissionSettings {
     }
 }
 
+/// Pipeline and context management settings.
+///
+/// These settings control how the agent pipeline manages conversation context,
+/// token limits, and auto-compaction behavior. They are persisted in the
+/// application configuration and merged with provider-specific defaults at runtime.
+///
+/// # Examples
+///
+/// ```
+/// use gestura_core::config::PipelineSettings;
+/// use gestura_core::pipeline::CompactionStrategy;
+///
+/// // Create custom settings
+/// let mut settings = PipelineSettings::default();
+/// settings.max_history_messages = 20;
+/// settings.auto_compact_threshold_percent = 75;
+/// settings.compaction_strategy = CompactionStrategy::MemoryBank;
+///
+/// // Convert threshold to float for comparison
+/// assert_eq!(settings.auto_compact_threshold(), 0.75);
+/// ```
+///
+/// # Configuration via CLI
+///
+/// ```bash
+/// # Set maximum history messages
+/// gestura config set pipeline.max_history_messages 20
+///
+/// # Set auto-compaction threshold (0-100%)
+/// gestura config set pipeline.auto_compact_threshold_percent 75
+///
+/// # Set compaction strategy
+/// gestura config set pipeline.compaction_strategy MemoryBank
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PipelineSettings {
+    /// Maximum number of history messages to include in prompt.
+    ///
+    /// Older messages beyond this limit are dropped to save tokens.
+    /// Default: 10 messages
+    ///
+    /// Range: 1-100 (enforced by CLI validation)
+    pub max_history_messages: usize,
+
+    /// Auto-compaction threshold as percentage (0-100).
+    ///
+    /// When estimated tokens exceed this percentage of the context limit,
+    /// automatically trigger context compaction using the configured strategy.
+    ///
+    /// Stored as integer percentage (0-100) for `Eq` trait compatibility.
+    /// Use `auto_compact_threshold()` method to get as float (0.0-1.0).
+    ///
+    /// Default: 80 (triggers at 80% of token limit)
+    ///
+    /// Range: 0-100
+    pub auto_compact_threshold_percent: u8,
+
+    /// Strategy to use when auto-compaction is triggered.
+    ///
+    /// Available strategies:
+    /// - `Summarize`: Condense older messages into a summary (default)
+    /// - `Truncate`: Remove oldest messages
+    /// - `Clear`: Drop all history and start fresh
+    /// - `Prompt`: Ask user what to do
+    /// - `MemoryBank`: Save context to persistent markdown files
+    ///
+    /// Default: `Summarize`
+    pub compaction_strategy: crate::pipeline::CompactionStrategy,
+
+    /// Maximum context window tokens (model-dependent).
+    ///
+    /// Set to 0 to use provider-specific defaults:
+    /// - OpenAI GPT-4: 128,000 tokens
+    /// - Anthropic Claude: 200,000 tokens
+    /// - Grok: 131,072 tokens
+    /// - Ollama: 32,768 tokens (conservative default)
+    ///
+    /// Default: 0 (use provider defaults)
+    pub max_context_tokens: usize,
+
+    /// Enable token usage logging for debugging.
+    ///
+    /// When enabled, logs token usage estimates and visual indicators
+    /// (green/yellow/red) to help monitor context window utilization.
+    ///
+    /// Default: true
+    pub log_token_usage: bool,
+}
+
+impl Default for PipelineSettings {
+    fn default() -> Self {
+        Self {
+            max_history_messages: 10,
+            auto_compact_threshold_percent: 80, // 80% = 0.8
+            compaction_strategy: crate::pipeline::CompactionStrategy::default(),
+            max_context_tokens: 0, // 0 = use provider defaults
+            log_token_usage: true,
+        }
+    }
+}
+
+impl PipelineSettings {
+    /// Get auto-compaction threshold as a float (0.0-1.0).
+    ///
+    /// Converts the integer percentage (0-100) to a float for use in
+    /// threshold comparisons.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gestura_core::config::PipelineSettings;
+    ///
+    /// let settings = PipelineSettings::default();
+    /// assert_eq!(settings.auto_compact_threshold(), 0.80);
+    ///
+    /// let mut custom = PipelineSettings::default();
+    /// custom.auto_compact_threshold_percent = 75;
+    /// assert_eq!(custom.auto_compact_threshold(), 0.75);
+    /// ```
+    pub fn auto_compact_threshold(&self) -> f64 {
+        (self.auto_compact_threshold_percent as f64) / 100.0
+    }
+}
+
+/// Prompt enhancement settings for LLM-powered prompt improvement
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PromptEnhancementSettings {
+    /// Enable auto-enhancement while typing (debounced)
+    pub auto_enhance: bool,
+    /// Enhancement style: "concise" | "detailed" | "technical"
+    pub style: String,
+    /// Maximum length multiplier for enhanced prompts (1.0 - 5.0)
+    /// Stored as integer (10-50) for Eq compatibility, divide by 10 to get actual value
+    pub max_length_multiplier_x10: u8,
+}
+
+impl Default for PromptEnhancementSettings {
+    fn default() -> Self {
+        Self {
+            auto_enhance: false, // Opt-in feature
+            style: "concise".to_string(),
+            max_length_multiplier_x10: 30, // 3.0x default
+        }
+    }
+}
+
+impl PromptEnhancementSettings {
+    /// Get max_length_multiplier as f64
+    pub fn max_length_multiplier(&self) -> f64 {
+        (self.max_length_multiplier_x10 as f64) / 10.0
+    }
+
+    /// Set max_length_multiplier from f64 (clamps to 1.0-5.0 range)
+    pub fn set_max_length_multiplier(&mut self, value: f64) {
+        let clamped = value.clamp(1.0, 5.0);
+        self.max_length_multiplier_x10 = (clamped * 10.0).round() as u8;
+    }
+}
+
 /// Application configuration persisted to a JSON file.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppConfig {
@@ -99,6 +260,12 @@ pub struct AppConfig {
     /// Global permission settings for tool execution
     #[serde(default)]
     pub permissions: GlobalPermissionSettings,
+    /// Pipeline and context management settings
+    #[serde(default)]
+    pub pipeline: PipelineSettings,
+    /// Prompt enhancement settings
+    #[serde(default)]
+    pub prompt_enhancement: PromptEnhancementSettings,
 }
 
 /// Notification settings for response completion and MCP feedback
@@ -399,6 +566,8 @@ impl Default for AppConfig {
             notifications: NotificationSettings::default(),
             web_search: WebSearchConfig::default(),
             permissions: GlobalPermissionSettings::default(),
+            pipeline: PipelineSettings::default(),
+            prompt_enhancement: PromptEnhancementSettings::default(),
         }
     }
 }
@@ -436,29 +605,51 @@ impl AppConfig {
         Self::whisper_models_dir().join("ggml-base.en.bin")
     }
 
-    /// Load configuration from disk, falling back to defaults if missing (sync version)
-    pub fn load() -> Self {
-        let path = Self::default_path();
-        match fs::read_to_string(&path) {
+    /// Load configuration from disk at an explicit path.
+    ///
+    /// This is primarily useful for tests and tooling that want to avoid
+    /// mutating the user's real config file.
+    ///
+    /// If the file does not exist or cannot be read/parsed, this returns
+    /// [`AppConfig::default`].
+    pub fn load_from_path(path: impl AsRef<Path>) -> Self {
+        let path = path.as_ref();
+        match fs::read_to_string(path) {
             Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
             Err(_) => Self::default(),
         }
     }
 
-    /// Load configuration from disk asynchronously, falling back to defaults if missing
+    /// Load configuration from disk, falling back to defaults if missing (sync version).
+    pub fn load() -> Self {
+        Self::load_from_path(Self::default_path())
+    }
+
+    /// Load configuration from disk at an explicit path (async).
     ///
-    /// This is the preferred method for GUI/Tauri commands to avoid blocking the UI thread.
-    pub async fn load_async() -> Self {
-        let path = Self::default_path();
+    /// This is the async equivalent of [`AppConfig::load_from_path`]. If the file
+    /// does not exist or cannot be read/parsed, this returns [`AppConfig::default`].
+    pub async fn load_from_path_async(path: impl AsRef<Path>) -> Self {
+        let path = path.as_ref().to_path_buf();
         match tokio::fs::read_to_string(&path).await {
             Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
             Err(_) => Self::default(),
         }
     }
 
-    /// Save configuration to disk (sync version)
-    pub fn save(&self) -> Result<()> {
-        let path = Self::default_path();
+    /// Load configuration from disk asynchronously, falling back to defaults if missing.
+    ///
+    /// This is the preferred method for GUI/Tauri commands to avoid blocking the UI thread.
+    pub async fn load_async() -> Self {
+        Self::load_from_path_async(Self::default_path()).await
+    }
+
+    /// Save configuration to disk at an explicit path.
+    ///
+    /// This is primarily useful for tests and tooling that want deterministic,
+    /// isolated config files.
+    pub fn save_to_path(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -468,11 +659,16 @@ impl AppConfig {
         Ok(())
     }
 
-    /// Save configuration to disk asynchronously
+    /// Save configuration to disk (sync version).
+    pub fn save(&self) -> Result<()> {
+        self.save_to_path(Self::default_path())
+    }
+
+    /// Save configuration to disk at an explicit path (async).
     ///
-    /// This is the preferred method for GUI/Tauri commands to avoid blocking the UI thread.
-    pub async fn save_async(&self) -> Result<()> {
-        let path = Self::default_path();
+    /// This is the async equivalent of [`AppConfig::save_to_path`].
+    pub async fn save_to_path_async(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -480,6 +676,13 @@ impl AppConfig {
             .map_err(|e| AppError::Config(format!("Failed to serialize config: {}", e)))?;
         tokio::fs::write(path, data).await?;
         Ok(())
+    }
+
+    /// Save configuration to disk asynchronously.
+    ///
+    /// This is the preferred method for GUI/Tauri commands to avoid blocking the UI thread.
+    pub async fn save_async(&self) -> Result<()> {
+        self.save_to_path_async(Self::default_path()).await
     }
 
     /// Get a config value by dot-notation key (e.g., "llm.primary")
@@ -745,6 +948,7 @@ impl WhisperModelInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline::CompactionStrategy;
 
     #[test]
     fn default_config_has_expected_values() {
@@ -773,5 +977,86 @@ mod tests {
         assert!(!models.is_empty());
         let recommended: Vec<_> = models.iter().filter(|m| m.recommended).collect();
         assert_eq!(recommended.len(), 1);
+    }
+
+    #[test]
+    fn test_backward_compatibility_without_pipeline_settings() {
+        // Create a default config and serialize it
+        let default_config = AppConfig::default();
+        let mut json_value: serde_json::Value = serde_json::to_value(&default_config).unwrap();
+
+        // Remove the pipeline field to simulate an old config file
+        json_value.as_object_mut().unwrap().remove("pipeline");
+
+        // Deserialize should succeed and use default pipeline settings
+        let config: AppConfig = serde_json::from_value(json_value).unwrap();
+
+        // Verify pipeline settings have default values
+        assert_eq!(config.pipeline.max_history_messages, 10);
+        assert_eq!(config.pipeline.auto_compact_threshold_percent, 80);
+        assert_eq!(
+            config.pipeline.compaction_strategy,
+            CompactionStrategy::Summarize
+        );
+        assert_eq!(config.pipeline.max_context_tokens, 0);
+        assert!(config.pipeline.log_token_usage);
+    }
+
+    #[test]
+    fn test_backward_compatibility_with_partial_pipeline_settings() {
+        // Create a default config and serialize it
+        let default_config = AppConfig::default();
+        let mut json_value: serde_json::Value = serde_json::to_value(&default_config).unwrap();
+
+        // Modify pipeline to only have max_history_messages
+        let pipeline_obj = serde_json::json!({
+            "max_history_messages": 20
+        });
+        json_value
+            .as_object_mut()
+            .unwrap()
+            .insert("pipeline".to_string(), pipeline_obj);
+
+        // Deserialize should succeed and use defaults for missing fields
+        let config: AppConfig = serde_json::from_value(json_value).unwrap();
+
+        // Verify explicitly set value
+        assert_eq!(config.pipeline.max_history_messages, 20);
+
+        // Verify other fields have default values
+        assert_eq!(config.pipeline.auto_compact_threshold_percent, 80);
+        assert_eq!(
+            config.pipeline.compaction_strategy,
+            CompactionStrategy::Summarize
+        );
+        assert_eq!(config.pipeline.max_context_tokens, 0);
+        assert!(config.pipeline.log_token_usage);
+    }
+
+    #[test]
+    fn test_pipeline_settings_serialization_roundtrip() {
+        // Create a config with custom pipeline settings
+        let mut config = AppConfig::default();
+        config.pipeline.max_history_messages = 15;
+        config.pipeline.auto_compact_threshold_percent = 75;
+        config.pipeline.compaction_strategy = CompactionStrategy::MemoryBank;
+        config.pipeline.max_context_tokens = 50000;
+        config.pipeline.log_token_usage = false;
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&config).unwrap();
+
+        // Deserialize back
+        let deserialized: AppConfig = serde_json::from_str(&json).unwrap();
+
+        // Verify all pipeline settings are preserved
+        assert_eq!(deserialized.pipeline.max_history_messages, 15);
+        assert_eq!(deserialized.pipeline.auto_compact_threshold_percent, 75);
+        assert_eq!(
+            deserialized.pipeline.compaction_strategy,
+            CompactionStrategy::MemoryBank
+        );
+        assert_eq!(deserialized.pipeline.max_context_tokens, 50000);
+        assert!(!deserialized.pipeline.log_token_usage);
     }
 }
