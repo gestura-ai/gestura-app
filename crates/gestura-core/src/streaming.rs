@@ -22,6 +22,53 @@ const ECHO_STREAM_CHUNK_CHARS: usize = 24;
 /// Default timeout for streaming LLM API calls
 const STREAMING_TIMEOUT_SECS: u64 = 300;
 
+/// Pricing per 1M tokens (input/output) for various providers
+/// Prices are in USD and updated as of January 2026
+pub mod pricing {
+    /// OpenAI GPT-4 Turbo pricing (per 1M tokens)
+    pub const OPENAI_GPT4_TURBO_INPUT: f64 = 10.0;
+    pub const OPENAI_GPT4_TURBO_OUTPUT: f64 = 30.0;
+
+    /// OpenAI GPT-3.5 Turbo pricing (per 1M tokens)
+    pub const OPENAI_GPT35_TURBO_INPUT: f64 = 0.50;
+    pub const OPENAI_GPT35_TURBO_OUTPUT: f64 = 1.50;
+
+    /// Anthropic Claude 3.5 Sonnet pricing (per 1M tokens)
+    pub const ANTHROPIC_CLAUDE_35_SONNET_INPUT: f64 = 3.0;
+    pub const ANTHROPIC_CLAUDE_35_SONNET_OUTPUT: f64 = 15.0;
+
+    /// Anthropic Claude 3 Opus pricing (per 1M tokens)
+    pub const ANTHROPIC_CLAUDE_3_OPUS_INPUT: f64 = 15.0;
+    pub const ANTHROPIC_CLAUDE_3_OPUS_OUTPUT: f64 = 75.0;
+
+    /// Anthropic Claude 3 Haiku pricing (per 1M tokens)
+    pub const ANTHROPIC_CLAUDE_3_HAIKU_INPUT: f64 = 0.25;
+    pub const ANTHROPIC_CLAUDE_3_HAIKU_OUTPUT: f64 = 1.25;
+
+    /// xAI Grok pricing (per 1M tokens) - estimated
+    pub const XAI_GROK_INPUT: f64 = 5.0;
+    pub const XAI_GROK_OUTPUT: f64 = 15.0;
+
+    /// Ollama (local) - free
+    pub const OLLAMA_INPUT: f64 = 0.0;
+    pub const OLLAMA_OUTPUT: f64 = 0.0;
+
+    /// Default fallback pricing (per 1M tokens)
+    pub const DEFAULT_INPUT: f64 = 1.0;
+    pub const DEFAULT_OUTPUT: f64 = 3.0;
+}
+
+/// Token usage status indicator for visual feedback
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenUsageStatus {
+    /// Green: Healthy usage (<70% of limit)
+    Green,
+    /// Yellow: Approaching limit (70-90% of limit)
+    Yellow,
+    /// Red: Near or exceeding limit (>90% of limit)
+    Red,
+}
+
 /// A chunk of streaming response
 #[derive(Debug, Clone)]
 pub enum StreamChunk {
@@ -68,6 +115,20 @@ pub enum StreamChunk {
         /// Summary of what was compacted
         summary: String,
     },
+    /// Token usage notification for user feedback
+    /// Provides real-time visibility into context window utilization
+    TokenUsageUpdate {
+        /// Estimated tokens in current request
+        estimated: usize,
+        /// Maximum input tokens allowed
+        limit: usize,
+        /// Utilization percentage (0-100)
+        percentage: u8,
+        /// Status indicator: Green (<70%), Yellow (70-90%), Red (>90%)
+        status: TokenUsageStatus,
+        /// Estimated cost in USD for this request (input only)
+        estimated_cost: f64,
+    },
     /// A request from the agent to change configuration.
     ///
     /// This is surfaced to UIs (GUI/TUI) so they can prompt for confirmation or
@@ -110,6 +171,18 @@ pub enum StreamChunk {
         tool_name: String,
         /// Reason for blocking
         reason: String,
+    },
+    /// Memory bank entry saved notification for user feedback
+    /// Emitted when context is saved to persistent memory bank file
+    MemoryBankSaved {
+        /// Path to the saved memory bank file
+        file_path: String,
+        /// Session ID associated with this entry
+        session_id: String,
+        /// Brief summary of what was saved
+        summary: String,
+        /// Number of messages saved
+        messages_saved: usize,
     },
     /// Stream completed successfully with optional token usage
     Done(Option<TokenUsage>),
@@ -167,6 +240,10 @@ async fn forward_attempt_stream(
                 // Forward compaction notifications without marking as output
                 let _ = tx.send(chunk).await;
             }
+            StreamChunk::TokenUsageUpdate { .. } => {
+                // Forward token usage updates without marking as output
+                let _ = tx.send(chunk).await;
+            }
             StreamChunk::ConfigRequest { .. } => {
                 // Forward config requests without marking as output
                 let _ = tx.send(chunk).await;
@@ -177,6 +254,10 @@ async fn forward_attempt_stream(
             }
             StreamChunk::ToolBlocked { .. } => {
                 // Forward tool blocked notifications without marking as output
+                let _ = tx.send(chunk).await;
+            }
+            StreamChunk::MemoryBankSaved { .. } => {
+                // Forward memory bank notifications without marking as output
                 let _ = tx.send(chunk).await;
             }
             StreamChunk::Done(_) => {
@@ -420,7 +501,6 @@ fn build_openai_chat_body(
     let mut body = serde_json::json!({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.2,
         "stream": true
     });
 
@@ -1158,6 +1238,12 @@ mod tests {
         assert!(body.get("tools").is_none());
         assert!(body.get("tool_choice").is_none());
     }
+
+	#[test]
+	fn openai_body_omits_temperature() {
+		let body = build_openai_chat_body("gpt-test", "hi", None);
+		assert!(body.get("temperature").is_none());
+	}
 
     #[test]
     fn anthropic_body_includes_tools_when_provided() {
