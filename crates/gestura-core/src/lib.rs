@@ -48,16 +48,22 @@ pub mod interaction;
 pub mod knowledge;
 pub mod llm_provider;
 pub mod mcp;
+pub mod memory_bank;
+/// OpenAI(-compatible) API compatibility helpers (e.g., parameter support quirks).
+pub mod openai_compat;
 mod persona;
 pub mod pipeline;
+pub mod prompt_enhancement;
 pub mod retry;
 pub mod session_manager;
 pub mod session_workspace;
 pub mod speech;
+pub mod stt_provider;
 pub mod stream_error;
 pub mod stream_health;
 pub mod stream_reconnect;
 pub mod streaming;
+pub mod tasks;
 pub mod telemetry;
 pub mod token_tracker;
 pub mod tool_inspection;
@@ -95,7 +101,8 @@ pub use interaction::{
 };
 pub use knowledge::{
     KnowledgeError, KnowledgeItem, KnowledgeMatch, KnowledgeQuery, KnowledgeReference,
-    KnowledgeStore, LoadCondition, register_builtin_knowledge,
+    KnowledgeSettingsManager, KnowledgeStore, LoadCondition, SessionKnowledgeSettings,
+    register_builtin_knowledge,
 };
 #[cfg(any(feature = "dev", test))]
 pub use llm_provider::EchoProvider;
@@ -105,6 +112,11 @@ pub use llm_provider::{
 pub use mcp::{
     CachedTool, LocalMcp, McpCacheStats, McpDiscoveryManager, McpIntegrator, McpServerConfig,
     McpServerInfo, MdhResource, ServerState, TokenInfo, get_mcp, mdh_translate,
+};
+pub use memory_bank::{
+    MemoryBankEntry, MemoryBankError, clear_memory_bank, ensure_memory_bank_dir,
+    get_memory_bank_dir, list_memory_bank, load_from_memory_bank, save_to_memory_bank,
+    search_memory_bank,
 };
 pub use pipeline::{
     AgentPipeline, AgentRequest, AgentResponse, Message, PipelineConfig, RequestMetadata,
@@ -128,6 +140,7 @@ pub use stream_reconnect::{
     ReconnectConfig, ReconnectEvent, ReconnectManager, ReconnectState, StreamState,
 };
 pub use streaming::{CancellationToken, StreamChunk, start_streaming};
+pub use tasks::{Task, TaskError, TaskList, TaskManager, TaskStatus};
 pub use telemetry::{
     Metric, MetricType, SystemHealth, TelemetryManager, Timer, get_telemetry_manager,
 };

@@ -248,98 +248,23 @@ impl SpeechProcessor {
 
     /// Transcribe audio file to text
     ///
-    /// Uses the configured STT provider (local Whisper or OpenAI Whisper API)
+    /// Uses the unified STT provider abstraction from `stt_provider` module.
+    /// The provider is selected based on `AppConfig.voice.provider` and respects
+    /// configured base_url and model settings.
     pub async fn transcribe_audio(
         &self,
         audio_path: &Path,
     ) -> Result<TranscriptionResult, AppError> {
-        let config = self.get_config();
         let app_config = AppConfig::load();
+        let provider = crate::stt_provider::select_provider(&app_config);
 
-        tracing::info!("Transcribing audio with provider: {}", config.stt_provider);
+        tracing::info!(
+            "Transcribing audio with provider: {} (config.voice.provider={})",
+            provider.provider_id(),
+            app_config.voice.provider
+        );
 
-        match config.stt_provider.as_str() {
-            "openai-whisper" => {
-                // Use OpenAI Whisper API
-                let api_key = if !config.openai_api_key.is_empty() {
-                    config.openai_api_key.clone()
-                } else if let Some(ref openai) = app_config.llm.openai {
-                    openai.api_key.clone()
-                } else {
-                    return Err(AppError::Voice("OpenAI API key not configured".to_string()));
-                };
-
-                // Get the selected STT model from voice settings, default to gpt-4o-transcribe
-                let stt_model = app_config
-                    .voice
-                    .openai_model
-                    .as_deref()
-                    .unwrap_or("gpt-4o-transcribe");
-
-                tracing::info!("Using OpenAI STT model: {}", stt_model);
-
-                let client = reqwest::Client::new();
-                let bytes = std::fs::read(audio_path)
-                    .map_err(|e| AppError::Voice(format!("Failed to read audio file: {}", e)))?;
-
-                let file_name = audio_path
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("audio.wav")
-                    .to_string();
-
-                let part = reqwest::multipart::Part::bytes(bytes)
-                    .file_name(file_name)
-                    .mime_str("audio/wav")
-                    .map_err(|e| AppError::Voice(format!("Failed to create multipart: {}", e)))?;
-
-                let form = reqwest::multipart::Form::new()
-                    .text("model", stt_model.to_string())
-                    .part("file", part);
-
-                let response = client
-                    .post("https://api.openai.com/v1/audio/transcriptions")
-                    .header("Authorization", format!("Bearer {}", api_key))
-                    .multipart(form)
-                    .send()
-                    .await
-                    .map_err(|e| AppError::Voice(format!("OpenAI API request failed: {}", e)))?;
-
-                if !response.status().is_success() {
-                    let error_text = response.text().await.unwrap_or_default();
-                    return Err(AppError::Voice(format!("OpenAI API error: {}", error_text)));
-                }
-
-                #[derive(serde::Deserialize)]
-                struct WhisperResponse {
-                    text: String,
-                }
-
-                let result: WhisperResponse = response
-                    .json()
-                    .await
-                    .map_err(|e| AppError::Voice(format!("Failed to parse response: {}", e)))?;
-
-                Ok(TranscriptionResult {
-                    text: result.text,
-                    duration_secs: 0.0, // Duration not provided by API
-                    audio_path: Some(audio_path.to_path_buf()),
-                    provider: "openai-whisper".to_string(),
-                })
-            }
-            "local-whisper" => {
-                // Local Whisper transcription using whisper-rs
-                self.transcribe_with_local_whisper(audio_path).await
-            }
-            other => {
-                tracing::warn!(
-                    "Unknown STT provider '{other}', falling back to local whisper placeholder"
-                );
-                Err(AppError::Voice(format!(
-                    "Unknown STT provider '{other}'. Supported providers: openai-whisper, local-whisper"
-                )))
-            }
-        }
+        provider.transcribe_file(audio_path).await
     }
 
     /// Transcribe audio using local Whisper model (whisper-rs)
@@ -475,17 +400,22 @@ impl SpeechProcessor {
         let sample_rate = spec.sample_rate;
         let channels = spec.channels as usize;
 
-        // Read samples based on format
+        // Read samples based on format, propagating decode errors
         let samples: Vec<f32> = match spec.sample_format {
             hound::SampleFormat::Int => {
                 let max_val = (1 << (spec.bits_per_sample - 1)) as f32;
-                reader
-                    .samples::<i32>()
-                    .filter_map(|s| s.ok())
+                let raw_samples: Result<Vec<i32>, _> = reader.samples::<i32>().collect();
+                raw_samples
+                    .map_err(|e| AppError::Voice(format!("Failed to decode audio samples: {}", e)))?
+                    .into_iter()
                     .map(|s| s as f32 / max_val)
                     .collect()
             }
-            hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
+            hound::SampleFormat::Float => {
+                let raw_samples: Result<Vec<f32>, _> = reader.samples::<f32>().collect();
+                raw_samples
+                    .map_err(|e| AppError::Voice(format!("Failed to decode audio samples: {}", e)))?
+            }
         };
 
         // Convert to mono if stereo
@@ -589,4 +519,138 @@ pub fn is_speech_recording() -> bool {
 /// Update the global speech processor configuration
 pub fn update_speech_config(config: SpeechConfig) {
     SPEECH_PROCESSOR.update_config(config);
+}
+
+/// Resolve the path to the local Whisper model file.
+///
+/// Checks (in order):
+/// 1. `config.voice.local_model_path` if set
+/// 2. `GESTURA_WHISPER_MODEL` environment variable
+/// 3. Default search directories (~/.gestura/models/, ./models/)
+///
+/// Returns an error with an actionable message if no model is found.
+#[cfg(feature = "voice-local")]
+pub fn resolve_whisper_model_path(config: &AppConfig) -> Result<PathBuf, AppError> {
+    // 1. Check config-provided path first
+    if let Some(ref path_str) = config.voice.local_model_path {
+        let path = PathBuf::from(path_str);
+        if path.exists() {
+            return Ok(path);
+        }
+        // Config path set but doesn't exist — warn and continue searching
+        tracing::warn!(
+            "Configured local_model_path '{}' does not exist; searching defaults",
+            path_str
+        );
+    }
+
+    // 2. Check environment variable
+    if let Ok(path_str) = std::env::var("GESTURA_WHISPER_MODEL") {
+        let path = PathBuf::from(&path_str);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    // 3. Search default directories
+    let model_names = [
+        "ggml-base.en.bin",
+        "ggml-base.bin",
+        "ggml-small.en.bin",
+        "ggml-small.bin",
+        "ggml-medium.en.bin",
+        "ggml-medium.bin",
+        "ggml-large.bin",
+    ];
+
+    let search_dirs: Vec<Option<PathBuf>> = vec![
+        dirs::home_dir().map(|h| h.join(".gestura").join("models")),
+        Some(PathBuf::from("models")),
+    ];
+
+    for dir in search_dirs.iter().flatten() {
+        for model_name in &model_names {
+            let model_path = dir.join(model_name);
+            if model_path.exists() {
+                tracing::info!("Found Whisper model at: {:?}", model_path);
+                return Ok(model_path);
+            }
+        }
+    }
+
+    Err(AppError::Voice(
+        "Whisper model not found. Please download a model (e.g., ggml-base.en.bin) \
+         and place it in ~/.gestura/models/ or set GESTURA_WHISPER_MODEL environment variable, \
+         or configure voice.local_model_path in your settings."
+            .to_string(),
+    ))
+}
+
+/// Load audio file and convert to 16kHz mono f32 samples.
+///
+/// This is the format required by whisper.cpp / whisper-rs for transcription.
+/// Supports WAV files with integer or float samples, any sample rate, mono or stereo.
+#[cfg(feature = "voice-local")]
+pub fn load_audio_samples_16khz_mono(audio_path: &Path) -> Result<Vec<f32>, AppError> {
+    use hound::WavReader;
+
+    let mut reader = WavReader::open(audio_path)
+        .map_err(|e| AppError::Voice(format!("Failed to open audio file: {}", e)))?;
+
+    let spec = reader.spec();
+    let sample_rate = spec.sample_rate;
+    let channels = spec.channels as usize;
+
+    // Read samples based on format, propagating decode errors
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Int => {
+            let max_val = (1 << (spec.bits_per_sample - 1)) as f32;
+            let raw_samples: Result<Vec<i32>, _> = reader.samples::<i32>().collect();
+            raw_samples
+                .map_err(|e| AppError::Voice(format!("Failed to decode audio samples: {}", e)))?
+                .into_iter()
+                .map(|s| s as f32 / max_val)
+                .collect()
+        }
+        hound::SampleFormat::Float => {
+            let raw_samples: Result<Vec<f32>, _> = reader.samples::<f32>().collect();
+            raw_samples
+                .map_err(|e| AppError::Voice(format!("Failed to decode audio samples: {}", e)))?
+        }
+    };
+
+    // Convert to mono if stereo (average channels)
+    let mono_samples: Vec<f32> = if channels > 1 {
+        samples
+            .chunks(channels)
+            .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
+            .collect()
+    } else {
+        samples
+    };
+
+    // Resample to 16kHz if needed (simple linear interpolation)
+    let target_rate = 16000u32;
+    if sample_rate != target_rate {
+        let ratio = sample_rate as f32 / target_rate as f32;
+        let new_len = (mono_samples.len() as f32 / ratio) as usize;
+        let mut resampled = Vec::with_capacity(new_len);
+
+        for i in 0..new_len {
+            let src_idx = i as f32 * ratio;
+            let idx = src_idx as usize;
+            let frac = src_idx - idx as f32;
+
+            let sample = if idx + 1 < mono_samples.len() {
+                mono_samples[idx] * (1.0 - frac) + mono_samples[idx + 1] * frac
+            } else {
+                mono_samples[idx.min(mono_samples.len() - 1)]
+            };
+            resampled.push(sample);
+        }
+
+        Ok(resampled)
+    } else {
+        Ok(mono_samples)
+    }
 }
