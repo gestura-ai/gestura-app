@@ -448,7 +448,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
     println!("{}", format!("├{}┤", "─".repeat(inner_width + 2)).dimmed());
 
     // Help hints
-    let hints = "/help commands · /tools list · Ctrl+C quit";
+    let hints = "/help commands · /tools list · /summarize history · /memory manage · Ctrl+C quit";
     let hints_padding = inner_width.saturating_sub(hints.len());
     println!(
         "{} {}{} {}",
@@ -630,6 +630,18 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 "List all tools or show detail for one".dimmed()
                             );
                             println!(
+                                "{}  {}        {}",
+                                "│".dimmed(),
+                                "/summarize".green(),
+                                "Summarize conversation history".dimmed()
+                            );
+                            println!(
+                                "{}  {}  {}",
+                                "│".dimmed(),
+                                "/memory [list|save|clear]".green(),
+                                "Manage memory bank".dimmed()
+                            );
+                            println!(
                                 "{}  {}              {}",
                                 "│".dimmed(),
                                 "/save".green(),
@@ -699,6 +711,265 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 }
                             } else {
                                 println!("{}", crate::tool_registry::render_tools_overview());
+                            }
+                            println!();
+                            continue;
+                        }
+                        "/summarize" => {
+                            println!();
+                            // Get conversation history
+                            let history: Vec<String> = chat_session
+                                .messages
+                                .iter()
+                                .map(|msg| msg.content.clone())
+                                .collect();
+
+                            if history.is_empty() {
+                                println!(
+                                    "{} {}",
+                                    "◆".yellow().bold(),
+                                    "No conversation history to summarize.".yellow()
+                                );
+                            } else {
+                                // Use context manager to summarize
+                                use gestura_core::context::ContextManager;
+                                let context_manager = ContextManager::new();
+                                let summary = context_manager.summarize_history(&history);
+
+                                println!(
+                                    "{} {}",
+                                    "◆".blue().bold(),
+                                    "Conversation Summary:".blue()
+                                );
+                                println!();
+                                println!("{}", summary);
+                                println!();
+                                println!(
+                                    "{}",
+                                    format!("Summarized {} messages", history.len()).dimmed()
+                                );
+
+                                // Add summary to session
+                                chat_session.add_message(
+                                    "assistant",
+                                    &format!(
+                                        "## Conversation Summary\n\n{}\n\n---\n\n*Summarized {} messages*",
+                                        summary,
+                                        history.len()
+                                    ),
+                                    Some("Summarizing conversation history (no LLM call)...".to_string()),
+                                );
+                            }
+                            println!();
+                            continue;
+                        }
+                        cmd if cmd.starts_with("/memory") => {
+                            println!();
+                            // Parse subcommand
+                            let parts: Vec<&str> = cmd.split_whitespace().collect();
+                            let subcommand = parts.get(1).unwrap_or(&"list");
+
+                            match *subcommand {
+                                "list" => {
+                                    // List all memory bank entries
+                                    if let Some(workspace_dir) = chat_session.workspace_dir.as_ref()
+                                    {
+                                        let result = tokio::runtime::Runtime::new()
+                                            .unwrap()
+                                            .block_on(gestura_core::memory_bank::list_memory_bank(
+                                                workspace_dir,
+                                            ));
+                                        match result {
+                                            Ok(entries) if !entries.is_empty() => {
+                                                println!(
+                                                    "{} {}",
+                                                    "◆".blue().bold(),
+                                                    format!(
+                                                        "Memory Bank Entries ({} total):",
+                                                        entries.len()
+                                                    )
+                                                    .blue()
+                                                );
+                                                println!();
+                                                for entry in entries {
+                                                    println!(
+                                                        "  {} {} (Session: {})",
+                                                        "•".dimmed(),
+                                                        entry
+                                                            .timestamp
+                                                            .format("%Y-%m-%d %H:%M UTC"),
+                                                        entry.session_id.dimmed()
+                                                    );
+                                                    println!("    {}", entry.summary);
+                                                    if let Some(path) = entry.file_path {
+                                                        println!(
+                                                            "    File: {}",
+                                                            path.display().to_string().dimmed()
+                                                        );
+                                                    }
+                                                    println!();
+                                                }
+                                            }
+                                            Ok(_) => {
+                                                println!(
+                                                    "{} {}",
+                                                    "◆".yellow().bold(),
+                                                    "No memory bank entries found.".yellow()
+                                                );
+                                            }
+                                            Err(e) => {
+                                                println!(
+                                                    "{} {}",
+                                                    "✗".red().bold(),
+                                                    format!("Error listing memory bank: {}", e)
+                                                        .red()
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        println!(
+                                            "{} {}",
+                                            "✗".red().bold(),
+                                            "No workspace directory configured. Cannot access memory bank.".red()
+                                        );
+                                    }
+                                }
+                                "save" => {
+                                    // Save current context to memory bank
+                                    if let Some(workspace_dir) = chat_session.workspace_dir.as_ref()
+                                    {
+                                        let history: Vec<String> = chat_session
+                                            .messages
+                                            .iter()
+                                            .map(|msg| msg.content.clone())
+                                            .collect();
+
+                                        if history.is_empty() {
+                                            println!(
+                                                "{} {}",
+                                                "◆".yellow().bold(),
+                                                "No conversation history to save.".yellow()
+                                            );
+                                        } else {
+                                            use gestura_core::context::ContextManager;
+                                            let context_manager = ContextManager::new();
+                                            let summary =
+                                                context_manager.summarize_history(&history);
+                                            let content = history.join("\n\n");
+
+                                            let entry =
+                                                gestura_core::memory_bank::MemoryBankEntry {
+                                                    timestamp: chrono::Utc::now(),
+                                                    session_id: chat_session.id.clone(),
+                                                    summary: summary.clone(),
+                                                    content,
+                                                    file_path: None,
+                                                };
+
+                                            let result =
+                                                tokio::runtime::Runtime::new().unwrap().block_on(
+                                                    gestura_core::memory_bank::save_to_memory_bank(
+                                                        workspace_dir,
+                                                        &entry,
+                                                    ),
+                                                );
+                                            match result {
+                                                Ok(path) => {
+                                                    println!(
+                                                        "{} {}",
+                                                        "✓".green().bold(),
+                                                        format!(
+                                                            "Saved {} messages to memory bank",
+                                                            history.len()
+                                                        )
+                                                        .green()
+                                                    );
+                                                    println!("  File: {}", path.display());
+                                                    println!("  Summary: {}", summary.dimmed());
+                                                }
+                                                Err(e) => {
+                                                    println!(
+                                                        "{} {}",
+                                                        "✗".red().bold(),
+                                                        format!(
+                                                            "Error saving to memory bank: {}",
+                                                            e
+                                                        )
+                                                        .red()
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        println!(
+                                            "{} {}",
+                                            "✗".red().bold(),
+                                            "No workspace directory configured. Cannot save to memory bank.".red()
+                                        );
+                                    }
+                                }
+                                "clear" => {
+                                    // Clear all memory bank entries
+                                    if let Some(workspace_dir) = chat_session.workspace_dir.as_ref()
+                                    {
+                                        let memory_dir =
+                                            workspace_dir.join(".gestura").join("memory");
+                                        match std::fs::remove_dir_all(&memory_dir) {
+                                            Ok(_) => {
+                                                // Recreate the directory
+                                                let _ = std::fs::create_dir_all(&memory_dir);
+                                                println!(
+                                                    "{} {}",
+                                                    "✓".green().bold(),
+                                                    "Cleared all memory bank entries.".green()
+                                                );
+                                            }
+                                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                                println!(
+                                                    "{} {}",
+                                                    "◆".yellow().bold(),
+                                                    "Memory bank is already empty.".yellow()
+                                                );
+                                            }
+                                            Err(e) => {
+                                                println!(
+                                                    "{} {}",
+                                                    "✗".red().bold(),
+                                                    format!("Error clearing memory bank: {}", e)
+                                                        .red()
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        println!(
+                                            "{} {}",
+                                            "✗".red().bold(),
+                                            "No workspace directory configured. Cannot clear memory bank.".red()
+                                        );
+                                    }
+                                }
+                                _ => {
+                                    println!(
+                                        "{} {}",
+                                        "✗".red().bold(),
+                                        format!("Unknown /memory subcommand: '{}'", subcommand)
+                                            .red()
+                                    );
+                                    println!();
+                                    println!("Usage:");
+                                    println!(
+                                        "  {} - Show all memory bank entries",
+                                        "/memory list".green()
+                                    );
+                                    println!(
+                                        "  {} - Save current conversation to memory bank",
+                                        "/memory save".green()
+                                    );
+                                    println!(
+                                        "  {} - Delete all memory bank entries",
+                                        "/memory clear".green()
+                                    );
+                                }
                             }
                             println!();
                             continue;
@@ -799,8 +1070,9 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 // Add user message to session
                 chat_session.add_message("user", &input, None);
 
-                // Deterministic response for common tool-inventory questions.
-                if crate::tool_registry::looks_like_tools_question(&input) {
+                // Handle explicit /tools command only (not natural language questions)
+                // Natural language questions should go through the LLM for dynamic, session-aware responses
+                if input.trim().starts_with("/tools") {
                     let text = crate::tool_registry::render_tools_overview();
                     println!();
                     println!(
@@ -811,6 +1083,249 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                     println!();
                     println!("{}", text);
                     chat_session.add_message("assistant", &text, None);
+                    continue;
+                }
+
+                // Handle /summarize command - summarize conversation history without calling LLM
+                if input.trim().starts_with("/summarize") {
+                    println!();
+                    // Get conversation history
+                    let history: Vec<String> = chat_session
+                        .messages
+                        .iter()
+                        .map(|msg| msg.content.clone())
+                        .collect();
+
+                    if history.is_empty() {
+                        println!(
+                            "{} {}",
+                            "◆".yellow().bold(),
+                            "No conversation history to summarize.".yellow()
+                        );
+                    } else {
+                        // Use context manager to summarize
+                        use gestura_core::context::ContextManager;
+                        let context_manager = ContextManager::new();
+                        let summary = context_manager.summarize_history(&history);
+
+                        println!("{} {}", "◆".blue().bold(), "Conversation Summary:".blue());
+                        println!();
+                        println!("{}", summary);
+                        println!();
+                        println!(
+                            "{}",
+                            format!("Summarized {} messages", history.len()).dimmed()
+                        );
+
+                        // Add summary to session
+                        chat_session.add_message(
+                            "assistant",
+                            &format!(
+                                "## Conversation Summary\n\n{}\n\n---\n\n*Summarized {} messages*",
+                                summary,
+                                history.len()
+                            ),
+                            Some("Summarizing conversation history (no LLM call)...".to_string()),
+                        );
+                    }
+                    println!();
+                    continue;
+                }
+
+                // Handle /memory command - manage memory bank without calling LLM
+                if input.trim().starts_with("/memory") {
+                    println!();
+                    // Parse subcommand
+                    let parts: Vec<&str> = input.split_whitespace().collect();
+                    let subcommand = parts.get(1).unwrap_or(&"list");
+
+                    match *subcommand {
+                        "list" => {
+                            // List all memory bank entries
+                            if let Some(workspace_dir) = chat_session.workspace_dir.as_ref() {
+                                let result = tokio::runtime::Runtime::new().unwrap().block_on(
+                                    gestura_core::memory_bank::list_memory_bank(workspace_dir),
+                                );
+                                match result {
+                                    Ok(entries) if !entries.is_empty() => {
+                                        println!(
+                                            "{} {}",
+                                            "◆".blue().bold(),
+                                            format!(
+                                                "Memory Bank Entries ({} total):",
+                                                entries.len()
+                                            )
+                                            .blue()
+                                        );
+                                        println!();
+                                        for entry in entries {
+                                            println!(
+                                                "  {} {} (Session: {})",
+                                                "•".dimmed(),
+                                                entry.timestamp.format("%Y-%m-%d %H:%M UTC"),
+                                                entry.session_id.dimmed()
+                                            );
+                                            println!("    {}", entry.summary);
+                                            if let Some(path) = entry.file_path {
+                                                println!(
+                                                    "    File: {}",
+                                                    path.display().to_string().dimmed()
+                                                );
+                                            }
+                                            println!();
+                                        }
+                                    }
+                                    Ok(_) => {
+                                        println!(
+                                            "{} {}",
+                                            "◆".yellow().bold(),
+                                            "No memory bank entries found.".yellow()
+                                        );
+                                    }
+                                    Err(e) => {
+                                        println!(
+                                            "{} {}",
+                                            "✗".red().bold(),
+                                            format!("Error listing memory bank: {}", e).red()
+                                        );
+                                    }
+                                }
+                            } else {
+                                println!(
+                                    "{} {}",
+                                    "✗".red().bold(),
+                                    "No workspace directory configured. Cannot access memory bank."
+                                        .red()
+                                );
+                            }
+                        }
+                        "save" => {
+                            // Save current context to memory bank
+                            if let Some(workspace_dir) = chat_session.workspace_dir.as_ref() {
+                                let history: Vec<String> = chat_session
+                                    .messages
+                                    .iter()
+                                    .map(|msg| msg.content.clone())
+                                    .collect();
+
+                                if history.is_empty() {
+                                    println!(
+                                        "{} {}",
+                                        "◆".yellow().bold(),
+                                        "No conversation history to save.".yellow()
+                                    );
+                                } else {
+                                    use gestura_core::context::ContextManager;
+                                    let context_manager = ContextManager::new();
+                                    let summary = context_manager.summarize_history(&history);
+                                    let content = history.join("\n\n");
+
+                                    let entry = gestura_core::memory_bank::MemoryBankEntry {
+                                        timestamp: chrono::Utc::now(),
+                                        session_id: chat_session.id.clone(),
+                                        summary: summary.clone(),
+                                        content,
+                                        file_path: None,
+                                    };
+
+                                    let result = tokio::runtime::Runtime::new().unwrap().block_on(
+                                        gestura_core::memory_bank::save_to_memory_bank(
+                                            workspace_dir,
+                                            &entry,
+                                        ),
+                                    );
+                                    match result {
+                                        Ok(path) => {
+                                            println!(
+                                                "{} {}",
+                                                "✓".green().bold(),
+                                                format!(
+                                                    "Saved {} messages to memory bank",
+                                                    history.len()
+                                                )
+                                                .green()
+                                            );
+                                            println!("  File: {}", path.display());
+                                            println!("  Summary: {}", summary.dimmed());
+                                        }
+                                        Err(e) => {
+                                            println!(
+                                                "{} {}",
+                                                "✗".red().bold(),
+                                                format!("Error saving to memory bank: {}", e).red()
+                                            );
+                                        }
+                                    }
+                                }
+                            } else {
+                                println!(
+                                    "{} {}",
+                                    "✗".red().bold(),
+                                    "No workspace directory configured. Cannot save to memory bank.".red()
+                                );
+                            }
+                        }
+                        "clear" => {
+                            // Clear all memory bank entries
+                            if let Some(workspace_dir) = chat_session.workspace_dir.as_ref() {
+                                let memory_dir = workspace_dir.join(".gestura").join("memory");
+                                match std::fs::remove_dir_all(&memory_dir) {
+                                    Ok(_) => {
+                                        // Recreate the directory
+                                        let _ = std::fs::create_dir_all(&memory_dir);
+                                        println!(
+                                            "{} {}",
+                                            "✓".green().bold(),
+                                            "Cleared all memory bank entries.".green()
+                                        );
+                                    }
+                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                        println!(
+                                            "{} {}",
+                                            "◆".yellow().bold(),
+                                            "Memory bank is already empty.".yellow()
+                                        );
+                                    }
+                                    Err(e) => {
+                                        println!(
+                                            "{} {}",
+                                            "✗".red().bold(),
+                                            format!("Error clearing memory bank: {}", e).red()
+                                        );
+                                    }
+                                }
+                            } else {
+                                println!(
+                                    "{} {}",
+                                    "✗".red().bold(),
+                                    "No workspace directory configured. Cannot clear memory bank."
+                                        .red()
+                                );
+                            }
+                        }
+                        _ => {
+                            println!(
+                                "{} {}",
+                                "✗".red().bold(),
+                                format!("Unknown /memory subcommand: '{}'", subcommand).red()
+                            );
+                            println!();
+                            println!("Usage:");
+                            println!(
+                                "  {} - Show all memory bank entries",
+                                "/memory list".green()
+                            );
+                            println!(
+                                "  {} - Save current conversation to memory bank",
+                                "/memory save".green()
+                            );
+                            println!(
+                                "  {} - Delete all memory bank entries",
+                                "/memory clear".green()
+                            );
+                        }
+                    }
+                    println!();
                     continue;
                 }
 
@@ -915,23 +1430,21 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                         name.dimmed(),
                                         duration_ms
                                     );
-                                    // Show truncated output for success
+                                    // Show output with pretty printing for JSON
                                     if !output.is_empty() {
-                                        let preview = if output.len() > 100 {
-                                            format!("{}...", &output[..100])
-                                        } else {
-                                            output.clone()
-                                        };
-                                        println!("    {}", preview.dimmed());
+                                        let formatted_output = format_tool_output(&output);
+                                        println!("{}", formatted_output.dimmed());
                                     }
                                 } else {
                                     println!(
-                                        "  {} {} failed ({}ms): {}",
+                                        "  {} {} failed ({}ms):",
                                         "✗".red(),
                                         name,
-                                        duration_ms,
-                                        output.red()
+                                        duration_ms
                                     );
+                                    // Show error output with pretty printing
+                                    let formatted_output = format_tool_output(&output);
+                                    println!("{}", formatted_output.red());
                                 }
                                 print!("  ");
                                 let _ = std::io::stdout().flush();
@@ -974,6 +1487,26 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 print!("  ");
                                 let _ = std::io::stdout().flush();
                             }
+                            StreamChunk::MemoryBankSaved {
+                                file_path,
+                                session_id,
+                                summary,
+                                messages_saved,
+                            } => {
+                                println!();
+                                println!(
+                                    "  {} Memory bank saved: {} messages",
+                                    "💾".cyan(),
+                                    messages_saved
+                                );
+                                println!("     File: {}", file_path.dimmed());
+                                if !summary.is_empty() {
+                                    println!("     Summary: {}", summary.dimmed());
+                                }
+                                println!("     Session: {}", session_id.dimmed());
+                                print!("  ");
+                                let _ = std::io::stdout().flush();
+                            }
                             StreamChunk::Done(_) => {
                                 saw_done = true;
                                 break;
@@ -1008,6 +1541,27 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                     "🚫".red(),
                                     tool_name,
                                     reason
+                                );
+                                print!("  ");
+                                let _ = std::io::stdout().flush();
+                            }
+                            StreamChunk::TokenUsageUpdate {
+                                estimated,
+                                limit,
+                                percentage,
+                                status,
+                                estimated_cost,
+                            } => {
+                                // Display token usage inline
+                                let status_icon = match status {
+                                    gestura_core::streaming::TokenUsageStatus::Green => "🟢",
+                                    gestura_core::streaming::TokenUsageStatus::Yellow => "🟡",
+                                    gestura_core::streaming::TokenUsageStatus::Red => "🔴",
+                                };
+                                println!();
+                                println!(
+                                    "  {} Tokens: {}/{} ({}%) - Est. cost: ${:.4}",
+                                    status_icon, estimated, limit, percentage, estimated_cost
                                 );
                                 print!("  ");
                                 let _ = std::io::stdout().flush();
@@ -1164,5 +1718,64 @@ fn record_voice_input(rt: &tokio::runtime::Runtime) -> Result<String> {
             Ok(text)
         }
         Err(e) => Err(e.into()),
+    }
+}
+
+/// Format tool output with pretty printing for JSON and smart truncation
+fn format_tool_output(output: &str) -> String {
+    // Try to parse as JSON and pretty print
+    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(output) {
+        // Pretty print JSON with indentation
+        if let Ok(pretty) = serde_json::to_string_pretty(&json_value) {
+            // Truncate if too long, but show more for JSON (1000 chars instead of 100)
+            if pretty.len() > 1000 {
+                let truncated = &pretty[..1000];
+                // Try to truncate at a line boundary
+                if let Some(last_newline) = truncated.rfind('\n') {
+                    format!(
+                        "    {}\n    ... (truncated, {} more chars)",
+                        &pretty[..last_newline],
+                        pretty.len() - last_newline
+                    )
+                } else {
+                    format!(
+                        "    {}...\n    (truncated, {} more chars)",
+                        truncated,
+                        pretty.len() - 1000
+                    )
+                }
+            } else {
+                // Indent each line for better readability
+                pretty
+                    .lines()
+                    .map(|line| format!("    {}", line))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        } else {
+            // Fallback to regular truncation if pretty printing fails
+            truncate_output(output, 100)
+        }
+    } else {
+        // Not JSON, use regular truncation
+        truncate_output(output, 100)
+    }
+}
+
+/// Truncate output to a maximum length
+fn truncate_output(output: &str, max_len: usize) -> String {
+    if output.len() > max_len {
+        format!(
+            "    {}...\n    (truncated, {} more chars)",
+            &output[..max_len],
+            output.len() - max_len
+        )
+    } else {
+        // Indent for consistency
+        output
+            .lines()
+            .map(|line| format!("    {}", line))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }

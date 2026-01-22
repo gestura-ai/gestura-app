@@ -67,6 +67,35 @@ pub fn run(action: &ConfigAction) -> Result<()> {
                 &[("count", &config.mcp_tools.len().to_string())],
             );
             print_config_section("UI", &[("theme", &config.ui.theme_mode)]);
+            print_config_section(
+                "Pipeline / Context Management",
+                &[
+                    (
+                        "max_history_messages",
+                        &config.pipeline.max_history_messages.to_string(),
+                    ),
+                    (
+                        "auto_compact_threshold",
+                        &format!("{}%", config.pipeline.auto_compact_threshold_percent),
+                    ),
+                    (
+                        "compaction_strategy",
+                        &format!("{:?}", config.pipeline.compaction_strategy),
+                    ),
+                    (
+                        "max_context_tokens",
+                        &if config.pipeline.max_context_tokens == 0 {
+                            "auto (provider default)".to_string()
+                        } else {
+                            config.pipeline.max_context_tokens.to_string()
+                        },
+                    ),
+                    (
+                        "log_token_usage",
+                        &config.pipeline.log_token_usage.to_string(),
+                    ),
+                ],
+            );
             println!();
             println!(
                 "Config file: {}",
@@ -149,6 +178,15 @@ fn get_config_value(config: &AppConfig, key: &str) -> Option<String> {
         "ui.theme_mode" => Some(config.ui.theme_mode.clone()),
         "hotkey_listen" => Some(config.hotkey_listen.clone()),
         "nats_url" => Some(config.nats_url.clone()),
+        "pipeline.max_history_messages" => Some(config.pipeline.max_history_messages.to_string()),
+        "pipeline.auto_compact_threshold_percent" => {
+            Some(config.pipeline.auto_compact_threshold_percent.to_string())
+        }
+        "pipeline.compaction_strategy" => {
+            Some(format!("{:?}", config.pipeline.compaction_strategy))
+        }
+        "pipeline.max_context_tokens" => Some(config.pipeline.max_context_tokens.to_string()),
+        "pipeline.log_token_usage" => Some(config.pipeline.log_token_usage.to_string()),
         _ => None,
     }
 }
@@ -182,6 +220,47 @@ fn set_config_value(config: &mut AppConfig, key: &str, value: &str) -> bool {
         "nats_url" => {
             config.nats_url = value.to_string();
             true
+        }
+        "pipeline.max_history_messages" => {
+            if let Ok(val) = value.parse::<usize>() {
+                config.pipeline.max_history_messages = val;
+                true
+            } else {
+                false
+            }
+        }
+        "pipeline.auto_compact_threshold_percent" => {
+            if let Ok(val) = value.parse::<u8>() {
+                if val <= 100 {
+                    config.pipeline.auto_compact_threshold_percent = val;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+        "pipeline.compaction_strategy" => {
+            use gestura_core::pipeline::CompactionStrategy;
+            config.pipeline.compaction_strategy = CompactionStrategy::parse(value);
+            true
+        }
+        "pipeline.max_context_tokens" => {
+            if let Ok(val) = value.parse::<usize>() {
+                config.pipeline.max_context_tokens = val;
+                true
+            } else {
+                false
+            }
+        }
+        "pipeline.log_token_usage" => {
+            if let Ok(val) = value.parse::<bool>() {
+                config.pipeline.log_token_usage = val;
+                true
+            } else {
+                false
+            }
         }
         _ => false,
     }

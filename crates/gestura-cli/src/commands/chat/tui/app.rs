@@ -285,6 +285,8 @@ pub enum Action {
     Cancel,
     /// Toggle voice recording
     ToggleRecording,
+    /// Enhance the current prompt using LLM
+    EnhancePrompt,
 }
 
 /// Message for TUI display with additional metadata
@@ -407,6 +409,8 @@ pub struct TuiApp {
     pub session_output_tokens: u64,
     /// Session estimated cost in USD
     pub session_cost_usd: f64,
+    /// Original prompt before enhancement (for undo with Cmd+Z)
+    pub original_prompt: Option<String>,
 }
 
 /// State for the interactive settings editor
@@ -499,6 +503,7 @@ impl TuiApp {
             session_input_tokens: 0,
             session_output_tokens: 0,
             session_cost_usd: 0.0,
+            original_prompt: None,
         }
     }
 

@@ -192,21 +192,16 @@ fn run_main_loop(
                             duration_ms,
                         } => {
                             if success {
-                                let preview = if output.len() > 100 {
-                                    format!("{}...", &output[..100])
-                                } else if output.is_empty() {
-                                    "(completed)".to_string()
-                                } else {
-                                    output.clone()
-                                };
+                                let formatted = format_tool_output_tui(&output);
                                 stream_state.content.push_str(&format!(
-                                    "  ✅ {} ({}ms): {}\n",
-                                    name, duration_ms, preview
+                                    "  ✅ {} ({}ms):\n{}\n",
+                                    name, duration_ms, formatted
                                 ));
                             } else {
+                                let formatted = format_tool_output_tui(&output);
                                 stream_state.content.push_str(&format!(
-                                    "  ❌ {} failed ({}ms): {}\n",
-                                    name, duration_ms, output
+                                    "  ❌ {} failed ({}ms):\n{}\n",
+                                    name, duration_ms, formatted
                                 ));
                             }
                             app.update_last_message(&stream_state.content);
@@ -241,6 +236,28 @@ fn run_main_loop(
                             }
                             app.update_last_message(&stream_state.content);
                             app.set_status("Context compacted".to_string());
+                        }
+                        StreamChunk::MemoryBankSaved {
+                            file_path,
+                            session_id,
+                            summary,
+                            messages_saved,
+                        } => {
+                            // Show memory bank save notification in the stream
+                            stream_state.content.push_str(&format!(
+                                "\n💾 Memory bank saved: {} messages\n",
+                                messages_saved
+                            ));
+                            stream_state
+                                .content
+                                .push_str(&format!("   File: {}\n", file_path));
+                            if !summary.is_empty() {
+                                stream_state
+                                    .content
+                                    .push_str(&format!("   Summary: {}\n", summary));
+                            }
+                            app.update_last_message(&stream_state.content);
+                            app.set_status(format!("Memory saved (session: {})", session_id));
                         }
                         StreamChunk::Done(usage) => {
                             // Record token usage if available
@@ -305,6 +322,24 @@ fn run_main_loop(
                             app.set_status("Cancelled");
                             streaming = None;
                             break;
+                        }
+                        StreamChunk::TokenUsageUpdate {
+                            estimated,
+                            limit,
+                            percentage,
+                            status,
+                            estimated_cost,
+                        } => {
+                            // Display token usage in status bar
+                            let status_icon = match status {
+                                gestura_core::streaming::TokenUsageStatus::Green => "🟢",
+                                gestura_core::streaming::TokenUsageStatus::Yellow => "🟡",
+                                gestura_core::streaming::TokenUsageStatus::Red => "🔴",
+                            };
+                            app.set_status(format!(
+                                "{} Tokens: {}/{} ({}%) - ${:.4}",
+                                status_icon, estimated, limit, percentage, estimated_cost
+                            ));
                         }
                         StreamChunk::Error(err) => {
                             let error_msg = format!("Stream error: {}", err);
@@ -402,6 +437,58 @@ fn run_main_loop(
                     // Voice recording toggle - not implemented in CLI TUI
                     app.set_status("Voice recording not available in CLI mode");
                 }
+                Action::EnhancePrompt => {
+                    // Don't enhance while streaming or if input is empty
+                    if streaming.is_none() && !app.input.is_empty() {
+                        let original_input = app.input.clone();
+                        app.set_status("Enhancing prompt...");
+
+                        // Build context from session history
+                        let session_history: Vec<(String, String)> = app
+                            .session
+                            .messages
+                            .iter()
+                            .rev()
+                            .take(5) // Last 5 messages to avoid token overflow
+                            .rev()
+                            .map(|msg| (msg.role.clone(), msg.content.clone()))
+                            .collect();
+
+                        // Call the enhancement function with context
+                        match rt.block_on(async {
+                            use gestura_core::prompt_enhancement::{
+                                PromptContext, enhance_prompt_with_llm,
+                            };
+                            let cfg = gestura_core::config::AppConfig::load_async().await;
+
+                            let context = if !session_history.is_empty() {
+                                Some(PromptContext::new().with_session_history(session_history))
+                            } else {
+                                None
+                            };
+
+                            enhance_prompt_with_llm(&original_input, &cfg, context).await
+                        }) {
+                            Ok(enhanced) => {
+                                // Store original for undo
+                                app.original_prompt = Some(original_input.clone());
+                                // Replace with enhanced prompt
+                                app.input = enhanced;
+                                app.cursor_pos = app.input.len();
+                                app.set_status(&format!(
+                                    "✨ Prompt enhanced! (was {} chars, now {} chars) - Press Cmd+Z to undo",
+                                    original_input.len(),
+                                    app.input.len()
+                                ));
+                            }
+                            Err(e) => {
+                                app.set_error(&format!("Enhancement failed: {}", e));
+                            }
+                        }
+                    } else if app.input.is_empty() {
+                        app.set_status("Please enter a prompt first");
+                    }
+                }
                 Action::Continue => {}
             }
         }
@@ -416,8 +503,9 @@ fn start_streaming_message(
     rt: &tokio::runtime::Runtime,
     message: &str,
 ) -> Result<Option<StreamingState>> {
-    // Check for tool-related questions first (handle synchronously)
-    if crate::tool_registry::looks_like_tools_question(message) {
+    // Handle explicit /tools command only (not natural language questions)
+    // Natural language questions should go through the LLM for dynamic, session-aware responses
+    if message.trim().starts_with("/tools") {
         app.add_message("user", message);
         let response = crate::tool_registry::render_tools_overview();
         app.add_message("assistant", &response);
@@ -975,4 +1063,54 @@ fn handle_workflow_command(app: &mut TuiApp, args: &[&str], dir: &std::path::Pat
         Some(cmd) => app.set_error(format!("Unknown workflow command: {}", cmd)),
     }
     Ok(())
+}
+
+/// Format tool output for TUI with pretty printing for JSON
+fn format_tool_output_tui(output: &str) -> String {
+    if output.is_empty() {
+        return "     (completed)".to_string();
+    }
+
+    // Try to parse as JSON and pretty print
+    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(output) {
+        if let Ok(pretty) = serde_json::to_string_pretty(&json_value) {
+            // For TUI, show more content (500 chars) since it has scrolling
+            if pretty.len() > 500 {
+                let truncated = &pretty[..500];
+                if let Some(last_newline) = truncated.rfind('\n') {
+                    format!(
+                        "     {}\n     ... ({} more chars)",
+                        pretty[..last_newline].replace('\n', "\n     "),
+                        pretty.len() - last_newline
+                    )
+                } else {
+                    format!(
+                        "     {}...\n     ({} more chars)",
+                        truncated.replace('\n', "\n     "),
+                        pretty.len() - 500
+                    )
+                }
+            } else {
+                // Indent each line for better readability
+                format!("     {}", pretty.replace('\n', "\n     "))
+            }
+        } else {
+            truncate_output_tui(output, 200)
+        }
+    } else {
+        truncate_output_tui(output, 200)
+    }
+}
+
+/// Truncate output for TUI
+fn truncate_output_tui(output: &str, max_len: usize) -> String {
+    if output.len() > max_len {
+        format!(
+            "     {}...\n     ({} more chars)",
+            output[..max_len].replace('\n', "\n     "),
+            output.len() - max_len
+        )
+    } else {
+        format!("     {}", output.replace('\n', "\n     "))
+    }
 }

@@ -221,18 +221,6 @@ fn textwrap_simple(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// Heuristic: decide whether a user message is asking for a tool inventory.
-pub fn looks_like_tools_question(input: &str) -> bool {
-    let s = input.trim().to_ascii_lowercase();
-    s == "tools"
-        || s == "tool"
-        || s.contains("what tools")
-        || s.contains("available tools")
-        || s.contains("which tools")
-        || s.contains("list tools")
-        || s.contains("tool list")
-}
-
 /// Render a summary of AI capabilities for the /capabilities command.
 pub fn render_capabilities() -> String {
     let mut out = String::new();
@@ -274,12 +262,5 @@ mod tests {
         assert!(find_tool("file").is_some());
         assert!(find_tool("shell").is_some());
         assert!(find_tool("git").is_some());
-    }
-
-    #[test]
-    fn looks_like_tools_question_matches_common_phrases() {
-        assert!(looks_like_tools_question("what tools do you have?"));
-        assert!(looks_like_tools_question("list tools"));
-        assert!(!looks_like_tools_question("tell me a joke"));
     }
 }
