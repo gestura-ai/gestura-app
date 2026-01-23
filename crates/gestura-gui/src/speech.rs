@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
+use crate::api::try_get_api_key_from_keychain_sync;
 use crate::audio_capture::record_audio;
 use crate::config::AppConfig;
 use crate::voice::{OpenAiWhisperVoice, WhisperLocal};
@@ -13,6 +14,10 @@ pub struct SpeechConfig {
     pub stt_provider: String,
     pub llm_provider: String,
     pub openai_api_key: String,
+    /// OpenAI base URL for Whisper API (defaults to https://api.openai.com)
+    pub openai_base_url: String,
+    /// OpenAI model for transcription (e.g., "whisper-1", "gpt-4o-transcribe")
+    pub openai_model: String,
     pub anthropic_api_key: String,
     pub google_api_key: String,
     pub azure_api_key: String,
@@ -29,6 +34,8 @@ impl Default for SpeechConfig {
             stt_provider: "openai-whisper".to_string(),
             llm_provider: "openai-gpt".to_string(),
             openai_api_key: String::new(),
+            openai_base_url: "https://api.openai.com".to_string(),
+            openai_model: "gpt-4o-transcribe".to_string(),
             anthropic_api_key: String::new(),
             google_api_key: String::new(),
             azure_api_key: String::new(),
@@ -112,6 +119,38 @@ impl SpeechProcessor {
         // Load configuration from AppConfig instead of using stale SpeechConfig
         let app_config = AppConfig::load();
 
+        // Resolve OpenAI API key with keychain fallback chain:
+        // 1. Config file voice.openai_api_key
+        // 2. Keychain voice_openai key
+        // 3. Keychain openai key (general LLM OpenAI key)
+        // 4. LLM OpenAI config fallback
+        let openai_api_key = {
+            let config_key = app_config.voice.openai_api_key.clone().unwrap_or_default();
+            if !config_key.is_empty() {
+                config_key
+            } else {
+                // Try keychain voice-specific key
+                let voice_key = try_get_api_key_from_keychain_sync("voice_openai");
+                if !voice_key.is_empty() {
+                    voice_key
+                } else {
+                    // Try keychain general OpenAI key
+                    let general_key = try_get_api_key_from_keychain_sync("openai");
+                    if !general_key.is_empty() {
+                        general_key
+                    } else {
+                        // Fall back to LLM OpenAI config
+                        app_config
+                            .llm
+                            .openai
+                            .as_ref()
+                            .map(|c| c.api_key.clone())
+                            .unwrap_or_default()
+                    }
+                }
+            }
+        };
+
         // Map VoiceSettings to SpeechConfig
         let speech_config = SpeechConfig {
             stt_provider: match app_config.voice.provider.as_str() {
@@ -120,7 +159,17 @@ impl SpeechProcessor {
                 _ => "local-whisper".to_string(), // default to local
             },
             llm_provider: app_config.llm.primary.clone(),
-            openai_api_key: app_config.voice.openai_api_key.clone().unwrap_or_default(),
+            openai_api_key,
+            openai_base_url: app_config
+                .voice
+                .openai_base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com".to_string()),
+            openai_model: app_config
+                .voice
+                .openai_model
+                .clone()
+                .unwrap_or_else(|| "gpt-4o-transcribe".to_string()),
             anthropic_api_key: app_config
                 .llm
                 .anthropic
@@ -202,24 +251,32 @@ impl SpeechProcessor {
     ) -> Result<String, String> {
         let app_config = AppConfig::load();
 
+        tracing::info!(
+            "Transcribing audio with provider: {}, base_url: {}, model: {}",
+            config.stt_provider,
+            config.openai_base_url,
+            config.openai_model
+        );
+
         match config.stt_provider.as_str() {
             "openai-whisper" => {
                 if config.openai_api_key.is_empty() {
-                    return Err("OpenAI API key not configured".to_string());
+                    return Err(
+                        "OpenAI API key not configured. Please set your OpenAI API key in Settings > Voice."
+                            .to_string(),
+                    );
                 }
+
+                tracing::info!(
+                    "Using OpenAI Whisper API: base_url={}, model={}",
+                    config.openai_base_url,
+                    config.openai_model
+                );
 
                 let voice_processor = OpenAiWhisperVoice {
                     api_key: config.openai_api_key.clone(),
-                    base_url: app_config
-                        .voice
-                        .openai_base_url
-                        .clone()
-                        .unwrap_or_else(|| "https://api.openai.com".to_string()),
-                    model: app_config
-                        .voice
-                        .openai_model
-                        .clone()
-                        .unwrap_or_else(|| "gpt-4o-transcribe".to_string()),
+                    base_url: config.openai_base_url.clone(),
+                    model: config.openai_model.clone(),
                 };
 
                 voice_processor

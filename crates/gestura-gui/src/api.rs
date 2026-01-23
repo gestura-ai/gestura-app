@@ -462,7 +462,7 @@ pub async fn list_openai_models(api_key: String) -> Result<Vec<serde_json::Value
 
 /// List available OpenAI STT (Speech-to-Text) models
 /// Fetches from /v1/models and filters for transcription-capable models
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn list_openai_stt_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
     if api_key.is_empty() {
         // Return static list with sensible defaults when no API key
@@ -790,7 +790,7 @@ fn get_static_grok_models() -> Vec<serde_json::Value> {
 }
 
 /// Test local Whisper model with detailed validation
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn test_local_whisper(model_path: String) -> Result<String, String> {
     use crate::voice::validate_whisper_model;
     use std::path::Path;
@@ -831,7 +831,7 @@ pub fn get_whisper_models() -> Vec<crate::config::WhisperModelInfo> {
 }
 
 /// Check if a specific Whisper model file is already downloaded
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub fn is_whisper_model_downloaded(model_filename: String) -> Result<serde_json::Value, String> {
     let models_dir = crate::config::AppConfig::whisper_models_dir();
     let model_path = models_dir.join(&model_filename);
@@ -873,7 +873,7 @@ pub fn get_whisper_model_status() -> Result<serde_json::Value, String> {
 
 /// Download a Whisper model from HuggingFace
 /// Returns progress updates via Tauri events
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn download_whisper_model(
     app: tauri::AppHandle,
     model_filename: String,
@@ -935,26 +935,62 @@ pub async fn download_whisper_model(
         }),
     );
 
-    // Download the model
-    let client = reqwest::Client::new();
+    // Download the model with proper timeout and User-Agent
+    // Hugging Face CDN requires a User-Agent header and may need time for large files
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(1800)) // 30 minute timeout for large models
+        .user_agent("Gestura/0.2.0 (https://gestura.ai)")
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    tracing::info!("Starting HTTP request to: {}", model_info.url);
+
     let response = client
         .get(&model_info.url)
         .send()
         .await
-        .map_err(|e| format!("Failed to start download: {}", e))?;
+        .map_err(|e| {
+            tracing::error!("HTTP request failed: {}", e);
+            format!("Failed to start download: {}", e)
+        })?;
+
+    tracing::info!(
+        "HTTP response received: status={}, content_length={:?}",
+        response.status(),
+        response.content_length()
+    );
 
     if !response.status().is_success() {
-        return Err(format!("Download failed: HTTP {}", response.status()));
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        tracing::error!("Download failed with HTTP {}: {}", status, body);
+        let _ = app.emit(
+            "whisper-download-progress",
+            serde_json::json!({
+                "status": "error",
+                "filename": model_filename,
+                "error": format!("HTTP {}", status)
+            }),
+        );
+        return Err(format!("Download failed: HTTP {} - {}", status, body));
     }
 
     let total_size = response
         .content_length()
         .unwrap_or(model_info.size_mb * 1024 * 1024);
 
+    tracing::info!(
+        "Starting streaming download: total_size={} bytes ({:.1} MB)",
+        total_size,
+        total_size as f64 / (1024.0 * 1024.0)
+    );
+
     // Create temp file for download
     let temp_path = output_path.with_extension("tmp");
-    let mut file = std::fs::File::create(&temp_path)
-        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+    let mut file = std::fs::File::create(&temp_path).map_err(|e| {
+        tracing::error!("Failed to create temp file {:?}: {}", temp_path, e);
+        format!("Failed to create temp file: {}", e)
+    })?;
 
     let mut downloaded: u64 = 0;
     let mut last_percent: u64 = 0;
@@ -964,9 +1000,22 @@ pub async fn download_whisper_model(
     use futures_util::StreamExt;
 
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Download error: {}", e))?;
-        file.write_all(&chunk)
-            .map_err(|e| format!("Failed to write file: {}", e))?;
+        let chunk = chunk.map_err(|e| {
+            tracing::error!("Download stream error after {} bytes: {}", downloaded, e);
+            let _ = app.emit(
+                "whisper-download-progress",
+                serde_json::json!({
+                    "status": "error",
+                    "filename": model_filename,
+                    "error": format!("Stream error: {}", e)
+                }),
+            );
+            format!("Download error: {}", e)
+        })?;
+        file.write_all(&chunk).map_err(|e| {
+            tracing::error!("Failed to write chunk to file: {}", e);
+            format!("Failed to write file: {}", e)
+        })?;
 
         downloaded += chunk.len() as u64;
         let percent = (downloaded * 100) / total_size;
@@ -987,6 +1036,12 @@ pub async fn download_whisper_model(
             );
         }
     }
+
+    tracing::info!(
+        "Download complete: {} bytes written to {:?}",
+        downloaded,
+        temp_path
+    );
 
     // Rename temp file to final path
     std::fs::rename(&temp_path, &output_path)
@@ -1067,7 +1122,7 @@ pub async fn scan_for_rings() -> Result<Vec<String>, String> {
 }
 
 /// Get ring status by device ID
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn get_ring_status(device_id: String) -> Result<Option<crate::ble::RingStatus>, String> {
     let ring_manager = crate::ble::create_ring_manager();
     ring_manager
@@ -1077,7 +1132,7 @@ pub async fn get_ring_status(device_id: String) -> Result<Option<crate::ble::Rin
 }
 
 /// Pair with a ring
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn pair_ring(device_id: String) -> Result<(), String> {
     let ring_manager = crate::ble::create_ring_manager();
     ring_manager
@@ -1087,7 +1142,7 @@ pub async fn pair_ring(device_id: String) -> Result<(), String> {
 }
 
 /// Send haptic feedback to ring
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn send_haptic_feedback(
     device_id: String,
     pattern: String,
@@ -1117,7 +1172,7 @@ pub async fn send_haptic_feedback(
 }
 
 /// Start gesture monitoring for a ring
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn start_gesture_monitoring(device_id: String) -> Result<(), String> {
     let ring_manager = crate::ble::create_ring_manager();
     let (event_tx, _) = tokio::sync::broadcast::channel(100);
@@ -1128,7 +1183,7 @@ pub async fn start_gesture_monitoring(device_id: String) -> Result<(), String> {
 }
 
 /// Stop gesture monitoring for a ring
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn stop_gesture_monitoring(device_id: String) -> Result<(), String> {
     let ring_manager = crate::ble::create_ring_manager();
     ring_manager
@@ -1851,6 +1906,48 @@ pub async fn process_chat_message_streaming(
         cfg.llm.primary
     );
 
+    // Create an agent task for this chat processing (if we have a session)
+    // This makes agent work visible in the task panel
+    let agent_task_id: Option<String> = if let Some(ref sid) = resolved_session_id {
+        let task_name = {
+            let preview: String = message.chars().take(50).collect();
+            if message.len() > 50 {
+                format!("{}...", preview)
+            } else {
+                preview
+            }
+        };
+
+        match crate::task_integration::create_agent_task(
+            &app,
+            sid,
+            &task_name,
+            &message,
+            None, // agent_id - we could use the provider name here
+            None, // parent_id
+        ) {
+            Ok(task) => {
+                tracing::debug!(
+                    task_id = %task.id,
+                    session_id = %sid,
+                    "Created agent task for chat processing"
+                );
+                // Mark as in progress immediately
+                let _ = crate::task_integration::mark_task_in_progress(&app, sid, &task.id);
+                Some(task.id)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to create agent task for chat processing"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Create channel for streaming chunks
     let (tx, mut rx) = mpsc::channel::<StreamChunk>(100);
 
@@ -2226,6 +2323,11 @@ pub async fn process_chat_message_streaming(
                         );
                     }
 
+                // Mark agent task as completed
+                if let (Some(sid), Some(task_id)) = (&resolved_session_id, &agent_task_id) {
+                    let _ = crate::task_integration::mark_task_completed(&app, sid, task_id);
+                }
+
                 emit("chat-stream-done", serde_json::json!(null));
                 break;
             }
@@ -2244,6 +2346,12 @@ pub async fn process_chat_message_streaming(
                             assistant_thinking.clone(),
                         );
                     }
+
+                // Mark agent task as cancelled
+                if let (Some(sid), Some(task_id)) = (&resolved_session_id, &agent_task_id) {
+                    let _ = crate::task_integration::mark_task_cancelled(&app, sid, task_id);
+                }
+
                 emit("chat-stream-cancelled", serde_json::json!(null));
                 break;
             }
@@ -2262,6 +2370,12 @@ pub async fn process_chat_message_streaming(
                             assistant_thinking.clone(),
                         );
                     }
+
+                // Mark agent task as cancelled (error case)
+                if let (Some(sid), Some(task_id)) = (&resolved_session_id, &agent_task_id) {
+                    let _ = crate::task_integration::mark_task_cancelled(&app, sid, task_id);
+                }
+
                 emit("chat-stream-error", serde_json::json!(err));
                 break;
             }
@@ -3376,20 +3490,33 @@ fn get_task_manager() -> &'static TaskManager {
 /// Create a new task
 #[tauri::command]
 pub fn create_task(
+    app: tauri::AppHandle,
     session_id: String,
     name: String,
     description: String,
     parent_id: Option<String>,
 ) -> Result<Task, String> {
     let manager = get_task_manager();
-    manager
+    let task = manager
         .create_task(&session_id, name, description, parent_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Emit task-created event for frontend reactivity
+    let _ = app.emit(
+        "task-created",
+        serde_json::json!({
+            "session_id": session_id,
+            "task": &task
+        }),
+    );
+
+    Ok(task)
 }
 
 /// Update a task's status
 #[tauri::command]
 pub fn update_task_status(
+    app: tauri::AppHandle,
     session_id: String,
     task_id: String,
     status: String,
@@ -3409,12 +3536,25 @@ pub fn update_task_status(
     };
     manager
         .update_task_status(&session_id, &task_id, task_status)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Emit task-updated event for frontend reactivity
+    let _ = app.emit(
+        "task-updated",
+        serde_json::json!({
+            "session_id": session_id,
+            "task_id": task_id,
+            "status": status
+        }),
+    );
+
+    Ok(())
 }
 
 /// Update a task's name and/or description
 #[tauri::command]
 pub fn update_task(
+    app: tauri::AppHandle,
     session_id: String,
     task_id: String,
     name: Option<String>,
@@ -3422,17 +3562,45 @@ pub fn update_task(
 ) -> Result<(), String> {
     let manager = get_task_manager();
     manager
-        .update_task(&session_id, &task_id, name, description)
-        .map_err(|e| e.to_string())
+        .update_task(&session_id, &task_id, name.clone(), description.clone())
+        .map_err(|e| e.to_string())?;
+
+    // Emit task-updated event for frontend reactivity
+    let _ = app.emit(
+        "task-updated",
+        serde_json::json!({
+            "session_id": session_id,
+            "task_id": task_id,
+            "name": name,
+            "description": description
+        }),
+    );
+
+    Ok(())
 }
 
 /// Delete a task
 #[tauri::command]
-pub fn delete_task(session_id: String, task_id: String) -> Result<Task, String> {
+pub fn delete_task(
+    app: tauri::AppHandle,
+    session_id: String,
+    task_id: String,
+) -> Result<Task, String> {
     let manager = get_task_manager();
-    manager
+    let task = manager
         .delete_task(&session_id, &task_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Emit task-deleted event for frontend reactivity
+    let _ = app.emit(
+        "task-deleted",
+        serde_json::json!({
+            "session_id": session_id,
+            "task_id": task_id
+        }),
+    );
+
+    Ok(task)
 }
 
 /// List all tasks for a session
@@ -3599,13 +3767,38 @@ fn validate_voice_config_with_config(config: &crate::AppConfig) -> VoiceConfigVa
             }
         }
         "openai" => {
-            // Check if OpenAI API key is configured
-            if config
+            // Check if OpenAI API key is configured (config file, keychain, or LLM fallback)
+            let config_key = config
                 .voice
                 .openai_api_key
                 .as_ref()
-                .is_none_or(|k| k.is_empty())
-            {
+                .map(|k| k.as_str())
+                .unwrap_or("");
+
+            // Try keychain fallback if config key is empty
+            let has_api_key = if !config_key.is_empty() {
+                true
+            } else {
+                // Check keychain: voice-specific key first, then general OpenAI key
+                let voice_key = try_get_api_key_from_keychain_sync("voice_openai");
+                if !voice_key.is_empty() {
+                    true
+                } else {
+                    let general_key = try_get_api_key_from_keychain_sync("openai");
+                    if !general_key.is_empty() {
+                        true
+                    } else {
+                        // Fallback to LLM OpenAI config
+                        config
+                            .llm
+                            .openai
+                            .as_ref()
+                            .is_some_and(|c| !c.api_key.is_empty())
+                    }
+                }
+            };
+
+            if !has_api_key {
                 return VoiceConfigValidation {
                     is_valid: false,
                     provider: "openai".to_string(),
@@ -3882,7 +4075,7 @@ pub async fn update_voice_provider(provider: String) -> Result<(), String> {
 }
 
 /// Update whisper model setting
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn update_whisper_model(model_filename: String) -> Result<(), String> {
     let mut cfg = AppConfig::load_async().await;
     let models_dir = AppConfig::whisper_models_dir();

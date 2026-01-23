@@ -140,7 +140,7 @@ pub use stream_reconnect::{
     ReconnectConfig, ReconnectEvent, ReconnectManager, ReconnectState, StreamState,
 };
 pub use streaming::{CancellationToken, StreamChunk, start_streaming};
-pub use tasks::{Task, TaskError, TaskList, TaskManager, TaskStatus};
+pub use tasks::{Task, TaskError, TaskList, TaskManager, TaskSource, TaskStatus};
 pub use telemetry::{
     Metric, MetricType, SystemHealth, TelemetryManager, Timer, get_telemetry_manager,
 };

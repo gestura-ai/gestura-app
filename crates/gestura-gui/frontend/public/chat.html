@@ -1962,7 +1962,6 @@
         const messageInput = document.getElementById('messageInput');
         const sendButton = document.getElementById('sendButton');
         const enhanceButton = document.getElementById('enhanceButton');
-        const cancelButton = document.getElementById('cancelButton');
         const voiceBtn = document.getElementById('voiceBtn');
         const typingIndicator = document.getElementById('typing');
         const statusElement = document.getElementById('status');
@@ -2647,15 +2646,19 @@
 	            }
         }
 
-        // Update UI for processing state
+        // Update UI for processing state - transforms send button to stop button
         function setProcessingUI(processing) {
             if (processing) {
                 messageInput.placeholder = processingPlaceholder;
-                cancelButton.style.display = 'flex';
-                sendButton.title = 'Queue message';
+                // Transform send button to stop button
+                sendButton.innerHTML = '<span class="icon-stop"></span>';
+                sendButton.classList.add('send-stop');
+                sendButton.title = 'Cancel (click to stop)';
             } else {
                 messageInput.placeholder = defaultPlaceholder;
-                cancelButton.style.display = 'none';
+                // Transform back to send button
+                sendButton.innerHTML = '<span class="icon-send"></span>';
+                sendButton.classList.remove('send-stop');
                 sendButton.title = 'Send message';
             }
         }

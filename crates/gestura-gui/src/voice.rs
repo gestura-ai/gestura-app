@@ -290,8 +290,15 @@ pub struct OpenAiWhisperVoice {
 impl OpenAiWhisperVoice {
     /// Transcribe an audio file directly using OpenAI Whisper API
     pub async fn transcribe_file(&self, audio_path: &std::path::Path) -> Result<String, AppError> {
-        let client = reqwest::Client::new();
+        // Create client with reasonable timeout for transcription
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120)) // 2 minute timeout for transcription
+            .user_agent("Gestura/0.2.0 (https://gestura.ai)")
+            .build()
+            .map_err(|e| AppError::Voice(format!("Failed to create HTTP client: {}", e)))?;
+
         let url = format!("{}/v1/audio/transcriptions", self.base_url);
+        tracing::debug!("Sending transcription request to: {}", url);
 
         let bytes = std::fs::read(audio_path).map_err(|e| AppError::Voice(e.to_string()))?;
         let file_name = audio_path

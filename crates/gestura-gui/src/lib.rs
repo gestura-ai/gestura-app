@@ -117,6 +117,9 @@ pub mod chat_receipts;
 /// Multi-window chat isolation probe utilities (diagnostics-only).
 pub mod chat_probe;
 
+/// Task integration for bidirectional sync between AgentOrchestrator and TaskManager.
+pub mod task_integration;
+
 pub mod api;
 
 // ============================================================================

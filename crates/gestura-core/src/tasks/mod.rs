@@ -42,6 +42,18 @@ pub enum TaskStatus {
     Cancelled,
 }
 
+/// Source of a task (who created it)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TaskSource {
+    /// Created manually by user via the task panel UI
+    #[default]
+    User,
+    /// Created automatically by the agent during processing
+    Agent,
+    /// Created by the orchestrator for workflow delegation
+    Orchestrator,
+}
+
 /// A task represents a unit of work to be tracked
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
@@ -61,10 +73,22 @@ pub struct Task {
     pub updated_at: DateTime<Utc>,
     /// Session ID this task belongs to
     pub session_id: String,
+    /// Source of the task (user, agent, or orchestrator)
+    #[serde(default)]
+    pub source: TaskSource,
+    /// ID linking to an orchestrator DelegatedTask (for bidirectional sync)
+    #[serde(default)]
+    pub orchestrator_task_id: Option<String>,
+    /// ID of the agent that created/owns this task
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    /// Additional metadata (tool calls, output, context, etc.)
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
 }
 
 impl Task {
-    /// Create a new task
+    /// Create a new task (defaults to User source)
     pub fn new(
         session_id: impl Into<String>,
         name: impl Into<String>,
@@ -81,7 +105,69 @@ impl Task {
             created_at: now,
             updated_at: now,
             session_id: session_id.into(),
+            source: TaskSource::User,
+            orchestrator_task_id: None,
+            agent_id: None,
+            metadata: None,
         }
+    }
+
+    /// Create a new task with a specific source
+    pub fn new_with_source(
+        session_id: impl Into<String>,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parent_id: Option<String>,
+        source: TaskSource,
+        agent_id: Option<String>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4().to_string(),
+            name: name.into(),
+            description: description.into(),
+            status: TaskStatus::NotStarted,
+            parent_id,
+            created_at: now,
+            updated_at: now,
+            session_id: session_id.into(),
+            source,
+            orchestrator_task_id: None,
+            agent_id,
+            metadata: None,
+        }
+    }
+
+    /// Create a task from an orchestrator delegated task
+    pub fn from_orchestrator_task(
+        session_id: impl Into<String>,
+        orchestrator_task_id: impl Into<String>,
+        agent_id: impl Into<String>,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        context: Option<serde_json::Value>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4().to_string(),
+            name: name.into(),
+            description: description.into(),
+            status: TaskStatus::NotStarted,
+            parent_id: None,
+            created_at: now,
+            updated_at: now,
+            session_id: session_id.into(),
+            source: TaskSource::Orchestrator,
+            orchestrator_task_id: Some(orchestrator_task_id.into()),
+            agent_id: Some(agent_id.into()),
+            metadata: context,
+        }
+    }
+
+    /// Set metadata (e.g., tool calls, output)
+    pub fn set_metadata(&mut self, metadata: serde_json::Value) {
+        self.metadata = Some(metadata);
+        self.updated_at = Utc::now();
     }
 
     /// Update the task status
@@ -340,6 +426,89 @@ impl TaskManager {
         }
 
         Ok(hierarchy)
+    }
+
+    /// Create a task from an agent (during LLM processing)
+    pub fn create_agent_task(
+        &self,
+        session_id: &str,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        agent_id: Option<String>,
+        parent_id: Option<String>,
+    ) -> Result<Task, TaskError> {
+        let mut task_list = self.get_or_load(session_id)?;
+        let task = Task::new_with_source(
+            session_id,
+            name,
+            description,
+            parent_id,
+            TaskSource::Agent,
+            agent_id,
+        );
+        task_list.add_task(task.clone());
+        self.update_and_save(task_list)?;
+        Ok(task)
+    }
+
+    /// Create a task from an orchestrator delegated task
+    pub fn create_orchestrator_task(
+        &self,
+        session_id: &str,
+        orchestrator_task_id: impl Into<String>,
+        agent_id: impl Into<String>,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        context: Option<serde_json::Value>,
+    ) -> Result<Task, TaskError> {
+        let mut task_list = self.get_or_load(session_id)?;
+        let task = Task::from_orchestrator_task(
+            session_id,
+            orchestrator_task_id,
+            agent_id,
+            name,
+            description,
+            context,
+        );
+        task_list.add_task(task.clone());
+        self.update_and_save(task_list)?;
+        Ok(task)
+    }
+
+    /// Find a task by its orchestrator_task_id
+    pub fn find_by_orchestrator_id(
+        &self,
+        session_id: &str,
+        orchestrator_task_id: &str,
+    ) -> Result<Option<Task>, TaskError> {
+        let task_list = self.get_or_load(session_id)?;
+        Ok(task_list
+            .tasks
+            .iter()
+            .find(|t| t.orchestrator_task_id.as_deref() == Some(orchestrator_task_id))
+            .cloned())
+    }
+
+    /// Update a task's metadata
+    pub fn update_task_metadata(
+        &self,
+        session_id: &str,
+        task_id: &str,
+        metadata: serde_json::Value,
+    ) -> Result<(), TaskError> {
+        let mut task_list = self.get_or_load(session_id)?;
+        let task = task_list
+            .find_task_mut(task_id)
+            .ok_or_else(|| TaskError::NotFound(task_id.to_string()))?;
+        task.set_metadata(metadata);
+        self.update_and_save(task_list)?;
+        Ok(())
+    }
+
+    /// Get a specific task by ID
+    pub fn get_task(&self, session_id: &str, task_id: &str) -> Result<Option<Task>, TaskError> {
+        let task_list = self.get_or_load(session_id)?;
+        Ok(task_list.find_task(task_id).cloned())
     }
 }
 
