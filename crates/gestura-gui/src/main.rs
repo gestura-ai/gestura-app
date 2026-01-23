@@ -223,6 +223,7 @@ async fn main() {
             gestura_gui::api::delete_task,
             gestura_gui::api::list_tasks,
             gestura_gui::api::get_task_hierarchy,
+            gestura_gui::api::break_down_requirements,
             // Knowledge management
             gestura_gui::api::list_knowledge_items,
             gestura_gui::api::get_knowledge_item,

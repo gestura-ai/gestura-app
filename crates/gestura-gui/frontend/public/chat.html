@@ -404,9 +404,206 @@
 
         .task-header-btn .icon-plus,
         .task-header-btn .icon-play-circle,
-        .task-header-btn .icon-trash {
+        .task-header-btn .icon-trash,
+        .task-header-btn .icon-file-plus-02,
+        .task-header-btn .icon-file-x-02 {
             width: 18px;
             height: 18px;
+        }
+
+        /* Modal Styles */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1100;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.2s ease;
+        }
+
+        .modal-overlay.visible {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .modal-container {
+            background: var(--bg-base);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            width: 90%;
+            max-width: 600px;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+            transform: scale(0.95);
+            transition: transform 0.2s ease;
+        }
+
+        .modal-overlay.visible .modal-container {
+            transform: scale(1);
+        }
+
+        .modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .modal-header h3 {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .modal-close {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            font-size: 18px;
+        }
+
+        .modal-close:hover {
+            color: var(--text-primary);
+            background: var(--bg-glass);
+        }
+
+        .modal-content {
+            padding: 20px;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .modal-description {
+            color: var(--text-secondary);
+            font-size: 13px;
+            margin: 0 0 16px 0;
+            line-height: 1.5;
+        }
+
+        .modal-field {
+            margin-bottom: 16px;
+        }
+
+        .modal-field label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 8px;
+            color: var(--text-primary);
+        }
+
+        .modal-textarea {
+            width: 100%;
+            padding: 12px;
+            background: var(--bg-glass);
+            border: 1px solid var(--glass-border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 13px;
+            font-family: inherit;
+            resize: vertical;
+            min-height: 150px;
+            box-sizing: border-box;
+        }
+
+        .modal-textarea:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+        }
+
+        .file-upload-area {
+            border: 2px dashed var(--glass-border);
+            border-radius: 8px;
+            padding: 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .file-upload-area:hover {
+            border-color: var(--accent-primary);
+            background: var(--bg-glass);
+        }
+
+        .file-upload-area.drag-over {
+            border-color: var(--accent-primary);
+            background: var(--accent-glow);
+        }
+
+        .file-upload-text {
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+
+        .file-name {
+            color: var(--accent-primary);
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .modal-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            padding: 16px 20px;
+            border-top: 1px solid var(--glass-border);
+        }
+
+        .btn-secondary {
+            padding: 8px 16px;
+            background: var(--bg-glass);
+            color: var(--text-primary);
+            border: 1px solid var(--glass-border);
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-secondary:hover {
+            background: var(--bg-glass-strong);
+        }
+
+        .btn-primary {
+            padding: 8px 16px;
+            background: var(--accent-primary);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s ease;
+        }
+
+        .btn-primary:hover {
+            opacity: 0.9;
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
 
         .session-panel-content {
@@ -569,6 +766,96 @@
             color: var(--text-secondary);
             font-size: 13px;
             padding: 32px 16px;
+        }
+
+        /* Inline Task Creation Form */
+        .task-create-form {
+            background: var(--bg-glass);
+            border: 2px solid var(--accent-primary);
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 8px;
+            display: none;
+        }
+
+        .task-create-form.visible {
+            display: block;
+        }
+
+        .task-create-form input,
+        .task-create-form textarea {
+            width: 100%;
+            padding: 10px 12px;
+            background: var(--bg-base);
+            border: 1px solid var(--glass-border);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 13px;
+            font-family: inherit;
+            box-sizing: border-box;
+        }
+
+        .task-create-form input:focus,
+        .task-create-form textarea:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+        }
+
+        .task-create-form input {
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+
+        .task-create-form textarea {
+            min-height: 60px;
+            resize: vertical;
+            margin-bottom: 12px;
+        }
+
+        .task-create-form input::placeholder,
+        .task-create-form textarea::placeholder {
+            color: var(--text-secondary);
+        }
+
+        .task-create-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+
+        .task-create-actions button {
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .task-create-cancel {
+            background: transparent;
+            border: 1px solid var(--glass-border);
+            color: var(--text-secondary);
+        }
+
+        .task-create-cancel:hover {
+            background: var(--bg-glass);
+            color: var(--text-primary);
+        }
+
+        .task-create-save {
+            background: var(--accent-primary);
+            border: none;
+            color: white;
+        }
+
+        .task-create-save:hover {
+            opacity: 0.9;
+        }
+
+        .task-create-save:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
 
         .task-item {
@@ -1833,11 +2120,14 @@
                 <button class="task-header-btn" id="addTaskBtn" title="Add Task">
                     <span class="icon-plus"></span>
                 </button>
+                <button class="task-header-btn" id="breakdownTasksBtn" title="Break Down Requirements">
+                    <span class="icon-file-plus-02"></span>
+                </button>
                 <button class="task-header-btn" id="playAllTasksBtn" title="Play All Tasks">
                     <span class="icon-play-circle"></span>
                 </button>
                 <button class="task-header-btn" id="cleanupTasksBtn" title="Cleanup Finished">
-                    <span class="icon-trash"></span>
+                    <span class="icon-file-x-02"></span>
                 </button>
             </div>
             <button class="session-panel-close" id="taskPanelClose">
@@ -1845,8 +2135,50 @@
             </button>
         </div>
         <div class="session-panel-content">
+            <!-- Inline Task Creation Form -->
+            <div class="task-create-form" id="taskCreateForm">
+                <input type="text" id="newTaskName" placeholder="Task title..." autofocus>
+                <textarea id="newTaskDescription" placeholder="Description (optional)..."></textarea>
+                <div class="task-create-actions">
+                    <button class="task-create-cancel" id="taskCreateCancel">Cancel</button>
+                    <button class="task-create-save" id="taskCreateSave">Add Task</button>
+                </div>
+            </div>
             <div class="task-list" id="taskList">
                 <div class="task-empty">No tasks yet. Click + to get started.</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Task Breakdown Modal -->
+    <div class="modal-overlay" id="breakdownModalOverlay">
+        <div class="modal-container" id="breakdownModal">
+            <div class="modal-header">
+                <h3>Break Down Requirements</h3>
+                <button class="modal-close" id="breakdownModalClose">
+                    <span class="icon-close"></span>
+                </button>
+            </div>
+            <div class="modal-content">
+                <p class="modal-description">Enter your requirements as plain text or upload a file. The agent will analyze them and create a prioritized task hierarchy.</p>
+                <div class="modal-field">
+                    <label for="requirementsInput">Requirements</label>
+                    <textarea id="requirementsInput" class="modal-textarea" placeholder="Describe your project requirements, features, or goals here..."></textarea>
+                </div>
+                <div class="modal-field">
+                    <label>Or upload a file</label>
+                    <div class="file-upload-area" id="fileUploadArea">
+                        <input type="file" id="requirementsFileInput" accept=".txt,.md,.json,.yaml,.yml" hidden>
+                        <span class="file-upload-text">Click or drag to upload (.txt, .md, .json, .yaml)</span>
+                        <span class="file-name" id="uploadedFileName"></span>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" id="breakdownCancelBtn">Cancel</button>
+                <button class="btn-primary" id="breakdownSubmitBtn">
+                    <span class="icon-sparkles"></span> Break Down
+                </button>
             </div>
         </div>
     </div>
@@ -4372,21 +4704,26 @@
         taskPanelOverlay?.addEventListener('click', closeTaskPanel);
 
         addTaskBtn?.addEventListener('click', async () => {
+            if (!sessionId) {
+                showToast('No active session. Please start a chat first.', 'error');
+                return;
+            }
             const name = prompt('Task name:');
-            if (!name) return;
-            const description = prompt('Task description (optional):');
+            if (!name || !name.trim()) return;
+            const description = prompt('Task description (optional):') || '';
 
             try {
                 await window.__TAURI__.core.invoke('create_task', {
                     sessionId: sessionId,
-                    name,
-                    description: description || '',
+                    name: name.trim(),
+                    description: description.trim(),
                     parentId: null
                 });
                 await loadTasks();
+                showToast('Task created', 'success');
             } catch (e) {
                 console.error('Failed to create task:', e);
-                alert('Failed to create task: ' + e);
+                showToast('Failed to create task: ' + e, 'error');
             }
         });
 
@@ -4460,6 +4797,111 @@
             } catch (e) {
                 console.error('Failed to cleanup tasks:', e);
                 showToast('Failed to cleanup tasks: ' + e, 'error');
+            }
+        });
+
+        // Breakdown Requirements Modal
+        const breakdownTasksBtn = document.getElementById('breakdownTasksBtn');
+        const breakdownModalOverlay = document.getElementById('breakdownModalOverlay');
+        const breakdownModalClose = document.getElementById('breakdownModalClose');
+        const breakdownCancelBtn = document.getElementById('breakdownCancelBtn');
+        const breakdownSubmitBtn = document.getElementById('breakdownSubmitBtn');
+        const requirementsInput = document.getElementById('requirementsInput');
+        const fileUploadArea = document.getElementById('fileUploadArea');
+        const requirementsFileInput = document.getElementById('requirementsFileInput');
+        const uploadedFileName = document.getElementById('uploadedFileName');
+
+        function openBreakdownModal() {
+            breakdownModalOverlay.classList.add('visible');
+            requirementsInput.value = '';
+            uploadedFileName.textContent = '';
+            requirementsFileInput.value = '';
+        }
+
+        function closeBreakdownModal() {
+            breakdownModalOverlay.classList.remove('visible');
+        }
+
+        breakdownTasksBtn?.addEventListener('click', openBreakdownModal);
+        breakdownModalClose?.addEventListener('click', closeBreakdownModal);
+        breakdownCancelBtn?.addEventListener('click', closeBreakdownModal);
+        breakdownModalOverlay?.addEventListener('click', (e) => {
+            if (e.target === breakdownModalOverlay) {
+                closeBreakdownModal();
+            }
+        });
+
+        // File upload handling
+        fileUploadArea?.addEventListener('click', () => requirementsFileInput?.click());
+
+        fileUploadArea?.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            fileUploadArea.classList.add('drag-over');
+        });
+
+        fileUploadArea?.addEventListener('dragleave', () => {
+            fileUploadArea.classList.remove('drag-over');
+        });
+
+        fileUploadArea?.addEventListener('drop', (e) => {
+            e.preventDefault();
+            fileUploadArea.classList.remove('drag-over');
+            const file = e.dataTransfer.files[0];
+            if (file) handleFileUpload(file);
+        });
+
+        requirementsFileInput?.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) handleFileUpload(file);
+        });
+
+        async function handleFileUpload(file) {
+            const validExtensions = ['.txt', '.md', '.json', '.yaml', '.yml'];
+            const ext = '.' + file.name.split('.').pop().toLowerCase();
+            if (!validExtensions.includes(ext)) {
+                showToast('Invalid file type. Use .txt, .md, .json, or .yaml', 'error');
+                return;
+            }
+
+            try {
+                const text = await file.text();
+                requirementsInput.value = text;
+                uploadedFileName.textContent = file.name;
+            } catch (e) {
+                console.error('Failed to read file:', e);
+                showToast('Failed to read file', 'error');
+            }
+        }
+
+        breakdownSubmitBtn?.addEventListener('click', async () => {
+            const requirements = requirementsInput.value.trim();
+            if (!requirements) {
+                showToast('Please enter requirements or upload a file', 'error');
+                return;
+            }
+
+            if (!sessionId) {
+                showToast('No active session', 'error');
+                return;
+            }
+
+            breakdownSubmitBtn.disabled = true;
+            breakdownSubmitBtn.innerHTML = '<span class="icon-sparkles"></span> Processing...';
+
+            try {
+                await window.__TAURI__.core.invoke('break_down_requirements', {
+                    sessionId: sessionId,
+                    requirements: requirements
+                });
+                closeBreakdownModal();
+                await loadTasks();
+                showToast('Tasks created successfully', 'success');
+            } catch (e) {
+                console.error('Failed to break down requirements:', e);
+                showToast('Failed to break down requirements: ' + e, 'error');
+            } finally {
+                breakdownSubmitBtn.disabled = false;
+                breakdownSubmitBtn.innerHTML = '<span class="icon-sparkles"></span> Break Down';
             }
         });
 

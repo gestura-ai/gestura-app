@@ -3619,6 +3619,172 @@ pub fn get_task_hierarchy(session_id: String) -> Result<Vec<(Task, Vec<Task>)>, 
         .map_err(|e| e.to_string())
 }
 
+/// Break down requirements into a task hierarchy using the LLM.
+///
+/// This command analyzes the provided requirements text and generates
+/// a prioritized task hierarchy with dependencies identified.
+#[tauri::command]
+pub async fn break_down_requirements(
+    app: tauri::AppHandle,
+    session_id: String,
+    requirements: String,
+) -> Result<Vec<String>, String> {
+    use gestura_core::{llm_provider::select_provider, AgentContext, AppConfig};
+
+    let cfg = AppConfig::load_async().await;
+    let provider = select_provider(
+        &cfg,
+        &AgentContext {
+            agent_id: "task_breakdown".into(),
+        },
+    );
+
+    // Construct a prompt that instructs the LLM to break down requirements
+    let prompt = format!(
+        r#"You are a project planning assistant. Analyze the following requirements and break them down into a structured task list.
+
+Requirements:
+{}
+
+Please respond with a JSON array of tasks. Each task should have:
+- "name": A concise task name (max 60 chars)
+- "description": A detailed description of what needs to be done
+- "priority": "high", "medium", or "low"
+- "is_blocking": true if other tasks depend on this, false otherwise
+- "parent_name": null for root tasks, or the exact name of the parent task for subtasks
+
+Order tasks by priority and logical execution order. Group related tasks under parent tasks.
+
+Example format:
+[
+  {{"name": "Setup project structure", "description": "Initialize the project...", "priority": "high", "is_blocking": true, "parent_name": null}},
+  {{"name": "Configure build system", "description": "Set up the build...", "priority": "high", "is_blocking": false, "parent_name": "Setup project structure"}}
+]
+
+Respond ONLY with the JSON array, no additional text."#,
+        requirements
+    );
+
+    let response = provider
+        .call(&prompt)
+        .await
+        .map_err(|e| format!("LLM error: {}", e))?;
+
+    // Parse the LLM response as JSON
+    let tasks_json: serde_json::Value =
+        serde_json::from_str(&response).map_err(|e| format!("Failed to parse LLM response: {}. Response was: {}", e, response))?;
+
+    let tasks_array = tasks_json
+        .as_array()
+        .ok_or_else(|| "LLM response is not a JSON array".to_string())?;
+
+    let manager = get_task_manager();
+    let mut created_task_ids = Vec::new();
+    let mut name_to_id: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    // First pass: create root tasks (no parent)
+    for task_json in tasks_array {
+        let parent_name = task_json.get("parent_name").and_then(|v| v.as_str());
+        if parent_name.is_some() && !parent_name.unwrap().is_empty() {
+            continue; // Skip subtasks in first pass
+        }
+
+        let name = task_json
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Untitled Task")
+            .to_string();
+
+        let priority = task_json
+            .get("priority")
+            .and_then(|v| v.as_str())
+            .unwrap_or("medium");
+        let is_blocking = task_json
+            .get("is_blocking")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let description = format!(
+            "{}\n\n[Priority: {} | Blocking: {}]",
+            task_json
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or(""),
+            priority,
+            if is_blocking { "Yes" } else { "No" }
+        );
+
+        let task = manager
+            .create_task(&session_id, name.clone(), description, None)
+            .map_err(|e| e.to_string())?;
+
+        name_to_id.insert(name, task.id.clone());
+        created_task_ids.push(task.id.clone());
+
+        // Emit task-created event
+        let _ = app.emit(
+            "task-created",
+            serde_json::json!({
+                "session_id": &session_id,
+                "task": &task
+            }),
+        );
+    }
+
+    // Second pass: create subtasks
+    for task_json in tasks_array {
+        let parent_name = match task_json.get("parent_name").and_then(|v| v.as_str()) {
+            Some(name) if !name.is_empty() => name,
+            _ => continue, // Skip root tasks
+        };
+
+        let parent_id = name_to_id.get(parent_name).cloned();
+
+        let name = task_json
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Untitled Subtask")
+            .to_string();
+
+        let priority = task_json
+            .get("priority")
+            .and_then(|v| v.as_str())
+            .unwrap_or("medium");
+        let is_blocking = task_json
+            .get("is_blocking")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let description = format!(
+            "{}\n\n[Priority: {} | Blocking: {}]",
+            task_json
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or(""),
+            priority,
+            if is_blocking { "Yes" } else { "No" }
+        );
+
+        let task = manager
+            .create_task(&session_id, name.clone(), description, parent_id)
+            .map_err(|e| e.to_string())?;
+
+        name_to_id.insert(name, task.id.clone());
+        created_task_ids.push(task.id.clone());
+
+        // Emit task-created event
+        let _ = app.emit(
+            "task-created",
+            serde_json::json!({
+                "session_id": &session_id,
+                "task": &task
+            }),
+        );
+    }
+
+    Ok(created_task_ids)
+}
+
 // ============================================================================
 // Knowledge Management Commands
 // ============================================================================
