@@ -374,6 +374,41 @@
             color: var(--text-primary);
         }
 
+        /* Task Header Actions */
+        .task-header-actions {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-left: auto;
+            margin-right: 8px;
+        }
+
+        .task-header-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 6px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s ease;
+        }
+
+        .task-header-btn:hover {
+            background: var(--bg-glass);
+            color: var(--text-primary);
+            transform: scale(1.1);
+        }
+
+        .task-header-btn .icon-plus,
+        .task-header-btn .icon-play-circle,
+        .task-header-btn .icon-trash {
+            width: 18px;
+            height: 18px;
+        }
+
         .session-panel-content {
             flex: 1;
             overflow-y: auto;
@@ -1397,6 +1432,13 @@
             color: var(--text-primary);
             outline: none;
             font-family: inherit;
+            resize: none;
+            overflow-y: auto;
+            min-height: 24px;
+            max-height: 200px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-wrap: break-word;
         }
 
         .message-input::placeholder {
@@ -1502,6 +1544,38 @@
                 transform: scale(0.95);
                 box-shadow: 0 0 0 0 rgba(255, 59, 48, 0);
             }
+        }
+
+        /* Enhance Button Glow (purple) */
+        .enhance-active {
+            color: #8B5CF6;
+            box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.7);
+            animation: pulse-purple 1.5s infinite;
+        }
+
+        @keyframes pulse-purple {
+            0% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.7);
+            }
+            70% {
+                transform: scale(1);
+                box-shadow: 0 0 0 10px rgba(139, 92, 246, 0);
+            }
+            100% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(139, 92, 246, 0);
+            }
+        }
+
+        /* Send button in stop mode (red) */
+        .send-stop {
+            color: var(--error);
+        }
+
+        .send-stop:hover {
+            color: var(--error);
+            background: rgba(255, 59, 48, 0.1);
         }
 
         /* Markdown Styling */
@@ -1755,18 +1829,24 @@
     <div class="session-panel" id="taskPanel">
         <div class="session-panel-header">
             <h3>Tasks</h3>
+            <div class="task-header-actions">
+                <button class="task-header-btn" id="addTaskBtn" title="Add Task">
+                    <span class="icon-plus"></span>
+                </button>
+                <button class="task-header-btn" id="playAllTasksBtn" title="Play All Tasks">
+                    <span class="icon-play-circle"></span>
+                </button>
+                <button class="task-header-btn" id="cleanupTasksBtn" title="Cleanup Finished">
+                    <span class="icon-trash"></span>
+                </button>
+            </div>
             <button class="session-panel-close" id="taskPanelClose">
                 <span class="icon-close"></span>
             </button>
         </div>
         <div class="session-panel-content">
-            <div class="task-actions">
-                <button class="btn-task-add" id="addTaskBtn" title="Add Task">
-                    <span class="icon-plus"></span> New Task
-                </button>
-            </div>
             <div class="task-list" id="taskList">
-                <div class="task-empty">No tasks yet. Click "New Task" to get started.</div>
+                <div class="task-empty">No tasks yet. Click + to get started.</div>
             </div>
         </div>
     </div>
@@ -1877,27 +1957,12 @@
             <button class="btn-icon" id="voiceBtn" title="Voice Input">
                 <span class="icon-microphone"></span>
             </button>
-            <input type="text" class="message-input" id="messageInput" placeholder="Type a message..."
-                autocomplete="off">
-            <button class="btn-icon btn-enhance" id="enhanceButton" title="Enhance prompt (Cmd+K)">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M12 2L13.5 8.5L20 10L13.5 11.5L12 18L10.5 11.5L4 10L10.5 8.5L12 2Z"
-                          fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                    <path d="M19 15L19.5 17L21.5 17.5L19.5 18L19 20L18.5 18L16.5 17.5L18.5 17L19 15Z"
-                          fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                    <path d="M5 4L5.5 5.5L7 6L5.5 6.5L5 8L4.5 6.5L3 6L4.5 5.5L5 4Z"
-                          fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
+            <textarea class="message-input" id="messageInput" placeholder="Type a message..." rows="1" autocomplete="off"></textarea>
+            <button class="btn-icon" id="enhanceButton" title="Enhance prompt (Cmd+K)">
+                <span class="icon-sparkles"></span>
             </button>
-            <button class="btn-icon btn-primary" id="sendButton" title="Send message">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"></path>
-                </svg>
-            </button>
-            <button class="btn-icon btn-cancel" id="cancelButton" title="Cancel" style="display: none;">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M18 6L6 18M6 6l12 12"></path>
-                </svg>
+            <button class="btn-icon" id="sendButton" title="Send message">
+                <span class="icon-send"></span>
             </button>
         </div>
     </div>
@@ -2584,9 +2649,10 @@
             const text = messageInput.value.trim();
             if (!text) return;
 
-	            messageQueue.push({ kind: 'text', text });
-	            addMessage(formatUserDisplayText('text', text, true), 'user'); // Show queued message with indicator
+            messageQueue.push({ kind: 'text', text });
+            addMessage(formatUserDisplayText('text', text, true), 'user'); // Show queued message with indicator
             messageInput.value = '';
+            messageInput.style.height = 'auto';
             updateQueueIndicator();
         }
 
@@ -2715,6 +2781,7 @@
             // UI Updates
             addMessage(text, 'user');
             messageInput.value = '';
+            messageInput.style.height = 'auto';
 
             await processMessage(text);
         }
@@ -3827,8 +3894,8 @@
                 return;
             }
 
-            // Show loading state
-            enhanceButton.classList.add('loading');
+            // Show glow animation while enhancing
+            enhanceButton.classList.add('enhance-active');
             enhanceButton.disabled = true;
             enhancementInProgress = true;
 
@@ -3856,7 +3923,7 @@
                 console.error('[Enhance] Enhancement failed:', error);
                 showToast('Failed to enhance prompt: ' + error, 'error');
             } finally {
-                enhanceButton.classList.remove('loading');
+                enhanceButton.classList.remove('enhance-active');
                 enhanceButton.disabled = false;
                 enhancementInProgress = false;
             }
@@ -3882,15 +3949,42 @@
 
         // --- Interaction ---
 
-        sendButton.addEventListener('click', sendMessage);
+        // Send button handles both sending and cancelling (transforms based on state)
+        sendButton.addEventListener('click', async () => {
+            if (isProcessing) {
+                // Cancel mode: stop streaming and clear queue
+                messageQueue = [];
+                updateQueueIndicator();
 
-	        messageInput.addEventListener('keydown', (e) => {
+                if (!window.__TAURI__) return;
+
+                sendButton.disabled = true;
+                try {
+                    if (!isListening) setStatus('Cancelling...', 'busy');
+                    const cancelPayload = {};
+                    if (sessionId) cancelPayload.sessionId = sessionId;
+                    await window.__TAURI__.core.invoke('cancel_chat_streaming', cancelPayload);
+                } catch (e) {
+                    console.error('Failed to cancel streaming', e);
+                    addMessage(`Cancel failed: ${e}`, 'agent');
+                    // If backend says there's no active stream, don't leave UI stuck.
+                    finalizeStreamForCurrentRequest({ statusText: 'Ready', statusKind: 'ready' });
+                } finally {
+                    sendButton.disabled = false;
+                }
+            } else {
+                // Send mode: send the message
+                sendMessage();
+            }
+        });
+
+        messageInput.addEventListener('keydown', (e) => {
             // Cmd+K / Ctrl+K: Enhance prompt
             if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
                 e.preventDefault();
-	                // Prevent the global (document-level) shortcut handler from also
-	                // firing when the user triggers Cmd/Ctrl+K inside the input.
-	                e.stopPropagation();
+                // Prevent the global (document-level) shortcut handler from also
+                // firing when the user triggers Cmd/Ctrl+K inside the input.
+                e.stopPropagation();
                 enhancePrompt();
                 return;
             }
@@ -3902,32 +3996,17 @@
                 return;
             }
 
-            // Enter: Send message
-            if (e.key === 'Enter') sendMessage();
+            // Enter: Send message (Shift+Enter for newline)
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
         });
 
-        // Cancel button cancels in-flight streaming (if any) and clears the queue.
-        cancelButton.addEventListener('click', async () => {
-            messageQueue = [];
-            updateQueueIndicator();
-
-            if (!window.__TAURI__) return;
-            if (!isProcessing) return;
-
-            cancelButton.disabled = true;
-            try {
-                if (!isListening) setStatus('Cancelling...', 'busy');
-			const cancelPayload = {};
-			if (sessionId) cancelPayload.sessionId = sessionId;
-	            await window.__TAURI__.core.invoke('cancel_chat_streaming', cancelPayload);
-            } catch (e) {
-                console.error('Failed to cancel streaming', e);
-                addMessage(`Cancel failed: ${e}`, 'agent');
-                // If backend says there's no active stream, don't leave UI stuck.
-                finalizeStreamForCurrentRequest({ statusText: 'Ready', statusKind: 'ready' });
-            } finally {
-                cancelButton.disabled = false;
-            }
+        // Auto-resize textarea based on content
+        messageInput.addEventListener('input', () => {
+            messageInput.style.height = 'auto';
+            messageInput.style.height = Math.min(messageInput.scrollHeight, 200) + 'px';
         });
 
         voiceBtn.addEventListener('click', async () => {
@@ -4298,16 +4377,89 @@
             const description = prompt('Task description (optional):');
 
             try {
-	                await window.__TAURI__.core.invoke('create_task', {
-	                    sessionId: sessionId,
-	                    name,
-	                    description: description || '',
-	                    parentId: null
-	                });
+                await window.__TAURI__.core.invoke('create_task', {
+                    sessionId: sessionId,
+                    name,
+                    description: description || '',
+                    parentId: null
+                });
                 await loadTasks();
             } catch (e) {
                 console.error('Failed to create task:', e);
                 alert('Failed to create task: ' + e);
+            }
+        });
+
+        // Play all pending tasks
+        const playAllTasksBtn = document.getElementById('playAllTasksBtn');
+        playAllTasksBtn?.addEventListener('click', async () => {
+            if (!sessionId) return;
+            try {
+                const hierarchy = await window.__TAURI__.core.invoke('get_task_hierarchy', { sessionId: sessionId });
+                const pendingTasks = [];
+                hierarchy.forEach(([rootTask, subtasks]) => {
+                    if (rootTask.status === 'NotStarted' || rootTask.status === 'InProgress') {
+                        pendingTasks.push(rootTask);
+                    }
+                    subtasks.forEach(sub => {
+                        if (sub.status === 'NotStarted' || sub.status === 'InProgress') {
+                            pendingTasks.push(sub);
+                        }
+                    });
+                });
+
+                if (pendingTasks.length === 0) {
+                    showToast('No pending tasks to run', 'info');
+                    return;
+                }
+
+                for (const task of pendingTasks) {
+                    const prompt = task.description
+                        ? `Task: ${task.name}\n\nDescription: ${task.description}`
+                        : `Task: ${task.name}`;
+                    messageInput.value = prompt;
+                    messageInput.style.height = 'auto';
+                    messageInput.style.height = Math.min(messageInput.scrollHeight, 200) + 'px';
+                    await sendMessage();
+                }
+                showToast(`Queued ${pendingTasks.length} task(s)`, 'success');
+            } catch (e) {
+                console.error('Failed to play all tasks:', e);
+                showToast('Failed to play tasks: ' + e, 'error');
+            }
+        });
+
+        // Cleanup finished tasks
+        const cleanupTasksBtn = document.getElementById('cleanupTasksBtn');
+        cleanupTasksBtn?.addEventListener('click', async () => {
+            if (!sessionId) return;
+            try {
+                const hierarchy = await window.__TAURI__.core.invoke('get_task_hierarchy', { sessionId: sessionId });
+                const finishedTaskIds = [];
+                hierarchy.forEach(([rootTask, subtasks]) => {
+                    subtasks.forEach(sub => {
+                        if (sub.status === 'Completed' || sub.status === 'Cancelled') {
+                            finishedTaskIds.push(sub.id);
+                        }
+                    });
+                    if (rootTask.status === 'Completed' || rootTask.status === 'Cancelled') {
+                        finishedTaskIds.push(rootTask.id);
+                    }
+                });
+
+                if (finishedTaskIds.length === 0) {
+                    showToast('No finished tasks to cleanup', 'info');
+                    return;
+                }
+
+                for (const taskId of finishedTaskIds) {
+                    await window.__TAURI__.core.invoke('delete_task', { sessionId: sessionId, taskId: taskId });
+                }
+                await loadTasks();
+                showToast(`Removed ${finishedTaskIds.length} task(s)`, 'success');
+            } catch (e) {
+                console.error('Failed to cleanup tasks:', e);
+                showToast('Failed to cleanup tasks: ' + e, 'error');
             }
         });
 
