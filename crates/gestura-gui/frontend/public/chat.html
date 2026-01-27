@@ -682,6 +682,70 @@
             margin: 16px 0;
         }
 
+        /* Providers Panel Styles */
+        .providers-section {
+            margin-bottom: 8px;
+        }
+
+        .providers-section-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+        }
+
+        .providers-section-header span[class^="icon-"] {
+            font-size: 16px;
+            color: var(--accent-primary);
+        }
+
+        .providers-section-info {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 12px;
+            line-height: 1.4;
+        }
+
+        .provider-select {
+            width: 100%;
+            padding: 10px 12px;
+            background: var(--bg-glass);
+            border: 1px solid var(--glass-border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 13px;
+            cursor: pointer;
+            outline: none;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 36px;
+        }
+
+        .provider-select:focus {
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 0 2px var(--accent-glow);
+        }
+
+        .provider-select:hover {
+            border-color: var(--accent-primary);
+        }
+
+        .provider-select option {
+            background: var(--bg-base);
+            color: var(--text-primary);
+        }
+
+        #resetProvidersBtn {
+            width: 100%;
+            padding: 10px 16px;
+            font-size: 13px;
+        }
+
         .session-panel-overlay {
             position: fixed;
             top: 0;
@@ -700,16 +764,97 @@
             visibility: visible;
         }
 
+        /* Main Menu Panel */
+        .menu-panel {
+            position: fixed;
+            top: 0;
+            right: -280px;
+            width: 280px;
+            height: 100%;
+            background: var(--bg-glass-strong);
+            backdrop-filter: var(--blur);
+            -webkit-backdrop-filter: var(--blur);
+            border-left: 1px solid var(--glass-border);
+            z-index: 100;
+            transition: right 0.3s ease;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .menu-panel.open {
+            right: 0;
+        }
+
+        .menu-panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px;
+            border-bottom: 1px solid var(--glass-border);
+        }
+
+        .menu-panel-header h3 {
+            font-size: 14px;
+            font-weight: 600;
+            margin: 0;
+        }
+
+        .menu-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px;
+        }
+
+        .menu-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s ease;
+            color: var(--text-primary);
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .menu-item:hover {
+            background: var(--bg-glass);
+        }
+
+        .menu-item span[class^="icon-"] {
+            width: 20px;
+            height: 20px;
+            color: var(--text-secondary);
+        }
+
+        .menu-item-label {
+            flex: 1;
+        }
+
+        .menu-item-badge {
+            font-size: 11px;
+            padding: 2px 6px;
+            background: var(--accent-primary);
+            color: white;
+            border-radius: 10px;
+        }
+
         .session-tools-list {
             display: flex;
             flex-direction: column;
             gap: 8px;
+	            max-height: 320px;
+	            overflow-y: auto;
+	            padding: 4px;
+	            border: 1px solid var(--border-subtle);
+	            border-radius: 8px;
         }
 
         .tool-checkbox {
             display: flex;
-            align-items: center;
-            gap: 8px;
+	            align-items: flex-start;
+	            gap: 10px;
             font-size: 13px;
             color: var(--text-primary);
             cursor: pointer;
@@ -725,7 +870,108 @@
         .tool-checkbox input[type="checkbox"] {
             width: 16px;
             height: 16px;
+	            margin-top: 2px;
             accent-color: var(--accent-primary);
+        }
+
+        /* Dynamic tool list styles */
+        .tools-section-header {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+            padding: 8px 0 4px 0;
+            margin-top: 8px;
+            border-top: 1px solid var(--border-subtle);
+        }
+
+        .tools-section-header:first-child {
+            margin-top: 0;
+            border-top: none;
+            padding-top: 0;
+        }
+
+	        .tool-details {
+	            flex: 1;
+	            min-width: 0;
+	            display: flex;
+	            flex-direction: column;
+	            gap: 2px;
+	        }
+
+	        .tool-name {
+	            font-weight: 500;
+	            line-height: 1.2;
+	            overflow-wrap: anywhere;
+	        }
+
+	        .tool-summary {
+	            font-size: 11px;
+	            line-height: 1.2;
+	            color: var(--text-secondary);
+	            overflow-wrap: anywhere;
+	        }
+
+	        .tool-badges {
+	            margin-left: auto;
+	            display: flex;
+	            align-items: center;
+	            justify-content: flex-end;
+	            gap: 6px;
+	            flex-wrap: wrap;
+	        }
+
+        .tool-badge {
+            font-size: 9px;
+            font-weight: 600;
+            text-transform: uppercase;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: var(--bg-glass);
+            color: var(--text-secondary);
+	            white-space: nowrap;
+	            max-width: 170px;
+	            overflow: hidden;
+	            text-overflow: ellipsis;
+        }
+
+	        .tool-badge.builtin {
+	            background: rgba(16, 185, 129, 0.18);
+	            color: #34d399;
+	        }
+
+        .tool-badge.mcp {
+            background: rgba(139, 92, 246, 0.2);
+            color: #a78bfa;
+        }
+
+	        .tool-badge.side-effects {
+	            background: rgba(245, 158, 11, 0.18);
+	            color: #fbbf24;
+	        }
+
+	        .tool-badge.risk-high {
+	            background: rgba(239, 68, 68, 0.18);
+	            color: #f87171;
+	        }
+
+        .loading-tools,
+        .no-tools,
+        .tools-error {
+            font-size: 12px;
+            color: var(--text-secondary);
+            padding: 12px 8px;
+            text-align: center;
+        }
+
+        .tools-error {
+            color: var(--text-danger, #ef4444);
+        }
+
+        .mcp-tool {
+            border-left: 2px solid rgba(139, 92, 246, 0.5);
+            padding-left: 10px;
         }
 
         /* Task Panel Styles */
@@ -885,34 +1131,49 @@
 
         .task-status-icon {
             flex-shrink: 0;
-            width: 18px;
-            height: 18px;
+            width: 20px;
+            height: 20px;
             border-radius: 4px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 10px;
             cursor: pointer;
             transition: all 0.2s ease;
         }
 
+        .task-status-icon span[class^="icon-"] {
+            width: 16px;
+            height: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
         .task-status-icon.not-started {
-            background: rgba(128, 128, 128, 0.2);
+            background: rgba(128, 128, 128, 0.15);
+        }
+        .task-status-icon.not-started span[class^="icon-"] {
             color: var(--text-secondary);
         }
 
         .task-status-icon.in-progress {
             background: rgba(10, 132, 255, 0.2);
+        }
+        .task-status-icon.in-progress span[class^="icon-"] {
             color: #0a84ff;
         }
 
         .task-status-icon.completed {
             background: rgba(52, 199, 89, 0.2);
+        }
+        .task-status-icon.completed span[class^="icon-"] {
             color: var(--success);
         }
 
         .task-status-icon.cancelled {
             background: rgba(255, 59, 48, 0.2);
+        }
+        .task-status-icon.cancelled span[class^="icon-"] {
             color: var(--error);
         }
 
@@ -924,42 +1185,65 @@
             word-break: break-word;
         }
 
+        /* Task Item Action Icons (top right) */
+        .task-item-actions {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            flex-shrink: 0;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+        }
+
+        .task-item:hover .task-item-actions {
+            opacity: 1;
+        }
+
+        .task-icon-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s ease;
+        }
+
+        .task-icon-btn:hover {
+            background: var(--bg-glass);
+            color: var(--text-primary);
+        }
+
+        .task-icon-btn.play:hover {
+            color: var(--success);
+            background: rgba(52, 199, 89, 0.15);
+        }
+
+        .task-icon-btn.edit:hover {
+            color: var(--accent-primary);
+            background: rgba(0, 113, 227, 0.15);
+        }
+
+        .task-icon-btn.delete:hover {
+            color: var(--error);
+            background: rgba(255, 59, 48, 0.15);
+        }
+
+        .task-icon-btn .icon-play,
+        .task-icon-btn .icon-edit-02,
+        .task-icon-btn .icon-trash {
+            width: 14px;
+            height: 14px;
+        }
+
         .task-description {
             font-size: 12px;
             color: var(--text-secondary);
             margin-left: 26px;
             line-height: 1.4;
-        }
-
-        .task-actions-row {
-            display: flex;
-            gap: 8px;
-            margin-top: 8px;
-            margin-left: 26px;
-        }
-
-        .task-btn {
-            padding: 4px 8px;
-            font-size: 11px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            background: var(--bg-glass);
-            color: var(--text-secondary);
-        }
-
-        .task-btn:hover {
-            background: var(--bg-glass-strong);
-            color: var(--text-primary);
-        }
-
-        .task-btn.delete {
-            color: var(--error);
-        }
-
-        .task-btn.delete:hover {
-            background: rgba(255, 59, 48, 0.1);
         }
 
 	        /* Knowledge Panel */
@@ -1187,6 +1471,16 @@
             border-color: var(--error);
             background: rgba(255, 59, 48, 0.08);
         }
+
+	        /* Waiting for user approval (Restricted mode) */
+	        .tool-call.waiting-confirmation {
+	            border-color: #ff9f0a;
+	            background: rgba(255, 159, 10, 0.08);
+	        }
+
+	        .tool-call.waiting-confirmation .tool-icon {
+	            fill: #ff9f0a;
+	        }
 
         .tool-call.error .tool-icon {
             fill: var(--error);
@@ -1568,6 +1862,123 @@
             background: #0077ed;
         }
 
+	        /* Tool Confirmation Dialog (Restricted mode pause/resume) */
+	        .tool-confirm-overlay {
+	            position: fixed;
+	            top: 0;
+	            left: 0;
+	            right: 0;
+	            bottom: 0;
+	            background: rgba(0, 0, 0, 0.6);
+	            display: flex;
+	            align-items: center;
+	            justify-content: center;
+	            z-index: 10001;
+	            backdrop-filter: blur(4px);
+	        }
+
+	        .tool-confirm-dialog {
+	            background: var(--bg-secondary);
+	            border: 1px solid var(--border);
+	            border-radius: 16px;
+	            padding: 24px;
+	            max-width: 520px;
+	            width: 92%;
+	            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+	        }
+
+	        .tool-confirm-dialog h3 {
+	            margin: 0 0 12px 0;
+	            font-size: 18px;
+	            color: var(--text-primary);
+	        }
+
+	        .tool-confirm-dialog p {
+	            margin: 0 0 10px 0;
+	            color: var(--text-secondary);
+	            font-size: 14px;
+	        }
+
+	        .tool-confirm-details {
+	            background: var(--bg-glass);
+	            border-radius: 10px;
+	            padding: 12px 14px;
+	            border: 1px solid var(--glass-border);
+	            margin: 10px 0 12px 0;
+	            overflow: hidden;
+	        }
+
+	        .tool-confirm-details .meta {
+	            display: flex;
+	            flex-wrap: wrap;
+	            gap: 8px;
+	            margin-bottom: 10px;
+	            font-size: 12px;
+	            color: var(--text-secondary);
+	        }
+
+	        .tool-confirm-badge {
+	            display: inline-flex;
+	            align-items: center;
+	            gap: 6px;
+	            padding: 2px 8px;
+	            border-radius: 10px;
+	            border: 1px solid var(--border);
+	            background: rgba(255, 159, 10, 0.10);
+	            color: #ff9f0a;
+	            font-weight: 600;
+	        }
+
+	        .tool-confirm-args {
+	            margin: 0;
+	            padding: 10px 12px;
+	            border-radius: 10px;
+	            border: 1px solid var(--glass-border);
+	            background: rgba(0, 0, 0, 0.04);
+	            font-size: 12px;
+	            line-height: 1.35;
+	            overflow-x: auto;
+	            white-space: pre;
+	            max-height: 220px;
+	            overflow-y: auto;
+	        }
+
+	        .tool-confirm-buttons {
+	            display: flex;
+	            gap: 12px;
+	            justify-content: flex-end;
+	            margin-top: 18px;
+	        }
+
+	        .tool-confirm-buttons button {
+	            padding: 10px 20px;
+	            border-radius: 8px;
+	            font-size: 14px;
+	            font-weight: 600;
+	            cursor: pointer;
+	            transition: all 0.2s ease;
+	        }
+
+	        .tool-confirm-buttons .btn-deny {
+	            background: var(--bg-glass);
+	            border: 1px solid var(--border);
+	            color: var(--text-secondary);
+	        }
+
+	        .tool-confirm-buttons .btn-deny:hover {
+	            background: var(--bg-glass-strong);
+	        }
+
+	        .tool-confirm-buttons .btn-approve {
+	            background: #ff9f0a;
+	            border: none;
+	            color: white;
+	        }
+
+	        .tool-confirm-buttons .btn-approve:hover {
+	            background: #f08f00;
+	        }
+
         .tool-icon {
             width: 16px;
             height: 16px;
@@ -1734,8 +2145,8 @@
         }
 
         .btn-icon {
-            width: 44px;
-            height: 44px;
+            width: 38px;
+            height: 38px;
             border-radius: 50%;
             border: none;
             background: transparent;
@@ -1744,7 +2155,10 @@
             display: flex;
             align-items: center;
             justify-content: center;
+            align-items: center;
+            justify-content: center;
             transition: all 0.2s ease;
+            font-size: 1em; /* Icon size proportional to button */
         }
 
         .btn-icon:hover {
@@ -1897,6 +2311,103 @@
         .markdown-body p:last-child {
             margin-bottom: 0;
         }
+
+	        .markdown-body h1,
+	        .markdown-body h2,
+	        .markdown-body h3,
+	        .markdown-body h4,
+	        .markdown-body h5,
+	        .markdown-body h6 {
+	            margin: 0.9em 0 0.45em 0;
+	            line-height: 1.25;
+	            font-weight: 700;
+	        }
+
+	        .markdown-body h1 { font-size: 1.45em; }
+	        .markdown-body h2 { font-size: 1.30em; }
+	        .markdown-body h3 { font-size: 1.18em; }
+	        .markdown-body h4 { font-size: 1.05em; }
+
+	        .markdown-body ul,
+	        .markdown-body ol {
+	            margin: 0.5em 0 0.9em 1.25em;
+	        }
+
+	        .markdown-body li {
+	            margin: 0.2em 0;
+	        }
+
+		        /* Markdown: GitHub-style task lists */
+		        .markdown-body .md-task-list-item {
+		            list-style: none;
+		            margin-left: -1.25em;
+		            display: flex;
+		            align-items: flex-start;
+		            gap: 0.5em;
+		        }
+
+		        .markdown-body .md-task-list-item input[type="checkbox"] {
+		            margin-top: 0.2em;
+		            accent-color: var(--accent-primary);
+		        }
+
+		        .markdown-body .md-task-list-text {
+		            flex: 1;
+		        }
+
+		        /* Markdown: tables (basic GFM) */
+		        .markdown-body .md-table-wrapper {
+		            overflow-x: auto;
+		            margin: 0.8em 0;
+		        }
+
+		        .markdown-body table {
+		            width: 100%;
+		            border-collapse: collapse;
+		            border-spacing: 0;
+		        }
+
+		        .markdown-body th,
+		        .markdown-body td {
+		            border: 1px solid var(--glass-border);
+		            padding: 8px 10px;
+		            vertical-align: top;
+		        }
+
+		        .markdown-body thead th {
+		            background: rgba(0, 0, 0, 0.03);
+		            font-weight: 700;
+		        }
+
+		        .markdown-body tbody tr:nth-child(even) {
+		            background: rgba(0, 0, 0, 0.015);
+		        }
+
+	        .markdown-body blockquote {
+	            margin: 0.8em 0;
+	            padding: 0.2em 0 0.2em 1em;
+	            border-left: 3px solid rgba(10, 132, 255, 0.6);
+	            color: var(--text-secondary);
+	            background: rgba(10, 132, 255, 0.05);
+	            border-radius: 8px;
+	        }
+
+	        .markdown-body hr {
+	            border: none;
+	            border-top: 1px solid var(--border);
+	            margin: 1em 0;
+	            opacity: 0.8;
+	        }
+
+	        .markdown-body a {
+	            color: var(--accent-primary);
+	            text-decoration: underline;
+	            text-underline-offset: 2px;
+	        }
+
+	        .markdown-body a:hover {
+	            opacity: 0.9;
+	        }
 
         /* Copy Button Styling */
         .message.agent {
@@ -2066,6 +2577,50 @@
                 transform: scale(1);
             }
         }
+
+	        /* Toast Notifications */
+	        .toast-container {
+	            position: fixed;
+	            top: 64px;
+	            right: 12px;
+	            display: flex;
+	            flex-direction: column;
+	            gap: 8px;
+	            z-index: 2000;
+	            pointer-events: none;
+	        }
+
+	        .toast {
+	            pointer-events: auto;
+	            background: var(--bg-glass-strong);
+	            border: 1px solid var(--glass-border);
+	            color: var(--text-primary);
+	            border-radius: 12px;
+	            padding: 10px 12px;
+	            box-shadow: var(--shadow-md);
+	            min-width: 220px;
+	            max-width: min(360px, calc(100vw - 24px));
+	            font-size: 13px;
+	            line-height: 1.35;
+	            transform: translateY(-6px);
+	            opacity: 0;
+	            transition: transform 0.15s ease, opacity 0.15s ease;
+	        }
+
+	        .toast.visible {
+	            transform: translateY(0);
+	            opacity: 1;
+	        }
+
+	        .toast.hiding {
+	            transform: translateY(-6px);
+	            opacity: 0;
+	        }
+
+	        .toast.toast-success { border-left: 3px solid var(--success); }
+	        .toast.toast-error { border-left: 3px solid var(--error); }
+	        .toast.toast-warning { border-left: 3px solid #ff9f0a; }
+	        .toast.toast-info { border-left: 3px solid var(--accent-primary); }
     </style>
 </head>
 
@@ -2073,39 +2628,45 @@
     <!-- Header -->
     <div class="header">
         <div class="header-title">
-            <span class="icon-message"></span>
-            Gestura
+            <img src="../assets/gestura-app.svg" alt="Gestura" style="width: 20px; height: 20px;">
+            Gestura Agent
         </div>
         <div class="header-controls">
-            <div class="provider-selector-wrapper">
-                <div class="provider-icon" id="providerIcon" title="Provider">
-                    <!-- Anthropic icon (default) -->
-                    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                        <path
-                            d="M17.304 3.541l-5.296 16.918h3.208l5.296-16.918h-3.208zm-7.4 0l-5.296 16.918h3.208l1.319-4.214h5.632l.855 4.214h3.208l-5.296-16.918h-3.63zm.855 9.918l1.855-5.918 1.855 5.918h-3.71z" />
-                    </svg>
-                </div>
-                <select class="model-selector" id="providerSelect" title="Select provider">
-                    <option value="anthropic">Anthropic</option>
-                    <option value="openai">OpenAI</option>
-                    <option value="grok">Grok</option>
-                    <option value="ollama">Ollama</option>
-                    <option value="echo">Echo</option>
-                </select>
-            </div>
-            <select class="model-selector-standalone" id="modelSelect" title="Select model" disabled>
-                <option value="">Model</option>
-            </select>
-            <button class="btn-settings" id="taskPanelBtn" title="Tasks (Ctrl/Cmd+T)">
-                <span class="icon-checklist"></span>
-            </button>
-	    	    <button class="btn-settings" id="knowledgePanelBtn" title="Skills (Ctrl/Cmd+Shift+K)">
-                <span class="icon-knowledge"></span>
-            </button>
-            <button class="btn-settings" id="sessionSettingsBtn" title="Session Settings">
+            <div class="status-badge" id="status">Ready</div>
+            <button class="btn-settings" id="menuBtn" title="Menu">
                 <span class="icon-settings"></span>
             </button>
-            <div class="status-badge" id="status">Ready</div>
+        </div>
+    </div>
+
+    <!-- Menu Panel Overlay -->
+    <div class="session-panel-overlay" id="menuPanelOverlay"></div>
+
+    <!-- Menu Panel -->
+    <div class="menu-panel" id="menuPanel">
+        <div class="menu-panel-header">
+            <h3>Menu</h3>
+            <button class="session-panel-close" id="menuPanelClose">
+                <span class="icon-close"></span>
+            </button>
+        </div>
+        <div class="menu-list">
+            <div class="menu-item" id="menuItemSettings">
+                <span class="icon-settings"></span>
+                <span class="menu-item-label">Settings</span>
+            </div>
+            <div class="menu-item" id="menuItemProviders">
+                <span class="icon-server-01"></span>
+                <span class="menu-item-label">Providers</span>
+            </div>
+            <div class="menu-item" id="menuItemKnowledge">
+                <span class="icon-knowledge"></span>
+                <span class="menu-item-label">Knowledge</span>
+            </div>
+            <div class="menu-item" id="menuItemTasks">
+                <span class="icon-checklist"></span>
+                <span class="menu-item-label">Tasks</span>
+            </div>
         </div>
     </div>
 
@@ -2208,6 +2769,78 @@
         </div>
     </div>
 
+    <!-- Providers Panel Overlay -->
+    <div class="session-panel-overlay" id="providersPanelOverlay"></div>
+
+    <!-- Providers Panel -->
+    <div class="session-panel" id="providersPanel">
+        <div class="session-panel-header">
+            <h3>Providers</h3>
+            <button class="session-panel-close" id="providersPanelClose">
+                <span class="icon-close"></span>
+            </button>
+        </div>
+        <div class="session-panel-content">
+            <!-- LLM Provider Section -->
+            <div class="providers-section">
+                <div class="providers-section-header">
+                    <span class="icon-cpu-chip"></span>
+                    <span>LLM Provider</span>
+                </div>
+                <div class="providers-section-info">
+                    Select the AI model provider and model for this session.
+                </div>
+                <div class="session-field">
+                    <label>Provider</label>
+                    <select id="sessionLlmProvider" class="provider-select">
+                        <option value="">Loading...</option>
+                    </select>
+                </div>
+                <div class="session-field">
+                    <label>Model</label>
+                    <select id="sessionLlmModel" class="provider-select">
+                        <option value="">Select provider first</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="session-divider"></div>
+
+            <!-- STT Provider Section -->
+            <div class="providers-section">
+                <div class="providers-section-header">
+                    <span class="icon-microphone"></span>
+                    <span>Speech-to-Text Provider</span>
+                </div>
+                <div class="providers-section-info">
+                    Select the speech recognition provider for voice input in this session.
+                </div>
+                <div class="session-field">
+                    <label>STT Provider</label>
+                    <select id="sessionSttProvider" class="provider-select">
+                        <option value="openai">OpenAI Whisper (Cloud)</option>
+                        <option value="local">Local Whisper</option>
+                    </select>
+                </div>
+                <div class="session-field" id="sttModelField">
+                    <label>STT Model</label>
+                    <select id="sessionSttModel" class="provider-select">
+                        <option value="">Loading models...</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="session-divider"></div>
+
+            <!-- Reset to Defaults -->
+            <div class="providers-section">
+                <button class="btn-secondary" id="resetProvidersBtn">
+                    Reset to Global Defaults
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Session Settings Panel Overlay -->
     <div class="session-panel-overlay" id="sessionPanelOverlay"></div>
 
@@ -2246,21 +2879,8 @@
             <div class="session-field">
                 <label>Available Tools</label>
                 <div class="session-tools-list" id="sessionToolsList">
-                    <label class="tool-checkbox">
-                        <input type="checkbox" value="file_read" checked> File Read
-                    </label>
-                    <label class="tool-checkbox">
-                        <input type="checkbox" value="file_write" checked> File Write
-                    </label>
-                    <label class="tool-checkbox">
-                        <input type="checkbox" value="shell" checked> Shell Commands
-                    </label>
-                    <label class="tool-checkbox">
-                        <input type="checkbox" value="web_search"> Web Search
-                    </label>
-                    <label class="tool-checkbox">
-                        <input type="checkbox" value="code_analysis" checked> Code Analysis
-                    </label>
+                    <!-- Tools are loaded dynamically from backend -->
+                    <div class="loading-tools">Loading tools...</div>
                 </div>
             </div>
         </div>
@@ -2368,27 +2988,33 @@
         // Cached config (used for model dropdown)
         let cachedConfig = null;
 
-        // State
+	        // State
         let isProcessing = false;
         let isListening = false;
         let currentRequestNonce = 0;
         let lastStreamEventAt = Date.now();
         let streamWatchdogInterval = null;
+	        let streamWatchdogMaxIdleMs = 90_000;
         let streamingMessageElement = null;
         let streamingContent = '';
         let currentThinkingDiv = null;
         let currentToolCard = null;
-	        let currentToolArgsEl = null;
-	        /**
-	         * Queue of messages received/sent while a stream is in-flight.
-	         *
-	         * We keep this small and explicit so both typed text and voice (STT)
-	         * can be queued without leaking UI-only prefixes into the LLM input.
-	         *
-	         * @typedef {{ kind: 'text'|'voice', text: string }} QueuedMessage
-	         * @type {QueuedMessage[]}
-	         */
-	        let messageQueue = [];
+		        let currentToolArgsEl = null;
+		        /** @type {{confirmation_id: string, tool_name: string, tool_args: string, description?: string, risk_level?: string, category?: string, session_id?: (string|null)}[]} */
+		        let toolConfirmationQueue = [];
+		        let toolConfirmationActive = false;
+		        /**
+		         * Queue of messages received/sent while a stream is in-flight.
+		         *
+		         * We keep this small and explicit so both typed text and voice (STT)
+		         * can be queued without leaking UI-only prefixes into the LLM input.
+		         *
+		         * @typedef {{ kind: 'text'|'voice', text: string, taskId?: (string | null) }} QueuedMessage
+		         * @type {QueuedMessage[]}
+		         */
+		        let messageQueue = [];
+		        /** @type {string | null} */
+		        let activeTaskIdForCurrentRequest = null;
         const defaultPlaceholder = 'Type a message...';
         const processingPlaceholder = 'Type to queue another message...';
 		        const sessionId = new URLSearchParams(window.location.search).get('session_id');
@@ -2464,7 +3090,7 @@
 	            if (!isDebugEnabled()) return null;
 	            let panel = document.getElementById('gestura-debug-panel');
 	            if (panel) return panel;
-	
+
 	            panel = document.createElement('div');
 	            panel.id = 'gestura-debug-panel';
 	            panel.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:99999;width:420px;max-height:60vh;overflow:auto;background:rgba(20,20,20,0.92);color:#fff;border:1px solid rgba(255,255,255,0.15);border-radius:10px;padding:10px;font:12px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;';
@@ -2494,17 +3120,17 @@
 		                    <pre id="gestura-debug-backend-receipts" style="white-space:pre-wrap;word-break:break-word;background:rgba(255,255,255,0.06);padding:8px;border-radius:8px;max-height:18vh;overflow:auto;margin:0;"></pre>
 		                </div>
 	            `;
-	
+
 	            document.body.appendChild(panel);
 
 	            const closeBtn = panel.querySelector('#gestura-debug-close');
 	            closeBtn?.addEventListener('click', () => setDebugEnabled(false));
-	
+
 	            panel.querySelector('#gestura-debug-clear-local')?.addEventListener('click', () => {
 	                localEventTrace.length = 0;
 	                renderDebugPanel();
 	            });
-	
+
 	            panel.querySelector('#gestura-debug-clear-backend')?.addEventListener('click', async () => {
 	                try {
 	                    if (!window.__TAURI__) throw new Error('Tauri not available');
@@ -2516,7 +3142,7 @@
 	                    if (out) out.textContent = `clear_chat_event_trace failed: ${e}`;
 	                }
 	            });
-	
+
 	            panel.querySelector('#gestura-debug-fetch-backend')?.addEventListener('click', async () => {
 	                try {
 	                    if (!window.__TAURI__) throw new Error('Tauri not available');
@@ -2568,7 +3194,7 @@
 	            }
 	            const p = ensureDebugPanel();
 	            if (!p) return;
-	
+
 	            const metaEl = p.querySelector('#gestura-debug-meta');
 	            if (metaEl) {
 	                metaEl.innerHTML = [
@@ -2664,7 +3290,7 @@
 	            try {
 	                /** @type {any} */
 					const payload = { prompt: original };
-					if (sessionId) payload.sessionId = sessionId;
+					if (sessionId) payload.session_id = sessionId;
 	                const enhanced = await window.__TAURI__.core.invoke('enhance_prompt', payload);
 	                if (typeof enhanced === 'string' && enhanced.trim().length > 0) return enhanced;
 	            } catch (e) {
@@ -2696,8 +3322,110 @@
             if (kind === 'error') statusElement.classList.add('error');
         }
 
+	        /** @type {HTMLElement | null} */
+	        let toastContainer = null;
+
+	        /**
+	         * Ensure the toast container exists in the DOM.
+	         *
+	         * @returns {HTMLElement}
+	         */
+	        function ensureToastContainer() {
+	            if (toastContainer && document.body.contains(toastContainer)) return toastContainer;
+	            const existing = document.getElementById('toastContainer');
+	            if (existing) {
+	                toastContainer = existing;
+	                return existing;
+	            }
+	            const div = document.createElement('div');
+	            div.id = 'toastContainer';
+	            div.className = 'toast-container';
+	            div.setAttribute('aria-live', 'polite');
+	            div.setAttribute('aria-atomic', 'true');
+	            document.body.appendChild(div);
+	            toastContainer = div;
+	            return div;
+	        }
+
+	        /**
+	         * Show a transient toast notification.
+	         *
+	         * @param {string} message
+	         * @param {'success'|'error'|'warning'|'info'} [kind]
+	         * @param {{ durationMs?: number }} [options]
+	         */
+	        function showToast(message, kind = 'info', options = {}) {
+	            const text = String(message ?? '').trim();
+	            if (!text) return;
+	            const container = ensureToastContainer();
+
+	            const toast = document.createElement('div');
+	            const toastKind = String(kind || 'info').toLowerCase();
+	            toast.className = `toast toast-${toastKind}`;
+	            toast.textContent = text;
+
+	            // Click to dismiss.
+	            toast.addEventListener('click', () => {
+	                toast.classList.add('hiding');
+	                setTimeout(() => toast.remove(), 180);
+	            });
+
+	            container.appendChild(toast);
+	            requestAnimationFrame(() => toast.classList.add('visible'));
+
+	            const durationMs = typeof options.durationMs === 'number'
+	                ? options.durationMs
+	                : toastKind === 'error'
+	                    ? 4500
+	                    : 2800;
+
+	            setTimeout(() => {
+	                if (!toast.isConnected) return;
+	                toast.classList.add('hiding');
+	                setTimeout(() => toast.remove(), 180);
+	            }, durationMs);
+	        }
+
+	        /**
+	         * Format a local Whisper model name for display.
+	         * Removes size suffixes like " (142 MB)".
+	         *
+	         * @param {{ name?: string, filename?: string } | null | undefined} model
+	         * @returns {string}
+	         */
+	        function formatWhisperModelDisplayName(model) {
+	            const raw = String(model?.name || model?.filename || '').trim();
+	            if (!raw) return '';
+	            return raw.replace(/\s*\(\s*[0-9]+(?:\.[0-9]+)?\s*(?:kb|mb|gb)\s*\)\s*$/i, '').trim();
+	        }
+
+		        /**
+		         * Best-effort update of a played task's status after a chat run finishes.
+		         *
+		         * This is frontend-driven because the backend chat pipeline does not know which
+		         * Tasks-panel item a free-form chat message corresponds to.
+		         *
+		         * @param {string | null | undefined} taskId
+		         * @param {'Completed'|'Cancelled'} status
+		         * @returns {Promise<void>}
+		         */
+		        async function tryUpdatePlayedTaskStatus(taskId, status) {
+		            if (!taskId || !sessionId) return;
+		            try {
+		                await window.__TAURI__.core.invoke('update_task_status', {
+		                    session_id: sessionId,
+		                    task_id: taskId,
+		                    status,
+		                });
+		                // Refresh the UI list so the status badge updates.
+		                await loadTasks();
+		            } catch (e) {
+		                console.error('[Tasks] Failed to auto-update task status:', { taskId, status, error: e });
+		            }
+		        }
+
         function finalizeStreamForCurrentRequest(options = {}) {
-            const { statusText = null, statusKind = 'ready', allowQueueAdvance = true } = options;
+	            const { statusText = null, statusKind = 'ready', allowQueueAdvance = true, finalTaskStatus = null } = options;
             if (streamWatchdogInterval) {
                 clearInterval(streamWatchdogInterval);
                 streamWatchdogInterval = null;
@@ -2706,7 +3434,9 @@
             isProcessing = false;
             currentRequestNonce = 0;
             if (streamingMessageElement) {
-                streamingMessageElement.classList.remove('streaming');
+	                streamingMessageElement.classList.remove('streaming');
+	                // Ensure the final raw markdown is stored for copy.
+	                streamingMessageElement.dataset.rawMarkdown = (streamingContent ?? '').toString();
                 // Add copy button and enhance code blocks for completed streaming message
                 addCopyButtonToMessage(streamingMessageElement);
                 const contentDiv = streamingMessageElement.querySelector('.message-content');
@@ -2715,6 +3445,17 @@
             const thinkingHeaders = document.querySelectorAll('.thinking-header.animating');
             thinkingHeaders.forEach(h => h.classList.remove('animating'));
             if (!isListening) setStatus(statusText || 'Ready', statusKind);
+
+	            // If this stream was initiated via Play/Play All, auto-mark the associated task.
+	            const playedTaskId = activeTaskIdForCurrentRequest;
+	            activeTaskIdForCurrentRequest = null;
+	            if (playedTaskId) {
+	                const resolved = finalTaskStatus || (statusKind === 'error' ? 'Cancelled' : null);
+	                if (resolved) {
+	                    // Fire-and-forget: do not block UI finalization.
+	                    tryUpdatePlayedTaskStatus(playedTaskId, resolved);
+	                }
+	            }
 
             if (messageQueue.length > 0) {
                 // Keep the UI in "processing" mode while we drain the queue.
@@ -2725,66 +3466,457 @@
             }
         }
 
-        function touchStreamActivity() {
-            lastStreamEventAt = Date.now();
-        }
+	        /**
+	         * Record activity for the stream watchdog and optionally adjust idle tolerance.
+	         *
+	         * In Restricted mode, the backend can intentionally pause streaming while
+	         * waiting for user approval. The frontend watchdog must allow this.
+	         *
+	         * @param {{ mode?: 'normal'|'waiting_user' }} [options]
+	         */
+	        function touchStreamActivity(options = {}) {
+	            lastStreamEventAt = Date.now();
+	            if (options.mode === 'waiting_user') {
+	                streamWatchdogMaxIdleMs = 10 * 60 * 1000;
+	            } else if (options.mode === 'normal') {
+	                streamWatchdogMaxIdleMs = 90_000;
+	            }
+	        }
 
-        function startStreamWatchdog(nonce) {
+	        /**
+	         * Start (or restart) the frontend stream watchdog.
+	         * @param {number} nonce
+	         */
+	        function startStreamWatchdog(nonce) {
             if (streamWatchdogInterval) clearInterval(streamWatchdogInterval);
             // Frontend-side safety: if backend never emits any stream events (or invoke never returns),
             // don't leave the UI stuck forever.
-            const maxIdleMs = 90_000;
             streamWatchdogInterval = setInterval(() => {
                 if (!isProcessing || currentRequestNonce !== nonce) return;
-                if (Date.now() - lastStreamEventAt > maxIdleMs) {
-                    addMessage(`Error: Timed out waiting for agent response (no events for ${Math.round(maxIdleMs / 1000)}s).`, 'agent');
+	                if (Date.now() - lastStreamEventAt > streamWatchdogMaxIdleMs) {
+	                    addMessage(`Error: Timed out waiting for agent response (no events for ${Math.round(streamWatchdogMaxIdleMs / 1000)}s).`, 'agent');
                     finalizeStreamForCurrentRequest({ statusText: 'Error', statusKind: 'error' });
                 }
             }, 1000);
         }
 
-        // --- Markdown Parsing (Simplified for reliability) ---
-        function parseMarkdown(text) {
-            // Escape HTML
-            const escapeHtml = (str) => str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+	        // --- Markdown Parsing (Safe, minimal renderer) ---
 
-            let html = escapeHtml(text);
+	        /**
+	         * Escape HTML special characters in plain text.
+	         * @param {string} text
+	         * @returns {string}
+	         */
+	        function escapeHtmlText(text) {
+	            return (text ?? '')
+	                .toString()
+	                .replace(/&/g, '&amp;')
+	                .replace(/</g, '&lt;')
+	                .replace(/>/g, '&gt;')
+	                .replace(/"/g, '&quot;')
+	                .replace(/'/g, '&#39;');
+	        }
 
-            // Code blocks
-            html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="language-$1">$2</code></pre>');
+	        /**
+	         * Escape a value for inclusion in HTML attributes.
+	         * @param {string} text
+	         * @returns {string}
+	         */
+	        function escapeHtmlAttr(text) {
+	            return escapeHtmlText(text);
+	        }
 
-            // Inline code
-            html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+	        /**
+	         * Sanitize a link URL to reduce XSS risk.
+	         * Allows: http(s), mailto, and same-page anchors (#...).
+	         * @param {string} url
+	         * @returns {string|null}
+	         */
+	        function sanitizeLinkUrl(url) {
+	            const raw = (url ?? '').toString().trim();
+	            if (!raw) return null;
+	            if (raw.startsWith('#')) return raw;
+	            const lower = raw.toLowerCase();
+	            if (lower.startsWith('http://') || lower.startsWith('https://') || lower.startsWith('mailto:')) return raw;
+	            return null;
+	        }
 
-            // Bold
-            html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+	        /**
+	         * Render inline markdown (bold/italic/strike/links/inline-code) with HTML-escaping.
+	         * @param {string} text
+	         * @returns {string}
+	         */
+	        function renderInlineMarkdown(text) {
+	            const src = (text ?? '').toString();
+			            const inlineCodeTokens = [];
+			            const linkTokens = [];
+		            let working = src.replace(/`([^`]+?)`/g, (_m, code) => {
+	                const token = `@@INLINE_CODE_${inlineCodeTokens.length}@@`;
+	                inlineCodeTokens.push(`<code>${escapeHtmlText(code)}</code>`);
+	                return token;
+	            });
 
-            // Italic
-            html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+		            // Links: [text](url)
+		            // NOTE: We parse links before escaping so URL sanitization sees the raw value.
+		            // The rendered label is HTML-escaped.
+		            working = working.replace(/\[([^\]]+?)\]\(([^\)]+?)\)/g, (m, label, url) => {
+		                const safeUrl = sanitizeLinkUrl(url);
+		                if (!safeUrl) return m;
+		                const token = `@@LINK_${linkTokens.length}@@`;
+		                const safeLabel = escapeHtmlText(label);
+		                const href = escapeHtmlAttr(safeUrl);
+		                const isHttp = /^https?:/i.test(safeUrl);
+		                const attrs = isHttp ? ' target="_blank" rel="noopener noreferrer"' : '';
+		                linkTokens.push(`<a href="${href}"${attrs}>${safeLabel}</a>`);
+		                return token;
+		            });
 
-            // Paragraphs (double newline)
-            html = html.replace(/\n\n/g, '<p></p>');
+			            // Auto-link bare http(s) URLs.
+			            // We do this before escaping so we can sanitize the raw URL.
+			            // NOTE: This intentionally does not attempt to parse complex punctuation edge cases.
+			            working = working.replace(/(^|[^A-Za-z0-9_@])(https?:\/\/[^\s<>()]+[^\s<>()\.,;:!?])/g, (m, lead, url) => {
+			                const safeUrl = sanitizeLinkUrl(url);
+			                if (!safeUrl) return m;
+			                const token = `@@LINK_${linkTokens.length}@@`;
+			                const href = escapeHtmlAttr(safeUrl);
+			                linkTokens.push(`<a href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtmlText(url)}</a>`);
+			                return `${lead}${token}`;
+			            });
 
-            // Line breaks
-            html = html.replace(/\n/g, '<br>');
+		            // Escape remaining HTML before introducing tags.
+		            working = escapeHtmlText(working);
 
-            return html;
-        }
+	            // Strikethrough
+	            working = working.replace(/~~(.+?)~~/g, '<del>$1</del>');
+	            // Bold
+	            working = working.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+		            // Bold (underscore)
+		            working = working.replace(/__(.+?)__/g, '<strong>$1</strong>');
+	            // Italic (simple; avoids matching bold)
+	            working = working.replace(/(^|[^*])\*([^*]+?)\*(?!\*)/g, '$1<em>$2</em>');
+		            // Italic (underscore)
+		            working = working.replace(/(^|[^_])_([^_]+?)_(?!_)/g, '$1<em>$2</em>');
+
+		            // Restore links
+		            for (let i = 0; i < linkTokens.length; i++) {
+		                const token = `@@LINK_${i}@@`;
+		                working = working.split(token).join(linkTokens[i]);
+		            }
+
+	            // Restore inline code tokens
+	            for (let i = 0; i < inlineCodeTokens.length; i++) {
+	                const token = `@@INLINE_CODE_${i}@@`;
+	                working = working.split(token).join(inlineCodeTokens[i]);
+	            }
+	            return working;
+	        }
+
+		        /**
+		         * Check if a line looks like a GitHub-flavored markdown table separator.
+		         * Examples:
+		         * - `| --- | --- |`
+		         * - `---|:---:|---:`
+		         *
+		         * @param {string} line
+		         * @returns {boolean}
+		         */
+		        function isMarkdownTableSeparatorLine(line) {
+		            const src = (line ?? '').toString().trim();
+		            if (!src) return false;
+		            // Require at least one pipe and at least one dash group.
+		            if (!src.includes('|') || !src.includes('-')) return false;
+		            return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(src);
+		        }
+
+		        /**
+		         * Split a markdown table row into cells.
+		         *
+		         * - Trims outer pipes.
+		         * - Preserves pipes inside inline code spans (`like | this`).
+		         * - Supports escaped pipes (\|).
+		         *
+		         * @param {string} line
+		         * @returns {string[]}
+		         */
+		        function splitMarkdownTableRow(line) {
+		            let src = (line ?? '').toString().trim();
+		            if (src.startsWith('|')) src = src.slice(1);
+		            if (src.endsWith('|')) src = src.slice(0, -1);
+		
+		            const cells = [];
+		            let cell = '';
+		            let inCode = false;
+		            let escaped = false;
+		
+		            for (let i = 0; i < src.length; i++) {
+		                const ch = src[i];
+		                if (escaped) {
+		                    cell += ch;
+		                    escaped = false;
+		                    continue;
+		                }
+		                if (ch === '\\') {
+		                    // Only treat as escape if it escapes a pipe.
+		                    if (src[i + 1] === '|') {
+		                        escaped = true;
+		                        continue;
+		                    }
+		                    cell += ch;
+		                    continue;
+		                }
+		                if (ch === '`') {
+		                    inCode = !inCode;
+		                    cell += ch;
+		                    continue;
+		                }
+		                if (ch === '|' && !inCode) {
+		                    cells.push(cell.trim());
+		                    cell = '';
+		                    continue;
+		                }
+		                cell += ch;
+		            }
+		            cells.push(cell.trim());
+		            return cells;
+		        }
+
+		        /**
+		         * Parse column alignments from a markdown table separator line.
+		         *
+		         * @param {string} sepLine
+		         * @param {number} colCount
+		         * @returns {Array<'left'|'right'|'center'|null>}
+		         */
+		        function parseMarkdownTableAlignments(sepLine, colCount) {
+		            const parts = splitMarkdownTableRow(sepLine);
+		            const out = [];
+		            for (let i = 0; i < colCount; i++) {
+		                const p = (parts[i] ?? '').trim();
+		                const starts = p.startsWith(':');
+		                const ends = p.endsWith(':');
+		                if (starts && ends) out.push('center');
+		                else if (ends) out.push('right');
+		                else if (starts) out.push('left');
+		                else out.push(null);
+		            }
+		            return out;
+		        }
+
+		        /**
+		         * Render a list item to HTML, supporting GitHub-flavored task list items.
+		         * Examples:
+		         * - `- [ ] todo`
+		         * - `- [x] done`
+		         *
+		         * @param {string} itemText
+		         * @returns {string}
+		         */
+		        function renderMarkdownListItemHtml(itemText) {
+		            const src = (itemText ?? '').toString();
+		            const m = src.match(/^\[( |x|X)\]\s+(.+?)\s*$/);
+		            if (m) {
+		                const checked = (m[1] ?? '').toLowerCase() === 'x';
+		                const body = renderInlineMarkdown(m[2]);
+		                const checkedAttr = checked ? ' checked' : '';
+		                return `<li class="md-task-list-item"><input type="checkbox" disabled${checkedAttr}><span class="md-task-list-text">${body}</span></li>`;
+		            }
+		            return `<li>${renderInlineMarkdown(src)}</li>`;
+		        }
+
+		        /**
+		         * Render markdown into safe HTML.
+		         * Supports: fenced code blocks, headings, lists (incl. task list items),
+		         * blockquotes, hr, tables (basic GFM), paragraphs, and basic inline formatting.
+		         *
+		         * @param {unknown} content
+		         * @returns {string}
+		         */
+	        function parseMarkdown(content) {
+	            const text = (content ?? '').toString().replace(/\r\n/g, '\n');
+	            if (!text) return '';
+		            // Paragraph buffer must be per-call so recursion (e.g., blockquotes) is safe.
+		            const paragraphBuf = [];
+
+		            // Extract fenced code blocks first.
+		            // Supports backticks (```) and tildes (~~~), and tolerates optional spaces
+		            // around the language id and closing fence.
+		            const codeTokens = [];
+		            let withoutCode = text.replace(/(```|~~~)\s*([a-zA-Z0-9_-]*)\s*\n([\s\S]*?)\n\1\s*(?:\n|$)/g, (_m, _fence, lang, code) => {
+	                const token = `@@CODE_BLOCK_${codeTokens.length}@@`;
+	                const safeLang = (lang ?? '').toString().trim();
+	                const classAttr = safeLang ? ` class="language-${escapeHtmlAttr(safeLang)}"` : '';
+	                codeTokens.push(`<pre><code${classAttr}>${escapeHtmlText(code)}</code></pre>`);
+	                return token;
+	            });
+
+	            const lines = withoutCode.split('\n');
+	            const out = [];
+	            let i = 0;
+
+	            const flushParagraph = (buf) => {
+	                if (!buf.length) return;
+	                const joined = buf.join('\n');
+	                const html = renderInlineMarkdown(joined).replace(/\n/g, '<br>');
+	                out.push(`<p>${html}</p>`);
+	                buf.length = 0;
+	            };
+
+	            while (i < lines.length) {
+	                const line = lines[i];
+	
+	                // Blank line: paragraph break
+	                if (/^\s*$/.test(line)) {
+	                    flushParagraph(paragraphBuf);
+	                    i++;
+	                    continue;
+	                }
+	
+	                // Horizontal rule
+	                if (/^\s*(---|\*\*\*|___)\s*$/.test(line)) {
+	                    flushParagraph(paragraphBuf);
+	                    out.push('<hr>');
+	                    i++;
+	                    continue;
+	                }
+
+	                // Headings
+	                const headingMatch = line.match(/^\s*(#{1,6})\s+(.+?)\s*$/);
+	                if (headingMatch) {
+	                    flushParagraph(paragraphBuf);
+	                    const level = headingMatch[1].length;
+	                    const title = renderInlineMarkdown(headingMatch[2]);
+	                    out.push(`<h${level}>${title}</h${level}>`);
+	                    i++;
+	                    continue;
+	                }
+
+	                // Blockquote
+	                if (/^\s*>/.test(line)) {
+	                    flushParagraph(paragraphBuf);
+	                    const quoteLines = [];
+	                    while (i < lines.length && /^\s*>/.test(lines[i])) {
+	                        quoteLines.push(lines[i].replace(/^\s*>\s?/, ''));
+	                        i++;
+	                    }
+	                    const inner = parseMarkdown(quoteLines.join('\n'));
+	                    out.push(`<blockquote>${inner}</blockquote>`);
+	                    continue;
+	                }
+
+		                // Tables (basic GitHub-flavored markdown)
+		                if (line.includes('|') && i + 1 < lines.length && isMarkdownTableSeparatorLine(lines[i + 1])) {
+		                    flushParagraph(paragraphBuf);
+		                    const headerLine = lines[i];
+		                    const sepLine = lines[i + 1];
+		                    const headers = splitMarkdownTableRow(headerLine);
+		                    const aligns = parseMarkdownTableAlignments(sepLine, headers.length);
+		
+		                    i += 2;
+		                    const rowLines = [];
+		                    while (i < lines.length && !/^\s*$/.test(lines[i]) && lines[i].includes('|')) {
+		                        rowLines.push(lines[i]);
+		                        i++;
+		                    }
+		
+		                    const thead = `<thead><tr>${headers.map((h, idx) => {
+		                        const a = aligns[idx];
+		                        const style = a ? ` style="text-align:${a}"` : '';
+		                        return `<th${style}>${renderInlineMarkdown(h)}</th>`;
+		                    }).join('')}</tr></thead>`;
+		
+		                    const tbodyRows = rowLines.map((rl) => {
+		                        const cells = splitMarkdownTableRow(rl);
+		                        return `<tr>${headers.map((_h, idx) => {
+		                            const a = aligns[idx];
+		                            const style = a ? ` style="text-align:${a}"` : '';
+		                            const cell = (cells[idx] ?? '').toString();
+		                            return `<td${style}>${renderInlineMarkdown(cell)}</td>`;
+		                        }).join('')}</tr>`;
+		                    }).join('');
+		
+		                    out.push(`<div class="md-table-wrapper"><table>${thead}<tbody>${tbodyRows}</tbody></table></div>`);
+		                    continue;
+		                }
+
+		                // Lists
+	                const ulMatch = line.match(/^\s*([-+*])\s+(.+?)\s*$/);
+	                const olMatch = line.match(/^\s*(\d+)\.\s+(.+?)\s*$/);
+	                if (ulMatch || olMatch) {
+	                    flushParagraph(paragraphBuf);
+	                    const isOrdered = !!olMatch;
+		                    const orderedStart = isOrdered ? parseInt(olMatch[1], 10) : null;
+	                    const items = [];
+	                    while (i < lines.length) {
+	                        const l = lines[i];
+	                        const um = l.match(/^\s*([-+*])\s+(.+?)\s*$/);
+	                        const om = l.match(/^\s*(\d+)\.\s+(.+?)\s*$/);
+	                        if (isOrdered) {
+	                            if (!om) break;
+		                            items.push(renderMarkdownListItemHtml(om[2]));
+	                        } else {
+	                            if (!um) break;
+		                            items.push(renderMarkdownListItemHtml(um[2]));
+	                        }
+	                        i++;
+	                    }
+		                    const tag = isOrdered ? 'ol' : 'ul';
+		                    const startAttr = (isOrdered && Number.isFinite(orderedStart) && orderedStart > 0)
+		                        ? ` start="${orderedStart}"`
+		                        : '';
+		                    out.push(`<${tag}${startAttr}>${items.join('')}</${tag}>`);
+	                    continue;
+	                }
+
+	                // Otherwise: paragraph line
+	                paragraphBuf.push(line);
+	                i++;
+	            }
+	
+	            flushParagraph(paragraphBuf);
+	            let html = out.join('');
+
+	            // Restore code blocks
+	            for (let j = 0; j < codeTokens.length; j++) {
+	                const token = `@@CODE_BLOCK_${j}@@`;
+	                html = html.split(token).join(codeTokens[j]);
+	            }
+	            return html;
+	        }
+
+		        // (paragraphBuf is now per-call inside parseMarkdown)
 
         // --- Message Handling ---
 
-        function addMessage(content, type, isHtml = false) {
-            const msgDiv = document.createElement('div');
-            msgDiv.className = `message ${type}`;
+	        /**
+	         * Add a chat message to the UI.
+	         * @param {string} content
+	         * @param {'user'|'agent'|'tool'} type
+	         * @param {boolean} [isHtml=false]
+	         */
+	        function addMessage(content, type, isHtml = false) {
+	            const msgDiv = document.createElement('div');
+	            msgDiv.className = `message ${type}`;
+
+	            // Preserve the raw assistant markdown for copy-to-clipboard.
+	            // Note: the "Thinking Process" stream is rendered separately and is intentionally
+	            // excluded from this raw markdown field.
+	            if (type === 'agent' && !isHtml) {
+	                msgDiv.dataset.rawMarkdown = (content ?? '').toString();
+	            } else if (type === 'agent' && isHtml && msgDiv.dataset.rawMarkdown == null) {
+	                // Streaming messages start as empty HTML; the chunk handler will update this.
+	                msgDiv.dataset.rawMarkdown = '';
+	            }
 
             const contentDiv = document.createElement('div');
             contentDiv.className = 'message-content markdown-body';
 
-            if (isHtml) {
-                contentDiv.innerHTML = content;
-            } else {
-                contentDiv.textContent = content;
-            }
+	            if (isHtml) {
+	                contentDiv.innerHTML = content;
+	            } else if (type === 'agent') {
+	                contentDiv.innerHTML = parseMarkdown(content);
+	            } else {
+	                contentDiv.textContent = content;
+	            }
 
             msgDiv.appendChild(contentDiv);
             messagesContainer.appendChild(msgDiv);
@@ -2912,6 +4044,21 @@
             return btn;
         }
 
+	        /**
+	         * Get the raw markdown for an assistant message.
+	         *
+	         * We store this on the message element so the response-level copy button copies the
+	         * original markdown (not rendered HTML/text), and avoids UI-only blocks like the
+	         * "Thinking Process" panel.
+	         *
+	         * @param {HTMLElement} msgDiv
+	         * @returns {string}
+	         */
+	        function getMessageRawMarkdown(msgDiv) {
+	            const raw = msgDiv?.dataset?.rawMarkdown;
+	            return (raw ?? '').toString();
+	        }
+
         function addCopyButtonToMessage(msgDiv) {
             const contentDiv = msgDiv.querySelector('.message-content');
             if (!contentDiv) return;
@@ -2921,26 +4068,42 @@
             msgDiv.setAttribute('role', 'article');
             msgDiv.setAttribute('aria-label', 'Assistant response');
 
-            const copyBtn = createCopyButton('copy-response-btn');
-            copyBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                // Get text content excluding copy buttons
-                const clone = contentDiv.cloneNode(true);
-                clone.querySelectorAll('.copy-response-btn, .copy-code-btn, .retry-tool-btn').forEach(btn => btn.remove());
-                copyToClipboard(clone.textContent.trim(), copyBtn);
-            });
-            contentDiv.appendChild(copyBtn);
+	            // Idempotent: avoid duplicate buttons when this is called multiple times.
+	            contentDiv.querySelectorAll('.copy-response-btn').forEach(btn => btn.remove());
 
-            // Add keyboard shortcut for copy (Ctrl/Cmd+C when focused)
-            msgDiv.addEventListener('keydown', (e) => {
-                if ((e.ctrlKey || e.metaKey) && e.key === 'c' && !window.getSelection().toString()) {
-                    // Only copy if no text is selected (let native selection copy work)
-                    e.preventDefault();
-                    const clone = contentDiv.cloneNode(true);
-                    clone.querySelectorAll('.copy-response-btn, .copy-code-btn, .retry-tool-btn').forEach(btn => btn.remove());
-                    copyToClipboard(clone.textContent.trim(), copyBtn);
-                }
-            });
+	            const copyBtn = createCopyButton('copy-response-btn');
+	            const doCopy = () => {
+	                const rawMd = getMessageRawMarkdown(msgDiv).trim();
+	                if (rawMd) {
+	                    copyToClipboard(rawMd, copyBtn);
+	                    return;
+	                }
+
+	                // Fallback: copy rendered text (best-effort). Prefer the text-content section
+	                // so we don't copy the "Thinking Process" panel.
+	                const target = contentDiv.querySelector('.text-content') || contentDiv;
+	                const clone = target.cloneNode(true);
+	                clone.querySelectorAll('.copy-response-btn, .copy-code-btn, .retry-tool-btn').forEach(btn => btn.remove());
+	                copyToClipboard(clone.textContent.trim(), copyBtn);
+	            };
+
+	            copyBtn.addEventListener('click', (e) => {
+	                e.stopPropagation();
+	                doCopy();
+	            });
+	            contentDiv.appendChild(copyBtn);
+
+	            // Add keyboard shortcut for copy (Ctrl/Cmd+C when focused)
+	            if (msgDiv.dataset.copyKeyHandlerAttached !== '1') {
+	                msgDiv.dataset.copyKeyHandlerAttached = '1';
+	                msgDiv.addEventListener('keydown', (e) => {
+	                    if ((e.ctrlKey || e.metaKey) && e.key === 'c' && !window.getSelection().toString()) {
+	                        // Only copy if no text is selected (let native selection copy work)
+	                        e.preventDefault();
+	                        doCopy();
+	                    }
+	                });
+	            }
         }
 
         function enhanceCodeBlocks(container) {
@@ -2976,12 +4139,16 @@
             return streamingMessageElement;
         }
 
-        // Queue a message for later processing
-        function queueMessage() {
+	        /**
+	         * Queue a message for later processing.
+	         *
+	         * @param {{ taskId?: (string | null) }=} meta
+	         */
+	        function queueMessage(meta = {}) {
             const text = messageInput.value.trim();
             if (!text) return;
 
-            messageQueue.push({ kind: 'text', text });
+	            messageQueue.push({ kind: 'text', text, taskId: meta?.taskId ?? null });
             addMessage(formatUserDisplayText('text', text, true), 'user'); // Show queued message with indicator
             messageInput.value = '';
             messageInput.style.height = 'auto';
@@ -2996,9 +4163,105 @@
 	        function queueVoiceTranscript(transcript) {
 	            const text = (transcript || '').trim();
 	            if (!text) return;
-	            messageQueue.push({ kind: 'voice', text });
+		            messageQueue.push({ kind: 'voice', text, taskId: null });
 	            addMessage(formatUserDisplayText('voice', text, true), 'user');
 	            updateQueueIndicator();
+	        }
+
+	        // --- Tool Confirmation Dialog (Restricted mode pause/resume) ---
+
+	        /**
+	         * Show a tool confirmation dialog.
+	         * @param {{ tool_name: string, tool_args: string, description?: string, risk_level?: string, category?: string }} payload
+	         * @returns {Promise<boolean>}
+	         */
+	        async function showToolConfirmationDialog(payload) {
+	            return new Promise((resolve) => {
+	                const overlay = document.createElement('div');
+	                overlay.className = 'tool-confirm-overlay';
+	
+	                const toolName = payload?.tool_name || 'tool';
+	                const toolArgs = payload?.tool_args || '';
+	                const risk = payload?.risk_level || 'unknown';
+	                const category = payload?.category || 'unknown';
+	                const description = payload?.description || 'This operation may modify files or run commands.';
+	
+	                overlay.innerHTML = `
+	                    <div class="tool-confirm-dialog" role="dialog" aria-modal="true">
+	                        <h3>Approve tool execution?</h3>
+	                        <p>${escapeHtmlText(description)}</p>
+	                        <div class="tool-confirm-details">
+	                            <div class="meta">
+	                                <span class="tool-confirm-badge">Restricted</span>
+	                                <span>Tool: <strong>${escapeHtmlText(toolName)}</strong></span>
+	                                <span>Risk: <strong>${escapeHtmlText(risk)}</strong></span>
+	                                <span>Category: <strong>${escapeHtmlText(category)}</strong></span>
+	                            </div>
+	                            <pre class="tool-confirm-args">${escapeHtmlText(toolArgs)}</pre>
+	                        </div>
+	                        <div class="tool-confirm-buttons">
+	                            <button class="btn-deny">Deny</button>
+	                            <button class="btn-approve">Approve</button>
+	                        </div>
+	                    </div>
+	                `;
+
+	                document.body.appendChild(overlay);
+	                const approveBtn = overlay.querySelector('.btn-approve');
+	                const denyBtn = overlay.querySelector('.btn-deny');
+
+	                const cleanup = (value) => {
+	                    overlay.remove();
+	                    resolve(value);
+	                };
+
+	                approveBtn?.addEventListener('click', () => cleanup(true));
+	                denyBtn?.addEventListener('click', () => cleanup(false));
+	                overlay.addEventListener('click', (e) => {
+	                    if (e.target === overlay) cleanup(false);
+	                });
+	                approveBtn?.focus();
+	            });
+	        }
+
+	        /**
+	         * Enqueue tool confirmations so the user is never shown multiple dialogs at once.
+	         * @param {{confirmation_id: string, tool_name: string, tool_args: string, description?: string, risk_level?: string, category?: string, session_id?: (string|null)}} payload
+	         */
+	        function enqueueToolConfirmation(payload) {
+	            if (!payload || !payload.confirmation_id) return;
+	            toolConfirmationQueue.push(payload);
+	            if (toolConfirmationActive) return;
+	
+	            toolConfirmationActive = true;
+	            (async () => {
+	                while (toolConfirmationQueue.length > 0) {
+	                    const next = toolConfirmationQueue.shift();
+	                    if (!next) continue;
+	
+	                    // Mark current tool card as waiting, if present.
+	                    const targetCard = currentToolCard || (streamingMessageElement ? streamingMessageElement.querySelector('.tool-call:last-of-type') : null);
+	                    if (targetCard) targetCard.classList.add('waiting-confirmation');
+
+	                    const approved = await showToolConfirmationDialog(next);
+	                    const sid = next.session_id || sessionId || null;
+	                    try {
+	                        if (approved) {
+	                            await invoke('approve_tool_confirmation', { confirmation_id: next.confirmation_id, session_id: sid });
+	                            showToast('Approved tool execution', 'success');
+	                        } else {
+	                            await invoke('deny_tool_confirmation', { confirmation_id: next.confirmation_id, session_id: sid });
+	                            showToast('Denied tool execution', 'warning');
+	                        }
+	                    } catch (err) {
+	                        console.error('Failed to resolve tool confirmation:', err);
+	                        showToast(`Failed to resolve tool confirmation: ${err}`, 'error');
+	                    } finally {
+	                        if (targetCard) targetCard.classList.remove('waiting-confirmation');
+	                    }
+	                }
+	                toolConfirmationActive = false;
+	            })();
 	        }
 
         // Update the queue indicator UI
@@ -3037,11 +4300,12 @@
                 }
             }
 
-	            if (nextItem.kind === 'voice') {
-	                await sendVoiceTranscriptToAgent(nextItem.text);
-	            } else {
-	                await processMessage(nextItem.text);
-	            }
+		            if (nextItem.kind === 'voice') {
+		                activeTaskIdForCurrentRequest = null;
+		                await sendVoiceTranscriptToAgent(nextItem.text);
+		            } else {
+		                await processMessage(nextItem.text, { taskId: nextItem?.taskId ?? null });
+		            }
         }
 
         // Update UI for processing state - transforms send button to stop button
@@ -3061,8 +4325,14 @@
             }
         }
 
-        // Core message processing function
-        async function processMessage(text) {
+	        /**
+	         * Core message processing function.
+	         *
+	         * @param {string} text
+	         * @param {{ taskId?: (string | null) }=} meta
+	         */
+	        async function processMessage(text, meta = {}) {
+	            activeTaskIdForCurrentRequest = meta?.taskId ?? null;
             const nonce = ++currentRequestNonce;
             touchStreamActivity();
             startStreamWatchdog(nonce);
@@ -3081,7 +4351,7 @@
             try {
                 // Invoke Backend
 				const payload = { message: text };
-				if (sessionId) payload.sessionId = sessionId;
+				if (sessionId) payload.session_id = sessionId;
                 const p = window.__TAURI__.core.invoke('process_chat_message_streaming', payload);
                 // Don't await: streaming completion is signaled via events, and awaiting can deadlock UI state.
                 p.catch((err) => {
@@ -3100,13 +4370,18 @@
             }
         }
 
-        async function sendMessage() {
+	        /**
+	         * Send a user-authored message to the agent.
+	         *
+	         * @param {{ taskId?: (string | null) }=} meta
+	         */
+	        async function sendMessage(meta = {}) {
             const text = messageInput.value.trim();
             if (!text) return;
 
             // If already processing, queue the message instead
             if (isProcessing) {
-                queueMessage();
+	                queueMessage(meta);
                 return;
             }
 
@@ -3115,7 +4390,7 @@
             messageInput.value = '';
             messageInput.style.height = 'auto';
 
-            await processMessage(text);
+	            await processMessage(text, meta);
         }
 
         // --- Event Listeners (Tauri) ---
@@ -3212,7 +4487,7 @@
 		                        return false;
 		                    }
 		                }
-		
+
 		                if (!isDebugEnabled() && !isProbePayload(rawPayload)) return;
 		                if (!window.__TAURI__ || !window.__TAURI__.core || !window.__TAURI__.core.invoke) return;
 
@@ -3267,7 +4542,7 @@
 	                } else {
 	                    reason = 'unscoped_window';
 	                }
-	
+
 	                pushLocalEventTrace({
 	                    ts_ms: Date.now(),
 	                    eventName,
@@ -3276,7 +4551,7 @@
 	                    incomingSessionId,
 	                });
 		                recordBackendReceipt(eventName, rawPayload, incomingSessionId, accept, reason);
-	
+
 	                return { accept, value, incomingSessionId, reason };
 	            }
 
@@ -3322,7 +4597,7 @@
 	                if (!res.accept) return;
 	                const chunk = (typeof res.value === 'string') ? res.value : JSON.stringify(res.value);
 	                console.log('[DEBUG] chat-stream-chunk received:', chunk?.substring(0, 100));
-                touchStreamActivity();
+	                touchStreamActivity({ mode: 'normal' });
                 ensureStreamingMessage();
 
                 // Stop thinking animation if it was running
@@ -3339,13 +4614,17 @@
                     currentThinkingDiv = null; // Reset ensures we don't keep appending to thought
                 }
 
-	                streamingContent += chunk;
+	                	streamingContent += chunk;
+	                // Keep raw markdown updated for copy-to-clipboard.
+	                if (streamingMessageElement) {
+	                    streamingMessageElement.dataset.rawMarkdown = (streamingContent ?? '').toString();
+	                }
 
                 // Update content (preserving thinking block if it exists)
                 const contentDiv = streamingMessageElement.querySelector('.message-content');
 
                 // We need to keep the thinking block element, updates only text content AFTER it
-                // Simple approach: re-render full markdown. 
+                // Simple approach: re-render full markdown.
                 // BUT we must not destroy the thinking block.
 
                 // Let's create a text container if not exists
@@ -3361,10 +4640,18 @@
             });
 
             // 3. Tool Call Events (aligned with backend)
+	            await listen('chat-stream-tool-confirmation', (e) => {
+	                const res = acceptSessionEvent('chat-stream-tool-confirmation', e?.payload);
+	                if (!res.accept) return;
+	                touchStreamActivity({ mode: 'waiting_user' });
+	                const payload = res.value || {};
+	                enqueueToolConfirmation(payload);
+	            });
+
 	            await listen('chat-stream-tool-start', (e) => {
 	                const res = acceptSessionEvent('chat-stream-tool-start', e?.payload);
 	                if (!res.accept) return;
-                touchStreamActivity();
+	                touchStreamActivity({ mode: 'normal' });
                 ensureStreamingMessage();
 
                 // Stop thinking animation
@@ -3396,7 +4683,7 @@
 	            await listen('chat-stream-tool-args', (e) => {
 	                const res = acceptSessionEvent('chat-stream-tool-args', e?.payload);
 	                if (!res.accept) return;
-                touchStreamActivity();
+	                touchStreamActivity({ mode: 'normal' });
                 if (!currentToolArgsEl) return;
 	                const argsText = (typeof res.value === 'string') ? res.value : JSON.stringify(res.value, null, 2);
                 currentToolArgsEl.style.display = 'block';
@@ -3407,7 +4694,7 @@
 	            await listen('chat-stream-tool-end', (e) => {
 	                const res = acceptSessionEvent('chat-stream-tool-end', e?.payload);
 	                if (!res.accept) return;
-                touchStreamActivity();
+	                touchStreamActivity({ mode: 'normal' });
                 // Don't clear currentToolCard yet - wait for tool-result to update it
                 // Just mark it as "executing" state
                 if (currentToolCard) {
@@ -3419,7 +4706,7 @@
 	            await listen('chat-stream-tool-result', (e) => {
 	                const res = acceptSessionEvent('chat-stream-tool-result', e?.payload);
 	                if (!res.accept) return;
-                touchStreamActivity();
+	                touchStreamActivity({ mode: 'normal' });
 	                const payload = res.value || {};
                 const { name, success, output, duration_ms } = payload;
 
@@ -3515,6 +4802,12 @@
                 // Clear the current tool card reference
                 currentToolCard = null;
                 currentToolArgsEl = null;
+
+                // If the tool was "task", refresh the task panel for real-time updates
+                if (name === 'task' || name === 'tasks') {
+                    loadTasks();
+                }
+
                 scrollToBottom();
             });
 
@@ -3522,7 +4815,7 @@
 	            await listen('chat-stream-retry', (e) => {
 	                const res = acceptSessionEvent('chat-stream-retry', e?.payload);
 	                if (!res.accept) return;
-                touchStreamActivity();
+	                touchStreamActivity({ mode: 'normal' });
 	                const payload = res.value || {};
                 const { attempt, max_attempts, delay_ms, error_message } = payload;
 
@@ -3550,7 +4843,7 @@
 	            await listen('chat-context-compacted', (e) => {
 	                const res = acceptSessionEvent('chat-context-compacted', e?.payload);
 	                if (!res.accept) return;
-                touchStreamActivity();
+	                touchStreamActivity({ mode: 'normal' });
 	                const payload = res.value || {};
                 const { messages_before, messages_after, tokens_saved, summary } = payload;
 
@@ -3578,7 +4871,7 @@
 	            await listen('chat-config-request', async (e) => {
 	                const res = acceptSessionEvent('chat-config-request', e?.payload);
 	                if (!res.accept) return;
-                touchStreamActivity();
+	                touchStreamActivity({ mode: 'normal' });
 	                const payload = res.value || {};
                 const { operation, key, value, requires_confirmation, session_id } = payload;
 
@@ -3591,22 +4884,22 @@
                         // Apply the config change
 			                        try {
 			                            const sid = session_id || sessionId;
-			                            if (!sid) {
-			                                console.warn('[chat] Ignoring chat-config-request: missing session id', { payload });
-			                                return;
-			                            }
-	                            if (key === 'provider') {
-	                                await invoke('set_session_llm_provider', { sessionId: sid, provider: value });
+                            if (!sid) {
+                                console.warn('[chat] Ignoring chat-config-request: missing session id', { payload });
+                                return;
+                            }
+                            if (key === 'provider') {
+                                await invoke('set_session_llm_provider', { session_id: sid, provider: value });
                                 // Update UI dropdown
                                 const providerSelect = document.getElementById('provider-select');
                                 if (providerSelect) providerSelect.value = value;
                             } else if (key === 'model') {
-	                                await invoke('set_session_llm_model', { sessionId: sid, model: value });
+                                await invoke('set_session_llm_model', { session_id: sid, model: value });
                                 // Update UI dropdown
                                 const modelSelect = document.getElementById('model-select');
                                 if (modelSelect) modelSelect.value = value;
                             } else if (key === 'permission_level') {
-	                                await invoke('set_session_permission_level', { sessionId: sid, level: value });
+                                await invoke('set_session_permission_level', { session_id: sid, level: value });
                             }
                             addMessage(`✅ Configuration updated: ${key} = ${value}`, 'agent');
                         } catch (err) {
@@ -3617,19 +4910,19 @@
                     }
                 } else if (operation === 'set') {
                     // No confirmation needed (permissive mode)
-			                    try {
-			                        const sid = session_id || sessionId;
-			                        if (!sid) {
-			                            console.warn('[chat] Ignoring chat-config-request: missing session id', { payload });
-			                            return;
-			                        }
-	                        if (key === 'provider') {
-	                            await invoke('set_session_llm_provider', { sessionId: sid, provider: value });
-	                        } else if (key === 'model') {
-	                            await invoke('set_session_llm_model', { sessionId: sid, model: value });
-	                        } else if (key === 'permission_level') {
-	                            await invoke('set_session_permission_level', { sessionId: sid, level: value });
-	                        }
+                    try {
+                        const sid = session_id || sessionId;
+                        if (!sid) {
+                            console.warn('[chat] Ignoring chat-config-request: missing session id', { payload });
+                            return;
+                        }
+                        if (key === 'provider') {
+                            await invoke('set_session_llm_provider', { session_id: sid, provider: value });
+                        } else if (key === 'model') {
+                            await invoke('set_session_llm_model', { session_id: sid, model: value });
+                        } else if (key === 'permission_level') {
+                            await invoke('set_session_permission_level', { session_id: sid, level: value });
+                        }
                         addMessage(`✅ Configuration updated: ${key} = ${value}`, 'agent');
                     } catch (err) {
                         addMessage(`❌ Failed to update configuration: ${err}`, 'agent');
@@ -3638,12 +4931,12 @@
                 scrollToBottom();
             });
 
-            // 4. Stream Done
+	            // 4. Stream Done
 	            await listen('chat-stream-done', (e) => {
 	                const res = acceptSessionEvent('chat-stream-done', e?.payload);
 	                if (!res.accept) return;
-                touchStreamActivity();
-                finalizeStreamForCurrentRequest({ statusText: 'Ready', statusKind: 'ready' });
+	                touchStreamActivity({ mode: 'normal' });
+	            		finalizeStreamForCurrentRequest({ statusText: 'Ready', statusKind: 'ready', finalTaskStatus: 'Completed' });
             });
 
             // 4b. Stream Cancelled / Error
@@ -3652,7 +4945,7 @@
 	                if (!res.accept) return;
                 touchStreamActivity();
                 addMessage('Cancelled.', 'agent');
-                finalizeStreamForCurrentRequest({ statusText: 'Cancelled', statusKind: 'ready' });
+	            		finalizeStreamForCurrentRequest({ statusText: 'Cancelled', statusKind: 'ready', finalTaskStatus: 'Cancelled' });
             });
 
 	            await listen('chat-stream-error', (e) => {
@@ -3664,7 +4957,7 @@
                     ? payload
                     : (payload?.message || JSON.stringify(payload));
                 addMessage(`Error: ${errText}`, 'agent');
-                finalizeStreamForCurrentRequest({ statusText: 'Error', statusKind: 'error' });
+	            		finalizeStreamForCurrentRequest({ statusText: 'Error', statusKind: 'error', finalTaskStatus: 'Cancelled' });
             });
 
             // 4c. Stream Health Events
@@ -3761,7 +5054,7 @@
 	                    try { payload = JSON.parse(rawPayload); } catch { payload = { type: 'unknown', message: rawPayload }; }
 	                }
 	                payload = payload || {};
-	
+
 	                const incomingSessionId = payload.session_id || payload.sessionId || null;
 	                if (sessionId) {
 	                    if (!incomingSessionId) {
@@ -3773,7 +5066,7 @@
 	                        return;
 	                    }
 	                }
-	
+
 	                const kind = payload.type;
 	                const message = (payload.message || '').toString();
 	                if (!message.trim()) return;
@@ -3804,6 +5097,37 @@
                     if (!isProcessing) setStatus('Ready', 'ready');
                 }
             });
+
+            // 6. Task Events - for real-time task panel updates
+            await listen('task-created', (e) => {
+                const payload = e?.payload || {};
+                const incomingSessionId = payload.session_id || null;
+                if (sessionId && incomingSessionId && sessionId !== incomingSessionId) {
+                    return; // Ignore events from other sessions
+                }
+                console.log('[TaskEvent] task-created:', payload);
+                loadTasks(); // Refresh task panel
+            });
+
+            await listen('task-updated', (e) => {
+                const payload = e?.payload || {};
+                const incomingSessionId = payload.session_id || null;
+                if (sessionId && incomingSessionId && sessionId !== incomingSessionId) {
+                    return; // Ignore events from other sessions
+                }
+                console.log('[TaskEvent] task-updated:', payload);
+                loadTasks(); // Refresh task panel
+            });
+
+            await listen('task-deleted', (e) => {
+                const payload = e?.payload || {};
+                const incomingSessionId = payload.session_id || null;
+                if (sessionId && incomingSessionId && sessionId !== incomingSessionId) {
+                    return; // Ignore events from other sessions
+                }
+                console.log('[TaskEvent] task-deleted:', payload);
+                loadTasks(); // Refresh task panel
+            });
         }
 
         async function refreshConfig() {
@@ -3827,7 +5151,7 @@
 	         */
 	        function setModelSelectOptions(models, selectedId) {
 	            modelSelect.innerHTML = '';
-	
+
 	            const normalized = (Array.isArray(models) ? models : [])
 	                .map((m) => {
 	                    if (typeof m === 'string') {
@@ -3839,7 +5163,7 @@
 	                    return null;
 	                })
 	                .filter((m) => !!m);
-	
+
 	            for (const m of normalized) {
 	                const opt = document.createElement('option');
 	                opt.value = m.id;
@@ -3919,7 +5243,7 @@
 
                     if (apiKey) {
                         console.log('[DEBUG] Calling list_openai_models with API key...');
-							const result = await window.__TAURI__.core.invoke('list_openai_models', { apiKey });
+							const result = await window.__TAURI__.core.invoke('list_openai_models', { api_key: apiKey });
 	                        models = Array.isArray(result)
 	                            ? result
 	                                .map((m) => ({ id: m?.id, label: m?.name || m?.id }))
@@ -3958,7 +5282,7 @@
 
                     if (apiKey) {
                         console.log('[DEBUG] Calling list_anthropic_models with API key...');
-							const result = await window.__TAURI__.core.invoke('list_anthropic_models', { apiKey });
+							const result = await window.__TAURI__.core.invoke('list_anthropic_models', { api_key: apiKey });
 	                        models = Array.isArray(result)
 	                            ? result
 	                                .map((m) => ({ id: m?.id, label: m?.name || m?.id }))
@@ -3997,7 +5321,7 @@
 
                     // Grok backend command has built-in static fallback, so we can pass empty string
                     console.log('[DEBUG] Calling list_grok_models...');
-						const result = await window.__TAURI__.core.invoke('list_grok_models', { apiKey: apiKey || '' });
+						const result = await window.__TAURI__.core.invoke('list_grok_models', { api_key: apiKey || '' });
 	                    models = Array.isArray(result)
 	                        ? result
 	                            .map((m) => ({ id: m?.id, label: m?.name || m?.id }))
@@ -4083,7 +5407,7 @@
 
             if (sessionId) {
                 try {
-						const [provider, model] = await window.__TAURI__.core.invoke('get_effective_llm_config', { sessionId });
+                    const [provider, model] = await window.__TAURI__.core.invoke('get_effective_llm_config', { session_id: sessionId });
                     initialProvider = provider;
                     initialModel = model;
                 } catch (e) {
@@ -4110,9 +5434,9 @@
                 try {
                     // Use session-scoped config change (doesn't modify global config)
                     if (sessionId) {
-                        console.log('[DEBUG] Calling set_session_llm_provider with sessionId:', sessionId);
-	                        await window.__TAURI__.core.invoke('set_session_llm_provider', {
-	                        	sessionId: sessionId,
+                        console.log('[DEBUG] Calling set_session_llm_provider with session_id:', sessionId);
+                        await window.__TAURI__.core.invoke('set_session_llm_provider', {
+                            session_id: sessionId,
                             provider
                         });
                         console.log('[DEBUG] set_session_llm_provider completed successfully');
@@ -4127,11 +5451,11 @@
                     // Ensure the session model stays consistent with the newly-selected provider.
                     // Without this, a previous session-scoped model override can linger and be
                     // applied to subsequent messages even after switching providers.
-	                    if (sessionId) {
+                    if (sessionId) {
                         const selectedModel = modelSelect?.value;
                         if (selectedModel) {
-	                            await window.__TAURI__.core.invoke('set_session_llm_model', {
-	                                sessionId: sessionId,
+                            await window.__TAURI__.core.invoke('set_session_llm_model', {
+                                session_id: sessionId,
                                 model: selectedModel,
                             });
                         }
@@ -4146,13 +5470,13 @@
                 const model = modelSelect.value;
                 if (!model) return;
 
-	            console.log('[DEBUG] Model dropdown changed:', { sessionId, model });
+                console.log('[DEBUG] Model dropdown changed:', { session_id: sessionId, model });
                 try {
                     // Use session-scoped model change (doesn't modify global config)
                     if (sessionId) {
-                        console.log('[DEBUG] Calling set_session_llm_model with sessionId:', sessionId);
-	                        await window.__TAURI__.core.invoke('set_session_llm_model', {
-	                        	sessionId: sessionId,
+                        console.log('[DEBUG] Calling set_session_llm_model with session_id:', sessionId);
+                        await window.__TAURI__.core.invoke('set_session_llm_model', {
+                            session_id: sessionId,
                             model
                         });
                         console.log('[DEBUG] set_session_llm_model completed successfully');
@@ -4233,12 +5557,12 @@
 
             try {
                 console.log('[Enhance] Enhancing prompt:', originalPrompt.substring(0, 50) + '...');
-	                console.log('[Enhance] Session ID:', sessionId);
+                console.log('[Enhance] Session ID:', sessionId);
 
-				const enhanced = await window.__TAURI__.core.invoke('enhance_prompt', {
-					prompt: originalPrompt,
-					sessionId: sessionId || null
-				});
+                const enhanced = await window.__TAURI__.core.invoke('enhance_prompt', {
+                    prompt: originalPrompt,
+                    session_id: sessionId || null
+                });
 
                 console.log('[Enhance] Enhancement successful, length:', enhanced.length);
 
@@ -4294,7 +5618,7 @@
                 try {
                     if (!isListening) setStatus('Cancelling...', 'busy');
                     const cancelPayload = {};
-                    if (sessionId) cancelPayload.sessionId = sessionId;
+                    if (sessionId) cancelPayload.session_id = sessionId;
                     await window.__TAURI__.core.invoke('cancel_chat_streaming', cancelPayload);
                 } catch (e) {
                     console.error('Failed to cancel streaming', e);
@@ -4367,42 +5691,351 @@
         const sessionPermission = document.getElementById('sessionPermission');
         const workDirInfo = document.getElementById('workDirInfo');
 
+	        /**
+	         * Await a promise with a timeout.
+	         *
+	         * Used to prevent UI panels (notably Tools) from being stuck in an infinite
+	         * loading state if an invocation hangs.
+	         *
+	         * @template T
+	         * @param {Promise<T>} promise
+	         * @param {number} timeoutMs
+	         * @param {string} label
+	         * @returns {Promise<T>}
+	         */
+	        function withTimeout(promise, timeoutMs, label) {
+	            let timeoutId;
+	            const timeoutPromise = new Promise((_, reject) => {
+	                timeoutId = setTimeout(() => {
+	                    reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+	                }, timeoutMs);
+	            });
+	            return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
+	        }
+
+        // Menu Panel elements
+        const menuPanel = document.getElementById('menuPanel');
+        const menuPanelOverlay = document.getElementById('menuPanelOverlay');
+        const menuBtn = document.getElementById('menuBtn');
+        const menuPanelClose = document.getElementById('menuPanelClose');
+
+        function openMenuPanel() {
+            menuPanel?.classList.add('open');
+            menuPanelOverlay?.classList.add('visible');
+        }
+
+        function closeMenuPanel() {
+            menuPanel?.classList.remove('open');
+            menuPanelOverlay?.classList.remove('visible');
+        }
+
+        // Menu button handlers
+        menuBtn?.addEventListener('click', () => {
+            if (menuPanel?.classList.contains('open')) {
+                closeMenuPanel();
+            } else {
+                openMenuPanel();
+            }
+        });
+
+        menuPanelClose?.addEventListener('click', closeMenuPanel);
+        menuPanelOverlay?.addEventListener('click', closeMenuPanel);
+
+        // Menu item handlers - open respective panels
+        document.getElementById('menuItemSettings')?.addEventListener('click', () => {
+            closeMenuPanel();
+            openSessionPanel();
+        });
+
+        document.getElementById('menuItemProviders')?.addEventListener('click', () => {
+            closeMenuPanel();
+            // Open the providers panel
+            openProvidersPanel();
+        });
+
+        document.getElementById('menuItemKnowledge')?.addEventListener('click', () => {
+            closeMenuPanel();
+            // Use the proper openKnowledgePanel function which calls loadKnowledge()
+            if (typeof openKnowledgePanel === 'function') {
+                openKnowledgePanel();
+            } else {
+                // Fallback: manually open and load
+                const knowledgePanel = document.getElementById('knowledgePanel');
+                const knowledgePanelOverlay = document.getElementById('knowledgePanelOverlay');
+                knowledgePanel?.classList.add('open');
+                knowledgePanelOverlay?.classList.add('visible');
+                if (typeof loadKnowledge === 'function') loadKnowledge();
+            }
+        });
+
+        document.getElementById('menuItemTasks')?.addEventListener('click', () => {
+            closeMenuPanel();
+            // Task panel will open via its own handler
+            const taskPanel = document.getElementById('taskPanel');
+            const taskPanelOverlay = document.getElementById('taskPanelOverlay');
+            taskPanel?.classList.add('open');
+            taskPanelOverlay?.classList.add('visible');
+            // Trigger loadTasks if function exists
+            if (typeof loadTasks === 'function') loadTasks();
+        });
+
         function openSessionPanel() {
             sessionPanel.classList.add('open');
             sessionPanelOverlay.classList.add('visible');
-            sessionSettingsBtn.classList.add('active');
             loadSessionSettings();
         }
 
         function closeSessionPanel() {
             sessionPanel.classList.remove('open');
             sessionPanelOverlay.classList.remove('visible');
-            sessionSettingsBtn.classList.remove('active');
         }
 
-	        async function loadSessionSettings() {
-            if (!sessionId) return;
+        async function loadSessionSettings() {
+            console.log('[Settings] loadSessionSettings called, sessionId:', sessionId);
+            if (!sessionId) {
+                console.warn('[Settings] No sessionId, returning early');
+                return;
+            }
             try {
-                // Load workspace directory
-				const workDir = await window.__TAURI__.core.invoke('get_session_workspace_by_id', { sessionId });
-                sessionWorkDir.value = workDir || '';
-                workDirInfo.textContent = workDir ? `Commands run in: ${workDir}` : 'No directory selected';
+                // Load workspace directory (fixed: use snake_case)
+	                const workDir = await window.__TAURI__.core.invoke('get_session_workspace_by_id', { session_id: sessionId });
+                console.log('[Settings] Workspace directory:', workDir);
+	                // UI fallback: always show the session default path even if the backend has not
+	                // persisted/loaded the workspace for this session yet.
+	                const effectiveWorkDir = workDir || `~/.gestura/sessions/${sessionId}/`;
+	                if (sessionWorkDir) sessionWorkDir.value = effectiveWorkDir;
+	                if (workDirInfo) {
+	                    workDirInfo.textContent = workDir
+	                        ? `Commands run in: ${workDir}`
+	                        : `Commands run in: ${effectiveWorkDir} (default)`;
+	                }
 
-                // Load tool settings (permission level and enabled tools)
-				const toolSettings = await window.__TAURI__.core.invoke('get_session_tool_settings', { sessionId });
+                // Load tool settings (permission level and enabled tools) (fixed: use snake_case)
+                const toolSettings = await window.__TAURI__.core.invoke('get_session_tool_settings', { session_id: sessionId });
+                console.log('[Settings] Tool settings:', toolSettings);
+
+                // Dynamically load available tools from backend
+                const toolsListContainer = document.getElementById('sessionToolsList');
+                console.log('[Settings] toolsListContainer element:', toolsListContainer);
+                if (toolsListContainer) {
+                    toolsListContainer.innerHTML = '<div class="loading-tools">Loading tools...</div>';
+
+                    try {
+                        // Fetch built-in tools
+                        console.log('[Settings] Fetching built-in tools...');
+	                        const builtinTools = await withTimeout(
+	                            window.__TAURI__.core.invoke('list_builtin_tools'),
+	                            7000,
+	                            'list_builtin_tools'
+	                        );
+                        console.log('[Settings] Built-in tools:', builtinTools);
+
+                        // Fetch discovered MCP tools from MCP discovery manager
+                        // This returns actual tools from connected MCP servers with metadata
+                        let discoveredMcpTools = [];
+                        try {
+                            // Initialize MCP servers from config (registers them with discovery manager)
+                            console.log('[Settings] Initializing MCP servers...');
+	                            await withTimeout(
+	                                window.__TAURI__.core.invoke('init_mcp_servers'),
+	                                12000,
+	                                'init_mcp_servers'
+	                            );
+                            // Get discovered tools from MCP servers
+	                            discoveredMcpTools = await withTimeout(
+	                                window.__TAURI__.core.invoke('list_discovered_mcp_tools'),
+	                                12000,
+	                                'list_discovered_mcp_tools'
+	                            );
+                            console.log('[Settings] Discovered MCP tools:', discoveredMcpTools);
+                        } catch (mcpErr) {
+                            console.warn('[Settings] MCP discovery not available, falling back to config:', mcpErr);
+                        }
+
+                        // Fall back to config-based MCP tools if discovery returned nothing
+                        // This shows configured servers even if they haven't been connected yet
+                        let mcpTools = discoveredMcpTools;
+                        if (mcpTools.length === 0) {
+                            const config = await window.__TAURI__.core.invoke('get_config');
+                            const configMcpTools = config?.mcp_tools || [];
+                            // Convert config format to match discovered format
+                            mcpTools = configMcpTools.map(t => ({
+                                name: `${t.name}:*`,  // Indicate all tools from this server
+                                summary: `MCP server at ${t.endpoint}`,
+                                server_name: t.name,
+                                category: 'unknown',
+                                has_side_effects: true,
+                                risk_level: 'medium'
+                            }));
+                        }
+
+                        // Build unified tool list
+                        toolsListContainer.innerHTML = '';
+
+                        // Add built-in tools section
+                        if (builtinTools && builtinTools.length > 0) {
+                            const builtinHeader = document.createElement('div');
+                            builtinHeader.className = 'tools-section-header';
+                            builtinHeader.textContent = 'Built-in Tools';
+                            toolsListContainer.appendChild(builtinHeader);
+
+                            for (const tool of builtinTools) {
+                                const label = document.createElement('label');
+                                label.className = 'tool-checkbox';
+                                label.title = tool.summary || '';
+
+                                const checkbox = document.createElement('input');
+                                checkbox.type = 'checkbox';
+                                checkbox.value = tool.name;
+                                // Check if tool is enabled in session settings
+                                const isEnabled = toolSettings?.enabled_tools?.[tool.name] ?? true;
+                                checkbox.checked = isEnabled;
+
+                                // Add change handler
+                                checkbox.addEventListener('change', async () => {
+                                    if (!sessionId) return;
+                                    try {
+                                        await window.__TAURI__.core.invoke('set_session_tool_enabled', {
+                                            session_id: sessionId,
+                                            tool_name: checkbox.value,
+                                            enabled: checkbox.checked
+                                        });
+                                        console.log('Tool toggled:', checkbox.value, checkbox.checked);
+                                    } catch (e) {
+                                        console.error('Failed to update tool setting:', e);
+                                    }
+                                });
+
+	                                const details = document.createElement('div');
+	                                details.className = 'tool-details';
+
+	                                const nameSpan = document.createElement('span');
+	                                nameSpan.className = 'tool-name';
+	                                nameSpan.textContent = tool.name;
+	                                details.appendChild(nameSpan);
+
+	                                if (tool.summary) {
+	                                    const summarySpan = document.createElement('span');
+	                                    summarySpan.className = 'tool-summary';
+	                                    summarySpan.textContent = tool.summary;
+	                                    details.appendChild(summarySpan);
+	                                }
+
+	                                const badges = document.createElement('div');
+	                                badges.className = 'tool-badges';
+	                                const builtinBadge = document.createElement('span');
+	                                builtinBadge.className = 'tool-badge builtin';
+	                                builtinBadge.textContent = 'built-in';
+	                                badges.appendChild(builtinBadge);
+
+	                                label.appendChild(checkbox);
+	                                label.appendChild(details);
+	                                label.appendChild(badges);
+                                toolsListContainer.appendChild(label);
+                            }
+                        }
+
+                        // Add MCP tools section if any exist
+                        // MCP tools now come from discovery manager with full metadata
+                        if (mcpTools && mcpTools.length > 0) {
+                            const mcpHeader = document.createElement('div');
+                            mcpHeader.className = 'tools-section-header';
+                            mcpHeader.textContent = 'MCP Tools';
+                            toolsListContainer.appendChild(mcpHeader);
+
+                            for (const mcpTool of mcpTools) {
+                                const label = document.createElement('label');
+                                label.className = 'tool-checkbox mcp-tool';
+                                // Show detailed tooltip with category and risk
+                                const riskBadge = mcpTool.risk_level === 'high' ? '⚠️' : mcpTool.risk_level === 'medium' ? '⚡' : '';
+                                label.title = `${mcpTool.summary || ''}\nServer: ${mcpTool.server_name}\nCategory: ${mcpTool.category}\nRisk: ${mcpTool.risk_level}${mcpTool.has_side_effects ? '\n⚠️ Has side effects' : ''}`;
+
+                                const checkbox = document.createElement('input');
+                                checkbox.type = 'checkbox';
+                                // Use the full name which is already in "server:tool" format
+                                checkbox.value = mcpTool.name;
+                                // Check if MCP tool is enabled (default to false for safety)
+                                const isEnabled = toolSettings?.enabled_tools?.[mcpTool.name] ?? false;
+                                checkbox.checked = isEnabled;
+
+                                checkbox.addEventListener('change', async () => {
+                                    if (!sessionId) return;
+                                    try {
+                                        await window.__TAURI__.core.invoke('set_session_tool_enabled', {
+                                            session_id: sessionId,
+                                            tool_name: checkbox.value,
+                                            enabled: checkbox.checked
+                                        });
+                                        console.log('MCP tool toggled:', checkbox.value, checkbox.checked);
+                                    } catch (e) {
+                                        console.error('Failed to update MCP tool setting:', e);
+                                    }
+                                });
+
+	                                const details = document.createElement('div');
+	                                details.className = 'tool-details';
+
+	                                const nameSpan = document.createElement('span');
+	                                nameSpan.className = 'tool-name';
+	                                // Display just the tool name without server prefix if it has one
+	                                const displayName = mcpTool.name.includes(':')
+	                                    ? mcpTool.name.split(':').slice(1).join(':')
+	                                    : mcpTool.name;
+	                                nameSpan.textContent = displayName;
+	                                details.appendChild(nameSpan);
+
+	                                if (mcpTool.summary) {
+	                                    const summarySpan = document.createElement('span');
+	                                    summarySpan.className = 'tool-summary';
+	                                    summarySpan.textContent = mcpTool.summary;
+	                                    details.appendChild(summarySpan);
+	                                }
+
+	                                const badges = document.createElement('div');
+	                                badges.className = 'tool-badges';
+
+	                                // Server badge
+	                                const serverBadge = document.createElement('span');
+	                                serverBadge.className = 'tool-badge mcp';
+	                                serverBadge.textContent = mcpTool.server_name || 'MCP';
+	                                badges.appendChild(serverBadge);
+
+	                                if (mcpTool.has_side_effects) {
+	                                    const seBadge = document.createElement('span');
+	                                    seBadge.className = 'tool-badge side-effects';
+	                                    seBadge.textContent = 'writes';
+	                                    badges.appendChild(seBadge);
+	                                }
+
+	                                // Risk indicator for high-risk tools
+	                                if (mcpTool.risk_level === 'high') {
+	                                    const riskSpan = document.createElement('span');
+	                                    riskSpan.className = 'tool-badge risk-high';
+	                                    riskSpan.textContent = 'high';
+	                                    badges.appendChild(riskSpan);
+	                                }
+
+	                                label.appendChild(checkbox);
+	                                label.appendChild(details);
+	                                label.appendChild(badges);
+                                toolsListContainer.appendChild(label);
+                            }
+                        }
+
+                        // Show message if no tools found
+                        if ((!builtinTools || builtinTools.length === 0) && (!mcpTools || mcpTools.length === 0)) {
+                            toolsListContainer.innerHTML = '<div class="no-tools">No tools available</div>';
+                        }
+                    } catch (toolsError) {
+                        console.error('Failed to load tools:', toolsError);
+                        toolsListContainer.innerHTML = '<div class="tools-error">Failed to load tools</div>';
+                    }
+                }
+
                 if (toolSettings) {
                     // Set permission level dropdown
                     if (toolSettings.permission_level) {
                         sessionPermission.value = toolSettings.permission_level;
-                    }
-                    // Set tool checkboxes
-                    if (toolSettings.enabled_tools) {
-                        document.querySelectorAll('#sessionToolsList input[type="checkbox"]').forEach(checkbox => {
-                            const toolName = checkbox.value;
-                            if (toolSettings.enabled_tools[toolName] !== undefined) {
-                                checkbox.checked = toolSettings.enabled_tools[toolName];
-                            }
-                        });
                     }
                 }
             } catch (e) {
@@ -4410,10 +6043,10 @@
             }
         }
 
-	        async function loadSessionHistory() {
+        async function loadSessionHistory() {
             if (!sessionId) return;
             try {
-				const messages = await window.__TAURI__.core.invoke('get_session_history', { sessionId });
+                const messages = await window.__TAURI__.core.invoke('get_session_history', { session_id: sessionId });
                 if (messages && messages.length > 0) {
                     console.log(`Loading ${messages.length} messages from session history`);
 
@@ -4424,22 +6057,16 @@
 	                     * @param {unknown} content
 	                     * @returns {{ isHtml: boolean, value: string }}
 	                     */
-	                    function renderMarkdownSafe(content) {
-	                        const text = (content ?? '').toString();
-	                        try {
-	                            const m = (typeof marked !== 'undefined' && marked && typeof marked.parse === 'function')
-	                                ? marked
-	                                : (typeof window !== 'undefined' && window.marked && typeof window.marked.parse === 'function')
-	                                    ? window.marked
-	                                    : null;
-	                            if (m) {
-	                                return { isHtml: true, value: m.parse(text) };
-	                            }
-	                        } catch (e) {
-	                            console.warn('Markdown render failed; falling back to plain text', e);
-	                        }
-	                        return { isHtml: false, value: text };
-	                    }
+		                    function renderMarkdownSafe(content) {
+		                        const text = (content ?? '').toString();
+		                        try {
+		                            // Use our safe renderer for consistency between streaming + history.
+		                            return { isHtml: true, value: parseMarkdown(text) };
+		                        } catch (e) {
+		                            console.warn('Markdown render failed; falling back to plain text', e);
+		                            return { isHtml: false, value: text };
+		                        }
+		                    }
 
                     for (const msg of messages) {
 	                        try {
@@ -4449,6 +6076,7 @@
 	                                // Render assistant message; markdown when available, plain text fallback.
 	                                const msgDiv = document.createElement('div');
 	                                msgDiv.className = 'message agent';
+	                                msgDiv.dataset.rawMarkdown = (msg.content ?? '').toString();
 	                                const contentDiv = document.createElement('div');
 	                                contentDiv.className = 'message-content markdown-body';
 	                                const rendered = renderMarkdownSafe(msg.content);
@@ -4491,7 +6119,7 @@
         pickWorkDirBtn?.addEventListener('click', async () => {
             if (!sessionId) return;
             try {
-				const result = await window.__TAURI__.core.invoke('pick_workspace_directory', { sessionId });
+                const result = await window.__TAURI__.core.invoke('pick_workspace_directory', { session_id: sessionId });
                 if (result) {
                     sessionWorkDir.value = result;
                     workDirInfo.textContent = `Commands run in: ${result}`;
@@ -4505,32 +6133,17 @@
         sessionPermission?.addEventListener('change', async () => {
             if (!sessionId) return;
             try {
-	                await window.__TAURI__.core.invoke('set_session_permission_level', {
-	                    sessionId: sessionId,
-	                    level: sessionPermission.value
-	                });
+                await window.__TAURI__.core.invoke('set_session_permission_level', {
+                    session_id: sessionId,
+                    level: sessionPermission.value
+                });
                 console.log('Permission level updated to:', sessionPermission.value);
             } catch (e) {
                 console.error('Failed to update permission level:', e);
             }
         });
 
-        // Tool checkbox changes
-        document.querySelectorAll('#sessionToolsList input[type="checkbox"]').forEach(checkbox => {
-            checkbox.addEventListener('change', async () => {
-                if (!sessionId) return;
-                try {
-	                    await window.__TAURI__.core.invoke('set_session_tool_enabled', {
-	                        sessionId: sessionId,
-	                        toolName: checkbox.value,
-	                        enabled: checkbox.checked
-	                    });
-                    console.log('Tool toggled:', checkbox.value, checkbox.checked);
-                } catch (e) {
-                    console.error('Failed to update tool setting:', e);
-                }
-            });
-        });
+        // Note: Tool checkbox event handlers are now attached dynamically in loadSessionSettings()
 
         // =====================================================================
         // Task Panel
@@ -4543,26 +6156,36 @@
         const taskList = document.getElementById('taskList');
 
         function openTaskPanel() {
-            taskPanel.classList.add('open');
-            taskPanelOverlay.classList.add('visible');
-            taskPanelBtn.classList.add('active');
+            console.log('[Tasks] Opening task panel');
+            taskPanel?.classList.add('open');
+            taskPanelOverlay?.classList.add('visible');
+            taskPanelBtn?.classList.add('active');
             loadTasks();
         }
 
         function closeTaskPanel() {
-            taskPanel.classList.remove('open');
-            taskPanelOverlay.classList.remove('visible');
-            taskPanelBtn.classList.remove('active');
+            console.log('[Tasks] Closing task panel');
+            taskPanel?.classList.remove('open');
+            taskPanelOverlay?.classList.remove('visible');
+            taskPanelBtn?.classList.remove('active');
         }
 
         async function loadTasks() {
-            if (!sessionId) return;
+            console.log('[Tasks] loadTasks called, sessionId:', sessionId);
+            if (!sessionId) {
+                console.warn('[Tasks] No sessionId, skipping load');
+                return;
+            }
             try {
-	                const hierarchy = await window.__TAURI__.core.invoke('get_task_hierarchy', { sessionId: sessionId });
+                console.log('[Tasks] Fetching task hierarchy...');
+                const hierarchy = await window.__TAURI__.core.invoke('get_task_hierarchy', { session_id: sessionId });
+                console.log('[Tasks] Retrieved hierarchy:', hierarchy?.length || 0, 'root tasks');
                 renderTasks(hierarchy);
             } catch (e) {
-                console.error('Failed to load tasks:', e);
-                taskList.innerHTML = '<div class="task-empty">Failed to load tasks</div>';
+                console.error('[Tasks] Failed to load tasks:', e);
+                if (taskList) {
+                    taskList.innerHTML = '<div class="task-empty">Failed to load tasks: ' + e + '</div>';
+                }
             }
         }
 
@@ -4586,7 +6209,8 @@
             div.className = 'task-item' + (isSubtask ? ' subtask' : '');
             div.dataset.taskId = task.id;
 
-            const statusClass = task.status.toLowerCase().replace('_', '-');
+            // Convert PascalCase status (NotStarted, InProgress) to kebab-case (not-started, in-progress)
+            const statusClass = task.status.replace(/([A-Z])/g, '-$1').toLowerCase().slice(1);
             const statusIcon = getStatusIcon(task.status);
 
             div.innerHTML = `
@@ -4595,23 +6219,41 @@
                         ${statusIcon}
                     </div>
                     <div class="task-name">${escapeHtml(task.name)}</div>
+                    <div class="task-item-actions">
+                        <button class="task-icon-btn play" data-action="play" data-task-id="${task.id}" title="Play this task">
+                            <span class="icon-play"></span>
+                        </button>
+                        <button class="task-icon-btn edit" data-action="edit" data-task-id="${task.id}" title="Edit task">
+                            <span class="icon-edit-02"></span>
+                        </button>
+                        <button class="task-icon-btn delete" data-action="delete" data-task-id="${task.id}" title="Delete task">
+                            <span class="icon-trash"></span>
+                        </button>
+                    </div>
                 </div>
                 ${task.description ? `<div class="task-description">${escapeHtml(task.description)}</div>` : ''}
-                <div class="task-actions-row">
-                    <button class="task-btn" data-action="edit" data-task-id="${task.id}">Edit</button>
-                    <button class="task-btn delete" data-action="delete" data-task-id="${task.id}">Delete</button>
-                </div>
             `;
 
             // Status icon click handler
             div.querySelector('.task-status-icon').addEventListener('click', () => cycleTaskStatus(task));
 
-            // Action button handlers
-            div.querySelectorAll('.task-btn').forEach(btn => {
+            // Action icon button handlers - use closest() to handle clicks on icon spans
+            div.querySelectorAll('.task-icon-btn').forEach(btn => {
                 btn.addEventListener('click', async (e) => {
-                    const action = e.target.dataset.action;
-                    const taskId = e.target.dataset.taskId;
-                    if (action === 'edit') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    // Get button even if click was on the icon span inside
+                    const button = e.target.closest('.task-icon-btn');
+                    if (!button) return;
+
+                    const action = button.dataset.action;
+                    const taskId = button.dataset.taskId;
+
+                    console.log('[TaskAction] Action:', action, 'TaskId:', taskId);
+
+                    if (action === 'play') {
+                        await playTask(task);
+                    } else if (action === 'edit') {
                         editTask(task);
                     } else if (action === 'delete') {
                         await deleteTask(taskId);
@@ -4624,11 +6266,11 @@
 
         function getStatusIcon(status) {
             switch (status) {
-                case 'NotStarted': return '○';
-                case 'InProgress': return '◐';
-                case 'Completed': return '✓';
-                case 'Cancelled': return '✕';
-                default: return '○';
+                case 'NotStarted': return '<span class="icon-circle"></span>';
+                case 'InProgress': return '<span class="icon-disc-01"></span>';
+                case 'Completed': return '<span class="icon-check-circle"></span>';
+                case 'Cancelled': return '<span class="icon-x-circle"></span>';
+                default: return '<span class="icon-circle"></span>';
             }
         }
 
@@ -4638,11 +6280,11 @@
             const nextStatus = statusCycle[(currentIndex + 1) % statusCycle.length];
 
             try {
-	                await window.__TAURI__.core.invoke('update_task_status', {
-	                    sessionId: sessionId,
-	                    taskId: task.id,
-	                    status: nextStatus
-	                });
+                await window.__TAURI__.core.invoke('update_task_status', {
+                    session_id: sessionId,
+                    task_id: task.id,
+                    status: nextStatus
+                });
                 await loadTasks();
             } catch (e) {
                 console.error('Failed to update task status:', e);
@@ -4652,10 +6294,10 @@
         async function deleteTask(taskId) {
             if (!confirm('Delete this task?')) return;
             try {
-	                await window.__TAURI__.core.invoke('delete_task', {
-	                    sessionId: sessionId,
-	                    taskId: taskId
-	                });
+                await window.__TAURI__.core.invoke('delete_task', {
+                    session_id: sessionId,
+                    task_id: taskId
+                });
                 await loadTasks();
             } catch (e) {
                 console.error('Failed to delete task:', e);
@@ -4673,15 +6315,54 @@
 
         async function updateTask(taskId, name, description) {
             try {
-	                await window.__TAURI__.core.invoke('update_task', {
-	                    sessionId: sessionId,
-	                    taskId: taskId,
-	                    name: name || null,
-	                    description: description || null
-	                });
+                await window.__TAURI__.core.invoke('update_task', {
+                    session_id: sessionId,
+                    task_id: taskId,
+                    name: name || null,
+                    description: description || null
+                });
                 await loadTasks();
             } catch (e) {
                 console.error('Failed to update task:', e);
+            }
+        }
+
+        async function playTask(task) {
+            if (task.status === 'Completed' || task.status === 'Cancelled') {
+                showToast('Cannot play a completed or cancelled task', 'info');
+                return;
+            }
+
+            try {
+                // Update task status to InProgress
+                await window.__TAURI__.core.invoke('update_task_status', {
+                    session_id: sessionId,
+                    task_id: task.id,
+                    status: 'InProgress'
+                });
+                await loadTasks();
+
+                // Construct task prompt
+                const taskPrompt = `Execute the following task:\n\nTask: ${task.name}${task.description ? `\n\nDescription: ${task.description}` : ''}`;
+
+                // Enhance the prompt with session context before sending
+                console.log('[PlayTask] Enhancing prompt for task:', task.name);
+                const enhancedPrompt = await enhanceTextForSession(taskPrompt);
+                console.log('[PlayTask] Enhanced prompt length:', enhancedPrompt.length);
+
+                // Set the enhanced prompt in the input and send
+                if (messageInput) {
+                    messageInput.value = enhancedPrompt;
+                    messageInput.style.height = 'auto';
+                    messageInput.style.height = Math.min(messageInput.scrollHeight, 200) + 'px';
+                    // Use sendMessage() for proper queuing
+	                    await sendMessage({ taskId: task.id });
+                }
+
+                showToast('Task started', 'success');
+            } catch (e) {
+                console.error('Failed to play task:', e);
+                showToast('Failed to start task: ' + e, 'error');
             }
         }
 
@@ -4703,75 +6384,170 @@
         taskPanelClose?.addEventListener('click', closeTaskPanel);
         taskPanelOverlay?.addEventListener('click', closeTaskPanel);
 
-        addTaskBtn?.addEventListener('click', async () => {
+        // Inline Task Creation Form
+        const taskCreateForm = document.getElementById('taskCreateForm');
+        const newTaskName = document.getElementById('newTaskName');
+        const newTaskDescription = document.getElementById('newTaskDescription');
+        const taskCreateCancel = document.getElementById('taskCreateCancel');
+        const taskCreateSave = document.getElementById('taskCreateSave');
+
+        function showTaskCreateForm() {
+            taskCreateForm.classList.add('visible');
+            newTaskName.value = '';
+            newTaskDescription.value = '';
+            newTaskName.focus();
+        }
+
+        function hideTaskCreateForm() {
+            taskCreateForm.classList.remove('visible');
+            newTaskName.value = '';
+            newTaskDescription.value = '';
+        }
+
+        addTaskBtn?.addEventListener('click', () => {
             if (!sessionId) {
                 showToast('No active session. Please start a chat first.', 'error');
                 return;
             }
-            const name = prompt('Task name:');
-            if (!name || !name.trim()) return;
-            const description = prompt('Task description (optional):') || '';
+            showTaskCreateForm();
+        });
+
+        taskCreateCancel?.addEventListener('click', hideTaskCreateForm);
+
+        taskCreateSave?.addEventListener('click', async () => {
+            console.log('[Task Create] Save button clicked');
+            console.log('[Task Create] sessionId:', sessionId);
+
+            if (!sessionId) {
+                showToast('No active session. Please start a chat first.', 'error');
+                console.error('[Task Create] No sessionId available');
+                return;
+            }
+
+            const name = newTaskName.value.trim();
+            console.log('[Task Create] Task name:', name);
+
+            if (!name) {
+                showToast('Please enter a task title', 'error');
+                newTaskName.focus();
+                return;
+            }
+
+            const description = newTaskDescription.value.trim();
+            console.log('[Task Create] Task description:', description);
+
+            taskCreateSave.disabled = true;
+            taskCreateSave.textContent = 'Adding...';
 
             try {
-                await window.__TAURI__.core.invoke('create_task', {
-                    sessionId: sessionId,
-                    name: name.trim(),
-                    description: description.trim(),
-                    parentId: null
+                console.log('[Task Create] Invoking create_task command...');
+                const result = await window.__TAURI__.core.invoke('create_task', {
+                    session_id: sessionId,
+                    name: name,
+                    description: description,
+                    parent_id: null
                 });
+                console.log('[Task Create] Task created successfully:', result);
+                hideTaskCreateForm();
                 await loadTasks();
                 showToast('Task created', 'success');
             } catch (e) {
-                console.error('Failed to create task:', e);
+                console.error('[Task Create] Failed to create task:', e);
                 showToast('Failed to create task: ' + e, 'error');
+            } finally {
+                taskCreateSave.disabled = false;
+                taskCreateSave.textContent = 'Add Task';
+            }
+        });
+
+        // Allow Enter key to save from title field
+        newTaskName?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                taskCreateSave.click();
+            } else if (e.key === 'Escape') {
+                hideTaskCreateForm();
+            }
+        });
+
+        // Allow Escape to close from description field
+        newTaskDescription?.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                hideTaskCreateForm();
             }
         });
 
         // Play all pending tasks
         const playAllTasksBtn = document.getElementById('playAllTasksBtn');
-        playAllTasksBtn?.addEventListener('click', async () => {
-            if (!sessionId) return;
-            try {
-                const hierarchy = await window.__TAURI__.core.invoke('get_task_hierarchy', { sessionId: sessionId });
-                const pendingTasks = [];
-                hierarchy.forEach(([rootTask, subtasks]) => {
-                    if (rootTask.status === 'NotStarted' || rootTask.status === 'InProgress') {
-                        pendingTasks.push(rootTask);
-                    }
-                    subtasks.forEach(sub => {
-                        if (sub.status === 'NotStarted' || sub.status === 'InProgress') {
-                            pendingTasks.push(sub);
-                        }
-                    });
-                });
-
-                if (pendingTasks.length === 0) {
-                    showToast('No pending tasks to run', 'info');
+        console.log('[PlayAll] playAllTasksBtn element:', playAllTasksBtn);
+        if (playAllTasksBtn) {
+            playAllTasksBtn.addEventListener('click', async () => {
+                console.log('[PlayAll] Button clicked, sessionId:', sessionId);
+                if (!sessionId) {
+                    showToast('No active session', 'error');
                     return;
                 }
+                try {
+                    console.log('[PlayAll] Fetching task hierarchy...');
+                    const hierarchy = await window.__TAURI__.core.invoke('get_task_hierarchy', { session_id: sessionId });
+                    console.log('[PlayAll] Got hierarchy:', hierarchy);
 
-                for (const task of pendingTasks) {
-                    const prompt = task.description
-                        ? `Task: ${task.name}\n\nDescription: ${task.description}`
-                        : `Task: ${task.name}`;
-                    messageInput.value = prompt;
-                    messageInput.style.height = 'auto';
-                    messageInput.style.height = Math.min(messageInput.scrollHeight, 200) + 'px';
-                    await sendMessage();
+                    const pendingTasks = [];
+                    hierarchy.forEach(([rootTask, subtasks]) => {
+                        if (rootTask.status === 'NotStarted' || rootTask.status === 'InProgress') {
+                            pendingTasks.push(rootTask);
+                        }
+                        subtasks.forEach(sub => {
+                            if (sub.status === 'NotStarted' || sub.status === 'InProgress') {
+                                pendingTasks.push(sub);
+                            }
+                        });
+                    });
+
+                    if (pendingTasks.length === 0) {
+                        showToast('No pending tasks to run', 'info');
+                        return;
+                    }
+
+                    showToast(`Playing ${pendingTasks.length} task(s)...`, 'info');
+
+                    for (const task of pendingTasks) {
+                        // Update task status to InProgress
+                        await window.__TAURI__.core.invoke('update_task_status', {
+                            session_id: sessionId,
+                            task_id: task.id,
+                            status: 'InProgress'
+                        });
+
+                        // Construct and enhance the task prompt
+                        const taskPrompt = `Execute the following task:\n\nTask: ${task.name}${task.description ? `\n\nDescription: ${task.description}` : ''}`;
+
+                        console.log('[PlayAll] Enhancing prompt for task:', task.name);
+                        const enhancedPrompt = await enhanceTextForSession(taskPrompt);
+
+                        messageInput.value = enhancedPrompt;
+                        messageInput.style.height = 'auto';
+                        messageInput.style.height = Math.min(messageInput.scrollHeight, 200) + 'px';
+	                        await sendMessage({ taskId: task.id });
+                    }
+
+                    await loadTasks();
+                    showToast(`Queued ${pendingTasks.length} task(s)`, 'success');
+                } catch (e) {
+                    console.error('Failed to play all tasks:', e);
+                    showToast('Failed to play tasks: ' + e, 'error');
                 }
-                showToast(`Queued ${pendingTasks.length} task(s)`, 'success');
-            } catch (e) {
-                console.error('Failed to play all tasks:', e);
-                showToast('Failed to play tasks: ' + e, 'error');
-            }
-        });
+            });
+        } else {
+            console.warn('[PlayAll] playAllTasksBtn element not found!');
+        }
 
         // Cleanup finished tasks
         const cleanupTasksBtn = document.getElementById('cleanupTasksBtn');
         cleanupTasksBtn?.addEventListener('click', async () => {
             if (!sessionId) return;
             try {
-                const hierarchy = await window.__TAURI__.core.invoke('get_task_hierarchy', { sessionId: sessionId });
+                const hierarchy = await window.__TAURI__.core.invoke('get_task_hierarchy', { session_id: sessionId });
                 const finishedTaskIds = [];
                 hierarchy.forEach(([rootTask, subtasks]) => {
                     subtasks.forEach(sub => {
@@ -4790,7 +6566,7 @@
                 }
 
                 for (const taskId of finishedTaskIds) {
-                    await window.__TAURI__.core.invoke('delete_task', { sessionId: sessionId, taskId: taskId });
+                    await window.__TAURI__.core.invoke('delete_task', { session_id: sessionId, task_id: taskId });
                 }
                 await loadTasks();
                 showToast(`Removed ${finishedTaskIds.length} task(s)`, 'success');
@@ -4890,7 +6666,7 @@
 
             try {
                 await window.__TAURI__.core.invoke('break_down_requirements', {
-                    sessionId: sessionId,
+                    session_id: sessionId,
                     requirements: requirements
                 });
                 closeBreakdownModal();
@@ -4918,6 +6694,372 @@
         });
 
         // =====================================================================
+        // Providers Panel
+        // =====================================================================
+        const providersPanel = document.getElementById('providersPanel');
+        const providersPanelOverlay = document.getElementById('providersPanelOverlay');
+        const providersPanelClose = document.getElementById('providersPanelClose');
+        const sessionLlmProvider = document.getElementById('sessionLlmProvider');
+        const sessionLlmModel = document.getElementById('sessionLlmModel');
+        const sessionSttProvider = document.getElementById('sessionSttProvider');
+        const sessionSttModel = document.getElementById('sessionSttModel');
+        const sttModelField = document.getElementById('sttModelField');
+        const resetProvidersBtn = document.getElementById('resetProvidersBtn');
+
+        // Available LLM providers
+        const LLM_PROVIDERS = [
+            { id: 'openai', name: 'OpenAI' },
+            { id: 'anthropic', name: 'Anthropic' },
+            { id: 'grok', name: 'Grok (xAI)' },
+            { id: 'ollama', name: 'Ollama (Local)' },
+            { id: 'echo', name: 'Echo (Test)' }
+        ];
+
+        function openProvidersPanel() {
+            providersPanel?.classList.add('open');
+            providersPanelOverlay?.classList.add('visible');
+            loadProviderSettings();
+        }
+
+        function closeProvidersPanel() {
+            providersPanel?.classList.remove('open');
+            providersPanelOverlay?.classList.remove('visible');
+        }
+
+        providersPanelClose?.addEventListener('click', closeProvidersPanel);
+        providersPanelOverlay?.addEventListener('click', closeProvidersPanel);
+
+        async function loadProviderSettings() {
+            if (!sessionId) return;
+            console.log('[Providers] Loading provider settings for session:', sessionId);
+
+            try {
+                // Populate LLM provider dropdown
+                sessionLlmProvider.innerHTML = LLM_PROVIDERS.map(p =>
+                    `<option value="${p.id}">${p.name}</option>`
+                ).join('');
+
+                // Get current session LLM config
+                const sessionLlm = await window.__TAURI__.core.invoke('get_session_llm_config', { session_id: sessionId });
+                const globalConfig = await window.__TAURI__.core.invoke('get_config');
+
+                // Use session override if available, otherwise use global
+                const currentProvider = sessionLlm?.provider || globalConfig?.llm?.primary || 'openai';
+                sessionLlmProvider.value = currentProvider;
+                console.log('[Providers] Current LLM provider:', currentProvider);
+
+                // Load models for current provider
+                await loadModelsForProvider(currentProvider, sessionLlm?.model);
+
+	                // Load session-scoped voice/STT overrides (fallback to global config)
+	                const sessionVoice = await window.__TAURI__.core.invoke('get_session_voice_config', { session_id: sessionId });
+	                const sttProvider = sessionVoice?.provider || globalConfig?.voice?.provider || 'openai';
+	                sessionSttProvider.value = sttProvider;
+	                await loadSttModels(sttProvider);
+
+	                /**
+	                 * Normalize a model value for the STT model <select>.
+	                 *
+	                 * The backend may store local models as full paths (global config), while
+	                 * the Providers panel uses filenames as <option>.value.
+	                 *
+	                 * @param {any} value
+	                 * @returns {string}
+	                 */
+	                function normalizeSttModelValue(value) {
+	                    if (typeof value !== 'string') return '';
+	                    if (value.length === 0) return '';
+	                    // If it's a path, take the basename.
+	                    const parts = value.split('/');
+	                    return parts[parts.length - 1] || value;
+	                }
+
+	                // Apply model selection after options have been loaded.
+	                if (sttProvider === 'local') {
+	                    const globalLocalPath = globalConfig?.voice?.local_model_path;
+	                    const modelValue = normalizeSttModelValue(sessionVoice?.model || globalLocalPath);
+	                    if (modelValue) sessionSttModel.value = modelValue;
+	                } else if (sttProvider === 'openai') {
+	                    const globalOpenAiModel = globalConfig?.voice?.openai_model;
+	                    const modelValue = String(sessionVoice?.model || globalOpenAiModel || 'gpt-4o-transcribe');
+	                    if (modelValue) sessionSttModel.value = modelValue;
+	                }
+
+            } catch (e) {
+                console.error('[Providers] Failed to load provider settings:', e);
+            }
+        }
+
+	        /**
+	         * Resolve an API key for the given provider.
+	         *
+	         * Preference order:
+	         * 1) Secure storage via `get_api_key` (keychain)
+	         * 2) Config file fallback (if present)
+	         *
+	         * Never logs the key value.
+	         *
+	         * @param {string} provider
+	         * @param {any} config
+	         * @returns {Promise<string>} API key (empty string if missing)
+	         */
+	        async function resolveApiKey(provider, config) {
+	            try {
+	                /** @type {any} */
+	                const fromKeychain = await window.__TAURI__.core.invoke('get_api_key', { provider });
+	                if (typeof fromKeychain === 'string' && fromKeychain.length > 0) return fromKeychain;
+	            } catch (e) {
+	                // Non-fatal: fall back to config.
+	                console.warn('[Providers] get_api_key failed (falling back to config):', provider, e);
+	            }
+
+	            const cfgKey = config?.llm?.[provider]?.api_key;
+	            return typeof cfgKey === 'string' ? cfgKey : '';
+	        }
+
+	        /**
+	         * Resolve Ollama endpoint from config with a safe default.
+	         * @param {any} config
+	         * @returns {string}
+	         */
+	        function resolveOllamaEndpoint(config) {
+	            const endpoint =
+	                config?.llm?.ollama?.endpoint ||
+	                config?.llm?.ollama?.base_url ||
+	                'http://localhost:11434';
+	            return typeof endpoint === 'string' && endpoint.length > 0 ? endpoint : 'http://localhost:11434';
+	        }
+
+        async function loadModelsForProvider(provider, currentModel) {
+            console.log('[Providers] Loading models for provider:', provider);
+            sessionLlmModel.innerHTML = '<option value="">Loading models...</option>';
+
+            try {
+	                /** @type {Array<{id: string, name?: string}>} */
+	                let models = [];
+	                const config = await window.__TAURI__.core.invoke('get_config');
+
+                switch (provider) {
+                    case 'openai':
+	                        {
+	                            const apiKey = await resolveApiKey('openai', config);
+	                            if (!apiKey) {
+	                                sessionLlmModel.innerHTML = '<option value="">Set OpenAI API key to load models</option>';
+	                                return;
+	                            }
+	                            const result = await window.__TAURI__.core.invoke('list_openai_models', { api_key: apiKey });
+	                            models = Array.isArray(result)
+	                                ? result
+	                                    .map((m) => ({ id: m?.id, name: m?.name || m?.id }))
+	                                    .filter((m) => typeof m.id === 'string' && m.id.length > 0)
+	                                : [];
+	                        }
+                        break;
+                    case 'anthropic':
+	                        {
+	                            const apiKey = await resolveApiKey('anthropic', config);
+	                            if (!apiKey) {
+	                                sessionLlmModel.innerHTML = '<option value="">Set Anthropic API key to load models</option>';
+	                                return;
+	                            }
+	                            const result = await window.__TAURI__.core.invoke('list_anthropic_models', { api_key: apiKey });
+	                            models = Array.isArray(result)
+	                                ? result
+	                                    .map((m) => ({ id: m?.id, name: m?.name || m?.id }))
+	                                    .filter((m) => typeof m.id === 'string' && m.id.length > 0)
+	                                : [];
+	                        }
+                        break;
+                    case 'grok':
+	                        {
+	                            const apiKey = await resolveApiKey('grok', config);
+	                            const result = await window.__TAURI__.core.invoke('list_grok_models', { api_key: apiKey || '' });
+	                            models = Array.isArray(result)
+	                                ? result
+	                                    .map((m) => ({ id: m?.id, name: m?.name || m?.id }))
+	                                    .filter((m) => typeof m.id === 'string' && m.id.length > 0)
+	                                : [];
+	                        }
+                        break;
+                    case 'ollama':
+	                        {
+	                            const endpoint = resolveOllamaEndpoint(config);
+	                            const result = await window.__TAURI__.core.invoke('list_ollama_models', { endpoint });
+	                            const names = Array.isArray(result)
+	                                ? result.map((m) => m?.name).filter((n) => typeof n === 'string' && n.length > 0)
+	                                : [];
+	                            models = names.map((n) => ({ id: n, name: n }));
+	                        }
+                        break;
+                    case 'echo':
+                        models = [{ id: 'echo', name: 'Echo (Test Mode)' }];
+                        break;
+                }
+
+                console.log('[Providers] Loaded models:', models);
+
+                if (models && models.length > 0) {
+                    sessionLlmModel.innerHTML = models.map(m =>
+                        `<option value="${m.id}">${m.name || m.id}</option>`
+                    ).join('');
+
+                    // Select current model if available
+                    if (currentModel) {
+                        sessionLlmModel.value = currentModel;
+                    }
+                } else {
+                    sessionLlmModel.innerHTML = '<option value="">No models available</option>';
+                }
+            } catch (e) {
+                console.error('[Providers] Failed to load models:', e);
+                sessionLlmModel.innerHTML = '<option value="">Failed to load models</option>';
+            }
+        }
+
+        async function loadSttModels(provider) {
+            console.log('[Providers] Loading STT models for provider:', provider);
+
+            if (provider === 'local') {
+                // For local whisper, show downloaded models
+                sttModelField.style.display = 'block';
+                try {
+	                    const whisperModels = await window.__TAURI__.core.invoke('get_whisper_models');
+	                    const statuses = await Promise.all(
+	                        (Array.isArray(whisperModels) ? whisperModels : []).map(async (m) => {
+	                            try {
+	                                return await window.__TAURI__.core.invoke('is_whisper_model_downloaded', {
+	                                    model_filename: m?.filename,
+	                                });
+	                            } catch (e) {
+	                                return { exists: false, error: String(e) };
+	                            }
+	                        })
+	                    );
+
+	                    const downloaded = (Array.isArray(whisperModels) ? whisperModels : []).filter((m, idx) => {
+	                        const exists = statuses?.[idx]?.exists;
+	                        return exists === true;
+	                    });
+
+	                    if (downloaded.length === 0) {
+	                        sessionSttModel.innerHTML = '<option value="">No local models downloaded</option>';
+	                        return;
+	                    }
+
+	                    // Note: Show only downloaded models; display a clean name (no size suffix).
+	                    sessionSttModel.innerHTML = '';
+	                    for (const m of downloaded) {
+	                        const opt = document.createElement('option');
+	                        opt.value = m?.filename;
+	                        opt.textContent = formatWhisperModelDisplayName(m) || String(m?.name || m?.filename || '');
+	                        sessionSttModel.appendChild(opt);
+	                    }
+                } catch (e) {
+                    sessionSttModel.innerHTML = '<option value="">No local models</option>';
+                }
+            } else if (provider === 'openai') {
+                sttModelField.style.display = 'block';
+                try {
+	                    const config = await window.__TAURI__.core.invoke('get_config');
+	                    const apiKey = await resolveApiKey('openai', config);
+	                    const sttModels = await window.__TAURI__.core.invoke('list_openai_stt_models', { api_key: apiKey || '' });
+                    sessionSttModel.innerHTML = sttModels.map(m =>
+                        `<option value="${m.id}">${m.name || m.id}</option>`
+                    ).join('');
+                } catch (e) {
+                    sessionSttModel.innerHTML = '<option value="whisper-1">Whisper V2</option>';
+                }
+            } else {
+                sttModelField.style.display = 'none';
+            }
+        }
+
+        // LLM Provider change handler
+        sessionLlmProvider?.addEventListener('change', async () => {
+            const provider = sessionLlmProvider.value;
+            console.log('[Providers] LLM provider changed to:', provider);
+
+            try {
+                await window.__TAURI__.core.invoke('set_session_llm_provider', {
+                    session_id: sessionId,
+                    provider: provider
+                });
+                await loadModelsForProvider(provider, null);
+            } catch (e) {
+                console.error('[Providers] Failed to set LLM provider:', e);
+                showToast('Failed to update provider: ' + e, 'error');
+            }
+        });
+
+        // LLM Model change handler
+        sessionLlmModel?.addEventListener('change', async () => {
+            const model = sessionLlmModel.value;
+            if (!model) return;
+            console.log('[Providers] LLM model changed to:', model);
+
+            try {
+                await window.__TAURI__.core.invoke('set_session_llm_model', {
+                    session_id: sessionId,
+                    model: model
+                });
+                showToast('Model updated', 'success');
+            } catch (e) {
+                console.error('[Providers] Failed to set LLM model:', e);
+                showToast('Failed to update model: ' + e, 'error');
+            }
+        });
+
+	        // STT Provider change handler
+	        sessionSttProvider?.addEventListener('change', async () => {
+	            const provider = sessionSttProvider.value;
+	            console.log('[Providers] STT provider changed to:', provider);
+	            try {
+	                // Persist to session-scoped config (does not modify global AppConfig).
+	                if (!sessionId) {
+	                    showToast('No active session. Cannot update STT provider.', 'warning');
+	                    return;
+	                }
+	                await window.__TAURI__.core.invoke('set_session_voice_provider', { session_id: sessionId, provider });
+	                await loadSttModels(provider);
+	                showToast('STT provider updated for this session', 'success');
+	            } catch (e) {
+	                console.error('[Providers] Failed to update STT provider:', e);
+	                showToast('Failed to update STT provider: ' + e, 'error');
+	            }
+	        });
+
+	        // STT Model change handler (session-scoped)
+	        sessionSttModel?.addEventListener('change', async () => {
+	            const model = sessionSttModel.value;
+	            console.log('[Providers] STT model changed to:', model);
+	            try {
+	                if (!sessionId) {
+	                    showToast('No active session. Cannot update STT model.', 'warning');
+	                    return;
+	                }
+	                await window.__TAURI__.core.invoke('set_session_voice_model', { session_id: sessionId, model });
+	                showToast('STT model updated for this session', 'success');
+	            } catch (e) {
+	                console.error('[Providers] Failed to update STT model:', e);
+	                showToast('Failed to update STT model: ' + e, 'error');
+	            }
+	        });
+
+        // Reset to defaults button
+        resetProvidersBtn?.addEventListener('click', async () => {
+            if (!sessionId) return;
+            try {
+                await window.__TAURI__.core.invoke('clear_session_llm_config', { session_id: sessionId });
+	                await window.__TAURI__.core.invoke('clear_session_voice_config', { session_id: sessionId });
+                await loadProviderSettings();
+                showToast('Reset to global defaults', 'success');
+            } catch (e) {
+                console.error('[Providers] Failed to reset:', e);
+                showToast('Failed to reset: ' + e, 'error');
+            }
+        });
+
+        // =====================================================================
         // Knowledge Panel
         // =====================================================================
         const knowledgePanel = document.getElementById('knowledgePanel');
@@ -4933,31 +7075,47 @@
 	        let latestEnabledKnowledgeIds = new Set();
 
         function openKnowledgePanel() {
-            knowledgePanel.classList.add('open');
-            knowledgePanelOverlay.classList.add('visible');
-            knowledgePanelBtn.classList.add('active');
-	            // Make the “skills” search immediately usable.
-	            try { knowledgeSearch?.focus(); } catch (_) {}
+            console.log('[Knowledge] Opening knowledge panel');
+            knowledgePanel?.classList.add('open');
+            knowledgePanelOverlay?.classList.add('visible');
+            knowledgePanelBtn?.classList.add('active');
+            // Make the "skills" search immediately usable.
+            try { knowledgeSearch?.focus(); } catch (_) {}
             loadKnowledge();
         }
 
         function closeKnowledgePanel() {
-            knowledgePanel.classList.remove('open');
-            knowledgePanelOverlay.classList.remove('visible');
-            knowledgePanelBtn.classList.remove('active');
+            console.log('[Knowledge] Closing knowledge panel');
+            knowledgePanel?.classList.remove('open');
+            knowledgePanelOverlay?.classList.remove('visible');
+            knowledgePanelBtn?.classList.remove('active');
         }
 
-	        async function loadKnowledge() {
-            if (!sessionId) return;
+        async function loadKnowledge() {
+            console.log('[Knowledge] loadKnowledge called, sessionId:', sessionId);
+            if (!sessionId) {
+                console.warn('[Knowledge] No sessionId, skipping load');
+                return;
+            }
             try {
+                console.log('[Knowledge] Fetching knowledge items...');
                 const items = await window.__TAURI__.core.invoke('list_knowledge_items');
-	                const enabled = await window.__TAURI__.core.invoke('get_enabled_knowledge', { sessionId: sessionId });
+                console.log('[Knowledge] Retrieved items:', items?.length || 0, 'items');
+
+                console.log('[Knowledge] Fetching enabled knowledge for session...');
+                const enabled = await window.__TAURI__.core.invoke('get_enabled_knowledge', { session_id: sessionId });
+                console.log('[Knowledge] Enabled knowledge IDs:', enabled);
+
                 renderKnowledge(items, enabled);
+                console.log('[Knowledge] Render complete');
             } catch (e) {
-                console.error('Failed to load knowledge:', e);
-                knowledgeList.innerHTML = '<div class="knowledge-empty">Failed to load knowledge</div>';
+                console.error('[Knowledge] Failed to load knowledge:', e);
+                if (knowledgeList) {
+                    knowledgeList.innerHTML = '<div class="knowledge-empty">Failed to load knowledge: ' + e + '</div>';
+                }
             }
         }
+
 
 	        /**
 	         * Update the little “enabled” counter shown next to the knowledge/skills search box.
@@ -4992,13 +7150,13 @@
 	                });
 
 	            updateKnowledgeEnabledCount(latestEnabledKnowledgeIds);
-	
+
 	            knowledgeList.innerHTML = '';
 	            if (filtered.length === 0) {
 	                knowledgeList.innerHTML = '<div class="knowledge-empty">No matching skills</div>';
 	                return;
 	            }
-	
+
 	            filtered.forEach((item) => {
 	                const div = createKnowledgeElement(item, latestEnabledKnowledgeIds.has(item.id));
 	                knowledgeList.appendChild(div);
@@ -5073,42 +7231,48 @@
             return div;
         }
 
-	        /**
-	         * Enable/disable a knowledge item for the current session.
-	         * Keeps the local cached enabled set in sync so the enabled counter stays correct
-	         * without needing a refetch.
-	         *
-	         * @param {string} knowledgeId
-	         * @param {boolean} enabled
-	         * @returns {Promise<boolean>} true on success
-	         */
-	        async function toggleKnowledge(knowledgeId, enabled) {
-            if (!sessionId) return;
+        /**
+         * Enable/disable a knowledge item for the current session.
+         * Keeps the local cached enabled set in sync so the enabled counter stays correct
+         * without needing a refetch.
+         *
+         * @param {string} knowledgeId
+         * @param {boolean} enabled
+         * @returns {Promise<boolean>} true on success
+         */
+        async function toggleKnowledge(knowledgeId, enabled) {
+            console.log('[Knowledge] toggleKnowledge called:', { knowledgeId, enabled, sessionId });
+            if (!sessionId) {
+                console.warn('[Knowledge] No sessionId for toggle');
+                return false;
+            }
             try {
+                console.log('[Knowledge] Invoking set_knowledge_enabled...');
                 await window.__TAURI__.core.invoke('set_knowledge_enabled', {
-	                    sessionId: sessionId,
-	                    knowledgeId: knowledgeId,
+                    session_id: sessionId,
+                    knowledge_id: knowledgeId,
                     enabled: enabled
                 });
+                console.log('[Knowledge] set_knowledge_enabled succeeded');
 
-	                if (typeof knowledgeId === 'string' && knowledgeId.length > 0) {
-	                    if (enabled) latestEnabledKnowledgeIds.add(knowledgeId);
-	                    else latestEnabledKnowledgeIds.delete(knowledgeId);
-	                    updateKnowledgeEnabledCount(latestEnabledKnowledgeIds);
-	                }
-	                return true;
+                if (typeof knowledgeId === 'string' && knowledgeId.length > 0) {
+                    if (enabled) latestEnabledKnowledgeIds.add(knowledgeId);
+                    else latestEnabledKnowledgeIds.delete(knowledgeId);
+                    updateKnowledgeEnabledCount(latestEnabledKnowledgeIds);
+                }
+                return true;
             } catch (e) {
-                console.error('Failed to toggle knowledge:', e);
+                console.error('[Knowledge] Failed to toggle knowledge:', e);
                 alert('Failed to update knowledge: ' + e);
                 // Reload to reset checkbox state
                 await loadKnowledge();
-	                return false;
+                return false;
             }
         }
 
         // Event listeners
         knowledgePanelBtn?.addEventListener('click', () => {
-            if (knowledgePanel.classList.contains('open')) {
+            if (knowledgePanel?.classList.contains('open')) {
                 closeKnowledgePanel();
             } else {
                 openKnowledgePanel();
@@ -5117,7 +7281,7 @@
 
         knowledgePanelClose?.addEventListener('click', closeKnowledgePanel);
         knowledgePanelOverlay?.addEventListener('click', closeKnowledgePanel);
-	
+
 	        // “Skills” search
 	        knowledgeSearch?.addEventListener('input', () => {
 	            renderKnowledgeFiltered();
@@ -5130,11 +7294,11 @@
 	            }
 	        });
 
-	        // Keyboard shortcut: Ctrl/Cmd + Shift + K
-        document.addEventListener('keydown', (e) => {
-	            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'k') {
+	        // Keyboard shortcut: Ctrl/Cmd + S (opens Knowledge/Skills panel)
+	        document.addEventListener('keydown', (e) => {
+	            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 's') {
                 e.preventDefault();
-                if (knowledgePanel.classList.contains('open')) {
+                if (knowledgePanel?.classList.contains('open')) {
                     closeKnowledgePanel();
                 } else {
                     openKnowledgePanel();
