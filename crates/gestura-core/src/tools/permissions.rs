@@ -9,6 +9,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
+/// Default maximum number of audit log entries retained in memory.
+const DEFAULT_MAX_AUDIT_ENTRIES: usize = 1_000;
+
 /// A permission grant
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Permission {
@@ -39,6 +42,26 @@ pub struct PermissionCheck {
     pub reason: String,
 }
 
+/// Audit log entry for a permission check.
+///
+/// This is an in-memory, best-effort trail intended for observability and
+/// debugging (e.g. showing why a tool action was allowed or denied).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionAuditEntry {
+    /// When the check occurred.
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Tool name (e.g. "file", "shell").
+    pub tool: String,
+    /// Action name (e.g. "read", "write").
+    pub action: String,
+    /// Optional resource being checked (e.g. a path or command).
+    pub resource: Option<String>,
+    /// Whether the check was allowed.
+    pub allowed: bool,
+    /// Human-readable reason for the decision.
+    pub reason: String,
+}
+
 /// Persisted permission state
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct PermissionState {
@@ -49,6 +72,8 @@ struct PermissionState {
 pub struct PermissionManager {
     permissions: RwLock<HashMap<String, HashSet<Permission>>>,
     config_path: PathBuf,
+    audit_log: RwLock<Vec<PermissionAuditEntry>>,
+    max_audit_entries: usize,
 }
 
 impl Permission {
@@ -80,6 +105,10 @@ impl Default for PermissionManager {
 }
 
 impl PermissionManager {
+    /// Create a new permission manager.
+    ///
+    /// Loads persisted permissions from `~/.config/gestura/permissions.json` (or
+    /// the platform equivalent). The audit log is kept in-memory only.
     pub fn new() -> Self {
         let config_path = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -94,9 +123,48 @@ impl PermissionManager {
         let manager = Self {
             permissions: RwLock::new(HashMap::new()),
             config_path,
+            audit_log: RwLock::new(Vec::new()),
+            max_audit_entries: DEFAULT_MAX_AUDIT_ENTRIES,
         };
         let _ = manager.load();
         manager
+    }
+
+    /// Return a snapshot of the permission audit log.
+    pub fn audit_log(&self) -> Result<Vec<PermissionAuditEntry>> {
+        let log = self
+            .audit_log
+            .read()
+            .map_err(|e| AppError::Io(std::io::Error::other(format!("Lock error: {e}"))))?;
+        Ok(log.clone())
+    }
+
+    /// Clear the permission audit log.
+    ///
+    /// Returns the number of entries removed.
+    pub fn clear_audit_log(&self) -> Result<usize> {
+        let mut log = self
+            .audit_log
+            .write()
+            .map_err(|e| AppError::Io(std::io::Error::other(format!("Lock error: {e}"))))?;
+        let removed = log.len();
+        log.clear();
+        Ok(removed)
+    }
+
+    /// Record an audit entry, trimming the log to the configured maximum.
+    fn push_audit_entry(&self, entry: PermissionAuditEntry) {
+        let Ok(mut log) = self.audit_log.write() else {
+            return;
+        };
+
+        log.push(entry);
+
+        // Trim oldest entries if we exceed capacity.
+        if self.max_audit_entries > 0 && log.len() > self.max_audit_entries {
+            let overflow = log.len() - self.max_audit_entries;
+            log.drain(0..overflow);
+        }
     }
 
     /// Load permissions from disk
@@ -260,6 +328,9 @@ impl PermissionManager {
         let key = format!("{tool}:{action}");
         let now = chrono::Utc::now();
 
+        let mut allowed = false;
+        let mut reason = "No matching permission found".to_string();
+
         if let Some(perm_set) = perms.get(&key) {
             for perm in perm_set {
                 // Check expiry
@@ -294,27 +365,39 @@ impl PermissionManager {
                         scope = ?perm.scope,
                         "Permission check: ALLOWED"
                     );
-                    return Ok(PermissionCheck {
-                        tool: tool.to_string(),
-                        action: action.to_string(),
-                        allowed: true,
-                        reason: "Permission granted".to_string(),
-                    });
+                    allowed = true;
+                    reason = "Permission granted".to_string();
+                    break;
                 }
             }
         }
 
-        tracing::debug!(
-            tool = %tool,
-            action = %action,
-            resource = ?resource,
-            "Permission check: DENIED (no matching permission)"
-        );
+        if allowed {
+            // already logged as allowed above
+        } else {
+            tracing::debug!(
+                tool = %tool,
+                action = %action,
+                resource = ?resource,
+                "Permission check: DENIED (no matching permission)"
+            );
+        }
+
+        // Best-effort audit trail (in-memory).
+        self.push_audit_entry(PermissionAuditEntry {
+            timestamp: chrono::Utc::now(),
+            tool: tool.to_string(),
+            action: action.to_string(),
+            resource: resource.map(|r| r.to_string()),
+            allowed,
+            reason: reason.clone(),
+        });
+
         Ok(PermissionCheck {
             tool: tool.to_string(),
             action: action.to_string(),
-            allowed: false,
-            reason: "No matching permission found".to_string(),
+            allowed,
+            reason,
         })
     }
 
@@ -383,5 +466,22 @@ mod tests {
         // List should work even if empty
         let perms = manager.list().unwrap();
         assert!(perms.is_empty() || !perms.is_empty()); // Just check it doesn't panic
+    }
+
+    #[test]
+    fn permission_checks_are_audited() {
+        let manager = PermissionManager::new();
+        manager.clear_audit_log().unwrap();
+
+        // Any check (allowed or denied) should produce an audit entry.
+        let _ = manager
+            .check("file", "read", Some("/tmp/test.txt"))
+            .unwrap();
+
+        let log = manager.audit_log().unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].tool, "file");
+        assert_eq!(log[0].action, "read");
+        assert_eq!(log[0].resource.as_deref(), Some("/tmp/test.txt"));
     }
 }
