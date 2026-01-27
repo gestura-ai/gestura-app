@@ -2,60 +2,22 @@
 //!
 //! Wires AgentManager/AgentSpawner into the main workflow with tool calling,
 //! MCP integration, delegated tasks, and observability.
+//!
+//! Uses core types from gestura_core::agents for DelegatedTask, TaskResult,
+//! and OrchestratorToolCall. The orchestrator itself stays in GUI due to
+//! Tauri AppHandle dependencies for UI event emission.
 
 use crate::AppConfig;
 use crate::agents::AgentManager;
 use crate::mcp_server::McpServer;
 use gestura_core::tools::PermissionManager;
 use gestura_core::{AgentPipeline, AgentRequest, RequestSource};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 
-/// Task that can be delegated to a subagent
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DelegatedTask {
-    /// Unique task identifier
-    pub id: String,
-    /// Agent ID to delegate to
-    pub agent_id: String,
-    /// Task description/prompt
-    pub prompt: String,
-    /// Optional context from parent
-    pub context: Option<serde_json::Value>,
-    /// Required tools for the task
-    pub required_tools: Vec<String>,
-    /// Priority (lower = higher priority)
-    pub priority: u8,
-    /// Session ID for task panel integration (optional for backward compat)
-    #[serde(default)]
-    pub session_id: Option<String>,
-    /// Human-readable task name for UI display
-    #[serde(default)]
-    pub name: Option<String>,
-}
-
-/// Result from a delegated task
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskResult {
-    pub task_id: String,
-    pub agent_id: String,
-    pub success: bool,
-    pub output: String,
-    pub tool_calls: Vec<ToolCallRecord>,
-    pub duration_ms: u64,
-}
-
-/// Record of a tool call during task execution
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCallRecord {
-    pub tool_name: String,
-    pub input: serde_json::Value,
-    pub output: serde_json::Value,
-    pub success: bool,
-    pub duration_ms: u64,
-}
+// Re-export core types for backwards compatibility
+pub use gestura_core::agents::{DelegatedTask, OrchestratorToolCall, TaskResult};
 
 /// Orchestrator for coordinating subagents, tool calls, and MCP integration
 pub struct AgentOrchestrator {
@@ -93,7 +55,11 @@ impl AgentOrchestrator {
     }
 
     /// Create a new orchestrator with AppHandle for UI integration
-    pub fn new_with_app(agent_manager: AgentManager, config: AppConfig, app: tauri::AppHandle) -> Self {
+    pub fn new_with_app(
+        agent_manager: AgentManager,
+        config: AppConfig,
+        app: tauri::AppHandle,
+    ) -> Self {
         let (result_tx, result_rx) = mpsc::channel(100);
         Self {
             agent_manager,
@@ -169,7 +135,9 @@ impl AgentOrchestrator {
         }
 
         // Create UI task if session_id and app_handle are available
-        let ui_task_id: Option<String> = if let (Some(sid), Some(app)) = (&session_id, &self.app_handle) {
+        let ui_task_id: Option<String> = if let (Some(sid), Some(app)) =
+            (&session_id, &self.app_handle)
+        {
             let task_name = task.name.clone().unwrap_or_else(|| {
                 // Generate a name from the prompt (first 50 chars)
                 let prompt_preview = task.prompt.chars().take(50).collect::<String>();
@@ -321,7 +289,7 @@ async fn execute_delegated_task(
     agent_manager: &AgentManager,
     config: &AppConfig,
     task: &DelegatedTask,
-) -> (Result<String, String>, Vec<ToolCallRecord>) {
+) -> (Result<String, String>, Vec<OrchestratorToolCall>) {
     // Build prompt with context
     let full_prompt = if let Some(ctx) = &task.context {
         format!(
@@ -357,7 +325,7 @@ async fn execute_delegated_task(
     match result {
         Ok(response) => {
             // Convert pipeline tool calls to orchestrator format
-            let tool_calls: Vec<ToolCallRecord> = response
+            let tool_calls: Vec<OrchestratorToolCall> = response
                 .tool_calls
                 .into_iter()
                 .map(|tc| {
@@ -379,7 +347,7 @@ async fn execute_delegated_task(
                         }
                     };
 
-                    ToolCallRecord {
+                    OrchestratorToolCall {
                         tool_name: tc.name,
                         input,
                         output,
