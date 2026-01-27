@@ -31,6 +31,7 @@ pub mod integrator;
 pub mod lifecycle;
 pub mod notifications;
 pub mod prompts;
+pub mod server;
 pub mod types;
 
 // Re-export commonly used types
@@ -45,6 +46,10 @@ pub use notifications::{
     ProgressTracker, create_notification_channel,
 };
 pub use prompts::{PromptRegistry, RegisteredPrompt};
+pub use server::{
+    JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpRequestContext, McpResourceHandler,
+    McpServer, McpToolHandler,
+};
 pub use types::{
     // Notifications
     CancelledNotification,
