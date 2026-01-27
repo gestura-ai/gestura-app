@@ -3,7 +3,9 @@
 //! This module contains the core application state machine for the TUI,
 //! including mode management, message handling, and state transitions.
 
+use chrono::Utc;
 use gestura_core::AppConfig;
+use gestura_core::chat_sessions::MessageSource;
 use ratatui::style::Color;
 use ratatui::widgets::ListState;
 
@@ -461,7 +463,12 @@ pub struct LayoutAreas {
 impl TuiApp {
     /// Create a new TUI application
     pub fn new(session: ChatSession, config: AppConfig, system_prompt: Option<String>) -> Self {
-        let messages: Vec<TuiMessage> = session.messages.iter().map(TuiMessage::from).collect();
+        let messages: Vec<TuiMessage> = session
+            .state
+            .messages
+            .iter()
+            .map(TuiMessage::from)
+            .collect();
 
         let mut message_list_state = ListState::default();
         // Select the last message if any exist
@@ -699,7 +706,22 @@ impl TuiApp {
             is_streaming: false,
             is_error: false,
         });
-        self.session.add_message(role, content, None);
+
+        match role {
+            "user" => self.session.add_user_message(content, MessageSource::Text),
+            "assistant" => self.session.add_assistant_message(content, None),
+            other => {
+                // Best-effort persistence for uncommon roles.
+                self.session.state.messages.push(ChatMessage {
+                    role: other.to_string(),
+                    content: content.to_string(),
+                    tool_call_id: None,
+                    thinking: None,
+                    timestamp: Utc::now(),
+                    source: MessageSource::System,
+                });
+            }
+        }
 
         // Auto-scroll to bottom unless user has scrolled up
         if !self.user_scrolled {
@@ -778,9 +800,26 @@ impl TuiApp {
     pub fn finalize_streaming_message(&mut self) {
         if let Some(last) = self.messages.last_mut() {
             last.is_streaming = false;
+
             // Also save to session
-            self.session
-                .add_message(&last.role, &last.content, last.thinking.clone());
+            match last.role.as_str() {
+                "assistant" => self
+                    .session
+                    .add_assistant_message(&last.content, last.thinking.clone()),
+                "user" => self
+                    .session
+                    .add_user_message(&last.content, MessageSource::Text),
+                other => {
+                    self.session.state.messages.push(ChatMessage {
+                        role: other.to_string(),
+                        content: last.content.clone(),
+                        tool_call_id: None,
+                        thinking: last.thinking.clone(),
+                        timestamp: Utc::now(),
+                        source: MessageSource::System,
+                    });
+                }
+            }
         }
     }
 
@@ -1181,10 +1220,11 @@ impl TuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::chat::new_cli_session;
 
     /// Helper to create a test app with a mock session
     fn create_test_app() -> TuiApp {
-        let session = crate::commands::chat::ChatSession::new(None);
+        let session = new_cli_session(None).unwrap();
         let config = AppConfig::default();
         TuiApp::new(session, config, None)
     }

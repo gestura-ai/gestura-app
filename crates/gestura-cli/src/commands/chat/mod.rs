@@ -1,22 +1,21 @@
 //! Interactive chat command
 
 use super::Result;
-use chrono::{DateTime, Datelike, Local};
 use colored::Colorize;
 use gestura_core::{
-    AgentPipeline, AgentRequest, AppConfig, AudioCaptureConfig, CancellationToken, RequestSource,
-    StreamChunk, get_speech_processor,
+    AgentPipeline, AgentRequest, AppConfig, AudioCaptureConfig, CancellationToken, PermissionLevel,
+    RequestSource, SessionToolSettings, StreamChunk,
+    chat_sessions::{ChatSessionStore, FileChatSessionStore, MessageSource},
+    get_speech_processor,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 mod tui;
 
@@ -31,178 +30,117 @@ pub struct ChatOptions<'a> {
     pub system: Option<&'a str>,
 }
 
-/// Message in a chat session
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ChatMessage {
-    role: String,
-    content: String,
-    #[serde(default)]
-    thinking: Option<String>,
-    timestamp: DateTime<Local>,
+/// Persisted chat message.
+///
+/// This is a re-export of the canonical message type from `gestura-core`, so the
+/// CLI (including the TUI) does not maintain a divergent persistence model.
+pub use gestura_core::chat_sessions::ConversationMessage as ChatMessage;
+
+/// Persisted chat session.
+///
+/// The CLI uses the canonical core session type; all persistence is performed
+/// via the core-backed `FileChatSessionStore`.
+pub use gestura_core::chat_sessions::ChatSession;
+
+/// Session listing filter options.
+pub use gestura_core::chat_sessions::SessionFilter;
+
+/// Session metadata returned by `list_sessions*`.
+pub use gestura_core::chat_sessions::SessionInfo;
+
+/// Return the CLI session store (file-backed, one JSON file per session).
+fn session_store() -> FileChatSessionStore {
+    FileChatSessionStore::new_default()
 }
 
-/// Chat session data
-#[derive(Debug, Serialize, Deserialize)]
-struct ChatSession {
-    id: String,
-    created: DateTime<Local>,
-    updated: DateTime<Local>,
-    model: Option<String>,
-    messages: Vec<ChatMessage>,
-    /// Workspace directory for sandboxed file/shell operations
-    #[serde(default)]
-    workspace_dir: Option<PathBuf>,
-}
-
-impl ChatSession {
-    fn new(model: Option<String>) -> Self {
-        let now = Local::now();
-        // Use current working directory as workspace
-        let workspace = std::env::current_dir().ok();
-        Self {
-            id: Uuid::new_v4().to_string(),
-            created: now,
-            updated: now,
-            model,
-            messages: Vec::new(),
-            workspace_dir: workspace,
+/// Create a new CLI session.
+///
+/// The CLI prefers using the current working directory as the session workspace
+/// (so file/shell tools operate in the user's project), but falls back to a
+/// sandbox workspace if the CWD cannot be determined.
+fn new_cli_session(model: Option<String>) -> Result<ChatSession> {
+    match std::env::current_dir() {
+        Ok(cwd) => ChatSession::new_with_workspace(cwd, model)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>),
+        Err(_) => {
+            ChatSession::new_sandbox(model).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
         }
     }
-
-    fn add_message(&mut self, role: &str, content: &str, thinking: Option<String>) {
-        self.messages.push(ChatMessage {
-            role: role.to_string(),
-            content: content.to_string(),
-            thinking,
-            timestamp: Local::now(),
-        });
-        self.updated = Local::now();
-    }
-
-    fn save(&self) -> Result<()> {
-        let sessions_dir = get_sessions_dir();
-        fs::create_dir_all(&sessions_dir)?;
-        let path = sessions_dir.join(format!("{}.json", self.id));
-        let json = serde_json::to_string_pretty(self)?;
-        fs::write(path, json)?;
-        Ok(())
-    }
-
-    fn load(id: &str) -> Result<Self> {
-        let path = get_sessions_dir().join(format!("{}.json", id));
-        let json = fs::read_to_string(path)?;
-        Ok(serde_json::from_str(&json)?)
-    }
-
-    fn load_last() -> Result<Option<Self>> {
-        let sessions_dir = get_sessions_dir();
-        if !sessions_dir.exists() {
-            return Ok(None);
-        }
-
-        let mut entries: Vec<_> = fs::read_dir(&sessions_dir)?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
-            .collect();
-
-        entries.sort_by(|a, b| {
-            b.metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-                .cmp(
-                    &a.metadata()
-                        .and_then(|m| m.modified())
-                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
-                )
-        });
-
-        if let Some(entry) = entries.first() {
-            let json = fs::read_to_string(entry.path())?;
-            return Ok(Some(serde_json::from_str(&json)?));
-        }
-
-        Ok(None)
-    }
-
-    /// Delete a session by ID
-    fn delete(id: &str) -> Result<bool> {
-        let path = get_sessions_dir().join(format!("{}.json", id));
-        if path.exists() {
-            fs::remove_file(path)?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    /// Export session to a file
-    fn export(&self, path: &std::path::Path) -> Result<()> {
-        let json = serde_json::to_string_pretty(self)?;
-        fs::write(path, json)?;
-        Ok(())
-    }
 }
 
-/// Session metadata for listing
-#[derive(Debug, Clone)]
-pub struct SessionInfo {
-    pub id: String,
-    /// Creation timestamp - used for session filtering/sorting by date
-    pub created: DateTime<Local>,
-    pub updated: DateTime<Local>,
-    pub message_count: usize,
-    pub model: Option<String>,
+/// Ensure the session has tool settings configured.
+///
+/// The unified session model stores tool settings inside `ChatSession.state.tool_settings`.
+/// Older sessions (or shells that didn't initialize settings) may have this field missing.
+///
+/// Returns `true` if the session was updated.
+pub(super) fn ensure_session_tool_settings(session: &mut ChatSession, config: &AppConfig) -> bool {
+    if session.state.tool_settings.is_some() {
+        return false;
+    }
+
+    session.state.tool_settings = Some(SessionToolSettings::from_global_config(config));
+    true
 }
 
-impl SessionInfo {
-    /// Check if session was created on or after the given date
-    pub fn created_on_or_after(&self, date: DateTime<Local>) -> bool {
-        self.created >= date
-    }
+/// Derive the effective tool execution policy for an `AgentRequest`.
+///
+/// - `PermissionLevel` is used for runtime gating (sandbox/restricted/full)
+/// - `allowed_tools` is used for tool visibility to the LLM (empty = all tools)
+pub(super) fn derive_request_policy(session: &ChatSession) -> (PermissionLevel, Vec<String>) {
+    let Some(settings) = session.state.tool_settings.as_ref() else {
+        // Backstop for legacy sessions: preserve existing CLI behavior.
+        return (PermissionLevel::Restricted, Vec::new());
+    };
 
-    /// Check if session was created on or before the given date
-    pub fn created_on_or_before(&self, date: DateTime<Local>) -> bool {
-        self.created <= date
-    }
+    let permission_level = settings.permission_level.to_pipeline();
 
-    /// Check if session was created today
-    pub fn created_today(&self) -> bool {
-        self.created.date_naive() == Local::now().date_naive()
-    }
+    let mut allowed_tools: Vec<String> = settings
+        .enabled_tools
+        .iter()
+        .filter(|(_, enabled)| **enabled)
+        .map(|(tool, _)| tool.clone())
+        .collect();
+    allowed_tools.sort();
 
-    /// Check if session was created this week
-    pub fn created_this_week(&self) -> bool {
-        let now = Local::now();
-        let week_ago = now - chrono::Duration::days(7);
-        self.created >= week_ago
-    }
-
-    /// Check if session was created this month
-    pub fn created_this_month(&self) -> bool {
-        let now = Local::now();
-        self.created.year() == now.year() && self.created.month() == now.month()
-    }
+    (permission_level, allowed_tools)
 }
 
-/// Session filter options for listing
-#[derive(Debug, Clone, Default)]
-pub enum SessionFilter {
-    /// No filter - return all sessions
-    #[default]
-    All,
-    /// Sessions created today
-    Today,
-    /// Sessions created in the last 7 days
-    ThisWeek,
-    /// Sessions created this month
-    ThisMonth,
-    /// Sessions created within a custom date range.
-    /// TODO: Add CLI parsing for custom date ranges (e.g., /session list from:2024-01-01 to:2024-12-31)
-    #[allow(dead_code)]
-    DateRange {
-        from: Option<DateTime<Local>>,
-        to: Option<DateTime<Local>>,
-    },
+/// Persist a session to disk.
+fn save_cli_session(session: &ChatSession) -> Result<()> {
+    session_store()
+        .save(session)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+}
+
+/// Load a session by ID.
+fn load_cli_session(id: &str) -> Result<ChatSession> {
+    session_store()
+        .load(id)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+}
+
+/// Load the most recently active session, if any.
+fn load_last_cli_session() -> Result<Option<ChatSession>> {
+    session_store()
+        .load_last()
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+}
+
+/// Delete a session by ID.
+fn delete_cli_session(id: &str) -> Result<bool> {
+    session_store()
+        .delete(id)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+}
+
+/// Export a session to a specific file.
+fn export_cli_session(session: &ChatSession, path: &Path) -> Result<()> {
+    let json = session
+        .to_pretty_json()
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    fs::write(path, json)?;
+    Ok(())
 }
 
 /// List all available sessions with metadata
@@ -212,56 +150,9 @@ pub fn list_sessions() -> Result<Vec<SessionInfo>> {
 
 /// List sessions with optional date filtering
 pub fn list_sessions_filtered(filter: SessionFilter) -> Result<Vec<SessionInfo>> {
-    let sessions_dir = get_sessions_dir();
-    if !sessions_dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut sessions = Vec::new();
-    for entry in fs::read_dir(&sessions_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "json")
-            && let Ok(json) = fs::read_to_string(&path)
-            && let Ok(session) = serde_json::from_str::<ChatSession>(&json)
-        {
-            let info = SessionInfo {
-                id: session.id,
-                created: session.created,
-                updated: session.updated,
-                message_count: session.messages.len(),
-                model: session.model,
-            };
-
-            // Apply filter
-            let include = match &filter {
-                SessionFilter::All => true,
-                SessionFilter::Today => info.created_today(),
-                SessionFilter::ThisWeek => info.created_this_week(),
-                SessionFilter::ThisMonth => info.created_this_month(),
-                SessionFilter::DateRange { from, to } => {
-                    let after_from = from.is_none_or(|d| info.created_on_or_after(d));
-                    let before_to = to.is_none_or(|d| info.created_on_or_before(d));
-                    after_from && before_to
-                }
-            };
-
-            if include {
-                sessions.push(info);
-            }
-        }
-    }
-
-    // Sort by updated time, most recent first
-    sessions.sort_by(|a, b| b.updated.cmp(&a.updated));
-    Ok(sessions)
-}
-
-fn get_sessions_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("gestura")
-        .join("sessions")
+    session_store()
+        .list(filter)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
 }
 
 fn get_history_path() -> PathBuf {
@@ -319,7 +210,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
     // Load or create session
     let mut chat_session = if resume {
         if let Some(id) = session {
-            match ChatSession::load(id) {
+            match load_cli_session(id) {
                 Ok(s) => {
                     println!("{} Resuming session {}", "→".cyan(), id.dimmed());
                     s
@@ -330,7 +221,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 }
             }
         } else {
-            match ChatSession::load_last()? {
+            match load_last_cli_session()? {
                 Some(s) => {
                     println!("{} Resuming last session {}", "→".cyan(), s.id.dimmed());
                     s
@@ -340,12 +231,12 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                         "{}",
                         "No previous session found, starting new chat.".yellow()
                     );
-                    ChatSession::new(model.map(String::from))
+                    new_cli_session(model.map(String::from))?
                 }
             }
         }
     } else {
-        ChatSession::new(model.map(String::from))
+        new_cli_session(model.map(String::from))?
     };
 
     // Load config and set up provider
@@ -367,6 +258,11 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
             }
             _ => {}
         }
+    }
+
+    // Ensure persisted sessions have tool settings (migration / defaults).
+    if ensure_session_tool_settings(&mut chat_session, &config) {
+        save_cli_session(&chat_session)?;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -406,7 +302,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
     );
 
     // Workspace directory line
-    if let Some(ref workspace) = chat_session.workspace_dir {
+    if let Some(workspace) = chat_session.workspace_dir() {
         let workspace_display = workspace.display().to_string();
         let workspace_line = format!("workspace: {}", workspace_display);
         let truncated_line = if workspace_line.chars().count() > inner_width {
@@ -467,8 +363,8 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
     // ─────────────────────────────────────────────────────────────────────────
     // HISTORY: Show previous messages if resuming session
     // ─────────────────────────────────────────────────────────────────────────
-    if !chat_session.messages.is_empty() {
-        let history_header = format!("┌─ History ({} messages) ", chat_session.messages.len());
+    if chat_session.message_count() != 0 {
+        let history_header = format!("┌─ History ({} messages) ", chat_session.message_count());
         let history_padding = inner_width.saturating_sub(history_header.len()) + 3;
         println!(
             "{}{}",
@@ -476,7 +372,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
             "─".repeat(history_padding).dimmed()
         );
 
-        for msg in &chat_session.messages {
+        for msg in &chat_session.state.messages {
             let prefix = if msg.role == "user" {
                 "│ >"
             } else {
@@ -547,9 +443,9 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 let input = line.trim();
 
                 // In voice mode, empty input triggers voice recording
-                let input = if input.is_empty() && voice {
+                let (input, input_source) = if input.is_empty() && voice {
                     match record_voice_input(&rt) {
-                        Ok(text) => text,
+                        Ok(text) => (text, MessageSource::Voice),
                         Err(e) => {
                             eprintln!("{}: {}", "Voice error".red(), e);
                             continue;
@@ -558,7 +454,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 } else if input.is_empty() {
                     continue;
                 } else {
-                    input.to_string()
+                    (input.to_string(), MessageSource::Text)
                 };
 
                 // Add to history
@@ -571,7 +467,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                     let args: Vec<&str> = parts.collect();
                     match cmd.to_ascii_lowercase().as_str() {
                         "/exit" | "/quit" | "/q" => {
-                            chat_session.save()?;
+                            save_cli_session(&chat_session)?;
                             println!();
                             println!(
                                 "{} {} {}",
@@ -719,6 +615,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                             println!();
                             // Get conversation history
                             let history: Vec<String> = chat_session
+                                .state
                                 .messages
                                 .iter()
                                 .map(|msg| msg.content.clone())
@@ -750,8 +647,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 );
 
                                 // Add summary to session
-                                chat_session.add_message(
-                                    "assistant",
+                                chat_session.add_assistant_message(
                                     &format!(
                                         "## Conversation Summary\n\n{}\n\n---\n\n*Summarized {} messages*",
                                         summary,
@@ -772,8 +668,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                             match *subcommand {
                                 "list" => {
                                     // List all memory bank entries
-                                    if let Some(workspace_dir) = chat_session.workspace_dir.as_ref()
-                                    {
+                                    if let Some(workspace_dir) = chat_session.workspace_dir() {
                                         let result = tokio::runtime::Runtime::new()
                                             .unwrap()
                                             .block_on(gestura_core::memory_bank::list_memory_bank(
@@ -836,9 +731,9 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 }
                                 "save" => {
                                     // Save current context to memory bank
-                                    if let Some(workspace_dir) = chat_session.workspace_dir.as_ref()
-                                    {
+                                    if let Some(workspace_dir) = chat_session.workspace_dir() {
                                         let history: Vec<String> = chat_session
+                                            .state
                                             .messages
                                             .iter()
                                             .map(|msg| msg.content.clone())
@@ -910,8 +805,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 }
                                 "clear" => {
                                     // Clear all memory bank entries
-                                    if let Some(workspace_dir) = chat_session.workspace_dir.as_ref()
-                                    {
+                                    if let Some(workspace_dir) = chat_session.workspace_dir() {
                                         let memory_dir =
                                             workspace_dir.join(".gestura").join("memory");
                                         match std::fs::remove_dir_all(&memory_dir) {
@@ -979,17 +873,19 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                             continue;
                         }
                         "/save" => {
-                            chat_session.save()?;
+                            save_cli_session(&chat_session)?;
                             println!("{} Session saved", "✓".green());
                             continue;
                         }
                         "/history" => {
                             let user_msgs = chat_session
+                                .state
                                 .messages
                                 .iter()
                                 .filter(|m| m.role == "user")
                                 .count();
                             let asst_msgs = chat_session
+                                .state
                                 .messages
                                 .iter()
                                 .filter(|m| m.role == "assistant")
@@ -1010,7 +906,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 "{}  {} {}",
                                 "│".dimmed(),
                                 "Total Messages:".dimmed(),
-                                chat_session.messages.len()
+                                chat_session.message_count()
                             );
                             println!(
                                 "{}  {} {}",
@@ -1024,7 +920,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 "AI Responses:".dimmed(),
                                 asst_msgs
                             );
-                            if let Some(ref workspace) = chat_session.workspace_dir {
+                            if let Some(workspace) = chat_session.workspace_dir() {
                                 println!(
                                     "{}  {} {}",
                                     "│".dimmed(),
@@ -1041,8 +937,8 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                             continue;
                         }
                         "/new" => {
-                            chat_session.save()?;
-                            chat_session = ChatSession::new(model.map(String::from));
+                            save_cli_session(&chat_session)?;
+                            chat_session = new_cli_session(model.map(String::from))?;
                             println!();
                             println!(
                                 "{} {} {}",
@@ -1068,7 +964,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 }
 
                 // Add user message to session
-                chat_session.add_message("user", &input, None);
+                chat_session.add_user_message(&input, input_source);
 
                 // Handle explicit /tools command only (not natural language questions)
                 // Natural language questions should go through the LLM for dynamic, session-aware responses
@@ -1082,7 +978,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                     );
                     println!();
                     println!("{}", text);
-                    chat_session.add_message("assistant", &text, None);
+                    chat_session.add_assistant_message(&text, None);
                     continue;
                 }
 
@@ -1091,6 +987,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                     println!();
                     // Get conversation history
                     let history: Vec<String> = chat_session
+                        .state
                         .messages
                         .iter()
                         .map(|msg| msg.content.clone())
@@ -1118,8 +1015,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                         );
 
                         // Add summary to session
-                        chat_session.add_message(
-                            "assistant",
+                        chat_session.add_assistant_message(
                             &format!(
                                 "## Conversation Summary\n\n{}\n\n---\n\n*Summarized {} messages*",
                                 summary,
@@ -1142,7 +1038,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                     match *subcommand {
                         "list" => {
                             // List all memory bank entries
-                            if let Some(workspace_dir) = chat_session.workspace_dir.as_ref() {
+                            if let Some(workspace_dir) = chat_session.workspace_dir() {
                                 let result = tokio::runtime::Runtime::new().unwrap().block_on(
                                     gestura_core::memory_bank::list_memory_bank(workspace_dir),
                                 );
@@ -1201,8 +1097,9 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                         }
                         "save" => {
                             // Save current context to memory bank
-                            if let Some(workspace_dir) = chat_session.workspace_dir.as_ref() {
+                            if let Some(workspace_dir) = chat_session.workspace_dir() {
                                 let history: Vec<String> = chat_session
+                                    .state
                                     .messages
                                     .iter()
                                     .map(|msg| msg.content.clone())
@@ -1267,7 +1164,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                         }
                         "clear" => {
                             // Clear all memory bank entries
-                            if let Some(workspace_dir) = chat_session.workspace_dir.as_ref() {
+                            if let Some(workspace_dir) = chat_session.workspace_dir() {
                                 let memory_dir = workspace_dir.join(".gestura").join("memory");
                                 match std::fs::remove_dir_all(&memory_dir) {
                                     Ok(_) => {
@@ -1330,19 +1227,8 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 }
 
                 // Build conversation history for the AgentPipeline
-                let history: Vec<gestura_core::Message> = chat_session
-                    .messages
-                    .iter()
-                    .rev()
-                    .take(10)
-                    .rev()
-                    .map(|msg| gestura_core::Message {
-                        role: msg.role.clone(),
-                        content: msg.content.clone(),
-                        tool_call_id: None,
-                        thinking: msg.thinking.clone(),
-                    })
-                    .collect();
+                let history: Vec<gestura_core::Message> =
+                    chat_session.to_pipeline_messages_limited(10);
 
                 // ─────────────────────────────────────────────────────────────
                 // AI RESPONSE: Show thinking indicator then response
@@ -1354,7 +1240,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                     .with_history(history);
 
                 // Set workspace directory for sandboxed operations
-                if let Some(ref workspace) = chat_session.workspace_dir {
+                if let Some(workspace) = chat_session.workspace_dir() {
                     request = request.with_workspace(workspace.clone());
                 }
 
@@ -1371,10 +1257,13 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                     .clone()
                     .or_else(|| model_for_provider(&config, &provider_name))
                     .unwrap_or_default();
+                let (permission_level, allowed_tools) = derive_request_policy(&chat_session);
                 request = request
                     .with_session_llm_config(provider_name, model_name)
-                    // CLI currently has no per-session permission UI; default to a conservative label.
-                    .with_permission_level(gestura_core::pipeline::PermissionLevel::Restricted);
+                    .with_permission_level(permission_level);
+                if !allowed_tools.is_empty() {
+                    request = request.with_allowed_tools(allowed_tools);
+                }
 
                 // Stream response chunks as they arrive (CLI basic mode should feel interactive).
                 println!();
@@ -1596,8 +1485,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                             );
                         }
 
-                        chat_session.add_message(
-                            "assistant",
+                        chat_session.add_assistant_message(
                             &agent_response.content,
                             agent_response.thinking,
                         );
@@ -1610,8 +1498,8 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 println!();
 
                 // Auto-save periodically
-                if chat_session.messages.len() % 5 == 0 {
-                    let _ = chat_session.save();
+                if chat_session.message_count() % 5 == 0 {
+                    let _ = save_cli_session(&chat_session);
                 }
             }
             Err(ReadlineError::Interrupted) => {
@@ -1638,13 +1526,13 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                     "{}",
                     "╰─────────────────────────────────────────────────────────────╯".dimmed()
                 );
-                chat_session.save()?;
+                save_cli_session(&chat_session)?;
                 break;
             }
             Err(ReadlineError::Eof) => {
                 println!();
                 println!("{} {}", "✓".green(), "Session saved. Goodbye!".dimmed());
-                chat_session.save()?;
+                save_cli_session(&chat_session)?;
                 break;
             }
             Err(err) => {

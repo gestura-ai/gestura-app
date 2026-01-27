@@ -39,6 +39,7 @@ use app::ConfirmAction;
 use std::io;
 use std::time::Duration;
 
+use chrono::Local;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture},
     execute,
@@ -50,7 +51,7 @@ use gestura_core::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 
-use super::{ChatOptions, ChatSession, Result};
+use super::{ChatOptions, Result};
 
 /// Streaming state for async LLM responses
 struct StreamingState {
@@ -67,15 +68,16 @@ struct StreamingState {
 /// Run the TUI chat interface
 pub fn run_tui(opts: ChatOptions<'_>) -> Result<()> {
     // Load or create session
-    let session = if opts.resume {
+    let mut session = if opts.resume {
         if let Some(id) = opts.session {
-            ChatSession::load(id)?
+            super::load_cli_session(id)?
+        } else if let Some(last) = super::load_last_cli_session()? {
+            last
         } else {
-            ChatSession::load_last()?
-                .unwrap_or_else(|| ChatSession::new(opts.model.map(String::from)))
+            super::new_cli_session(opts.model.map(String::from))?
         }
     } else {
-        ChatSession::new(opts.model.map(String::from))
+        super::new_cli_session(opts.model.map(String::from))?
     };
 
     // Load config
@@ -97,6 +99,11 @@ pub fn run_tui(opts: ChatOptions<'_>) -> Result<()> {
             }
             _ => {}
         }
+    }
+
+    // Ensure persisted sessions have tool settings (migration / defaults).
+    if super::ensure_session_tool_settings(&mut session, &config) {
+        super::save_cli_session(&session)?;
     }
 
     // Create app state
@@ -129,7 +136,7 @@ pub fn run_tui(opts: ChatOptions<'_>) -> Result<()> {
 
     // Save session on exit unless explicitly suppressed ("quit without save").
     if !app.skip_save_on_exit {
-        app.session.save()?;
+        super::save_cli_session(&app.session)?;
     }
 
     result
@@ -446,6 +453,7 @@ fn run_main_loop(
                         // Build context from session history
                         let session_history: Vec<(String, String)> = app
                             .session
+                            .state
                             .messages
                             .iter()
                             .rev()
@@ -475,14 +483,14 @@ fn run_main_loop(
                                 // Replace with enhanced prompt
                                 app.input = enhanced;
                                 app.cursor_pos = app.input.len();
-                                app.set_status(&format!(
+                                app.set_status(format!(
                                     "✨ Prompt enhanced! (was {} chars, now {} chars) - Press Cmd+Z to undo",
                                     original_input.len(),
                                     app.input.len()
                                 ));
                             }
                             Err(e) => {
-                                app.set_error(&format!("Enhancement failed: {}", e));
+                                app.set_error(format!("Enhancement failed: {}", e));
                             }
                         }
                     } else if app.input.is_empty() {
@@ -521,21 +529,17 @@ fn start_streaming_message(
     app.add_streaming_message();
 
     // Build conversation history for the pipeline
-    let msg_count = app.session.messages.len();
+    let msg_count = app.session.state.messages.len();
     let history: Vec<gestura_core::Message> = app
         .session
+        .state
         .messages
         .iter()
         .take(msg_count.saturating_sub(1))
         .rev()
         .take(10)
         .rev()
-        .map(|msg| gestura_core::Message {
-            role: msg.role.clone(),
-            content: msg.content.clone(),
-            tool_call_id: None,
-            thinking: None,
-        })
+        .map(|msg| msg.to_pipeline_message())
         .collect();
 
     // Build the agent request
@@ -550,7 +554,7 @@ fn start_streaming_message(
 
     // Attach session environment metadata for agent awareness.
     request = request.with_session(app.session.id.clone());
-    if let Some(ref ws) = app.session.workspace_dir {
+    if let Some(ws) = app.session.workspace_dir() {
         request = request.with_workspace(ws.clone());
     }
     let provider_name = app.config.llm.primary.clone();
@@ -560,9 +564,13 @@ fn start_streaming_message(
         .clone()
         .or_else(|| model_for_provider(&app.config, &provider_name))
         .unwrap_or_default();
+    let (permission_level, allowed_tools) = super::derive_request_policy(&app.session);
     request = request
         .with_session_llm_config(provider_name, model_name)
-        .with_permission_level(gestura_core::pipeline::PermissionLevel::Restricted);
+        .with_permission_level(permission_level);
+    if !allowed_tools.is_empty() {
+        request = request.with_allowed_tools(allowed_tools);
+    }
 
     // Add conversation history
     request = request.with_history(history);
@@ -634,13 +642,17 @@ fn handle_command(app: &mut TuiApp, command: &str) -> Result<Option<Action>> {
             app.show_confirm(ConfirmAction::ClearMessages);
         }
         "/save" => {
-            app.session.save()?;
+            super::save_cli_session(&app.session)?;
             app.set_status("Session saved");
         }
         "/new" => {
             if confirmed {
-                app.session.save()?;
-                app.session = ChatSession::new(app.session.model.clone());
+                super::save_cli_session(&app.session)?;
+                let mut new_session = super::new_cli_session(app.session.model.clone())?;
+                if super::ensure_session_tool_settings(&mut new_session, &app.config) {
+                    super::save_cli_session(&new_session)?;
+                }
+                app.session = new_session;
                 app.messages.clear();
                 app.message_list_state.select(None);
                 app.set_status(format!("New session: {}", &app.session.id[..8]));
@@ -764,8 +776,14 @@ fn handle_session_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
                                 &session.id[..8],
                                 session.message_count,
                                 model_info,
-                                session.created.format("%Y-%m-%d %H:%M"),
-                                session.updated.format("%Y-%m-%d %H:%M")
+                                session
+                                    .created_at
+                                    .with_timezone(&Local)
+                                    .format("%Y-%m-%d %H:%M"),
+                                session
+                                    .last_active
+                                    .with_timezone(&Local)
+                                    .format("%Y-%m-%d %H:%M")
                             ));
                         }
                         content.push_str("\nFilters: /session list today|week|month");
@@ -788,7 +806,7 @@ fn handle_session_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
         Some("load") | Some("switch") | Some("resume") => {
             if let Some(id) = args.get(1) {
                 // Save current session first
-                if let Err(e) = app.session.save() {
+                if let Err(e) = super::save_cli_session(&app.session) {
                     app.set_error(format!("Failed to save current session: {}", e));
                     return Ok(());
                 }
@@ -796,10 +814,14 @@ fn handle_session_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
                 // Try to load the session (support partial ID matching)
                 match find_session_by_prefix(id) {
                     Ok(Some(full_id)) => {
-                        match ChatSession::load(&full_id) {
-                            Ok(session) => {
+                        match super::load_cli_session(&full_id) {
+                            Ok(mut session) => {
+                                if super::ensure_session_tool_settings(&mut session, &app.config) {
+                                    super::save_cli_session(&session)?;
+                                }
                                 // Convert session messages to TUI messages
                                 app.messages = session
+                                    .state
                                     .messages
                                     .iter()
                                     .map(|m| app::TuiMessage {
@@ -840,7 +862,7 @@ fn handle_session_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
                 }
 
                 match find_session_by_prefix(id) {
-                    Ok(Some(full_id)) => match ChatSession::delete(&full_id) {
+                    Ok(Some(full_id)) => match super::delete_cli_session(&full_id) {
                         Ok(true) => {
                             app.set_status(format!("Deleted session: {}", &full_id[..8]));
                         }
@@ -867,12 +889,12 @@ fn handle_session_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
                 let export_path = args.get(2).map(std::path::PathBuf::from);
 
                 match find_session_by_prefix(id) {
-                    Ok(Some(full_id)) => match ChatSession::load(&full_id) {
+                    Ok(Some(full_id)) => match super::load_cli_session(&full_id) {
                         Ok(session) => {
                             let path = export_path.unwrap_or_else(|| {
                                 std::path::PathBuf::from(format!("session_{}.json", &full_id[..8]))
                             });
-                            match session.export(&path) {
+                            match super::export_cli_session(&session, &path) {
                                 Ok(()) => {
                                     app.set_status(format!("Exported to: {}", path.display()));
                                 }
@@ -896,7 +918,7 @@ fn handle_session_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
                 // Export current session
                 let path =
                     std::path::PathBuf::from(format!("session_{}.json", &app.session.id[..8]));
-                match app.session.export(&path) {
+                match super::export_cli_session(&app.session, &path) {
                     Ok(()) => {
                         app.set_status(format!("Exported current session to: {}", path.display()));
                     }
@@ -922,8 +944,14 @@ fn handle_session_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
                  Model: {}\n\
                  Messages: {} (you: {}, AI: {})",
                 session.id,
-                session.created.format("%Y-%m-%d %H:%M:%S"),
-                session.updated.format("%Y-%m-%d %H:%M:%S"),
+                session
+                    .created_at
+                    .with_timezone(&Local)
+                    .format("%Y-%m-%d %H:%M:%S"),
+                session
+                    .last_active
+                    .with_timezone(&Local)
+                    .format("%Y-%m-%d %H:%M:%S"),
                 session.model.as_deref().unwrap_or("default"),
                 app.messages.len(),
                 user_count,
