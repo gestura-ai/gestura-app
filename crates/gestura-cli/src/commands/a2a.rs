@@ -172,32 +172,25 @@ fn register_profile(id: &str, name: &str, capabilities: Option<&str>) -> Result<
 
 /// Generate a new auth token for an agent
 fn generate_token(agent_id: &str, hours: i64) -> Result<()> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     println!("{}", "Generating Auth Token".bold().cyan());
     println!("{}", "═".repeat(50));
     println!();
 
-    // Generate a pseudo-random token using system time
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-
-    let chars: Vec<char> = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-        .chars()
-        .collect();
-    let token: String = (0..64)
-        .map(|i| {
-            let idx = ((seed as usize).wrapping_mul(i + 1).wrapping_add(i * 31)) % chars.len();
-            chars[idx]
-        })
-        .collect();
+    // Core-first: token generation rules live in gestura-core.
+    let mut profile = gestura_core::a2a::AgentProfile::new(agent_id, agent_id);
+    profile.generate_token(hours);
+    let token = profile
+        .auth_token
+        .clone()
+        .expect("token should be generated");
 
     println!("{}: {}", "Agent ID".bold(), agent_id);
     println!("{}: {} hours", "Validity".bold(), hours);
     println!();
     println!("{}: {}", "Token".bold().green(), token);
+    if let Some(expires_at) = profile.token_expires_at {
+        println!("{}: {}", "Expires At".bold(), expires_at.to_rfc3339());
+    }
     println!();
     println!(
         "{}",
@@ -216,9 +209,18 @@ fn validate_token(token: &str) -> Result<()> {
     println!("{}: {}...", "Token".bold(), &token[..token.len().min(16)]);
     println!();
 
-    // Stub validation
-    println!("{}", "Note: This is a stub implementation.".yellow());
-    println!("In production, this would validate the token against the profile store.");
+    if !gestura_core::a2a::is_token_well_formed(token) {
+        println!("{}", "Invalid token format".red().bold());
+        println!(
+            "Expected an ASCII-alphanumeric bearer token (minimum length threshold not met, or invalid characters)."
+        );
+        return Ok(());
+    }
+
+    println!("{}", "Token is well-formed".green().bold());
+    println!(
+        "Note: This performs an offline format check only; remote validation requires calling profile/validate on the hosting agent."
+    );
 
     Ok(())
 }
