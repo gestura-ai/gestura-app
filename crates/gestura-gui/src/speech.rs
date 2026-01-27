@@ -119,6 +119,37 @@ impl SpeechProcessor {
         // Load configuration from AppConfig instead of using stale SpeechConfig
         let app_config = AppConfig::load();
 
+        // Resolve session-scoped voice/STT overrides for the active voice target session.
+        //
+        // Voice input is routed to the "active" chat session (focused or most-recent).
+        // If the user selected a per-session STT provider/model in the Providers panel,
+        // apply that override here before recording/transcribing.
+        let active_voice_session_id = crate::window_manager::get_active_chat_for_voice();
+        let session_voice_config = active_voice_session_id
+            .as_deref()
+            .and_then(crate::window_manager::get_session_voice_config);
+
+        let effective_voice_provider = session_voice_config
+            .as_ref()
+            .and_then(|c| c.provider.clone())
+            .unwrap_or_else(|| app_config.voice.provider.clone());
+
+        // Session-scoped model override applies primarily to OpenAI Whisper (cloud).
+        // Local model override is handled in `transcribe_audio` where the model path is needed.
+        let effective_openai_model = if effective_voice_provider == "openai" {
+            session_voice_config
+                .as_ref()
+                .and_then(|c| c.model.clone())
+                .or_else(|| app_config.voice.openai_model.clone())
+                .unwrap_or_else(|| "gpt-4o-transcribe".to_string())
+        } else {
+            app_config
+                .voice
+                .openai_model
+                .clone()
+                .unwrap_or_else(|| "gpt-4o-transcribe".to_string())
+        };
+
         // Resolve OpenAI API key with keychain fallback chain:
         // 1. Config file voice.openai_api_key
         // 2. Keychain voice_openai key
@@ -151,9 +182,17 @@ impl SpeechProcessor {
             }
         };
 
-        // Map VoiceSettings to SpeechConfig
+        tracing::info!(
+            active_voice_session_id = ?active_voice_session_id,
+            session_voice_config = ?session_voice_config,
+            effective_voice_provider = %effective_voice_provider,
+            effective_openai_model = %effective_openai_model,
+            "Resolved voice/STT config (session override + global fallback)"
+        );
+
+        // Map VoiceSettings to SpeechConfig (with session-scoped overrides applied)
         let speech_config = SpeechConfig {
-            stt_provider: match app_config.voice.provider.as_str() {
+            stt_provider: match effective_voice_provider.as_str() {
                 "local" => "local-whisper".to_string(),
                 "openai" => "openai-whisper".to_string(),
                 _ => "local-whisper".to_string(), // default to local
@@ -165,11 +204,7 @@ impl SpeechProcessor {
                 .openai_base_url
                 .clone()
                 .unwrap_or_else(|| "https://api.openai.com".to_string()),
-            openai_model: app_config
-                .voice
-                .openai_model
-                .clone()
-                .unwrap_or_else(|| "gpt-4o-transcribe".to_string()),
+            openai_model: effective_openai_model,
             anthropic_api_key: app_config
                 .llm
                 .anthropic
@@ -285,14 +320,51 @@ impl SpeechProcessor {
                     .map_err(|e| format!("Transcription failed: {}", e))
             }
             "local-whisper" => {
-                // Get the model path from app config
-                let model_path = app_config
-                    .voice
-                    .local_model_path
-                    .clone()
-                    .ok_or_else(|| {
-                        "Local Whisper model path not configured. Please set the model path in Settings > Voice > Local Whisper Model Path.".to_string()
-                    })?;
+                // Resolve the effective local Whisper model path.
+                //
+                // Priority:
+                // 1) Session-scoped override (Providers panel) via SessionVoiceConfig.model
+                //    - For local providers we store/select a *filename* (e.g. ggml-base.en.bin)
+                //      and resolve it into the global whisper models dir.
+                // 2) Global config voice.local_model_path (full path)
+                let active_voice_session_id = crate::window_manager::get_active_chat_for_voice();
+                let session_voice_config = active_voice_session_id
+                    .as_deref()
+                    .and_then(crate::window_manager::get_session_voice_config);
+
+                let session_model = session_voice_config
+                    .as_ref()
+                    .and_then(|c| c.model.clone())
+                    .filter(|m| !m.is_empty());
+
+                let model_path = if let Some(model) = session_model {
+                    // If the UI ever starts sending a full path, accept it.
+                    if model.contains('/') || model.contains('\\') {
+                        tracing::info!(
+                            active_voice_session_id = ?active_voice_session_id,
+                            model = %model,
+                            "Using session-scoped local Whisper model path (already a path)"
+                        );
+                        model
+                    } else {
+                        let resolved = AppConfig::whisper_models_dir().join(&model);
+                        tracing::info!(
+                            active_voice_session_id = ?active_voice_session_id,
+                            model_filename = %model,
+                            resolved_path = %resolved.to_string_lossy(),
+                            "Using session-scoped local Whisper model (resolved from filename)"
+                        );
+                        resolved.to_string_lossy().to_string()
+                    }
+                } else {
+                    app_config
+                        .voice
+                        .local_model_path
+                        .clone()
+                        .ok_or_else(|| {
+                            "Local Whisper model not configured. Select a model in Settings → Voice & Audio, or choose one per-session in Providers.".to_string()
+                        })?
+                };
 
                 // Verify the model file exists
                 if !std::path::Path::new(&model_path).exists() {

@@ -26,6 +26,7 @@ use crate::session_workspace::SessionWorkspace;
 use crate::streaming::{
     CancellationToken, StreamChunk, start_streaming, start_streaming_with_fallback,
 };
+use crate::tool_confirmation::TOOL_CONFIRMATIONS;
 use crate::tools::registry::{ToolDefinition, all_tools};
 
 pub use types::*;
@@ -249,6 +250,7 @@ impl AgentPipeline {
                 tx,
                 cancel_token,
                 workspace.as_ref(),
+                request.metadata.session_id.clone(),
                 request.metadata.permission_level,
             )
             .await?;
@@ -1564,6 +1566,7 @@ impl AgentPipeline {
         tx: mpsc::Sender<StreamChunk>,
         cancel_token: CancellationToken,
         workspace: Option<&SessionWorkspace>,
+        session_id: Option<String>,
         permission_level: PermissionLevel,
     ) -> Result<AgentResponse, AppError> {
         let mut response = AgentResponse {
@@ -1652,11 +1655,15 @@ impl AgentPipeline {
                         if let Some(pending) = pending_tool_call.take() {
                             self.finalize_pending_tool_call(
                                 pending,
-                                workspace,
-                                permission_level,
-                                &mut tool_calls_in_iteration,
-                                &mut response,
-                                &tx,
+                                FinalizePendingToolCallCtx {
+                                    workspace,
+                                    session_id: session_id.clone(),
+                                    permission_level,
+                                    cancel_token: &cancel_token,
+                                    tool_calls_in_iteration: &mut tool_calls_in_iteration,
+                                    response: &mut response,
+                                    tx: &tx,
+                                },
                             )
                             .await;
                         }
@@ -1679,11 +1686,15 @@ impl AgentPipeline {
                         if let Some(pending) = pending_tool_call.take() {
                             self.finalize_pending_tool_call(
                                 pending,
-                                workspace,
-                                permission_level,
-                                &mut tool_calls_in_iteration,
-                                &mut response,
-                                &tx,
+                                FinalizePendingToolCallCtx {
+                                    workspace,
+                                    session_id: session_id.clone(),
+                                    permission_level,
+                                    cancel_token: &cancel_token,
+                                    tool_calls_in_iteration: &mut tool_calls_in_iteration,
+                                    response: &mut response,
+                                    tx: &tx,
+                                },
                             )
                             .await;
                         }
@@ -1728,11 +1739,15 @@ impl AgentPipeline {
                         if let Some(pending) = pending_tool_call.take() {
                             self.finalize_pending_tool_call(
                                 pending,
-                                workspace,
-                                permission_level,
-                                &mut tool_calls_in_iteration,
-                                &mut response,
-                                &tx,
+                                FinalizePendingToolCallCtx {
+                                    workspace,
+                                    session_id: session_id.clone(),
+                                    permission_level,
+                                    cancel_token: &cancel_token,
+                                    tool_calls_in_iteration: &mut tool_calls_in_iteration,
+                                    response: &mut response,
+                                    tx: &tx,
+                                },
                             )
                             .await;
                         }
@@ -1761,11 +1776,15 @@ impl AgentPipeline {
             if let Some(pending) = pending_tool_call.take() {
                 self.finalize_pending_tool_call(
                     pending,
-                    workspace,
-                    permission_level,
-                    &mut tool_calls_in_iteration,
-                    &mut response,
-                    &tx,
+                    FinalizePendingToolCallCtx {
+                        workspace,
+                        session_id: session_id.clone(),
+                        permission_level,
+                        cancel_token: &cancel_token,
+                        tool_calls_in_iteration: &mut tool_calls_in_iteration,
+                        response: &mut response,
+                        tx: &tx,
+                    },
                 )
                 .await;
             }
@@ -1895,29 +1914,31 @@ impl AgentPipeline {
         Err(last_error.unwrap_or_else(|| AppError::Llm("All LLM providers failed".to_string())))
     }
 
-    /// Execute a tool by name with given arguments
+    /// Execute a tool by name with given arguments.
     ///
-    /// If `workspace` is provided, all file paths and shell commands are sandboxed
+    /// Note: If a workspace is provided in `ctx`, all file paths and shell commands are sandboxed
     /// to that directory. Paths outside the workspace will be rejected.
     async fn finalize_pending_tool_call(
         &self,
         pending: PendingToolCall,
-        workspace: Option<&SessionWorkspace>,
-        permission_level: PermissionLevel,
-        tool_calls_in_iteration: &mut Vec<ToolCallRecord>,
-        response: &mut AgentResponse,
-        tx: &mpsc::Sender<StreamChunk>,
+        ctx: FinalizePendingToolCallCtx<'_>,
     ) {
-        // Check if this is a write operation
-        let is_write = Self::is_write_operation(&pending.name, &pending.arguments);
+        let FinalizePendingToolCallCtx {
+            workspace,
+            session_id,
+            permission_level,
+            cancel_token,
+            tool_calls_in_iteration,
+            response,
+            tx,
+        } = ctx;
+        let policy = crate::tools::policy::evaluate_tool_call(
+            permission_level,
+            &pending.name,
+            &pending.arguments,
+        );
 
-        // Check permission level
-        if permission_level.blocks(is_write) {
-            // Tool is blocked entirely (e.g., write operation in Sandbox mode)
-            let reason = format!(
-                "Tool '{}' blocked: write operations are not allowed in Sandbox mode",
-                pending.name
-            );
+        if let crate::tools::policy::ToolCallDecision::Blocked { reason } = &policy.decision {
             let _ = tx
                 .send(StreamChunk::ToolBlocked {
                     tool_name: pending.name.clone(),
@@ -1925,11 +1946,21 @@ impl AgentPipeline {
                 })
                 .await;
 
+            // Emit a tool result so the UI can finalize the tool card.
+            let _ = tx
+                .send(StreamChunk::ToolCallResult {
+                    name: pending.name.clone(),
+                    success: false,
+                    output: reason.clone(),
+                    duration_ms: 0,
+                })
+                .await;
+
             let record = ToolCallRecord {
                 id: pending.id,
                 name: pending.name,
                 arguments: pending.arguments,
-                result: ToolResult::Skipped(reason),
+                result: ToolResult::Skipped(reason.clone()),
                 duration_ms: 0,
             };
             tool_calls_in_iteration.push(record.clone());
@@ -1937,38 +1968,78 @@ impl AgentPipeline {
             return;
         }
 
-        if permission_level.requires_confirmation(is_write) {
-            // Tool requires confirmation (write operation in Restricted mode)
-            let confirmation_id = uuid::Uuid::new_v4().to_string();
+        if let crate::tools::policy::ToolCallDecision::RequiresConfirmation(info) = &policy.decision
+        {
+            // Tool requires confirmation (write operation in Restricted mode).
+            // We pause tool execution until the UI approves/denies.
+
+            const CONFIRMATION_TIMEOUT_SECS: u64 = 300;
+            let confirmation_id = format!("tool_confirm_{}", uuid::Uuid::new_v4());
+
+            // Register pending confirmation before emitting the event, so the UI can
+            // resolve it immediately without racing.
+            let rx = TOOL_CONFIRMATIONS.register(
+                confirmation_id.clone(),
+                session_id.clone(),
+                pending.name.clone(),
+                pending.arguments.clone(),
+            );
+
             let _ = tx
                 .send(StreamChunk::ToolConfirmationRequired {
                     confirmation_id: confirmation_id.clone(),
                     tool_name: pending.name.clone(),
                     tool_args: pending.arguments.clone(),
-                    description: format!(
-                        "Tool '{}' wants to perform a write operation",
-                        pending.name
-                    ),
-                    risk_level: 2, // Medium risk for write operations
-                    category: "write".to_string(),
+                    description: info.description.clone(),
+                    risk_level: info.risk_level,
+                    category: info.category.clone(),
                 })
                 .await;
 
-            // For now, we skip the tool and let the UI handle confirmation
-            // In a full implementation, we would wait for user confirmation
-            let record = ToolCallRecord {
-                id: pending.id,
-                name: pending.name,
-                arguments: pending.arguments,
-                result: ToolResult::Skipped(format!(
-                    "Awaiting user confirmation (id: {})",
-                    confirmation_id
-                )),
-                duration_ms: 0,
+            // Await UI decision with timeout and cancellation.
+            let approved = tokio::select! {
+                decision = rx => decision.unwrap_or(false),
+                _ = tokio::time::sleep(std::time::Duration::from_secs(CONFIRMATION_TIMEOUT_SECS)) => {
+                    TOOL_CONFIRMATIONS.abandon(&confirmation_id);
+                    false
+                }
+                _ = async {
+                    while !cancel_token.is_cancelled() {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                } => {
+                    TOOL_CONFIRMATIONS.abandon(&confirmation_id);
+                    false
+                }
             };
-            tool_calls_in_iteration.push(record.clone());
-            response.tool_calls.push(record);
-            return;
+
+            if !approved {
+                let duration_ms = pending.start_time.elapsed().as_millis() as u64;
+                let msg = format!(
+                    "Skipped: tool confirmation denied/timed-out (id: {})",
+                    confirmation_id
+                );
+                let _ = tx
+                    .send(StreamChunk::ToolCallResult {
+                        name: pending.name.clone(),
+                        success: false,
+                        output: msg.clone(),
+                        duration_ms,
+                    })
+                    .await;
+
+                let record = ToolCallRecord {
+                    id: pending.id,
+                    name: pending.name,
+                    arguments: pending.arguments,
+                    result: ToolResult::Skipped(msg),
+                    duration_ms,
+                };
+                tool_calls_in_iteration.push(record.clone());
+                response.tool_calls.push(record);
+                return;
+            }
+            // Approved: continue to normal execution flow below.
         }
 
         // Execute the tool with workspace sandboxing
@@ -2002,64 +2073,6 @@ impl AgentPipeline {
 
         tool_calls_in_iteration.push(record.clone());
         response.tool_calls.push(record);
-    }
-
-    /// Determine if a tool operation is a write operation based on tool name and arguments.
-    ///
-    /// Write operations include:
-    /// - shell/bash/execute: Always considered write (can modify system state)
-    /// - file with write operation
-    /// - git with modifying operations (commit, push, checkout, etc.)
-    fn is_write_operation(tool_name: &str, arguments: &str) -> bool {
-        match tool_name {
-            // Shell commands are always considered write operations
-            "shell" | "bash" | "execute" => true,
-
-            // File operations depend on the operation type
-            "file" | "write_file" => {
-                // Check if it's a write operation
-                if let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) {
-                    let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("");
-                    matches!(
-                        op,
-                        "write" | "delete" | "create" | "append" | "move" | "copy"
-                    )
-                } else {
-                    // If we can't parse, assume write for safety
-                    tool_name == "write_file"
-                }
-            }
-            "read_file" => false,
-
-            // Git operations depend on the operation type
-            "git" => {
-                if let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) {
-                    let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("");
-                    matches!(
-                        op,
-                        "commit"
-                            | "push"
-                            | "pull"
-                            | "checkout"
-                            | "merge"
-                            | "rebase"
-                            | "reset"
-                            | "stash"
-                            | "branch"
-                            | "add"
-                            | "rm"
-                    )
-                } else {
-                    false
-                }
-            }
-
-            // Web and code tools are read-only
-            "web" | "web_search" | "code" => false,
-
-            // Unknown tools are considered read-only by default
-            _ => false,
-        }
     }
 
     async fn execute_tool(
@@ -2854,6 +2867,20 @@ struct PendingToolCall {
     start_time: Instant,
 }
 
+/// Context used by `AgentPipeline::finalize_pending_tool_call`.
+///
+/// This bundles together the mutable per-iteration state and runtime references required to
+/// complete a pending tool call (permission checks, execution, streaming events, and recording).
+struct FinalizePendingToolCallCtx<'a> {
+    workspace: Option<&'a SessionWorkspace>,
+    session_id: Option<String>,
+    permission_level: PermissionLevel,
+    cancel_token: &'a CancellationToken,
+    tool_calls_in_iteration: &'a mut Vec<ToolCallRecord>,
+    response: &'a mut AgentResponse,
+    tx: &'a mpsc::Sender<StreamChunk>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2934,6 +2961,54 @@ mod tests {
         assert!(args.contains("\"operation\":\"read\""));
         assert!(args.contains("\"path\":\"foo.txt\""));
         assert!(prefix.to_lowercase().contains("file"));
+    }
+
+    #[test]
+    fn is_write_operation_classifies_file_operations() {
+        let read = serde_json::json!({"operation": "read", "path": "foo.txt"}).to_string();
+        assert!(!crate::tools::policy::is_write_operation("file", &read));
+
+        let list = serde_json::json!({"operation": "list", "path": "."}).to_string();
+        assert!(!crate::tools::policy::is_write_operation("file", &list));
+
+        let search =
+            serde_json::json!({"operation": "search", "path": ".", "pattern": "foo"}).to_string();
+        assert!(!crate::tools::policy::is_write_operation("file", &search));
+
+        let write = serde_json::json!({"operation": "write", "path": "foo.txt", "content": "hi"})
+            .to_string();
+        assert!(crate::tools::policy::is_write_operation("file", &write));
+
+        let edit =
+            serde_json::json!({"operation": "edit", "path": "foo.txt", "old": "a", "new": "b"})
+                .to_string();
+        assert!(crate::tools::policy::is_write_operation("file", &edit));
+
+        // Mirror the defaulting behavior: content without operation is treated as write.
+        let implicit_write = serde_json::json!({"path": "foo.txt", "content": "hi"}).to_string();
+        assert!(crate::tools::policy::is_write_operation(
+            "file",
+            &implicit_write
+        ));
+    }
+
+    #[test]
+    fn is_write_operation_classifies_shell_commands_conservatively() {
+        let pwd = serde_json::json!({"command": "pwd"}).to_string();
+        assert!(!crate::tools::policy::is_write_operation("shell", &pwd));
+
+        let ls = serde_json::json!({"command": "ls -la"}).to_string();
+        assert!(!crate::tools::policy::is_write_operation("shell", &ls));
+
+        let echo = serde_json::json!({"command": "echo hi"}).to_string();
+        assert!(!crate::tools::policy::is_write_operation("shell", &echo));
+
+        let redirect = serde_json::json!({"command": "echo hi > out.txt"}).to_string();
+        assert!(crate::tools::policy::is_write_operation("shell", &redirect));
+
+        // Unknown commands are treated as write for safety.
+        let unknown = serde_json::json!({"command": "git status"}).to_string();
+        assert!(crate::tools::policy::is_write_operation("shell", &unknown));
     }
 
     #[tokio::test]
@@ -3029,6 +3104,232 @@ mod tests {
         .unwrap_or(false);
 
         assert!(saw_done);
+    }
+
+    /// In Restricted mode, write operations must request confirmation.
+    ///
+    /// When the user denies, the tool should be skipped, a ToolCallResult should
+    /// be emitted (success=false), and the pending confirmation should be cleared.
+    #[tokio::test]
+    async fn restricted_mode_write_tool_denied_emits_tool_call_result_and_skips() {
+        use std::sync::Arc;
+        use tempfile::tempdir;
+        use tokio::sync::mpsc;
+
+        use crate::session_workspace::SessionWorkspace;
+        use crate::tool_confirmation::TOOL_CONFIRMATIONS;
+
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let temp = tempdir().unwrap();
+        let workspace = Arc::new(
+            SessionWorkspace::from_directory("s1", temp.path().to_path_buf()).expect("workspace"),
+        );
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let cancel = CancellationToken::new();
+
+        let pending = PendingToolCall {
+            id: "call_test_denied".to_string(),
+            name: "file".to_string(),
+            arguments: serde_json::json!({
+                "operation": "write",
+                "path": "out.txt",
+                "content": "hi"
+            })
+            .to_string(),
+            start_time: Instant::now(),
+        };
+
+        let handle = tokio::spawn({
+            let workspace = workspace.clone();
+            async move {
+                let mut tool_calls_in_iteration: Vec<ToolCallRecord> = Vec::new();
+                let mut response = AgentResponse::empty();
+
+                pipeline
+                    .finalize_pending_tool_call(
+                        pending,
+                        FinalizePendingToolCallCtx {
+                            workspace: Some(workspace.as_ref()),
+                            session_id: Some("s1".to_string()),
+                            permission_level: PermissionLevel::Restricted,
+                            cancel_token: &cancel,
+                            tool_calls_in_iteration: &mut tool_calls_in_iteration,
+                            response: &mut response,
+                            tx: &tx,
+                        },
+                    )
+                    .await;
+
+                (tool_calls_in_iteration, response)
+            }
+        });
+
+        // Wait for the confirmation request and deny it.
+        let mut confirmation_id: Option<String> = None;
+        while let Some(chunk) = rx.recv().await {
+            if let StreamChunk::ToolConfirmationRequired {
+                confirmation_id: id,
+                ..
+            } = chunk
+            {
+                confirmation_id = Some(id);
+                break;
+            }
+        }
+        let confirmation_id = confirmation_id.expect("expected ToolConfirmationRequired");
+
+        TOOL_CONFIRMATIONS
+            .resolve(&confirmation_id, Some("s1"), false)
+            .expect("resolve should succeed");
+
+        // Ensure we emit a tool call result with success=false.
+        let mut saw_result = false;
+        while let Some(chunk) = rx.recv().await {
+            if let StreamChunk::ToolCallResult {
+                success, output, ..
+            } = chunk
+            {
+                assert!(!success);
+                assert!(output.contains("Skipped: tool confirmation"));
+                saw_result = true;
+                break;
+            }
+        }
+        assert!(saw_result);
+
+        let (tool_calls, response) = handle.await.expect("task join");
+        // Ensure this specific confirmation has been cleared, without depending on
+        // global pending count (tests may run concurrently).
+        let err = TOOL_CONFIRMATIONS
+            .resolve(&confirmation_id, Some("s1"), true)
+            .unwrap_err();
+        assert!(err.contains("Unknown confirmation id"));
+        assert!(!temp.path().join("out.txt").exists());
+
+        // Sanity: the pipeline should record a skipped tool call.
+        assert!(
+            tool_calls
+                .iter()
+                .any(|t| matches!(t.result, ToolResult::Skipped(_)))
+        );
+        assert!(
+            response
+                .tool_calls
+                .iter()
+                .any(|t| matches!(t.result, ToolResult::Skipped(_)))
+        );
+    }
+
+    /// In Restricted mode, if the user never responds, the confirmation should
+    /// time out and the tool should be skipped with a ToolCallResult.
+    #[tokio::test(start_paused = true)]
+    async fn restricted_mode_write_tool_times_out_and_emits_tool_call_result() {
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tempfile::tempdir;
+        use tokio::sync::mpsc;
+
+        use crate::session_workspace::SessionWorkspace;
+        use crate::tool_confirmation::TOOL_CONFIRMATIONS;
+
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let temp = tempdir().unwrap();
+        let workspace = Arc::new(
+            SessionWorkspace::from_directory("s1", temp.path().to_path_buf()).expect("workspace"),
+        );
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let cancel = CancellationToken::new();
+
+        let pending = PendingToolCall {
+            id: "call_test_timeout".to_string(),
+            name: "file".to_string(),
+            arguments: serde_json::json!({
+                "operation": "write",
+                "path": "out_timeout.txt",
+                "content": "hi"
+            })
+            .to_string(),
+            start_time: Instant::now(),
+        };
+
+        let handle = tokio::spawn({
+            let workspace = workspace.clone();
+            async move {
+                let mut tool_calls_in_iteration: Vec<ToolCallRecord> = Vec::new();
+                let mut response = AgentResponse::empty();
+
+                pipeline
+                    .finalize_pending_tool_call(
+                        pending,
+                        FinalizePendingToolCallCtx {
+                            workspace: Some(workspace.as_ref()),
+                            session_id: Some("s1".to_string()),
+                            permission_level: PermissionLevel::Restricted,
+                            cancel_token: &cancel,
+                            tool_calls_in_iteration: &mut tool_calls_in_iteration,
+                            response: &mut response,
+                            tx: &tx,
+                        },
+                    )
+                    .await;
+
+                (tool_calls_in_iteration, response)
+            }
+        });
+
+        // Wait for the confirmation request. We intentionally do NOT resolve it.
+        let mut confirmation_id: Option<String> = None;
+        while let Some(chunk) = rx.recv().await {
+            if let StreamChunk::ToolConfirmationRequired {
+                confirmation_id: id,
+                ..
+            } = chunk
+            {
+                confirmation_id = Some(id);
+                break;
+            }
+        }
+        let confirmation_id = confirmation_id.expect("expected ToolConfirmationRequired");
+
+        // Advance time beyond the hard-coded confirmation timeout (300s).
+        tokio::time::advance(Duration::from_secs(301)).await;
+        tokio::task::yield_now().await;
+
+        let mut saw_result = false;
+        while let Some(chunk) = rx.recv().await {
+            if let StreamChunk::ToolCallResult {
+                success, output, ..
+            } = chunk
+            {
+                assert!(!success);
+                assert!(output.contains("timed-out") || output.contains("denied"));
+                saw_result = true;
+                break;
+            }
+        }
+        assert!(saw_result);
+
+        let (tool_calls, response) = handle.await.expect("task join");
+        // Ensure this specific confirmation has been cleared, without depending on
+        // global pending count (tests may run concurrently).
+        let err = TOOL_CONFIRMATIONS
+            .resolve(&confirmation_id, Some("s1"), true)
+            .unwrap_err();
+        assert!(err.contains("Unknown confirmation id"));
+        assert!(!temp.path().join("out_timeout.txt").exists());
+        assert!(
+            tool_calls
+                .iter()
+                .any(|t| matches!(t.result, ToolResult::Skipped(_)))
+        );
+        assert!(
+            response
+                .tool_calls
+                .iter()
+                .any(|t| matches!(t.result, ToolResult::Skipped(_)))
+        );
     }
 
     #[tokio::test]

@@ -94,7 +94,9 @@ pub fn record_chat_receipt_payload(payload: &str) {
             ts_ms: now_ms,
             window_label: w.window_label,
             session_id: w.session_id,
-            event_name: w.event_name.unwrap_or_else(|| "(missing_event_name)".to_string()),
+            event_name: w
+                .event_name
+                .unwrap_or_else(|| "(missing_event_name)".to_string()),
             incoming_session_id: w.incoming_session_id,
             accept: w.accept.unwrap_or(false),
             reason: w.reason,
@@ -120,4 +122,3 @@ pub fn record_chat_receipt_payload(payload: &str) {
         store.pop_front();
     }
 }
-

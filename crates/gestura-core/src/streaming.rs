@@ -1239,11 +1239,11 @@ mod tests {
         assert!(body.get("tool_choice").is_none());
     }
 
-	#[test]
-	fn openai_body_omits_temperature() {
-		let body = build_openai_chat_body("gpt-test", "hi", None);
-		assert!(body.get("temperature").is_none());
-	}
+    #[test]
+    fn openai_body_omits_temperature() {
+        let body = build_openai_chat_body("gpt-test", "hi", None);
+        assert!(body.get("temperature").is_none());
+    }
 
     #[test]
     fn anthropic_body_includes_tools_when_provided() {

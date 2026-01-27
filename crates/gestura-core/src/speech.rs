@@ -269,6 +269,7 @@ impl SpeechProcessor {
 
     /// Transcribe audio using local Whisper model (whisper-rs)
     #[cfg(feature = "voice-local")]
+    #[allow(dead_code)]
     async fn transcribe_with_local_whisper(
         &self,
         audio_path: &Path,
@@ -339,6 +340,7 @@ impl SpeechProcessor {
 
     /// Fallback when voice-local feature is not enabled
     #[cfg(not(feature = "voice-local"))]
+    #[allow(dead_code)]
     async fn transcribe_with_local_whisper(
         &self,
         _audio_path: &Path,
@@ -351,6 +353,7 @@ impl SpeechProcessor {
     }
 
     /// Get the path to the Whisper model file
+    #[allow(dead_code)]
     fn get_whisper_model_path(&self) -> Result<PathBuf, AppError> {
         // Check environment variable first
         if let Ok(path) = std::env::var("GESTURA_WHISPER_MODEL") {
@@ -390,6 +393,7 @@ impl SpeechProcessor {
 
     /// Load audio file and convert to f32 samples at 16kHz
     #[cfg(feature = "voice-local")]
+    #[allow(dead_code)]
     fn load_audio_samples(&self, audio_path: &Path) -> Result<Vec<f32>, AppError> {
         use hound::WavReader;
 
@@ -413,8 +417,9 @@ impl SpeechProcessor {
             }
             hound::SampleFormat::Float => {
                 let raw_samples: Result<Vec<f32>, _> = reader.samples::<f32>().collect();
-                raw_samples
-                    .map_err(|e| AppError::Voice(format!("Failed to decode audio samples: {}", e)))?
+                raw_samples.map_err(|e| {
+                    AppError::Voice(format!("Failed to decode audio samples: {}", e))
+                })?
             }
         };
 

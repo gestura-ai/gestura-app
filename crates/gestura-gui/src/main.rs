@@ -104,6 +104,12 @@ async fn main() {
             gestura_gui::api::list_mcp_tools,
             gestura_gui::api::add_mcp_tool,
             gestura_gui::api::remove_mcp_tool,
+            // MCP Discovery Manager commands
+            gestura_gui::api::init_mcp_servers,
+            gestura_gui::api::list_discovered_mcp_tools,
+            gestura_gui::api::get_mcp_server_status,
+            gestura_gui::api::register_mcp_server,
+            gestura_gui::api::unregister_mcp_server,
             gestura_gui::api::get_mdh_pointers,
             gestura_gui::api::set_mdh_pointer,
             gestura_gui::api::remove_mdh_pointer,
@@ -149,13 +155,16 @@ async fn main() {
             gestura_gui::api::process_chat_message,
             gestura_gui::api::process_chat_message_streaming,
             gestura_gui::api::cancel_chat_streaming,
-		        // Chat diagnostics
-		        gestura_gui::api::get_chat_event_trace,
-		        gestura_gui::api::clear_chat_event_trace,
-		        gestura_gui::api::record_chat_receipt,
-		        gestura_gui::api::get_chat_receipt_trace,
-		        gestura_gui::api::clear_chat_receipt_trace,
-		        gestura_gui::api::run_chat_isolation_probe,
+            // Tool confirmation (Restricted mode pause/resume)
+            gestura_gui::api::approve_tool_confirmation,
+            gestura_gui::api::deny_tool_confirmation,
+            // Chat diagnostics
+            gestura_gui::api::get_chat_event_trace,
+            gestura_gui::api::clear_chat_event_trace,
+            gestura_gui::api::record_chat_receipt,
+            gestura_gui::api::get_chat_receipt_trace,
+            gestura_gui::api::clear_chat_receipt_trace,
+            gestura_gui::api::run_chat_isolation_probe,
             gestura_gui::api::send_agent_message,
             gestura_gui::api::get_agent_status,
             gestura_gui::api::list_agents,
@@ -170,6 +179,8 @@ async fn main() {
             // Permission management commands
             gestura_gui::api::check_permission,
             gestura_gui::api::request_permission,
+            // Window management commands
+            gestura_gui::api::open_config_window,
             // UI testing commands
             gestura_gui::api::test_open_window,
             gestura_gui::api::capture_window_screenshot,
@@ -209,6 +220,11 @@ async fn main() {
             gestura_gui::api::set_session_llm_model,
             gestura_gui::api::clear_session_llm_config,
             gestura_gui::api::get_effective_llm_config,
+            // Session Voice/STT config (session-scoped, doesn't modify global config)
+            gestura_gui::api::get_session_voice_config,
+            gestura_gui::api::set_session_voice_provider,
+            gestura_gui::api::set_session_voice_model,
+            gestura_gui::api::clear_session_voice_config,
             // Session tool and permission settings
             gestura_gui::api::get_session_tool_settings,
             gestura_gui::api::set_session_permission_level,

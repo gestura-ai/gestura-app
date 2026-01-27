@@ -68,7 +68,9 @@ pub struct ChatIsolationProbeReport {
 /// - Emits `chat-probe` events to each window using window-scoped `emit_to`.
 /// - Waits briefly for frontend receipts to arrive.
 /// - Returns traces and an analysis summary.
-pub async fn run_chat_isolation_probe(app: tauri::AppHandle) -> Result<ChatIsolationProbeReport, String> {
+pub async fn run_chat_isolation_probe(
+    app: tauri::AppHandle,
+) -> Result<ChatIsolationProbeReport, String> {
     crate::chat_events::clear_chat_event_trace();
     crate::chat_receipts::clear_chat_receipt_trace();
 
@@ -187,21 +189,23 @@ fn analyze_probe(
         }
 
         // Leakage signal 1: receipt on a non-target window label.
-        if let Some(wl) = &r.window_label {
-            if !targets.contains(wl.as_str()) {
-                leakage.push(ProbeLeakageFinding {
-                    window_label: r.window_label.clone(),
-                    session_id: r.session_id.clone(),
-                    incoming_session_id: r.incoming_session_id.clone(),
-                    accept: r.accept,
-                    reason: r.reason.clone(),
-                });
-            }
+        if r.window_label
+            .as_deref()
+            .filter(|wl| !targets.contains(*wl))
+            .is_some()
+        {
+            leakage.push(ProbeLeakageFinding {
+                window_label: r.window_label.clone(),
+                session_id: r.session_id.clone(),
+                incoming_session_id: r.incoming_session_id.clone(),
+                accept: r.accept,
+                reason: r.reason.clone(),
+            });
         }
 
         // Leakage signal 2: this window received an event tagged for a different session.
-        if let (Some(sid), Some(incoming)) = (&r.session_id, &r.incoming_session_id) {
-            if sid != incoming {
+        match (&r.session_id, &r.incoming_session_id) {
+            (Some(sid), Some(incoming)) if sid != incoming => {
                 leakage.push(ProbeLeakageFinding {
                     window_label: r.window_label.clone(),
                     session_id: r.session_id.clone(),
@@ -210,6 +214,7 @@ fn analyze_probe(
                     reason: r.reason.clone(),
                 });
             }
+            _ => {}
         }
     }
 
@@ -226,12 +231,14 @@ fn analyze_probe(
 
     let receipt_counts = counts
         .into_iter()
-        .map(|(window_label, (total, accepted, ignored))| ProbeReceiptCount {
-            window_label,
-            total,
-            accepted,
-            ignored,
-        })
+        .map(
+            |(window_label, (total, accepted, ignored))| ProbeReceiptCount {
+                window_label,
+                total,
+                accepted,
+                ignored,
+            },
+        )
         .collect::<Vec<_>>();
 
     let ok = leakage.is_empty() && warnings.is_empty();

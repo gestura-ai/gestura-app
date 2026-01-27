@@ -33,7 +33,11 @@ pub const NAME: &str = env!("CARGO_PKG_NAME");
 // ============================================================================
 
 pub mod a2a;
+pub mod agents;
+pub mod analytics;
+pub mod audio;
 pub mod audio_capture;
+pub mod chat_sessions;
 pub mod compaction;
 pub mod config;
 pub mod config_env;
@@ -49,30 +53,55 @@ pub mod knowledge;
 pub mod llm_provider;
 pub mod mcp;
 pub mod memory_bank;
+pub mod nats_mq;
 /// OpenAI(-compatible) API compatibility helpers (e.g., parameter support quirks).
 pub mod openai_compat;
 mod persona;
 pub mod pipeline;
 pub mod prompt_enhancement;
+pub mod recommendations;
 pub mod retry;
+pub mod sandbox;
+pub mod scripting;
+pub mod security;
 pub mod session_manager;
 pub mod session_workspace;
 pub mod speech;
-pub mod stt_provider;
 pub mod stream_error;
 pub mod stream_health;
 pub mod stream_reconnect;
 pub mod streaming;
+pub mod stt_provider;
 pub mod tasks;
 pub mod telemetry;
 pub mod token_tracker;
+pub mod tool_confirmation;
 pub mod tool_inspection;
 pub mod tools;
 
 // Re-export common types for convenience
+pub use a2a::{
+    A2AClient, A2AError, A2AMessage, A2ARequest, A2AResponse, A2AServer, A2ATask, AgentCard,
+    AgentCardRegistry, AgentProfile, Artifact, AuthenticationInfo, MessagePart, OAuth2Config,
+    ProfileStore, Skill, create_gestura_agent_card, is_token_well_formed,
+};
+pub use analytics::{
+    AnalyticsConfig, AnalyticsInsights, ErrorAnalysis, EventType, PerformanceMetrics, PrivacyMode,
+    TimePeriod, UsageAnalytics, UsageEvent, UsagePatterns,
+};
+pub use audio::{
+    NoiseCancellationConfig, NoiseCancellationProcessor, NoiseReductionStats,
+    create_music_noise_canceller, create_speech_noise_canceller,
+};
 pub use audio_capture::{
     AudioCaptureConfig, AudioDeviceInfo, is_microphone_available, list_audio_input_devices,
     record_audio, request_stop_recording, reset_stop_flag,
+};
+pub use chat_sessions::{
+    ChatSession, ChatSessionResult, ChatSessionStore, ConversationMessage, FileChatSessionStore,
+    MessageSource, SessionFilter, SessionInfo, SessionLlmConfig, SessionPermissionLevel,
+    SessionState, SessionToolCall, SessionToolSettings, SessionVoiceConfig,
+    default_chat_sessions_dir,
 };
 pub use compaction::{
     CompactionConfig, CompactionEvent, CompactionEventType, CompactionResult, CompactionStrategy,
@@ -110,8 +139,10 @@ pub use llm_provider::{
     AgentContext, LlmCallResponse, LlmProvider, TokenUsage, UnconfiguredProvider, select_provider,
 };
 pub use mcp::{
-    CachedTool, LocalMcp, McpCacheStats, McpDiscoveryManager, McpIntegrator, McpServerConfig,
-    McpServerInfo, MdhResource, ServerState, TokenInfo, get_mcp, mdh_translate,
+    CachedTool, JsonRpcError, JsonRpcRequest, JsonRpcResponse, LocalMcp, McpCacheStats,
+    McpDiscoveryManager, McpIntegrator, McpRequestContext, McpResourceHandler, McpServer,
+    McpServerConfig, McpServerInfo, McpToolHandler, MdhResource, ServerState, TokenInfo, get_mcp,
+    mdh_translate,
 };
 pub use memory_bank::{
     MemoryBankEntry, MemoryBankError, clear_memory_bank, ensure_memory_bank_dir,
@@ -119,8 +150,12 @@ pub use memory_bank::{
     search_memory_bank,
 };
 pub use pipeline::{
-    AgentPipeline, AgentRequest, AgentResponse, Message, PipelineConfig, RequestMetadata,
-    RequestSource, ToolCallRecord, ToolResult,
+    AgentPipeline, AgentRequest, AgentResponse, Message, PermissionLevel, PipelineConfig,
+    RequestMetadata, RequestSource, ToolCallRecord, ToolResult,
+};
+pub use recommendations::{
+    PersonalizedRecommendationEngine, Recommendation, RecommendationConfig, RecommendationFeedback,
+    RecommendationType, SessionPatterns, UserBehaviorPattern,
 };
 pub use retry::{ErrorClass, RetryCallback, RetryEvent, RetryManager, RetryPolicy};
 pub use session_manager::{AuthToken, SessionManager, TokenType, UserSession, get_session_manager};
@@ -154,6 +189,44 @@ pub use tool_inspection::{
 pub use tools::{
     ToolDefinition, all_tools, find_tool, looks_like_capabilities_question,
     looks_like_tools_question, render_capabilities, render_tool_detail, render_tools_overview,
+};
+
+// NATS MQ module exports (messaging/JetStream)
+#[cfg(feature = "nats")]
+pub use nats_mq::NatsHealthMonitor;
+pub use nats_mq::{
+    Connection as NatsConnection, DispatchEvent, connect_nats, connect_with_retry, init_jetstream,
+    publish_json, spawn_nats_server, subjects, subscribe, subscribe_wildcard,
+};
+
+// Sandbox module exports (agent process isolation)
+pub use sandbox::{SandboxConfig, SandboxManager, create_default_sandbox};
+
+// Scripting module exports (Lua/Python/JS automation)
+pub use scripting::{
+    Script, ScriptContext, ScriptExecutionResult, ScriptLanguage, ScriptPermission, ScriptTrigger,
+    ScriptingEngine, get_scripting_engine,
+};
+
+// Security module exports (SecureStorage, encryption, etc.)
+#[cfg(feature = "security")]
+pub use security::{Encryptor, KeychainStorage, SecureConfigManager};
+pub use security::{
+    McpToken, MockSecureStorage, SecureStorage, SecureStorageError, create_secure_storage,
+};
+
+// Security/policy helpers and permission primitives.
+pub use tools::PermissionManager;
+pub use tools::permissions::{Permission, PermissionAuditEntry, PermissionCheck, PermissionScope};
+pub use tools::policy::{
+    ToolCallDecision, ToolConfirmationInfo, ToolPolicyEvaluation, evaluate_tool_call,
+    is_action_allowed, is_shell_command_write_operation, is_write_operation, requires_confirmation,
+};
+
+// Agents module exports (agent lifecycle, task delegation)
+pub use agents::{
+    AgentCommand, AgentEnvelope, AgentInfo, AgentManager, AgentSpawner, AgentStatus, DelegatedTask,
+    OrchestratorToolCall, TaskResult,
 };
 
 #[cfg(test)]

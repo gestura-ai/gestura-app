@@ -111,6 +111,9 @@ pub mod chat_events;
 /// Small shared utilities.
 pub(crate) mod text_utils;
 
+/// Best-effort provider/model compatibility validation helpers.
+pub(crate) mod llm_validation;
+
 /// Frontend receipt tracing utilities (diagnostics-only).
 pub mod chat_receipts;
 

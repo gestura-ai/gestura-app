@@ -94,7 +94,14 @@ pub fn create_orchestrator_task(
 ) -> Result<Task, String> {
     let manager = get_task_manager();
     let task = manager
-        .create_orchestrator_task(session_id, orchestrator_task_id, agent_id, name, description, context)
+        .create_orchestrator_task(
+            session_id,
+            orchestrator_task_id,
+            agent_id,
+            name,
+            description,
+            context,
+        )
         .map_err(|e| e.to_string())?;
 
     // Emit task-created event
@@ -152,20 +159,12 @@ pub fn mark_task_in_progress(
 }
 
 /// Mark a task as completed
-pub fn mark_task_completed(
-    app: &AppHandle,
-    session_id: &str,
-    task_id: &str,
-) -> Result<(), String> {
+pub fn mark_task_completed(app: &AppHandle, session_id: &str, task_id: &str) -> Result<(), String> {
     update_task_status(app, session_id, task_id, TaskStatus::Completed)
 }
 
 /// Mark a task as cancelled
-pub fn mark_task_cancelled(
-    app: &AppHandle,
-    session_id: &str,
-    task_id: &str,
-) -> Result<(), String> {
+pub fn mark_task_cancelled(app: &AppHandle, session_id: &str, task_id: &str) -> Result<(), String> {
     update_task_status(app, session_id, task_id, TaskStatus::Cancelled)
 }
 
@@ -252,4 +251,3 @@ pub fn get_agent_tasks(session_id: &str) -> Result<Vec<Task>, String> {
         .filter(|t| matches!(t.source, TaskSource::Agent | TaskSource::Orchestrator))
         .collect())
 }
-

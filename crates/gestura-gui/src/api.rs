@@ -11,6 +11,127 @@ fn try_get_api_key_from_keychain(provider: &str) -> String {
     try_get_api_key_from_keychain_sync(provider)
 }
 
+/// Apply session-scoped LLM provider/model overrides to an in-memory `AppConfig`.
+///
+/// This helper keeps all per-session LLM behavior consistent across features (chat,
+/// prompt enhancement, etc.) by applying the same override rules:
+///
+/// - If the session overrides the provider, set `cfg.llm.primary`.
+/// - If the session overrides the model, apply it to the active provider's config.
+///
+/// This does **not** persist any changes to disk; it only affects the current request.
+fn apply_session_llm_config_overrides(cfg: &mut AppConfig, session_id: &str) {
+    let session_llm = crate::window_manager::get_session_llm_config(session_id);
+    tracing::debug!(
+        session_id = %session_id,
+        session_llm_config = ?session_llm,
+        "Retrieved session LLM config for overrides"
+    );
+
+    let Some(session_llm) = session_llm else {
+        return;
+    };
+
+    if let Some(provider) = session_llm.provider {
+        tracing::info!(
+            session_id = %session_id,
+            provider = %provider,
+            "Applying session-scoped LLM provider override"
+        );
+        cfg.llm.primary = provider;
+    }
+
+    if let Some(model) = session_llm.model {
+        // Defensive validation: if the persisted session override is inconsistent
+        // (e.g. provider=openai + model=grok-2), ignore the model override.
+        if !crate::llm_validation::is_model_compatible_with_provider(&cfg.llm.primary, &model) {
+            tracing::warn!(
+                session_id = %session_id,
+                provider = %cfg.llm.primary,
+                model = %model,
+                "Ignoring incompatible session-scoped LLM model override"
+            );
+            return;
+        }
+
+        tracing::info!(
+            session_id = %session_id,
+            model = %model,
+            provider = %cfg.llm.primary,
+            "Applying session-scoped LLM model override"
+        );
+
+        // Apply model to the active provider's config
+        // Create provider config if it doesn't exist, trying keychain for API keys.
+        match cfg.llm.primary.as_str() {
+            "openai" => {
+                let openai = cfg.llm.openai.get_or_insert_with(|| {
+                    let api_key = try_get_api_key_from_keychain("openai");
+                    if api_key.is_empty() {
+                        tracing::warn!("OpenAI provider selected but no API key found");
+                    }
+                    gestura_core::config::OpenAiConfig {
+                        api_key,
+                        model: model.clone(),
+                        base_url: None,
+                    }
+                });
+                openai.model = model;
+            }
+            "anthropic" => {
+                let anthropic = cfg.llm.anthropic.get_or_insert_with(|| {
+                    let api_key = try_get_api_key_from_keychain("anthropic");
+                    if api_key.is_empty() {
+                        tracing::warn!("Anthropic provider selected but no API key found");
+                    }
+                    gestura_core::config::AnthropicConfig {
+                        api_key,
+                        model: model.clone(),
+                        base_url: None,
+                        thinking_budget_tokens: None,
+                    }
+                });
+                anthropic.model = model;
+            }
+            "grok" => {
+                let grok = cfg.llm.grok.get_or_insert_with(|| {
+                    let api_key = try_get_api_key_from_keychain("grok");
+                    if api_key.is_empty() {
+                        tracing::warn!("Grok provider selected but no API key found");
+                    }
+                    gestura_core::config::GrokConfig {
+                        api_key,
+                        model: model.clone(),
+                        base_url: None,
+                    }
+                });
+                grok.model = model;
+            }
+            "ollama" => {
+                // Ollama doesn't require API key, so create default config if missing.
+                let ollama =
+                    cfg.llm
+                        .ollama
+                        .get_or_insert_with(|| gestura_core::config::OllamaConfig {
+                            base_url: "http://localhost:11434".into(),
+                            model: model.clone(),
+                        });
+                ollama.model = model;
+            }
+            "echo" => {
+                // Echo provider doesn't need config; model is ignored.
+                tracing::debug!("Echo provider selected - model override not applicable");
+            }
+            other => {
+                tracing::warn!(
+                    provider = other,
+                    "Unknown provider - model override ignored"
+                );
+            }
+        }
+    }
+}
+
 /// Public synchronous keychain API key retrieval.
 ///
 /// This is used by other modules (e.g., speech.rs) to retrieve API keys from the
@@ -41,12 +162,18 @@ pub fn try_get_api_key_from_keychain_sync(provider: &str) -> String {
     }
 }
 
-#[tauri::command]
+/// Get the current application configuration.
+///
+/// JS↔Rust interop: This command is exposed to the frontend via Tauri.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn get_config() -> Result<AppConfig, String> {
     Ok(AppConfig::load_async().await)
 }
 
-#[tauri::command]
+/// Persist a new application configuration.
+///
+/// JS↔Rust interop: The frontend invokes this command with `{ cfg: AppConfig }`.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn save_config(cfg: AppConfig) -> Result<(), String> {
     cfg.save_async().await.map_err(|e| e.to_string())
 }
@@ -107,6 +234,167 @@ pub async fn remove_mcp_tool(name: String) -> Result<(), String> {
     let mut cfg = AppConfig::load_async().await;
     cfg.mcp_tools.retain(|t| t.name != name);
     cfg.save_async().await.map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// MCP Discovery Manager - Dynamic Tool Provisioning
+// ============================================================================
+
+use gestura_core::{McpDiscoveryManager, McpServerConfig};
+
+/// Global MCP discovery manager instance
+static MCP_DISCOVERY_MANAGER: std::sync::OnceLock<McpDiscoveryManager> = std::sync::OnceLock::new();
+
+/// Get or initialize the global MCP discovery manager
+fn get_mcp_discovery_manager() -> &'static McpDiscoveryManager {
+    MCP_DISCOVERY_MANAGER.get_or_init(McpDiscoveryManager::new)
+}
+
+/// MCP tool information for the frontend (matches ToolInfo pattern)
+#[derive(serde::Serialize)]
+pub struct McpToolInfo {
+    /// Full tool name in format "server:tool_name"
+    pub name: String,
+    /// Tool description from MCP server
+    pub summary: String,
+    /// Source MCP server name
+    pub server_name: String,
+    /// Tool category (read, write, execute, etc.)
+    pub category: String,
+    /// Whether this tool has side effects
+    pub has_side_effects: bool,
+    /// Risk level (low, medium, high)
+    pub risk_level: String,
+}
+
+/// Initialize MCP servers from config
+/// This registers all configured MCP servers with the discovery manager
+#[tauri::command]
+pub async fn init_mcp_servers() -> Result<usize, String> {
+    let config = AppConfig::load_async().await;
+    let manager = get_mcp_discovery_manager();
+
+    let mut registered = 0;
+    for mcp_tool in &config.mcp_tools {
+        let server_config = McpServerConfig {
+            name: mcp_tool.name.clone(),
+            uri: mcp_tool.endpoint.clone(),
+            enabled: true,
+            timeout_secs: 30,
+            auto_reconnect: true,
+        };
+        manager.register_server(server_config);
+        registered += 1;
+        tracing::info!("Registered MCP server: {}", mcp_tool.name);
+    }
+
+    Ok(registered)
+}
+
+/// List all discovered tools from MCP servers
+/// Returns tools that have been cached from connected MCP servers
+#[tauri::command]
+pub fn list_discovered_mcp_tools() -> Vec<McpToolInfo> {
+    use gestura_core::execution_mode::ToolCategory;
+
+    let manager = get_mcp_discovery_manager();
+    let cached_tools = manager.list_tools();
+
+    cached_tools
+        .into_iter()
+        .map(|ct| {
+            let category_str = match ct.metadata.category {
+                ToolCategory::ReadOnly => "read",
+                ToolCategory::Write => "write",
+                ToolCategory::Shell => "shell",
+                ToolCategory::Network => "network",
+                ToolCategory::System => "system",
+                ToolCategory::Git => "git",
+            };
+            // Convert numeric risk_level (0-10) to string category
+            let risk_str = if ct.metadata.risk_level <= 2 {
+                "low"
+            } else if ct.metadata.risk_level <= 5 {
+                "medium"
+            } else {
+                "high"
+            };
+            McpToolInfo {
+                name: ct.metadata.name.clone(),
+                summary: ct.metadata.description.clone(),
+                server_name: ct.server_name.clone(),
+                category: category_str.to_string(),
+                has_side_effects: ct.metadata.has_side_effects,
+                risk_level: risk_str.to_string(),
+            }
+        })
+        .collect()
+}
+
+/// Get MCP server status information
+#[tauri::command]
+pub fn get_mcp_server_status() -> Vec<McpServerStatus> {
+    let manager = get_mcp_discovery_manager();
+    manager
+        .list_servers()
+        .into_iter()
+        .map(|s| McpServerStatus {
+            name: s.config.name,
+            uri: s.config.uri,
+            state: format!("{:?}", s.state),
+            tool_count: s.tool_count,
+            last_error: s.last_error,
+        })
+        .collect()
+}
+
+/// MCP server status for frontend display
+#[derive(serde::Serialize)]
+pub struct McpServerStatus {
+    pub name: String,
+    pub uri: String,
+    pub state: String,
+    pub tool_count: usize,
+    pub last_error: Option<String>,
+}
+
+/// Register a new MCP server and initialize discovery
+#[tauri::command]
+pub async fn register_mcp_server(name: String, endpoint: String) -> Result<(), String> {
+    // Add to config
+    let tool = crate::config::McpTool {
+        name: name.clone(),
+        endpoint: endpoint.clone(),
+    };
+    add_mcp_tool(tool).await?;
+
+    // Register with discovery manager
+    let manager = get_mcp_discovery_manager();
+    let server_config = McpServerConfig {
+        name: name.clone(),
+        uri: endpoint,
+        enabled: true,
+        timeout_secs: 30,
+        auto_reconnect: true,
+    };
+    manager.register_server(server_config);
+
+    tracing::info!("Registered new MCP server: {}", name);
+    Ok(())
+}
+
+/// Unregister an MCP server
+#[tauri::command]
+pub async fn unregister_mcp_server(name: String) -> Result<(), String> {
+    // Remove from config
+    remove_mcp_tool(name.clone()).await?;
+
+    // Unregister from discovery manager
+    let manager = get_mcp_discovery_manager();
+    manager.unregister_server(&name);
+
+    tracing::info!("Unregistered MCP server: {}", name);
+    Ok(())
 }
 
 #[tauri::command]
@@ -260,7 +548,9 @@ pub async fn test_llm(prompt: String) -> Result<String, String> {
 /// # Returns
 ///
 /// Returns the enhanced prompt as a String, or an error message if enhancement fails.
-#[tauri::command]
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn enhance_prompt(prompt: String, session_id: Option<String>) -> Result<String, String> {
     use gestura_core::prompt_enhancement::{PromptContext, enhance_prompt_with_llm};
 
@@ -270,12 +560,12 @@ pub async fn enhance_prompt(prompt: String, session_id: Option<String>) -> Resul
     }
 
     // Load config
-    let cfg = AppConfig::load_async().await;
+    let mut cfg = AppConfig::load_async().await;
 
     // Build context from session history if session_id provided
-    let context = if let Some(sid) = session_id {
+    let context = if let Some(ref sid) = session_id {
         // Get session state using public API
-        if let Some(state) = crate::window_manager::get_session_state(&sid) {
+        if let Some(state) = crate::window_manager::get_session_state(sid) {
             // Get last 5 messages for context (to avoid token overflow)
             let history: Vec<(String, String)> = state
                 .messages
@@ -303,6 +593,12 @@ pub async fn enhance_prompt(prompt: String, session_id: Option<String>) -> Resul
     } else {
         None
     };
+
+    // Apply session-specific LLM config overrides so the prompt enhancer uses the same
+    // effective provider/model as chat for this session.
+    if let Some(ref sid) = session_id {
+        apply_session_llm_config_overrides(&mut cfg, sid);
+    }
 
     tracing::info!(
         prompt_length = prompt.len(),
@@ -360,8 +656,10 @@ pub async fn test_ollama_connection(endpoint: String) -> Result<serde_json::Valu
     }))
 }
 
-/// List available Ollama models
-#[tauri::command]
+/// List available Ollama models.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn list_ollama_models(endpoint: String) -> Result<Vec<serde_json::Value>, String> {
     let client = reqwest::Client::new();
     let url = format!("{}/api/tags", endpoint.trim_end_matches('/'));
@@ -401,8 +699,10 @@ pub async fn list_ollama_models(endpoint: String) -> Result<Vec<serde_json::Valu
     Ok(models)
 }
 
-/// List available OpenAI models
-#[tauri::command]
+/// List available OpenAI models.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn list_openai_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
     let client = reqwest::Client::new();
     let url = "https://api.openai.com/v1/models";
@@ -604,8 +904,10 @@ fn format_openai_model_name(id: &str) -> String {
     }
 }
 
-/// List available Anthropic models
-#[tauri::command]
+/// List available Anthropic models.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn list_anthropic_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
     let client = reqwest::Client::new();
     let url = "https://api.anthropic.com/v1/models";
@@ -697,7 +999,9 @@ fn format_anthropic_model_name(id: &str) -> String {
 
 /// Fetch available Grok models from xAI API
 /// API Reference: https://docs.x.ai/docs/api-reference#list-models
-#[tauri::command]
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn list_grok_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
     if api_key.is_empty() {
         return Ok(get_static_grok_models());
@@ -945,14 +1249,10 @@ pub async fn download_whisper_model(
 
     tracing::info!("Starting HTTP request to: {}", model_info.url);
 
-    let response = client
-        .get(&model_info.url)
-        .send()
-        .await
-        .map_err(|e| {
-            tracing::error!("HTTP request failed: {}", e);
-            format!("Failed to start download: {}", e)
-        })?;
+    let response = client.get(&model_info.url).send().await.map_err(|e| {
+        tracing::error!("HTTP request failed: {}", e);
+        format!("Failed to start download: {}", e)
+    })?;
 
     tracing::info!(
         "HTTP response received: status={}, content_length={:?}",
@@ -1368,7 +1668,9 @@ fn cancel_key_for_window_label(window_label: &str) -> String {
 /// The optional `source` argument can be used to hint how the message was produced:
 /// - `"voice"` for transcribed speech
 /// - `"text"` for typed input (default)
-#[tauri::command]
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn process_chat_message_streaming(
     webview_window: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -1391,101 +1693,7 @@ pub async fn process_chat_message_streaming(
 
     // Apply session-specific LLM config overrides (doesn't modify persisted global config)
     if let Some(ref sid) = session_id {
-        let session_llm = crate::window_manager::get_session_llm_config(sid);
-        tracing::debug!(
-            session_id = %sid,
-            session_llm_config = ?session_llm,
-            "Retrieved session LLM config"
-        );
-
-        if let Some(session_llm) = session_llm {
-            if let Some(provider) = session_llm.provider {
-                tracing::info!(
-                    session_id = %sid,
-                    provider = %provider,
-                    "Applying session-scoped LLM provider override"
-                );
-                cfg.llm.primary = provider.clone();
-            }
-            if let Some(model) = session_llm.model {
-                tracing::info!(
-                    session_id = %sid,
-                    model = %model,
-                    provider = %cfg.llm.primary,
-                    "Applying session-scoped LLM model override"
-                );
-                // Apply model to the active provider's config
-                // Create provider config if it doesn't exist, trying keychain for API keys
-                match cfg.llm.primary.as_str() {
-                    "openai" => {
-                        let openai = cfg.llm.openai.get_or_insert_with(|| {
-                            // Try to get API key from keychain
-                            let api_key = try_get_api_key_from_keychain("openai");
-                            if api_key.is_empty() {
-                                tracing::warn!("OpenAI provider selected but no API key found");
-                            }
-                            gestura_core::config::OpenAiConfig {
-                                api_key,
-                                model: model.clone(),
-                                base_url: None,
-                            }
-                        });
-                        openai.model = model;
-                    }
-                    "anthropic" => {
-                        let anthropic = cfg.llm.anthropic.get_or_insert_with(|| {
-                            // Try to get API key from keychain
-                            let api_key = try_get_api_key_from_keychain("anthropic");
-                            if api_key.is_empty() {
-                                tracing::warn!("Anthropic provider selected but no API key found");
-                            }
-                            gestura_core::config::AnthropicConfig {
-                                api_key,
-                                model: model.clone(),
-                                base_url: None,
-                                thinking_budget_tokens: None,
-                            }
-                        });
-                        anthropic.model = model;
-                    }
-                    "grok" => {
-                        let grok = cfg.llm.grok.get_or_insert_with(|| {
-                            // Try to get API key from keychain
-                            let api_key = try_get_api_key_from_keychain("grok");
-                            if api_key.is_empty() {
-                                tracing::warn!("Grok provider selected but no API key found");
-                            }
-                            gestura_core::config::GrokConfig {
-                                api_key,
-                                model: model.clone(),
-                                base_url: None,
-                            }
-                        });
-                        grok.model = model;
-                    }
-                    "ollama" => {
-                        // Ollama doesn't require API key, so create default config if missing
-                        let ollama = cfg.llm.ollama.get_or_insert_with(|| {
-                            gestura_core::config::OllamaConfig {
-                                base_url: "http://localhost:11434".into(),
-                                model: model.clone(),
-                            }
-                        });
-                        ollama.model = model;
-                    }
-                    "echo" => {
-                        // Echo provider doesn't need config, model is ignored
-                        tracing::debug!("Echo provider selected - model override not applicable");
-                    }
-                    other => {
-                        tracing::warn!(
-                            provider = other,
-                            "Unknown provider - model override ignored"
-                        );
-                    }
-                }
-            }
-        }
+        apply_session_llm_config_overrides(&mut cfg, sid);
     }
 
     tracing::info!(
@@ -1512,13 +1720,14 @@ pub async fn process_chat_message_streaming(
 
     // Defense-in-depth: if the caller is a chat window with a known session, do not
     // allow it to stream into a different session by passing a mismatched session id.
-    if let (Some(calling_sid), Some(request_sid)) = (&calling_session_id, &session_id) {
-        if calling_sid != request_sid {
+    match (&calling_session_id, &session_id) {
+        (Some(calling_sid), Some(request_sid)) if calling_sid != request_sid => {
             return Err(format!(
                 "Session mismatch for window '{}': caller session '{}' != requested session '{}'",
                 calling_window_label, calling_sid, request_sid
             ));
         }
+        _ => {}
     }
 
     // Resolve session id (typed input: use the calling window; voice: optionally route to active chat).
@@ -1535,37 +1744,38 @@ pub async fn process_chat_message_streaming(
     // Choose the window to receive stream events.
     // - Text: the calling window.
     // - Voice: the resolved active chat window if available; otherwise the calling window.
-    let target_window_label = if matches!(message_source, crate::window_manager::MessageSource::Voice)
-    {
-        resolved_session_id
-            .as_deref()
-            .and_then(crate::window_manager::get_session_window_label)
-            .unwrap_or_else(|| calling_window_label.clone())
-    } else {
-        calling_window_label.clone()
-    };
+    let target_window_label =
+        if matches!(message_source, crate::window_manager::MessageSource::Voice) {
+            resolved_session_id
+                .as_deref()
+                .and_then(crate::window_manager::get_session_window_label)
+                .unwrap_or_else(|| calling_window_label.clone())
+        } else {
+            calling_window_label.clone()
+        };
 
-	// Centralized, window-scoped emission (never broadcast): emits via `emit_to` and
-	// attaches `session_id` for frontend filtering.
-	let emit = |event: &str, payload: serde_json::Value| {
-	    let payload = crate::chat_events::attach_session_id(payload, resolved_session_id.as_deref());
-	    if let Err(err) = crate::chat_events::emit_chat_event_to_window(
-	        &app,
-	        &target_window_label,
-	        &calling_window_label,
-	        event,
-	        &payload,
-	        resolved_session_id.as_deref(),
-	    ) {
-	        tracing::error!(
-	            event = %event,
-	            target_window_label = %target_window_label,
-	            calling_window_label = %calling_window_label,
-	            error = %err,
-	            "Failed to emit chat event"
-	        );
-	    }
-	};
+    // Centralized, window-scoped emission (never broadcast): emits via `emit_to` and
+    // attaches `session_id` for frontend filtering.
+    let emit = |event: &str, payload: serde_json::Value| {
+        let payload =
+            crate::chat_events::attach_session_id(payload, resolved_session_id.as_deref());
+        if let Err(err) = crate::chat_events::emit_chat_event_to_window(
+            &app,
+            &target_window_label,
+            &calling_window_label,
+            event,
+            &payload,
+            resolved_session_id.as_deref(),
+        ) {
+            tracing::error!(
+                event = %event,
+                target_window_label = %target_window_label,
+                calling_window_label = %calling_window_label,
+                error = %err,
+                "Failed to emit chat event"
+            );
+        }
+    };
 
     // Check if this is a tools/capabilities/summarize/memory command (explicit slash command) and handle it locally without LLM
     // Natural language questions like "what tools do you have?" should go through the LLM for dynamic, session-aware responses
@@ -1919,10 +2129,7 @@ pub async fn process_chat_message_streaming(
         };
 
         match crate::task_integration::create_agent_task(
-            &app,
-            sid,
-            &task_name,
-            &message,
+            &app, sid, &task_name, &message,
             None, // agent_id - we could use the provider name here
             None, // parent_id
         ) {
@@ -1979,9 +2186,24 @@ pub async fn process_chat_message_streaming(
             let provider = session_llm
                 .provider
                 .unwrap_or_else(|| cfg.llm.primary.clone());
-            let model = session_llm
-                .model
-                .unwrap_or_else(|| get_model_for_provider(&cfg, &provider).unwrap_or_default());
+
+            let fallback_model = || get_model_for_provider(&cfg, &provider).unwrap_or_default();
+            let model = match session_llm.model {
+                Some(m)
+                    if crate::llm_validation::is_model_compatible_with_provider(&provider, &m) =>
+                {
+                    m
+                }
+                Some(m) => {
+                    tracing::warn!(
+                        provider = %provider,
+                        model = %m,
+                        "Ignoring incompatible session-scoped LLM model override (falling back)"
+                    );
+                    fallback_model()
+                }
+                None => fallback_model(),
+            };
             (provider, model)
         })
         .unwrap_or_else(|| {
@@ -2140,7 +2362,12 @@ pub async fn process_chat_message_streaming(
     let mut assistant_text = String::new();
     let mut assistant_thinking: Option<String> = None;
     let mut saw_terminal = false;
-    let idle_timeout = Duration::from_secs(90);
+    // Normal idle timeout detects backend hangs.
+    // When we are waiting for *user* tool confirmation, we extend this to avoid
+    // cancelling a healthy stream that is intentionally paused.
+    let idle_timeout_normal = Duration::from_secs(90);
+    let idle_timeout_waiting_for_user = Duration::from_secs(10 * 60);
+    let mut idle_timeout = idle_timeout_normal;
     let idle_timer = tokio::time::sleep(idle_timeout);
     tokio::pin!(idle_timer);
 
@@ -2149,6 +2376,11 @@ pub async fn process_chat_message_streaming(
             maybe_chunk = rx.recv() => {
                 let Some(chunk) = maybe_chunk else {
                     break;
+                };
+                // Update idle timeout based on what we just received.
+                idle_timeout = match &chunk {
+                    StreamChunk::ToolConfirmationRequired { .. } => idle_timeout_waiting_for_user,
+                    _ => idle_timeout_normal,
                 };
                 idle_timer.as_mut().reset(Instant::now() + idle_timeout);
                 match chunk {
@@ -2445,7 +2677,9 @@ pub async fn process_chat_message_streaming(
 ///
 /// This prevents a cancel action in one chat window from cancelling another window's
 /// in-flight stream.
-#[tauri::command]
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn cancel_chat_streaming(
     webview_window: tauri::WebviewWindow,
     session_id: Option<String>,
@@ -2454,14 +2688,48 @@ pub fn cancel_chat_streaming(
     cancel_chat_streaming_internal(Some(calling_window_label), session_id)
 }
 
+/// Approve a pending tool confirmation request.
+///
+/// JS↔Rust interop: The frontend calls this when the user clicks "Approve" on a
+/// `chat-stream-tool-confirmation` dialog.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub fn approve_tool_confirmation(
+    confirmation_id: String,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    gestura_core::tool_confirmation::TOOL_CONFIRMATIONS.resolve(
+        &confirmation_id,
+        session_id.as_deref(),
+        true,
+    )
+}
+
+/// Deny a pending tool confirmation request.
+///
+/// JS↔Rust interop: The frontend calls this when the user clicks "Deny" (or
+/// dismisses) a `chat-stream-tool-confirmation` dialog.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub fn deny_tool_confirmation(
+    confirmation_id: String,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    gestura_core::tool_confirmation::TOOL_CONFIRMATIONS.resolve(
+        &confirmation_id,
+        session_id.as_deref(),
+        false,
+    )
+}
+
 /// Returns recent chat event emission trace entries.
 ///
 /// This is a diagnostics-only command used to debug cross-window event leakage.
 /// The trace is an in-memory ring buffer recorded by `crate::chat_events`.
 #[tauri::command]
-pub fn get_chat_event_trace(
-    max: Option<usize>,
-) -> Vec<crate::chat_events::ChatEventTraceEntry> {
+pub fn get_chat_event_trace(max: Option<usize>) -> Vec<crate::chat_events::ChatEventTraceEntry> {
     crate::chat_events::get_chat_event_trace(max)
 }
 
@@ -2510,7 +2778,9 @@ pub fn clear_chat_receipt_trace() -> Result<(), String> {
 /// This does not call any external LLM providers. It emits a `chat-probe` event to
 /// two open chat windows and returns an analysis based on backend traces.
 #[tauri::command]
-pub async fn run_chat_isolation_probe(app: tauri::AppHandle) -> Result<crate::chat_probe::ChatIsolationProbeReport, String> {
+pub async fn run_chat_isolation_probe(
+    app: tauri::AppHandle,
+) -> Result<crate::chat_probe::ChatIsolationProbeReport, String> {
     crate::chat_probe::run_chat_isolation_probe(app).await
 }
 
@@ -2536,7 +2806,8 @@ fn cancel_chat_streaming_internal(
         cancel_key_for_window_label(&label)
     } else {
         return Err(
-            "Cannot cancel stream: no session_id provided and no calling window context".to_string(),
+            "Cannot cancel stream: no session_id provided and no calling window context"
+                .to_string(),
         );
     };
 
@@ -2926,6 +3197,12 @@ pub async fn request_permission(permission: String) -> Result<(), String> {
     }
 }
 
+/// Open the configuration/settings window
+#[tauri::command]
+pub fn open_config_window() -> Result<(), String> {
+    crate::window_manager::open_config_window().map_err(|e| e.to_string())
+}
+
 // UI Testing and Validation Commands
 
 #[tauri::command]
@@ -3235,7 +3512,9 @@ pub fn get_session_counts() -> Result<(usize, usize), String> {
 }
 
 /// Get the conversation history for a session
-#[tauri::command]
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn get_session_history(
     session_id: String,
 ) -> Result<Vec<crate::window_manager::ConversationMessage>, String> {
@@ -3250,8 +3529,10 @@ pub fn get_session_workspace() -> Option<String> {
     crate::window_manager::get_active_session_workspace().map(|p| p.display().to_string())
 }
 
-/// Get the workspace directory for a specific session by ID
-#[tauri::command]
+/// Get the workspace directory for a specific session by ID.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn get_session_workspace_by_id(session_id: String) -> Option<String> {
     crate::window_manager::get_session_state(&session_id)
         .and_then(|s| s.workspace_dir)
@@ -3280,7 +3561,9 @@ pub fn set_session_workspace(session_id: String, workspace_path: String) -> Resu
 /// Open a directory picker dialog and set it as the workspace for a session
 /// If session_id is provided, sets workspace for that session.
 /// Otherwise, sets workspace for the current active session.
-#[tauri::command]
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn pick_workspace_directory(
     app: tauri::AppHandle,
     session_id: Option<String>,
@@ -3325,7 +3608,9 @@ pub async fn pick_workspace_directory(
 
 /// Get the session-scoped LLM config for a chat session
 /// Returns None if no session-specific override is set (uses global config)
-#[tauri::command]
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn get_session_llm_config(
     session_id: String,
 ) -> Option<crate::window_manager::SessionLlmConfig> {
@@ -3334,7 +3619,9 @@ pub fn get_session_llm_config(
 
 /// Set the LLM provider for a specific session (doesn't modify global config)
 /// This allows users to switch providers mid-conversation without affecting defaults
-#[tauri::command]
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn set_session_llm_provider(session_id: String, provider: String) -> Result<(), String> {
     crate::window_manager::set_session_llm_provider(&session_id, provider.clone());
     tracing::info!(
@@ -3346,9 +3633,11 @@ pub fn set_session_llm_provider(session_id: String, provider: String) -> Result<
 }
 
 /// Set the LLM model for a specific session (doesn't modify global config)
-#[tauri::command]
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn set_session_llm_model(session_id: String, model: String) -> Result<(), String> {
-    crate::window_manager::set_session_llm_model(&session_id, model.clone());
+    crate::window_manager::set_session_llm_model(&session_id, model.clone())?;
     tracing::info!(
         session_id = %session_id,
         model = %model,
@@ -3358,16 +3647,74 @@ pub fn set_session_llm_model(session_id: String, model: String) -> Result<(), St
 }
 
 /// Clear session LLM config (revert to global config for this session)
-#[tauri::command]
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn clear_session_llm_config(session_id: String) -> Result<(), String> {
     crate::window_manager::clear_session_llm_config(&session_id);
     tracing::info!(session_id = %session_id, "Session LLM config cleared (using global config)");
     Ok(())
 }
 
+// =========================================================================
+// Session Voice/STT Config Commands (session-scoped, doesn't modify globals)
+// =========================================================================
+
+/// Get the session-scoped voice/STT config for a chat session.
+///
+/// Returns `None` if no session-specific override is set (uses global config).
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub fn get_session_voice_config(
+    session_id: String,
+) -> Option<crate::window_manager::SessionVoiceConfig> {
+    crate::window_manager::get_session_voice_config(&session_id)
+}
+
+/// Set the STT provider for a specific session (doesn't modify global config).
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub fn set_session_voice_provider(session_id: String, provider: String) -> Result<(), String> {
+    crate::window_manager::set_session_voice_provider(&session_id, provider.clone());
+    tracing::info!(
+        session_id = %session_id,
+        provider = %provider,
+        "Session voice provider updated (session-scoped)"
+    );
+    Ok(())
+}
+
+/// Set the STT model for a specific session (doesn't modify global config).
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub fn set_session_voice_model(session_id: String, model: String) -> Result<(), String> {
+    crate::window_manager::set_session_voice_model(&session_id, model.clone());
+    tracing::info!(
+        session_id = %session_id,
+        model = %model,
+        "Session voice model updated (session-scoped)"
+    );
+    Ok(())
+}
+
+/// Clear session voice config (revert to global config for this session).
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub fn clear_session_voice_config(session_id: String) -> Result<(), String> {
+    crate::window_manager::clear_session_voice_config(&session_id);
+    tracing::info!(session_id = %session_id, "Session voice config cleared (using global config)");
+    Ok(())
+}
+
 /// Get the effective LLM config for a session (session override or global fallback)
 /// Returns (provider, model) tuple
-#[tauri::command]
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn get_effective_llm_config(session_id: String) -> Result<(String, String), String> {
     let global_cfg = AppConfig::load_async().await;
 
@@ -3376,9 +3723,22 @@ pub async fn get_effective_llm_config(session_id: String) -> Result<(String, Str
         let provider = session_llm
             .provider
             .unwrap_or_else(|| global_cfg.llm.primary.clone());
-        let model = session_llm
-            .model
-            .unwrap_or_else(|| get_model_for_provider(&global_cfg, &provider).unwrap_or_default());
+
+        let fallback_model = || get_model_for_provider(&global_cfg, &provider).unwrap_or_default();
+        let model = match session_llm.model {
+            Some(m) if crate::llm_validation::is_model_compatible_with_provider(&provider, &m) => m,
+            Some(m) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    provider = %provider,
+                    model = %m,
+                    "Ignoring incompatible session-scoped model override in get_effective_llm_config"
+                );
+                fallback_model()
+            }
+            None => fallback_model(),
+        };
+
         return Ok((provider, model));
     }
 
@@ -3403,15 +3763,19 @@ fn get_model_for_provider(cfg: &AppConfig, provider: &str) -> Option<String> {
 // Session Tool and Permission Settings Commands
 // ============================================================================
 
-/// Get the tool settings for a session (permission level and enabled tools)
-#[tauri::command]
+/// Get the tool settings for a session (permission level and enabled tools).
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn get_session_tool_settings(session_id: String) -> crate::window_manager::SessionToolSettings {
     crate::window_manager::get_session_tool_settings(&session_id)
 }
 
 /// Set the permission level for a session
 /// Valid levels: "sandbox", "restricted", "full"
-#[tauri::command]
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn set_session_permission_level(session_id: String, level: String) -> Result<(), String> {
     let permission_level = match level.to_lowercase().as_str() {
         "sandbox" => crate::window_manager::SessionPermissionLevel::Sandbox,
@@ -3433,8 +3797,10 @@ pub fn set_session_permission_level(session_id: String, level: String) -> Result
     Ok(())
 }
 
-/// Enable or disable a tool for a session
-#[tauri::command]
+/// Enable or disable a tool for a session.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn set_session_tool_enabled(
     session_id: String,
     tool_name: String,
@@ -3487,8 +3853,10 @@ fn get_task_manager() -> &'static TaskManager {
     })
 }
 
-/// Create a new task
-#[tauri::command]
+/// Create a new task.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn create_task(
     app: tauri::AppHandle,
     session_id: String,
@@ -3514,7 +3882,9 @@ pub fn create_task(
 }
 
 /// Update a task's status
-#[tauri::command]
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn update_task_status(
     app: tauri::AppHandle,
     session_id: String,
@@ -3552,7 +3922,9 @@ pub fn update_task_status(
 }
 
 /// Update a task's name and/or description
-#[tauri::command]
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn update_task(
     app: tauri::AppHandle,
     session_id: String,
@@ -3579,8 +3951,10 @@ pub fn update_task(
     Ok(())
 }
 
-/// Delete a task
-#[tauri::command]
+/// Delete a task.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn delete_task(
     app: tauri::AppHandle,
     session_id: String,
@@ -3604,14 +3978,18 @@ pub fn delete_task(
 }
 
 /// List all tasks for a session
-#[tauri::command]
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn list_tasks(session_id: String) -> Result<Vec<Task>, String> {
     let manager = get_task_manager();
     manager.list_tasks(&session_id).map_err(|e| e.to_string())
 }
 
-/// Get task hierarchy for a session (root tasks with their subtasks)
-#[tauri::command]
+/// Get task hierarchy for a session (root tasks with their subtasks).
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn get_task_hierarchy(session_id: String) -> Result<Vec<(Task, Vec<Task>)>, String> {
     let manager = get_task_manager();
     manager
@@ -3623,13 +4001,15 @@ pub fn get_task_hierarchy(session_id: String) -> Result<Vec<(Task, Vec<Task>)>, 
 ///
 /// This command analyzes the provided requirements text and generates
 /// a prioritized task hierarchy with dependencies identified.
-#[tauri::command]
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn break_down_requirements(
     app: tauri::AppHandle,
     session_id: String,
     requirements: String,
 ) -> Result<Vec<String>, String> {
-    use gestura_core::{llm_provider::select_provider, AgentContext, AppConfig};
+    use gestura_core::{AgentContext, AppConfig, llm_provider::select_provider};
 
     let cfg = AppConfig::load_async().await;
     let provider = select_provider(
@@ -3671,8 +4051,12 @@ Respond ONLY with the JSON array, no additional text."#,
         .map_err(|e| format!("LLM error: {}", e))?;
 
     // Parse the LLM response as JSON
-    let tasks_json: serde_json::Value =
-        serde_json::from_str(&response).map_err(|e| format!("Failed to parse LLM response: {}. Response was: {}", e, response))?;
+    let tasks_json: serde_json::Value = serde_json::from_str(&response).map_err(|e| {
+        format!(
+            "Failed to parse LLM response: {}. Response was: {}",
+            e, response
+        )
+    })?;
 
     let tasks_array = tasks_json
         .as_array()
@@ -3680,7 +4064,8 @@ Respond ONLY with the JSON array, no additional text."#,
 
     let manager = get_task_manager();
     let mut created_task_ids = Vec::new();
-    let mut name_to_id: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut name_to_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     // First pass: create root tasks (no parent)
     for task_json in tasks_array {
@@ -3830,8 +4215,10 @@ pub fn get_knowledge_item(knowledge_id: String) -> Result<Option<KnowledgeItem>,
     Ok(store.get(&knowledge_id))
 }
 
-/// Set knowledge enabled/disabled for a session
-#[tauri::command]
+/// Set knowledge enabled/disabled for a session.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn set_knowledge_enabled(
     session_id: String,
     knowledge_id: String,
@@ -3843,8 +4230,10 @@ pub fn set_knowledge_enabled(
         .map_err(|e| e.to_string())
 }
 
-/// Get list of enabled knowledge IDs for a session
-#[tauri::command]
+/// Get list of enabled knowledge IDs for a session.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn get_enabled_knowledge(session_id: String) -> Result<Vec<String>, String> {
     let settings = get_knowledge_settings();
     settings
@@ -3934,12 +4323,7 @@ fn validate_voice_config_with_config(config: &crate::AppConfig) -> VoiceConfigVa
         }
         "openai" => {
             // Check if OpenAI API key is configured (config file, keychain, or LLM fallback)
-            let config_key = config
-                .voice
-                .openai_api_key
-                .as_ref()
-                .map(|k| k.as_str())
-                .unwrap_or("");
+            let config_key = config.voice.openai_api_key.as_deref().unwrap_or("");
 
             // Try keychain fallback if config key is empty
             let has_api_key = if !config_key.is_empty() {
@@ -4446,23 +4830,31 @@ pub fn is_keychain_available() -> bool {
     }
 }
 
-/// Store an API key securely. Convenience wrapper that uses provider-specific key names.
-/// Provider can be: "openai", "anthropic", "grok", "serpapi", "brave"
-#[tauri::command]
+/// Store an API key securely.
+///
+/// Convenience wrapper that uses provider-specific key names.
+/// Provider can be: "openai", "anthropic", "grok", "serpapi", "brave".
+///
+/// JS↔Rust interop: This command is exposed to the frontend via Tauri.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn store_api_key(provider: String, api_key: String) -> Result<(), String> {
     let key = format!("gestura_api_key_{}", provider.to_lowercase());
     store_secret(key, api_key).await
 }
 
 /// Retrieve an API key from secure storage.
-#[tauri::command]
+///
+/// JS↔Rust interop: This command is exposed to the frontend via Tauri.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn get_api_key(provider: String) -> Result<Option<String>, String> {
     let key = format!("gestura_api_key_{}", provider.to_lowercase());
     get_secret(key).await
 }
 
 /// Delete an API key from secure storage.
-#[tauri::command]
+///
+/// JS↔Rust interop: This command is exposed to the frontend via Tauri.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn delete_api_key(provider: String) -> Result<(), String> {
     let key = format!("gestura_api_key_{}", provider.to_lowercase());
     delete_secret(key).await

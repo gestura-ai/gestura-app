@@ -56,7 +56,10 @@ pub fn get_chat_event_trace(max: Option<usize>) -> Vec<ChatEventTraceEntry> {
 /// - If `session_id` is `None`, returns the payload unchanged.
 /// - If `payload` is a JSON object and it does not already include `session_id`, inserts it.
 /// - Otherwise, wraps the payload into `{ session_id, value }`.
-pub fn attach_session_id(payload: serde_json::Value, session_id: Option<&str>) -> serde_json::Value {
+pub fn attach_session_id(
+    payload: serde_json::Value,
+    session_id: Option<&str>,
+) -> serde_json::Value {
     let Some(session_id) = session_id else {
         return payload;
     };
@@ -128,4 +131,3 @@ pub fn emit_chat_event_to_window(
 
     Ok(emitted_to)
 }
-

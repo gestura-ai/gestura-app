@@ -23,7 +23,10 @@ pub fn should_retry_without_temperature(status_code: u16, body_text: &str) -> bo
     let err = &v["error"];
     let param = err["param"].as_str().unwrap_or_default();
     let code = err["code"].as_str().unwrap_or_default();
-    let msg = err["message"].as_str().unwrap_or_default().to_ascii_lowercase();
+    let msg = err["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
 
     (param == "temperature" && code == "unsupported_value")
         || (msg.contains("temperature")
@@ -59,4 +62,3 @@ mod tests {
         assert!(should_retry_without_temperature(400, body));
     }
 }
-

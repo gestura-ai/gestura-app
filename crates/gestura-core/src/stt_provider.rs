@@ -196,11 +196,7 @@ impl SttProvider for LocalWhisperProvider {
 pub fn select_provider(config: &AppConfig) -> Box<dyn SttProvider> {
     match config.voice.provider.as_str() {
         "openai" => {
-            let api_key = config
-                .voice
-                .openai_api_key
-                .clone()
-                .unwrap_or_default();
+            let api_key = config.voice.openai_api_key.clone().unwrap_or_default();
             let api_key = if !api_key.is_empty() {
                 api_key
             } else {
@@ -271,6 +267,9 @@ mod tests {
             base_url: "https://example.com/".into(),
             model: "whisper-1".into(),
         };
-        assert_eq!(p.transcription_url(), "https://example.com/v1/audio/transcriptions");
+        assert_eq!(
+            p.transcription_url(),
+            "https://example.com/v1/audio/transcriptions"
+        );
     }
 }

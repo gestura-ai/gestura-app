@@ -39,11 +39,12 @@ impl PromptCache {
 
     fn insert(&mut self, key: String, value: String) {
         // If cache is full, evict least recently used
-        if self.cache.len() >= self.max_size && !self.cache.contains_key(&key) {
-            if let Some(lru_key) = self.lru_queue.pop_front() {
-                self.cache.remove(&lru_key);
-                tracing::debug!(evicted_key = %lru_key, "Evicted LRU cache entry");
-            }
+        if self.cache.len() >= self.max_size
+            && !self.cache.contains_key(&key)
+            && let Some(lru_key) = self.lru_queue.pop_front()
+        {
+            self.cache.remove(&lru_key);
+            tracing::debug!(evicted_key = %lru_key, "Evicted LRU cache entry");
         }
 
         // Insert new entry
@@ -64,12 +65,47 @@ lazy_static::lazy_static! {
     static ref PROMPT_CACHE: Mutex<PromptCache> = Mutex::new(PromptCache::new(20));
 }
 
-/// Generate a cache key from prompt and context
-fn generate_cache_key(prompt: &str, context: &Option<PromptContext>) -> String {
+/// Generate a cache key for prompt enhancement.
+///
+/// The cache key includes prompt, context, and the effective LLM provider/model.
+/// This ensures switching a session's model/provider does not incorrectly reuse a
+/// cached enhancement produced by a different backend.
+fn generate_cache_key(prompt: &str, config: &AppConfig, context: &Option<PromptContext>) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
     let mut hasher = DefaultHasher::new();
+
+    // Include LLM selection
+    config.llm.primary.hash(&mut hasher);
+    match config.llm.primary.as_str() {
+        "openai" => {
+            if let Some(c) = &config.llm.openai {
+                c.base_url.hash(&mut hasher);
+                c.model.hash(&mut hasher);
+            }
+        }
+        "anthropic" => {
+            if let Some(c) = &config.llm.anthropic {
+                c.base_url.hash(&mut hasher);
+                c.model.hash(&mut hasher);
+                c.thinking_budget_tokens.hash(&mut hasher);
+            }
+        }
+        "grok" => {
+            if let Some(c) = &config.llm.grok {
+                c.base_url.hash(&mut hasher);
+                c.model.hash(&mut hasher);
+            }
+        }
+        "ollama" => {
+            if let Some(c) = &config.llm.ollama {
+                c.base_url.hash(&mut hasher);
+                c.model.hash(&mut hasher);
+            }
+        }
+        _ => {}
+    }
     prompt.hash(&mut hasher);
 
     // Include context in hash if present
@@ -165,7 +201,10 @@ fn get_enhancement_system_prompt(style: &str, max_length_multiplier: f64) -> Str
         "technical" => {
             "Use precise technical language. Include specific implementation details, edge cases, and technical constraints. Reference relevant technologies and best practices."
         }
-        "concise" | _ => {
+        "concise" => {
+            "Be brief and to the point. Add only essential context and clarity. Avoid unnecessary elaboration."
+        }
+        _ => {
             "Be brief and to the point. Add only essential context and clarity. Avoid unnecessary elaboration."
         }
     };
@@ -196,20 +235,22 @@ fn format_context(context: &PromptContext) -> String {
     let mut sections = Vec::new();
 
     // Add session history
-    if let Some(history) = &context.session_history {
-        if !history.is_empty() {
-            let mut history_text = String::from("## Recent Conversation:\n");
-            for (role, content) in history {
-                // Truncate very long messages to avoid token overflow
-                let truncated = if content.len() > 500 {
-                    format!("{}...", &content[..500])
-                } else {
-                    content.clone()
-                };
-                history_text.push_str(&format!("{}: {}\n", role, truncated));
-            }
-            sections.push(history_text);
+    if let Some(history) = context
+        .session_history
+        .as_ref()
+        .filter(|history| !history.is_empty())
+    {
+        let mut history_text = String::from("## Recent Conversation:\n");
+        for (role, content) in history {
+            // Truncate very long messages to avoid token overflow
+            let truncated = if content.len() > 500 {
+                format!("{}...", &content[..500])
+            } else {
+                content.clone()
+            };
+            history_text.push_str(&format!("{}: {}\n", role, truncated));
         }
+        sections.push(history_text);
     }
 
     // Add active file context
@@ -231,20 +272,22 @@ fn format_context(context: &PromptContext) -> String {
     }
 
     // Add knowledge entries
-    if let Some(entries) = &context.knowledge_entries {
-        if !entries.is_empty() {
-            let mut knowledge_text = String::from("## Relevant Knowledge:\n");
-            for entry in entries {
-                // Truncate long knowledge entries
-                let truncated = if entry.len() > 300 {
-                    format!("- {}...\n", &entry[..300])
-                } else {
-                    format!("- {}\n", entry)
-                };
-                knowledge_text.push_str(&truncated);
-            }
-            sections.push(knowledge_text);
+    if let Some(entries) = context
+        .knowledge_entries
+        .as_ref()
+        .filter(|entries| !entries.is_empty())
+    {
+        let mut knowledge_text = String::from("## Relevant Knowledge:\n");
+        for entry in entries {
+            // Truncate long knowledge entries
+            let truncated = if entry.len() > 300 {
+                format!("- {}...\n", &entry[..300])
+            } else {
+                format!("- {}\n", entry)
+            };
+            knowledge_text.push_str(&truncated);
         }
+        sections.push(knowledge_text);
     }
 
     if sections.is_empty() {
@@ -310,7 +353,7 @@ pub async fn enhance_prompt_with_llm(
     }
 
     // Check cache first
-    let cache_key = generate_cache_key(trimmed_prompt, &context);
+    let cache_key = generate_cache_key(trimmed_prompt, config, &context);
     {
         let mut cache = PROMPT_CACHE.lock().unwrap();
         if let Some(cached_result) = cache.get(&cache_key) {
@@ -529,21 +572,40 @@ mod tests {
         let prompt2 = "test prompt";
         let prompt3 = "different prompt";
 
+        let mut config = AppConfig::default();
+        config.llm.primary = "echo".to_string();
+
         // Same prompt should generate same key
-        let key1 = generate_cache_key(prompt1, &None);
-        let key2 = generate_cache_key(prompt2, &None);
+        let key1 = generate_cache_key(prompt1, &config, &None);
+        let key2 = generate_cache_key(prompt2, &config, &None);
         assert_eq!(key1, key2);
 
         // Different prompt should generate different key
-        let key3 = generate_cache_key(prompt3, &None);
+        let key3 = generate_cache_key(prompt3, &config, &None);
         assert_ne!(key1, key3);
+
+        // Same prompt with different model should generate different key
+        let mut openai_cfg = AppConfig::default();
+        openai_cfg.llm.primary = "openai".to_string();
+        openai_cfg.llm.openai = Some(crate::config::OpenAiConfig {
+            api_key: String::new(),
+            base_url: None,
+            model: "gpt-4o".to_string(),
+        });
+        let mut openai_cfg_2 = openai_cfg.clone();
+        if let Some(c) = openai_cfg_2.llm.openai.as_mut() {
+            c.model = "gpt-4o-mini".to_string();
+        }
+        let key_model_1 = generate_cache_key(prompt1, &openai_cfg, &None);
+        let key_model_2 = generate_cache_key(prompt1, &openai_cfg_2, &None);
+        assert_ne!(key_model_1, key_model_2);
 
         // Same prompt with different context should generate different key
         let context = Some(
             PromptContext::new()
                 .with_session_history(vec![("user".to_string(), "context".to_string())]),
         );
-        let key4 = generate_cache_key(prompt1, &context);
+        let key4 = generate_cache_key(prompt1, &config, &context);
         assert_ne!(key1, key4);
     }
 
