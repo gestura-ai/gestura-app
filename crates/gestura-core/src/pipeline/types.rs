@@ -63,6 +63,55 @@ impl PermissionLevel {
     }
 }
 
+/// Strategy for handling context window overflow during auto-compaction.
+///
+/// Different strategies provide different trade-offs between preserving context,
+/// performance, and user control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum CompactionStrategy {
+    /// Summarize older messages into a condensed form (default)
+    /// Preserves semantic meaning while reducing token count
+    #[default]
+    Summarize,
+    /// Truncate oldest messages to fit within limit
+    /// Simple but loses information
+    Truncate,
+    /// Clear all history and start fresh
+    /// Most aggressive, loses all context
+    Clear,
+    /// Prompt user to choose action
+    /// Gives user control but requires interaction
+    Prompt,
+    /// Save context to persistent memory bank file and clear history
+    /// Preserves context for future retrieval while freeing tokens
+    MemoryBank,
+}
+
+impl CompactionStrategy {
+    /// Parse compaction strategy from string (case-insensitive)
+    pub fn parse(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "summarize" => Self::Summarize,
+            "truncate" => Self::Truncate,
+            "clear" => Self::Clear,
+            "prompt" => Self::Prompt,
+            "memorybank" | "memory_bank" | "memory-bank" => Self::MemoryBank,
+            _ => Self::default(),
+        }
+    }
+
+    /// Get human-readable name for the strategy
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Summarize => "Summarize",
+            Self::Truncate => "Truncate",
+            Self::Clear => "Clear",
+            Self::Prompt => "Prompt",
+            Self::MemoryBank => "Memory Bank",
+        }
+    }
+}
+
 /// A request to be processed by the agent pipeline
 #[derive(Debug, Clone)]
 pub struct AgentRequest {
@@ -234,6 +283,14 @@ pub struct PipelineConfig {
     pub max_history_messages: usize,
     /// Log token usage before/after optimization
     pub log_token_usage: bool,
+    /// Auto-compaction threshold (0.0-1.0)
+    /// When estimated tokens exceed this percentage of the limit,
+    /// automatically trigger context summarization.
+    /// Default: 0.8 (80% of limit)
+    pub auto_compact_threshold: f64,
+    /// Strategy to use when auto-compaction is triggered
+    /// Default: CompactionStrategy::Summarize
+    pub compaction_strategy: CompactionStrategy,
 }
 
 impl Default for PipelineConfig {
@@ -246,8 +303,10 @@ impl Default for PipelineConfig {
             enable_context_reduction: true,
             enable_fallback: true,
             always_include_categories: vec![ContextCategory::General],
-            max_history_messages: 10, // Keep last 10 messages by default
-            log_token_usage: true,    // Log token usage for debugging
+            max_history_messages: 10,    // Keep last 10 messages by default
+            log_token_usage: true,       // Log token usage for debugging
+            auto_compact_threshold: 0.8, // Auto-compact at 80% of token limit
+            compaction_strategy: CompactionStrategy::Summarize, // Default to summarization
         }
     }
 }
@@ -271,6 +330,63 @@ impl PipelineConfig {
             max_context_tokens: Self::context_tokens_for_provider(provider),
             ..Default::default()
         }
+    }
+
+    /// Apply user settings from `AppConfig.pipeline` to this configuration.
+    ///
+    /// This method intelligently merges user preferences with provider-specific
+    /// defaults, allowing users to customize behavior while still benefiting from
+    /// optimized provider defaults.
+    ///
+    /// # Merge Strategy
+    ///
+    /// - `max_history_messages`: Always use user setting
+    /// - `auto_compact_threshold`: Always use user setting (converted from percentage)
+    /// - `compaction_strategy`: Always use user setting
+    /// - `log_token_usage`: Always use user setting
+    /// - `max_context_tokens`: Only override if user set non-zero value (0 = keep provider default)
+    ///
+    /// # Arguments
+    ///
+    /// * `settings` - User-configured pipeline settings from `AppConfig`
+    ///
+    /// # Returns
+    ///
+    /// Self with user settings applied
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gestura_core::config::PipelineSettings;
+    /// use gestura_core::pipeline::{PipelineConfig, CompactionStrategy};
+    ///
+    /// // Start with provider defaults
+    /// let config = PipelineConfig::for_provider("openai");
+    /// assert_eq!(config.max_context_tokens, 128_000);
+    ///
+    /// // Apply user settings
+    /// let mut user_settings = PipelineSettings::default();
+    /// user_settings.max_history_messages = 20;
+    /// user_settings.compaction_strategy = CompactionStrategy::MemoryBank;
+    /// user_settings.max_context_tokens = 0; // Keep provider default
+    ///
+    /// let config = config.with_user_settings(&user_settings);
+    /// assert_eq!(config.max_history_messages, 20);
+    /// assert_eq!(config.compaction_strategy, CompactionStrategy::MemoryBank);
+    /// assert_eq!(config.max_context_tokens, 128_000); // Provider default preserved
+    /// ```
+    pub fn with_user_settings(mut self, settings: &crate::config::PipelineSettings) -> Self {
+        self.max_history_messages = settings.max_history_messages;
+        self.auto_compact_threshold = settings.auto_compact_threshold();
+        self.compaction_strategy = settings.compaction_strategy;
+        self.log_token_usage = settings.log_token_usage;
+
+        // Only override max_context_tokens if user has set a non-zero value
+        if settings.max_context_tokens > 0 {
+            self.max_context_tokens = settings.max_context_tokens;
+        }
+
+        self
     }
 }
 

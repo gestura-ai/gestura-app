@@ -104,6 +104,12 @@ async fn main() {
             gestura_gui::api::list_mcp_tools,
             gestura_gui::api::add_mcp_tool,
             gestura_gui::api::remove_mcp_tool,
+            // MCP Discovery Manager commands
+            gestura_gui::api::init_mcp_servers,
+            gestura_gui::api::list_discovered_mcp_tools,
+            gestura_gui::api::get_mcp_server_status,
+            gestura_gui::api::register_mcp_server,
+            gestura_gui::api::unregister_mcp_server,
             gestura_gui::api::get_mdh_pointers,
             gestura_gui::api::set_mdh_pointer,
             gestura_gui::api::remove_mdh_pointer,
@@ -112,6 +118,7 @@ async fn main() {
             gestura_gui::api::list_knowledge_entries,
             gestura_gui::api::search_knowledge,
             gestura_gui::api::test_llm,
+            gestura_gui::api::enhance_prompt,
             gestura_gui::api::test_voice,
             gestura_gui::api::test_ollama_connection,
             gestura_gui::api::list_ollama_models,
@@ -128,6 +135,7 @@ async fn main() {
             gestura_gui::api::run_voice_once,
             gestura_gui::api::get_ui_prefs,
             gestura_gui::api::set_ui_prefs,
+            gestura_gui::api::get_system_theme,
             gestura_gui::api::scan_for_rings,
             gestura_gui::api::get_ring_status,
             gestura_gui::api::pair_ring,
@@ -147,6 +155,16 @@ async fn main() {
             gestura_gui::api::process_chat_message,
             gestura_gui::api::process_chat_message_streaming,
             gestura_gui::api::cancel_chat_streaming,
+            // Tool confirmation (Restricted mode pause/resume)
+            gestura_gui::api::approve_tool_confirmation,
+            gestura_gui::api::deny_tool_confirmation,
+            // Chat diagnostics
+            gestura_gui::api::get_chat_event_trace,
+            gestura_gui::api::clear_chat_event_trace,
+            gestura_gui::api::record_chat_receipt,
+            gestura_gui::api::get_chat_receipt_trace,
+            gestura_gui::api::clear_chat_receipt_trace,
+            gestura_gui::api::run_chat_isolation_probe,
             gestura_gui::api::send_agent_message,
             gestura_gui::api::get_agent_status,
             gestura_gui::api::list_agents,
@@ -161,6 +179,8 @@ async fn main() {
             // Permission management commands
             gestura_gui::api::check_permission,
             gestura_gui::api::request_permission,
+            // Window management commands
+            gestura_gui::api::open_config_window,
             // UI testing commands
             gestura_gui::api::test_open_window,
             gestura_gui::api::capture_window_screenshot,
@@ -189,6 +209,7 @@ async fn main() {
             gestura_gui::api::restore_chat_session,
             gestura_gui::api::create_chat_session,
             gestura_gui::api::get_session_counts,
+            gestura_gui::api::get_session_history,
             gestura_gui::api::get_session_workspace,
             gestura_gui::api::get_session_workspace_by_id,
             gestura_gui::api::set_session_workspace,
@@ -199,6 +220,11 @@ async fn main() {
             gestura_gui::api::set_session_llm_model,
             gestura_gui::api::clear_session_llm_config,
             gestura_gui::api::get_effective_llm_config,
+            // Session Voice/STT config (session-scoped, doesn't modify global config)
+            gestura_gui::api::get_session_voice_config,
+            gestura_gui::api::set_session_voice_provider,
+            gestura_gui::api::set_session_voice_model,
+            gestura_gui::api::clear_session_voice_config,
             // Session tool and permission settings
             gestura_gui::api::get_session_tool_settings,
             gestura_gui::api::set_session_permission_level,
@@ -206,6 +232,19 @@ async fn main() {
             gestura_gui::api::is_session_tool_enabled,
             gestura_gui::api::is_session_action_allowed,
             gestura_gui::api::session_requires_confirmation,
+            // Task management
+            gestura_gui::api::create_task,
+            gestura_gui::api::update_task_status,
+            gestura_gui::api::update_task,
+            gestura_gui::api::delete_task,
+            gestura_gui::api::list_tasks,
+            gestura_gui::api::get_task_hierarchy,
+            gestura_gui::api::break_down_requirements,
+            // Knowledge management
+            gestura_gui::api::list_knowledge_items,
+            gestura_gui::api::get_knowledge_item,
+            gestura_gui::api::set_knowledge_enabled,
+            gestura_gui::api::get_enabled_knowledge,
             // Simulator management
             gestura_gui::commands::get_simulators,
             gestura_gui::commands::scan_for_simulators,

@@ -7,23 +7,19 @@
     <title>Gestura Configuration</title>
     <link rel="stylesheet" href="icons.css">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        :root {
+            /* Premium Light Palette */
+            --background-color: #ffffff;
+            --text-color: #000000;
+            --border-color: #e0e0e0;
+            --section-background: #f8f9fa;
+            --input-background: #ffffff;
         }
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: var(--background-color, #ffffff);
-            color: var(--text-color, #000000);
-            min-height: 100vh;
-            display: flex;
-        }
-
-        /* System theme support */
+        /* Auto mode: respect system preference */
         @media (prefers-color-scheme: dark) {
-            body {
+            :root {
+                /* Premium Dark Palette */
                 --background-color: #1e1e1e;
                 --text-color: #ffffff;
                 --border-color: #404040;
@@ -32,14 +28,36 @@
             }
         }
 
-        @media (prefers-color-scheme: light) {
-            body {
-                --background-color: #ffffff;
-                --text-color: #000000;
-                --border-color: #e0e0e0;
-                --section-background: #f8f9fa;
-                --input-background: #ffffff;
-            }
+        /* Force light mode (overrides system preference) */
+        html[data-theme="light"] {
+            --background-color: #ffffff;
+            --text-color: #000000;
+            --border-color: #e0e0e0;
+            --section-background: #f8f9fa;
+            --input-background: #ffffff;
+        }
+
+        /* Force dark mode (overrides system preference) */
+        html[data-theme="dark"] {
+            --background-color: #1e1e1e;
+            --text-color: #ffffff;
+            --border-color: #404040;
+            --section-background: #2d2d2d;
+            --input-background: #3d3d3d;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--background-color);
+            color: var(--text-color);
+            min-height: 100vh;
+            display: flex;
         }
 
         .config-container {
@@ -2153,6 +2171,129 @@
 
                     <div class="subsection">
                         <div class="subsection-title">
+                            <span class="icon icon-monitor"></span>User Interface
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="themeMode">Theme Mode</label>
+                            <select class="form-select" id="themeMode" name="theme_mode">
+                                <option value="system">Auto (Follow System)</option>
+                                <option value="light">Light</option>
+                                <option value="dark">Dark</option>
+                            </select>
+                            <div class="help-text">Choose how the application appearance adapts to your system theme</div>
+                        </div>
+                    </div>
+
+                    <div class="subsection">
+                        <div class="subsection-title">
+                            <span class="icon icon-sparkles"></span>Prompt Enhancement
+                        </div>
+
+                        <div class="form-group">
+                            <label class="toggle-label">
+                                <input type="checkbox" id="autoEnhance" name="auto_enhance">
+                                <span class="toggle-slider"></span>
+                                <span class="toggle-text">Auto-enhance prompts while typing</span>
+                            </label>
+                            <div class="help-text">Automatically enhance prompts as you type (debounced, opt-in feature)</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="enhancementStyle">Enhancement Style</label>
+                            <select class="form-select" id="enhancementStyle" name="enhancement_style">
+                                <option value="concise">Concise - Brief and to the point</option>
+                                <option value="detailed">Detailed - Thorough and comprehensive</option>
+                                <option value="technical">Technical - Precise technical language</option>
+                            </select>
+                            <div class="help-text">Choose how prompts should be enhanced when using Cmd+K</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="maxLengthMultiplier">Max Length Multiplier: <span id="maxLengthValue">3.0x</span></label>
+                            <input type="range" class="form-range" id="maxLengthMultiplier" name="max_length_multiplier"
+                                min="10" max="50" step="5" value="30">
+                            <div class="help-text">Maximum expansion ratio for enhanced prompts (1.0x - 5.0x)</div>
+                        </div>
+                    </div>
+
+                    <div class="subsection">
+                        <div class="subsection-title">
+                            <span class="icon icon-globe"></span>Web Search & Content Retrieval
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="webSearchProvider">Search Provider</label>
+                            <select class="form-select" id="webSearchProvider" name="web_search_provider">
+                                <option value="local">Local (Free, No Registration) - DuckDuckGo HTML</option>
+                                <option value="duckduckgo">DuckDuckGo API (Free, Limited Results)</option>
+                                <option value="brave">Brave Search API (Requires API Key)</option>
+                                <option value="serpapi">SerpAPI (Requires API Key)</option>
+                            </select>
+                            <div class="help-text">
+                                <strong>Local</strong> is the default and requires no setup - uses DuckDuckGo HTML scraping (completely free, no registration).
+                                For more reliable results, consider Brave Search API (free tier available).
+                            </div>
+                        </div>
+
+                        <div class="form-group" id="braveKeyGroup" style="display: none;">
+                            <label class="form-label" for="braveSearchKey">
+                                Brave Search API Key <span class="label-hint">(optional)</span>
+                            </label>
+                            <input type="password" class="form-input" id="braveSearchKey" name="brave_search_key"
+                                placeholder="Enter your Brave Search API key">
+                            <div class="help-text">
+                                Get a free API key at <a href="https://brave.com/search/api/" target="_blank">brave.com/search/api</a>.
+                                Free tier: 2,000 queries/month.
+                            </div>
+                        </div>
+
+                        <div class="form-group" id="serpapiKeyGroup" style="display: none;">
+                            <label class="form-label" for="serpapiKey">
+                                SerpAPI Key <span class="label-hint">(optional)</span>
+                            </label>
+                            <input type="password" class="form-input" id="serpapiKey" name="serpapi_key"
+                                placeholder="Enter your SerpAPI key">
+                            <div class="help-text">
+                                Get an API key at <a href="https://serpapi.com/" target="_blank">serpapi.com</a>.
+                                Free tier: 100 searches/month.
+                            </div>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label" for="maxSearchResults">Max Search Results</label>
+                                <input type="number" class="form-input" id="maxSearchResults" name="max_search_results"
+                                    value="5" min="1" max="20">
+                                <div class="help-text">Number of search results to return (1-20)</div>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label" for="searchTimeout">Search Timeout (seconds)</label>
+                                <input type="number" class="form-input" id="searchTimeout" name="search_timeout"
+                                    value="30" min="5" max="120">
+                                <div class="help-text">Request timeout for web searches</div>
+                            </div>
+                        </div>
+
+                        <div class="checkbox-group">
+                            <input type="checkbox" class="form-checkbox" id="extractContent" name="extract_content" checked>
+                            <div class="checkbox-label">
+                                Extract content from search results
+                                <div class="checkbox-description">Fetch and extract main content from search result pages (slower but more informative)</div>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="maxContentLength">Max Content Length (characters)</label>
+                            <input type="number" class="form-input" id="maxContentLength" name="max_content_length"
+                                value="10000" min="1000" max="50000" step="1000">
+                            <div class="help-text">Maximum content to extract from each page</div>
+                        </div>
+                    </div>
+
+                    <div class="subsection">
+                        <div class="subsection-title">
                             <span class="icon icon-search"></span>Debug & Development
                         </div>
 
@@ -2185,6 +2326,60 @@
     </div>
 
     <script type="module">
+        // =====================================================================
+        // Theme Management
+        // =====================================================================
+        async function initTheme() {
+            try {
+                // Load config to get theme preference
+                const config = await window.__TAURI__.core.invoke('get_config');
+                const themeMode = config?.ui?.theme_mode || 'system';
+
+                console.log('[Theme] Loaded theme mode from config:', themeMode);
+
+                // Apply theme based on preference
+                applyTheme(themeMode);
+
+                // Listen for system theme changes (only when in "system" mode)
+                if (themeMode === 'system') {
+                    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+                    mediaQuery.addEventListener('change', (e) => {
+                        console.log('[Theme] System theme changed to:', e.matches ? 'dark' : 'light');
+                        applyTheme('system');
+                    });
+                }
+            } catch (e) {
+                console.error('[Theme] Failed to initialize theme:', e);
+                // Fallback to system preference
+                applyTheme('system');
+            }
+        }
+
+        function applyTheme(mode) {
+            const html = document.documentElement;
+
+            if (mode === 'light') {
+                html.setAttribute('data-theme', 'light');
+                console.log('[Theme] Applied: light (forced)');
+            } else if (mode === 'dark') {
+                html.setAttribute('data-theme', 'dark');
+                console.log('[Theme] Applied: dark (forced)');
+            } else {
+                // System mode: remove data-theme to let CSS media query handle it
+                html.removeAttribute('data-theme');
+                const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                console.log('[Theme] Applied: system (detected:', isDark ? 'dark' : 'light', ')');
+            }
+        }
+
+        // Initialize theme immediately (before DOM ready)
+        if (window.__TAURI__) {
+            initTheme();
+        }
+
+        // =====================================================================
+        // Core Elements
+        // =====================================================================
         const statusMessage = document.getElementById('statusMessage');
         const configForm = document.getElementById('configForm');
         const tocLinks = document.querySelectorAll('.toc-link');
@@ -2348,6 +2543,36 @@
 
             // Set initial visibility
             updateLlmProviderVisibility();
+        }
+
+        // Handle web search provider configuration visibility
+        function setupWebSearchProviderVisibility() {
+            const webSearchProviderSelect = document.getElementById('webSearchProvider');
+            if (!webSearchProviderSelect) return;
+
+            function updateWebSearchProviderVisibility() {
+                const provider = webSearchProviderSelect.value;
+
+                // Hide all API key fields
+                const braveKeyGroup = document.getElementById('braveKeyGroup');
+                const serpapiKeyGroup = document.getElementById('serpapiKeyGroup');
+
+                if (braveKeyGroup) braveKeyGroup.style.display = 'none';
+                if (serpapiKeyGroup) serpapiKeyGroup.style.display = 'none';
+
+                // Show relevant API key field
+                if (provider === 'brave' && braveKeyGroup) {
+                    braveKeyGroup.style.display = 'block';
+                } else if (provider === 'serpapi' && serpapiKeyGroup) {
+                    serpapiKeyGroup.style.display = 'block';
+                }
+            }
+
+            // Listen for changes
+            webSearchProviderSelect.addEventListener('change', updateWebSearchProviderVisibility);
+
+            // Set initial visibility
+            updateWebSearchProviderVisibility();
         }
 
         function showStatus(message, type = 'success') {
@@ -2518,6 +2743,48 @@
                 document.getElementById('debugMode').checked = false;
                 document.getElementById('devTools').checked = false;
 
+                // UI Settings (load from backend config if available)
+                const uiConfig = backendConfig?.ui;
+                const themeModeSelect = document.getElementById('themeMode');
+                if (themeModeSelect) {
+                    themeModeSelect.value = uiConfig?.theme_mode || 'system';
+                }
+
+                // Prompt Enhancement settings (load from backend config if available)
+                const promptEnhancementConfig = backendConfig?.prompt_enhancement;
+                const autoEnhanceEl = document.getElementById('autoEnhance');
+                if (autoEnhanceEl) {
+                    autoEnhanceEl.checked = promptEnhancementConfig?.auto_enhance || false;
+                }
+                const enhancementStyleEl = document.getElementById('enhancementStyle');
+                if (enhancementStyleEl) {
+                    enhancementStyleEl.value = promptEnhancementConfig?.style || 'concise';
+                }
+                const maxLengthMultiplierEl = document.getElementById('maxLengthMultiplier');
+                if (maxLengthMultiplierEl) {
+                    const multiplierX10 = promptEnhancementConfig?.max_length_multiplier_x10 || 30;
+                    maxLengthMultiplierEl.value = multiplierX10;
+                    // Update display value
+                    const displayValue = (multiplierX10 / 10).toFixed(1);
+                    const maxLengthValueEl = document.getElementById('maxLengthValue');
+                    if (maxLengthValueEl) {
+                        maxLengthValueEl.textContent = displayValue + 'x';
+                    }
+                }
+
+                // Web Search defaults (load from backend config if available)
+                const webSearchConfig = backendConfig?.web_search;
+                document.getElementById('webSearchProvider').value = webSearchConfig?.provider || 'local';
+                document.getElementById('braveSearchKey').value = webSearchConfig?.brave_key || '';
+                document.getElementById('serpapiKey').value = webSearchConfig?.serpapi_key || '';
+                document.getElementById('maxSearchResults').value = webSearchConfig?.max_results || 5;
+                document.getElementById('searchTimeout').value = webSearchConfig?.timeout_secs || 30;
+                document.getElementById('extractContent').checked = webSearchConfig?.extract_content !== false;
+                document.getElementById('maxContentLength').value = webSearchConfig?.max_content_length || 10000;
+
+                // Trigger web search provider visibility update
+                setupWebSearchProviderVisibility();
+
                 // Notification settings (loaded from backend notifications config)
                 if (isTauriAvailable()) {
                     try {
@@ -2568,7 +2835,8 @@
                     'voice_activation', 'push_to_talk', 'noise_reduction',
                     'auto_discover_mcp', 'data_collection', 'crash_reports',
                     'voice_data_local', 'require_auth', 'exit_confirmation',
-                    'start_on_boot', 'nats_secure', 'debug_mode', 'dev_tools'
+                    'start_on_boot', 'nats_secure', 'debug_mode', 'dev_tools',
+                    'extract_content'
                 ];
 
                 checkboxes.forEach(checkbox => {
@@ -2695,6 +2963,19 @@
                     if (sttModelSelect && sttModelSelect.value) {
                         currentConfig.voice.openai_model = sttModelSelect.value;
                     }
+
+                    // Update web search configuration
+                    currentConfig.web_search = {
+                        provider: document.getElementById('webSearchProvider')?.value || 'local',
+                        brave_key: document.getElementById('braveSearchKey')?.value || null,
+                        serpapi_key: document.getElementById('serpapiKey')?.value || null,
+                        max_results: parseInt(document.getElementById('maxSearchResults')?.value) || 5,
+                        timeout_secs: parseInt(document.getElementById('searchTimeout')?.value) || 30,
+                        extract_content: document.getElementById('extractContent')?.checked !== false,
+                        max_content_length: parseInt(document.getElementById('maxContentLength')?.value) || 10000,
+                        user_agent: "Gestura/0.2.0 (+https://gestura.ai)",
+                        fallback_providers: ["duckduckgo"]
+                    };
 
                     // Save the updated config
                     await window.__TAURI__.core.invoke('save_config', { cfg: currentConfig });
@@ -3038,6 +3319,7 @@
 
         // Refresh OpenAI models dynamically
         async function refreshOpenAIModels() {
+	            clearDropdownError('openaiLlmModel');
             if (!isTauriAvailable()) {
                 console.warn('Tauri API not available - cannot refresh OpenAI models');
                 setDropdownLoading('openaiLlmModel', false);
@@ -3057,16 +3339,17 @@
             try {
                 setDropdownLoading('openaiLlmModel', true);
 
-                const models = await window.__TAURI__.core.invoke('list_openai_models', { api_key: apiKey });
+	                const models = await window.__TAURI__.core.invoke('list_openai_models', { apiKey });
                 modelSelect.innerHTML = '';
 
-                if (models.length === 0) {
-                    modelSelect.innerHTML = '<option value="gpt-4o">GPT-4o</option>';
-                } else {
+	                if (!Array.isArray(models) || models.length === 0) {
+	                    setDropdownError('openaiLlmModel', 'OpenAI returned no models. Verify the API key and account permissions.');
+	                    return;
+	                } else {
                     models.forEach(model => {
                         const option = document.createElement('option');
                         option.value = model.id;
-                        option.textContent = model.name;
+	                        option.textContent = model.name || model.id;
                         modelSelect.appendChild(option);
                     });
                 }
@@ -3080,14 +3363,7 @@
                 }
             } catch (error) {
                 console.error('Failed to list OpenAI models:', error);
-                // Restore static list on error
-                modelSelect.innerHTML = `
-                    <option value="gpt-4o">GPT-4o</option>
-                    <option value="gpt-4o-mini">GPT-4o Mini</option>
-                    <option value="gpt-4-turbo">GPT-4 Turbo</option>
-                    <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
-                `;
-                if (currentValue) modelSelect.value = currentValue;
+	                setDropdownError('openaiLlmModel', `Failed to load OpenAI models: ${error}`);
             } finally {
                 setDropdownLoading('openaiLlmModel', false);
             }
@@ -3095,6 +3371,7 @@
 
         // Refresh Anthropic models dynamically
         async function refreshAnthropicModels() {
+	            clearDropdownError('anthropicLlmModel');
             if (!isTauriAvailable()) {
                 console.warn('Tauri API not available - cannot refresh Anthropic models');
                 setDropdownLoading('anthropicLlmModel', false);
@@ -3114,16 +3391,17 @@
             try {
                 setDropdownLoading('anthropicLlmModel', true);
 
-                const models = await window.__TAURI__.core.invoke('list_anthropic_models', { api_key: apiKey });
+	                const models = await window.__TAURI__.core.invoke('list_anthropic_models', { apiKey });
                 modelSelect.innerHTML = '';
 
-                if (models.length === 0) {
-                    modelSelect.innerHTML = '<option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>';
-                } else {
+	                if (!Array.isArray(models) || models.length === 0) {
+	                    setDropdownError('anthropicLlmModel', 'Anthropic returned no models. Verify the API key and account permissions.');
+	                    return;
+	                } else {
                     models.forEach(model => {
                         const option = document.createElement('option');
                         option.value = model.id;
-                        option.textContent = model.name;
+	                        option.textContent = model.name || model.id;
                         modelSelect.appendChild(option);
                     });
                 }
@@ -3137,14 +3415,7 @@
                 }
             } catch (error) {
                 console.error('Failed to list Anthropic models:', error);
-                // Restore static list on error
-                modelSelect.innerHTML = `
-                    <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
-                    <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</option>
-                    <option value="claude-3-opus-20240229">Claude 3 Opus</option>
-                    <option value="claude-3-haiku-20240307">Claude 3 Haiku</option>
-                `;
-                if (currentValue) modelSelect.value = currentValue;
+	                setDropdownError('anthropicLlmModel', `Failed to load Anthropic models: ${error}`);
             } finally {
                 setDropdownLoading('anthropicLlmModel', false);
             }
@@ -3152,6 +3423,7 @@
 
         // Load Grok models dynamically from xAI API
         async function loadGrokModels() {
+	            clearDropdownError('grokLlmModel');
             if (!isTauriAvailable()) {
                 setDropdownLoading('grokLlmModel', false);
                 return;
@@ -3164,13 +3436,18 @@
 
             try {
                 setDropdownLoading('grokLlmModel', true);
-                const models = await window.__TAURI__.core.invoke('list_grok_models', { api_key: apiKey });
+	            	const models = await window.__TAURI__.core.invoke('list_grok_models', { apiKey });
                 modelSelect.innerHTML = '';
+	
+	                if (!Array.isArray(models) || models.length === 0) {
+	                    setDropdownError('grokLlmModel', 'Grok returned no models. Verify the API key (if required) and connectivity.');
+	                    return;
+	                }
 
                 models.forEach(model => {
                     const option = document.createElement('option');
                     option.value = model.id;
-                    option.textContent = model.name;
+	                    option.textContent = model.name || model.id;
                     modelSelect.appendChild(option);
                 });
 
@@ -3184,8 +3461,7 @@
                 }
             } catch (error) {
                 console.error('Failed to load Grok models:', error);
-                // Fallback to static list
-                modelSelect.innerHTML = '<option value="grok-3">Grok 3</option>';
+	                setDropdownError('grokLlmModel', `Failed to load Grok models: ${error}`);
             } finally {
                 setDropdownLoading('grokLlmModel', false);
             }
@@ -3310,7 +3586,7 @@
             try {
                 setDropdownLoading('openaiSttModel', true);
                 if (statusSpan) statusSpan.textContent = 'Loading models...';
-                const models = await window.__TAURI__.core.invoke('list_openai_stt_models', { api_key: apiKey });
+	                const models = await window.__TAURI__.core.invoke('list_openai_stt_models', { api_key: apiKey });
                 modelSelect.innerHTML = '';
 
                 models.forEach(model => {
@@ -3906,24 +4182,88 @@
             }
         }
 
-        // Show loading state on a dropdown
-        function setDropdownLoading(selectId, loading) {
-            const select = document.getElementById(selectId);
-            if (!select) return;
-            if (loading) {
-                select.dataset.originalHtml = select.innerHTML;
-                select.innerHTML = '<option value="">Loading...</option>';
-                select.disabled = true;
-                select.classList.add('loading');
-            } else {
-                select.disabled = false;
-                select.classList.remove('loading');
-            }
-        }
+	        /**
+	         * Toggle loading UI for a model <select>.
+	         *
+	         * When loading begins, we cache the current HTML options so we can restore it if the
+	         * load exits early (e.g., missing API key) and the select is still showing "Loading...".
+	         *
+	         * If `select.dataset.keepDisabled === 'true'` (set by `setDropdownError`), the select
+	         * remains disabled when loading ends.
+	         *
+	         * @param {string} selectId
+	         * @param {boolean} loading
+	         */
+	        function setDropdownLoading(selectId, loading) {
+	            const select = document.getElementById(selectId);
+	            if (!select) return;
+
+	            if (loading) {
+	                if (!select.dataset.originalHtml) {
+	                    select.dataset.originalHtml = select.innerHTML;
+	                }
+	                select.innerHTML = '<option value="">Loading...</option>';
+	                select.disabled = true;
+	                select.classList.add('loading');
+	                return;
+	            }
+
+	            // Stop loading
+	            const keepDisabled = select.dataset.keepDisabled === 'true';
+	
+	            // If we never replaced the loading placeholder, restore the original options.
+	            if (select.dataset.originalHtml && select.innerHTML.includes('Loading...')) {
+	                select.innerHTML = select.dataset.originalHtml;
+	            }
+	
+	            select.classList.remove('loading');
+	            select.disabled = keepDisabled;
+	
+	            // Clear cached HTML so future loads capture the current option set.
+	            delete select.dataset.originalHtml;
+	        }
+
+	        /**
+	         * Put a model dropdown into an explicit error state.
+	         *
+	         * @param {string} selectId
+	         * @param {string} message
+	         */
+	        function setDropdownError(selectId, message) {
+	            const select = document.getElementById(selectId);
+	            if (!select) return;
+	
+	            select.dataset.keepDisabled = 'true';
+	            select.dataset.errorMessage = message || 'Error loading models';
+	            select.classList.remove('loading');
+	            select.disabled = true;
+	            select.title = select.dataset.errorMessage;
+	            select.innerHTML = '<option value="">Error loading models</option>';
+	
+	            // Clear cached HTML (we've decided to show an error instead).
+	            delete select.dataset.originalHtml;
+	        }
+
+	        /**
+	         * Clear any dropdown error state previously set by `setDropdownError`.
+	         *
+	         * @param {string} selectId
+	         */
+	        function clearDropdownError(selectId) {
+	            const select = document.getElementById(selectId);
+	            if (!select) return;
+	
+	            if (select.dataset.errorMessage) {
+	                select.removeAttribute('title');
+	            }
+	            delete select.dataset.keepDisabled;
+	            delete select.dataset.errorMessage;
+	        }
 
         // Initialize everything with Tauri API check
         async function initializeApp() {
             setupProviderSelection();
+            setupWebSearchProviderVisibility();
 
             // Show loading states immediately for all model dropdowns
             const modelDropdowns = [
@@ -3971,6 +4311,87 @@
             }
 
             setupNotificationSoundPreview();
+
+            // Setup theme selector event listener
+            const themeSelect = document.getElementById('themeMode');
+            if (themeSelect) {
+                themeSelect.addEventListener('change', async (e) => {
+                    const newTheme = e.target.value;
+                    console.log('[Theme] User changed theme to:', newTheme);
+
+                    // Apply theme immediately
+                    applyTheme(newTheme);
+
+                    // Save to config
+                    try {
+                        const config = await window.__TAURI__.core.invoke('get_config');
+                        if (!config.ui) config.ui = {};
+                        config.ui.theme_mode = newTheme;
+                        await window.__TAURI__.core.invoke('save_config', { cfg: config });
+                        console.log('[Theme] Saved theme preference to config');
+                    } catch (e) {
+                        console.error('[Theme] Failed to save theme preference:', e);
+                    }
+                });
+            }
+
+            // Setup prompt enhancement settings event listeners
+            const maxLengthMultiplierEl = document.getElementById('maxLengthMultiplier');
+            const maxLengthValueEl = document.getElementById('maxLengthValue');
+            if (maxLengthMultiplierEl && maxLengthValueEl) {
+                // Update display value as slider moves
+                maxLengthMultiplierEl.addEventListener('input', (e) => {
+                    const multiplierX10 = parseInt(e.target.value);
+                    const displayValue = (multiplierX10 / 10).toFixed(1);
+                    maxLengthValueEl.textContent = displayValue + 'x';
+                });
+
+                // Save to config when slider is released
+                maxLengthMultiplierEl.addEventListener('change', async (e) => {
+                    const multiplierX10 = parseInt(e.target.value);
+                    try {
+                        const config = await window.__TAURI__.core.invoke('get_config');
+                        if (!config.prompt_enhancement) config.prompt_enhancement = {};
+                        config.prompt_enhancement.max_length_multiplier_x10 = multiplierX10;
+                        await window.__TAURI__.core.invoke('save_config', { cfg: config });
+                        console.log('[Enhancement] Saved max length multiplier:', (multiplierX10 / 10).toFixed(1) + 'x');
+                    } catch (e) {
+                        console.error('[Enhancement] Failed to save max length multiplier:', e);
+                    }
+                });
+            }
+
+            const autoEnhanceEl = document.getElementById('autoEnhance');
+            if (autoEnhanceEl) {
+                autoEnhanceEl.addEventListener('change', async (e) => {
+                    const enabled = e.target.checked;
+                    try {
+                        const config = await window.__TAURI__.core.invoke('get_config');
+                        if (!config.prompt_enhancement) config.prompt_enhancement = {};
+                        config.prompt_enhancement.auto_enhance = enabled;
+                        await window.__TAURI__.core.invoke('save_config', { cfg: config });
+                        console.log('[Enhancement] Auto-enhance:', enabled ? 'enabled' : 'disabled');
+                    } catch (e) {
+                        console.error('[Enhancement] Failed to save auto-enhance setting:', e);
+                    }
+                });
+            }
+
+            const enhancementStyleEl = document.getElementById('enhancementStyle');
+            if (enhancementStyleEl) {
+                enhancementStyleEl.addEventListener('change', async (e) => {
+                    const style = e.target.value;
+                    try {
+                        const config = await window.__TAURI__.core.invoke('get_config');
+                        if (!config.prompt_enhancement) config.prompt_enhancement = {};
+                        config.prompt_enhancement.style = style;
+                        await window.__TAURI__.core.invoke('save_config', { cfg: config });
+                        console.log('[Enhancement] Enhancement style:', style);
+                    } catch (e) {
+                        console.error('[Enhancement] Failed to save enhancement style:', e);
+                    }
+                });
+            }
 
             // Wait for all parallel operations to complete
             await Promise.allSettled(initPromises);

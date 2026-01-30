@@ -237,6 +237,22 @@ fn handle_insert_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
                 Action::Continue
             }
         }
+        // Cmd+K (Meta+K): Enhance prompt (takes precedence over Ctrl+K kill-to-end)
+        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::META) => Action::EnhancePrompt,
+        // Cmd+Z / Ctrl+Z: Undo enhancement
+        KeyCode::Char('z')
+            if (key.modifiers.contains(KeyModifiers::META)
+                || key.modifiers.contains(KeyModifiers::CONTROL))
+                && app.original_prompt.is_some() =>
+        {
+            // Restore original prompt
+            if let Some(original) = app.original_prompt.take() {
+                app.input = original;
+                app.cursor_pos = app.input.len();
+                app.set_status("Prompt restored");
+            }
+            Action::Continue
+        }
         // Ctrl+A start of line
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.cursor_home();
@@ -254,8 +270,11 @@ fn handle_insert_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
             app.delete_word_before();
             Action::Continue
         }
-        // Ctrl+K delete to end of line
-        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        // Ctrl+K delete to end of line (only if not Meta)
+        KeyCode::Char('k')
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::META) =>
+        {
             app.delete_to_end();
             Action::Continue
         }

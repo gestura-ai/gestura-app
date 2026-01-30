@@ -222,7 +222,9 @@ async fn test_mdh_translation() {
 #[tokio::test]
 async fn test_configuration_persistence() {
     // Test configuration loading and saving
-    let mut config = AppConfig::load();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config_path = temp_dir.path().join("config.json");
+    let mut config = AppConfig::load_from_path(&config_path);
 
     // Modify config
     config.hotkey_listen = "Ctrl+Alt+G".to_string();
@@ -231,13 +233,47 @@ async fn test_configuration_persistence() {
     config.ui.accent = Some("emerald".to_string());
 
     // Save and reload
-    assert!(config.save().is_ok());
-    let reloaded_config = AppConfig::load();
+    assert!(config.save_to_path(&config_path).is_ok());
+    let reloaded_config = AppConfig::load_from_path(&config_path);
 
     assert_eq!(reloaded_config.hotkey_listen, "Ctrl+Alt+G");
     assert_eq!(reloaded_config.grace_period_secs, 45);
     assert_eq!(reloaded_config.ui.theme_mode, "dark");
     assert_eq!(reloaded_config.ui.accent, Some("emerald".to_string()));
+}
+
+#[tokio::test]
+async fn test_pipeline_settings_persistence() {
+    use gestura_core::pipeline::CompactionStrategy;
+
+    // Test pipeline settings loading and saving
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config_path = temp_dir.path().join("config.json");
+    let mut config = AppConfig::load_from_path(&config_path);
+
+    // Modify pipeline settings
+    config.pipeline.max_history_messages = 20;
+    config.pipeline.auto_compact_threshold_percent = 75;
+    config.pipeline.compaction_strategy = CompactionStrategy::MemoryBank;
+    config.pipeline.max_context_tokens = 100_000;
+    config.pipeline.log_token_usage = false;
+
+    // Save and reload
+    assert!(config.save_to_path(&config_path).is_ok());
+    let reloaded_config = AppConfig::load_from_path(&config_path);
+
+    // Verify pipeline settings persisted
+    assert_eq!(reloaded_config.pipeline.max_history_messages, 20);
+    assert_eq!(reloaded_config.pipeline.auto_compact_threshold_percent, 75);
+    assert_eq!(
+        reloaded_config.pipeline.compaction_strategy,
+        CompactionStrategy::MemoryBank
+    );
+    assert_eq!(reloaded_config.pipeline.max_context_tokens, 100_000);
+    assert!(!reloaded_config.pipeline.log_token_usage);
+
+    // Verify auto_compact_threshold() helper method
+    assert_eq!(reloaded_config.pipeline.auto_compact_threshold(), 0.75);
 }
 
 #[tokio::test]

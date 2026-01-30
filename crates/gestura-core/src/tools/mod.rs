@@ -17,6 +17,7 @@ pub mod code;
 pub mod file;
 pub mod git;
 pub mod permissions;
+pub mod policy;
 pub mod registry;
 pub mod schemas;
 pub mod shell;

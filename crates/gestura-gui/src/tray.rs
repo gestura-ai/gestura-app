@@ -293,8 +293,12 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
         all_sessions.len()
     );
 
-    let active_sessions: Vec<_> = all_sessions.iter().filter(|s| s.is_open).collect();
-    let closed_sessions: Vec<_> = all_sessions.iter().filter(|s| !s.is_open).collect();
+    // Filter and sort sessions by last_active (most recent first)
+    let mut active_sessions: Vec<_> = all_sessions.iter().filter(|s| s.is_open).collect();
+    active_sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+
+    let mut closed_sessions: Vec<_> = all_sessions.iter().filter(|s| !s.is_open).collect();
+    closed_sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
 
     tracing::info!(
         "Session breakdown: {} active, {} closed",
@@ -326,8 +330,8 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
             )?;
             builder = builder.item(&active_header);
 
-            // Add individual active sessions (limit to 10)
-            for session in active_sessions.iter().take(10) {
+            // Add individual active sessions (limit to 5 most recent)
+            for session in active_sessions.iter().take(5) {
                 let label = format!(
                     "💬 {} ({})",
                     session.title,
@@ -359,8 +363,8 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
             )?;
             builder = builder.item(&closed_header);
 
-            // Add individual closed sessions (limit to 5)
-            for session in closed_sessions.iter().take(5) {
+            // Add individual closed sessions (limit to 3 most recent)
+            for session in closed_sessions.iter().take(3) {
                 let label = format!(
                     "📁 {} ({})",
                     session.title,

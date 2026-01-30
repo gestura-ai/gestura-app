@@ -8,6 +8,13 @@ An always‑ready, local‑first companion app for the Gestura Haptic Harmony ri
 - **Local‑first voice**: whisper.cpp via whisper‑rs (feature `voice-local`), with OpenAI Whisper HTTP fallback
 - **LLM provider abstraction**: OpenAI, Anthropic (Claude), Grok (xAI), Ollama (local); choose via config
 - **Token tracking**: Real-time tracking of prompt, completion, and total tokens with usage statistics
+- **Prompt Enhancer**: AI-powered prompt improvement with context awareness
+  - **Keyboard shortcut**: `Cmd+K` (GUI) or `Ctrl+E` (CLI) to enhance current prompt
+  - **Context-aware**: Automatically includes session history, active files, and project context
+  - **Customizable styles**: Choose between Concise, Detailed, or Technical enhancement styles
+  - **Performance optimized**: LRU caching (20 entries) and debouncing (500ms) for fast responses
+  - **Undo support**: `Cmd+Z` to revert to original prompt
+  - **Configuration**: Auto-enhance toggle, style preference, and max length multiplier in Settings
 
 ### CLI (gestura-cli)
 - **Modern TUI**: Professional ratatui-based terminal interface
@@ -72,6 +79,7 @@ Key sections:
 - `voice`: `{ provider: "local"|"openai"|"none", input_path, local_model_path, openai_* }`
 - `llm.primary`: "openai"|"anthropic"|"grok"|"ollama"|"echo"
 - `llm.anthropic.thinking_budget_tokens`: optional number; enables Claude "extended thinking" (provider-native) when supported by the selected model
+- `prompt_enhancement`: `{ auto_enhance: bool, style: "concise"|"detailed"|"technical", max_length_multiplier_x10: u8 }`
 - `mcp_tools`: array of `{name, endpoint}`
 - `mdh_pointers`: map of dataset aliases to URIs
 - `nats_url`: default `nats://127.0.0.1:4222`
@@ -82,6 +90,7 @@ Tauri commands:
 - MCP/MDH: `list_mcp_tools`, `add_mcp_tool`, `remove_mcp_tool`, `get_mdh_pointers`, `set_mdh_pointer`, `remove_mdh_pointer`
 - Voice: `test_voice`, `run_voice_once`
 - LLM: `test_llm`
+- Prompt Enhancement: `enhance_prompt`
 
 ## Voice Engines
 - Local whisper (whisper-rs): build with `--features voice-local`; set `voice.local_model_path` and `voice.input_path` (WAV)

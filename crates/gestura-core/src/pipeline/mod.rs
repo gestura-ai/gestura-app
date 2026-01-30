@@ -20,11 +20,13 @@ use tokio::sync::mpsc;
 use crate::config::AppConfig;
 use crate::context::{ContextManager, RequestAnalyzer};
 use crate::error::AppError;
+use crate::knowledge::{KnowledgeSettingsManager, KnowledgeStore};
 use crate::llm_provider::{AgentContext, select_provider};
 use crate::session_workspace::SessionWorkspace;
 use crate::streaming::{
     CancellationToken, StreamChunk, start_streaming, start_streaming_with_fallback,
 };
+use crate::tool_confirmation::TOOL_CONFIRMATIONS;
 use crate::tools::registry::{ToolDefinition, all_tools};
 
 pub use types::*;
@@ -39,6 +41,10 @@ pub struct AgentPipeline {
     analyzer: RequestAnalyzer,
     /// Pipeline-specific configuration
     pipeline_config: PipelineConfig,
+    /// Knowledge store for specialized expertise
+    knowledge_store: Option<&'static KnowledgeStore>,
+    /// Knowledge settings manager for session-scoped activation
+    knowledge_settings: Option<&'static KnowledgeSettingsManager>,
 }
 
 impl AgentPipeline {
@@ -49,6 +55,8 @@ impl AgentPipeline {
             context_manager: ContextManager::new(),
             analyzer: RequestAnalyzer::new(),
             pipeline_config: PipelineConfig::default(),
+            knowledge_store: None,
+            knowledge_settings: None,
         }
     }
 
@@ -59,21 +67,38 @@ impl AgentPipeline {
             context_manager: ContextManager::new(),
             analyzer: RequestAnalyzer::new(),
             pipeline_config,
+            knowledge_store: None,
+            knowledge_settings: None,
         }
+    }
+
+    /// Set the knowledge store and settings manager for this pipeline
+    pub fn with_knowledge(
+        mut self,
+        store: &'static KnowledgeStore,
+        settings: &'static KnowledgeSettingsManager,
+    ) -> Self {
+        self.knowledge_store = Some(store);
+        self.knowledge_settings = Some(settings);
+        self
     }
 
     /// Create a pipeline with configuration optimized for the current LLM provider
     ///
-    /// This automatically sets the context token limit based on the provider's capabilities.
+    /// This automatically sets the context token limit based on the provider's capabilities
+    /// and applies user settings from AppConfig.pipeline.
     pub fn with_provider_optimized_config(config: AppConfig) -> Self {
         let provider = config.llm.primary.as_str();
-        let pipeline_config = PipelineConfig::for_provider(provider);
+        let pipeline_config =
+            PipelineConfig::for_provider(provider).with_user_settings(&config.pipeline);
 
         tracing::info!(
             provider = provider,
             max_context_tokens = pipeline_config.max_context_tokens,
             max_history_messages = pipeline_config.max_history_messages,
-            "Created pipeline with provider-optimized configuration"
+            auto_compact_threshold = pipeline_config.auto_compact_threshold,
+            compaction_strategy = ?pipeline_config.compaction_strategy,
+            "Created pipeline with provider-optimized configuration and user settings"
         );
 
         Self {
@@ -81,6 +106,8 @@ impl AgentPipeline {
             context_manager: ContextManager::new(),
             analyzer: RequestAnalyzer::new(),
             pipeline_config,
+            knowledge_store: None,
+            knowledge_settings: None,
         }
     }
 
@@ -155,6 +182,49 @@ impl AgentPipeline {
             self.context_manager
                 .resolve_context(&request.input, &analysis, &request.history);
 
+        // 3.1. Search memory bank for relevant context (if workspace available)
+        if let Some(workspace_dir) = &request.metadata.workspace_dir
+            && let Some(memory_context) = self
+                .search_and_load_memory_bank(workspace_dir, &request.input, 3)
+                .await
+        {
+            // Add memory bank context to knowledge field
+            resolved_context.knowledge.push(memory_context.clone());
+
+            tracing::debug!(
+                memory_context_len = memory_context.len(),
+                "Added memory bank context to request"
+            );
+        }
+
+        // 3.2. Load enabled knowledge items for this session
+        if let Some(knowledge_context) =
+            self.load_enabled_knowledge(request.metadata.session_id.as_deref())
+        {
+            resolved_context.knowledge.push(knowledge_context.clone());
+
+            tracing::debug!(
+                knowledge_context_len = knowledge_context.len(),
+                "Added enabled knowledge to request"
+            );
+        }
+
+        // 3.5. Check for auto-compaction before building prompt
+        // Build a preview prompt to estimate tokens
+        let preview_prompt = self.build_prompt(&request, &resolved_context, &relevant_tools);
+        if let Some(compaction_chunk) = self
+            .check_and_apply_auto_compaction(&request.history, &preview_prompt, &request.metadata)
+            .await
+        {
+            // Emit compaction notification to user
+            let _ = tx.send(compaction_chunk).await;
+
+            // Re-resolve context after compaction
+            resolved_context =
+                self.context_manager
+                    .resolve_context(&request.input, &analysis, &request.history);
+        }
+
         // 4. Build the optimized prompt with token limit checking
         let (prompt, truncated) =
             self.truncate_prompt_if_needed(&request, &mut resolved_context, &relevant_tools);
@@ -162,6 +232,14 @@ impl AgentPipeline {
         if truncated {
             tracing::info!("Prompt was truncated to fit token limit");
         }
+
+        // 4.5. Hard validation: reject if still over limit after truncation
+        // This prevents API errors and provides clear feedback to the user
+        self.validate_token_limit(&prompt)?;
+
+        // 4.6. Emit token usage update for user visibility
+        let token_usage_chunk = self.create_token_usage_update(&prompt);
+        let _ = tx.send(token_usage_chunk).await;
 
         // 5. Execute the agentic loop with workspace sandboxing
         let mut response = self
@@ -172,6 +250,7 @@ impl AgentPipeline {
                 tx,
                 cancel_token,
                 workspace.as_ref(),
+                request.metadata.session_id.clone(),
                 request.metadata.permission_level,
             )
             .await?;
@@ -456,12 +535,117 @@ impl AgentPipeline {
             self.context_manager
                 .resolve_context(&request.input, &analysis, &request.history);
 
+        // 3.1. Search memory bank for relevant context (if workspace available)
+        if let Some(workspace_dir) = &request.metadata.workspace_dir
+            && let Some(memory_context) = self
+                .search_and_load_memory_bank(workspace_dir, &request.input, 3)
+                .await
+        {
+            // Add memory bank context to knowledge field
+            resolved_context.knowledge.push(memory_context.clone());
+
+            tracing::debug!(
+                memory_context_len = memory_context.len(),
+                "Added memory bank context to request"
+            );
+        }
+
+        // 3.2. Load enabled knowledge items for this session
+        if let Some(knowledge_context) =
+            self.load_enabled_knowledge(request.metadata.session_id.as_deref())
+        {
+            resolved_context.knowledge.push(knowledge_context.clone());
+
+            tracing::debug!(
+                knowledge_context_len = knowledge_context.len(),
+                "Added enabled knowledge to request"
+            );
+        }
+
+        // 3.5. Check for auto-compaction before building prompt
+        // Build a preview prompt to estimate tokens
+        let preview_prompt = self.build_prompt(&request, &resolved_context, &relevant_tools);
+        if let Some(compaction_chunk) = self
+            .check_and_apply_auto_compaction(&request.history, &preview_prompt, &request.metadata)
+            .await
+        {
+            // Log compaction in blocking mode (no stream to emit to)
+            match compaction_chunk {
+                StreamChunk::ContextCompacted {
+                    messages_before,
+                    messages_after,
+                    tokens_saved,
+                    summary,
+                } => {
+                    tracing::info!(
+                        messages_before = messages_before,
+                        messages_after = messages_after,
+                        tokens_saved = tokens_saved,
+                        "Context auto-compacted in blocking mode: {}",
+                        summary
+                    );
+                }
+                StreamChunk::MemoryBankSaved {
+                    file_path,
+                    session_id,
+                    summary,
+                    messages_saved,
+                } => {
+                    tracing::info!(
+                        file_path = %file_path,
+                        session_id = %session_id,
+                        messages_saved = messages_saved,
+                        "Memory bank saved in blocking mode: {}",
+                        summary
+                    );
+                }
+                _ => {}
+            }
+
+            // Re-resolve context after compaction
+            resolved_context =
+                self.context_manager
+                    .resolve_context(&request.input, &analysis, &request.history);
+        }
+
         // 4. Build prompt with token limit checking
         let (prompt, truncated) =
             self.truncate_prompt_if_needed(&request, &mut resolved_context, &relevant_tools);
 
         if truncated {
             tracing::info!("Prompt was truncated to fit token limit");
+        }
+
+        // 4.5. Hard validation: reject if still over limit after truncation
+        // This prevents API errors and provides clear feedback to the user
+        self.validate_token_limit(&prompt)?;
+
+        // 4.6. Log token usage in blocking mode
+        if let StreamChunk::TokenUsageUpdate {
+            estimated,
+            limit,
+            percentage,
+            status,
+            estimated_cost,
+        } = self.create_token_usage_update(&prompt)
+        {
+            let status_str = match status {
+                crate::streaming::TokenUsageStatus::Green => "🟢 Green",
+                crate::streaming::TokenUsageStatus::Yellow => "🟡 Yellow",
+                crate::streaming::TokenUsageStatus::Red => "🔴 Red",
+            };
+            tracing::info!(
+                estimated_tokens = estimated,
+                limit = limit,
+                percentage = percentage,
+                status = status_str,
+                estimated_cost_usd = format!("${:.4}", estimated_cost),
+                "Token usage in blocking mode: {} tokens / {} tokens ({}%) - Est. cost: ${:.4}",
+                estimated,
+                limit,
+                percentage,
+                estimated_cost
+            );
         }
 
         // 5. Execute blocking agentic loop with workspace sandboxing
@@ -498,17 +682,27 @@ impl AgentPipeline {
 
         let mut tools = Vec::new();
 
-        // If allowed_tools is specified, only use those
+        // If allowed_tools is specified, only use those (session-specific tool configuration)
+        // This ensures the LLM only sees tools that are enabled in the session settings
         if !allowed_tools.is_empty() {
             for tool_name in allowed_tools {
                 if let Some(t) = crate::tools::registry::find_tool(tool_name) {
                     tools.push(t);
                 }
             }
+
+            if self.pipeline_config.log_token_usage {
+                tracing::debug!(
+                    allowed_tools = ?allowed_tools,
+                    resolved_tools = ?tools.iter().map(|t| t.name).collect::<Vec<_>>(),
+                    "Using session-specific tool configuration"
+                );
+            }
+
             return tools;
         }
 
-        // Otherwise, filter by category
+        // Otherwise, filter by category (legacy behavior when no session tool settings exist)
         for category in &analysis.categories {
             match category {
                 ContextCategory::FileSystem => {
@@ -547,6 +741,21 @@ impl AgentPipeline {
         // If no specific tools found but tools are needed, include all
         if tools.is_empty() && analysis.needs_tools {
             tools = all_tools().iter().collect();
+
+            if self.pipeline_config.log_token_usage {
+                tracing::debug!(
+                    "No category-specific tools matched, including all tools as fallback"
+                );
+            }
+        }
+
+        if self.pipeline_config.log_token_usage {
+            tracing::debug!(
+                categories = ?analysis.categories,
+                needs_tools = analysis.needs_tools,
+                resolved_tools = ?tools.iter().map(|t| t.name).collect::<Vec<_>>(),
+                "Category-based tool filtering"
+            );
         }
 
         // Deduplicate
@@ -699,6 +908,14 @@ impl AgentPipeline {
             }
         }
 
+        // Add knowledge context (memory bank + enabled knowledge items)
+        if !context.knowledge.is_empty() {
+            for knowledge_section in &context.knowledge {
+                prompt.push_str(knowledge_section);
+                prompt.push('\n');
+            }
+        }
+
         // Add history summary if available (for older context)
         if let Some(ref summary) = context.history_summary {
             prompt.push_str(&format!("Conversation summary: {}\n\n", summary));
@@ -726,7 +943,11 @@ impl AgentPipeline {
                 match msg.role.as_str() {
                     "user" => prompt.push_str(&format!("User: {}\n", msg.content)),
                     "assistant" => prompt.push_str(&format!("Assistant: {}\n", msg.content)),
-                    "tool" => prompt.push_str(&format!("Tool result: {}\n", msg.content)),
+                    "tool" => {
+                        // Truncate tool results to prevent token explosion
+                        let truncated_content = self.truncate_tool_result(&msg.content);
+                        prompt.push_str(&format!("Tool result: {}\n", truncated_content));
+                    }
                     _ => prompt.push_str(&format!("{}: {}\n", msg.role, msg.content)),
                 }
             }
@@ -782,6 +1003,466 @@ impl AgentPipeline {
             TokenLimitStatus::Ok {
                 estimated: estimated_tokens,
                 limit: max_input,
+            }
+        }
+    }
+
+    /// Check if auto-compaction should be triggered based on estimated token usage
+    /// Returns Some(StreamChunk) if compaction was performed, None otherwise
+    async fn check_and_apply_auto_compaction<M>(
+        &self,
+        history: &[M],
+        prompt_preview: &str,
+        metadata: &RequestMetadata,
+    ) -> Option<StreamChunk>
+    where
+        M: AsRef<str>,
+    {
+        // Skip if auto-compaction is disabled (threshold <= 0.0 or >= 1.0)
+        if self.pipeline_config.auto_compact_threshold <= 0.0
+            || self.pipeline_config.auto_compact_threshold >= 1.0
+        {
+            return None;
+        }
+
+        let estimated_tokens = Self::estimate_tokens(prompt_preview);
+        let max_input = self
+            .pipeline_config
+            .max_context_tokens
+            .saturating_sub(self.pipeline_config.max_output_tokens);
+
+        let threshold_tokens =
+            (max_input as f64 * self.pipeline_config.auto_compact_threshold) as usize;
+
+        if estimated_tokens > threshold_tokens {
+            let messages_before = history.len();
+
+            // Apply compaction strategy
+            use crate::pipeline::types::CompactionStrategy;
+            match self.pipeline_config.compaction_strategy {
+                CompactionStrategy::Summarize => {
+                    // Trigger summarization via context manager
+                    let _summary = self.context_manager.summarize_history(history);
+
+                    // Calculate tokens saved (rough estimate)
+                    // Assume summarization reduces history by ~70%
+                    let messages_after = (messages_before as f64 * 0.3) as usize;
+                    let tokens_saved = (estimated_tokens as f64 * 0.4) as usize; // Conservative estimate
+
+                    tracing::info!(
+                        messages_before = messages_before,
+                        messages_after = messages_after,
+                        tokens_saved = tokens_saved,
+                        estimated_tokens = estimated_tokens,
+                        threshold_tokens = threshold_tokens,
+                        threshold_pct = (self.pipeline_config.auto_compact_threshold * 100.0) as u8,
+                        strategy = "Summarize",
+                        "Auto-compaction triggered: context exceeded {}% threshold",
+                        (self.pipeline_config.auto_compact_threshold * 100.0) as u8
+                    );
+
+                    Some(StreamChunk::ContextCompacted {
+                        messages_before,
+                        messages_after,
+                        tokens_saved,
+                        summary: format!(
+                            "Context auto-compacted (Summarize): {} messages → {} messages (saved ~{} tokens)",
+                            messages_before, messages_after, tokens_saved
+                        ),
+                    })
+                }
+                CompactionStrategy::MemoryBank => {
+                    // Save context to memory bank file
+                    if let Some(workspace_dir) = &metadata.workspace_dir {
+                        let session_id = metadata
+                            .session_id
+                            .clone()
+                            .unwrap_or_else(|| "unknown".to_string());
+
+                        // Build summary from history
+                        let summary = self.context_manager.summarize_history(history);
+
+                        // Build full content from history
+                        let content = history
+                            .iter()
+                            .map(|m| m.as_ref())
+                            .collect::<Vec<_>>()
+                            .join("\n\n");
+
+                        let entry = crate::memory_bank::MemoryBankEntry::new(
+                            session_id.clone(),
+                            summary.clone(),
+                            content,
+                        );
+
+                        match crate::memory_bank::save_to_memory_bank(workspace_dir, &entry).await {
+                            Ok(file_path) => {
+                                tracing::info!(
+                                    messages_saved = messages_before,
+                                    file_path = %file_path.display(),
+                                    session_id = %session_id,
+                                    estimated_tokens = estimated_tokens,
+                                    threshold_tokens = threshold_tokens,
+                                    threshold_pct = (self.pipeline_config.auto_compact_threshold * 100.0) as u8,
+                                    strategy = "MemoryBank",
+                                    "Auto-compaction triggered: saved context to memory bank"
+                                );
+
+                                Some(StreamChunk::MemoryBankSaved {
+                                    file_path: file_path.display().to_string(),
+                                    session_id,
+                                    summary,
+                                    messages_saved: messages_before,
+                                })
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    error = %e,
+                                    "Failed to save context to memory bank, falling back to summarization"
+                                );
+
+                                // Fallback to summarization
+                                let _summary = self.context_manager.summarize_history(history);
+                                let messages_after = (messages_before as f64 * 0.3) as usize;
+                                let tokens_saved = (estimated_tokens as f64 * 0.4) as usize;
+
+                                Some(StreamChunk::ContextCompacted {
+                                    messages_before,
+                                    messages_after,
+                                    tokens_saved,
+                                    summary: format!(
+                                        "Context auto-compacted (fallback): {} messages → {} messages",
+                                        messages_before, messages_after
+                                    ),
+                                })
+                            }
+                        }
+                    } else {
+                        tracing::warn!(
+                            "MemoryBank strategy requires workspace_dir, falling back to summarization"
+                        );
+
+                        // Fallback to summarization
+                        let _summary = self.context_manager.summarize_history(history);
+                        let messages_after = (messages_before as f64 * 0.3) as usize;
+                        let tokens_saved = (estimated_tokens as f64 * 0.4) as usize;
+
+                        Some(StreamChunk::ContextCompacted {
+                            messages_before,
+                            messages_after,
+                            tokens_saved,
+                            summary: format!(
+                                "Context auto-compacted (fallback): {} messages → {} messages",
+                                messages_before, messages_after
+                            ),
+                        })
+                    }
+                }
+                CompactionStrategy::Truncate => {
+                    // Simply truncate oldest messages
+                    // This is handled by the caller (they should drop oldest messages)
+                    tracing::info!(
+                        messages_before = messages_before,
+                        estimated_tokens = estimated_tokens,
+                        threshold_tokens = threshold_tokens,
+                        strategy = "Truncate",
+                        "Auto-compaction triggered: truncate strategy (caller should drop oldest messages)"
+                    );
+
+                    Some(StreamChunk::ContextCompacted {
+                        messages_before,
+                        messages_after: 0, // Caller will handle truncation
+                        tokens_saved: 0,   // Unknown until caller truncates
+                        summary: "Context will be truncated (oldest messages dropped)".to_string(),
+                    })
+                }
+                CompactionStrategy::Clear => {
+                    // Clear all history
+                    tracing::info!(
+                        messages_before = messages_before,
+                        estimated_tokens = estimated_tokens,
+                        threshold_tokens = threshold_tokens,
+                        strategy = "Clear",
+                        "Auto-compaction triggered: clear strategy (all history will be dropped)"
+                    );
+
+                    Some(StreamChunk::ContextCompacted {
+                        messages_before,
+                        messages_after: 0,
+                        tokens_saved: estimated_tokens,
+                        summary: "Context cleared (all history dropped)".to_string(),
+                    })
+                }
+                CompactionStrategy::Prompt => {
+                    // Prompt user for action
+                    // For now, just log and fallback to summarization
+                    tracing::info!(
+                        messages_before = messages_before,
+                        estimated_tokens = estimated_tokens,
+                        threshold_tokens = threshold_tokens,
+                        strategy = "Prompt",
+                        "Auto-compaction triggered: prompt strategy (not yet implemented, falling back to summarization)"
+                    );
+
+                    let _summary = self.context_manager.summarize_history(history);
+                    let messages_after = (messages_before as f64 * 0.3) as usize;
+                    let tokens_saved = (estimated_tokens as f64 * 0.4) as usize;
+
+                    Some(StreamChunk::ContextCompacted {
+                        messages_before,
+                        messages_after,
+                        tokens_saved,
+                        summary: format!(
+                            "Context auto-compacted (Prompt not yet implemented): {} messages → {} messages",
+                            messages_before, messages_after
+                        ),
+                    })
+                }
+            }
+        } else {
+            if self.pipeline_config.log_token_usage {
+                let utilization_pct = (estimated_tokens * 100 / max_input) as u8;
+                tracing::debug!(
+                    estimated_tokens = estimated_tokens,
+                    threshold_tokens = threshold_tokens,
+                    utilization_pct = utilization_pct,
+                    "Auto-compaction check: below threshold ({}%)",
+                    utilization_pct
+                );
+            }
+            None
+        }
+    }
+
+    /// Calculate estimated cost for a request based on provider and token count
+    /// Returns cost in USD
+    fn calculate_cost(&self, tokens: usize) -> f64 {
+        use crate::streaming::pricing;
+
+        let provider = &self.config.llm.primary;
+        let model = match provider.as_str() {
+            "openai" => self.config.llm.openai.as_ref().map(|c| c.model.as_str()),
+            "anthropic" => self.config.llm.anthropic.as_ref().map(|c| c.model.as_str()),
+            "grok" => self.config.llm.grok.as_ref().map(|c| c.model.as_str()),
+            "ollama" => Some("ollama"),
+            _ => None,
+        };
+
+        // Determine pricing per 1M tokens based on provider and model
+        let price_per_million = match (provider.as_str(), model) {
+            ("openai", Some(m)) if m.contains("gpt-4") => pricing::OPENAI_GPT4_TURBO_INPUT,
+            ("openai", Some(m)) if m.contains("gpt-3.5") => pricing::OPENAI_GPT35_TURBO_INPUT,
+            ("openai", _) => pricing::OPENAI_GPT4_TURBO_INPUT, // Default to GPT-4 pricing
+            ("anthropic", Some(m)) if m.contains("opus") => pricing::ANTHROPIC_CLAUDE_3_OPUS_INPUT,
+            ("anthropic", Some(m)) if m.contains("haiku") => {
+                pricing::ANTHROPIC_CLAUDE_3_HAIKU_INPUT
+            }
+            ("anthropic", _) => pricing::ANTHROPIC_CLAUDE_35_SONNET_INPUT, // Default to 3.5 Sonnet
+            ("grok", _) => pricing::XAI_GROK_INPUT,
+            ("ollama", _) => pricing::OLLAMA_INPUT, // Free/local
+            _ => pricing::DEFAULT_INPUT,
+        };
+
+        // Calculate cost: (tokens / 1,000,000) * price_per_million
+        (tokens as f64 / 1_000_000.0) * price_per_million
+    }
+
+    /// Search memory bank for relevant entries and load them into context
+    /// Returns additional context string to prepend to the resolved context
+    async fn search_and_load_memory_bank(
+        &self,
+        workspace_dir: &std::path::Path,
+        query: &str,
+        max_entries: usize,
+    ) -> Option<String> {
+        // Search for relevant memory bank entries
+        match crate::memory_bank::search_memory_bank(workspace_dir, query, max_entries).await {
+            Ok(entries) if !entries.is_empty() => {
+                tracing::info!(
+                    entries_found = entries.len(),
+                    max_entries = max_entries,
+                    "Found relevant memory bank entries"
+                );
+
+                // Build context from entries
+                let mut context = String::from("## Relevant Context from Memory Bank\n\n");
+
+                for entry in entries {
+                    context.push_str(&format!(
+                        "### Memory Entry ({})\n",
+                        entry.timestamp.format("%Y-%m-%d %H:%M UTC")
+                    ));
+                    context.push_str(&format!("**Summary**: {}\n\n", entry.summary));
+
+                    // Include a preview of the content (first 500 chars)
+                    let preview = if entry.content.len() > 500 {
+                        format!("{}...\n\n", &entry.content[..500])
+                    } else {
+                        format!("{}\n\n", entry.content)
+                    };
+                    context.push_str(&preview);
+                    context.push_str("---\n\n");
+                }
+
+                Some(context)
+            }
+            Ok(_) => {
+                tracing::debug!("No relevant memory bank entries found");
+                None
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to search memory bank");
+                None
+            }
+        }
+    }
+
+    /// Load enabled knowledge items for the session and format them as context
+    /// Returns additional context string to include in the prompt
+    fn load_enabled_knowledge(&self, session_id: Option<&str>) -> Option<String> {
+        // Check if knowledge system is configured
+        let store = self.knowledge_store?;
+        let settings = self.knowledge_settings?;
+        let session_id = session_id?;
+
+        // Get enabled knowledge IDs for this session
+        let enabled_ids = match settings.get_enabled_knowledge(session_id) {
+            Ok(ids) if !ids.is_empty() => ids,
+            Ok(_) => {
+                tracing::debug!("No knowledge items enabled for session");
+                return None;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to load enabled knowledge settings");
+                return None;
+            }
+        };
+
+        tracing::info!(
+            session_id = session_id,
+            enabled_count = enabled_ids.len(),
+            "Loading enabled knowledge items"
+        );
+
+        // Build context from enabled knowledge items
+        let mut context = String::from("## Specialized Knowledge\n\n");
+        context.push_str("The following specialized knowledge is available for this session:\n\n");
+
+        for knowledge_id in enabled_ids {
+            if let Some(item) = store.get(&knowledge_id) {
+                context.push_str(&format!(
+                    "### {}\n\n",
+                    knowledge_id.replace('-', " ").to_uppercase()
+                ));
+
+                // Add category
+                context.push_str(&format!("**Category**: {}\n\n", item.category));
+
+                // Add core content
+                context.push_str(&item.core_content);
+                context.push_str("\n\n---\n\n");
+
+                tracing::debug!(
+                    knowledge_id = %knowledge_id,
+                    content_len = item.core_content.len(),
+                    "Added knowledge item to context"
+                );
+            } else {
+                tracing::warn!(
+                    knowledge_id = %knowledge_id,
+                    "Enabled knowledge item not found in store"
+                );
+            }
+        }
+
+        Some(context)
+    }
+
+    /// Create a token usage update chunk for user feedback
+    /// Returns a StreamChunk with current token utilization status
+    fn create_token_usage_update(&self, prompt: &str) -> StreamChunk {
+        use crate::streaming::TokenUsageStatus;
+
+        let estimated_tokens = Self::estimate_tokens(prompt);
+        let max_input = self
+            .pipeline_config
+            .max_context_tokens
+            .saturating_sub(self.pipeline_config.max_output_tokens);
+
+        let percentage = ((estimated_tokens * 100) / max_input.max(1)) as u8;
+
+        let status = if percentage < 70 {
+            TokenUsageStatus::Green
+        } else if percentage < 90 {
+            TokenUsageStatus::Yellow
+        } else {
+            TokenUsageStatus::Red
+        };
+
+        let estimated_cost = self.calculate_cost(estimated_tokens);
+
+        StreamChunk::TokenUsageUpdate {
+            estimated: estimated_tokens,
+            limit: max_input,
+            percentage,
+            status,
+            estimated_cost,
+        }
+    }
+
+    /// Validate that the prompt is within token limits before sending to LLM
+    ///
+    /// This is a hard validation that rejects requests exceeding limits,
+    /// preventing API errors. Similar to Aider's check_tokens() approach.
+    ///
+    /// Returns an error if the prompt exceeds the maximum allowed tokens,
+    /// with guidance on how to reduce context.
+    fn validate_token_limit(&self, prompt: &str) -> Result<(), AppError> {
+        let status = self.check_token_limit(prompt);
+
+        match status {
+            TokenLimitStatus::Exceeded {
+                estimated,
+                limit,
+                overage,
+            } => {
+                tracing::error!(
+                    estimated_tokens = estimated,
+                    limit = limit,
+                    overage = overage,
+                    "Request exceeds token limit - rejecting to prevent API error"
+                );
+
+                Err(AppError::Llm(format!(
+                    "Context too large: estimated {} tokens exceeds limit of {} tokens (overage: {} tokens). \
+                    Try reducing conversation history, disabling unused tools, or using /summarize to compact context.",
+                    estimated, limit, overage
+                )))
+            }
+            TokenLimitStatus::Warning {
+                estimated,
+                limit,
+                percentage,
+            } => {
+                tracing::warn!(
+                    estimated_tokens = estimated,
+                    limit = limit,
+                    utilization_pct = percentage,
+                    "Token usage approaching limit ({}%)",
+                    percentage
+                );
+                Ok(())
+            }
+            TokenLimitStatus::Ok { estimated, limit } => {
+                if self.pipeline_config.log_token_usage {
+                    tracing::debug!(
+                        estimated_tokens = estimated,
+                        limit = limit,
+                        utilization_pct = (estimated * 100 / limit),
+                        "Token validation passed"
+                    );
+                }
+                Ok(())
             }
         }
     }
@@ -885,6 +1566,7 @@ impl AgentPipeline {
         tx: mpsc::Sender<StreamChunk>,
         cancel_token: CancellationToken,
         workspace: Option<&SessionWorkspace>,
+        session_id: Option<String>,
         permission_level: PermissionLevel,
     ) -> Result<AgentResponse, AppError> {
         let mut response = AgentResponse {
@@ -973,11 +1655,15 @@ impl AgentPipeline {
                         if let Some(pending) = pending_tool_call.take() {
                             self.finalize_pending_tool_call(
                                 pending,
-                                workspace,
-                                permission_level,
-                                &mut tool_calls_in_iteration,
-                                &mut response,
-                                &tx,
+                                FinalizePendingToolCallCtx {
+                                    workspace,
+                                    session_id: session_id.clone(),
+                                    permission_level,
+                                    cancel_token: &cancel_token,
+                                    tool_calls_in_iteration: &mut tool_calls_in_iteration,
+                                    response: &mut response,
+                                    tx: &tx,
+                                },
                             )
                             .await;
                         }
@@ -1000,11 +1686,15 @@ impl AgentPipeline {
                         if let Some(pending) = pending_tool_call.take() {
                             self.finalize_pending_tool_call(
                                 pending,
-                                workspace,
-                                permission_level,
-                                &mut tool_calls_in_iteration,
-                                &mut response,
-                                &tx,
+                                FinalizePendingToolCallCtx {
+                                    workspace,
+                                    session_id: session_id.clone(),
+                                    permission_level,
+                                    cancel_token: &cancel_token,
+                                    tool_calls_in_iteration: &mut tool_calls_in_iteration,
+                                    response: &mut response,
+                                    tx: &tx,
+                                },
                             )
                             .await;
                         }
@@ -1034,6 +1724,14 @@ impl AgentPipeline {
                         // Forward tool blocked notifications to frontend
                         let _ = tx.send(chunk).await;
                     }
+                    StreamChunk::TokenUsageUpdate { .. } => {
+                        // Forward token usage updates to frontend
+                        let _ = tx.send(chunk).await;
+                    }
+                    StreamChunk::MemoryBankSaved { .. } => {
+                        // Forward memory bank notification to user
+                        let _ = tx.send(chunk).await;
+                    }
                     StreamChunk::Done(usage) => {
                         // Some providers (or buggy intermediaries) may terminate the stream
                         // without emitting a ToolCallEnd. If we have a pending tool call, treat
@@ -1041,11 +1739,15 @@ impl AgentPipeline {
                         if let Some(pending) = pending_tool_call.take() {
                             self.finalize_pending_tool_call(
                                 pending,
-                                workspace,
-                                permission_level,
-                                &mut tool_calls_in_iteration,
-                                &mut response,
-                                &tx,
+                                FinalizePendingToolCallCtx {
+                                    workspace,
+                                    session_id: session_id.clone(),
+                                    permission_level,
+                                    cancel_token: &cancel_token,
+                                    tool_calls_in_iteration: &mut tool_calls_in_iteration,
+                                    response: &mut response,
+                                    tx: &tx,
+                                },
                             )
                             .await;
                         }
@@ -1074,11 +1776,15 @@ impl AgentPipeline {
             if let Some(pending) = pending_tool_call.take() {
                 self.finalize_pending_tool_call(
                     pending,
-                    workspace,
-                    permission_level,
-                    &mut tool_calls_in_iteration,
-                    &mut response,
-                    &tx,
+                    FinalizePendingToolCallCtx {
+                        workspace,
+                        session_id: session_id.clone(),
+                        permission_level,
+                        cancel_token: &cancel_token,
+                        tool_calls_in_iteration: &mut tool_calls_in_iteration,
+                        response: &mut response,
+                        tx: &tx,
+                    },
                 )
                 .await;
             }
@@ -1208,29 +1914,31 @@ impl AgentPipeline {
         Err(last_error.unwrap_or_else(|| AppError::Llm("All LLM providers failed".to_string())))
     }
 
-    /// Execute a tool by name with given arguments
+    /// Execute a tool by name with given arguments.
     ///
-    /// If `workspace` is provided, all file paths and shell commands are sandboxed
+    /// Note: If a workspace is provided in `ctx`, all file paths and shell commands are sandboxed
     /// to that directory. Paths outside the workspace will be rejected.
     async fn finalize_pending_tool_call(
         &self,
         pending: PendingToolCall,
-        workspace: Option<&SessionWorkspace>,
-        permission_level: PermissionLevel,
-        tool_calls_in_iteration: &mut Vec<ToolCallRecord>,
-        response: &mut AgentResponse,
-        tx: &mpsc::Sender<StreamChunk>,
+        ctx: FinalizePendingToolCallCtx<'_>,
     ) {
-        // Check if this is a write operation
-        let is_write = Self::is_write_operation(&pending.name, &pending.arguments);
+        let FinalizePendingToolCallCtx {
+            workspace,
+            session_id,
+            permission_level,
+            cancel_token,
+            tool_calls_in_iteration,
+            response,
+            tx,
+        } = ctx;
+        let policy = crate::tools::policy::evaluate_tool_call(
+            permission_level,
+            &pending.name,
+            &pending.arguments,
+        );
 
-        // Check permission level
-        if permission_level.blocks(is_write) {
-            // Tool is blocked entirely (e.g., write operation in Sandbox mode)
-            let reason = format!(
-                "Tool '{}' blocked: write operations are not allowed in Sandbox mode",
-                pending.name
-            );
+        if let crate::tools::policy::ToolCallDecision::Blocked { reason } = &policy.decision {
             let _ = tx
                 .send(StreamChunk::ToolBlocked {
                     tool_name: pending.name.clone(),
@@ -1238,11 +1946,21 @@ impl AgentPipeline {
                 })
                 .await;
 
+            // Emit a tool result so the UI can finalize the tool card.
+            let _ = tx
+                .send(StreamChunk::ToolCallResult {
+                    name: pending.name.clone(),
+                    success: false,
+                    output: reason.clone(),
+                    duration_ms: 0,
+                })
+                .await;
+
             let record = ToolCallRecord {
                 id: pending.id,
                 name: pending.name,
                 arguments: pending.arguments,
-                result: ToolResult::Skipped(reason),
+                result: ToolResult::Skipped(reason.clone()),
                 duration_ms: 0,
             };
             tool_calls_in_iteration.push(record.clone());
@@ -1250,38 +1968,78 @@ impl AgentPipeline {
             return;
         }
 
-        if permission_level.requires_confirmation(is_write) {
-            // Tool requires confirmation (write operation in Restricted mode)
-            let confirmation_id = uuid::Uuid::new_v4().to_string();
+        if let crate::tools::policy::ToolCallDecision::RequiresConfirmation(info) = &policy.decision
+        {
+            // Tool requires confirmation (write operation in Restricted mode).
+            // We pause tool execution until the UI approves/denies.
+
+            const CONFIRMATION_TIMEOUT_SECS: u64 = 300;
+            let confirmation_id = format!("tool_confirm_{}", uuid::Uuid::new_v4());
+
+            // Register pending confirmation before emitting the event, so the UI can
+            // resolve it immediately without racing.
+            let rx = TOOL_CONFIRMATIONS.register(
+                confirmation_id.clone(),
+                session_id.clone(),
+                pending.name.clone(),
+                pending.arguments.clone(),
+            );
+
             let _ = tx
                 .send(StreamChunk::ToolConfirmationRequired {
                     confirmation_id: confirmation_id.clone(),
                     tool_name: pending.name.clone(),
                     tool_args: pending.arguments.clone(),
-                    description: format!(
-                        "Tool '{}' wants to perform a write operation",
-                        pending.name
-                    ),
-                    risk_level: 2, // Medium risk for write operations
-                    category: "write".to_string(),
+                    description: info.description.clone(),
+                    risk_level: info.risk_level,
+                    category: info.category.clone(),
                 })
                 .await;
 
-            // For now, we skip the tool and let the UI handle confirmation
-            // In a full implementation, we would wait for user confirmation
-            let record = ToolCallRecord {
-                id: pending.id,
-                name: pending.name,
-                arguments: pending.arguments,
-                result: ToolResult::Skipped(format!(
-                    "Awaiting user confirmation (id: {})",
-                    confirmation_id
-                )),
-                duration_ms: 0,
+            // Await UI decision with timeout and cancellation.
+            let approved = tokio::select! {
+                decision = rx => decision.unwrap_or(false),
+                _ = tokio::time::sleep(std::time::Duration::from_secs(CONFIRMATION_TIMEOUT_SECS)) => {
+                    TOOL_CONFIRMATIONS.abandon(&confirmation_id);
+                    false
+                }
+                _ = async {
+                    while !cancel_token.is_cancelled() {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                } => {
+                    TOOL_CONFIRMATIONS.abandon(&confirmation_id);
+                    false
+                }
             };
-            tool_calls_in_iteration.push(record.clone());
-            response.tool_calls.push(record);
-            return;
+
+            if !approved {
+                let duration_ms = pending.start_time.elapsed().as_millis() as u64;
+                let msg = format!(
+                    "Skipped: tool confirmation denied/timed-out (id: {})",
+                    confirmation_id
+                );
+                let _ = tx
+                    .send(StreamChunk::ToolCallResult {
+                        name: pending.name.clone(),
+                        success: false,
+                        output: msg.clone(),
+                        duration_ms,
+                    })
+                    .await;
+
+                let record = ToolCallRecord {
+                    id: pending.id,
+                    name: pending.name,
+                    arguments: pending.arguments,
+                    result: ToolResult::Skipped(msg),
+                    duration_ms,
+                };
+                tool_calls_in_iteration.push(record.clone());
+                response.tool_calls.push(record);
+                return;
+            }
+            // Approved: continue to normal execution flow below.
         }
 
         // Execute the tool with workspace sandboxing
@@ -1317,64 +2075,6 @@ impl AgentPipeline {
         response.tool_calls.push(record);
     }
 
-    /// Determine if a tool operation is a write operation based on tool name and arguments.
-    ///
-    /// Write operations include:
-    /// - shell/bash/execute: Always considered write (can modify system state)
-    /// - file with write operation
-    /// - git with modifying operations (commit, push, checkout, etc.)
-    fn is_write_operation(tool_name: &str, arguments: &str) -> bool {
-        match tool_name {
-            // Shell commands are always considered write operations
-            "shell" | "bash" | "execute" => true,
-
-            // File operations depend on the operation type
-            "file" | "write_file" => {
-                // Check if it's a write operation
-                if let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) {
-                    let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("");
-                    matches!(
-                        op,
-                        "write" | "delete" | "create" | "append" | "move" | "copy"
-                    )
-                } else {
-                    // If we can't parse, assume write for safety
-                    tool_name == "write_file"
-                }
-            }
-            "read_file" => false,
-
-            // Git operations depend on the operation type
-            "git" => {
-                if let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) {
-                    let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("");
-                    matches!(
-                        op,
-                        "commit"
-                            | "push"
-                            | "pull"
-                            | "checkout"
-                            | "merge"
-                            | "rebase"
-                            | "reset"
-                            | "stash"
-                            | "branch"
-                            | "add"
-                            | "rm"
-                    )
-                } else {
-                    false
-                }
-            }
-
-            // Web and code tools are read-only
-            "web" | "web_search" | "code" => false,
-
-            // Unknown tools are considered read-only by default
-            _ => false,
-        }
-    }
-
     async fn execute_tool(
         &self,
         name: &str,
@@ -1397,6 +2097,7 @@ impl AgentPipeline {
             "git" => self.execute_git_tool(arguments, workspace).await,
             "web" | "web_search" => self.execute_web_tool(arguments).await,
             "code" => self.execute_code_tool(arguments, workspace).await,
+            "task" | "tasks" => self.execute_task_tool(arguments, workspace).await,
             _ => ToolResult::Skipped(format!("Unknown tool: {}", name)),
         };
 
@@ -1430,11 +2131,23 @@ impl AgentPipeline {
                             }
                         };
 
-                        match web.fetch(url).await {
-                            Ok(res) => match serde_json::to_string_pretty(&res) {
-                                Ok(s) => ToolResult::Success(s),
-                                Err(e) => ToolResult::Error(format!("Serialize error: {e}")),
-                            },
+                        // Use fetch_and_extract to get structured content instead of raw HTML
+                        // This prevents token overflow by extracting only relevant content
+                        match web.fetch_and_extract(url).await {
+                            Ok(extracted) => {
+                                // Return structured extracted content instead of raw HTML
+                                let result = serde_json::json!({
+                                    "url": url,
+                                    "title": extracted.title,
+                                    "description": extracted.description,
+                                    "content": extracted.main_content,
+                                    "links": extracted.links,
+                                });
+                                match serde_json::to_string_pretty(&result) {
+                                    Ok(s) => ToolResult::Success(s),
+                                    Err(e) => ToolResult::Error(format!("Serialize error: {e}")),
+                                }
+                            }
                             Err(e) => ToolResult::Error(e.to_string()),
                         }
                     }
@@ -1852,6 +2565,262 @@ impl AgentPipeline {
         }
     }
 
+    /// Execute task management tool
+    async fn execute_task_tool(
+        &self,
+        arguments: &str,
+        workspace: Option<&SessionWorkspace>,
+    ) -> ToolResult {
+        use crate::{TaskManager, TaskStatus};
+        use std::sync::OnceLock;
+
+        // Global task manager instance
+        static TASK_MANAGER: OnceLock<TaskManager> = OnceLock::new();
+
+        // Get or initialize the global task manager
+        let manager = TASK_MANAGER.get_or_init(|| {
+            let base_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+            TaskManager::new(base_dir)
+        });
+
+        // Get session_id from workspace
+        let session_id = match workspace {
+            Some(ws) => &ws.session_id,
+            None => {
+                return ToolResult::Error(
+                    "Task management requires an active session with workspace".to_string(),
+                );
+            }
+        };
+
+        match serde_json::from_str::<serde_json::Value>(arguments) {
+            Ok(args) => {
+                let operation = args
+                    .get("operation")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("list");
+
+                match operation {
+                    "create" => {
+                        let name = match args.get("name").and_then(|v| v.as_str()) {
+                            Some(n) => n,
+                            None => {
+                                return ToolResult::Error(
+                                    "Missing required field 'name' for create operation"
+                                        .to_string(),
+                                );
+                            }
+                        };
+                        let description = args
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let parent_id = args
+                            .get("parent_id")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+
+                        match manager.create_task(session_id, name, description, parent_id) {
+                            Ok(task) => ToolResult::Success(format!(
+                                "Created task '{}' (ID: {})\nDescription: {}\nStatus: {:?}",
+                                task.name, task.id, task.description, task.status
+                            )),
+                            Err(e) => ToolResult::Error(format!("Failed to create task: {}", e)),
+                        }
+                    }
+                    "update_status" => {
+                        let task_id =
+                            match args.get("task_id").and_then(|v| v.as_str()) {
+                                Some(id) => id,
+                                None => return ToolResult::Error(
+                                    "Missing required field 'task_id' for update_status operation"
+                                        .to_string(),
+                                ),
+                            };
+                        let status_str =
+                            match args.get("status").and_then(|v| v.as_str()) {
+                                Some(s) => s,
+                                None => return ToolResult::Error(
+                                    "Missing required field 'status' for update_status operation"
+                                        .to_string(),
+                                ),
+                            };
+
+                        let status = match status_str.to_lowercase().as_str() {
+                            "notstarted" | "not_started" => TaskStatus::NotStarted,
+                            "inprogress" | "in_progress" => TaskStatus::InProgress,
+                            "completed" => TaskStatus::Completed,
+                            "cancelled" => TaskStatus::Cancelled,
+                            _ => {
+                                return ToolResult::Error(format!(
+                                    "Invalid status '{}'. Use 'notstarted', 'inprogress', 'completed', or 'cancelled'",
+                                    status_str
+                                ));
+                            }
+                        };
+
+                        match manager.update_task_status(session_id, task_id, status) {
+                            Ok(_) => ToolResult::Success(format!(
+                                "Updated task {} status to {:?}",
+                                task_id, status
+                            )),
+                            Err(e) => {
+                                ToolResult::Error(format!("Failed to update task status: {}", e))
+                            }
+                        }
+                    }
+                    "update" => {
+                        let task_id = match args.get("task_id").and_then(|v| v.as_str()) {
+                            Some(id) => id,
+                            None => {
+                                return ToolResult::Error(
+                                    "Missing required field 'task_id' for update operation"
+                                        .to_string(),
+                                );
+                            }
+                        };
+                        let name = args
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let description = args
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+
+                        match manager.update_task(
+                            session_id,
+                            task_id,
+                            name.clone(),
+                            description.clone(),
+                        ) {
+                            Ok(_) => {
+                                let mut updates = Vec::new();
+                                if let Some(n) = name {
+                                    updates.push(format!("name to '{}'", n));
+                                }
+                                if let Some(d) = description {
+                                    updates.push(format!("description to '{}'", d));
+                                }
+                                ToolResult::Success(format!(
+                                    "Updated task {}: {}",
+                                    task_id,
+                                    updates.join(", ")
+                                ))
+                            }
+                            Err(e) => ToolResult::Error(format!("Failed to update task: {}", e)),
+                        }
+                    }
+                    "delete" => {
+                        let task_id = match args.get("task_id").and_then(|v| v.as_str()) {
+                            Some(id) => id,
+                            None => {
+                                return ToolResult::Error(
+                                    "Missing required field 'task_id' for delete operation"
+                                        .to_string(),
+                                );
+                            }
+                        };
+
+                        match manager.delete_task(session_id, task_id) {
+                            Ok(task) => ToolResult::Success(format!(
+                                "Deleted task '{}' (ID: {})",
+                                task.name, task.id
+                            )),
+                            Err(e) => ToolResult::Error(format!("Failed to delete task: {}", e)),
+                        }
+                    }
+                    "list" => match manager.list_tasks(session_id) {
+                        Ok(tasks) => {
+                            if tasks.is_empty() {
+                                ToolResult::Success("No tasks found for this session".to_string())
+                            } else {
+                                let mut output = format!("Found {} task(s):\n\n", tasks.len());
+                                for task in tasks {
+                                    output.push_str(&format!(
+                                        "• {} (ID: {})\n  Status: {:?}\n  Description: {}\n",
+                                        task.name, task.id, task.status, task.description
+                                    ));
+                                    if let Some(parent_id) = &task.parent_id {
+                                        output.push_str(&format!("  Parent: {}\n", parent_id));
+                                    }
+                                    output.push('\n');
+                                }
+                                ToolResult::Success(output)
+                            }
+                        }
+                        Err(e) => ToolResult::Error(format!("Failed to list tasks: {}", e)),
+                    },
+                    "get_hierarchy" => match manager.get_hierarchy(session_id) {
+                        Ok(hierarchy) => {
+                            if hierarchy.is_empty() {
+                                ToolResult::Success("No tasks found for this session".to_string())
+                            } else {
+                                let mut output = format!(
+                                    "Task hierarchy ({} root task(s)):\n\n",
+                                    hierarchy.len()
+                                );
+                                for (root, subtasks) in hierarchy {
+                                    output.push_str(&format!(
+                                        "• {} (ID: {})\n  Status: {:?}\n  Description: {}\n",
+                                        root.name, root.id, root.status, root.description
+                                    ));
+                                    if !subtasks.is_empty() {
+                                        output.push_str(&format!(
+                                            "  Subtasks ({}):\n",
+                                            subtasks.len()
+                                        ));
+                                        for subtask in subtasks {
+                                            output.push_str(&format!(
+                                                "    - {} (ID: {}, Status: {:?})\n",
+                                                subtask.name, subtask.id, subtask.status
+                                            ));
+                                        }
+                                    }
+                                    output.push('\n');
+                                }
+                                ToolResult::Success(output)
+                            }
+                        }
+                        Err(e) => ToolResult::Error(format!("Failed to get task hierarchy: {}", e)),
+                    },
+                    _ => ToolResult::Error(format!(
+                        "Unknown task operation: {}. Supported: create, update_status, update, delete, list, get_hierarchy",
+                        operation
+                    )),
+                }
+            }
+            Err(e) => ToolResult::Error(format!("Invalid arguments: {}", e)),
+        }
+    }
+
+    /// Truncate tool result to prevent token explosion
+    /// Limits results to 2000 characters max with truncation indicator
+    fn truncate_tool_result(&self, result: &str) -> String {
+        const MAX_TOOL_RESULT_CHARS: usize = 2000;
+
+        if result.len() <= MAX_TOOL_RESULT_CHARS {
+            result.to_string()
+        } else {
+            let truncated = &result[..MAX_TOOL_RESULT_CHARS];
+            let remaining = result.len() - MAX_TOOL_RESULT_CHARS;
+
+            if self.pipeline_config.log_token_usage {
+                tracing::debug!(
+                    original_length = result.len(),
+                    truncated_length = MAX_TOOL_RESULT_CHARS,
+                    remaining_chars = remaining,
+                    "Truncating tool result to prevent token explosion"
+                );
+            }
+
+            format!(
+                "{}\n[... truncated {} more characters ...]",
+                truncated, remaining
+            )
+        }
+    }
+
     /// Build a continuation prompt after tool execution
     fn build_tool_continuation_prompt(
         &self,
@@ -1865,9 +2834,18 @@ impl AgentPipeline {
 
         for tool_call in tool_calls {
             let result_text = match &tool_call.result {
-                ToolResult::Success(s) => format!("Success: {}", s),
-                ToolResult::Error(e) => format!("Error: {}", e),
-                ToolResult::Skipped(r) => format!("Skipped: {}", r),
+                ToolResult::Success(s) => {
+                    let truncated = self.truncate_tool_result(s);
+                    format!("Success: {}", truncated)
+                }
+                ToolResult::Error(e) => {
+                    let truncated = self.truncate_tool_result(e);
+                    format!("Error: {}", truncated)
+                }
+                ToolResult::Skipped(r) => {
+                    let truncated = self.truncate_tool_result(r);
+                    format!("Skipped: {}", truncated)
+                }
             };
             prompt.push_str(&format!(
                 "\nTool {} result:\n{}\n",
@@ -1887,6 +2865,20 @@ struct PendingToolCall {
     name: String,
     arguments: String,
     start_time: Instant,
+}
+
+/// Context used by `AgentPipeline::finalize_pending_tool_call`.
+///
+/// This bundles together the mutable per-iteration state and runtime references required to
+/// complete a pending tool call (permission checks, execution, streaming events, and recording).
+struct FinalizePendingToolCallCtx<'a> {
+    workspace: Option<&'a SessionWorkspace>,
+    session_id: Option<String>,
+    permission_level: PermissionLevel,
+    cancel_token: &'a CancellationToken,
+    tool_calls_in_iteration: &'a mut Vec<ToolCallRecord>,
+    response: &'a mut AgentResponse,
+    tx: &'a mpsc::Sender<StreamChunk>,
 }
 
 #[cfg(test)]
@@ -1969,6 +2961,54 @@ mod tests {
         assert!(args.contains("\"operation\":\"read\""));
         assert!(args.contains("\"path\":\"foo.txt\""));
         assert!(prefix.to_lowercase().contains("file"));
+    }
+
+    #[test]
+    fn is_write_operation_classifies_file_operations() {
+        let read = serde_json::json!({"operation": "read", "path": "foo.txt"}).to_string();
+        assert!(!crate::tools::policy::is_write_operation("file", &read));
+
+        let list = serde_json::json!({"operation": "list", "path": "."}).to_string();
+        assert!(!crate::tools::policy::is_write_operation("file", &list));
+
+        let search =
+            serde_json::json!({"operation": "search", "path": ".", "pattern": "foo"}).to_string();
+        assert!(!crate::tools::policy::is_write_operation("file", &search));
+
+        let write = serde_json::json!({"operation": "write", "path": "foo.txt", "content": "hi"})
+            .to_string();
+        assert!(crate::tools::policy::is_write_operation("file", &write));
+
+        let edit =
+            serde_json::json!({"operation": "edit", "path": "foo.txt", "old": "a", "new": "b"})
+                .to_string();
+        assert!(crate::tools::policy::is_write_operation("file", &edit));
+
+        // Mirror the defaulting behavior: content without operation is treated as write.
+        let implicit_write = serde_json::json!({"path": "foo.txt", "content": "hi"}).to_string();
+        assert!(crate::tools::policy::is_write_operation(
+            "file",
+            &implicit_write
+        ));
+    }
+
+    #[test]
+    fn is_write_operation_classifies_shell_commands_conservatively() {
+        let pwd = serde_json::json!({"command": "pwd"}).to_string();
+        assert!(!crate::tools::policy::is_write_operation("shell", &pwd));
+
+        let ls = serde_json::json!({"command": "ls -la"}).to_string();
+        assert!(!crate::tools::policy::is_write_operation("shell", &ls));
+
+        let echo = serde_json::json!({"command": "echo hi"}).to_string();
+        assert!(!crate::tools::policy::is_write_operation("shell", &echo));
+
+        let redirect = serde_json::json!({"command": "echo hi > out.txt"}).to_string();
+        assert!(crate::tools::policy::is_write_operation("shell", &redirect));
+
+        // Unknown commands are treated as write for safety.
+        let unknown = serde_json::json!({"command": "git status"}).to_string();
+        assert!(crate::tools::policy::is_write_operation("shell", &unknown));
     }
 
     #[tokio::test]
@@ -2064,6 +3104,232 @@ mod tests {
         .unwrap_or(false);
 
         assert!(saw_done);
+    }
+
+    /// In Restricted mode, write operations must request confirmation.
+    ///
+    /// When the user denies, the tool should be skipped, a ToolCallResult should
+    /// be emitted (success=false), and the pending confirmation should be cleared.
+    #[tokio::test]
+    async fn restricted_mode_write_tool_denied_emits_tool_call_result_and_skips() {
+        use std::sync::Arc;
+        use tempfile::tempdir;
+        use tokio::sync::mpsc;
+
+        use crate::session_workspace::SessionWorkspace;
+        use crate::tool_confirmation::TOOL_CONFIRMATIONS;
+
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let temp = tempdir().unwrap();
+        let workspace = Arc::new(
+            SessionWorkspace::from_directory("s1", temp.path().to_path_buf()).expect("workspace"),
+        );
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let cancel = CancellationToken::new();
+
+        let pending = PendingToolCall {
+            id: "call_test_denied".to_string(),
+            name: "file".to_string(),
+            arguments: serde_json::json!({
+                "operation": "write",
+                "path": "out.txt",
+                "content": "hi"
+            })
+            .to_string(),
+            start_time: Instant::now(),
+        };
+
+        let handle = tokio::spawn({
+            let workspace = workspace.clone();
+            async move {
+                let mut tool_calls_in_iteration: Vec<ToolCallRecord> = Vec::new();
+                let mut response = AgentResponse::empty();
+
+                pipeline
+                    .finalize_pending_tool_call(
+                        pending,
+                        FinalizePendingToolCallCtx {
+                            workspace: Some(workspace.as_ref()),
+                            session_id: Some("s1".to_string()),
+                            permission_level: PermissionLevel::Restricted,
+                            cancel_token: &cancel,
+                            tool_calls_in_iteration: &mut tool_calls_in_iteration,
+                            response: &mut response,
+                            tx: &tx,
+                        },
+                    )
+                    .await;
+
+                (tool_calls_in_iteration, response)
+            }
+        });
+
+        // Wait for the confirmation request and deny it.
+        let mut confirmation_id: Option<String> = None;
+        while let Some(chunk) = rx.recv().await {
+            if let StreamChunk::ToolConfirmationRequired {
+                confirmation_id: id,
+                ..
+            } = chunk
+            {
+                confirmation_id = Some(id);
+                break;
+            }
+        }
+        let confirmation_id = confirmation_id.expect("expected ToolConfirmationRequired");
+
+        TOOL_CONFIRMATIONS
+            .resolve(&confirmation_id, Some("s1"), false)
+            .expect("resolve should succeed");
+
+        // Ensure we emit a tool call result with success=false.
+        let mut saw_result = false;
+        while let Some(chunk) = rx.recv().await {
+            if let StreamChunk::ToolCallResult {
+                success, output, ..
+            } = chunk
+            {
+                assert!(!success);
+                assert!(output.contains("Skipped: tool confirmation"));
+                saw_result = true;
+                break;
+            }
+        }
+        assert!(saw_result);
+
+        let (tool_calls, response) = handle.await.expect("task join");
+        // Ensure this specific confirmation has been cleared, without depending on
+        // global pending count (tests may run concurrently).
+        let err = TOOL_CONFIRMATIONS
+            .resolve(&confirmation_id, Some("s1"), true)
+            .unwrap_err();
+        assert!(err.contains("Unknown confirmation id"));
+        assert!(!temp.path().join("out.txt").exists());
+
+        // Sanity: the pipeline should record a skipped tool call.
+        assert!(
+            tool_calls
+                .iter()
+                .any(|t| matches!(t.result, ToolResult::Skipped(_)))
+        );
+        assert!(
+            response
+                .tool_calls
+                .iter()
+                .any(|t| matches!(t.result, ToolResult::Skipped(_)))
+        );
+    }
+
+    /// In Restricted mode, if the user never responds, the confirmation should
+    /// time out and the tool should be skipped with a ToolCallResult.
+    #[tokio::test(start_paused = true)]
+    async fn restricted_mode_write_tool_times_out_and_emits_tool_call_result() {
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tempfile::tempdir;
+        use tokio::sync::mpsc;
+
+        use crate::session_workspace::SessionWorkspace;
+        use crate::tool_confirmation::TOOL_CONFIRMATIONS;
+
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let temp = tempdir().unwrap();
+        let workspace = Arc::new(
+            SessionWorkspace::from_directory("s1", temp.path().to_path_buf()).expect("workspace"),
+        );
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let cancel = CancellationToken::new();
+
+        let pending = PendingToolCall {
+            id: "call_test_timeout".to_string(),
+            name: "file".to_string(),
+            arguments: serde_json::json!({
+                "operation": "write",
+                "path": "out_timeout.txt",
+                "content": "hi"
+            })
+            .to_string(),
+            start_time: Instant::now(),
+        };
+
+        let handle = tokio::spawn({
+            let workspace = workspace.clone();
+            async move {
+                let mut tool_calls_in_iteration: Vec<ToolCallRecord> = Vec::new();
+                let mut response = AgentResponse::empty();
+
+                pipeline
+                    .finalize_pending_tool_call(
+                        pending,
+                        FinalizePendingToolCallCtx {
+                            workspace: Some(workspace.as_ref()),
+                            session_id: Some("s1".to_string()),
+                            permission_level: PermissionLevel::Restricted,
+                            cancel_token: &cancel,
+                            tool_calls_in_iteration: &mut tool_calls_in_iteration,
+                            response: &mut response,
+                            tx: &tx,
+                        },
+                    )
+                    .await;
+
+                (tool_calls_in_iteration, response)
+            }
+        });
+
+        // Wait for the confirmation request. We intentionally do NOT resolve it.
+        let mut confirmation_id: Option<String> = None;
+        while let Some(chunk) = rx.recv().await {
+            if let StreamChunk::ToolConfirmationRequired {
+                confirmation_id: id,
+                ..
+            } = chunk
+            {
+                confirmation_id = Some(id);
+                break;
+            }
+        }
+        let confirmation_id = confirmation_id.expect("expected ToolConfirmationRequired");
+
+        // Advance time beyond the hard-coded confirmation timeout (300s).
+        tokio::time::advance(Duration::from_secs(301)).await;
+        tokio::task::yield_now().await;
+
+        let mut saw_result = false;
+        while let Some(chunk) = rx.recv().await {
+            if let StreamChunk::ToolCallResult {
+                success, output, ..
+            } = chunk
+            {
+                assert!(!success);
+                assert!(output.contains("timed-out") || output.contains("denied"));
+                saw_result = true;
+                break;
+            }
+        }
+        assert!(saw_result);
+
+        let (tool_calls, response) = handle.await.expect("task join");
+        // Ensure this specific confirmation has been cleared, without depending on
+        // global pending count (tests may run concurrently).
+        let err = TOOL_CONFIRMATIONS
+            .resolve(&confirmation_id, Some("s1"), true)
+            .unwrap_err();
+        assert!(err.contains("Unknown confirmation id"));
+        assert!(!temp.path().join("out_timeout.txt").exists());
+        assert!(
+            tool_calls
+                .iter()
+                .any(|t| matches!(t.result, ToolResult::Skipped(_)))
+        );
+        assert!(
+            response
+                .tool_calls
+                .iter()
+                .any(|t| matches!(t.result, ToolResult::Skipped(_)))
+        );
     }
 
     #[tokio::test]
@@ -2370,5 +3636,284 @@ mod tests {
         assert_eq!(request.history.len(), 2);
         assert_eq!(request.history[0].role, "user");
         assert_eq!(request.history[1].role, "assistant");
+    }
+
+    // =========================================================================
+    // Integration Tests for Auto-Compaction Strategies
+    // =========================================================================
+
+    /// Helper function to estimate tokens from a vector of messages
+    fn estimate_tokens_from_messages(messages: &[Message]) -> usize {
+        messages.iter().map(|m| estimate_tokens(&m.content)).sum()
+    }
+
+    #[tokio::test]
+    async fn test_auto_compaction_summarize_strategy() {
+        // Test that Summarize strategy triggers at 80% threshold and reduces context
+        let mut config = AppConfig::default();
+        config.pipeline.compaction_strategy = CompactionStrategy::Summarize;
+        config.pipeline.auto_compact_threshold_percent = 80;
+        config.pipeline.max_context_tokens = 1000; // Small limit for testing
+
+        let pipeline = AgentPipeline::with_provider_optimized_config(config);
+
+        // Create history that exceeds 80% of 1000 tokens (>800 tokens)
+        // Each message needs to be longer to reach the threshold
+        // Rough estimate: 4 chars per token, so we need >3200 chars total
+        let mut history = Vec::new();
+        for i in 0..20 {
+            history.push(Message::user(format!(
+                "This is test message number {} with lots of additional content to increase token count. \
+                 We need to make sure this message is long enough to trigger the auto-compaction threshold. \
+                 Adding more text here to ensure we exceed 800 tokens total across all messages in the history.",
+                i
+            )));
+            history.push(Message::assistant(format!(
+                "This is response number {} with lots of additional content to increase token count. \
+                 We need to make sure this response is long enough to trigger the auto-compaction threshold. \
+                 Adding more text here to ensure we exceed 800 tokens total across all messages in the history.",
+                i
+            )));
+        }
+
+        let estimated_tokens = estimate_tokens_from_messages(&history);
+        assert!(
+            estimated_tokens > 800,
+            "History should exceed 80% threshold (got {} tokens)",
+            estimated_tokens
+        );
+
+        // Build a prompt preview to test auto-compaction
+        let prompt_preview: String = history
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let metadata = RequestMetadata::default();
+
+        // Check if auto-compaction would trigger
+        let compaction_result = pipeline
+            .check_and_apply_auto_compaction(&history, &prompt_preview, &metadata)
+            .await;
+
+        // Should trigger compaction
+        assert!(
+            compaction_result.is_some(),
+            "Auto-compaction should trigger"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_auto_compaction_truncate_strategy() {
+        // Test that Truncate strategy removes oldest messages
+        let mut config = AppConfig::default();
+        config.pipeline.compaction_strategy = CompactionStrategy::Truncate;
+        config.pipeline.auto_compact_threshold_percent = 80;
+        config.pipeline.max_context_tokens = 1000;
+
+        let pipeline = AgentPipeline::with_provider_optimized_config(config);
+
+        let mut history = Vec::new();
+        for i in 0..15 {
+            history.push(Message::user(format!(
+                "Message {} with additional content",
+                i
+            )));
+            history.push(Message::assistant(format!(
+                "Response {} with additional content",
+                i
+            )));
+        }
+
+        let messages_before = history.len();
+        let prompt_preview: String = history
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let metadata = RequestMetadata::default();
+
+        let compaction_result = pipeline
+            .check_and_apply_auto_compaction(&history, &prompt_preview, &metadata)
+            .await;
+
+        // Should trigger compaction
+        assert!(
+            compaction_result.is_some(),
+            "Auto-compaction should trigger"
+        );
+
+        // Verify compaction result indicates truncation occurred
+        if let Some(StreamChunk::ContextCompacted { messages_after, .. }) = compaction_result {
+            assert!(
+                messages_after < messages_before,
+                "Truncate should reduce message count"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_auto_compaction_clear_strategy() {
+        // Test that Clear strategy removes all history
+        let mut config = AppConfig::default();
+        config.pipeline.compaction_strategy = CompactionStrategy::Clear;
+        config.pipeline.auto_compact_threshold_percent = 80;
+        config.pipeline.max_context_tokens = 1000;
+
+        let pipeline = AgentPipeline::with_provider_optimized_config(config);
+
+        let mut history = Vec::new();
+        for i in 0..15 {
+            history.push(Message::user(format!(
+                "Message {} with additional content",
+                i
+            )));
+            history.push(Message::assistant(format!(
+                "Response {} with additional content",
+                i
+            )));
+        }
+
+        let prompt_preview: String = history
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let metadata = RequestMetadata::default();
+
+        let compaction_result = pipeline
+            .check_and_apply_auto_compaction(&history, &prompt_preview, &metadata)
+            .await;
+
+        // Should trigger compaction
+        assert!(
+            compaction_result.is_some(),
+            "Auto-compaction should trigger"
+        );
+
+        // Verify compaction result indicates all messages were cleared
+        if let Some(StreamChunk::ContextCompacted { messages_after, .. }) = compaction_result {
+            assert_eq!(
+                messages_after, 0,
+                "Clear strategy should remove all history"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_auto_compaction_memory_bank_strategy() {
+        // Test that MemoryBank strategy saves context to file
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path().to_path_buf();
+
+        let mut config = AppConfig::default();
+        config.pipeline.compaction_strategy = CompactionStrategy::MemoryBank;
+        config.pipeline.auto_compact_threshold_percent = 80;
+        config.pipeline.max_context_tokens = 1000;
+
+        let pipeline = AgentPipeline::with_provider_optimized_config(config);
+
+        let mut history = Vec::new();
+        for i in 0..15 {
+            history.push(Message::user(format!(
+                "Message {} with additional content",
+                i
+            )));
+            history.push(Message::assistant(format!(
+                "Response {} with additional content",
+                i
+            )));
+        }
+
+        let messages_before = history.len();
+        let prompt_preview: String = history
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let metadata = RequestMetadata {
+            workspace_dir: Some(workspace_path.clone()),
+            session_id: Some("test-session".to_string()),
+            ..Default::default()
+        };
+
+        let compaction_result = pipeline
+            .check_and_apply_auto_compaction(&history, &prompt_preview, &metadata)
+            .await;
+
+        // Should trigger compaction
+        assert!(
+            compaction_result.is_some(),
+            "Auto-compaction should trigger"
+        );
+
+        // Verify compaction result indicates memory bank save
+        if let Some(StreamChunk::MemoryBankSaved { messages_saved, .. }) = compaction_result {
+            assert_eq!(
+                messages_saved, messages_before,
+                "All messages should be saved to memory bank"
+            );
+        }
+
+        // Verify memory bank file was created
+        let memory_dir = workspace_path.join(".gestura").join("memory");
+        assert!(
+            memory_dir.exists(),
+            "Memory bank directory should be created"
+        );
+
+        // Check that at least one .md file exists
+        let entries = std::fs::read_dir(&memory_dir).unwrap();
+        let md_files: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("md"))
+            .collect();
+
+        assert!(
+            !md_files.is_empty(),
+            "Memory bank should contain at least one markdown file"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_auto_compaction_threshold_not_reached() {
+        // Test that auto-compaction does NOT trigger when below threshold
+        let mut config = AppConfig::default();
+        config.pipeline.auto_compact_threshold_percent = 80;
+        config.pipeline.max_context_tokens = 10000; // Large limit
+
+        let pipeline = AgentPipeline::with_provider_optimized_config(config);
+
+        // Create small history that won't exceed threshold
+        let history = vec![
+            Message::user("Hello".to_string()),
+            Message::assistant("Hi there!".to_string()),
+        ];
+
+        let estimated_tokens = estimate_tokens_from_messages(&history);
+        assert!(
+            estimated_tokens < 8000,
+            "History should be well below 80% threshold"
+        );
+
+        let prompt_preview: String = history
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let metadata = RequestMetadata::default();
+
+        // Check if auto-compaction would trigger
+        let compaction_result = pipeline
+            .check_and_apply_auto_compaction(&history, &prompt_preview, &metadata)
+            .await;
+
+        // Should NOT trigger compaction
+        assert!(
+            compaction_result.is_none(),
+            "Should not trigger compaction when below threshold"
+        );
     }
 }

@@ -8,246 +8,185 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
-/// Returns the path for storing GUI session history: ~/.gestura/gui_sessions.json
-fn sessions_file_path() -> PathBuf {
+use gestura_core::chat_sessions::{ChatSessionStore, FileChatSessionStore, SessionFilter};
+
+/// Returns the path for the legacy GUI session history file: `~/.gestura/gui_sessions.json`.
+///
+/// The GUI previously persisted all sessions in a single JSON file. As part of the
+/// Core-First migration (Phase 2), the GUI now uses the unified core store
+/// (`FileChatSessionStore`) which persists one JSON file per session in
+/// `AppConfig::data_dir()/chat_sessions/`.
+///
+/// This path remains only to support one-time migration from the legacy format.
+fn legacy_sessions_file_path() -> PathBuf {
     gestura_core::config::AppConfig::data_dir().join("gui_sessions.json")
 }
 
-/// Persisted session data (excludes window state which is ephemeral)
+/// Legacy persisted session data (excludes window state which is ephemeral).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct PersistedSessions {
+struct LegacyPersistedSessions {
     /// All sessions (open flag is reset on load since windows close on app exit)
     sessions: Vec<ChatSession>,
     /// Version for future migration support
     version: u32,
 }
 
-/// A message in the conversation history
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConversationMessage {
-    /// Message role: "user", "assistant", or "tool"
-    pub role: String,
-    /// Message content
-    pub content: String,
-    /// Tool call ID (for tool messages)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
-    /// Thinking content (for extended thinking)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<String>,
-    /// Message timestamp
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-    /// Source of the message: "text" or "voice"
-    pub source: MessageSource,
+/// Return the default core-backed chat session store.
+///
+/// Keeping this as a helper ensures the GUI remains a thin adapter over the
+/// unified persistence implementation in `gestura-core`.
+fn session_store() -> FileChatSessionStore {
+    FileChatSessionStore::new_default()
 }
 
-/// Source of a message
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum MessageSource {
-    /// Text input from chat
-    Text,
-    /// Voice input (transcribed)
-    Voice,
-    /// System-generated
-    System,
-}
-
-impl Default for MessageSource {
-    fn default() -> Self {
-        Self::Text
+/// Convert the GUI session view-model into the persisted core session model.
+///
+/// The GUI maintains ephemeral window state (`is_open`, `window_label`) and a
+/// derived `message_count` for UI display. Persistence is handled by the core
+/// `ChatSession` type only.
+fn to_core_session(session: &ChatSession) -> gestura_core::chat_sessions::ChatSession {
+    gestura_core::chat_sessions::ChatSession {
+        id: session.id.clone(),
+        title: session.title.clone(),
+        created_at: session.created_at,
+        last_active: session.last_active,
+        model: session
+            .state
+            .llm_config
+            .as_ref()
+            .and_then(|cfg| cfg.model.clone()),
+        state: session.state.clone(),
     }
 }
 
-/// Tool call record for session history
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionToolCall {
-    /// Tool call ID
-    pub id: String,
-    /// Tool name
-    pub name: String,
-    /// Tool arguments (JSON string)
-    pub arguments: String,
-    /// Tool result
-    pub result: String,
-    /// Whether the call succeeded
-    pub success: bool,
-    /// Duration in milliseconds
-    pub duration_ms: u64,
-    /// Timestamp
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-}
-
-/// Session-scoped LLM configuration
-/// When set, overrides the global config for this session only
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct SessionLlmConfig {
-    /// Override LLM provider for this session (e.g., "openai", "anthropic", "ollama")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    /// Override model for this session
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-}
-
-/// Permission level for session tool execution
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum SessionPermissionLevel {
-    /// Read-only access - no file writes, no shell commands
-    Sandbox,
-    /// Ask before write operations (default)
-    #[default]
-    Restricted,
-    /// Full access - all operations allowed without confirmation
-    Full,
-}
-
-/// Session-scoped tool availability settings
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionToolSettings {
-    /// Permission level for this session
-    #[serde(default)]
-    pub permission_level: SessionPermissionLevel,
-    /// Enabled tools for this session (tool name -> enabled)
-    #[serde(default)]
-    pub enabled_tools: std::collections::HashMap<String, bool>,
-}
-
-impl SessionToolSettings {
-    /// Create session tool settings from global config.
-    ///
-    /// New sessions inherit their permission level and enabled tools from the
-    /// global configuration, allowing users to set a default that applies to
-    /// all new sessions.
-    pub fn from_global_config(config: &gestura_core::config::AppConfig) -> Self {
-        use gestura_core::config::GlobalPermissionLevel;
-
-        let permission_level = match config.permissions.default_level {
-            GlobalPermissionLevel::Sandbox => SessionPermissionLevel::Sandbox,
-            GlobalPermissionLevel::Restricted => SessionPermissionLevel::Restricted,
-            GlobalPermissionLevel::Full => SessionPermissionLevel::Full,
-        };
-
-        Self {
-            permission_level,
-            enabled_tools: config.permissions.default_enabled_tools.clone(),
-        }
+/// Convert the persisted core session model into the GUI session view-model.
+///
+/// Windows do not survive app restarts, so all loaded sessions are marked as
+/// closed and their `window_label` is cleared.
+fn from_core_session(session: gestura_core::chat_sessions::ChatSession) -> ChatSession {
+    let message_count = session.state.messages.len();
+    ChatSession {
+        id: session.id,
+        title: session.title,
+        created_at: session.created_at,
+        last_active: session.last_active,
+        is_open: false,
+        window_label: None,
+        message_count,
+        state: session.state,
     }
 }
 
-impl Default for SessionToolSettings {
-    fn default() -> Self {
-        // Try to load from global config, fall back to hardcoded defaults
-        let config = gestura_core::config::AppConfig::load();
-        Self::from_global_config(&config)
-    }
-}
+/// Sanitize potentially invalid persisted (provider, model) overrides.
+///
+/// This is defensive against historic bug states such as `provider=openai` with
+/// a non-OpenAI model value.
+fn sanitize_session_llm_override(
+    session_id: &str,
+    state: &mut SessionState,
+    global_llm_provider: &str,
+) -> bool {
+    let Some(ref mut llm_cfg) = state.llm_config else {
+        return false;
+    };
 
-/// Unified session state for both voice and text inputs
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct SessionState {
-    /// Conversation history (shared between voice and text)
-    pub messages: Vec<ConversationMessage>,
-    /// Tool call history
-    pub tool_calls: Vec<SessionToolCall>,
-    /// Total tokens used in this session
-    pub total_tokens: u64,
-    /// Last context cache key (for smart context reduction)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub context_cache_key: Option<String>,
-    /// Workspace directory for sandboxed file/shell operations
-    /// All file operations and tool calls are scoped to this directory
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_dir: Option<PathBuf>,
-    /// Session-scoped LLM configuration (overrides global config when set)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub llm_config: Option<SessionLlmConfig>,
-    /// Session-scoped tool and permission settings
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_settings: Option<SessionToolSettings>,
-}
-
-impl SessionState {
-    /// Create a new session state with a workspace directory
-    pub fn with_workspace(workspace_dir: PathBuf) -> Self {
-        Self {
-            workspace_dir: Some(workspace_dir),
-            ..Default::default()
+    let mut repaired = false;
+    if let Some(ref model) = llm_cfg.model {
+        let effective_provider = llm_cfg.provider.as_deref().unwrap_or(global_llm_provider);
+        if !crate::llm_validation::is_model_compatible_with_provider(effective_provider, model) {
+            tracing::warn!(
+                session_id = %session_id,
+                provider = %effective_provider,
+                model = %model,
+                "Clearing incompatible persisted session LLM model override"
+            );
+            llm_cfg.model = None;
+            repaired = true;
         }
     }
 
-    /// Set the workspace directory
-    pub fn set_workspace(&mut self, workspace_dir: PathBuf) {
-        self.workspace_dir = Some(workspace_dir);
+    // If both fields are now empty, clear the override container.
+    if llm_cfg.provider.is_none() && llm_cfg.model.is_none() {
+        state.llm_config = None;
     }
 
-    /// Get the workspace directory
-    pub fn get_workspace(&self) -> Option<&PathBuf> {
-        self.workspace_dir.as_ref()
-    }
+    repaired
 }
 
-impl SessionState {
-    /// Add a user message
-    pub fn add_user_message(&mut self, content: &str, source: MessageSource) {
-        self.messages.push(ConversationMessage {
-            role: "user".to_string(),
-            content: content.to_string(),
-            tool_call_id: None,
-            thinking: None,
-            timestamp: chrono::Utc::now(),
-            source,
-        });
+/// One-time migration from the legacy `gui_sessions.json` file into the unified
+/// core store directory.
+///
+/// Returns the loaded core sessions if migration succeeded (even partially).
+fn migrate_legacy_gui_sessions_to_core(
+    store: &FileChatSessionStore,
+    global_llm_provider: &str,
+) -> Vec<gestura_core::chat_sessions::ChatSession> {
+    let path = legacy_sessions_file_path();
+    if !path.exists() {
+        return Vec::new();
     }
 
-    /// Add an assistant message
-    pub fn add_assistant_message(&mut self, content: &str, thinking: Option<String>) {
-        self.messages.push(ConversationMessage {
-            role: "assistant".to_string(),
-            content: content.to_string(),
-            tool_call_id: None,
-            thinking,
-            timestamp: chrono::Utc::now(),
-            source: MessageSource::System,
-        });
+    let mut migrated = Vec::new();
+    match std::fs::read_to_string(&path) {
+        Ok(json) => match serde_json::from_str::<LegacyPersistedSessions>(&json) {
+            Ok(persisted) => {
+                for mut session in persisted.sessions {
+                    // Windows don't survive app restart.
+                    session.is_open = false;
+                    session.window_label = None;
+                    session.message_count = session.state.messages.len();
+
+                    // Sanitize LLM overrides before persisting.
+                    let _ = sanitize_session_llm_override(
+                        &session.id,
+                        &mut session.state,
+                        global_llm_provider,
+                    );
+
+                    let core_session = to_core_session(&session);
+                    match store.save(&core_session) {
+                        Ok(()) => migrated.push(core_session),
+                        Err(e) => tracing::warn!(
+                            session_id = %session.id,
+                            error = %e,
+                            "Failed to migrate legacy GUI session to core store"
+                        ),
+                    }
+                }
+
+                // Best-effort cleanup: remove legacy file after migration.
+                if let Err(e) = std::fs::remove_file(&path) {
+                    tracing::debug!(error = %e, path = %path.display(), "Failed to remove legacy sessions file");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path.display(), "Failed to parse legacy GUI sessions file");
+            }
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, path = %path.display(), "Failed to read legacy GUI sessions file");
+        }
     }
 
-    /// Add a tool result message
-    pub fn add_tool_message(&mut self, tool_call_id: &str, content: &str) {
-        self.messages.push(ConversationMessage {
-            role: "tool".to_string(),
-            content: content.to_string(),
-            tool_call_id: Some(tool_call_id.to_string()),
-            thinking: None,
-            timestamp: chrono::Utc::now(),
-            source: MessageSource::System,
-        });
-    }
+    migrated
+}
 
-    /// Record a tool call
-    pub fn record_tool_call(&mut self, call: SessionToolCall) {
-        self.tool_calls.push(call);
-    }
+/// Core-First: the GUI re-exports the unified chat session model from `gestura-core`.
+///
+/// This keeps the Tauri layer thin while preserving the existing public module paths
+/// (`crate::window_manager::ConversationMessage`, etc.) used by backend commands.
+pub use gestura_core::chat_sessions::{
+    ConversationMessage, MessageSource, SessionLlmConfig, SessionPermissionLevel, SessionState,
+    SessionToolCall, SessionToolSettings, SessionVoiceConfig,
+};
 
-    /// Get recent messages for LLM context
-    pub fn get_recent_messages(&self, limit: usize) -> Vec<&ConversationMessage> {
-        let start = self.messages.len().saturating_sub(limit);
-        self.messages.iter().skip(start).collect()
-    }
-
-    /// Convert to Message format for pipeline
-    pub fn to_pipeline_messages(&self) -> Vec<gestura_core::Message> {
-        self.messages
-            .iter()
-            .map(|m| gestura_core::Message {
-                role: m.role.clone(),
-                content: m.content.clone(),
-                tool_call_id: m.tool_call_id.clone(),
-                thinking: m.thinking.clone(),
-            })
-            .collect()
-    }
+/// Default session tool settings derived from the global app configuration.
+///
+/// This is used in the GUI layer to preserve prior behavior where newly-created
+/// sessions inherited default enabled tools and permission level from config.
+fn default_session_tool_settings() -> SessionToolSettings {
+    let config = gestura_core::config::AppConfig::load();
+    SessionToolSettings::from_global_config(&config)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -291,81 +230,112 @@ impl WindowManager {
     /// Load persisted sessions from disk
     /// Called during initialization to restore session history
     pub fn load_persisted_sessions(&self) {
-        let path = sessions_file_path();
-        if !path.exists() {
-            tracing::info!("No persisted sessions file found at {:?}", path);
+        // Load global LLM provider once so we can validate persisted session overrides.
+        // This is a startup path; using the synchronous config load here is fine.
+        let global_llm_provider = gestura_core::config::AppConfig::load().llm.primary;
+        let store = session_store();
+
+        // 1) Prefer loading from the unified core store.
+        let mut loaded_core_sessions: Vec<gestura_core::chat_sessions::ChatSession> = Vec::new();
+        match store.list(SessionFilter::All) {
+            Ok(infos) => {
+                for info in infos {
+                    match store.load(&info.id) {
+                        Ok(session) => loaded_core_sessions.push(session),
+                        Err(e) => tracing::warn!(
+                            session_id = %info.id,
+                            error = %e,
+                            "Failed to load persisted session from core store"
+                        ),
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to list persisted sessions from core store");
+            }
+        }
+
+        // 2) If the core store is empty, attempt a one-time migration from the legacy file.
+        if loaded_core_sessions.is_empty() {
+            loaded_core_sessions =
+                migrate_legacy_gui_sessions_to_core(&store, global_llm_provider.as_str());
+        }
+
+        if loaded_core_sessions.is_empty() {
+            tracing::info!("No persisted sessions found");
             return;
         }
 
-        match std::fs::read_to_string(&path) {
-            Ok(json) => match serde_json::from_str::<PersistedSessions>(&json) {
-                Ok(persisted) => {
-                    let mut sessions = self.sessions.lock().unwrap();
-                    for mut session in persisted.sessions {
-                        // Mark all loaded sessions as closed (windows don't survive app restart)
-                        session.is_open = false;
-                        session.window_label = None;
-                        sessions.insert(session.id.clone(), session);
-                    }
-                    let count = sessions.len();
-                    drop(sessions);
+        // Sanitize sessions as we load them.
+        let mut repaired_any = false;
+        let mut sessions_for_ui: Vec<ChatSession> = Vec::new();
+        for mut core_session in loaded_core_sessions {
+            repaired_any |= sanitize_session_llm_override(
+                &core_session.id,
+                &mut core_session.state,
+                global_llm_provider.as_str(),
+            );
+            sessions_for_ui.push(from_core_session(core_session));
+        }
 
-                    tracing::info!("Loaded {} persisted sessions from {:?}", count, path);
-
-                    // Notify tray to rebuild menu with loaded sessions
-                    let _ = self.app.emit("sessions-changed", ());
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to parse persisted sessions: {}", e);
-                }
-            },
-            Err(e) => {
-                tracing::warn!("Failed to read persisted sessions file: {}", e);
+        // Store in-memory sessions.
+        {
+            let mut sessions = self.sessions.lock().unwrap();
+            for session in sessions_for_ui {
+                sessions.insert(session.id.clone(), session);
             }
         }
+
+        let count = self.sessions.lock().unwrap().len();
+        tracing::info!("Loaded {} persisted sessions from core store", count);
+
+        if repaired_any {
+            // Persist repairs so the invalid state does not reappear on next launch.
+            self.save_sessions_to_disk();
+            tracing::info!("Persisted session LLM config repairs to disk");
+        }
+
+        // Notify tray to rebuild menu with loaded sessions
+        let _ = self.app.emit("sessions-changed", ());
     }
 
     /// Save all sessions to disk for persistence across app restarts
     pub fn save_sessions_to_disk(&self) {
+        let store = session_store();
         let sessions = self.sessions.lock().unwrap();
         let session_list: Vec<ChatSession> = sessions.values().cloned().collect();
         drop(sessions);
 
+        // If there are no in-memory sessions, remove all persisted sessions.
         if session_list.is_empty() {
-            // Don't create empty file; remove existing one if present
-            let path = sessions_file_path();
-            if path.exists() {
-                let _ = std::fs::remove_file(&path);
-                tracing::debug!("Removed empty sessions file");
-            }
-            return;
-        }
-
-        let persisted = PersistedSessions {
-            sessions: session_list,
-            version: 1,
-        };
-
-        let path = sessions_file_path();
-        if let Some(parent) = path.parent()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            tracing::error!("Failed to create sessions directory: {}", e);
-            return;
-        }
-
-        match serde_json::to_string_pretty(&persisted) {
-            Ok(json) => {
-                if let Err(e) = std::fs::write(&path, json) {
-                    tracing::error!("Failed to write sessions file: {}", e);
-                } else {
-                    tracing::info!("Saved {} sessions to {:?}", persisted.sessions.len(), path);
+            if let Ok(infos) = store.list(SessionFilter::All) {
+                for info in infos {
+                    let _ = store.delete(&info.id);
                 }
             }
-            Err(e) => {
-                tracing::error!("Failed to serialize sessions: {}", e);
+            // Best-effort cleanup: also remove legacy file if present.
+            let legacy = legacy_sessions_file_path();
+            if legacy.exists() {
+                let _ = std::fs::remove_file(&legacy);
+            }
+            tracing::debug!("Removed all persisted sessions (none in memory)");
+            return;
+        }
+
+        let mut saved = 0usize;
+        for session in &session_list {
+            let core_session = to_core_session(session);
+            match store.save(&core_session) {
+                Ok(()) => saved += 1,
+                Err(e) => tracing::error!(
+                    session_id = %session.id,
+                    error = %e,
+                    "Failed to persist session to core store"
+                ),
             }
         }
+
+        tracing::info!("Saved {} sessions to core store", saved);
     }
 
     /// Create a new chat session and window
@@ -375,31 +345,53 @@ impl WindowManager {
 
         tracing::info!("Creating new chat session: {}", session_id);
 
-        // Default to a reasonable workspace so file tools can answer questions like
-        // "what's in the project directory" without requiring an explicit workspace pick.
+        // Default to a session-specific workspace directory:
+        // ~/.gestura/sessions/{session_uuid}/
+        // This ensures each session has its own isolated workspace for file operations.
         // Users can still override this via pick_workspace_directory.
-        //
-        // Priority order:
-        // 1. Detected project directory (has .git, Cargo.toml, etc.)
-        // 2. User's home directory
-        // 3. System temp directory (last resort)
-        let default_workspace = get_project_directory()
-            .or_else(dirs::home_dir)
-            .or_else(|| std::env::temp_dir().canonicalize().ok());
+        let session_workspace = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".gestura")
+            .join("sessions")
+            .join(&session_id);
 
-        let session_state = if let Some(ref workspace) = default_workspace {
-            tracing::info!(
-                session_id = %session_id,
-                workspace = %workspace.display(),
-                "Session initialized with default workspace"
-            );
-            SessionState::with_workspace(workspace.clone())
-        } else {
+        // Create the session workspace directory if it doesn't exist
+        if let Err(e) = std::fs::create_dir_all(&session_workspace) {
             tracing::warn!(
                 session_id = %session_id,
-                "No default workspace available - session will have no working directory"
+                error = %e,
+                path = %session_workspace.display(),
+                "Failed to create session workspace directory"
             );
-            SessionState::default()
+        }
+
+        let session_state = if session_workspace.exists() {
+            tracing::info!(
+                session_id = %session_id,
+                workspace = %session_workspace.display(),
+                "Session initialized with dedicated workspace"
+            );
+            SessionState::with_workspace(session_workspace)
+        } else {
+            // Fallback: try project directory, home, or temp
+            let fallback_workspace = get_project_directory()
+                .or_else(dirs::home_dir)
+                .or_else(|| std::env::temp_dir().canonicalize().ok());
+
+            if let Some(ref workspace) = fallback_workspace {
+                tracing::info!(
+                    session_id = %session_id,
+                    workspace = %workspace.display(),
+                    "Session initialized with fallback workspace"
+                );
+                SessionState::with_workspace(workspace.clone())
+            } else {
+                tracing::warn!(
+                    session_id = %session_id,
+                    "No workspace available - session will have no working directory"
+                );
+                SessionState::default()
+            }
         };
 
         // Create the session with user-friendly title
@@ -712,6 +704,32 @@ impl WindowManager {
             .and_then(|s| s.window_label.clone())
     }
 
+    /// Get the session id associated with a given window label.
+    ///
+    /// This is primarily used by Tauri commands to infer session context from the
+    /// calling window (by label) when the frontend omits `sessionId`.
+    ///
+    /// Resolution order:
+    /// 1) The internal `windows` registry (most robust)
+    /// 2) Parsing the app's chat label convention: `chat-{session_id}`
+    pub fn get_session_id_for_window_label(&self, window_label: &str) -> Option<String> {
+        // Prefer the explicit window registry.
+        let from_registry = self
+            .windows
+            .lock()
+            .unwrap()
+            .get(window_label)
+            .and_then(|info| info.session_id.clone());
+        if from_registry.is_some() {
+            return from_registry;
+        }
+
+        // Fallback: parse labels generated by this app's naming convention.
+        window_label
+            .strip_prefix("chat-")
+            .map(|sid| sid.to_string())
+    }
+
     /// Get the session state for a session
     pub fn get_session_state(&self, session_id: &str) -> Option<SessionState> {
         let sessions = self.sessions.lock().unwrap();
@@ -898,6 +916,13 @@ pub fn get_active_chat_for_voice() -> Option<String> {
     get_most_recent_active_session()
 }
 
+/// Try to resolve a session id from a Tauri window label.
+///
+/// This is a convenience wrapper over [`WindowManager::get_session_id_for_window_label`].
+pub fn get_session_id_for_window_label(window_label: &str) -> Option<String> {
+    get_window_manager().and_then(|m| m.get_session_id_for_window_label(window_label))
+}
+
 /// Get the window label for a session by its ID
 pub fn get_session_window_label(session_id: &str) -> Option<String> {
     get_window_manager().and_then(|m| m.get_session_window_label(session_id))
@@ -920,7 +945,7 @@ pub fn set_session_workspace(session_id: &str, workspace_dir: PathBuf) {
     if let Some(manager) = get_window_manager() {
         let mut sessions = manager.sessions.lock().unwrap();
         if let Some(session) = sessions.get_mut(session_id) {
-            session.state.set_workspace(workspace_dir);
+            session.state.workspace_dir = Some(workspace_dir);
         }
     }
 }
@@ -977,8 +1002,14 @@ pub fn set_session_llm_provider(session_id: &str, provider: String) {
     }
 }
 
-/// Set the session LLM model (overrides global config for this session)
-pub fn set_session_llm_model(session_id: &str, model: String) {
+/// Set the session LLM model (overrides global config for this session).
+///
+/// This performs a best-effort compatibility check between the current effective
+/// provider (session override provider if present, otherwise global default) and
+/// the requested `model`. If the model appears to belong to a different provider
+/// (e.g. `provider=openai` + `model=grok-2`), this returns an error and does not
+/// persist the invalid combination.
+pub fn set_session_llm_model(session_id: &str, model: String) -> Result<(), String> {
     tracing::info!(
         session_id = %session_id,
         model = %model,
@@ -988,14 +1019,38 @@ pub fn set_session_llm_model(session_id: &str, model: String) {
     if let Some(manager) = get_window_manager() {
         let mut sessions = manager.sessions.lock().unwrap();
         if let Some(session) = sessions.get_mut(session_id) {
+            let trimmed_model = model.trim().to_string();
+            if trimmed_model.is_empty() {
+                // Treat empty model as clearing the override.
+                if let Some(ref mut llm_cfg) = session.state.llm_config {
+                    llm_cfg.model = None;
+                    if llm_cfg.provider.is_none() {
+                        session.state.llm_config = None;
+                    }
+                }
+                return Ok(());
+            }
+
             let llm_config = session
                 .state
                 .llm_config
                 .get_or_insert_with(Default::default);
-            llm_config.model = Some(model.clone());
+
+            // Determine effective provider to validate against.
+            let effective_provider = llm_config
+                .provider
+                .as_deref()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| gestura_core::config::AppConfig::load().llm.primary);
+
+            crate::llm_validation::validate_model_for_provider(
+                &effective_provider,
+                &trimmed_model,
+            )?;
+            llm_config.model = Some(trimmed_model.clone());
             tracing::info!(
                 session_id = %session_id,
-                model = %model,
+                model = %trimmed_model,
                 final_config = ?session.state.llm_config,
                 "Session LLM model set successfully"
             );
@@ -1008,6 +1063,8 @@ pub fn set_session_llm_model(session_id: &str, model: String) {
     } else {
         tracing::error!("Window manager not available when setting session LLM model");
     }
+
+    Ok(())
 }
 
 /// Clear session LLM config (revert to global config)
@@ -1020,11 +1077,117 @@ pub fn clear_session_llm_config(session_id: &str) {
     }
 }
 
+/// Get the session voice config for a session.
+///
+/// Returns `None` when no session-specific override is set (use global config).
+pub fn get_session_voice_config(session_id: &str) -> Option<SessionVoiceConfig> {
+    let result = get_session_state(session_id).and_then(|s| s.voice_config);
+    tracing::debug!(
+        session_id = %session_id,
+        config = ?result,
+        "get_session_voice_config returning"
+    );
+    result
+}
+
+/// Set the session voice/STT provider (overrides global config for this session).
+///
+/// Clears any session-scoped STT model override when the provider changes to avoid stale model ids.
+pub fn set_session_voice_provider(session_id: &str, provider: String) {
+    tracing::info!(
+        session_id = %session_id,
+        provider = %provider,
+        "set_session_voice_provider called"
+    );
+
+    if let Some(manager) = get_window_manager() {
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            if let Some(session) = sessions.get_mut(session_id) {
+                let voice_config = session
+                    .state
+                    .voice_config
+                    .get_or_insert_with(Default::default);
+                voice_config.provider = Some(provider.clone());
+                voice_config.model = None;
+                tracing::info!(
+                    session_id = %session_id,
+                    provider = %provider,
+                    final_config = ?session.state.voice_config,
+                    "Session voice provider set successfully"
+                );
+            } else {
+                tracing::warn!(
+                    session_id = %session_id,
+                    "Session not found when setting voice provider"
+                );
+            }
+        }
+
+        // Persist immediately so provider changes are reflected in the on-disk session config
+        // even if the user closes the app before sending another message.
+        manager.save_sessions_to_disk();
+    } else {
+        tracing::error!("Window manager not available when setting session voice provider");
+    }
+}
+
+/// Set the session STT model (overrides global config for this session).
+pub fn set_session_voice_model(session_id: &str, model: String) {
+    tracing::info!(
+        session_id = %session_id,
+        model = %model,
+        "set_session_voice_model called"
+    );
+
+    if let Some(manager) = get_window_manager() {
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            if let Some(session) = sessions.get_mut(session_id) {
+                let voice_config = session
+                    .state
+                    .voice_config
+                    .get_or_insert_with(Default::default);
+                voice_config.model = Some(model.clone());
+                tracing::info!(
+                    session_id = %session_id,
+                    model = %model,
+                    final_config = ?session.state.voice_config,
+                    "Session voice model set successfully"
+                );
+            } else {
+                tracing::warn!(
+                    session_id = %session_id,
+                    "Session not found when setting voice model"
+                );
+            }
+        }
+
+        manager.save_sessions_to_disk();
+    } else {
+        tracing::error!("Window manager not available when setting session voice model");
+    }
+}
+
+/// Clear session voice config (revert to global config for this session).
+pub fn clear_session_voice_config(session_id: &str) {
+    if let Some(manager) = get_window_manager() {
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.state.voice_config = None;
+            }
+        }
+
+        manager.save_sessions_to_disk();
+    }
+}
+
 /// Get the session tool settings for a session
 pub fn get_session_tool_settings(session_id: &str) -> SessionToolSettings {
     get_session_state(session_id)
         .and_then(|s| s.tool_settings)
-        .unwrap_or_default()
+        .unwrap_or_else(default_session_tool_settings)
 }
 
 /// Set the session permission level
@@ -1035,7 +1198,7 @@ pub fn set_session_permission_level(session_id: &str, level: SessionPermissionLe
             let tool_settings = session
                 .state
                 .tool_settings
-                .get_or_insert_with(Default::default);
+                .get_or_insert_with(default_session_tool_settings);
             tool_settings.permission_level = level;
         }
     }
@@ -1049,7 +1212,7 @@ pub fn set_session_tool_enabled(session_id: &str, tool_name: &str, enabled: bool
             let tool_settings = session
                 .state
                 .tool_settings
-                .get_or_insert_with(Default::default);
+                .get_or_insert_with(default_session_tool_settings);
             tool_settings
                 .enabled_tools
                 .insert(tool_name.to_string(), enabled);
@@ -1069,21 +1232,15 @@ pub fn is_session_tool_enabled(session_id: &str, tool_name: &str) -> bool {
 /// Check if an action is allowed based on session permission level
 pub fn is_action_allowed(session_id: &str, is_write_operation: bool) -> bool {
     let settings = get_session_tool_settings(session_id);
-    match settings.permission_level {
-        SessionPermissionLevel::Sandbox => !is_write_operation,
-        SessionPermissionLevel::Restricted => true, // Will prompt for confirmation
-        SessionPermissionLevel::Full => true,
-    }
+    let permission_level = settings.permission_level.to_pipeline();
+    gestura_core::tools::policy::is_action_allowed(permission_level, is_write_operation)
 }
 
 /// Check if confirmation is required for an action
 pub fn requires_confirmation(session_id: &str, is_write_operation: bool) -> bool {
     let settings = get_session_tool_settings(session_id);
-    match settings.permission_level {
-        SessionPermissionLevel::Sandbox => false, // Blocked, no confirmation needed
-        SessionPermissionLevel::Restricted => is_write_operation,
-        SessionPermissionLevel::Full => false,
-    }
+    let permission_level = settings.permission_level.to_pipeline();
+    gestura_core::tools::policy::requires_confirmation(permission_level, is_write_operation)
 }
 
 /// Add a user message to a session (from text or voice)

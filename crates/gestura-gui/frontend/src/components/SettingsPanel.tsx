@@ -1,5 +1,5 @@
 import React from 'react';
-import { AppConfig, UiSettings } from '../types/config';
+import { AppConfig, UiSettings, PipelineSettings } from '../types/config';
 
 interface SettingsPanelProps {
   config: AppConfig;
@@ -20,6 +20,12 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ config, onConfigUpdate })
   const updateLlmSettings = (updates: any) => {
     updateConfig({
       llm: { ...config.llm, ...updates }
+    });
+  };
+
+  const updatePipelineSettings = (updates: Partial<PipelineSettings>) => {
+    updateConfig({
+      pipeline: { ...config.pipeline, ...updates }
     });
   };
 
@@ -102,12 +108,12 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ config, onConfigUpdate })
 
       <div className="panel">
         <h3>Voice Engine</h3>
-        
+
         <div className="form-group">
           <label>Provider</label>
-          <select 
-            value={config.voice.provider} 
-            onChange={(e) => updateConfig({ 
+          <select
+            value={config.voice.provider}
+            onChange={(e) => updateConfig({
               voice: { ...config.voice, provider: e.target.value }
             })}
           >
@@ -115,6 +121,73 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ config, onConfigUpdate })
             <option value="openai">OpenAI Whisper</option>
             <option value="none">Disabled</option>
           </select>
+        </div>
+      </div>
+
+      <div className="panel">
+        <h3>Context Management</h3>
+
+        <div className="form-group">
+          <label>Max History Messages</label>
+          <input
+            type="number"
+            value={config.pipeline.max_history_messages}
+            onChange={(e) => updatePipelineSettings({ max_history_messages: parseInt(e.target.value) || 10 })}
+            min="1"
+            max="100"
+          />
+          <small>Maximum conversation history messages to include in prompt (1-100)</small>
+        </div>
+
+        <div className="form-group">
+          <label>Auto-Compact Threshold (%)</label>
+          <input
+            type="number"
+            value={config.pipeline.auto_compact_threshold_percent}
+            onChange={(e) => updatePipelineSettings({ auto_compact_threshold_percent: parseInt(e.target.value) || 80 })}
+            min="0"
+            max="100"
+          />
+          <small>Trigger auto-compaction when context reaches this percentage of limit (0-100%)</small>
+        </div>
+
+        <div className="form-group">
+          <label>Compaction Strategy</label>
+          <select
+            value={config.pipeline.compaction_strategy}
+            onChange={(e) => updatePipelineSettings({ compaction_strategy: e.target.value })}
+          >
+            <option value="Summarize">Summarize - Condense older messages</option>
+            <option value="Truncate">Truncate - Remove oldest messages</option>
+            <option value="Clear">Clear - Drop all history</option>
+            <option value="Prompt">Prompt - Ask user what to do</option>
+            <option value="MemoryBank">Memory Bank - Save to persistent files</option>
+          </select>
+          <small>How to handle context overflow when auto-compaction is triggered</small>
+        </div>
+
+        <div className="form-group">
+          <label>Max Context Tokens</label>
+          <input
+            type="number"
+            value={config.pipeline.max_context_tokens}
+            onChange={(e) => updatePipelineSettings({ max_context_tokens: parseInt(e.target.value) || 0 })}
+            min="0"
+            max="200000"
+          />
+          <small>Maximum context window tokens (0 = use provider defaults)</small>
+        </div>
+
+        <div className="form-group">
+          <label>
+            <input
+              type="checkbox"
+              checked={config.pipeline.log_token_usage}
+              onChange={(e) => updatePipelineSettings({ log_token_usage: e.target.checked })}
+            />
+            {' '}Enable token usage logging
+          </label>
+          <small>Log token usage for debugging and monitoring</small>
         </div>
       </div>
     </div>

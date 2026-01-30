@@ -208,10 +208,12 @@ impl LlmProvider for OpenAiProvider {
 
     async fn call_with_usage(&self, prompt: &str) -> Result<LlmCallResponse, AppError> {
         let url = format!("{}/v1/chat/completions", self.base_url);
+        // NOTE: We intentionally omit `temperature`.
+        // Some OpenAI(-compatible) models only support the default value and will
+        // return HTTP 400 if a non-default temperature is provided.
         let body = serde_json::json!({
             "model": self.model,
-            "messages": [{"role":"user","content": prompt}],
-            "temperature": 0.2
+            "messages": [{"role":"user","content": prompt}]
         });
         let client = create_http_client();
         let resp = client

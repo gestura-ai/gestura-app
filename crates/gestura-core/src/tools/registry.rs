@@ -27,7 +27,7 @@ pub struct ToolDefinition {
 
 /// Return the set of built-in tools.
 pub fn all_tools() -> &'static [ToolDefinition] {
-    static TOOLS: [ToolDefinition; 9] = [
+    static TOOLS: [ToolDefinition; 10] = [
         ToolDefinition {
             name: "file",
             summary: "Read/write/list files and directories (workspace & sandbox-aware)",
@@ -128,6 +128,28 @@ pub fn all_tools() -> &'static [ToolDefinition] {
             examples: &[
                 "gestura tools mcp list",
                 "gestura tools mcp call filesystem read_file --path ./README.md",
+            ],
+        },
+        ToolDefinition {
+            name: "task",
+            summary: "Manage tasks for the current session: create, update status, list, organize hierarchies",
+            inputs: &[
+                "operation (create/update_status/update/delete/list/get_hierarchy)",
+                "task_id (for update/delete)",
+                "name (for create)",
+                "description (optional)",
+                "status (for update_status)",
+                "parent_id (optional, for subtasks)",
+            ],
+            side_effects: &[
+                "Creates/modifies/deletes task files in .gestura/tasks/",
+                "Persists task state across sessions",
+            ],
+            examples: &[
+                "task create --name 'Implement feature' --description 'Add new API endpoint'",
+                "task update_status --task_id abc123 --status inprogress",
+                "task list",
+                "task create --name 'Write tests' --parent_id abc123",
             ],
         },
     ];

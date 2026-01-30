@@ -6,6 +6,7 @@
   <title>Gestura</title>
   <style>
     :root {
+      /* Light theme variables */
       --bg: #ffffff;
       --text: #0f172a;
       --muted: #64748b;
@@ -15,7 +16,33 @@
       --surface: #f8fafc;
     }
 
-    :root[data-theme="dark"] {
+    /* Auto mode: respect system preference */
+    @media (prefers-color-scheme: dark) {
+      :root {
+        /* Dark theme variables */
+        --bg: #0f172a;
+        --text: #f1f5f9;
+        --muted: #94a3b8;
+        --accent: #60a5fa;
+        --accent-contrast: #1e293b;
+        --border: #334155;
+        --surface: #1e293b;
+      }
+    }
+
+    /* Force light mode (overrides system preference) */
+    html[data-theme="light"] {
+      --bg: #ffffff;
+      --text: #0f172a;
+      --muted: #64748b;
+      --accent: #2563eb;
+      --accent-contrast: #ffffff;
+      --border: #e2e8f0;
+      --surface: #f8fafc;
+    }
+
+    /* Force dark mode (overrides system preference) */
+    html[data-theme="dark"] {
       --bg: #0f172a;
       --text: #f1f5f9;
       --muted: #94a3b8;
@@ -156,6 +183,40 @@
 </head>
 <body>
   <div id="root"></div>
+  <script>
+    // Theme initialization
+    async function initTheme() {
+      if (!window.__TAURI__) return;
+      try {
+        const config = await window.__TAURI__.core.invoke('get_config');
+        const themeMode = config?.ui?.theme_mode || 'system';
+        applyTheme(themeMode);
+
+        if (themeMode === 'system') {
+          const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+          mediaQuery.addEventListener('change', () => applyTheme('system'));
+        }
+      } catch (e) {
+        console.error('[Theme] Failed to initialize:', e);
+        applyTheme('system');
+      }
+    }
+
+    function applyTheme(mode) {
+      const html = document.documentElement;
+      if (mode === 'light') {
+        html.setAttribute('data-theme', 'light');
+      } else if (mode === 'dark') {
+        html.setAttribute('data-theme', 'dark');
+      } else {
+        html.removeAttribute('data-theme');
+      }
+    }
+
+    if (window.__TAURI__) {
+      initTheme();
+    }
+  </script>
   <script type="module" src="/src/main.tsx"></script>
 </body>
 </html>

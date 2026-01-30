@@ -434,8 +434,9 @@ pub struct ToolsCallParams {
 #[serde(rename_all = "camelCase")]
 pub struct ToolsCallResult {
     pub content: Vec<ToolResultContent>,
-    #[serde(default)]
-    pub is_error: bool,
+    /// Whether this result represents an error (optional per MCP spec)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
 }
 
 /// Tool result content

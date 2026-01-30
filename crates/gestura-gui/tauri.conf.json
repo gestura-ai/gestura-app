@@ -2,10 +2,10 @@
   "$schema": "https://schema.tauri.app/config/2.0.0-beta",
   "productName": "Gestura",
   "identifier": "ai.gestura.desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "node -e \"const fs=require('fs');const cp=require('child_process');const candidates=['./frontend','.', './crates/gestura-gui/frontend'];const prefix=candidates.find(d=>fs.existsSync(d+'/package.json'));if(!prefix){console.error('Could not locate frontend package.json. cwd=',process.cwd());process.exit(1);}const npm=process.platform==='win32'?'npm.cmd':'npm';const r=cp.spawnSync(npm,['--prefix',prefix,'run','dev'],{stdio:'inherit'});process.exit(r.status??1);\"",
+    "beforeBuildCommand": "node -e \"const fs=require('fs');const cp=require('child_process');const candidates=['./frontend','.', './crates/gestura-gui/frontend'];const prefix=candidates.find(d=>fs.existsSync(d+'/package.json'));if(!prefix){console.error('Could not locate frontend package.json. cwd=',process.cwd());process.exit(1);}const npm=process.platform==='win32'?'npm.cmd':'npm';const r=cp.spawnSync(npm,['--prefix',prefix,'run','build'],{stdio:'inherit'});process.exit(r.status??1);\"",
     "devUrl": "http://localhost:1420",
     "frontendDist": "frontend/dist"
   },
@@ -88,7 +88,15 @@
     },
     "linux": {
       "deb": {
-        "depends": []
+        "depends": [],
+        "files": {
+          "binaries/gestura-x86_64-unknown-linux-gnu": "usr/bin/gestura"
+        }
+      },
+      "rpm": {
+        "files": {
+          "binaries/gestura-x86_64-unknown-linux-gnu": "usr/bin/gestura"
+        }
       }
     }
   }

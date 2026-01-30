@@ -65,9 +65,21 @@ const CATEGORY_PATTERNS: &[CategoryPattern] = &[
     },
     CategoryPattern {
         keywords: &[
-            "search", "web", "google", "url", "fetch", "download", "http", "api",
+            "search", "web", "google", "url", "fetch", "download", "http", "api", "lookup",
+            "browse", "website", "page", "online", "internet",
         ],
-        phrases: &["search for", "look up", "find online", "on the web"],
+        phrases: &[
+            "search for",
+            "look up",
+            "lookup",
+            "find online",
+            "on the web",
+            "browse to",
+            "visit",
+            "check the",
+            "go to",
+            "open the",
+        ],
         category: ContextCategory::Web,
     },
     CategoryPattern {
@@ -412,5 +424,25 @@ mod tests {
 
         assert!(analysis.is_followup);
         assert!(analysis.categories.contains(&ContextCategory::Session));
+    }
+
+    #[test]
+    fn test_web_lookup_detection() {
+        let analyzer = RequestAnalyzer::new();
+        let analysis = analyzer.analyze(
+            "please lookup the langchain landing page and tell me the main links it talks about",
+        );
+
+        assert!(analysis.categories.contains(&ContextCategory::Web));
+        assert!(analysis.needs_tools);
+    }
+
+    #[test]
+    fn test_web_browse_detection() {
+        let analyzer = RequestAnalyzer::new();
+        let analysis = analyzer.analyze("browse to the documentation website");
+
+        assert!(analysis.categories.contains(&ContextCategory::Web));
+        assert!(analysis.needs_tools);
     }
 }

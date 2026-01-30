@@ -7,6 +7,53 @@
     <title>Gestura System Status</title>
     <link rel="stylesheet" href="icons.css">
     <style>
+        :root {
+            /* Light theme variables */
+            --bg-gradient-start: #667eea;
+            --bg-gradient-end: #764ba2;
+            --container-bg: rgba(255, 255, 255, 0.95);
+            --text-primary: #1D1D1F;
+            --text-secondary: #8E8E93;
+            --surface-bg: #F2F2F7;
+            --surface-border: #E5E5EA;
+        }
+
+        /* Auto mode: respect system preference */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                /* Dark theme variables */
+                --bg-gradient-start: #1a1a2e;
+                --bg-gradient-end: #16213e;
+                --container-bg: rgba(30, 30, 30, 0.95);
+                --text-primary: #f5f5f7;
+                --text-secondary: #b0b0b0;
+                --surface-bg: #2d2d2d;
+                --surface-border: #404040;
+            }
+        }
+
+        /* Force light mode (overrides system preference) */
+        html[data-theme="light"] {
+            --bg-gradient-start: #667eea;
+            --bg-gradient-end: #764ba2;
+            --container-bg: rgba(255, 255, 255, 0.95);
+            --text-primary: #1D1D1F;
+            --text-secondary: #8E8E93;
+            --surface-bg: #F2F2F7;
+            --surface-border: #E5E5EA;
+        }
+
+        /* Force dark mode (overrides system preference) */
+        html[data-theme="dark"] {
+            --bg-gradient-start: #1a1a2e;
+            --bg-gradient-end: #16213e;
+            --container-bg: rgba(30, 30, 30, 0.95);
+            --text-primary: #f5f5f7;
+            --text-secondary: #b0b0b0;
+            --surface-bg: #2d2d2d;
+            --surface-border: #404040;
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -15,7 +62,7 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, var(--bg-gradient-start) 0%, var(--bg-gradient-end) 100%);
             min-height: 100vh;
             padding: 2rem;
         }
@@ -23,7 +70,7 @@
         .container {
             max-width: 700px;
             margin: 0 auto;
-            background: rgba(255, 255, 255, 0.95);
+            background: var(--container-bg);
             border-radius: 16px;
             padding: 2rem;
             box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
@@ -35,7 +82,7 @@
         }
 
         .header h1 {
-            color: #1D1D1F;
+            color: var(--text-primary);
             margin-bottom: 0.5rem;
         }
 
@@ -47,10 +94,10 @@
         }
 
         .status-card {
-            background: #F2F2F7;
+            background: var(--surface-bg);
             border-radius: 12px;
             padding: 1.5rem;
-            border-left: 4px solid #E5E5EA;
+            border-left: 4px solid var(--surface-border);
         }
 
         .status-card.healthy {
@@ -67,7 +114,7 @@
 
         .status-title {
             font-weight: 600;
-            color: #1D1D1F;
+            color: var(--text-primary);
             margin-bottom: 0.5rem;
         }
 
@@ -110,6 +157,37 @@
         .refresh-button:hover {
             background: #0056CC;
         }
+
+	        /* Diagnostics panel */
+	        .diag-controls {
+	            display: flex;
+	            gap: 0.5rem;
+	            flex-wrap: wrap;
+	            margin-top: 0.75rem;
+	        }
+
+	        .diag-button {
+	            padding: 0.5rem 0.75rem;
+	            border-radius: 10px;
+	            border: 1px solid var(--surface-border);
+	            background: transparent;
+	            color: var(--text-primary);
+	            cursor: pointer;
+	        }
+
+	        .diag-pre {
+	            margin-top: 0.75rem;
+	            background: rgba(0, 0, 0, 0.05);
+	            border: 1px solid var(--surface-border);
+	            border-radius: 12px;
+	            padding: 0.75rem;
+	            white-space: pre-wrap;
+	            word-break: break-word;
+	            max-height: 260px;
+	            overflow: auto;
+	            color: var(--text-primary);
+	            font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+	        }
     </style>
 </head>
 
@@ -125,11 +203,59 @@
         </div>
 
         <button class="refresh-button" onclick="loadStatus()">Refresh Status</button>
+
+	        <div class="status-card" style="margin-top: 1.25rem;">
+	            <div class="status-title">Chat Diagnostics</div>
+	            <div class="status-description">
+	                Debug cross-window chat leakage by inspecting: window list, backend emit trace, and backend receipt trace.
+	            </div>
+	            <div class="diag-controls">
+	                <button class="diag-button" id="chatDiagFetch">Fetch</button>
+		                <button class="diag-button" id="chatDiagProbe">Run probe</button>
+	                <button class="diag-button" id="chatDiagClear">Clear traces</button>
+	            </div>
+	            <pre class="diag-pre" id="chatDiagOut">(click Fetch)</pre>
+	        </div>
     </div>
 
     <script type="module">
         import { invoke } from '@tauri-apps/api/core';
 
+        // =====================================================================
+        // Theme Management
+        // =====================================================================
+        async function initTheme() {
+            try {
+                const config = await invoke('get_config');
+                const themeMode = config?.ui?.theme_mode || 'system';
+                applyTheme(themeMode);
+
+                if (themeMode === 'system') {
+                    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+                    mediaQuery.addEventListener('change', () => applyTheme('system'));
+                }
+            } catch (e) {
+                console.error('[Theme] Failed to initialize:', e);
+                applyTheme('system');
+            }
+        }
+
+        function applyTheme(mode) {
+            const html = document.documentElement;
+            if (mode === 'light') {
+                html.setAttribute('data-theme', 'light');
+            } else if (mode === 'dark') {
+                html.setAttribute('data-theme', 'dark');
+            } else {
+                html.removeAttribute('data-theme');
+            }
+        }
+
+        initTheme();
+
+        // =====================================================================
+        // Status Logic
+        // =====================================================================
         const statusGrid = document.getElementById('statusGrid');
 
         const statusItems = [
@@ -228,6 +354,85 @@
 
         // Load status on page load
         loadStatus();
+
+	        /**
+	         * Fetch chat-related diagnostics (window list + backend traces).
+	         *
+	         * This is best-effort and intended for debugging multi-window session isolation.
+	         */
+	        async function fetchChatDiagnostics() {
+	            const out = document.getElementById('chatDiagOut');
+	            if (!out) return;
+	            try {
+	                const [windows, emitTrace, receiptTrace] = await Promise.all([
+	                    invoke('get_window_list').catch(() => null),
+	                    invoke('get_chat_event_trace', { max: 250 }).catch(() => null),
+	                    invoke('get_chat_receipt_trace', { max: 250 }).catch(() => null),
+	                ]);
+	
+	                out.textContent = JSON.stringify(
+	                    {
+	                        ts: new Date().toISOString(),
+	                        windows,
+	                        emitTrace,
+	                        receiptTrace,
+	                    },
+	                    null,
+	                    2
+	                );
+	            } catch (e) {
+	                out.textContent = `fetchChatDiagnostics failed: ${e}`;
+	            }
+	        }
+
+	        /**
+	         * Clear backend chat traces (emit trace + receipt trace).
+	         */
+	        async function clearChatDiagnostics() {
+	            const out = document.getElementById('chatDiagOut');
+	            if (!out) return;
+	            try {
+	                await Promise.all([
+	                    invoke('clear_chat_event_trace').catch(() => null),
+	                    invoke('clear_chat_receipt_trace').catch(() => null),
+	                ]);
+	                out.textContent = '[cleared]';
+	            } catch (e) {
+	                out.textContent = `clearChatDiagnostics failed: ${e}`;
+	            }
+	        }
+
+		        /**
+		         * Run the backend multi-window chat isolation probe.
+		         *
+		         * This emits a `chat-probe` event to two open chat windows and returns
+		         * a correlated trace + analysis (no external LLM calls).
+		         */
+		        async function runChatIsolationProbe() {
+		            const out = document.getElementById('chatDiagOut');
+		            if (!out) return;
+		            out.textContent = '[running probe...]';
+		            try {
+		                const report = await invoke('run_chat_isolation_probe', {}).catch((e) => {
+		                    throw new Error(String(e));
+		                });
+		                out.textContent = JSON.stringify(
+		                    {
+		                        ts: new Date().toISOString(),
+		                        probe: report,
+		                    },
+		                    null,
+		                    2
+		                );
+		            } catch (e) {
+		                out.textContent = `runChatIsolationProbe failed: ${e}`;
+		            }
+		        }
+
+	        // Wire diagnostics buttons
+		        document.getElementById('chatDiagFetch')?.addEventListener('click', fetchChatDiagnostics);
+		        document.getElementById('chatDiagProbe')?.addEventListener('click', runChatIsolationProbe);
+		        document.getElementById('chatDiagClear')?.addEventListener('click', clearChatDiagnostics);
 
         // Auto-refresh every 30 seconds
         setInterval(loadStatus, 30000);
