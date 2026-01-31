@@ -6846,8 +6846,7 @@
             { id: 'openai', name: 'OpenAI' },
             { id: 'anthropic', name: 'Anthropic' },
             { id: 'grok', name: 'Grok (xAI)' },
-            { id: 'ollama', name: 'Ollama (Local)' },
-            { id: 'echo', name: 'Echo (Test)' }
+            { id: 'ollama', name: 'Ollama (Local)' }
         ];
 
         function openProvidersPanel() {
@@ -7025,9 +7024,6 @@
 	                                : [];
 	                            models = names.map((n) => ({ id: n, name: n }));
 	                        }
-                        break;
-                    case 'echo':
-                        models = [{ id: 'echo', name: 'Echo (Test Mode)' }];
                         break;
                 }
 

@@ -93,11 +93,10 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ config, onConfigUpdate })
         
         <div className="form-group">
           <label>Primary Provider</label>
-          <select 
-            value={config.llm.primary} 
+          <select
+            value={config.llm.primary}
             onChange={(e) => updateLlmSettings({ primary: e.target.value })}
           >
-            <option value="echo">Echo (Test)</option>
             <option value="openai">OpenAI</option>
             <option value="anthropic">Anthropic (Claude)</option>
             <option value="grok">Grok (xAI)</option>
