@@ -7,11 +7,12 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
 use super::app::{ConfirmAction, Theme, TuiApp, TuiMode};
+use super::widgets::composer;
 
 /// Parsed segment of a message (text or code block)
 #[derive(Debug)]
@@ -353,6 +354,8 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     result
 }
 
+// Note: composer sizing + cursor mapping helpers live in `widgets::composer`.
+
 /// Render the entire TUI
 pub fn render(app: &mut TuiApp, frame: &mut Frame) {
     let area = frame.area();
@@ -366,43 +369,47 @@ pub fn render(app: &mut TuiApp, frame: &mut Frame) {
     // Determine layout mode based on terminal size
     let is_compact = area.width < COMPACT_WIDTH || area.height < COMPACT_HEIGHT;
 
-    // Adaptive layout based on terminal size
-    let chunks = if is_compact {
-        // Compact layout: smaller header, minimal chrome
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1), // Minimal header (just mode indicator)
-                Constraint::Min(4),    // Content area
-                Constraint::Length(3), // Input field
-                Constraint::Length(1), // Status bar
-            ])
-            .split(area)
-    } else {
-        // Standard layout
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3), // Header with tabs
-                Constraint::Min(8),    // Content area
-                Constraint::Length(3), // Input field
-                Constraint::Length(1), // Status bar
-            ])
-            .split(area)
-    };
+    // Claude Code UI reads like a terminal transcript; keep header minimal.
+    // We still render one dim line for session context.
+    let header_height: u16 = 1;
+    let content_min: u16 = if is_compact { 4 } else { 8 };
+    let status_height: u16 = 1;
+
+    // Keep the composer from consuming the whole screen. In practice this yields a
+    // multi-line editor feel: it grows until max, then scrolls internally.
+    let min_input_height: u16 = 3;
+    let max_input_height: u16 = 10.min(
+        area.height
+            .saturating_sub(header_height)
+            .saturating_sub(status_height)
+            .saturating_sub(content_min)
+            .max(min_input_height),
+    );
+    let input_height = composer::composer_height_for_input(
+        &app.input,
+        area.width,
+        min_input_height,
+        max_input_height,
+    );
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(header_height),
+            Constraint::Min(content_min),
+            Constraint::Length(input_height),
+            Constraint::Length(status_height),
+        ])
+        .split(area);
 
     // Store layout areas for mouse click detection
     app.layout_areas.tabs = Some(chunks[0]);
     app.layout_areas.messages = Some(chunks[1]);
     app.layout_areas.input = Some(chunks[2]);
 
-    if is_compact {
-        render_compact_header(app, frame, chunks[0]);
-    } else {
-        render_header(app, frame, chunks[0]);
-    }
+    render_header(app, frame, chunks[0]);
     render_content(app, frame, chunks[1]);
-    render_input(app, frame, chunks[2]);
+    composer::render_input(app, frame, chunks[2]);
     render_status_bar(app, frame, chunks[3]);
 
     // Render overlays
@@ -410,6 +417,10 @@ pub fn render(app: &mut TuiApp, frame: &mut Frame) {
         render_help_overlay(app, frame, area);
     } else if app.mode == TuiMode::Confirm {
         render_confirm_dialog(app, frame, area);
+    } else if app.mode == TuiMode::ModelPicker {
+        render_model_picker_overlay(app, frame, area);
+    } else if app.mode == TuiMode::Activity {
+        render_activity_overlay(app, frame, area);
     } else if app.mode == TuiMode::Command && !app.command_suggestions.is_empty() {
         // Render command palette above the input field
         render_command_palette(app, frame, chunks[2]);
@@ -426,14 +437,13 @@ fn render_too_small_message(app: &TuiApp, frame: &mut Frame, area: Rect) {
         area.width, area.height, MIN_WIDTH, MIN_HEIGHT
     );
 
+    // Keep the message minimal (Claude-like): no boxes, no heavy chrome.
     let paragraph = Paragraph::new(message)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(app.theme.error_msg))
-                .title(" Gestura "),
+        .style(
+            Style::default()
+                .fg(app.theme.error_msg)
+                .add_modifier(Modifier::DIM),
         )
-        .style(Style::default().fg(app.theme.error_msg))
         .alignment(ratatui::layout::Alignment::Center)
         .wrap(Wrap { trim: false });
 
@@ -449,6 +459,8 @@ fn render_compact_header(app: &TuiApp, frame: &mut Frame, area: Rect) {
         TuiMode::Help => "?",
         TuiMode::Confirm => "!",
         TuiMode::Search => "/",
+        TuiMode::ModelPicker => "M",
+        TuiMode::Activity => "A",
     };
 
     let tab_str = match app.active_tab {
@@ -459,66 +471,26 @@ fn render_compact_header(app: &TuiApp, frame: &mut Frame, area: Rect) {
     };
 
     let header_text = format!(
-        " [{}] {} │ {} │ {}x{}",
-        mode_str,
-        tab_str,
+        " {} │ {} │ {} ",
+        tab_str.to_lowercase(),
         &app.session.id[..8.min(app.session.id.len())],
-        area.width,
-        area.height
+        mode_str
     );
 
     let paragraph = Paragraph::new(header_text).style(
         Style::default()
-            .fg(app.theme.header_fg)
-            .bg(app.theme.status_bg),
+            .fg(app.theme.status_fg)
+            .add_modifier(Modifier::DIM),
     );
 
     frame.render_widget(paragraph, area);
 }
 
-/// Render the header with tabs
+/// Render the header.
+///
+/// For Claude Code visual parity we render a single-line, dim header.
 fn render_header(app: &TuiApp, frame: &mut Frame, area: Rect) {
-    let block = Block::default().style(Style::default().bg(app.theme.header_bg));
-    frame.render_widget(block, area);
-
-    // Render "Gestura" logo and context
-    let logo_style = Style::default()
-        .fg(app.theme.header_fg)
-        .bg(app.theme.header_bg)
-        .add_modifier(Modifier::BOLD);
-
-    let normal_style = Style::default()
-        .fg(app.theme.header_fg)
-        .bg(app.theme.header_bg);
-    let arrow = Span::styled(" › ", normal_style);
-
-    let mut spans = vec![
-        Span::styled(" GESTURA ", logo_style),
-        arrow.clone(),
-        Span::styled(
-            format!("{} ", app.session.id.get(0..8).unwrap_or("")),
-            normal_style,
-        ),
-    ];
-
-    // Add Tabs
-    for (i, title) in app.tabs.iter().enumerate() {
-        spans.push(arrow.clone());
-        let style = if i == app.active_tab {
-            Style::default()
-                .fg(app.theme.tab_active)
-                .bg(app.theme.header_bg)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-                .fg(app.theme.tab_inactive)
-                .bg(app.theme.header_bg)
-        };
-        spans.push(Span::styled(*title, style));
-    }
-
-    let p = Paragraph::new(Line::from(spans));
-    frame.render_widget(p, area);
+    render_compact_header(app, frame, area);
 }
 
 /// Render the main content area (messages or other tab content)
@@ -539,9 +511,16 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     let search_query = &app.search_query;
     let has_search = !search_query.is_empty();
 
-    // Calculate available width for text wrapping
-    // Subtract borders (2) and prefix space (8 for "▶ You: " or "◆ AI: ")
-    let wrap_width = area.width.saturating_sub(10) as usize;
+    // Claude Code-style default view: when there are no messages yet, render a
+    // minimal home screen with tips and current model.
+    if app.messages.is_empty() {
+        render_empty_chat_view(app, frame, area);
+        return;
+    }
+
+    // Calculate available width for text wrapping.
+    // Transcript prefixes are at most 2 columns (e.g. "> ", "# ", "! ").
+    let wrap_width = area.width.saturating_sub(2) as usize;
 
     // Filter messages if in filter mode
     let message_indices: Vec<usize> = if app.search_filter_mode && has_search {
@@ -560,45 +539,22 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
                 None
             };
 
-            // Check if this message has search matches for highlighting
-            let has_match = has_search && app.message_has_match(msg_idx);
-
             let (prefix, base_style) = match msg.role.as_str() {
-                "user" => {
-                    // Add search indicator (🔍) for messages with matches
-                    let pfx = if has_match {
-                        "🔍▶ You: "
-                    } else {
-                        "▶ You: "
-                    };
-                    (pfx, Style::default().fg(theme.user_msg))
-                }
+                "user" => ("> ", Style::default().fg(theme.user_msg)),
                 "assistant" => {
                     if msg.is_streaming {
                         (
-                            "◆ AI: ",
+                            "",
                             Style::default()
                                 .fg(theme.streaming)
                                 .add_modifier(Modifier::ITALIC),
                         )
                     } else {
-                        let pfx = if has_match {
-                            "🔍◆ AI: "
-                        } else {
-                            "◆ AI: "
-                        };
-                        (pfx, Style::default().fg(theme.assistant_msg))
+                        ("", Style::default().fg(theme.assistant_msg))
                     }
                 }
-                "system" => {
-                    let pfx = if has_match {
-                        "🔍⚙ System: "
-                    } else {
-                        "⚙ System: "
-                    };
-                    (pfx, Style::default().fg(theme.system_msg))
-                }
-                _ => ("• ", Style::default()),
+                "system" => ("# ", Style::default().fg(theme.system_msg)),
+                _ => ("", Style::default()),
             };
 
             let base_style = if msg.is_error {
@@ -627,35 +583,30 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
             let segments = parse_message_segments(&content);
             let mut items = Vec::new();
 
-            // Render Thinking if present (with word wrapping)
+            // Render Thinking if present (with word wrapping) using transcript style.
             if let Some(thinking) = &msg.thinking
                 && !thinking.is_empty()
             {
                 items.push(ListItem::new(Line::from(Span::styled(
-                    "  ┌─ Thinking ",
+                    "... thinking",
                     Style::default()
                         .fg(theme.code_comment)
-                        .add_modifier(Modifier::ITALIC),
+                        .add_modifier(Modifier::ITALIC | Modifier::DIM),
                 ))));
 
-                // Wrap thinking text (subtract 4 for "  │ " prefix)
-                let thinking_wrap_width = wrap_width.saturating_sub(4);
+                // Wrap thinking text (indent 2 spaces)
+                let thinking_wrap_width = wrap_width.saturating_sub(2);
                 let wrapped_thinking = wrap_text(thinking, thinking_wrap_width);
                 for line in wrapped_thinking {
                     items.push(ListItem::new(Line::from(Span::styled(
-                        format!("  │ {}", line),
+                        format!("  {}", line),
                         Style::default()
                             .fg(theme.code_comment)
-                            .add_modifier(Modifier::ITALIC),
+                            .add_modifier(Modifier::ITALIC | Modifier::DIM),
                     ))));
                 }
 
-                items.push(ListItem::new(Line::from(Span::styled(
-                    "  └───────────",
-                    Style::default()
-                        .fg(theme.code_comment)
-                        .add_modifier(Modifier::ITALIC),
-                ))));
+                items.push(ListItem::new(Line::from("")));
             }
             let mut is_first = true;
             let mut char_offset = 0usize; // Track position in original content
@@ -670,6 +621,8 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
                             let display_prefix = if is_first {
                                 is_first = false;
                                 prefix
+                            } else if prefix.is_empty() {
+                                ""
                             } else {
                                 "  "
                             };
@@ -696,19 +649,27 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
                         }
                     }
                     MessageSegment::CodeBlock { language, code } => {
-                        // Add language label if present
-                        let lang_label = language.as_deref().unwrap_or("code");
-                        let header = format!("  ┌─ {} ─", lang_label);
+                        // Transcript-style fenced code blocks (avoid box-drawing chrome).
+                        let lang_label = language.as_deref().unwrap_or("");
+                        let fence_open = if lang_label.is_empty() {
+                            "```".to_string()
+                        } else {
+                            format!("```{}", lang_label)
+                        };
                         items.push(ListItem::new(Line::from(Span::styled(
-                            header,
-                            Style::default().fg(theme.code_lang_label),
+                            fence_open,
+                            Style::default()
+                                .fg(theme.code_lang_label)
+                                .add_modifier(Modifier::DIM),
                         ))));
 
-                        // Add highlighted code lines
+                        // Add highlighted code lines (indented)
                         for code_line in code.lines() {
                             let mut spans = vec![Span::styled(
-                                "  │ ".to_string(),
-                                Style::default().fg(theme.code_lang_label),
+                                "    ".to_string(),
+                                Style::default()
+                                    .fg(theme.code_lang_label)
+                                    .add_modifier(Modifier::DIM),
                             )];
                             spans.extend(highlight_code_line_themed(
                                 code_line,
@@ -718,11 +679,13 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
                             items.push(ListItem::new(Line::from(spans)));
                         }
 
-                        // Add closing border
                         items.push(ListItem::new(Line::from(Span::styled(
-                            "  └────────",
-                            Style::default().fg(theme.code_lang_label),
+                            "```",
+                            Style::default()
+                                .fg(theme.code_lang_label)
+                                .add_modifier(Modifier::DIM),
                         ))));
+                        items.push(ListItem::new(Line::from("")));
                         is_first = false;
                         // Update char_offset for code block (including markers)
                         char_offset += code.len() + 10; // Approximate for code block markers
@@ -741,30 +704,7 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         })
         .collect();
 
-    let scroll_info = app.scroll_indicator();
-    let search_info = if has_search {
-        format!(" [{}]", app.search_query)
-    } else {
-        String::new()
-    };
-    let title = format!(
-        " Messages ({}){} {} ",
-        app.messages.len(),
-        search_info,
-        if app.user_scrolled {
-            scroll_info
-        } else {
-            "".to_string()
-        }
-    );
-
-    let messages_block = Block::default()
-        // No borders for cleaner look
-        .borders(Borders::NONE)
-        .title(Span::styled(
-            title,
-            Style::default().fg(app.theme.header_fg),
-        ));
+    let messages_block = Block::default().borders(Borders::NONE);
 
     let list = List::new(messages).block(messages_block).highlight_style(
         Style::default()
@@ -773,6 +713,220 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     );
 
     frame.render_stateful_widget(list, area, &mut app.message_list_state.clone());
+}
+
+/// Render a Claude Code-like home/default view when there are no messages.
+///
+/// This keeps the main transcript window visually "empty" (no heavy chrome)
+/// while still guiding first-time users toward the key commands.
+fn render_empty_chat_view(app: &TuiApp, frame: &mut Frame, area: Rect) {
+    let model_label = effective_model_label(app);
+    let lines = vec![
+        Line::from(Span::styled(
+            "Gestura",
+            Style::default()
+                .fg(app.theme.header_fg)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            format!("model: {}", model_label),
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::DIM),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "tips",
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::DIM),
+        )),
+        Line::from(Span::styled(
+            "  /model     select model",
+            Style::default().fg(app.theme.code_comment),
+        )),
+        Line::from(Span::styled(
+            "  /activity  agent activity (tool calls)",
+            Style::default().fg(app.theme.code_comment),
+        )),
+        Line::from(Span::styled(
+            "  /help      keys & commands",
+            Style::default().fg(app.theme.code_comment),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "type to chat (insert mode) • press / to run a command",
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::DIM),
+        )),
+    ];
+
+    let p = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::NONE))
+        .alignment(ratatui::layout::Alignment::Center)
+        .wrap(Wrap { trim: true });
+
+    frame.render_widget(p, area);
+}
+
+/// Compute a short `provider:model` label for display.
+///
+/// Prefers session-scoped overrides, then CLI session `model` hint, then config.
+fn effective_model_label(app: &TuiApp) -> String {
+    if let Some(cfg) = app.session.state.llm_config.as_ref() {
+        let provider = cfg.provider.as_deref().unwrap_or("").trim();
+        let model = cfg.model.as_deref().unwrap_or("").trim();
+        if !provider.is_empty() && !model.is_empty() {
+            return format!("{}:{}", provider, model);
+        }
+        if !provider.is_empty() {
+            return provider.to_string();
+        }
+    }
+
+    if let Some(m) = app.session.model.as_deref() {
+        let m = m.trim();
+        if !m.is_empty() {
+            return m.to_string();
+        }
+    }
+
+    let provider = app.config.llm.primary.trim();
+    if provider.is_empty() {
+        "default".to_string()
+    } else {
+        provider.to_string()
+    }
+}
+
+/// Render the model picker overlay.
+///
+/// This is a Claude Code-like overlay: type-to-filter, arrow keys to select,
+/// Enter to apply, Esc to close.
+fn render_model_picker_overlay(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    let popup_width = 70.min(area.width.saturating_sub(4));
+    let popup_height = 18.min(area.height.saturating_sub(4));
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(3),
+            Constraint::Length(2),
+        ])
+        .split(popup_area);
+
+    let title = Span::styled(
+        " Model ",
+        Style::default()
+            .fg(app.theme.header_fg)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let filter_line = format!(" filter: {}", app.model_picker_state.query);
+    let filter = Paragraph::new(filter_line)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(title),
+        )
+        .style(
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::DIM),
+        );
+    frame.render_widget(filter, chunks[0]);
+
+    let items: Vec<ListItem> = app
+        .model_picker_state
+        .filtered
+        .iter()
+        .filter_map(|idx| app.model_picker_state.items.get(*idx))
+        .map(|it| {
+            ListItem::new(Line::from(Span::styled(
+                it.label.clone(),
+                Style::default().fg(app.theme.assistant_msg),
+            )))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::NONE))
+        .highlight_style(
+            Style::default()
+                .fg(app.theme.tab_active)
+                .bg(app.theme.selection_bg)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("› ");
+
+    frame.render_stateful_widget(list, chunks[1], &mut app.model_picker_state.list_state);
+
+    let hint = Paragraph::new(" type to filter • ↑↓ to select • Enter apply • Esc close ")
+        .style(
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::DIM),
+        )
+        .block(Block::default().borders(Borders::NONE));
+    frame.render_widget(hint, chunks[2]);
+}
+
+/// Render the agent activity overlay.
+///
+/// This displays a scrollable transcript of tool calls (name, args preview, result).
+fn render_activity_overlay(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    let popup_width = 80.min(area.width.saturating_sub(4));
+    let popup_height = area.height.saturating_sub(4).clamp(10, 24);
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let title = Span::styled(
+        format!(" Activity ({}) ", app.activity_state.entries.len()),
+        Style::default()
+            .fg(app.theme.header_fg)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.theme.border))
+        .title(title);
+
+    let items: Vec<ListItem> = app
+        .activity_state
+        .entries
+        .iter()
+        .map(|e| {
+            let style = if e.is_error {
+                Style::default().fg(app.theme.error_msg)
+            } else {
+                Style::default().fg(app.theme.status_fg)
+            };
+            ListItem::new(Text::from(e.text.clone())).style(style)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(block)
+        .highlight_symbol("› ")
+        .highlight_style(
+            Style::default()
+                .fg(app.theme.tab_active)
+                .bg(app.theme.selection_bg),
+        );
+
+    frame.render_stateful_widget(list, popup_area, &mut app.activity_state.list_state);
 }
 
 /// Highlight search matches in a line of text
@@ -839,7 +993,7 @@ fn highlight_search_matches(
 
 /// Render the tools tab
 fn render_tools_tab(app: &TuiApp, frame: &mut Frame, area: Rect) {
-    let tools_text = crate::tool_registry::render_tools_overview();
+    let tools_text = gestura_core::tools::render_tools_overview();
     let paragraph = Paragraph::new(tools_text)
         .block(
             Block::default()
@@ -894,67 +1048,6 @@ Commands:
     frame.render_widget(paragraph, area);
 }
 
-/// Render the input field
-fn render_input(app: &TuiApp, frame: &mut Frame, area: Rect) {
-    let mode_indicator = match app.mode {
-        TuiMode::Normal => ("NORMAL", app.theme.mode_normal),
-        TuiMode::Insert => ("INSERT", app.theme.mode_insert),
-        TuiMode::Command => ("COMMAND", app.theme.mode_command),
-        TuiMode::Help => ("HELP", app.theme.mode_normal),
-        TuiMode::Confirm => ("CONFIRM", app.theme.error_msg),
-        TuiMode::Search => ("SEARCH", app.theme.streaming),
-    };
-
-    let title = format!(
-        " {} │ {} ",
-        mode_indicator.0,
-        if app.is_loading {
-            "Waiting for response..."
-        } else {
-            "Type a message"
-        }
-    );
-
-    let border_style = if app.mode == TuiMode::Insert || app.mode == TuiMode::Command {
-        Style::default().fg(mode_indicator.1)
-    } else {
-        Style::default().fg(app.theme.border)
-    };
-
-    let input = Paragraph::new(app.input.as_str())
-        .block(
-            Block::default()
-                .borders(Borders::TOP) // Only top border to separate from messages
-                .border_style(border_style)
-                .title(Span::styled(title, Style::default().fg(mode_indicator.1))),
-        )
-        .style(Style::default().fg(app.theme.header_fg))
-        .wrap(Wrap { trim: false }); // Enable text wrapping for input
-
-    frame.render_widget(input, area);
-
-    // Show cursor in insert/command mode
-    // Note: With wrapping, cursor position calculation becomes complex for multi-line input
-    // For now, we show the cursor at the end of visible content
-    if app.mode == TuiMode::Insert || app.mode == TuiMode::Command {
-        let input_width = area.width.saturating_sub(2) as usize; // Account for borders
-        let cursor_line = if input_width > 0 {
-            app.cursor_pos / input_width
-        } else {
-            0
-        };
-        let cursor_col = if input_width > 0 {
-            app.cursor_pos % input_width
-        } else {
-            app.cursor_pos
-        };
-        frame.set_cursor_position((
-            area.x + cursor_col as u16 + 1,
-            area.y + 1 + cursor_line as u16,
-        ));
-    }
-}
-
 /// Render the status bar with adaptive compact format for narrow terminals
 fn render_status_bar(app: &TuiApp, frame: &mut Frame, area: Rect) {
     let is_compact = area.width < 80;
@@ -971,23 +1064,23 @@ fn render_status_bar(app: &TuiApp, frame: &mut Frame, area: Rect) {
     let status_style = if app.error.is_some() {
         Style::default()
             .fg(app.theme.error_msg)
-            .bg(app.theme.status_bg)
+            .add_modifier(Modifier::DIM)
     } else {
         Style::default()
             .fg(app.theme.status_fg)
-            .bg(app.theme.status_bg)
+            .add_modifier(Modifier::DIM)
     };
 
     let status_text = if let Some(e) = &app.error {
         if is_compact {
-            format!(" ERR: {}", &e[..e.len().min(20)])
+            format!("! {}", &e[..e.len().min(20)])
         } else {
-            format!(" ERROR: {}", e)
+            format!("! {}", e)
         }
     } else if is_compact {
-        format!(" {:?}", app.mode)
+        format!("{:?}", app.mode)
     } else {
-        format!(" {} [{:?}]", app.status, app.mode)
+        format!("{} [{:?}]", app.status, app.mode)
     };
 
     frame.render_widget(Paragraph::new(status_text).style(status_style), layout[0]);
@@ -995,11 +1088,11 @@ fn render_status_bar(app: &TuiApp, frame: &mut Frame, area: Rect) {
     // Right: Stats - use compact format for narrow terminals
     let stats_style = Style::default()
         .fg(app.theme.status_fg)
-        .bg(app.theme.status_bg);
+        .add_modifier(Modifier::DIM);
 
     let model = app.model_name();
 
-    let stats_text = if is_compact {
+    let mut stats_text = if is_compact {
         // Compact format: "1.2K|$0.01 | gpt-4"
         let compact_tokens = app.format_token_usage_compact();
         let short_model = if model.len() > 10 {
@@ -1023,6 +1116,12 @@ fn render_status_bar(app: &TuiApp, frame: &mut Frame, area: Rect) {
             model
         )
     };
+
+    // When the user has scrolled away from the bottom, show a subtle position indicator.
+    // This keeps the default “Claude-like” chrome minimal, while still providing orientation.
+    if !app.is_at_bottom() {
+        stats_text = format!("{} | {} ", app.scroll_indicator(), stats_text.trim_end());
+    }
 
     frame.render_widget(
         Paragraph::new(stats_text)
@@ -1249,7 +1348,7 @@ fn render_command_palette(app: &TuiApp, frame: &mut Frame, input_area: Rect) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(app.theme.mode_command))
             .title(Span::styled(
-                " Commands (Tab to complete, ↑↓ to navigate) ",
+                " Commands (Tab to complete, Enter to run, ↑↓ to select) ",
                 Style::default().fg(app.theme.mode_command),
             )),
     );
@@ -1352,4 +1451,80 @@ fn render_search_bar(app: &TuiApp, frame: &mut Frame, input_area: Rect) {
         .style(Style::default().fg(app.theme.header_fg));
 
     frame.render_widget(paragraph, search_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_message_segments_returns_text_when_no_fences() {
+        let segs = parse_message_segments("hello\nworld");
+        assert_eq!(segs.len(), 1);
+        match &segs[0] {
+            MessageSegment::Text(t) => assert_eq!(t, "hello\nworld"),
+            _ => panic!("expected Text segment"),
+        }
+    }
+
+    #[test]
+    fn parse_message_segments_splits_text_and_code_blocks() {
+        let input = "before\n```rust\nfn main() {}\n```\nafter";
+        let segs = parse_message_segments(input);
+        assert_eq!(segs.len(), 3);
+
+        match &segs[0] {
+            MessageSegment::Text(t) => assert_eq!(t, "before"),
+            _ => panic!("expected first segment to be Text"),
+        }
+        match &segs[1] {
+            MessageSegment::CodeBlock { language, code } => {
+                assert_eq!(language.as_deref(), Some("rust"));
+                assert_eq!(code, "fn main() {}");
+            }
+            _ => panic!("expected second segment to be CodeBlock"),
+        }
+        match &segs[2] {
+            MessageSegment::Text(t) => assert_eq!(t, "after"),
+            _ => panic!("expected third segment to be Text"),
+        }
+    }
+
+    #[test]
+    fn parse_message_segments_keeps_unclosed_code_block() {
+        let input = "```\nline1\nline2";
+        let segs = parse_message_segments(input);
+        assert_eq!(segs.len(), 1);
+        match &segs[0] {
+            MessageSegment::CodeBlock { language, code } => {
+                assert!(language.is_none());
+                assert_eq!(code, "line1\nline2");
+            }
+            _ => panic!("expected CodeBlock segment"),
+        }
+    }
+
+    #[test]
+    fn wrap_text_preserves_blank_lines() {
+        let lines = wrap_text("hello\n\nworld", 80);
+        assert_eq!(
+            lines,
+            vec!["hello".to_string(), "".to_string(), "world".to_string()]
+        );
+    }
+
+    #[test]
+    fn wrap_text_wraps_by_words() {
+        let lines = wrap_text("hello world", 5);
+        assert_eq!(lines, vec!["hello".to_string(), "world".to_string()]);
+    }
+
+    #[test]
+    fn wrap_text_hyphenates_long_words() {
+        let lines = wrap_text("abcdefghij", 5);
+        assert_eq!(
+            lines,
+            vec!["abcd-".to_string(), "efgh-".to_string(), "ij".to_string()]
+        );
+    }
 }

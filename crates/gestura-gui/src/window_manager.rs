@@ -10,25 +10,15 @@ use uuid::Uuid;
 
 use gestura_core::chat_sessions::{ChatSessionStore, FileChatSessionStore, SessionFilter};
 
-/// Returns the path for the legacy GUI session history file: `~/.gestura/gui_sessions.json`.
+/// Compute the default per-session workspace directory (`~/.gestura/sessions/{session_id}`).
 ///
-/// The GUI previously persisted all sessions in a single JSON file. As part of the
-/// Core-First migration (Phase 2), the GUI now uses the unified core store
-/// (`FileChatSessionStore`) which persists one JSON file per session in
-/// `AppConfig::data_dir()/chat_sessions/`.
-///
-/// This path remains only to support one-time migration from the legacy format.
-fn legacy_sessions_file_path() -> PathBuf {
-    gestura_core::config::AppConfig::data_dir().join("gui_sessions.json")
-}
-
-/// Legacy persisted session data (excludes window state which is ephemeral).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct LegacyPersistedSessions {
-    /// All sessions (open flag is reset on load since windows close on app exit)
-    sessions: Vec<ChatSession>,
-    /// Version for future migration support
-    version: u32,
+/// This mirrors the workspace convention used when creating new chat sessions.
+fn default_session_workspace_dir(session_id: &str) -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".gestura")
+        .join("sessions")
+        .join(session_id)
 }
 
 /// Return the default core-backed chat session store.
@@ -75,100 +65,6 @@ fn from_core_session(session: gestura_core::chat_sessions::ChatSession) -> ChatS
         message_count,
         state: session.state,
     }
-}
-
-/// Sanitize potentially invalid persisted (provider, model) overrides.
-///
-/// This is defensive against historic bug states such as `provider=openai` with
-/// a non-OpenAI model value.
-fn sanitize_session_llm_override(
-    session_id: &str,
-    state: &mut SessionState,
-    global_llm_provider: &str,
-) -> bool {
-    let Some(ref mut llm_cfg) = state.llm_config else {
-        return false;
-    };
-
-    let mut repaired = false;
-    if let Some(ref model) = llm_cfg.model {
-        let effective_provider = llm_cfg.provider.as_deref().unwrap_or(global_llm_provider);
-        if !crate::llm_validation::is_model_compatible_with_provider(effective_provider, model) {
-            tracing::warn!(
-                session_id = %session_id,
-                provider = %effective_provider,
-                model = %model,
-                "Clearing incompatible persisted session LLM model override"
-            );
-            llm_cfg.model = None;
-            repaired = true;
-        }
-    }
-
-    // If both fields are now empty, clear the override container.
-    if llm_cfg.provider.is_none() && llm_cfg.model.is_none() {
-        state.llm_config = None;
-    }
-
-    repaired
-}
-
-/// One-time migration from the legacy `gui_sessions.json` file into the unified
-/// core store directory.
-///
-/// Returns the loaded core sessions if migration succeeded (even partially).
-fn migrate_legacy_gui_sessions_to_core(
-    store: &FileChatSessionStore,
-    global_llm_provider: &str,
-) -> Vec<gestura_core::chat_sessions::ChatSession> {
-    let path = legacy_sessions_file_path();
-    if !path.exists() {
-        return Vec::new();
-    }
-
-    let mut migrated = Vec::new();
-    match std::fs::read_to_string(&path) {
-        Ok(json) => match serde_json::from_str::<LegacyPersistedSessions>(&json) {
-            Ok(persisted) => {
-                for mut session in persisted.sessions {
-                    // Windows don't survive app restart.
-                    session.is_open = false;
-                    session.window_label = None;
-                    session.message_count = session.state.messages.len();
-
-                    // Sanitize LLM overrides before persisting.
-                    let _ = sanitize_session_llm_override(
-                        &session.id,
-                        &mut session.state,
-                        global_llm_provider,
-                    );
-
-                    let core_session = to_core_session(&session);
-                    match store.save(&core_session) {
-                        Ok(()) => migrated.push(core_session),
-                        Err(e) => tracing::warn!(
-                            session_id = %session.id,
-                            error = %e,
-                            "Failed to migrate legacy GUI session to core store"
-                        ),
-                    }
-                }
-
-                // Best-effort cleanup: remove legacy file after migration.
-                if let Err(e) = std::fs::remove_file(&path) {
-                    tracing::debug!(error = %e, path = %path.display(), "Failed to remove legacy sessions file");
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, path = %path.display(), "Failed to parse legacy GUI sessions file");
-            }
-        },
-        Err(e) => {
-            tracing::warn!(error = %e, path = %path.display(), "Failed to read legacy GUI sessions file");
-        }
-    }
-
-    migrated
 }
 
 /// Core-First: the GUI re-exports the unified chat session model from `gestura-core`.
@@ -257,8 +153,10 @@ impl WindowManager {
 
         // 2) If the core store is empty, attempt a one-time migration from the legacy file.
         if loaded_core_sessions.is_empty() {
-            loaded_core_sessions =
-                migrate_legacy_gui_sessions_to_core(&store, global_llm_provider.as_str());
+            loaded_core_sessions = gestura_core::chat_sessions::migrate_legacy_gui_sessions_to_core(
+                &store,
+                global_llm_provider.as_str(),
+            );
         }
 
         if loaded_core_sessions.is_empty() {
@@ -270,7 +168,7 @@ impl WindowManager {
         let mut repaired_any = false;
         let mut sessions_for_ui: Vec<ChatSession> = Vec::new();
         for mut core_session in loaded_core_sessions {
-            repaired_any |= sanitize_session_llm_override(
+            repaired_any |= gestura_core::chat_sessions::sanitize_session_llm_override(
                 &core_session.id,
                 &mut core_session.state,
                 global_llm_provider.as_str(),
@@ -314,7 +212,7 @@ impl WindowManager {
                 }
             }
             // Best-effort cleanup: also remove legacy file if present.
-            let legacy = legacy_sessions_file_path();
+            let legacy = gestura_core::chat_sessions::legacy_gui_sessions_file_path();
             if legacy.exists() {
                 let _ = std::fs::remove_file(&legacy);
             }
@@ -349,11 +247,7 @@ impl WindowManager {
         // ~/.gestura/sessions/{session_uuid}/
         // This ensures each session has its own isolated workspace for file operations.
         // Users can still override this via pick_workspace_directory.
-        let session_workspace = dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".gestura")
-            .join("sessions")
-            .join(&session_id);
+        let session_workspace = default_session_workspace_dir(&session_id);
 
         // Create the session workspace directory if it doesn't exist
         if let Err(e) = std::fs::create_dir_all(&session_workspace) {
@@ -1043,7 +937,7 @@ pub fn set_session_llm_model(session_id: &str, model: String) -> Result<(), Stri
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| gestura_core::config::AppConfig::load().llm.primary);
 
-            crate::llm_validation::validate_model_for_provider(
+            gestura_core::llm_validation::validate_model_for_provider(
                 &effective_provider,
                 &trimmed_model,
             )?;
@@ -1304,6 +1198,44 @@ pub fn open_shell_session() -> Result<(), crate::shell_session::ShellSessionErro
     }
 
     spawn_shell(config)
+}
+
+/// Open a shell session for a specific chat session and automatically resume it via the CLI.
+///
+/// This opens a terminal at the session workspace directory and runs:
+/// `gestura chat --resume --session <session_id>`
+pub fn open_shell_session_for_chat_resume(session_id: &str) -> Result<(), String> {
+    use crate::shell_session::{ShellSessionConfig, open_shell_session as spawn_shell};
+
+    let state = get_session_state(session_id)
+        .ok_or_else(|| format!("Session not found: {}", session_id))?;
+
+    let existing_workspace = state.workspace_dir;
+    let workspace_dir = existing_workspace
+        .clone()
+        .unwrap_or_else(|| default_session_workspace_dir(session_id));
+
+    // Ensure the workspace directory exists so `cd` works reliably in the new terminal.
+    if let Err(e) = std::fs::create_dir_all(&workspace_dir) {
+        return Err(format!(
+            "Failed to create session workspace directory {}: {}",
+            workspace_dir.display(),
+            e
+        ));
+    }
+
+    // If this session did not yet have a workspace recorded (e.g. older sessions),
+    // persist the default so future lookups are consistent.
+    if existing_workspace.is_none() {
+        set_session_workspace(session_id, workspace_dir.clone());
+    }
+
+    let config = ShellSessionConfig::default()
+        .with_env("GESTURA_SHELL", "1")
+        .with_working_directory(workspace_dir)
+        .with_initial_command(format!("gestura chat --resume --session {}", session_id));
+
+    spawn_shell(config).map_err(|e| format!("Failed to open shell session: {}", e))
 }
 
 /// Get the current Gestura project directory

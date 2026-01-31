@@ -6,7 +6,7 @@ This template is a safe, repeatable procedure for inspecting and managing MCP (M
 
 Gestura persists MCP tool configuration in the user config file:
 
-- `~/.gestura/config.json`
+- `~/.gestura/config.yaml`
 - key: `mcp_tools`
 
 See `docs/CONFIGURATION.md` for the config location and structure.
@@ -33,7 +33,7 @@ See `docs/CONFIGURATION.md` for the config location and structure.
 - Remove a tool:
   - `gestura mcp remove` (requires the tool name)
 
-After add/remove, the CLI writes updated configuration back to `~/.gestura/config.json`.
+After add/remove, the CLI writes updated configuration back to `~/.gestura/config.yaml`.
 
 ## Safety / trust boundaries
 
@@ -43,6 +43,6 @@ After add/remove, the CLI writes updated configuration back to `~/.gestura/confi
 
 ## Troubleshooting
 
-- If `gestura mcp list` shows no tools, verify `~/.gestura/config.json` exists and is valid JSON.
+- If `gestura mcp list` shows no tools, verify `~/.gestura/config.yaml` exists and is valid YAML.
 - If the CLI fails to save config, check file permissions on `~/.gestura/`.
 

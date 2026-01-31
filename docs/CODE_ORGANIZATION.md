@@ -1,265 +1,251 @@
 # Code Organization and Structure
 
-## Current Module Organization
+## Workspace Architecture
 
-The Gestura.app backend currently has a flat structure in `src-tauri/src/` with 40+ modules. While functional, this structure can be improved for better maintainability and developer experience.
+Gestura.app uses a **Core-First Architecture** organized as a Rust workspace with three crates:
 
-### Current Structure Issues
-1. **Flat directory structure** - All modules in one directory
-2. **No logical grouping** - Related modules scattered
-3. **Difficult navigation** - Hard to find related functionality
-4. **Unclear dependencies** - Module relationships not obvious
-
-## Current Module Categories
-
-### Core Application (4 modules)
-- `config.rs` - Configuration management
-- `error.rs` - Error handling
-- `lib.rs` - Library exports
-- `main.rs` - Application entry point
-
-### Voice & AI Features (8 modules)
-- `voice.rs` - Voice processing
-- `voice_activity_detection.rs` - VAD
-- `voice_model_tuning.rs` - Model optimization
-- `voice_select.rs` - Engine selection
-- `speaker_identification.rs` - Speaker recognition
-- `noise_cancellation.rs` - Audio processing
-- `llm_provider.rs` - LLM integration
-- `predictive_text.rs` - Text prediction
-
-### Hardware & Devices (4 modules)
-- `ble.rs` - Bluetooth communication
-- `haptics.rs` - Haptic feedback
-- `simulator.rs` - Ring simulator
-- `device_simulator.rs` - Device simulation
-
-### Gesture Recognition (2 modules)
-- `custom_gestures.rs` - Custom gestures
-- `gesture_pattern_learning.rs` - Pattern learning
-
-### Integration & Messaging (7 modules)
-- `mcp.rs` - Model Context Protocol
-- `mcp_server.rs` - MCP server
-- `mq.rs` - Message queue abstraction
-- `nats_mq.rs` - NATS implementation
-- `memory_bus.rs` - Memory bus fallback
-- `third_party_integrations.rs` - External APIs
-- `mdh_translator.rs` - MDH protocol
-
-### UI & Interface (4 modules)
-- `api.rs` - API endpoints
-- `commands/` - Tauri commands
-- `tray.rs` - System tray
-- `hotkeys.rs` - Global shortcuts
-
-### System Utilities (8 modules)
-- `agents.rs` - Agent management
-- `security.rs` - Security utilities
-- `kv.rs` - Key-value storage
-- `dispatcher.rs` - Event dispatching
-- `process_spawner.rs` - Process management
-- `session_manager.rs` - Session handling
-- `permissions.rs` - Access control
-- `sandbox.rs` - Sandboxing
-
-### Analytics & Monitoring (4 modules)
-- `usage_analytics.rs` - Usage tracking
-- `telemetry.rs` - Application metrics
-- `error_recovery.rs` - Error handling
-- `gdpr.rs` - Privacy compliance
-
-### Development Tools (5 modules)
-- `plugin_system.rs` - Plugin architecture
-- `scripting_engine.rs` - Script execution
-- `developer_sdk.rs` - Developer tools
-- `query_optimizer.rs` - Performance optimization
-- `personalized_recommendations.rs` - AI recommendations
-
-## Proposed Reorganization
-
-### Target Structure
 ```
-src-tauri/src/
-├── core/                    # Core application (4 modules)
-│   ├── mod.rs
-│   ├── config.rs
-│   ├── error.rs
-│   └── app.rs              # Renamed from main.rs
-├── features/                # Feature modules
-│   ├── voice/              # Voice & AI (8 modules)
-│   │   ├── mod.rs
-│   │   ├── processing.rs   # Renamed from voice.rs
-│   │   ├── activity_detection.rs
-│   │   ├── model_tuning.rs
-│   │   ├── engine_selection.rs
-│   │   ├── speaker_id.rs
-│   │   ├── noise_cancellation.rs
-│   │   ├── llm_integration.rs
-│   │   └── text_prediction.rs
-│   ├── hardware/           # Hardware & Devices (4 modules)
-│   │   ├── mod.rs
-│   │   ├── bluetooth.rs    # Renamed from ble.rs
-│   │   ├── haptics.rs
-│   │   ├── simulator.rs
-│   │   └── device_sim.rs
-│   ├── gestures/           # Gesture Recognition (2 modules)
-│   │   ├── mod.rs
-│   │   ├── custom.rs
-│   │   └── pattern_learning.rs
-│   └── ai/                 # AI & ML features
-│       ├── mod.rs
-│       ├── recommendations.rs
-│       └── federated_learning.rs
-├── integrations/            # External integrations
-│   ├── mod.rs
-│   ├── messaging/          # Messaging systems
-│   │   ├── mod.rs
-│   │   ├── mq.rs
-│   │   ├── nats.rs
-│   │   └── memory_bus.rs
-│   ├── protocols/          # Protocol implementations
-│   │   ├── mod.rs
-│   │   ├── mcp_client.rs
-│   │   ├── mcp_server.rs
-│   │   └── mdh.rs
-│   └── external.rs         # Third-party APIs
-├── interface/              # UI & Interface (4 modules)
-│   ├── mod.rs
-│   ├── api.rs
-│   ├── commands/
-│   ├── tray.rs
-│   └── hotkeys.rs
-└── utils/                  # System utilities
-    ├── mod.rs
-    ├── system/             # System utilities
-    │   ├── mod.rs
-    │   ├── agents.rs
-    │   ├── kv_store.rs
-    │   ├── dispatcher.rs
-    │   ├── processes.rs
-    │   └── sessions.rs
-    ├── security/           # Security utilities
-    │   ├── mod.rs
-    │   ├── core.rs
-    │   ├── permissions.rs
-    │   └── sandbox.rs
-    ├── analytics/          # Analytics & monitoring
-    │   ├── mod.rs
-    │   ├── usage.rs
-    │   ├── telemetry.rs
-    │   ├── recovery.rs
-    │   └── privacy.rs
-    └── dev/                # Development tools
-        ├── mod.rs
-        ├── plugins.rs
-        ├── scripting.rs
-        ├── sdk.rs
-        └── optimization.rs
+gestura-app/
+├── Cargo.toml              # Workspace manifest
+├── crates/
+│   ├── gestura-core/       # Shared business logic (source of truth)
+│   ├── gestura-cli/        # CLI binary (thin presentation layer)
+│   └── gestura-gui/        # Tauri desktop app (thin presentation layer)
+├── docs/                   # Documentation
+└── AGENTS.md               # AI assistant guide
 ```
 
-## Migration Benefits
+## Core-First Design Principles
 
-### 1. Improved Navigation
-- Related modules grouped together
-- Clear hierarchy and relationships
-- Easier to find specific functionality
+1. **Single Source of Truth**: All business logic lives in `gestura-core`
+2. **Thin Presentation Layers**: CLI and GUI delegate to core
+3. **Re-export Pattern**: GUI/CLI modules re-export core types
+4. **Feature Gates**: Optional functionality via Cargo features
 
-### 2. Better Maintainability
-- Logical separation of concerns
-- Reduced cognitive load
-- Clearer module dependencies
+## gestura-core (Shared Library)
 
-### 3. Enhanced Developer Experience
-- Intuitive file organization
-- Faster onboarding for new developers
-- Easier code reviews
+The core crate contains all business logic organized by domain:
 
-### 4. Scalability
-- Room for growth within categories
-- Clear patterns for new features
-- Modular architecture
+### AI & Pipeline
+| Module | Files | Description |
+|--------|-------|-------------|
+| `pipeline/` | `mod.rs`, `types.rs` | Agent request/response pipeline |
+| `llm_provider.rs` | - | LLM API abstraction (OpenAI, Anthropic) |
+| `persona.rs` | - | System persona configuration |
+| `speech.rs` | - | Text-to-speech |
+| `stt_provider.rs` | - | Speech-to-text (Whisper) |
 
-## Migration Strategy
+### Session Management
+| Module | Files | Description |
+|--------|-------|-------------|
+| `chat_sessions/` | `mod.rs`, `types.rs`, `store.rs` | Session persistence |
+| `session_manager.rs` | - | Active session lifecycle |
+| `context/` | `mod.rs`, `types.rs`, `manager.rs`, `analyzer.rs`, `cache.rs` | Context window management |
+| `memory_bank/` | `mod.rs` | Long-term memory storage |
 
-### Phase 1: Documentation and Planning ✅
-- Document current structure
-- Plan target organization
-- Identify dependencies
+### Tools & Permissions
+| Module | Files | Description |
+|--------|-------|-------------|
+| `tools/` | `mod.rs`, `registry.rs`, `permissions.rs`, `policy.rs`, `schemas.rs` | Tool definitions and registry |
+| `tools/` | `file.rs`, `shell.rs`, `git.rs`, `web.rs`, `code.rs` | Built-in tool implementations |
+| `tool_confirmation.rs` | - | User confirmation flow with pause/resume |
+| `tool_inspection.rs` | - | Tool introspection |
 
-### Phase 2: Create Directory Structure
-```bash
-mkdir -p src-tauri/src/{core,features/{voice,hardware,gestures,ai},integrations/{messaging,protocols},interface,utils/{system,security,analytics,dev}}
+### Protocols
+| Module | Files | Description |
+|--------|-------|-------------|
+| `mcp/` | `mod.rs`, `server.rs`, `types.rs`, `lifecycle.rs`, `discovery.rs` | MCP server (2025-11-25) |
+| `mcp/` | `notifications.rs`, `prompts.rs`, `integrator.rs` | MCP features |
+| `a2a/` | `mod.rs`, `server.rs`, `client.rs`, `types.rs` | Agent-to-Agent protocol |
+| `nats_mq/` | `mod.rs` | NATS message queue |
+
+### Security & Sandboxing
+| Module | Files | Description |
+|--------|-------|-------------|
+| `security/` | `mod.rs`, `encryption.rs`, `storage.rs` | Encryption & secure storage |
+| `sandbox/` | `mod.rs` | Sandboxed execution |
+| `gdpr.rs` | - | Privacy compliance |
+
+### Analytics & AI
+| Module | Files | Description |
+|--------|-------|-------------|
+| `analytics/` | `mod.rs` | Usage analytics with privacy modes |
+| `recommendations/` | `mod.rs` | ML-based recommendations |
+| `audio/` | `mod.rs` | Noise cancellation (spectral subtraction) |
+
+### Extensibility
+| Module | Files | Description |
+|--------|-------|-------------|
+| `scripting/` | `mod.rs`, `runtime.rs` | Multi-language scripting engine |
+| `agents/` | `mod.rs` | Agent orchestration and spawning |
+| `tasks/` | `mod.rs` | Task management |
+
+### Infrastructure
+| Module | Files | Description |
+|--------|-------|-------------|
+| `config.rs` | - | Configuration management |
+| `error.rs` | - | Error types (thiserror) |
+| `telemetry.rs` | - | OpenTelemetry integration |
+| `knowledge/` | `mod.rs`, `types.rs`, `store.rs` | Knowledge base |
+| `streaming.rs` | - | Streaming responses |
+| `retry.rs` | - | Retry logic |
+
+## gestura-cli (CLI Binary)
+
+Thin command-line interface:
+
+```
+gestura-cli/src/
+├── main.rs              # Entry point with clap
+├── tool_registry.rs     # CLI tool registration
+└── commands/
+    ├── mod.rs           # Command routing
+    ├── chat/            # Interactive chat TUI
+    │   ├── mod.rs
+    │   └── tui/         # Ratatui TUI implementation
+    ├── exec.rs          # One-shot execution
+    ├── listen.rs        # Voice capture
+    ├── session.rs       # Session management
+    ├── mcp.rs           # MCP commands
+    ├── a2a.rs           # A2A protocol
+    ├── agent.rs         # Agent management
+    ├── config.rs        # Configuration
+    ├── context.rs       # Context commands
+    ├── device.rs        # Device commands
+    ├── health.rs        # Health check
+    ├── init.rs          # Initialize project
+    ├── knowledge.rs     # Knowledge base
+    ├── model.rs         # Model selection
+    ├── privacy.rs       # Privacy settings
+    ├── completion.rs    # Shell completions
+    └── tools/           # Tool subcommands
 ```
 
-### Phase 3: Move Core Modules
-- Move `config.rs`, `error.rs` to `core/`
-- Update `lib.rs` with new exports
-- Test compilation
+## gestura-gui (Tauri Desktop App)
 
-### Phase 4: Move Feature Modules
-- Group voice-related modules
-- Group hardware modules
-- Group gesture modules
-- Update imports and re-exports
+Thin Tauri wrapper with platform-specific integrations:
 
-### Phase 5: Move Integration Modules
-- Group messaging systems
-- Group protocol implementations
-- Update dependencies
+```
+gestura-gui/src/
+├── main.rs              # Tauri entry point
+├── lib.rs               # Module exports
+├── api.rs               # Tauri commands
+│
+├── # Thin Re-export Wrappers (delegate to gestura-core)
+├── a2a.rs               # Re-exports gestura_core::a2a
+├── security.rs          # Re-exports gestura_core::security
+├── sandbox.rs           # Re-exports gestura_core::sandbox
+├── scripting_engine.rs  # Re-exports gestura_core::scripting
+├── nats_mq.rs           # Re-exports gestura_core::nats_mq
+├── agents.rs            # Re-exports gestura_core::agents
+├── noise_cancellation.rs # Re-exports gestura_core::audio
+├── usage_analytics.rs   # Re-exports gestura_core::analytics
+├── personalized_recommendations.rs # Re-exports gestura_core::recommendations
+├── permissions.rs       # Re-exports gestura_core::tools::permissions
+│
+├── # Platform-specific (remain in GUI)
+├── window_manager.rs    # Window management
+├── tray.rs              # System tray
+├── hotkeys.rs           # Global shortcuts
+├── haptics.rs           # Haptic feedback
+├── ble.rs               # Bluetooth (platform-specific)
+├── mcp_server.rs        # MCP transport adapter
+│
+├── # UI Components
+├── ui/                  # UI utilities
+├── commands/            # Additional Tauri commands
+├── features/            # Feature modules
+├── integrations/        # External integrations
+└── utils/               # Utility modules
+```
 
-### Phase 6: Move Utility Modules
-- Group system utilities
-- Group security modules
-- Group analytics modules
-- Group development tools
+## Re-export Pattern
 
-### Phase 7: Final Cleanup
-- Update all imports
-- Update documentation
-- Run comprehensive tests
-- Update build scripts
-
-## Implementation Notes
-
-### Module Re-exports
-Each directory will have a `mod.rs` file that re-exports public items:
+GUI modules are thin wrappers that re-export core functionality:
 
 ```rust
-// features/voice/mod.rs
-pub mod processing;
-pub mod activity_detection;
-pub mod model_tuning;
-
-pub use processing::*;
-pub use activity_detection::*;
+// crates/gestura-gui/src/security.rs (18 lines)
+//! Security primitives - thin wrapper over gestura_core::security
+pub use gestura_core::security::{
+    Encryptor, McpToken, SecureStorage, create_secure_storage,
+};
 ```
-
-### Import Updates
-Imports will be updated to use the new structure:
 
 ```rust
-// Before
-use crate::voice::VoiceEngine;
-
-// After
-use crate::features::voice::VoiceEngine;
+// crates/gestura-gui/src/a2a.rs (7 lines)
+//! A2A protocol - thin wrapper over gestura_core::a2a
+pub use gestura_core::a2a::*;
 ```
 
-### Backward Compatibility
-During migration, we'll maintain backward compatibility with re-exports in `lib.rs`:
+## Feature Gates
 
+Optional functionality controlled via Cargo features in `gestura-core`:
+
+| Feature | Description | Dependencies |
+|---------|-------------|--------------|
+| `security` | Encryption & secure storage | `keyring`, `aes-gcm` |
+| `nats` | NATS message queue | `async-nats` |
+| `ble` | Bluetooth support | `btleplug` |
+| `analytics` | Usage analytics | - |
+
+## Adding New Features
+
+### 1. Implement in Core
 ```rust
-// lib.rs - temporary compatibility
-pub use features::voice as voice;
-pub use features::hardware::bluetooth as ble;
+// gestura-core/src/new_feature/mod.rs
+pub mod types;
+mod implementation;
+
+pub use types::*;
+pub use implementation::*;
 ```
 
-## Current Status
+### 2. Export from lib.rs
+```rust
+// gestura-core/src/lib.rs
+#[cfg(feature = "new_feature")]
+pub mod new_feature;
+```
 
-- ✅ **Analysis Complete** - Current structure documented
-- ✅ **Plan Created** - Target structure defined
-- 🔄 **Ready for Implementation** - Awaiting approval for migration
-- ⏳ **Migration Pending** - Can be done incrementally
+### 3. Create GUI Wrapper
+```rust
+// gestura-gui/src/new_feature.rs
+//! New feature - thin wrapper over gestura_core::new_feature
+pub use gestura_core::new_feature::*;
+```
 
-This reorganization will significantly improve the codebase maintainability and developer experience while preserving all existing functionality.
+### 4. Add CLI Command (if needed)
+```rust
+// gestura-cli/src/commands/new_feature.rs
+use gestura_core::new_feature::*;
+
+pub async fn run(args: Args) -> Result<()> {
+    // Implementation using core types
+}
+```
+
+## Migration Status
+
+The Core-First architecture migration was completed in 6 phases:
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| Phase 1 | A2A consolidation | ✅ Complete |
+| Phase 2 | Chat session unification | ✅ Complete |
+| Phase 3 | Permissions + security policy | ✅ Complete |
+| Phase 4 | MCP server migration | ✅ Complete |
+| Phase 5 | GUI subsystems migration | ✅ Complete |
+| Phase 6 | Analytics/Recommendations/Audio | ✅ Complete |
+
+### Code Reduction Results
+
+| GUI Module | Before | After | Reduction |
+|------------|--------|-------|-----------|
+| a2a.rs | 1,092 lines | 7 lines | 99.4% |
+| security.rs | 265 lines | 18 lines | 93.2% |
+| sandbox.rs | 326 lines | 7 lines | 97.9% |
+| scripting_engine.rs | 679 lines | 10 lines | 98.5% |
+| nats_mq.rs | 439 lines | 13 lines | 97.0% |
+| usage_analytics.rs | 772 lines | 10 lines | 98.7% |
+| personalized_recommendations.rs | 649 lines | 10 lines | 98.5% |
+| noise_cancellation.rs | 476 lines | 10 lines | 97.9% |

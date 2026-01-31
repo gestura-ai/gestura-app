@@ -2,7 +2,7 @@
 //!
 //! Provides hierarchical configuration loading with precedence:
 //! 1. Environment variables (GESTURA_* prefix)
-//! 2. Config file (~/.gestura/config.json)
+//! 2. Config file (~/.gestura/config.yaml)
 //! 3. Default values
 //!
 //! All environment variables use the GESTURA_ prefix and snake_case naming.

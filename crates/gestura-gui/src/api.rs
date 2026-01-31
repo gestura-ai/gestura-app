@@ -1,8 +1,7 @@
 //! Tauri command handlers for configuration, MCP tools, MDH pointers, and tests.
-use crate::{
-    AppConfig,
-    llm_provider::{AgentContext, select_provider},
-};
+use crate::AppConfig;
+
+use gestura_core::pipeline::{AgentPipeline, AgentRequest, RequestSource};
 use tauri::{Emitter, Manager};
 
 /// Try to get an API key from the keychain (synchronous, for use in config creation).
@@ -14,121 +13,89 @@ fn try_get_api_key_from_keychain(provider: &str) -> String {
 /// Apply session-scoped LLM provider/model overrides to an in-memory `AppConfig`.
 ///
 /// This helper keeps all per-session LLM behavior consistent across features (chat,
-/// prompt enhancement, etc.) by applying the same override rules:
+/// prompt enhancement, etc.). The override precedence and validation rules are
+/// core-owned; this GUI wrapper only:
 ///
-/// - If the session overrides the provider, set `cfg.llm.primary`.
-/// - If the session overrides the model, apply it to the active provider's config.
+/// 1) fetches the persisted session override (if any)
+/// 2) supplies a key lookup function (keychain)
 ///
 /// This does **not** persist any changes to disk; it only affects the current request.
-fn apply_session_llm_config_overrides(cfg: &mut AppConfig, session_id: &str) {
-    let session_llm = crate::window_manager::get_session_llm_config(session_id);
+///
+/// Returns the effective (provider, model) pair after applying overrides so callers can
+/// keep request metadata and pipeline configuration in sync.
+fn apply_session_llm_config_overrides(
+    cfg: &mut AppConfig,
+    session_id: Option<&str>,
+) -> gestura_core::llm_overrides::EffectiveLlmConfig {
+    let session_llm = session_id.and_then(crate::window_manager::get_session_llm_config);
     tracing::debug!(
-        session_id = %session_id,
+        session_id = ?session_id,
         session_llm_config = ?session_llm,
         "Retrieved session LLM config for overrides"
     );
 
-    let Some(session_llm) = session_llm else {
-        return;
+    let api_key_lookup = |provider: &str| {
+        let key = try_get_api_key_from_keychain(provider);
+        if key.trim().is_empty() {
+            None
+        } else {
+            Some(key)
+        }
     };
 
-    if let Some(provider) = session_llm.provider {
-        tracing::info!(
-            session_id = %session_id,
-            provider = %provider,
-            "Applying session-scoped LLM provider override"
-        );
-        cfg.llm.primary = provider;
+    gestura_core::llm_overrides::apply_session_llm_overrides(
+        cfg,
+        session_llm.as_ref(),
+        api_key_lookup,
+    )
+}
+
+/// Run a single-shot (non-streaming) request through the core pipeline.
+///
+/// This is intended for legacy GUI commands that previously performed a single
+/// `provider.call(...)` without tool execution.
+///
+/// Tools are explicitly disabled for this request; adapter commands that require
+/// tool execution should use the streaming pipeline path instead.
+async fn run_single_shot_pipeline(
+    cfg: AppConfig,
+    input: impl Into<String>,
+    source: RequestSource,
+    session_id: Option<&str>,
+) -> Result<String, String> {
+    let pipeline = AgentPipeline::with_provider_optimized_config(cfg);
+    let mut request = AgentRequest::new(input.into())
+        .with_streaming(false)
+        .with_source(source)
+        .with_tools_enabled(false);
+
+    if let Some(sid) = session_id {
+        request = request.with_session(sid);
     }
 
-    if let Some(model) = session_llm.model {
-        // Defensive validation: if the persisted session override is inconsistent
-        // (e.g. provider=openai + model=grok-2), ignore the model override.
-        if !crate::llm_validation::is_model_compatible_with_provider(&cfg.llm.primary, &model) {
-            tracing::warn!(
-                session_id = %session_id,
-                provider = %cfg.llm.primary,
-                model = %model,
-                "Ignoring incompatible session-scoped LLM model override"
-            );
-            return;
-        }
+    pipeline
+        .process_blocking(request)
+        .await
+        .map(|resp| resp.content)
+        .map_err(|e| e.to_string())
+}
 
-        tracing::info!(
-            session_id = %session_id,
-            model = %model,
-            provider = %cfg.llm.primary,
-            "Applying session-scoped LLM model override"
-        );
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        // Apply model to the active provider's config
-        // Create provider config if it doesn't exist, trying keychain for API keys.
-        match cfg.llm.primary.as_str() {
-            "openai" => {
-                let openai = cfg.llm.openai.get_or_insert_with(|| {
-                    let api_key = try_get_api_key_from_keychain("openai");
-                    if api_key.is_empty() {
-                        tracing::warn!("OpenAI provider selected but no API key found");
-                    }
-                    gestura_core::config::OpenAiConfig {
-                        api_key,
-                        model: model.clone(),
-                        base_url: None,
-                    }
-                });
-                openai.model = model;
-            }
-            "anthropic" => {
-                let anthropic = cfg.llm.anthropic.get_or_insert_with(|| {
-                    let api_key = try_get_api_key_from_keychain("anthropic");
-                    if api_key.is_empty() {
-                        tracing::warn!("Anthropic provider selected but no API key found");
-                    }
-                    gestura_core::config::AnthropicConfig {
-                        api_key,
-                        model: model.clone(),
-                        base_url: None,
-                        thinking_budget_tokens: None,
-                    }
-                });
-                anthropic.model = model;
-            }
-            "grok" => {
-                let grok = cfg.llm.grok.get_or_insert_with(|| {
-                    let api_key = try_get_api_key_from_keychain("grok");
-                    if api_key.is_empty() {
-                        tracing::warn!("Grok provider selected but no API key found");
-                    }
-                    gestura_core::config::GrokConfig {
-                        api_key,
-                        model: model.clone(),
-                        base_url: None,
-                    }
-                });
-                grok.model = model;
-            }
-            "ollama" => {
-                // Ollama doesn't require API key, so create default config if missing.
-                let ollama =
-                    cfg.llm
-                        .ollama
-                        .get_or_insert_with(|| gestura_core::config::OllamaConfig {
-                            base_url: "http://localhost:11434".into(),
-                            model: model.clone(),
-                        });
-                ollama.model = model;
-            }
-            "echo" => {
-                // Echo provider doesn't need config; model is ignored.
-                tracing::debug!("Echo provider selected - model override not applicable");
-            }
-            other => {
-                tracing::warn!(
-                    provider = other,
-                    "Unknown provider - model override ignored"
-                );
-            }
-        }
+    /// Ensures the GUI legacy single-shot path compiles and can execute via the
+    /// core pipeline without requiring real provider credentials.
+    #[tokio::test]
+    async fn run_single_shot_pipeline_returns_a_response() {
+        let cfg = AppConfig::default();
+        let out = run_single_shot_pipeline(cfg, "hello", RequestSource::GuiText, None)
+            .await
+            .expect("single-shot pipeline should succeed in tests");
+
+        assert!(!out.trim().is_empty());
+        // In test/dev builds, missing provider config falls back to EchoProvider.
+        assert!(out.contains("ECHO:"));
     }
 }
 
@@ -525,13 +492,7 @@ pub fn search_knowledge(
 #[tauri::command]
 pub async fn test_llm(prompt: String) -> Result<String, String> {
     let cfg = AppConfig::load_async().await;
-    let provider = select_provider(
-        &cfg,
-        &AgentContext {
-            agent_id: "test".into(),
-        },
-    );
-    provider.call(&prompt).await.map_err(|e| format!("{e}"))
+    run_single_shot_pipeline(cfg, prompt, RequestSource::GuiText, None).await
 }
 
 /// Enhance a user prompt using LLM to make it more effective
@@ -596,9 +557,7 @@ pub async fn enhance_prompt(prompt: String, session_id: Option<String>) -> Resul
 
     // Apply session-specific LLM config overrides so the prompt enhancer uses the same
     // effective provider/model as chat for this session.
-    if let Some(ref sid) = session_id {
-        apply_session_llm_config_overrides(&mut cfg, sid);
-    }
+    let _effective_llm = apply_session_llm_config_overrides(&mut cfg, session_id.as_deref());
 
     tracing::info!(
         prompt_length = prompt.len(),
@@ -1593,20 +1552,14 @@ pub async fn process_chat_message(
     use crate::notifications::{NotificationType, get_notification_manager};
 
     let cfg = AppConfig::load_async().await;
-    let provider = select_provider(
-        &cfg,
-        &AgentContext {
-            agent_id: "chat".into(),
-        },
-    );
 
     tracing::info!(
-        "Processing chat message through LLM provider: {}",
+        "Processing chat message through core AgentPipeline (provider={} )",
         cfg.llm.primary
     );
 
-    // Call the LLM provider with the user message
-    let response = provider.call(&message).await;
+    // Call the core pipeline with tools disabled (legacy single-shot command).
+    let response = run_single_shot_pipeline(cfg, message, RequestSource::GuiText, None).await;
 
     match &response {
         Ok(resp) => {
@@ -1628,30 +1581,13 @@ pub async fn process_chat_message(
     response.map_err(|e| format!("LLM error: {}", e))
 }
 
-/// Cancellation token key used when a chat stream is not associated with a session.
+/// Cancellation key used when a chat stream is not associated with a window label.
 ///
-/// This primarily supports the legacy/non-session chat surfaces (e.g., single-window UI).
+/// Most chat flows are window-scoped (`window:<label>`). This fallback key exists for
+/// legacy/non-session chat surfaces that do not have a stable window label.
+///
+/// Note: the cancellation token registry lives in `gestura_core::stream_cancellation`.
 const GLOBAL_STREAM_CANCEL_KEY: &str = "__global_stream__";
-
-/// Per-session cancellation tokens for streaming requests.
-///
-/// Why: a single global token can cancel the wrong stream when multiple sessions
-/// are running concurrently.
-static STREAMING_CANCEL_TOKENS: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<String, gestura_core::CancellationToken>>,
-> = std::sync::OnceLock::new();
-
-/// Get the global store of active streaming cancellation tokens.
-///
-/// The map is keyed by a per-window cancel key derived from the calling webview's
-/// window label (e.g., `window:chat-<uuid>`).
-///
-/// Why: keying by session alone can cause cross-window cancellation when multiple
-/// windows exist or when session inference falls back incorrectly.
-fn get_cancel_token_store()
--> &'static std::sync::Mutex<std::collections::HashMap<String, gestura_core::CancellationToken>> {
-    STREAMING_CANCEL_TOKENS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
-}
 
 /// Build the cancellation token key for a particular window label.
 ///
@@ -1689,16 +1625,6 @@ pub async fn process_chat_message_streaming(
         global_provider = %cfg.llm.primary,
         session_id = ?session_id,
         "Starting chat message processing"
-    );
-
-    // Apply session-specific LLM config overrides (doesn't modify persisted global config)
-    if let Some(ref sid) = session_id {
-        apply_session_llm_config_overrides(&mut cfg, sid);
-    }
-
-    tracing::info!(
-        final_provider = %cfg.llm.primary,
-        "Processing chat message with LLM provider"
     );
 
     let message_source = match source.as_deref().map(|s| s.trim().to_ascii_lowercase()) {
@@ -1753,6 +1679,20 @@ pub async fn process_chat_message_streaming(
         } else {
             calling_window_label.clone()
         };
+
+    // Apply session-specific LLM config overrides using the *resolved* session id.
+    //
+    // Why: voice routing can change the target session. We must keep request metadata
+    // and pipeline configuration consistent for the actual target session.
+    let effective_llm =
+        apply_session_llm_config_overrides(&mut cfg, resolved_session_id.as_deref());
+
+    tracing::info!(
+        session_id = ?resolved_session_id,
+        effective_provider = %effective_llm.provider,
+        effective_model = %effective_llm.model,
+        "Processing chat message with effective session LLM config"
+    );
 
     // Centralized, window-scoped emission (never broadcast): emits via `emit_to` and
     // attaches `session_id` for frontend filtering.
@@ -2158,59 +2098,18 @@ pub async fn process_chat_message_streaming(
     // Create channel for streaming chunks
     let (tx, mut rx) = mpsc::channel::<StreamChunk>(100);
 
-    // Create cancellation token and store it (window-scoped)
+    // Create cancellation token and register it (window-scoped).
     let cancel_token = CancellationToken::new();
     let cancel_key = if !target_window_label.is_empty() {
         cancel_key_for_window_label(&target_window_label)
     } else {
         GLOBAL_STREAM_CANCEL_KEY.to_string()
     };
-    {
-        let mut store = get_cancel_token_store().lock().unwrap();
-        // If an old stream is still recorded for this key, cancel it to avoid overlap.
-        if let Some(prev) = store.insert(cancel_key.clone(), cancel_token.clone()) {
-            prev.cancel();
-        }
-    }
+    gestura_core::stream_cancellation::STREAM_CANCELLATIONS
+        .register(cancel_key.clone(), cancel_token.clone());
 
     // Build the agent request with workspace sandboxing
     use gestura_core::{AgentPipeline, AgentRequest};
-
-    // Resolve the effective provider/model for this session (session override or global fallback).
-    // IMPORTANT: We must use this for BOTH agent awareness metadata and for the actual pipeline config,
-    // otherwise the agent may report one provider/model while the pipeline uses another.
-    let (effective_provider, effective_model) = resolved_session_id
-        .as_deref()
-        .and_then(|sid| crate::window_manager::get_session_llm_config(sid).map(|c| (sid, c)))
-        .map(|(_sid, session_llm)| {
-            let provider = session_llm
-                .provider
-                .unwrap_or_else(|| cfg.llm.primary.clone());
-
-            let fallback_model = || get_model_for_provider(&cfg, &provider).unwrap_or_default();
-            let model = match session_llm.model {
-                Some(m)
-                    if crate::llm_validation::is_model_compatible_with_provider(&provider, &m) =>
-                {
-                    m
-                }
-                Some(m) => {
-                    tracing::warn!(
-                        provider = %provider,
-                        model = %m,
-                        "Ignoring incompatible session-scoped LLM model override (falling back)"
-                    );
-                    fallback_model()
-                }
-                None => fallback_model(),
-            };
-            (provider, model)
-        })
-        .unwrap_or_else(|| {
-            let provider = cfg.llm.primary.clone();
-            let model = get_model_for_provider(&cfg, &provider).unwrap_or_default();
-            (provider, model)
-        });
 
     // Use a conservative default history limit to prevent token explosion.
     // This matches the PipelineConfig default and prevents excessive context buildup.
@@ -2270,13 +2169,15 @@ pub async fn process_chat_message_streaming(
 
     // Set session LLM config and permission level for agent awareness.
     // The agent can use this info to report its current configuration.
-    request = request.with_session_llm_config(&effective_provider, &effective_model);
+    request = request.with_session_llm_config(&effective_llm.provider, &effective_llm.model);
 
-    if let Some(ref sid) = resolved_session_id
-        && let Some(state) = crate::window_manager::get_session_state(sid)
-        && let Some(ref tool_settings) = state.tool_settings
-    {
+    // Apply session-scoped permission level and tool configuration.
+    // Use get_session_tool_settings() to ensure defaults are applied for sessions
+    // without explicit tool_settings (legacy sessions or newly-created ones).
+    if let Some(ref sid) = resolved_session_id {
         use gestura_core::pipeline::PermissionLevel;
+
+        let tool_settings = crate::window_manager::get_session_tool_settings(sid);
         let perm_level = match tool_settings.permission_level {
             crate::window_manager::SessionPermissionLevel::Sandbox => PermissionLevel::Sandbox,
             crate::window_manager::SessionPermissionLevel::Restricted => {
@@ -2297,9 +2198,10 @@ pub async fn process_chat_message_streaming(
         // Log all tool settings for debugging
         tracing::debug!(
             session_id = sid,
+            permission_level = ?perm_level,
             all_tool_settings = ?tool_settings.enabled_tools,
             enabled_tools = ?enabled_tools,
-            "Session tool configuration"
+            "Session tool configuration (with defaults applied)"
         );
 
         if !enabled_tools.is_empty() {
@@ -2313,32 +2215,9 @@ pub async fn process_chat_message_streaming(
     }
 
     // Create the pipeline with provider-optimized configuration and spawn the streaming task.
-    // We must apply the effective (session-scoped) provider/model to the pipeline config.
-    let mut cfg_clone = cfg.clone();
-    cfg_clone.llm.primary = effective_provider.clone();
-    match effective_provider.as_str() {
-        "openai" => {
-            if let Some(ref mut c) = cfg_clone.llm.openai {
-                c.model = effective_model.clone();
-            }
-        }
-        "anthropic" => {
-            if let Some(ref mut c) = cfg_clone.llm.anthropic {
-                c.model = effective_model.clone();
-            }
-        }
-        "grok" => {
-            if let Some(ref mut c) = cfg_clone.llm.grok {
-                c.model = effective_model.clone();
-            }
-        }
-        "ollama" => {
-            if let Some(ref mut c) = cfg_clone.llm.ollama {
-                c.model = effective_model.clone();
-            }
-        }
-        _ => {}
-    }
+    // Note: `apply_session_llm_config_overrides` already applied the effective provider/model
+    // into `cfg`, so we can clone directly.
+    let cfg_clone = cfg.clone();
     let cancel_token_clone = cancel_token.clone();
     let pipeline_handle = tokio::spawn(async move {
         // Use provider-optimized config for better token management
@@ -2390,6 +2269,10 @@ pub async fn process_chat_message_streaming(
                     .get_or_insert_with(String::new)
                     .push_str(&text);
                 emit("chat-stream-thinking", serde_json::json!(text));
+            }
+            StreamChunk::Status { message } => {
+                let payload = serde_json::json!({ "message": message });
+                emit("chat-stream-status", payload);
             }
             StreamChunk::Text(text) => {
                 tracing::debug!("[Stream] Text chunk: {}", &text.chars().take(100).collect::<String>());
@@ -2658,11 +2541,8 @@ pub async fn process_chat_message_streaming(
         }
     }
 
-    // Clear the cancellation token for this stream
-    {
-        let mut store = get_cancel_token_store().lock().unwrap();
-        store.remove(&cancel_key);
-    }
+    // Clear the cancellation token for this stream.
+    gestura_core::stream_cancellation::STREAM_CANCELLATIONS.remove(&cancel_key);
 
     Ok(())
 }
@@ -2792,8 +2672,6 @@ fn cancel_chat_streaming_internal(
     calling_window_label: Option<String>,
     session_id: Option<String>,
 ) -> Result<(), String> {
-    let mut store = get_cancel_token_store().lock().unwrap();
-
     let cancel_key = if let Some(sid) = session_id {
         let label = crate::window_manager::get_session_window_label(&sid).ok_or_else(|| {
             format!(
@@ -2811,8 +2689,7 @@ fn cancel_chat_streaming_internal(
         );
     };
 
-    if let Some(token) = store.remove(&cancel_key) {
-        token.cancel();
+    if gestura_core::stream_cancellation::STREAM_CANCELLATIONS.cancel(&cancel_key) {
         tracing::info!(cancel_key = %cancel_key, "Streaming chat cancelled");
         Ok(())
     } else {
@@ -2838,19 +2715,16 @@ mod streaming_cancellation_tests {
         let key = cancel_key_for_window_label(label);
 
         let token = gestura_core::CancellationToken::new();
-        {
-            let mut store = get_cancel_token_store().lock().unwrap();
-            store.remove(&key);
-            store.insert(key.clone(), token.clone());
-        }
+        gestura_core::stream_cancellation::STREAM_CANCELLATIONS.remove(&key);
+        gestura_core::stream_cancellation::STREAM_CANCELLATIONS
+            .register(key.clone(), token.clone());
 
         cancel_chat_streaming_internal(Some(label.to_string()), None)
             .expect("expected cancellation to succeed");
 
         assert!(token.is_cancelled(), "token should be cancelled");
-        let store = get_cancel_token_store().lock().unwrap();
         assert!(
-            !store.contains_key(&key),
+            !gestura_core::stream_cancellation::STREAM_CANCELLATIONS.contains_key(&key),
             "token entry should be removed after cancellation"
         );
     }
@@ -2868,14 +2742,7 @@ pub async fn send_agent_message(
     message: String,
     _state: tauri::State<'_, crate::AppState>,
 ) -> Result<String, String> {
-    // Use the configured LLM provider for agent communication
     let cfg = AppConfig::load_async().await;
-    let provider = select_provider(
-        &cfg,
-        &AgentContext {
-            agent_id: agent_id.clone(),
-        },
-    );
 
     tracing::info!("Agent {} sending message through LLM", agent_id);
 
@@ -2885,8 +2752,7 @@ pub async fn send_agent_message(
         agent_id, message
     );
 
-    let response = provider
-        .call(&prompt)
+    let response = run_single_shot_pipeline(cfg, prompt, RequestSource::GuiText, None)
         .await
         .map_err(|e| format!("Agent LLM error: {}", e))?;
 
@@ -2942,9 +2808,7 @@ pub async fn delegate_task(
     task: crate::orchestrator::DelegatedTask,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<String, String> {
-    let orchestrator =
-        crate::orchestrator::AgentOrchestrator::new(state.agents.clone(), state.config.clone());
-    orchestrator.delegate_task(task).await
+    state.orchestrator.delegate_task(task).await
 }
 
 /// Spawn a new subagent
@@ -2954,9 +2818,7 @@ pub async fn spawn_subagent(
     name: String,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<(), String> {
-    let orchestrator =
-        crate::orchestrator::AgentOrchestrator::new(state.agents.clone(), state.config.clone());
-    orchestrator.spawn_subagent(&agent_id, &name).await
+    state.orchestrator.spawn_subagent(&agent_id, &name).await
 }
 
 /// List all active tasks
@@ -2964,9 +2826,7 @@ pub async fn spawn_subagent(
 pub async fn list_active_tasks(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Vec<crate::orchestrator::DelegatedTask>, String> {
-    let orchestrator =
-        crate::orchestrator::AgentOrchestrator::new(state.agents.clone(), state.config.clone());
-    Ok(orchestrator.list_active_tasks().await)
+    Ok(state.orchestrator.list_active_tasks().await)
 }
 
 /// Cancel a running task
@@ -2975,9 +2835,7 @@ pub async fn cancel_task(
     task_id: String,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<(), String> {
-    let orchestrator =
-        crate::orchestrator::AgentOrchestrator::new(state.agents.clone(), state.config.clone());
-    orchestrator.cancel_task(&task_id).await
+    state.orchestrator.cancel_task(&task_id).await
 }
 
 // Audio Device Management Commands
@@ -3602,6 +3460,16 @@ pub async fn pick_workspace_directory(
     }
 }
 
+/// Open a terminal at the session workspace directory and resume the session via the CLI.
+///
+/// This command is intended for the chat window "Open In Shell" action.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub fn open_shell_for_session(session_id: String) -> Result<(), String> {
+    crate::window_manager::open_shell_session_for_chat_resume(&session_id)
+}
+
 // ============================================================================
 // Session LLM Config Commands (session-scoped, doesn't modify global config)
 // ============================================================================
@@ -3716,47 +3584,9 @@ pub fn clear_session_voice_config(session_id: String) -> Result<(), String> {
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn get_effective_llm_config(session_id: String) -> Result<(String, String), String> {
-    let global_cfg = AppConfig::load_async().await;
-
-    // Check for session-specific override first
-    if let Some(session_llm) = crate::window_manager::get_session_llm_config(&session_id) {
-        let provider = session_llm
-            .provider
-            .unwrap_or_else(|| global_cfg.llm.primary.clone());
-
-        let fallback_model = || get_model_for_provider(&global_cfg, &provider).unwrap_or_default();
-        let model = match session_llm.model {
-            Some(m) if crate::llm_validation::is_model_compatible_with_provider(&provider, &m) => m,
-            Some(m) => {
-                tracing::warn!(
-                    session_id = %session_id,
-                    provider = %provider,
-                    model = %m,
-                    "Ignoring incompatible session-scoped model override in get_effective_llm_config"
-                );
-                fallback_model()
-            }
-            None => fallback_model(),
-        };
-
-        return Ok((provider, model));
-    }
-
-    // Fall back to global config
-    let provider = global_cfg.llm.primary.clone();
-    let model = get_model_for_provider(&global_cfg, &provider).unwrap_or_default();
-    Ok((provider, model))
-}
-
-/// Helper to get the configured model for a provider from global config
-fn get_model_for_provider(cfg: &AppConfig, provider: &str) -> Option<String> {
-    match provider {
-        "openai" => cfg.llm.openai.as_ref().map(|c| c.model.clone()),
-        "anthropic" => cfg.llm.anthropic.as_ref().map(|c| c.model.clone()),
-        "grok" => cfg.llm.grok.as_ref().map(|c| c.model.clone()),
-        "ollama" => cfg.llm.ollama.as_ref().map(|c| c.model.clone()),
-        _ => None,
-    }
+    let mut cfg = AppConfig::load_async().await;
+    let effective = apply_session_llm_config_overrides(&mut cfg, Some(&session_id));
+    Ok((effective.provider, effective.model))
 }
 
 // ============================================================================
@@ -4009,15 +3839,8 @@ pub async fn break_down_requirements(
     session_id: String,
     requirements: String,
 ) -> Result<Vec<String>, String> {
-    use gestura_core::{AgentContext, AppConfig, llm_provider::select_provider};
-
-    let cfg = AppConfig::load_async().await;
-    let provider = select_provider(
-        &cfg,
-        &AgentContext {
-            agent_id: "task_breakdown".into(),
-        },
-    );
+    let mut cfg = AppConfig::load_async().await;
+    let _effective_llm = apply_session_llm_config_overrides(&mut cfg, Some(&session_id));
 
     // Construct a prompt that instructs the LLM to break down requirements
     let prompt = format!(
@@ -4045,10 +3868,14 @@ Respond ONLY with the JSON array, no additional text."#,
         requirements
     );
 
-    let response = provider
-        .call(&prompt)
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
+    let response = run_single_shot_pipeline(
+        cfg,
+        prompt,
+        RequestSource::GuiText,
+        Some(session_id.as_str()),
+    )
+    .await
+    .map_err(|e| format!("LLM error: {}", e))?;
 
     // Parse the LLM response as JSON
     let tasks_json: serde_json::Value = serde_json::from_str(&response).map_err(|e| {
@@ -4978,7 +4805,7 @@ fn is_system_dark_mode() -> bool {
 /// Detect if the system is using dark mode (non-macOS platforms).
 #[cfg(not(target_os = "macos"))]
 fn is_system_dark_mode() -> bool {
-    // Default to light mode on non-macOS platforms
-    // TODO: Add Windows/Linux dark mode detection
+    // Default to light mode on non-macOS platforms.
+    // Note: Windows/Linux dark mode detection is not currently implemented.
     false
 }

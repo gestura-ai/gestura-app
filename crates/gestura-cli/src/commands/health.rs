@@ -7,9 +7,8 @@ use std::path::PathBuf;
 
 /// Get the config file path
 fn get_config_path() -> PathBuf {
-    dirs::config_dir()
-        .map(|p| p.join("gestura").join("config.json"))
-        .unwrap_or_else(|| PathBuf::from("config.json"))
+    // Keep CLI health diagnostics consistent with gestura-core.
+    AppConfig::default_path()
 }
 
 pub fn run() -> Result<()> {

@@ -10,7 +10,7 @@
 
 use super::Result;
 use colored::Colorize;
-use gestura_core::{AgentContext, AppConfig, select_provider};
+use gestura_core::{AgentPipeline, AgentRequest, AppConfig, RequestSource};
 
 /// Agent subcommand options
 pub enum AgentSubcommand {
@@ -147,22 +147,25 @@ fn run_status() -> Result<()> {
 }
 
 fn run_send(message: &str) -> Result<()> {
-    let config = AppConfig::load();
-    let context = AgentContext {
-        agent_id: "cli-agent".to_string(),
-    };
-
-    let provider = select_provider(&config, &context);
-
     println!("{} Sending to agent...", "→".blue());
 
     // Create runtime for async call
     let rt = tokio::runtime::Runtime::new()?;
-    let response = rt.block_on(async { provider.call(message).await })?;
+
+    let response = rt.block_on(async {
+        let config = AppConfig::load();
+        let pipeline = AgentPipeline::with_provider_optimized_config(config);
+        let request = AgentRequest::new(message)
+            .with_streaming(false)
+            .with_source(RequestSource::CliBasic)
+            .with_tools_enabled(false);
+
+        pipeline.process_blocking(request).await
+    })?;
 
     println!();
     println!("{}", "Agent Response:".bold());
-    println!("{}", response);
+    println!("{}", response.content);
 
     Ok(())
 }

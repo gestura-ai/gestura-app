@@ -1,76 +1,119 @@
 # gestura.app
 
-An always‑ready, local‑first companion app for the Gestura Haptic Harmony ring. Built in Rust, it integrates voice (local ASR), MCP agents, NATS MQ, and haptic/gesture tooling with a focus on privacy, performance, and extensibility.
+An always‑ready, local‑first companion app for the Gestura Haptic Harmony ring. Built in Rust with a **Core-First Architecture**, it integrates voice (local ASR), MCP agents, NATS MQ, and haptic/gesture tooling with a focus on privacy, performance, and extensibility.
+
+## Architecture
+
+Gestura uses a **Core-First** architecture organized as a Rust workspace:
+
+```
+gestura-app/
+├── crates/
+│   ├── gestura-core/     # Shared business logic (source of truth)
+│   ├── gestura-cli/      # CLI binary (thin presentation layer)
+│   └── gestura-gui/      # Tauri desktop app (thin presentation layer)
+```
+
+**Design Principles:**
+- All business logic lives in `gestura-core`
+- CLI and GUI are thin presentation layers that delegate to core
+- GUI modules are thin re-export wrappers (7-18 lines each)
+- Optional features controlled via Cargo feature flags
 
 ## Features (Current)
 
 ### Voice & LLM
-- **Local‑first voice**: whisper.cpp via whisper‑rs (feature `voice-local`), with OpenAI Whisper HTTP fallback
-- **LLM provider abstraction**: OpenAI, Anthropic (Claude), Grok (xAI), Ollama (local); choose via config
-- **Token tracking**: Real-time tracking of prompt, completion, and total tokens with usage statistics
-- **Prompt Enhancer**: AI-powered prompt improvement with context awareness
-  - **Keyboard shortcut**: `Cmd+K` (GUI) or `Ctrl+E` (CLI) to enhance current prompt
-  - **Context-aware**: Automatically includes session history, active files, and project context
-  - **Customizable styles**: Choose between Concise, Detailed, or Technical enhancement styles
-  - **Performance optimized**: LRU caching (20 entries) and debouncing (500ms) for fast responses
-  - **Undo support**: `Cmd+Z` to revert to original prompt
-  - **Configuration**: Auto-enhance toggle, style preference, and max length multiplier in Settings
+- **Local‑first voice**: Whisper via whisper-rs with OpenAI Whisper HTTP fallback
+- **LLM provider abstraction**: OpenAI, Anthropic (Claude), Grok (xAI), Ollama (local)
+- **Token tracking**: Real-time tracking with usage statistics
+- **Streaming responses**: Real-time token display during generation
 
 ### CLI (gestura-cli)
 - **Modern TUI**: Professional ratatui-based terminal interface
   - Tabbed views: Chat, Tools, Settings, Help
   - Streaming responses with real-time token display
   - Vim-style modal editing (optional)
-  - Command palette (`/`) with fuzzy search
   - Syntax highlighting for code blocks
-  - Mouse support and responsive layouts
 - **Commands**: chat, exec, listen, config, model, device, mcp, a2a, session, agent, privacy, health, completion, init, tools
 
 ### MCP (Model Context Protocol)
 - **Full 2025-11-25 spec compliance**: lifecycle, prompts, notifications, capabilities
-- **MCP Server**: Embedded server with tool registration and execution
-- **CLI commands**: `gestura mcp status`, `gestura mcp prompts`, `gestura mcp capabilities`
+- **Core implementation**: `gestura-core/src/mcp/` with server, types, lifecycle
+- **Built-in tools**: file_read, file_write, file_edit, shell_exec, git_status, web_fetch
+- **CLI commands**: `gestura mcp serve`, `gestura mcp tools`, `gestura mcp call`
 
 ### A2A (Agent-to-Agent Protocol)
-- **Agent discovery**: via Agent Cards with skills and authentication info
-- **Profile management**: Identity propagation with bearer token authentication
+- **Core implementation**: `gestura-core/src/a2a/` with server, client, types
+- **Agent Cards**: Discovery with skills and authentication info
 - **Task communication**: JSON-RPC 2.0 based task create/status/cancel
-- **CLI commands**: `gestura a2a status`, `gestura a2a profiles`, `gestura a2a discover`, `gestura a2a token`
+- **CLI commands**: `gestura a2a serve`, `gestura a2a discover`, `gestura a2a send`
+
+### Core Modules
+| Module | Description |
+|--------|-------------|
+| `pipeline/` | Agent request/response pipeline |
+| `chat_sessions/` | Session persistence |
+| `tools/` | Tool registry, permissions, built-in tools |
+| `mcp/` | MCP server (2025-11-25) |
+| `a2a/` | Agent-to-Agent protocol |
+| `security/` | Encryption and secure storage |
+| `sandbox/` | Sandboxed execution |
+| `scripting/` | Multi-language scripting engine |
+| `analytics/` | Usage tracking with privacy modes |
+| `recommendations/` | ML-based recommendations |
+| `audio/` | Noise cancellation |
+| `agents/` | Agent orchestration |
+| `nats_mq/` | NATS message queue |
 
 ### Infrastructure
-- **Embedded MQ (client)**: async‑nats with JetStream KV wrappers; event subjects scaffolded
-- **Agents**: lightweight task manager with shutdown + persisted state to KV
+- **Embedded MQ (client)**: async‑nats with JetStream KV wrappers
+- **Agents**: lightweight task manager with persisted state
 - **System Tray + Global Hotkey**: background ready, hotkey triggers
-- **UI Preferences**: theme mode (system/light/dark) + accent via Tauri commands
-- **Cross-platform**: macOS (Intel + Apple Silicon), Windows, Linux builds
-
-## Features (Planned / Roadmap)
-- Faster‑Whisper (feature `voice-faster-whisper`) preferred when enabled
-- Agents in isolated processes with IPC envelopes; grace shutdown and reinit from KV
-- NATS JetStream subjects & dispatcher: events.voice, events.hotkey, events.mcp, agents.*; flush on exit
-- BLE/Haptics: pairing/reconnect, battery/CPT, gesture mapping, waveform editor, OTA w/ rollback
-- MCP client/server + dual auth (app approval + MCP tokens); MDH JSON‑LD translation with json-ld-rs
-- LLM providers: Gemini/Bedrock/Cohere/Mistral; rate‑limit/backoff; model parameters in UI
-- Security/Compliance: AES storage (OS keychain), GDPR prompts/exports, audit logs
-- Frontend: React UI (chat-lite, settings, BLE/haptic panels); full theme controller
+- **Cross-platform**: macOS (Intel + Apple Silicon), Windows, Linux
 
 ## Supported Platforms
 - Desktop: macOS 12+, Windows 10+, Linux (Ubuntu 20+)
 - Mobile: iOS/Android (Tauri mobile alpha; constraints apply)
 
 ## Build & Run
-- Prereqs: Rust stable, Cargo. For `voice-local`, install `cmake`.
-- Makefile (POSIX):
-  - `make build` / `make test` / `make clean`
-  - `make build-voice-local` / `make run-voice-local` (requires cmake)
-  - `make test-nats`
-- Justfile (cross‑platform convenience):
-  - `just build` / `just test` / `just clean`
-  - `just build-voice-local` / `just run-voice-local`
-  - `just check-nats` / `just package` / `just doctor`
+
+### Quick Start
+
+```bash
+# Clone repository
+git clone https://github.com/gestura-ai/gestura-app.git
+cd gestura-app
+
+# Quality gates (required before committing)
+cargo fmt
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+
+# Build all crates
+cargo build --workspace
+
+# Run CLI
+cargo run -p gestura-cli -- --help
+cargo run -p gestura-cli -- chat
+
+# Run GUI (Tauri)
+cargo tauri dev
+```
+
+### Build Commands
+
+| Command | Description |
+|---------|-------------|
+| `cargo fmt` | Format code |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Lint |
+| `cargo test --workspace --all-features` | Run tests (462+) |
+| `cargo build --workspace` | Debug build |
+| `cargo build --workspace --release` | Release build |
+| `cargo tauri dev` | GUI development |
+| `cargo tauri build` | GUI release |
 
 ## Configuration
-Config is stored at platform config dir (e.g., `~/Library/Application Support/Gestura/config.json`). Defaults are sensible and local‑first.
+Config is stored at `~/.gestura/config.yaml` (older versions used `config.json`). Defaults are sensible and local-first.
 
 Key sections:
 - `hotkey_listen`: e.g., "Ctrl+Space"
@@ -145,55 +188,47 @@ Tauri commands:
 
 ## Contributing
 
-We welcome contributions! Please read our contributing guidelines below.
+We welcome contributions! Please follow the Core-First architecture pattern.
 
 ### Development Setup
-1. Install Rust stable toolchain
-2. Install Node.js 18+ for frontend development
-3. Install platform-specific dependencies:
+1. Install Rust stable toolchain (2024 edition)
+2. Install Tauri CLI: `cargo install tauri-cli`
+3. Platform-specific:
    - **macOS**: Xcode Command Line Tools
    - **Windows**: Visual Studio Build Tools
-   - **Linux**: build-essential, cmake, pkg-config
+   - **Linux**: build-essential, cmake, pkg-config, libwebkit2gtk-4.1-dev
 
-### Code Standards
-- **Rust**: Use `cargo fmt` and `cargo clippy` before submitting
-- **Frontend**: Use Prettier and ESLint configurations
-- **Documentation**: All public APIs must have doc comments
-- **Testing**: New features require unit tests, integration tests for complex flows
+### Quality Gates (Required)
 
-### Feature Development
-1. Create feature branch from `main`
-2. Implement feature behind appropriate feature flags
-3. Add comprehensive tests
-4. Update documentation and CHANGELOG.md
-5. Ensure all platforms build successfully
-6. Submit PR with detailed description
+```bash
+cargo fmt
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+```
 
-### Code Organization
-- **Backend**: Modular crates in `src-tauri/src/`
-- **Frontend**: React components in `src/` (when added)
-- **Tests**: Unit tests alongside code, integration tests in `tests/`
-- **Documentation**: Inline docs + markdown files
+### Core-First Development
+
+1. **Business logic** → `crates/gestura-core/`
+2. **CLI commands** → `crates/gestura-cli/` (thin wrapper calling core)
+3. **GUI commands** → `crates/gestura-gui/` (re-export core types)
+
+```rust
+// Example: GUI module is a thin wrapper
+// crates/gestura-gui/src/new_module.rs
+pub use gestura_core::new_module::*;
+```
 
 ### Pull Request Process
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes with tests
-4. Run `just test` and `just build` to verify
-5. Update documentation as needed
-6. Submit PR with clear description
-7. Address review feedback promptly
+1. Create feature branch from `main`
+2. Implement in `gestura-core` first
+3. Add tests alongside implementation
+4. Run all quality gates
+5. Submit PR with clear description
 
 ### Issue Reporting
 - Use GitHub issue templates
 - Provide minimal reproduction steps
-- Include system information and logs
-- Tag appropriately (bug, feature, documentation)
-
-### Security
-- Report security issues privately to security@gestura.ai
-- Do not include sensitive data in public issues
-- Follow responsible disclosure practices
+- Include: OS, Rust version, error logs
 
 ## License
 

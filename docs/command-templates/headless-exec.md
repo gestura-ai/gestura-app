@@ -4,7 +4,7 @@ This template describes how to run a **single prompt** through Gestura in a way 
 
 ## Preconditions
 
-- You have a configured LLM provider in `~/.gestura/config.json` (see `docs/CONFIGURATION.md`).
+- You have a configured LLM provider in `~/.gestura/config.yaml` (see `docs/CONFIGURATION.md`).
 - If your workflow requires machine-readable output, use the global `--json` flag.
 
 ## Input sources (prompt text)
@@ -41,7 +41,7 @@ Before relying on this in automation, verify:
 
 - If the command fails, treat stderr as the primary signal.
 - If the failure is provider-related, validate:
-  - provider selection in `~/.gestura/config.json`
+  - provider selection in `~/.gestura/config.yaml`
   - network access (if using remote providers)
   - key availability (never paste keys into logs)
 

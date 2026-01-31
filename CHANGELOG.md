@@ -7,7 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Core-First Architecture Migration (Complete)
+
+A comprehensive refactoring to consolidate all business logic in `gestura-core`, with CLI and GUI as thin presentation layers.
+
+#### Phase 1: A2A Consolidation
+- Migrated A2A server implementation to `gestura-core/src/a2a/server.rs`
+- Created core token management functions
+- CLI uses core token functions via re-exports
+- **GUI a2a.rs**: 1,092 → 7 lines (99.4% reduction)
+
+#### Phase 2: Chat Session Unification
+- New `gestura-core/src/chat_sessions/` module with `types.rs` and `store.rs`
+- Unified session types: `ChatSession`, `ChatMessage`, `MessageRole`
+- Shared `ChatSessionStore` for file-based persistence
+- Both CLI and GUI use identical session management
+
+#### Phase 3: Permissions + Security Policy
+- Enhanced `gestura-core/src/tools/permissions.rs` with audit logging
+- Created `gestura-core/src/tools/policy.rs` for centralized policy helpers
+- GUI permissions module reduced to thin wrapper (~450 lines)
+
+#### Phase 4: MCP Server Migration
+- New `gestura-core/src/mcp/server.rs` (744 lines) with full protocol support
+- Includes tool calling, lifecycle management, and JSON-RPC handling
+- **GUI mcp_server.rs**: 956 → 459 lines (52% reduction)
+
+#### Phase 5: GUI Subsystem Migration
+- **Security**: `gestura-core/src/security/` with encryption.rs, storage.rs
+- **Sandbox**: `gestura-core/src/sandbox/` for isolated execution
+- **Scripting**: `gestura-core/src/scripting/` multi-language engine
+- **NATS**: `gestura-core/src/nats_mq/` message queue integration
+- **Agents**: `gestura-core/src/agents/` agent orchestration
+
+#### Phase 6: Analytics/Recommendations/Audio
+- **Audio**: `gestura-core/src/audio/` noise cancellation with DFT/IDFT
+- **Analytics**: `gestura-core/src/analytics/` with privacy modes
+- **Recommendations**: `gestura-core/src/recommendations/` ML-based suggestions
+
+#### Code Reduction Summary
+
+| GUI Module | Before | After | Reduction |
+|------------|--------|-------|-----------|
+| a2a.rs | 1,092 | 7 | 99.4% |
+| security.rs | 265 | 18 | 93.2% |
+| sandbox.rs | 326 | 7 | 97.9% |
+| scripting_engine.rs | 679 | 10 | 98.5% |
+| nats_mq.rs | 439 | 13 | 97.0% |
+| noise_cancellation.rs | 476 | 10 | 97.9% |
+| usage_analytics.rs | 772 | 10 | 98.7% |
+| personalized_recommendations.rs | 649 | 10 | 98.5% |
+
 ### Added
+
+#### Chat Markdown Improvements
+- **GFM-style tables**: Proper table rendering with borders and alignment
+- **Task lists**: GitHub-style `- [ ]` and `- [x]` checkbox rendering
+- **Better emphasis**: Proper bold, italic, and strikethrough handling
+- **Autolinks**: Automatic URL detection and linking
+- **Tolerant code fences**: Support for varied fence styles
+- **Copy raw markdown button**: One-click copy of original markdown content
+- **Restricted-mode tool confirmation**: Pause/resume flow for tool execution
 
 #### Modern TUI Implementation
 - **Advanced TUI Architecture**: Complete ratatui-based terminal UI with professional features

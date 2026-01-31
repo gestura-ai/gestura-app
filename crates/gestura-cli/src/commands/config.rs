@@ -8,9 +8,9 @@ use std::path::PathBuf;
 
 /// Get the config file path
 fn get_config_path() -> PathBuf {
-    dirs::config_dir()
-        .map(|p| p.join("gestura").join("config.json"))
-        .unwrap_or_else(|| PathBuf::from("config.json"))
+    // Keep CLI path reporting consistent with gestura-core.
+    // Config is persisted at `~/.gestura/config.yaml` (with legacy JSON migration).
+    AppConfig::default_path()
 }
 
 pub fn run(action: &ConfigAction) -> Result<()> {

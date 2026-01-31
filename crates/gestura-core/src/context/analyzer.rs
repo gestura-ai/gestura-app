@@ -135,7 +135,7 @@ const CATEGORY_PATTERNS: &[CategoryPattern] = &[
 ];
 
 /// Compiled regex for file path extraction.
-/// Matches paths like: src/main.rs, ./config.json, ~/Documents/file.txt
+/// Matches paths like: src/main.rs, ./config.yaml, ~/Documents/file.txt
 static FILE_PATH_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:^|[\s\(\[])([./~]?(?:[\w-]+/)*[\w.-]+\.[a-zA-Z0-9]+)(?:[\s\)\]]|$)")
         .expect("Invalid file path regex")

@@ -158,6 +158,34 @@
             opacity: 0.9;
         }
 
+			/*
+			 * Header chat icon
+			 *
+			 * We normally render icons via `icons.css` using CSS `mask-image`.
+			 * Some WebView builds can fail to render masked data-URI icons reliably.
+			 * For the chat header icon specifically, use a deterministic inline SVG.
+			 */
+			.header-title .icon-message {
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				width: 1em;
+				height: 1em;
+			}
+			.header-title .icon-message::before {
+				display: none;
+			}
+			.header-title .icon-message > svg {
+				width: 1em;
+				height: 1em;
+				display: block;
+				stroke: currentColor;
+				fill: none;
+				stroke-width: 2;
+				stroke-linecap: round;
+				stroke-linejoin: round;
+			}
+
         .header-controls {
             display: flex;
             align-items: center;
@@ -1790,13 +1818,29 @@
         }
 
         .config-confirm-dialog {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
+            /* Solid background matching system theme - no translucency */
+            background: #fbfbfd;
+            border: 1px solid var(--glass-border);
             border-radius: 16px;
             padding: 24px;
             max-width: 400px;
             width: 90%;
             box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+        }
+
+        /* Dark mode: solid dark background */
+        @media (prefers-color-scheme: dark) {
+            .config-confirm-dialog {
+                background: #1c1c1e;
+            }
+        }
+
+        html[data-theme="dark"] .config-confirm-dialog {
+            background: #1c1c1e;
+        }
+
+        html[data-theme="light"] .config-confirm-dialog {
+            background: #fbfbfd;
         }
 
         .config-confirm-dialog h3 {
@@ -1844,7 +1888,7 @@
 
         .config-confirm-buttons .btn-cancel {
             background: var(--bg-glass);
-            border: 1px solid var(--border);
+            border: 1px solid var(--glass-border);
             color: var(--text-secondary);
         }
 
@@ -1874,17 +1918,33 @@
 	            align-items: center;
 	            justify-content: center;
 	            z-index: 10001;
-	            backdrop-filter: blur(4px);
+	            /* Removed backdrop-filter for solid appearance */
 	        }
 
 	        .tool-confirm-dialog {
-	            background: var(--bg-secondary);
-	            border: 1px solid var(--border);
+	            /* Solid background matching system theme - no translucency */
+	            background: #fbfbfd;
+	            border: 1px solid var(--glass-border);
 	            border-radius: 16px;
 	            padding: 24px;
 	            max-width: 520px;
 	            width: 92%;
 	            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+	        }
+
+	        /* Dark mode: solid dark background */
+	        @media (prefers-color-scheme: dark) {
+	            .tool-confirm-dialog {
+	                background: #1c1c1e;
+	            }
+	        }
+
+	        html[data-theme="dark"] .tool-confirm-dialog {
+	            background: #1c1c1e;
+	        }
+
+	        html[data-theme="light"] .tool-confirm-dialog {
+	            background: #fbfbfd;
 	        }
 
 	        .tool-confirm-dialog h3 {
@@ -1923,7 +1983,7 @@
 	            gap: 6px;
 	            padding: 2px 8px;
 	            border-radius: 10px;
-	            border: 1px solid var(--border);
+	            border: 1px solid var(--glass-border);
 	            background: rgba(255, 159, 10, 0.10);
 	            color: #ff9f0a;
 	            font-weight: 600;
@@ -1961,7 +2021,7 @@
 
 	        .tool-confirm-buttons .btn-deny {
 	            background: var(--bg-glass);
-	            border: 1px solid var(--border);
+	            border: 1px solid var(--glass-border);
 	            color: var(--text-secondary);
 	        }
 
@@ -2628,7 +2688,11 @@
     <!-- Header -->
     <div class="header">
         <div class="header-title">
-            <img src="../assets/gestura-app.svg" alt="Gestura" style="width: 20px; height: 20px;">
+		            <span class="icon-message" aria-hidden="true">
+						<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+							<path d="M21 15C21 15.5304 20.7893 16.0391 20.4142 16.4142C20.0391 16.7893 19.5304 17 19 17H7L3 21V5C3 4.46957 3.21071 3.96086 3.58579 3.58579C3.96086 3.21071 4.46957 3 5 3H19C19.5304 3 20.0391 3.21071 20.4142 3.58579C20.7893 3.96086 21 4.46957 21 5V15Z" />
+						</svg>
+					</span>
             Gestura Agent
         </div>
         <div class="header-controls">
@@ -2667,6 +2731,10 @@
                 <span class="icon-checklist"></span>
                 <span class="menu-item-label">Tasks</span>
             </div>
+	            <div class="menu-item" id="menuItemOpenShell">
+	                <span class="icon-folder"></span>
+	                <span class="menu-item-label">Open In Shell</span>
+	            </div>
         </div>
     </div>
 
@@ -3317,8 +3385,10 @@
             statusElement.classList.remove('active');
             statusElement.classList.remove('busy');
             statusElement.classList.remove('error');
-            if (kind === 'listening') statusElement.classList.add('active');
-            if (kind === 'busy') statusElement.classList.add('busy');
+	            // Backwards-compatible alias: older handlers used `processing`.
+	            if (kind === 'processing') kind = 'busy';
+	            if (kind === 'listening') statusElement.classList.add('active');
+	            if (kind === 'busy') statusElement.classList.add('busy');
             if (kind === 'error') statusElement.classList.add('error');
         }
 
@@ -3542,6 +3612,25 @@
 	        }
 
 	        /**
+	         * Create a placeholder token that is safe from our inline-markdown regex passes.
+	         *
+	         * IMPORTANT: Avoid underscores because `_italic_` parsing would mutate tokens
+	         * (e.g. `@@INLINE_CODE_0@@` becomes `@@INLINE<em>CODE</em>0@@`), preventing
+	         * restoration and leaking placeholder text into the UI.
+	         *
+	         * Token format: `@@${prefix}${index}@@`
+	         *
+	         * @param {string} prefix
+	         * @param {number} index
+	         * @returns {string}
+	         */
+	        function makeSafeToken(prefix, index) {
+	            const p = (prefix ?? '').toString();
+	            const i = Number(index);
+	            return `@@${p}${Number.isFinite(i) ? i : 0}@@`;
+	        }
+
+	        /**
 	         * Render inline markdown (bold/italic/strike/links/inline-code) with HTML-escaping.
 	         * @param {string} text
 	         * @returns {string}
@@ -3551,7 +3640,7 @@
 			            const inlineCodeTokens = [];
 			            const linkTokens = [];
 		            let working = src.replace(/`([^`]+?)`/g, (_m, code) => {
-	                const token = `@@INLINE_CODE_${inlineCodeTokens.length}@@`;
+	                const token = makeSafeToken('INLINECODE', inlineCodeTokens.length);
 	                inlineCodeTokens.push(`<code>${escapeHtmlText(code)}</code>`);
 	                return token;
 	            });
@@ -3562,7 +3651,7 @@
 		            working = working.replace(/\[([^\]]+?)\]\(([^\)]+?)\)/g, (m, label, url) => {
 		                const safeUrl = sanitizeLinkUrl(url);
 		                if (!safeUrl) return m;
-		                const token = `@@LINK_${linkTokens.length}@@`;
+		                const token = makeSafeToken('LINK', linkTokens.length);
 		                const safeLabel = escapeHtmlText(label);
 		                const href = escapeHtmlAttr(safeUrl);
 		                const isHttp = /^https?:/i.test(safeUrl);
@@ -3577,7 +3666,7 @@
 			            working = working.replace(/(^|[^A-Za-z0-9_@])(https?:\/\/[^\s<>()]+[^\s<>()\.,;:!?])/g, (m, lead, url) => {
 			                const safeUrl = sanitizeLinkUrl(url);
 			                if (!safeUrl) return m;
-			                const token = `@@LINK_${linkTokens.length}@@`;
+			                const token = makeSafeToken('LINK', linkTokens.length);
 			                const href = escapeHtmlAttr(safeUrl);
 			                linkTokens.push(`<a href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtmlText(url)}</a>`);
 			                return `${lead}${token}`;
@@ -3599,13 +3688,13 @@
 
 		            // Restore links
 		            for (let i = 0; i < linkTokens.length; i++) {
-		                const token = `@@LINK_${i}@@`;
+		                const token = makeSafeToken('LINK', i);
 		                working = working.split(token).join(linkTokens[i]);
 		            }
 
 	            // Restore inline code tokens
 	            for (let i = 0; i < inlineCodeTokens.length; i++) {
-	                const token = `@@INLINE_CODE_${i}@@`;
+	                const token = makeSafeToken('INLINECODE', i);
 	                working = working.split(token).join(inlineCodeTokens[i]);
 	            }
 	            return working;
@@ -3742,7 +3831,7 @@
 		            // around the language id and closing fence.
 		            const codeTokens = [];
 		            let withoutCode = text.replace(/(```|~~~)\s*([a-zA-Z0-9_-]*)\s*\n([\s\S]*?)\n\1\s*(?:\n|$)/g, (_m, _fence, lang, code) => {
-	                const token = `@@CODE_BLOCK_${codeTokens.length}@@`;
+	                const token = makeSafeToken('CODEBLOCK', codeTokens.length);
 	                const safeLang = (lang ?? '').toString().trim();
 	                const classAttr = safeLang ? ` class="language-${escapeHtmlAttr(safeLang)}"` : '';
 	                codeTokens.push(`<pre><code${classAttr}>${escapeHtmlText(code)}</code></pre>`);
@@ -3877,7 +3966,7 @@
 
 	            // Restore code blocks
 	            for (let j = 0; j < codeTokens.length; j++) {
-	                const token = `@@CODE_BLOCK_${j}@@`;
+	                const token = makeSafeToken('CODEBLOCK', j);
 	                html = html.split(token).join(codeTokens[j]);
 	            }
 	            return html;
@@ -4247,10 +4336,10 @@
 	                    const sid = next.session_id || sessionId || null;
 	                    try {
 	                        if (approved) {
-	                            await invoke('approve_tool_confirmation', { confirmation_id: next.confirmation_id, session_id: sid });
+	                            await window.__TAURI__.core.invoke('approve_tool_confirmation', { confirmation_id: next.confirmation_id, session_id: sid });
 	                            showToast('Approved tool execution', 'success');
 	                        } else {
-	                            await invoke('deny_tool_confirmation', { confirmation_id: next.confirmation_id, session_id: sid });
+	                            await window.__TAURI__.core.invoke('deny_tool_confirmation', { confirmation_id: next.confirmation_id, session_id: sid });
 	                            showToast('Denied tool execution', 'warning');
 	                        }
 	                    } catch (err) {
@@ -4396,21 +4485,17 @@
         // --- Event Listeners (Tauri) ---
 
 		        async function setupEvents() {
-            if (!window.__TAURI__) return;
-	            const event = window.__TAURI__.event;
-		            const webview = await resolveCurrentWebviewWindow();
-				            // If this window is session-scoped, we can reliably derive its label.
-				            // This enables a safe targeted fallback even if we can't get the webview handle.
+	            if (!window.__TAURI__) return;
+		            const event = window.__TAURI__.event;
+			            const webview = await resolveCurrentWebviewWindow();
+				            // Best-effort window label lookup for diagnostics only.
 				            const expectedWindowLabel = sessionId ? `chat-${sessionId}` : null;
 				            const resolvedWindowLabel = await resolveWindowLabel(webview);
-				            const targetWindowLabel = resolvedWindowLabel || expectedWindowLabel;
 				            const listenerMode = (webview && typeof webview.listen === 'function')
 				                ? 'webview.listen'
-				                : (targetWindowLabel
-				                    ? `event.listen(target=WebviewWindow:${targetWindowLabel})`
-				                    : 'event.listen(DISABLED-no-target)');
+				                : 'event.listen';
 		            updateDebugMeta({
-				                windowLabel: targetWindowLabel,
+			                windowLabel: resolvedWindowLabel || expectedWindowLabel,
 		                listenerMode,
 		            });
 
@@ -4425,21 +4510,14 @@
 	             * @param {string} eventName
 	             * @param {(e: any) => void} handler
 	             */
-			            const listen = async (eventName, handler) => {
-			                if (webview && typeof webview.listen === 'function') {
-			                    return await webview.listen(eventName, handler);
-			                }
-				                // IMPORTANT (Tauri v2): global event.listen behaves like listen_any unless you set a target.
-				                // We therefore FAIL-CLOSED here: if we can't scope the listener to a window label,
-				                // we refuse to attach the listener rather than risk cross-window leakage.
-				                if (targetWindowLabel) {
-				                    return await event.listen(eventName, handler, {
-				                        target: { kind: 'WebviewWindow', label: targetWindowLabel },
-				                    });
-				                }
-				                console.error('[chat] Refusing to attach unscoped event listener (no webview.listen and no window label target)', { eventName });
-				                return () => {};
-			            };
+		            const listen = async (eventName, handler) => {
+		                if (webview && typeof webview.listen === 'function') {
+		                    return await webview.listen(eventName, handler);
+		                }
+		                // IMPORTANT: use unscoped event listeners as a compatibility fallback.
+		                // Safety: `acceptSessionEvent()` enforces session isolation (rejects missing/mismatched session_id).
+		                return await event.listen(eventName, handler);
+		            };
 
 	            /**
 	             * Unpack a backend event payload and extract a `session_id` when present.
@@ -4648,6 +4726,17 @@
 	                enqueueToolConfirmation(payload);
 	            });
 
+		            await listen('chat-stream-tool-blocked', (e) => {
+		                const res = acceptSessionEvent('chat-stream-tool-blocked', e?.payload);
+		                if (!res.accept) return;
+		                touchStreamActivity({ mode: 'normal' });
+		                const payload = res.value || {};
+		                const toolName = payload?.tool_name || 'tool';
+		                const reason = payload?.reason || 'blocked';
+		                addMessage(`Tool blocked: ${toolName} (${reason})`, 'agent');
+		                showToast(`Tool blocked: ${toolName}`, 'warning');
+		            });
+
 	            await listen('chat-stream-tool-start', (e) => {
 	                const res = acceptSessionEvent('chat-stream-tool-start', e?.payload);
 	                if (!res.accept) return;
@@ -4839,6 +4928,16 @@
                 scrollToBottom();
             });
 
+	            // 3c2. Status Event - user-facing streaming status updates
+	            await listen('chat-stream-status', (e) => {
+	                const res = acceptSessionEvent('chat-stream-status', e?.payload);
+	                if (!res.accept) return;
+	                touchStreamActivity({ mode: 'normal' });
+	                const payload = res.value;
+	                const msg = (typeof payload === 'string') ? payload : (payload && payload.message) ? payload.message : '';
+	                if (msg) setStatus(msg, 'busy');
+	            });
+
             // 3d. Context Compaction Event - shows compaction notification
 	            await listen('chat-context-compacted', (e) => {
 	                const res = acceptSessionEvent('chat-context-compacted', e?.payload);
@@ -4889,17 +4988,17 @@
                                 return;
                             }
                             if (key === 'provider') {
-                                await invoke('set_session_llm_provider', { session_id: sid, provider: value });
+	                                await window.__TAURI__.core.invoke('set_session_llm_provider', { session_id: sid, provider: value });
                                 // Update UI dropdown
                                 const providerSelect = document.getElementById('provider-select');
                                 if (providerSelect) providerSelect.value = value;
                             } else if (key === 'model') {
-                                await invoke('set_session_llm_model', { session_id: sid, model: value });
+	                                await window.__TAURI__.core.invoke('set_session_llm_model', { session_id: sid, model: value });
                                 // Update UI dropdown
                                 const modelSelect = document.getElementById('model-select');
                                 if (modelSelect) modelSelect.value = value;
                             } else if (key === 'permission_level') {
-                                await invoke('set_session_permission_level', { session_id: sid, level: value });
+	                                await window.__TAURI__.core.invoke('set_session_permission_level', { session_id: sid, level: value });
                             }
                             addMessage(`✅ Configuration updated: ${key} = ${value}`, 'agent');
                         } catch (err) {
@@ -4917,11 +5016,11 @@
                             return;
                         }
                         if (key === 'provider') {
-                            await invoke('set_session_llm_provider', { session_id: sid, provider: value });
+	                            await window.__TAURI__.core.invoke('set_session_llm_provider', { session_id: sid, provider: value });
                         } else if (key === 'model') {
-                            await invoke('set_session_llm_model', { session_id: sid, model: value });
+	                            await window.__TAURI__.core.invoke('set_session_llm_model', { session_id: sid, model: value });
                         } else if (key === 'permission_level') {
-                            await invoke('set_session_permission_level', { session_id: sid, level: value });
+	                            await window.__TAURI__.core.invoke('set_session_permission_level', { session_id: sid, level: value });
                         }
                         addMessage(`✅ Configuration updated: ${key} = ${value}`, 'agent');
                     } catch (err) {
@@ -5778,6 +5877,21 @@
             // Trigger loadTasks if function exists
             if (typeof loadTasks === 'function') loadTasks();
         });
+
+	        document.getElementById('menuItemOpenShell')?.addEventListener('click', async () => {
+	            closeMenuPanel();
+	            if (!sessionId) {
+	                showToast('No active session', 'error');
+	                return;
+	            }
+	            try {
+	                await window.__TAURI__.core.invoke('open_shell_for_session', { session_id: sessionId });
+	                showToast('Opened terminal for this session', 'success');
+	            } catch (e) {
+	                console.error('Failed to open shell for session:', e);
+	                showToast('Failed to open shell: ' + e, 'error');
+	            }
+	        });
 
         function openSessionPanel() {
             sessionPanel.classList.add('open');
@@ -7308,7 +7422,10 @@
 
         // Initialize
         initHeaderControls();
-        setupEvents();
+	        setupEvents().catch((err) => {
+	            console.error('[chat] setupEvents failed', err);
+	            showToast(`setupEvents failed: ${err}`, 'error');
+	        });
         loadSessionSettings(); // Load session settings on page load
         loadSessionHistory(); // Load conversation history when restoring a session
         messageInput.focus();

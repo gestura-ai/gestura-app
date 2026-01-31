@@ -2,459 +2,488 @@
 
 ## Overview
 
-Gestura.app provides a comprehensive REST API for voice recognition, gesture control, and haptic feedback integration. The API is designed for developers who want to integrate Gestura's capabilities into their applications.
+Gestura.app provides multiple API interfaces:
 
-## Base URL
+1. **gestura-core Library API** - Rust library for direct integration
+2. **MCP Protocol** - Model Context Protocol for AI tool execution
+3. **CLI Commands** - Command-line interface
+4. **Tauri Commands** - GUI IPC commands
 
-```
-https://api.gestura.app/v1
-```
+## gestura-core Library API
 
-## Authentication
+The core library exports types and functions for all Gestura functionality.
 
-All API requests require authentication using an API key. Include your API key in the request header:
+### Pipeline API
 
-```http
-Authorization: Bearer YOUR_API_KEY
-```
+Execute agent requests through the pipeline:
 
-### Getting an API Key
+```rust
+use gestura_core::pipeline::{Pipeline, AgentRequest, AgentResponse};
 
-1. Open Gestura.app
-2. Go to Settings → Developer → API Keys
-3. Click "Generate New Key"
-4. Copy the generated key (starts with `gsk_`)
+// Create a pipeline
+let pipeline = Pipeline::new(config).await?;
 
-## Rate Limits
-
-- **Free Tier**: 1,000 requests per hour
-- **Pro Tier**: 10,000 requests per hour
-- **Enterprise**: Custom limits
-
-Rate limit headers are included in all responses:
-- `X-RateLimit-Limit`: Request limit per hour
-- `X-RateLimit-Remaining`: Remaining requests
-- `X-RateLimit-Reset`: Time when limit resets (Unix timestamp)
-
-## Voice Recognition API
-
-### Recognize Speech
-
-Convert audio to text using advanced speech recognition.
-
-```http
-POST /voice/recognize
+// Execute a request
+let request = AgentRequest::new("Analyze this code");
+let response = pipeline.process(request).await?;
 ```
 
-**Parameters:**
+### Chat Sessions API
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `audio_data` | File | Yes | Audio file (WAV, MP3, FLAC) |
-| `language` | String | No | Language code (default: "en-US") |
-| `model` | String | No | Model type ("base", "small", "medium", "large") |
-| `enable_vad` | Boolean | No | Enable voice activity detection |
+Manage persistent chat sessions:
 
-**Example Request:**
+```rust
+use gestura_core::chat_sessions::{ChatSession, ChatSessionStore, FileChatSessionStore};
 
-```bash
-curl -X POST https://api.gestura.app/v1/voice/recognize \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -F "audio_data=@recording.wav" \
-  -F "language=en-US" \
-  -F "model=medium"
+// Create a session store
+let store = FileChatSessionStore::new(Path::new("~/.gestura/sessions"))?;
+
+// Create a new session
+let session = ChatSession::new("project-chat")?;
+store.save(&session).await?;
+
+// List sessions
+let sessions = store.list().await?;
+
+// Load a session
+let session = store.load("session-id").await?;
 ```
 
-**Response:**
+### Tool Registry API
+
+Register and execute tools:
+
+```rust
+use gestura_core::tools::{ToolRegistry, ToolDefinition, PermissionManager};
+
+// Create a registry
+let registry = ToolRegistry::new();
+
+// Register a tool
+registry.register(ToolDefinition {
+    name: "my_tool".to_string(),
+    description: "Custom tool".to_string(),
+    input_schema: json!({"type": "object"}),
+    handler: Box::new(my_handler),
+})?;
+
+// Check permissions
+let perms = PermissionManager::new(config);
+if perms.is_action_allowed(&request) {
+    // Execute tool
+}
+```
+
+### MCP Server API
+
+Create an MCP server:
+
+```rust
+use gestura_core::mcp::{McpServer, McpServerConfig};
+
+let config = McpServerConfig {
+    name: "my-server".to_string(),
+    version: "1.0.0".to_string(),
+    ..Default::default()
+};
+
+let server = McpServer::new(config)?;
+server.start().await?;
+```
+
+### Security API
+
+Encrypt and store sensitive data:
+
+```rust
+use gestura_core::security::{SecureStorage, Encryptor, create_secure_storage};
+
+// Create secure storage
+let storage = create_secure_storage("my-app")?;
+
+// Store a secret
+storage.set("api_key", "secret_value").await?;
+
+// Retrieve a secret
+let value = storage.get("api_key").await?;
+
+// Encrypt data
+let encryptor = Encryptor::new(key)?;
+let encrypted = encryptor.encrypt(data)?;
+```
+
+### Analytics API
+
+Track usage with privacy controls:
+
+```rust
+use gestura_core::analytics::{UsageAnalytics, PrivacyMode};
+
+let analytics = UsageAnalytics::new(PrivacyMode::Limited);
+
+// Track an event
+analytics.track_event("tool_used", json!({"tool": "file_read"})).await?;
+
+// Get insights
+let insights = analytics.get_insights().await?;
+```
+
+## MCP Protocol API
+
+Gestura implements MCP (Model Context Protocol) version 2025-11-25 for AI tool execution.
+
+### Protocol Overview
+
+MCP uses JSON-RPC 2.0 over STDIO for communication:
 
 ```json
+{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {...}}
+```
+
+### Initialization
+
+```json
+// Request
 {
-  "text": "Hello, this is a test recording",
-  "confidence": 0.95,
-  "language": "en-US",
-  "duration_ms": 2500,
-  "words": [
-    {
-      "word": "Hello",
-      "start_time": 0.0,
-      "end_time": 0.5,
-      "confidence": 0.98
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-11-25",
+    "capabilities": {
+      "tools": {},
+      "resources": {},
+      "prompts": {}
+    },
+    "clientInfo": {
+      "name": "my-client",
+      "version": "1.0.0"
     }
-  ]
+  }
 }
-```
 
-### Voice Activity Detection
-
-Detect speech segments in audio.
-
-```http
-POST /voice/vad
-```
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `audio_data` | File | Yes | Audio file |
-| `threshold` | Float | No | Detection threshold (0.0-1.0) |
-| `min_duration` | Integer | No | Minimum segment duration (ms) |
-
-**Response:**
-
-```json
+// Response
 {
-  "segments": [
-    {
-      "start_time": 1.2,
-      "end_time": 3.8,
-      "confidence": 0.92
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "protocolVersion": "2025-11-25",
+    "serverInfo": {
+      "name": "gestura-mcp",
+      "version": "0.1.0"
+    },
+    "capabilities": {
+      "tools": {"listChanged": true},
+      "resources": {"subscribe": true}
     }
-  ],
-  "total_speech_duration": 2.6,
-  "speech_ratio": 0.65
-}
-```
-
-## Gesture Recognition API
-
-### Recognize Gesture
-
-Identify gestures from sensor data.
-
-```http
-POST /gestures/recognize
-```
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `sensor_data` | Array | Yes | Array of sensor readings |
-| `user_id` | String | No | User ID for personalized recognition |
-| `gesture_types` | Array | No | Limit to specific gesture types |
-
-**Sensor Data Format:**
-
-```json
-{
-  "sensor_data": [
-    {
-      "timestamp_ms": 1640995200000,
-      "accelerometer": [0.1, 0.2, 9.8],
-      "gyroscope": [0.01, 0.02, 0.03],
-      "magnetometer": [25.0, -15.0, 45.0],
-      "quaternion": [1.0, 0.0, 0.0, 0.0]
-    }
-  ]
-}
-```
-
-**Response:**
-
-```json
-{
-  "gesture": "tap",
-  "confidence": 0.89,
-  "alternatives": [
-    {
-      "gesture": "double_tap",
-      "confidence": 0.23
-    }
-  ],
-  "processing_time_ms": 15
-}
-```
-
-### Custom Gestures
-
-#### Create Custom Gesture
-
-```http
-POST /gestures/custom
-```
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `name` | String | Yes | Gesture name |
-| `description` | String | No | Gesture description |
-| `gesture_type` | String | Yes | Type: "motion", "tap", "swipe", etc. |
-| `user_id` | String | Yes | User ID |
-
-#### Train Custom Gesture
-
-```http
-POST /gestures/custom/{gesture_id}/train
-```
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `training_samples` | Array | Yes | Array of sensor data samples |
-| `target_samples` | Integer | No | Number of samples needed (default: 5) |
-
-## Ring Integration API
-
-### Ring Status
-
-Get Haptic Harmony ring connection status.
-
-```http
-GET /ring/status
-```
-
-**Response:**
-
-```json
-{
-  "connected": true,
-  "battery_level": 85,
-  "signal_strength": -45,
-  "firmware_version": "1.2.3",
-  "last_seen": "2024-01-15T10:30:00Z"
-}
-```
-
-### Send Haptic Feedback
-
-```http
-POST /ring/haptic
-```
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `pattern` | String | Yes | Pattern: "tap", "pulse", "vibrate", "custom" |
-| `intensity` | Float | No | Intensity (0.0-1.0, default: 0.5) |
-| `duration_ms` | Integer | No | Duration in milliseconds |
-| `custom_pattern` | Array | No | Custom pattern data |
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "pattern_id": "pat_123456",
-  "estimated_duration_ms": 500
-}
-```
-
-## Analytics API
-
-### Usage Analytics
-
-Get usage analytics and insights.
-
-```http
-GET /analytics/usage
-```
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `days` | Integer | No | Number of days (default: 7, max: 365) |
-| `user_id` | String | No | Specific user ID |
-| `include_details` | Boolean | No | Include detailed breakdown |
-
-**Response:**
-
-```json
-{
-  "total_events": 1250,
-  "unique_users": 45,
-  "active_sessions": 12,
-  "most_used_features": [
-    {
-      "feature": "voice_commands",
-      "usage_count": 450
-    }
-  ],
-  "usage_patterns": {
-    "peak_usage_hours": [9, 14, 20],
-    "average_session_duration_minutes": 15.5
-  },
-  "performance_metrics": {
-    "average_response_time_ms": 125,
-    "gesture_recognition_accuracy": 0.92,
-    "voice_recognition_accuracy": 0.95
   }
 }
 ```
 
-## Plugin System API
-
-### List Plugins
-
-```http
-GET /plugins
-```
-
-**Response:**
+### List Tools
 
 ```json
+// Request
+{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
+
+// Response
 {
-  "plugins": [
-    {
-      "id": "plugin_123",
-      "name": "Weather Plugin",
-      "version": "1.0.0",
-      "state": "running",
-      "permissions": ["network", "notifications"]
-    }
-  ]
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "tools": [
+      {
+        "name": "file_read",
+        "description": "Read file contents",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {"type": "string"}
+          },
+          "required": ["path"]
+        }
+      }
+    ]
+  }
 }
 ```
 
-### Execute Plugin Command
-
-```http
-POST /plugins/{plugin_id}/execute
-```
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `command` | String | Yes | Command to execute |
-| `args` | Object | No | Command arguments |
-
-## Scripting API
-
-### Execute Script
-
-```http
-POST /scripts/execute
-```
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `script_id` | String | Yes | Script ID |
-| `context` | Object | No | Execution context |
-| `timeout_seconds` | Integer | No | Execution timeout |
-
-**Response:**
+### Call Tool
 
 ```json
+// Request
 {
-  "success": true,
-  "return_value": {"result": "completed"},
-  "execution_time_ms": 250,
-  "output": "Script executed successfully"
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "file_read",
+    "arguments": {"path": "/path/to/file.txt"}
+  }
 }
+
+// Response
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "content": [
+      {"type": "text", "text": "File contents here..."}
+    ]
+  }
+}
+```
+
+### Built-in Tools
+
+| Tool | Description | Required Args |
+|------|-------------|---------------|
+| `file_read` | Read file contents | `path` |
+| `file_write` | Write to file | `path`, `content` |
+| `file_edit` | Edit file with search/replace | `path`, `edits` |
+| `shell_exec` | Execute shell command | `command` |
+| `git_status` | Get git repository status | - |
+| `git_diff` | Get git diff | `ref` |
+| `web_fetch` | Fetch URL content | `url` |
+
+## CLI Commands
+
+The `gestura-cli` provides command-line access to all features.
+
+### Chat Commands
+
+```bash
+# Start interactive chat
+gestura chat
+
+# One-shot execution
+gestura exec "Explain this code"
+
+# Continue a session
+gestura chat --session <session-id>
+```
+
+### Session Management
+
+```bash
+# List sessions
+gestura session list
+
+# Show session details
+gestura session show <session-id>
+
+# Delete a session
+gestura session delete <session-id>
+```
+
+### MCP Commands
+
+```bash
+# Start MCP server
+gestura mcp serve
+
+# List available tools
+gestura mcp tools
+
+# Call a tool
+gestura mcp call file_read --path /path/to/file
+```
+
+### A2A Commands
+
+```bash
+# Start A2A server
+gestura a2a serve --port 8080
+
+# Discover agents
+gestura a2a discover
+
+# Send message to agent
+gestura a2a send --agent <agent-id> --message "Hello"
+```
+
+### Configuration
+
+```bash
+# Show config
+gestura config show
+
+# Set config value
+gestura config set llm.provider openai
+
+# Initialize project
+gestura init
+```
+
+### Other Commands
+
+```bash
+# Listen for voice input
+gestura listen
+
+# Health check
+gestura health
+
+# Generate shell completions
+gestura completion bash > ~/.bash_completion.d/gestura
+```
+
+## Tauri Commands (GUI IPC)
+
+The GUI exposes Tauri commands for frontend-backend communication:
+
+### Session Commands
+
+```typescript
+// List chat sessions
+await invoke('list_chat_sessions');
+
+// Create new session
+await invoke('create_chat_session', { name: 'My Chat' });
+
+// Load session
+await invoke('load_chat_session', { sessionId: 'uuid' });
+
+// Delete session
+await invoke('delete_chat_session', { sessionId: 'uuid' });
+```
+
+### Agent Commands
+
+```typescript
+// Execute agent request
+await invoke('execute_agent_request', {
+  prompt: 'Analyze this code',
+  sessionId: 'uuid'
+});
+
+// Cancel execution
+await invoke('cancel_execution', { requestId: 'uuid' });
+```
+
+### Tool Commands
+
+```typescript
+// List available tools
+await invoke('list_tools');
+
+// Execute tool
+await invoke('execute_tool', {
+  name: 'file_read',
+  arguments: { path: '/path/to/file' }
+});
+
+// Confirm tool execution (restricted mode)
+await invoke('confirm_tool_execution', {
+  requestId: 'uuid',
+  confirmed: true
+});
+```
+
+### Configuration Commands
+
+```typescript
+// Get configuration
+await invoke('get_config');
+
+// Update configuration
+await invoke('update_config', {
+  key: 'llm.provider',
+  value: 'openai'
+});
 ```
 
 ## Error Handling
 
-All API endpoints return standard HTTP status codes:
+### Rust Error Types
 
-- `200 OK`: Request successful
-- `400 Bad Request`: Invalid parameters
-- `401 Unauthorized`: Invalid or missing API key
-- `403 Forbidden`: Insufficient permissions
-- `404 Not Found`: Resource not found
-- `429 Too Many Requests`: Rate limit exceeded
-- `500 Internal Server Error`: Server error
+```rust
+use gestura_core::error::GesturaError;
 
-**Error Response Format:**
-
-```json
-{
-  "error": {
-    "code": "INVALID_PARAMETER",
-    "message": "The 'language' parameter must be a valid language code",
-    "details": {
-      "parameter": "language",
-      "provided_value": "invalid",
-      "valid_values": ["en-US", "es-ES", "fr-FR"]
-    }
-  }
+// Error variants
+pub enum GesturaError {
+    Config(String),
+    Io(std::io::Error),
+    Pipeline(String),
+    Tool(String),
+    Permission(String),
+    Session(String),
+    Mcp(String),
 }
 ```
 
-## SDKs and Libraries
+### MCP Error Codes
 
-Official SDKs are available for:
+| Code | Description |
+|------|-------------|
+| `-32700` | Parse error |
+| `-32600` | Invalid request |
+| `-32601` | Method not found |
+| `-32602` | Invalid params |
+| `-32603` | Internal error |
 
-- **JavaScript/Node.js**: `npm install @gestura/sdk`
-- **Python**: `pip install gestura-sdk`
-- **Rust**: `cargo add gestura-sdk`
-- **Go**: `go get github.com/gestura-ai/go-sdk`
+## Key Types Reference
 
-### JavaScript Example
+### Pipeline Types
 
-```javascript
-import { GesturaSDK } from '@gestura/sdk';
+```rust
+pub struct AgentRequest {
+    pub id: String,
+    pub prompt: String,
+    pub context: Option<Context>,
+    pub tools: Vec<ToolDefinition>,
+}
 
-const client = new GesturaSDK({
-  apiKey: 'YOUR_API_KEY',
-  baseUrl: 'https://api.gestura.app/v1'
-});
-
-// Recognize speech
-const result = await client.voice.recognize({
-  audioData: audioFile,
-  language: 'en-US'
-});
-
-console.log('Recognized text:', result.text);
+pub struct AgentResponse {
+    pub id: String,
+    pub content: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub usage: TokenUsage,
+}
 ```
 
-### Python Example
+### Session Types
 
-```python
-from gestura_sdk import GesturaClient
+```rust
+pub struct ChatSession {
+    pub id: String,
+    pub name: String,
+    pub messages: Vec<ChatMessage>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
 
-client = GesturaClient(api_key='YOUR_API_KEY')
-
-# Recognize gesture
-result = client.gestures.recognize(sensor_data=sensor_readings)
-print(f'Recognized gesture: {result.gesture}')
+pub struct ChatMessage {
+    pub role: Role,
+    pub content: String,
+    pub tool_calls: Option<Vec<ToolCall>>,
+}
 ```
 
-## Webhooks
+### Tool Types
 
-Configure webhooks to receive real-time notifications:
+```rust
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub input_schema: Value,
+}
 
-```http
-POST /webhooks
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: Value,
+}
+
+pub struct ToolResult {
+    pub call_id: String,
+    pub content: Vec<Content>,
+    pub is_error: bool,
+}
 ```
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `url` | String | Yes | Webhook URL |
-| `events` | Array | Yes | Events to subscribe to |
-| `secret` | String | No | Webhook secret for verification |
-
-**Supported Events:**
-
-- `voice.recognized`: Speech recognition completed
-- `gesture.detected`: Gesture detected
-- `ring.connected`: Ring connected/disconnected
-- `error.occurred`: Error occurred
 
 ## Support
 
+- **Repository**: https://github.com/gestura-ai/gestura-app
 - **Documentation**: https://docs.gestura.app
-- **API Status**: https://status.gestura.app
-- **Support**: support@gestura.app
-- **Discord**: https://discord.gg/gestura
-
-## Changelog
-
-### v1.0.0 (2024-01-15)
-- Initial API release
-- Voice recognition endpoints
-- Gesture recognition endpoints
-- Ring integration
-- Analytics API
-- Plugin system
-- Scripting support
+- **Issues**: https://github.com/gestura-ai/gestura-app/issues

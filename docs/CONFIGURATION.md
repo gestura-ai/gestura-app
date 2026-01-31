@@ -7,13 +7,13 @@ This document describes the configuration file location, structure, and first-ru
 Gestura stores its configuration in a unified location across all platforms:
 
 ```
-~/.gestura/config.json
+~/.gestura/config.yaml
 ```
 
 This path expands to:
-- **macOS**: `/Users/<username>/.gestura/config.json`
-- **Linux**: `/home/<username>/.gestura/config.json`
-- **Windows**: `C:\Users\<username>\.gestura\config.json`
+- **macOS**: `/Users/<username>/.gestura/config.yaml`
+- **Linux**: `/home/<username>/.gestura/config.yaml`
+- **Windows**: `C:\Users\<username>\.gestura\config.yaml`
 
 ## Directory Structure
 
@@ -21,7 +21,8 @@ The `~/.gestura/` directory contains all Gestura user data:
 
 ```
 ~/.gestura/
-├── config.json          # Main configuration file
+├── config.yaml          # Main configuration file (YAML)
+├── config.json.backup   # Legacy config backup (created on auto-migration, if present)
 ├── models/
 │   └── whisper/         # Downloaded Whisper STT models
 │       └── ggml-base.en.bin
@@ -31,10 +32,14 @@ The `~/.gestura/` directory contains all Gestura user data:
 
 ## First-Run Detection
 
-Gestura detects first-run by checking if `~/.gestura/config.json` exists:
+Gestura detects first-run by checking if a config file exists:
 
 - **First run**: No config file exists → Show onboarding/setup wizard
 - **Subsequent runs**: Config file exists → Load saved configuration
+
+Notes:
+- Current versions persist config as `~/.gestura/config.yaml`.
+- If `config.yaml` is missing but a legacy `~/.gestura/config.json` exists, Gestura will load it and auto-migrate it to YAML.
 
 ### API Commands
 
@@ -54,44 +59,35 @@ await window.__TAURI__.core.invoke('save_config', { cfg: config });
 
 ## Configuration Structure
 
-The configuration file is a JSON object with the following structure:
+The configuration file is a YAML mapping with the following structure:
 
-```json
-{
-  "hotkey_listen": "Cmd+Shift+G",
-  "voice": {
-    "provider": "local",
-    "local_model_path": "~/.gestura/models/whisper/ggml-base.en.bin",
-    "openai_api_key": ""
-  },
-  "llm": {
-    "primary": "echo",
-    "openai": {
-      "api_key": "",
-      "model": "gpt-4o-mini"
-    },
-    "anthropic": {
-      "api_key": "",
-      "model": "claude-3-5-sonnet-20241022"
-    },
-    "grok": {
-      "api_key": "",
-      "model": "grok-beta"
-    },
-    "ollama": {
-      "endpoint": "http://localhost:11434",
-      "model": "",
-      "temperature": 0.7,
-      "context_length": 4096
-    }
-  },
-  "mcp_tools": [],
-  "mdh_pointers": {},
-  "ui_prefs": {
-    "theme": "system",
-    "show_notifications": true
-  }
-}
+```yaml
+hotkey_listen: Cmd+Shift+G
+voice:
+  provider: local
+  local_model_path: ~/.gestura/models/whisper/ggml-base.en.bin
+  openai_api_key: ""
+llm:
+  primary: echo
+  openai:
+    api_key: ""
+    model: gpt-4o-mini
+  anthropic:
+    api_key: ""
+    model: claude-3-5-sonnet-20241022
+  grok:
+    api_key: ""
+    model: grok-beta
+  ollama:
+    endpoint: http://localhost:11434
+    model: ""
+    temperature: 0.7
+    context_length: 4096
+mcp_tools: []
+mdh_pointers: {}
+ui_prefs:
+  theme: system
+  show_notifications: true
 ```
 
 ## Configuration Fields
@@ -125,12 +121,14 @@ The configuration file is a JSON object with the following structure:
 
 To backup your configuration:
 ```bash
-cp ~/.gestura/config.json ~/.gestura/config.json.backup
+cp ~/.gestura/config.yaml ~/.gestura/config.yaml.backup
 ```
+
+If you are upgrading from an older version, you may also see `~/.gestura/config.json.backup` after the first load.
 
 To reset to defaults, delete the config file:
 ```bash
-rm ~/.gestura/config.json
+rm ~/.gestura/config.yaml
 ```
 
 The next app launch will create a fresh configuration with default values.
@@ -138,12 +136,12 @@ The next app launch will create a fresh configuration with default values.
 ## Troubleshooting
 
 ### Config file not loading
-1. Check file permissions: `ls -la ~/.gestura/config.json`
-2. Validate JSON syntax: `cat ~/.gestura/config.json | python -m json.tool`
+1. Check file permissions: `ls -la ~/.gestura/config.yaml`
+2. Validate YAML syntax (e.g., with `yq` or another YAML validator)
 3. Check for backup: `ls ~/.gestura/*.backup`
 
 ### First-run wizard keeps appearing
-1. Ensure config file was saved: `ls -la ~/.gestura/config.json`
+1. Ensure config file was saved: `ls -la ~/.gestura/config.yaml`
 2. Check write permissions on `~/.gestura/` directory
-3. Verify the config file contains valid JSON
+3. Verify the config file contains valid YAML
 

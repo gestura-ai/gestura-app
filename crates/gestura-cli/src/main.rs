@@ -6,7 +6,6 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 
 mod commands;
-mod tool_registry;
 
 /// Gestura - Voice-first AI Assistant
 #[derive(Parser)]

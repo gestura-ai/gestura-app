@@ -4,717 +4,474 @@
 
 1. [Getting Started](#getting-started)
 2. [Development Environment](#development-environment)
-3. [Architecture Overview](#architecture-overview)
-4. [Plugin Development](#plugin-development)
+3. [Core-First Architecture](#core-first-architecture)
+4. [Adding New Features](#adding-new-features)
 5. [Scripting](#scripting)
 6. [API Integration](#api-integration)
-7. [Custom Gestures](#custom-gestures)
-8. [Third-Party Integrations](#third-party-integrations)
-9. [Testing](#testing)
-10. [Deployment](#deployment)
+7. [Testing](#testing)
+8. [Deployment](#deployment)
 
 ## Getting Started
 
-Welcome to Gestura.app development! This guide will help you build plugins, scripts, and integrations for the Gestura ecosystem.
+Welcome to Gestura.app development! This guide covers the Core-First architecture and how to contribute to the codebase.
 
 ### Prerequisites
 
-- **Programming Experience**: Familiarity with at least one supported language
-- **Development Tools**: Code editor, terminal, Git
-- **Gestura.app**: Latest version installed
-- **API Key**: Developer API key (get from Settings → Developer)
+- **Rust 2024 Edition**: Install via rustup
+- **Tauri CLI**: For GUI development
+- **Development Tools**: VS Code with rust-analyzer, terminal, Git
 
-### Supported Languages
+### Quick Start
 
-- **Rust**: Core application development
-- **JavaScript/TypeScript**: Frontend and plugins
-- **Python**: Scripting and ML integrations
-- **Lua**: Lightweight scripting
-- **WebAssembly**: High-performance plugins
+```bash
+# Clone the repository
+git clone https://github.com/gestura-ai/gestura-app.git
+cd gestura-app
+
+# Install Tauri CLI
+cargo install tauri-cli
+
+# Run quality gates
+cargo fmt
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+
+# Development
+cargo tauri dev  # GUI development
+cargo run -p gestura-cli -- --help  # CLI
+```
 
 ## Development Environment
 
-### Setting Up
-
-1. **Clone the repository**:
-```bash
-git clone https://github.com/gestura-ai/gestura-app.git
-cd gestura-app
-```
-
-2. **Install dependencies**:
-```bash
-# Rust dependencies
-cargo install tauri-cli
-rustup target add wasm32-unknown-unknown
-
-# Node.js dependencies
-npm install
-
-# Python dependencies (optional)
-pip install gestura-sdk
-```
-
-3. **Development server**:
-```bash
-# Start development server
-npm run tauri dev
-
-# Or use just/make
-just dev
-make dev
-```
-
-### Project Structure
+### Workspace Structure
 
 ```
 gestura-app/
-├── src/                    # React frontend
-├── src-tauri/             # Rust backend
-│   ├── src/
-│   │   ├── lib.rs         # Main library
-│   │   ├── main.rs        # Application entry
-│   │   └── modules/       # Feature modules
-│   └── Cargo.toml
-├── plugins/               # Plugin directory
-├── scripts/               # User scripts
-├── docs/                  # Documentation
-├── tests/                 # Test files
-└── package.json
+├── Cargo.toml              # Workspace manifest
+├── crates/
+│   ├── gestura-core/       # Shared business logic (source of truth)
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       ├── lib.rs      # Re-exports
+│   │       ├── pipeline/   # Agent pipeline
+│   │       ├── tools/      # Tool registry & implementations
+│   │       ├── mcp/        # MCP server
+│   │       ├── a2a/        # A2A protocol
+│   │       └── ...
+│   ├── gestura-cli/        # CLI binary
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       ├── main.rs     # Entry point
+│   │       └── commands/   # CLI commands
+│   └── gestura-gui/        # Tauri desktop app
+│       ├── Cargo.toml
+│       ├── tauri.conf.json
+│       ├── frontend/       # Web frontend
+│       └── src/
+│           ├── main.rs     # Tauri entry
+│           └── ...         # Thin wrappers
+├── docs/                   # Documentation
+└── AGENTS.md               # AI assistant guide
 ```
 
-### Build System
-
-#### Using Just (Recommended)
+### Build Commands
 
 ```bash
-# Development
-just dev                   # Start dev server
-just test                  # Run all tests
-just lint                  # Run linters
-just format               # Format code
+# Format code
+cargo fmt
 
-# Building
-just build                # Debug build
-just build-release        # Release build
-just package              # Create packages
+# Lint with strict warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-# Platform-specific
-just build-mac            # macOS build
-just build-windows        # Windows build
-just build-linux          # Linux build
+# Run all tests
+cargo test --workspace --all-features
+
+# Build all crates
+cargo build --workspace
+
+# Release build
+cargo build --workspace --release
+
+# GUI development
+cargo tauri dev
+
+# CLI only
+cargo run -p gestura-cli -- chat
 ```
 
-#### Using Make (Alternative)
+## Core-First Architecture
 
-```bash
-# Development
-make dev                  # Start dev server
-make test                 # Run tests
-make clean                # Clean build artifacts
+### Design Principles
 
-# Building
-make build                # Debug build
-make release              # Release build
-make package              # Create packages
-```
+1. **Single Source of Truth**: All business logic in `gestura-core`
+2. **Thin Presentation Layers**: CLI and GUI delegate to core
+3. **Re-export Pattern**: GUI/CLI modules re-export core types
+4. **Feature Gates**: Optional functionality via Cargo features
 
-## Architecture Overview
+### Module Organization (gestura-core)
 
-### Core Components
+| Category | Modules | Description |
+|----------|---------|-------------|
+| AI & Pipeline | `pipeline/`, `llm_provider.rs`, `persona.rs` | Agent execution |
+| Sessions | `chat_sessions/`, `session_manager.rs`, `context/` | State management |
+| Tools | `tools/`, `tool_confirmation.rs` | Tool registry |
+| Protocols | `mcp/`, `a2a/`, `nats_mq/` | Communication |
+| Security | `security/`, `sandbox/`, `gdpr.rs` | Safety & privacy |
+| Analytics | `analytics/`, `recommendations/`, `audio/` | ML features |
+| Extensibility | `scripting/`, `agents/`, `tasks/` | Plugin system |
+
+### Re-export Pattern
+
+GUI modules are thin wrappers that re-export core functionality:
 
 ```rust
-// Main application structure
-pub struct GesturaApp {
-    voice_processor: VoiceProcessor,
-    gesture_recognizer: GestureRecognizer,
-    ring_manager: RingManager,
-    plugin_manager: PluginManager,
-    mcp_server: McpServer,
+// crates/gestura-gui/src/security.rs (18 lines)
+//! Security primitives - thin wrapper over gestura_core::security
+pub use gestura_core::security::{
+    Encryptor, McpToken, SecureStorage, create_secure_storage,
+};
+```
+
+```rust
+// crates/gestura-gui/src/a2a.rs (7 lines)
+//! A2A protocol - thin wrapper over gestura_core::a2a
+pub use gestura_core::a2a::*;
+```
+
+## Adding New Features
+
+### Step 1: Implement in Core
+
+Add business logic to `gestura-core`:
+
+```rust
+// crates/gestura-core/src/new_feature/mod.rs
+pub mod types;
+mod implementation;
+
+pub use types::*;
+pub use implementation::*;
+```
+
+```rust
+// crates/gestura-core/src/new_feature/types.rs
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewFeatureConfig {
+    pub enabled: bool,
+    pub option: String,
 }
-```
 
-### Event System
-
-```rust
-// Event types
 #[derive(Debug, Clone)]
-pub enum GesturaEvent {
-    VoiceRecognized { text: String, confidence: f32 },
-    GestureDetected { gesture: String, confidence: f32 },
-    RingConnected { device_id: String },
-    PluginLoaded { plugin_id: String },
+pub struct NewFeature {
+    config: NewFeatureConfig,
 }
 
-// Event handler trait
-pub trait EventHandler {
-    fn handle_event(&mut self, event: GesturaEvent) -> Result<(), Error>;
+impl NewFeature {
+    pub fn new(config: NewFeatureConfig) -> Self {
+        Self { config }
+    }
+
+    pub async fn execute(&self, input: &str) -> Result<String, NewFeatureError> {
+        // Implementation
+        Ok(format!("Processed: {}", input))
+    }
 }
 ```
 
-### Plugin Interface
+### Step 2: Export from lib.rs
 
 ```rust
-// Plugin trait
-pub trait Plugin {
-    fn initialize(&mut self, config: PluginConfig) -> Result<(), Error>;
-    fn handle_command(&mut self, command: &str, args: Value) -> Result<Value, Error>;
-    fn handle_event(&mut self, event: GesturaEvent) -> Result<(), Error>;
-    fn shutdown(&mut self) -> Result<(), Error>;
+// crates/gestura-core/src/lib.rs
+#[cfg(feature = "new_feature")]
+pub mod new_feature;
+```
+
+### Step 3: Create GUI Wrapper
+
+```rust
+// crates/gestura-gui/src/new_feature.rs
+//! New feature - thin wrapper over gestura_core::new_feature
+pub use gestura_core::new_feature::*;
+```
+
+### Step 4: Add CLI Command
+
+```rust
+// crates/gestura-cli/src/commands/new_feature.rs
+use clap::Args;
+use gestura_core::new_feature::*;
+
+#[derive(Args)]
+pub struct NewFeatureArgs {
+    /// Input to process
+    #[arg(short, long)]
+    pub input: String,
+}
+
+pub async fn run(args: NewFeatureArgs) -> anyhow::Result<()> {
+    let config = NewFeatureConfig::default();
+    let feature = NewFeature::new(config);
+    let result = feature.execute(&args.input).await?;
+    println!("{}", result);
+    Ok(())
 }
 ```
 
-## Plugin Development
+### Error Handling
 
-### Creating a Plugin
+Use `thiserror` for error types:
 
-1. **Create plugin directory**:
-```bash
-mkdir plugins/my-plugin
-cd plugins/my-plugin
-```
+```rust
+// crates/gestura-core/src/new_feature/mod.rs
+use thiserror::Error;
 
-2. **Create manifest** (`plugin.json`):
-```json
-{
-  "id": "my-plugin",
-  "name": "My Awesome Plugin",
-  "version": "1.0.0",
-  "description": "Does awesome things",
-  "author": "Your Name",
-  "license": "MIT",
-  "entry_point": "main.js",
-  "permissions": [
-    "voice_control",
-    "notifications"
-  ],
-  "dependencies": [],
-  "supported_platforms": ["linux", "macos", "windows"]
+#[derive(Debug, Error)]
+pub enum NewFeatureError {
+    #[error("Configuration error: {0}")]
+    Config(String),
+
+    #[error("Execution error: {0}")]
+    Execution(String),
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 }
 ```
 
-3. **Create main file** (`main.js`):
-```javascript
-// Plugin main file
-class MyPlugin {
-    constructor() {
-        this.name = "My Awesome Plugin";
-    }
+### Adding Tests
 
-    initialize(config) {
-        console.log("Plugin initialized with config:", config);
-        return Promise.resolve();
-    }
+```rust
+// crates/gestura-core/src/new_feature/mod.rs
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    handleCommand(command, args) {
-        switch (command) {
-            case "hello":
-                return Promise.resolve({ message: "Hello from plugin!" });
-            default:
-                return Promise.reject(new Error(`Unknown command: ${command}`));
-        }
-    }
-
-    handleEvent(event) {
-        if (event.type === "voice_recognized") {
-            console.log("Voice recognized:", event.text);
-        }
-        return Promise.resolve();
-    }
-
-    shutdown() {
-        console.log("Plugin shutting down");
-        return Promise.resolve();
+    #[tokio::test]
+    async fn test_new_feature() {
+        let config = NewFeatureConfig {
+            enabled: true,
+            option: "test".to_string(),
+        };
+        let feature = NewFeature::new(config);
+        let result = feature.execute("input").await.unwrap();
+        assert!(result.contains("Processed"));
     }
 }
-
-// Export plugin
-module.exports = MyPlugin;
 ```
 
-### Plugin Permissions
+## Permission System
 
-Available permissions:
-- `voice_control`: Access voice recognition
-- `gesture_control`: Access gesture recognition
-- `ring_control`: Control haptic ring
-- `notifications`: Send notifications
-- `filesystem`: File system access
-- `network`: Network access
-- `system_commands`: Execute system commands
-- `clipboard`: Clipboard access
-- `window_management`: Control windows
+### Permission Levels
 
-### Plugin API
+| Level | Description | Example Actions |
+|-------|-------------|-----------------|
+| `ReadOnly` | Read files, view context | `file_read`, `git_status` |
+| `WriteLocal` | Write to allowed paths | `file_write`, `file_edit` |
+| `Execute` | Run local commands | `shell_exec`, `script_run` |
+| `Network` | External API calls | `web_fetch`, `api_call` |
+| `Admin` | Full system access | `install_package`, `root_exec` |
 
-```javascript
-// Voice API
-gestura.voice.recognize(audioData, options)
-gestura.voice.synthesize(text, options)
-gestura.voice.setLanguage(language)
+### Checking Permissions
 
-// Gesture API
-gestura.gestures.recognize(sensorData)
-gestura.gestures.createCustom(name, pattern)
-gestura.gestures.onDetected(callback)
+```rust
+use gestura_core::tools::{PermissionManager, PermissionLevel};
 
-// Ring API
-gestura.ring.sendHaptic(pattern, intensity)
-gestura.ring.getStatus()
-gestura.ring.onConnected(callback)
+let perms = PermissionManager::new(config);
 
-// System API
-gestura.system.notify(title, message)
-gestura.system.execute(command)
-gestura.system.getClipboard()
-gestura.system.setClipboard(text)
+// Check if action is allowed
+if perms.is_action_allowed(&request) {
+    // Execute the action
+}
 
-// Storage API
-gestura.storage.get(key)
-gestura.storage.set(key, value)
-gestura.storage.delete(key)
+// Check if confirmation is required
+if perms.requires_confirmation(&tool_call) {
+    // Prompt user for confirmation
+}
 ```
 
-## Scripting
+## Scripting Engine
 
-### Lua Scripting
+The scripting engine is implemented in `gestura-core/src/scripting/` and provides sandboxed execution of user scripts.
+
+### Script Types
+
+| Language | Engine | Features |
+|----------|--------|----------|
+| Lua | mlua | Lightweight, fast startup |
+| Python | PyO3 | ML libraries, data processing |
+| JavaScript | deno_core | Async, web APIs |
+
+### Creating a Script
+
+```rust
+// crates/gestura-core/src/scripting/mod.rs
+use crate::scripting::{Script, ScriptEngine, ScriptContext};
+
+// Load and execute a script
+let engine = ScriptEngine::new(config)?;
+let script = Script::from_file("my_script.lua")?;
+
+let context = ScriptContext {
+    input: serde_json::json!({"location": "NYC"}),
+    permissions: vec!["network".to_string()],
+};
+
+let result = engine.execute(&script, context).await?;
+```
+
+### Script Permissions
+
+Scripts run in a sandbox with explicit permissions:
+
+| Permission | Description |
+|------------|-------------|
+| `network` | HTTP requests |
+| `filesystem` | File read/write (scoped) |
+| `system` | Execute commands |
+| `clipboard` | Clipboard access |
+
+### Script API (from Lua)
 
 ```lua
--- @name Weather Command
--- @description Get weather information
--- @author Your Name
+-- @name Example Script
 -- @version 1.0.0
 -- @permission network
--- @trigger voice:weather
 
 function main(args)
-    local location = args.location or "current"
-    local weather = http.get("https://api.weather.com/v1/current?location=" .. location)
-    
-    if weather.status == 200 then
-        local data = json.decode(weather.body)
-        local message = string.format("Weather in %s: %s, %d°F", 
-            data.location, data.condition, data.temperature)
-        
-        gestura.notify("Weather", message)
-        gestura.speak(message)
-        
-        return { success = true, message = message }
-    else
-        return { success = false, error = "Failed to get weather" }
-    end
+    -- HTTP requests
+    local response = http.get("https://api.example.com/data")
+
+    -- JSON parsing
+    local data = json.decode(response.body)
+
+    -- Notifications
+    gestura.notify("Title", "Message")
+
+    return { success = true, data = data }
 end
 ```
 
-### Python Scripting
+## MCP Integration
 
-```python
-# @name Smart Home Control
-# @description Control smart home devices
-# @author Your Name
-# @version 1.0.0
-# @permission network
-# @trigger gesture:circle
+### MCP Server (Core Implementation)
 
-import requests
-import json
+The MCP server is implemented in `gestura-core/src/mcp/` with full 2025-11-25 spec compliance.
 
-def main(context):
-    """Main script entry point"""
-    gesture_data = context.get('gesture_data', {})
-    
-    if gesture_data.get('confidence', 0) > 0.8:
-        # Turn on lights
-        response = requests.post(
-            'https://api.smarthome.com/lights/living-room/on',
-            headers={'Authorization': f'Bearer {get_token()}'}
-        )
-        
-        if response.status_code == 200:
-            gestura.ring.send_haptic('success', 0.7)
-            return {'success': True, 'action': 'lights_on'}
-        else:
-            gestura.ring.send_haptic('error', 0.5)
-            return {'success': False, 'error': 'Failed to control lights'}
-    
-    return {'success': False, 'error': 'Low confidence gesture'}
+```rust
+use gestura_core::mcp::{McpServer, ServerCapabilities};
 
-def get_token():
-    """Get authentication token"""
-    return gestura.storage.get('smarthome_token')
+// Create MCP server
+let server = McpServer::new(config)?;
+
+// Register tools
+server.register_tool("file_read", file_read_handler);
+server.register_tool("shell_exec", shell_exec_handler);
+
+// Start server
+server.serve().await?;
 ```
 
-### JavaScript Scripting
+### Built-in MCP Tools
 
-```javascript
-// @name Productivity Booster
-// @description Automate common tasks
-// @author Your Name
-// @version 1.0.0
-// @permission system_commands
-// @trigger voice:focus mode
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `file_read` | Read file contents | ReadOnly |
+| `file_write` | Write to file | WriteLocal |
+| `file_edit` | Edit file with diff | WriteLocal |
+| `shell_exec` | Execute shell command | Execute |
+| `git_status` | Get git status | ReadOnly |
+| `web_fetch` | Fetch URL content | Network |
 
-async function main(context) {
-    const { text } = context;
-    
-    if (text.includes('focus mode')) {
-        // Close distracting applications
-        await gestura.system.execute('pkill -f "Social Media App"');
-        await gestura.system.execute('pkill -f "Game"');
-        
-        // Start focus timer
-        const focusTime = 25 * 60 * 1000; // 25 minutes
-        setTimeout(async () => {
-            await gestura.notify('Focus Session', 'Time for a break!');
-            await gestura.ring.sendHaptic('notification', 0.6);
-        }, focusTime);
-        
-        // Set status
-        await gestura.system.setClipboard('🎯 In focus mode');
-        
-        return {
-            success: true,
-            message: 'Focus mode activated for 25 minutes'
-        };
-    }
-    
-    return { success: false, error: 'Unknown command' };
-}
-```
-
-## API Integration
-
-### Using the SDK
-
-#### JavaScript/Node.js
-
-```javascript
-const { GesturaSDK } = require('@gestura/sdk');
-
-const client = new GesturaSDK({
-    apiKey: 'your-api-key',
-    baseUrl: 'https://api.gestura.app/v1'
-});
-
-// Voice recognition
-async function recognizeVoice(audioFile) {
-    try {
-        const result = await client.voice.recognize({
-            audioData: audioFile,
-            language: 'en-US',
-            model: 'medium'
-        });
-        
-        console.log('Recognized text:', result.text);
-        console.log('Confidence:', result.confidence);
-        return result;
-    } catch (error) {
-        console.error('Recognition failed:', error);
-    }
-}
-
-// Gesture recognition
-async function recognizeGesture(sensorData) {
-    try {
-        const result = await client.gestures.recognize({
-            sensorData: sensorData,
-            userId: 'user123'
-        });
-        
-        console.log('Recognized gesture:', result.gesture);
-        return result;
-    } catch (error) {
-        console.error('Gesture recognition failed:', error);
-    }
-}
-```
-
-#### Python
-
-```python
-from gestura_sdk import GesturaClient
-
-client = GesturaClient(api_key='your-api-key')
-
-# Voice recognition
-def recognize_voice(audio_file):
-    try:
-        result = client.voice.recognize(
-            audio_data=audio_file,
-            language='en-US',
-            model='medium'
-        )
-        
-        print(f'Recognized text: {result.text}')
-        print(f'Confidence: {result.confidence}')
-        return result
-    except Exception as error:
-        print(f'Recognition failed: {error}')
-
-# Custom gesture creation
-def create_custom_gesture(name, training_data):
-    try:
-        gesture = client.gestures.create_custom(
-            name=name,
-            description=f'Custom gesture: {name}',
-            gesture_type='motion',
-            user_id='user123'
-        )
-        
-        # Train the gesture
-        for sample in training_data:
-            client.gestures.add_training_sample(
-                gesture_id=gesture.id,
-                sensor_data=sample
-            )
-        
-        return gesture
-    except Exception as error:
-        print(f'Failed to create gesture: {error}')
-```
-
-### REST API Examples
-
-#### Voice Recognition
+### MCP CLI Commands
 
 ```bash
-curl -X POST https://api.gestura.app/v1/voice/recognize \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: multipart/form-data" \
-  -F "audio_data=@recording.wav" \
-  -F "language=en-US" \
-  -F "model=medium"
-```
+# Start MCP server
+gestura mcp serve
 
-#### Gesture Recognition
+# List registered tools
+gestura mcp tools
 
-```bash
-curl -X POST https://api.gestura.app/v1/gestures/recognize \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "sensor_data": [
-      {
-        "timestamp_ms": 1640995200000,
-        "accelerometer": [0.1, 0.2, 9.8],
-        "gyroscope": [0.01, 0.02, 0.03],
-        "magnetometer": [25.0, -15.0, 45.0]
-      }
-    ],
-    "user_id": "user123"
-  }'
-```
+# Call a tool
+gestura mcp call file_read --path ./README.md
 
-## Custom Gestures
-
-### Creating Custom Gestures
-
-```rust
-use gestura::gestures::{CustomGesture, GestureType, SensorReading};
-
-// Create custom gesture
-let gesture = CustomGesture {
-    name: "My Custom Gesture".to_string(),
-    gesture_type: GestureType::Motion,
-    training_samples: Vec::new(),
-    recognition_threshold: 0.8,
-};
-
-// Add training samples
-for sample_data in training_data {
-    let sample = GestureTrainingSample {
-        sensor_data: sample_data,
-        quality_score: calculate_quality(&sample_data),
-        recorded_at: chrono::Utc::now(),
-    };
-    
-    gesture.training_samples.push(sample);
-}
-
-// Train the gesture
-let trained_gesture = gesture_manager.train_gesture(gesture).await?;
-```
-
-### Gesture Recognition Pipeline
-
-```rust
-// Gesture recognition pipeline
-pub struct GestureRecognitionPipeline {
-    feature_extractor: FeatureExtractor,
-    classifier: GestureClassifier,
-    post_processor: PostProcessor,
-}
-
-impl GestureRecognitionPipeline {
-    pub async fn recognize(&self, sensor_data: &[SensorReading]) -> Result<GestureResult, Error> {
-        // Extract features
-        let features = self.feature_extractor.extract(sensor_data)?;
-        
-        // Classify gesture
-        let classification = self.classifier.classify(&features)?;
-        
-        // Post-process results
-        let result = self.post_processor.process(classification)?;
-        
-        Ok(result)
-    }
-}
-```
-
-## Third-Party Integrations
-
-### Creating Integrations
-
-```rust
-use gestura::integrations::{Integration, IntegrationType, IntegrationConfig};
-
-// Create Slack integration
-let slack_integration = Integration {
-    name: "Slack".to_string(),
-    integration_type: IntegrationType::RestApi,
-    config: IntegrationConfig {
-        endpoint_url: Some("https://slack.com/api".to_string()),
-        timeout_seconds: 30,
-        headers: HashMap::from([
-            ("Content-Type".to_string(), "application/json".to_string()),
-        ]),
-        ..Default::default()
-    },
-    credentials: IntegrationCredentials {
-        auth_type: AuthType::BearerToken,
-        encrypted_data: encrypt_token(slack_token)?,
-    },
-    is_enabled: true,
-    created_at: chrono::Utc::now(),
-};
-
-// Add integration
-integration_manager.add_integration(slack_integration).await?;
-```
-
-### Integration Examples
-
-#### Slack Integration
-
-```javascript
-// Send Slack message via voice command
-gestura.voice.onCommand('send slack message *', async (text) => {
-    const message = text.replace('send slack message ', '');
-    
-    const response = await gestura.integrations.execute('slack', {
-        method: 'POST',
-        path: '/chat.postMessage',
-        body: {
-            channel: '#general',
-            text: message
-        }
-    });
-    
-    if (response.success) {
-        gestura.notify('Slack', 'Message sent successfully');
-    } else {
-        gestura.notify('Slack', 'Failed to send message');
-    }
-});
-```
-
-#### Smart Home Integration
-
-```python
-# Control Philips Hue lights with gestures
-@gestura.gesture.on('circle')
-async def toggle_lights(gesture_data):
-    if gesture_data.confidence > 0.8:
-        response = await gestura.integrations.execute('philips_hue', {
-            'method': 'PUT',
-            'path': '/lights/1/state',
-            'body': {'on': True, 'bri': 254}
-        })
-        
-        if response.success:
-            await gestura.ring.send_haptic('success', 0.7)
-        else:
-            await gestura.ring.send_haptic('error', 0.5)
+# Show capabilities
+gestura mcp capabilities
 ```
 
 ## Testing
 
-### Unit Testing
+### Running Tests
+
+```bash
+# Run all workspace tests
+cargo test --workspace --all-features
+
+# Run specific crate tests
+cargo test -p gestura-core
+cargo test -p gestura-cli
+cargo test -p gestura-gui
+
+# Run with output
+cargo test --workspace -- --nocapture
+
+# Run specific test
+cargo test test_session_persistence
+```
+
+### Writing Tests
 
 ```rust
+// crates/gestura-core/src/chat_sessions/mod.rs
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[tokio::test]
-    async fn test_voice_recognition() {
-        let processor = VoiceProcessor::new();
-        let audio_data = load_test_audio("test_sample.wav");
-        
-        let result = processor.recognize(audio_data).await.unwrap();
-        
-        assert!(result.confidence > 0.8);
-        assert_eq!(result.text, "hello world");
+    async fn test_session_persistence() {
+        let store = SessionStore::new_temp().unwrap();
+
+        let session = ChatSession::new("test-session");
+        store.save(&session).await.unwrap();
+
+        let loaded = store.load("test-session").await.unwrap();
+        assert_eq!(loaded.id, session.id);
     }
-    
+
     #[tokio::test]
-    async fn test_gesture_recognition() {
-        let recognizer = GestureRecognizer::new();
-        let sensor_data = load_test_gesture("tap_gesture.json");
-        
-        let result = recognizer.recognize(sensor_data).await.unwrap();
-        
-        assert_eq!(result.gesture, "tap");
-        assert!(result.confidence > 0.7);
+    async fn test_message_append() {
+        let mut session = ChatSession::new("test");
+
+        session.add_message(Message {
+            role: Role::User,
+            content: "Hello".to_string(),
+            timestamp: Utc::now(),
+        });
+
+        assert_eq!(session.messages.len(), 1);
     }
 }
 ```
 
-### Integration Testing
+### Integration Tests
 
-```javascript
-// Plugin integration test
-describe('Plugin System', () => {
-    let pluginManager;
-    
-    beforeEach(() => {
-        pluginManager = new PluginManager();
-    });
-    
-    test('should load plugin successfully', async () => {
-        const plugin = await pluginManager.loadPlugin('test-plugin');
-        expect(plugin).toBeDefined();
-        expect(plugin.name).toBe('Test Plugin');
-    });
-    
-    test('should execute plugin command', async () => {
-        const plugin = await pluginManager.loadPlugin('test-plugin');
-        const result = await plugin.handleCommand('hello', {});
-        
-        expect(result.message).toBe('Hello from plugin!');
-    });
-});
-```
+```rust
+// crates/gestura-gui/tests/integration_tests.rs
+#[tokio::test]
+async fn test_pipeline_integration() {
+    let config = Config::default();
+    let pipeline = Pipeline::new(config).await.unwrap();
 
-### End-to-End Testing
+    let request = AgentRequest {
+        content: "Hello".to_string(),
+        source: RequestSource::Cli,
+        session_id: None,
+    };
 
-```python
-# E2E test for voice-to-gesture workflow
-import pytest
-from gestura_test import GesturaTestClient
-
-@pytest.mark.asyncio
-async def test_voice_to_gesture_workflow():
-    client = GesturaTestClient()
-    
-    # Simulate voice command
-    voice_result = await client.voice.recognize("perform tap gesture")
-    assert voice_result.text == "perform tap gesture"
-    
-    # Verify gesture execution
-    gesture_events = await client.gestures.get_recent_events()
-    assert len(gesture_events) > 0
-    assert gesture_events[0].gesture == "tap"
+    let response = pipeline.process(request).await.unwrap();
+    assert!(!response.content.is_empty());
+}
 ```
 
 ## Deployment
@@ -722,34 +479,25 @@ async def test_voice_to_gesture_workflow():
 ### Building for Production
 
 ```bash
-# Build release version
-just build-release
+# Quality gates (required)
+cargo fmt
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
 
-# Create platform packages
-just package-mac      # Creates .dmg
-just package-windows  # Creates .exe installer
-just package-linux    # Creates .deb, .rpm, .AppImage
+# Release build
+cargo build --workspace --release
 
-# Sign and notarize (macOS)
-just sign-mac
-just notarize-mac
-
-# Create universal packages
-just package-all
+# GUI packaging
+cargo tauri build
 ```
 
-### Distribution
+### Build Outputs
 
-#### App Stores
-- **Mac App Store**: Use Xcode for submission
-- **Microsoft Store**: Use Partner Center
-- **Snap Store**: Use snapcraft
-- **Flathub**: Use flatpak-builder
-
-#### Direct Distribution
-- **GitHub Releases**: Automated via CI/CD
-- **Website Downloads**: Host on CDN
-- **Package Managers**: Submit to Homebrew, Chocolatey, etc.
+| Platform | Output | Location |
+|----------|--------|----------|
+| macOS | .dmg, .app | `target/release/bundle/dmg/` |
+| Windows | .msi, .exe | `target/release/bundle/msi/` |
+| Linux | .deb, .AppImage | `target/release/bundle/deb/` |
 
 ### CI/CD Pipeline
 
@@ -760,33 +508,28 @@ name: Build and Test
 on: [push, pull_request]
 
 jobs:
-  test:
+  quality-gates:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-      - run: cargo test
-      - run: npm test
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fmt -- --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
 
   build:
-    needs: test
+    needs: quality-gates
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --workspace --release
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: v__VERSION__
-          releaseName: 'Gestura v__VERSION__'
-          releaseBody: 'See CHANGELOG.md for details'
-          releaseDraft: true
-          prerelease: false
 ```
 
 ---
@@ -794,20 +537,15 @@ jobs:
 ## Resources
 
 ### Documentation
-- **API Reference**: https://docs.gestura.app/api
-- **Plugin Guide**: https://docs.gestura.app/plugins
-- **Examples**: https://github.com/gestura-ai/examples
+- **Architecture**: See `docs/ARCHITECTURE.md`
+- **API Reference**: See `docs/API.md`
+- **Code Organization**: See `docs/CODE_ORGANIZATION.md`
 
 ### Community
-- **Discord**: https://discord.gg/gestura
-- **Forum**: https://community.gestura.app
-- **GitHub**: https://github.com/gestura-ai
-
-### Support
-- **Developer Support**: dev-support@gestura.app
-- **Bug Reports**: https://github.com/gestura-ai/gestura-app/issues
-- **Feature Requests**: https://github.com/gestura-ai/gestura-app/discussions
+- **GitHub**: https://github.com/gestura-ai/gestura-app
+- **Issues**: https://github.com/gestura-ai/gestura-app/issues
+- **Discussions**: https://github.com/gestura-ai/gestura-app/discussions
 
 ---
 
-*Happy coding! Build amazing experiences with Gestura.app.*
+*Happy coding! Build with the Core-First architecture pattern.*

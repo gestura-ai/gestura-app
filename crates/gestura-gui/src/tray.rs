@@ -485,22 +485,46 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         }
         "open_shell" => {
             tracing::info!("Opening shell session from tray menu");
-            match window_manager::open_shell_session() {
-                Ok(()) => {
-                    tracing::info!("Shell session opened successfully");
-                    show_system_notification(
-                        app,
-                        "Shell Session",
-                        "Gestura shell session opened in terminal",
-                    );
+
+            // Prefer resuming the currently-active chat session, if there is one.
+            if let Some(session_id) = window_manager::get_active_chat_for_voice() {
+                match window_manager::open_shell_session_for_chat_resume(&session_id) {
+                    Ok(()) => {
+                        tracing::info!(session_id = %session_id, "Shell session opened for chat resume");
+                        show_system_notification(
+                            app,
+                            "Shell Session",
+                            "Opened terminal and resumed the active chat session",
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(session_id = %session_id, error = %e, "Failed to open shell for chat resume");
+                        show_system_notification(
+                            app,
+                            "Shell Session Error",
+                            &format!("Failed to open shell for session: {}", e),
+                        );
+                    }
                 }
-                Err(e) => {
-                    tracing::error!("Failed to open shell session: {}", e);
-                    show_system_notification(
-                        app,
-                        "Shell Session Error",
-                        &format!("Failed to open shell: {}", e),
-                    );
+            } else {
+                // Fallback: open a generic shell session (no active chat to resume).
+                match window_manager::open_shell_session() {
+                    Ok(()) => {
+                        tracing::info!("Shell session opened successfully");
+                        show_system_notification(
+                            app,
+                            "Shell Session",
+                            "Gestura shell session opened in terminal",
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to open shell session: {}", e);
+                        show_system_notification(
+                            app,
+                            "Shell Session Error",
+                            &format!("Failed to open shell: {}", e),
+                        );
+                    }
                 }
             }
         }

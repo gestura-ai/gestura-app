@@ -270,7 +270,7 @@ impl ConfigHealthCheck {
             validate_config(&config)
         } else {
             let mut result = ConfigValidationResult::new();
-            result.add_warning("config.json", "Config file does not exist, using defaults");
+            result.add_warning("config.yaml", "Config file does not exist, using defaults");
             result
         };
 

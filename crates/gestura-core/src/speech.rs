@@ -256,7 +256,12 @@ impl SpeechProcessor {
         audio_path: &Path,
     ) -> Result<TranscriptionResult, AppError> {
         let app_config = AppConfig::load();
-        let provider = crate::stt_provider::select_provider(&app_config);
+        // Use secure storage (keychain when enabled) for API key fallback chains.
+        let secret_provider = crate::secrets::SecureStorageSecretProvider::new(
+            crate::security::create_secure_storage(),
+        );
+        let provider =
+            crate::stt_provider::select_provider(&app_config, Some(&secret_provider)).await;
 
         tracing::info!(
             "Transcribing audio with provider: {} (config.voice.provider={})",
@@ -589,6 +594,120 @@ pub fn resolve_whisper_model_path(config: &AppConfig) -> Result<PathBuf, AppErro
          or configure voice.local_model_path in your settings."
             .to_string(),
     ))
+}
+
+/// Resolve the path to a local Whisper model file, with an optional session-scoped override.
+///
+/// This is the core-owned implementation of the GUI's per-session model selection rules.
+///
+/// When `session_model` is provided (and non-empty after trimming), it is interpreted as:
+/// - a full path when it contains a path separator (`/` or `\\`), otherwise
+/// - a filename resolved under `AppConfig::whisper_models_dir()`.
+///
+/// If a session override is provided but the resolved file does not exist, this returns an
+/// error instead of silently falling back to global defaults.
+///
+/// When no session override is provided, this falls back to [`resolve_whisper_model_path`].
+#[cfg(feature = "voice-local")]
+pub fn resolve_whisper_model_path_with_override(
+    config: &AppConfig,
+    session_model: Option<&str>,
+) -> Result<PathBuf, AppError> {
+    resolve_whisper_model_path_with_override_in_dir(
+        config,
+        session_model,
+        &AppConfig::whisper_models_dir(),
+    )
+}
+
+/// Implementation helper for [`resolve_whisper_model_path_with_override`].
+///
+/// This is split out to allow deterministic unit testing with a temporary models directory.
+#[cfg(feature = "voice-local")]
+fn resolve_whisper_model_path_with_override_in_dir(
+    config: &AppConfig,
+    session_model: Option<&str>,
+    whisper_models_dir: &Path,
+) -> Result<PathBuf, AppError> {
+    let session_model = session_model.map(str::trim).filter(|m| !m.is_empty());
+
+    if let Some(model) = session_model {
+        let candidate = if model.contains('/') || model.contains('\\') {
+            PathBuf::from(model)
+        } else {
+            whisper_models_dir.join(model)
+        };
+
+        if !candidate.exists() {
+            return Err(AppError::Voice(format!(
+                "Local Whisper model file not found at: {}. Please download a whisper.cpp compatible model (.bin file).",
+                candidate.display()
+            )));
+        }
+
+        return Ok(candidate);
+    }
+
+    resolve_whisper_model_path(config)
+}
+
+#[cfg(all(test, feature = "voice-local"))]
+mod whisper_model_override_tests {
+    use super::*;
+
+    #[test]
+    fn session_model_filename_is_resolved_under_models_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let models_dir = tmp.path().join("models");
+        std::fs::create_dir_all(&models_dir).expect("create models dir");
+
+        let model_file = models_dir.join("ggml-tiny.en.bin");
+        std::fs::write(&model_file, b"test").expect("write model");
+
+        let cfg = AppConfig::default();
+        let resolved = resolve_whisper_model_path_with_override_in_dir(
+            &cfg,
+            Some("ggml-tiny.en.bin"),
+            &models_dir,
+        )
+        .expect("resolve");
+
+        assert_eq!(resolved, model_file);
+    }
+
+    #[test]
+    fn session_model_path_is_used_as_is() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let model_file = tmp.path().join("ggml-small.en.bin");
+        std::fs::write(&model_file, b"test").expect("write model");
+
+        let cfg = AppConfig::default();
+        let resolved = resolve_whisper_model_path_with_override_in_dir(
+            &cfg,
+            Some(model_file.to_string_lossy().as_ref()),
+            tmp.path(),
+        )
+        .expect("resolve");
+
+        assert_eq!(resolved, model_file);
+    }
+
+    #[test]
+    fn missing_session_model_returns_actionable_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cfg = AppConfig::default();
+        let err = resolve_whisper_model_path_with_override_in_dir(
+            &cfg,
+            Some("does-not-exist.bin"),
+            tmp.path(),
+        )
+        .expect_err("should error");
+
+        match err {
+            AppError::Voice(msg) => assert!(msg.contains("Local Whisper model file not found")),
+            other => panic!("unexpected error type: {other:?}"),
+        }
+    }
 }
 
 /// Load audio file and convert to 16kHz mono f32 samples.

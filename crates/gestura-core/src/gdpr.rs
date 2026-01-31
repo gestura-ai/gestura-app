@@ -190,9 +190,15 @@ impl GdprManager {
         let mut export_data = serde_json::Map::new();
 
         // Export consent records
-        let consents = self.consent_records.read().await;
-        if let Some(user_consents) = consents.get(user_id) {
-            export_data.insert("consents".to_string(), serde_json::to_value(user_consents)?);
+        let user_consents: Vec<ConsentRecord> = {
+            let consents = self.consent_records.read().await;
+            consents.get(user_id).cloned().unwrap_or_default()
+        };
+        if !user_consents.is_empty() {
+            export_data.insert(
+                "consents".to_string(),
+                serde_json::to_value(&user_consents)?,
+            );
         }
 
         // Export configuration data
@@ -205,6 +211,30 @@ impl GdprManager {
             "audit_trail".to_string(),
             serde_json::to_value(&audit_entries)?,
         );
+
+        // Export voice data locations (metadata only)
+        let voice_locations: Vec<PathBuf> = {
+            let data_locations = self.data_locations.read().await;
+            data_locations
+                .get(&DataCategory::VoiceRecordings)
+                .cloned()
+                .unwrap_or_default()
+        };
+        if !voice_locations.is_empty() {
+            let voice_metadata: Vec<_> = voice_locations
+                .iter()
+                .map(|path| {
+                    serde_json::json!({
+                        "path": path.to_string_lossy(),
+                        "category": "voice_recording"
+                    })
+                })
+                .collect();
+            export_data.insert(
+                "voice_data_locations".to_string(),
+                serde_json::Value::Array(voice_metadata),
+            );
+        }
 
         tracing::info!("Data export completed for user: {}", user_id);
         Ok(serde_json::Value::Object(export_data))
@@ -271,6 +301,162 @@ impl GdprManager {
         let consents = self.consent_records.read().await;
         consents.get(user_id).cloned().unwrap_or_default()
     }
+
+    /// Delete all user data (GDPR Article 17 - Right to be forgotten).
+    ///
+    /// If `verify` is `true`, this **does not** delete anything; it returns a list of
+    /// items that *would* be deleted.
+    ///
+    /// Note: this function intentionally avoids holding async lock guards across
+    /// `.await` points (e.g., while deleting files) to prevent deadlocks and satisfy
+    /// `clippy::await_holding_lock`.
+    pub async fn delete_user_data(
+        &self,
+        user_id: &str,
+        verify: bool,
+    ) -> Result<Vec<String>, AppError> {
+        let mut deleted_items = Vec::new();
+
+        // Audit the deletion request
+        self.audit_data_operation(
+            user_id.to_string(),
+            DataOperation::Delete,
+            DataCategory::PersonalIdentifiers,
+            "Data deletion requested".to_string(),
+            "GDPR Article 17".to_string(),
+        )
+        .await;
+
+        // Delete consent records
+        {
+            let mut consents = self.consent_records.write().await;
+            if consents.remove(user_id).is_some() {
+                deleted_items.push("Consent records".to_string());
+            }
+        }
+
+        // Gather candidate file paths without holding the lock across await.
+        let candidates: Vec<(DataCategory, PathBuf)> = {
+            let data_locations = self.data_locations.read().await;
+            data_locations
+                .iter()
+                .flat_map(|(category, locations)| {
+                    locations
+                        .iter()
+                        .filter(|p| p.to_string_lossy().contains(user_id))
+                        .cloned()
+                        .map(|p| (category.clone(), p))
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        };
+
+        for (category, path) in candidates {
+            if verify {
+                deleted_items.push(format!("{category:?}: {}", path.display()));
+                continue;
+            }
+
+            match tokio::fs::remove_file(&path).await {
+                Ok(()) => {
+                    deleted_items.push(format!("{category:?}: {}", path.display()));
+                    tracing::info!(category = ?category, path = %path.display(), "Deleted user data file");
+                }
+                Err(e) => {
+                    // Match legacy GUI behavior: log and continue.
+                    tracing::error!(
+                        category = ?category,
+                        path = %path.display(),
+                        error = %e,
+                        "Failed to delete user data file"
+                    );
+                }
+            }
+        }
+
+        // Remove user from audit trail (anonymize)
+        if !verify {
+            let mut audit_trail = self.audit_trail.write().await;
+            for entry in audit_trail.iter_mut() {
+                if entry.user_id == user_id {
+                    entry.user_id = "[DELETED]".to_string();
+                }
+            }
+        }
+
+        if verify {
+            tracing::info!(user_id = %user_id, "Data deletion verification completed");
+        } else {
+            tracing::info!(user_id = %user_id, "Data deletion completed");
+        }
+
+        Ok(deleted_items)
+    }
+
+    /// Generate a privacy report summarizing stored GDPR-related metadata.
+    ///
+    /// This report is intended for administrative visibility and does not contain raw
+    /// user data. It includes counts for consents, audit entries, and tracked data
+    /// locations.
+    pub async fn generate_privacy_report(&self) -> serde_json::Value {
+        let (total_users, total_consents, granted, withdrawn, denied, pending) = {
+            let consents = self.consent_records.read().await;
+            let total_users = consents.len();
+            let total_consents: usize = consents.values().map(|v| v.len()).sum();
+
+            let mut granted = 0usize;
+            let mut withdrawn = 0usize;
+            let mut denied = 0usize;
+            let mut pending = 0usize;
+
+            for c in consents.values().flatten() {
+                match c.status {
+                    ConsentStatus::Granted => granted += 1,
+                    ConsentStatus::Withdrawn => withdrawn += 1,
+                    ConsentStatus::Denied => denied += 1,
+                    ConsentStatus::Pending => pending += 1,
+                }
+            }
+
+            (
+                total_users,
+                total_consents,
+                granted,
+                withdrawn,
+                denied,
+                pending,
+            )
+        };
+
+        let total_audit_entries = {
+            let audit_trail = self.audit_trail.read().await;
+            audit_trail.len()
+        };
+
+        let (total_data_locations, categories) = {
+            let data_locations = self.data_locations.read().await;
+            let total_data_locations: usize = data_locations.values().map(|v| v.len()).sum();
+            let categories = data_locations.keys().cloned().collect::<Vec<_>>();
+            (total_data_locations, categories)
+        };
+
+        serde_json::json!({
+            "generated_at": chrono::Utc::now(),
+            "summary": {
+                "total_users": total_users,
+                "total_consents": total_consents,
+                "total_audit_entries": total_audit_entries,
+                "total_data_locations": total_data_locations
+            },
+            "consent_breakdown": {
+                "granted": granted,
+                "withdrawn": withdrawn,
+                "denied": denied,
+                "pending": pending
+            },
+            "data_categories": categories
+        })
+    }
 }
 
 /// Global GDPR manager instance
@@ -281,4 +467,172 @@ pub async fn get_gdpr_manager() -> &'static GdprManager {
     GDPR_MANAGER
         .get_or_init(|| async { GdprManager::new(50000) })
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    /// Assert that a value can round-trip through JSON (via `serde_json::Value`) without loss.
+    fn assert_json_roundtrip<T>(value: &T)
+    where
+        T: serde::Serialize + for<'de> serde::Deserialize<'de>,
+    {
+        let v1 = serde_json::to_value(value).expect("serialize");
+        let decoded: T = serde_json::from_value(v1.clone()).expect("deserialize");
+        let v2 = serde_json::to_value(&decoded).expect("serialize (round-tripped)");
+        assert_eq!(v1, v2);
+    }
+
+    #[tokio::test]
+    async fn test_gdpr_manager_basic_flow() {
+        let manager = GdprManager::new(1000);
+
+        // Consent registration
+        manager
+            .register_consent(
+                "test-user".to_string(),
+                DataCategory::VoiceRecordings,
+                "Voice processing".to_string(),
+                "User consent".to_string(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            manager
+                .has_consent("test-user", &DataCategory::VoiceRecordings)
+                .await
+        );
+
+        // Withdrawal
+        manager
+            .withdraw_consent("test-user", &DataCategory::VoiceRecordings)
+            .await
+            .unwrap();
+        assert!(
+            !manager
+                .has_consent("test-user", &DataCategory::VoiceRecordings)
+                .await
+        );
+
+        // Export
+        let export = manager.export_user_data("test-user").await.unwrap();
+        assert!(export.get("configuration").is_some());
+
+        // Privacy report (shape)
+        let report = manager.generate_privacy_report().await;
+        assert!(report.get("summary").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_delete_user_data_verify_and_delete() {
+        let manager = GdprManager::new(1000);
+        let user_id = "user-to-delete";
+
+        manager
+            .register_consent(
+                user_id.to_string(),
+                DataCategory::PersonalIdentifiers,
+                "Testing".to_string(),
+                "Consent".to_string(),
+            )
+            .await
+            .unwrap();
+
+        // Create a temp file path containing the user_id
+        let mut tmp_path = std::env::temp_dir();
+        tmp_path.push(format!(
+            "gestura_gdpr_test_{user_id}_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&tmp_path, b"test").unwrap();
+
+        manager
+            .register_data_location(DataCategory::VoiceRecordings, tmp_path.clone())
+            .await;
+
+        // Verify mode should not delete
+        let preview = manager.delete_user_data(user_id, true).await.unwrap();
+        assert!(preview.iter().any(|s| s.contains(user_id)));
+        assert!(tmp_path.exists(), "file should still exist in verify mode");
+
+        // Non-verify should delete
+        let deleted = manager.delete_user_data(user_id, false).await.unwrap();
+        assert!(deleted.iter().any(|s| s.contains(user_id)));
+        assert!(!tmp_path.exists(), "file should be deleted");
+    }
+
+    #[test]
+    fn test_gdpr_models_serde_roundtrip() {
+        assert_json_roundtrip(&DataCategory::VoiceRecordings);
+        assert_json_roundtrip(&ConsentStatus::Granted);
+        assert_json_roundtrip(&DataOperation::Collect);
+
+        let fixed_ts = chrono::Utc
+            .with_ymd_and_hms(2025, 1, 1, 0, 0, 0)
+            .single()
+            .expect("valid timestamp");
+
+        let consent = ConsentRecord {
+            user_id: "user-1".to_string(),
+            category: DataCategory::VoiceRecordings,
+            status: ConsentStatus::Granted,
+            granted_at: Some(fixed_ts),
+            withdrawn_at: None,
+            purpose: "Voice processing".to_string(),
+            legal_basis: "Consent".to_string(),
+        };
+        assert_json_roundtrip(&consent);
+
+        let audit = DataAuditEntry {
+            timestamp: fixed_ts,
+            user_id: "user-1".to_string(),
+            operation: DataOperation::Access,
+            category: DataCategory::VoiceRecordings,
+            details: "Accessed voice data".to_string(),
+            legal_basis: "Consent".to_string(),
+        };
+        assert_json_roundtrip(&audit);
+    }
+
+    #[tokio::test]
+    async fn test_consent_timestamps_invariants() {
+        let manager = GdprManager::new(1000);
+        let user_id = "test-user-invariants";
+
+        manager
+            .register_consent(
+                user_id.to_string(),
+                DataCategory::VoiceRecordings,
+                "Voice processing".to_string(),
+                "Consent".to_string(),
+            )
+            .await
+            .unwrap();
+
+        let consents = manager.get_user_consents(user_id).await;
+        let c = consents
+            .iter()
+            .find(|c| c.category == DataCategory::VoiceRecordings)
+            .unwrap();
+        assert_eq!(c.status, ConsentStatus::Granted);
+        assert!(c.granted_at.is_some());
+        assert!(c.withdrawn_at.is_none());
+
+        manager
+            .withdraw_consent(user_id, &DataCategory::VoiceRecordings)
+            .await
+            .unwrap();
+
+        let consents = manager.get_user_consents(user_id).await;
+        let c = consents
+            .iter()
+            .find(|c| c.category == DataCategory::VoiceRecordings)
+            .unwrap();
+        assert_eq!(c.status, ConsentStatus::Withdrawn);
+        assert!(c.granted_at.is_some());
+        assert!(c.withdrawn_at.is_some());
+    }
 }

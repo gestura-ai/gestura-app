@@ -4,10 +4,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
-use crate::api::try_get_api_key_from_keychain_sync;
 use crate::audio_capture::record_audio;
 use crate::config::AppConfig;
-use crate::voice::{OpenAiWhisperVoice, WhisperLocal};
+
+use gestura_core::secrets::SecureStorageSecretProvider;
+use gestura_core::stt_provider::{SttProvider, select_provider_with_session_voice_config};
+
+/// Poll interval (ms) for checking whether the user requested cancellation.
+const CANCEL_POLL_INTERVAL_MS: u64 = 50;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpeechConfig {
@@ -74,6 +78,15 @@ impl SpeechProcessor {
         tracing::info!("Speech processor configuration updated");
     }
 
+    /// Start microphone capture and run the speech workflow.
+    ///
+    /// ## Cancel / timeout semantics
+    /// - Cancellation is requested via [`Self::stop_listening`].
+    /// - Cancellation is **best-effort and idempotent**:
+    ///   - recording is stopped via the core audio-capture stop flag
+    ///   - transcription is cancelled by dropping the in-flight future when possible
+    /// - A user-initiated cancel is treated as `Ok(())` (not an error) to avoid
+    ///   showing error UX for intentional stops.
     pub async fn start_listening(&self, app: &AppHandle) -> Result<(), String> {
         {
             let mut recording = self.is_recording.lock().unwrap();
@@ -85,7 +98,8 @@ impl SpeechProcessor {
 
         tracing::info!("Starting speech capture and processing");
 
-        // Use real microphone capture and voice processing
+        // Use real microphone capture and voice processing.
+        // Note: user cancellation is treated as success (see `process_speech_workflow`).
         let result = self.process_speech_workflow(app).await;
 
         {
@@ -96,22 +110,42 @@ impl SpeechProcessor {
         result
     }
 
+    /// Request that an in-flight speech workflow stop.
+    ///
+    /// This method is intentionally **idempotent**: calling it when not recording
+    /// still signals the core audio-capture stop flag, ensuring any in-flight
+    /// recording loop can observe the request.
     pub fn stop_listening(&self) -> Result<(), String> {
-        let mut recording = self.is_recording.lock().unwrap();
-        if !*recording {
-            return Err("Not currently recording".to_string());
-        }
-        *recording = false;
+        let was_recording = {
+            let mut recording = self.is_recording.lock().unwrap();
+            let was_recording = *recording;
+            *recording = false;
+            was_recording
+        };
 
-        // Signal the audio capture to stop immediately
+        // Signal the audio capture to stop immediately.
         crate::audio_capture::request_stop_recording();
 
-        tracing::info!("Stopped speech capture and requested audio recording stop");
+        tracing::info!(was_recording, "Stop listening requested");
         Ok(())
     }
 
     pub fn is_recording(&self) -> bool {
         *self.is_recording.lock().unwrap()
+    }
+
+    /// Wait until the workflow should be cancelled.
+    ///
+    /// Cancellation is signaled either via the global audio-capture stop flag
+    /// (set by `stop_listening`) or by `is_recording` being set to false.
+    async fn wait_for_cancel_request(&self) {
+        loop {
+            if crate::audio_capture::is_stop_requested() || !self.is_recording() {
+                return;
+            }
+
+            tokio::time::sleep(Duration::from_millis(CANCEL_POLL_INTERVAL_MS)).await;
+        }
     }
 
     /// Real speech processing workflow using microphone capture and voice transcription
@@ -129,106 +163,11 @@ impl SpeechProcessor {
             .as_deref()
             .and_then(crate::window_manager::get_session_voice_config);
 
-        let effective_voice_provider = session_voice_config
-            .as_ref()
-            .and_then(|c| c.provider.clone())
-            .unwrap_or_else(|| app_config.voice.provider.clone());
-
-        // Session-scoped model override applies primarily to OpenAI Whisper (cloud).
-        // Local model override is handled in `transcribe_audio` where the model path is needed.
-        let effective_openai_model = if effective_voice_provider == "openai" {
-            session_voice_config
-                .as_ref()
-                .and_then(|c| c.model.clone())
-                .or_else(|| app_config.voice.openai_model.clone())
-                .unwrap_or_else(|| "gpt-4o-transcribe".to_string())
-        } else {
-            app_config
-                .voice
-                .openai_model
-                .clone()
-                .unwrap_or_else(|| "gpt-4o-transcribe".to_string())
-        };
-
-        // Resolve OpenAI API key with keychain fallback chain:
-        // 1. Config file voice.openai_api_key
-        // 2. Keychain voice_openai key
-        // 3. Keychain openai key (general LLM OpenAI key)
-        // 4. LLM OpenAI config fallback
-        let openai_api_key = {
-            let config_key = app_config.voice.openai_api_key.clone().unwrap_or_default();
-            if !config_key.is_empty() {
-                config_key
-            } else {
-                // Try keychain voice-specific key
-                let voice_key = try_get_api_key_from_keychain_sync("voice_openai");
-                if !voice_key.is_empty() {
-                    voice_key
-                } else {
-                    // Try keychain general OpenAI key
-                    let general_key = try_get_api_key_from_keychain_sync("openai");
-                    if !general_key.is_empty() {
-                        general_key
-                    } else {
-                        // Fall back to LLM OpenAI config
-                        app_config
-                            .llm
-                            .openai
-                            .as_ref()
-                            .map(|c| c.api_key.clone())
-                            .unwrap_or_default()
-                    }
-                }
-            }
-        };
-
         tracing::info!(
             active_voice_session_id = ?active_voice_session_id,
             session_voice_config = ?session_voice_config,
-            effective_voice_provider = %effective_voice_provider,
-            effective_openai_model = %effective_openai_model,
-            "Resolved voice/STT config (session override + global fallback)"
-        );
-
-        // Map VoiceSettings to SpeechConfig (with session-scoped overrides applied)
-        let speech_config = SpeechConfig {
-            stt_provider: match effective_voice_provider.as_str() {
-                "local" => "local-whisper".to_string(),
-                "openai" => "openai-whisper".to_string(),
-                _ => "local-whisper".to_string(), // default to local
-            },
-            llm_provider: app_config.llm.primary.clone(),
-            openai_api_key,
-            openai_base_url: app_config
-                .voice
-                .openai_base_url
-                .clone()
-                .unwrap_or_else(|| "https://api.openai.com".to_string()),
-            openai_model: effective_openai_model,
-            anthropic_api_key: app_config
-                .llm
-                .anthropic
-                .as_ref()
-                .map(|a| a.api_key.clone())
-                .unwrap_or_default(),
-            google_api_key: String::new(),
-            azure_api_key: String::new(),
-            local_llm_endpoint: app_config
-                .llm
-                .ollama
-                .as_ref()
-                .map(|o| o.base_url.clone())
-                .unwrap_or_else(|| "http://localhost:11434".to_string()),
-            stt_timeout: 30,
-            llm_timeout: 60,
-            enable_fallback: true,
-            cache_responses: true,
-        };
-
-        tracing::info!(
-            "Starting speech workflow with STT: {}, LLM: {}",
-            speech_config.stt_provider,
-            app_config.llm.primary
+            config_voice_provider = %app_config.voice.provider,
+            "Resolved voice/STT config inputs (core applies precedence rules)"
         );
 
         // Step 1: Record audio from microphone with VAD (Voice Activity Detection)
@@ -239,20 +178,57 @@ impl SpeechProcessor {
             chrono::Utc::now().timestamp()
         ));
 
-        // Duration parameter is ignored - VAD handles stopping after silence
-        let duration = record_audio(Duration::from_secs(0), &audio_path)
-            .await
-            .map_err(|e| format!("Failed to record audio: {}", e))?;
+        // Duration parameter is ignored - VAD handles stopping after silence.
+        let duration = match record_audio(Duration::from_secs(0), &audio_path).await {
+            Ok(d) => d,
+            Err(e) => {
+                // Best-effort cleanup if a file was created.
+                let _ = std::fs::remove_file(&audio_path);
+
+                // User-initiated cancel is treated as success.
+                if crate::audio_capture::is_stop_requested() || !self.is_recording() {
+                    tracing::info!("Speech workflow cancelled during recording");
+                    return Ok(());
+                }
+
+                return Err(format!("Failed to record audio: {}", e));
+            }
+        };
 
         tracing::info!("Recorded {:.2}s of audio to {:?}", duration, audio_path);
+
+        // If the user cancelled, stop here and do not proceed to transcription.
+        if crate::audio_capture::is_stop_requested() || !self.is_recording() {
+            let _ = std::fs::remove_file(&audio_path);
+            tracing::info!("Speech workflow cancelled after recording; skipping transcription");
+            return Ok(());
+        }
 
         if duration < 0.5 {
             let _ = std::fs::remove_file(&audio_path);
             return Err("Recording too short - no audio captured".to_string());
         }
 
-        // Step 2: Transcribe audio using voice processor
-        let transcribed_text = self.transcribe_audio(&speech_config, &audio_path).await?;
+        // Step 2: Transcribe audio using core-owned STT selection + transcription.
+        // Cancellation is best-effort: if the user clicks "Stop" while transcribing,
+        // we return success and drop the in-flight future (cancels HTTP requests).
+        let transcribed_text_result = tokio::select! {
+            _ = self.wait_for_cancel_request() => {
+                let _ = std::fs::remove_file(&audio_path);
+                tracing::info!("Speech workflow cancelled before/during transcription");
+                return Ok(());
+            }
+            r = self.transcribe_audio(&app_config, session_voice_config.as_ref(), &audio_path) => r,
+        };
+
+        let transcribed_text = match transcribed_text_result {
+            Ok(text) => text,
+            Err(e) => {
+                let _ = std::fs::remove_file(&audio_path);
+                return Err(e);
+            }
+        };
+
         tracing::info!("Transcription: '{}'", transcribed_text);
 
         // Clean up temp file
@@ -278,117 +254,39 @@ impl SpeechProcessor {
         Ok(())
     }
 
-    /// Transcribe audio file using configured STT provider
+    /// Transcribe an audio file using core-owned STT selection.
+    ///
+    /// The GUI layer is intentionally a thin adapter:
+    /// - it provides session-scoped overrides (if any)
+    /// - it wires secure storage (keychain/mock) into core via `SecureStorageSecretProvider`
+    /// - it maps core errors into user-facing strings
     async fn transcribe_audio(
         &self,
-        config: &SpeechConfig,
+        app_config: &AppConfig,
+        session_voice_config: Option<&crate::window_manager::SessionVoiceConfig>,
         audio_path: &Path,
     ) -> Result<String, String> {
-        let app_config = AppConfig::load();
+        let storage = crate::security::create_secure_storage();
+        let secrets = SecureStorageSecretProvider::new(storage);
+
+        let provider: Box<dyn SttProvider> = select_provider_with_session_voice_config(
+            app_config,
+            session_voice_config,
+            Some(&secrets),
+        )
+        .await;
 
         tracing::info!(
-            "Transcribing audio with provider: {}, base_url: {}, model: {}",
-            config.stt_provider,
-            config.openai_base_url,
-            config.openai_model
+            provider_id = %provider.provider_id(),
+            "Selected STT provider (core-owned selection)"
         );
 
-        match config.stt_provider.as_str() {
-            "openai-whisper" => {
-                if config.openai_api_key.is_empty() {
-                    return Err(
-                        "OpenAI API key not configured. Please set your OpenAI API key in Settings > Voice."
-                            .to_string(),
-                    );
-                }
+        let result = provider
+            .transcribe_file(audio_path)
+            .await
+            .map_err(|e| format!("Transcription failed: {e}"))?;
 
-                tracing::info!(
-                    "Using OpenAI Whisper API: base_url={}, model={}",
-                    config.openai_base_url,
-                    config.openai_model
-                );
-
-                let voice_processor = OpenAiWhisperVoice {
-                    api_key: config.openai_api_key.clone(),
-                    base_url: config.openai_base_url.clone(),
-                    model: config.openai_model.clone(),
-                };
-
-                voice_processor
-                    .transcribe_file(audio_path)
-                    .await
-                    .map_err(|e| format!("Transcription failed: {}", e))
-            }
-            "local-whisper" => {
-                // Resolve the effective local Whisper model path.
-                //
-                // Priority:
-                // 1) Session-scoped override (Providers panel) via SessionVoiceConfig.model
-                //    - For local providers we store/select a *filename* (e.g. ggml-base.en.bin)
-                //      and resolve it into the global whisper models dir.
-                // 2) Global config voice.local_model_path (full path)
-                let active_voice_session_id = crate::window_manager::get_active_chat_for_voice();
-                let session_voice_config = active_voice_session_id
-                    .as_deref()
-                    .and_then(crate::window_manager::get_session_voice_config);
-
-                let session_model = session_voice_config
-                    .as_ref()
-                    .and_then(|c| c.model.clone())
-                    .filter(|m| !m.is_empty());
-
-                let model_path = if let Some(model) = session_model {
-                    // If the UI ever starts sending a full path, accept it.
-                    if model.contains('/') || model.contains('\\') {
-                        tracing::info!(
-                            active_voice_session_id = ?active_voice_session_id,
-                            model = %model,
-                            "Using session-scoped local Whisper model path (already a path)"
-                        );
-                        model
-                    } else {
-                        let resolved = AppConfig::whisper_models_dir().join(&model);
-                        tracing::info!(
-                            active_voice_session_id = ?active_voice_session_id,
-                            model_filename = %model,
-                            resolved_path = %resolved.to_string_lossy(),
-                            "Using session-scoped local Whisper model (resolved from filename)"
-                        );
-                        resolved.to_string_lossy().to_string()
-                    }
-                } else {
-                    app_config
-                        .voice
-                        .local_model_path
-                        .clone()
-                        .ok_or_else(|| {
-                            "Local Whisper model not configured. Select a model in Settings → Voice & Audio, or choose one per-session in Providers.".to_string()
-                        })?
-                };
-
-                // Verify the model file exists
-                if !std::path::Path::new(&model_path).exists() {
-                    return Err(format!(
-                        "Local Whisper model file not found at: {}. Please download a whisper.cpp compatible model (.bin file).",
-                        model_path
-                    ));
-                }
-
-                tracing::info!("Using local Whisper model: {}", model_path);
-
-                let whisper_local = WhisperLocal { model_path };
-
-                // Run transcription in a blocking task since whisper-rs is synchronous
-                let audio_path_owned = audio_path.to_path_buf();
-                tokio::task::spawn_blocking(move || {
-                    whisper_local.transcribe_file(&audio_path_owned)
-                })
-                .await
-                .map_err(|e| format!("Transcription task failed: {}", e))?
-                .map_err(|e| format!("Local Whisper transcription failed: {}", e))
-            }
-            _ => Err(format!("Unsupported STT provider: {}", config.stt_provider)),
-        }
+        Ok(result.text)
     }
 
     /// Process transcribed text with configured LLM provider via AgentPipeline.

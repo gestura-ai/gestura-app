@@ -8,12 +8,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time;
 
 use crate::kv::KvStore;
-use crate::llm_provider::{AgentContext, select_provider};
 use crate::mcp::{MdhResource, mdh_translate};
+use gestura_core::pipeline::{AgentPipeline, AgentRequest, RequestSource};
 
 // Re-export core types for backwards compatibility
 pub use gestura_core::agents::{
@@ -34,6 +34,18 @@ struct AgentRecord {
 #[derive(Default)]
 struct Inner {
     agents: HashMap<String, AgentRecord>,
+}
+
+/// Load configuration for background agent event processing.
+///
+/// In unit tests, this intentionally avoids reading the user's real on-disk
+/// config (which may point at networked providers and cause test hangs).
+async fn load_agent_event_config() -> crate::AppConfig {
+    if cfg!(test) {
+        crate::AppConfig::default()
+    } else {
+        crate::AppConfig::load_async().await
+    }
 }
 
 /// GUI-specific AgentManager with KV persistence and MDH event handling
@@ -91,29 +103,57 @@ impl AgentManager {
 
         // GUI-specific agent task with MDH and LLM integration
         let handle = tokio::spawn(async move {
+            // Background work spawned for event processing. We keep these in a JoinSet so
+            // we can abort them immediately on shutdown.
+            let mut in_flight: JoinSet<()> = JoinSet::new();
+
             while let Some(cmd) = rx.recv().await {
                 match cmd {
-                    AgentCommand::Shutdown => break,
-                    AgentCommand::Event(_payload) => {
-                        // Handle data-query events with MDH and LLM
-                        if let Some(path) = _payload.strip_prefix("data-query:") {
-                            let ld_path = PathBuf::from(path.trim());
-                            let mdh: Option<MdhResource> = mdh_translate(ld_path).ok();
-                            let mut prompt = String::from("Handle event with context.");
-                            if let Some(res) = mdh {
-                                prompt.push_str(&format!("\nMDH: {}", res.uri));
-                            }
-                            let provider = select_provider(
-                                &crate::AppConfig::load(),
-                                &AgentContext {
-                                    agent_id: String::from("default"),
-                                },
-                            );
-                            let _ = provider.call(&prompt).await;
+                    AgentCommand::Shutdown => {
+                        // Ensure shutdown is always responsive, even if an event
+                        // is currently being processed via the pipeline.
+                        in_flight.abort_all();
+                        break;
+                    }
+                    AgentCommand::Event(payload) => {
+                        // Handle data-query events with MDH and LLM.
+                        //
+                        // IMPORTANT: This is spawned so that slow providers (or a user's
+                        // config pointing at a networked provider) cannot block the
+                        // agent's shutdown handling.
+                        if let Some(path) = payload.strip_prefix("data-query:") {
+                            let path = path.trim().to_string();
+                            in_flight.spawn(async move {
+                                let ld_path = PathBuf::from(path);
+                                let mdh: Option<MdhResource> = mdh_translate(ld_path).ok();
+
+                                let mut prompt = String::from("Handle event with context.");
+                                if let Some(res) = mdh {
+                                    prompt.push_str(&format!("\nMDH: {}", res.uri));
+                                }
+
+                                // Core-First: route LLM calls through the unified pipeline.
+                                // This GUI agent event handler does not execute tools; it only
+                                // requests a single model response.
+                                let cfg = load_agent_event_config().await;
+                                let pipeline = AgentPipeline::with_provider_optimized_config(cfg);
+                                let request = AgentRequest::new(prompt)
+                                    .with_streaming(false)
+                                    .with_source(RequestSource::GuiText)
+                                    .with_tools_enabled(false);
+
+                                if let Err(e) = pipeline.process_blocking(request).await {
+                                    tracing::error!("AgentPipeline event processing error: {}", e);
+                                }
+                            });
                         }
                     }
                 }
             }
+
+            // Best-effort: if the channel closes without an explicit Shutdown command,
+            // ensure we don't keep any background tasks alive.
+            in_flight.abort_all();
         });
 
         let now = chrono::Utc::now();
@@ -217,5 +257,67 @@ impl AgentSpawner for AgentManager {
 
     async fn shutdown_all(&self, grace_secs: u64) {
         AgentManager::shutdown_all(self, grace_secs).await;
+    }
+}
+
+#[async_trait::async_trait]
+impl gestura_core::orchestrator::OrchestratorAgentManager for AgentManager {
+    /// Get status information for a specific agent.
+    async fn get_agent_status(&self, id: &str) -> Option<AgentInfo> {
+        AgentManager::get_agent_status(self, id).await
+    }
+
+    /// List all active agents.
+    async fn list_agents(&self) -> Vec<AgentInfo> {
+        AgentManager::list_agents(self).await
+    }
+
+    /// Update last activity timestamp for an agent.
+    async fn update_activity(&self, id: &str) {
+        AgentManager::update_activity(self, id).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{Duration, timeout};
+
+    /// Integration smoke test: a GUI agent event should be processed via the core
+    /// pipeline and the agent task should remain responsive (no hangs).
+    #[tokio::test]
+    async fn agent_data_query_event_is_processed_and_task_can_shutdown() {
+        let manager = AgentManager::new(PathBuf::from("/tmp/gestura_gui_agent_test"));
+
+        let id = "test-agent".to_string();
+        manager
+            .spawn_agent(id.clone(), "Test Agent".to_string())
+            .await;
+
+        // Pull out the agent handle so we can await shutdown deterministically.
+        let (tx, handle) = {
+            let mut inner = manager.inner.lock().await;
+            let rec = inner
+                .agents
+                .remove(&id)
+                .expect("agent record should exist after spawn_agent");
+            (rec.tx, rec._handle)
+        };
+
+        // Send a payload that triggers the data-query branch. The path can be invalid;
+        // MDH translation is best-effort and should not prevent pipeline execution.
+        tx.send(AgentCommand::Event(
+            "data-query:/path/does/not/exist.jsonld".to_string(),
+        ))
+        .await
+        .expect("event send should succeed");
+        tx.send(AgentCommand::Shutdown)
+            .await
+            .expect("shutdown send should succeed");
+
+        timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("agent task should terminate promptly")
+            .expect("agent task should not panic");
     }
 }

@@ -1,13 +1,19 @@
 //! Configuration management for Gestura
 //!
 //! This module defines the AppConfig struct and load/save helpers.
-//! Configuration is stored as JSON in ~/.gestura/config.json
+//! Configuration is stored as YAML in `~/.gestura/config.yaml`.
+//!
+//! ## Backward compatibility
+//!
+//! Older versions stored configuration as JSON in `~/.gestura/config.json`.
+//! On load, if `config.yaml` does not exist but `config.json` does, we
+//! automatically migrate the JSON file to YAML.
 //!
 //! ## Configuration Precedence
 //!
 //! Configuration values are loaded with the following precedence (highest first):
 //! 1. Environment variables (GESTURA_* prefix)
-//! 2. Config file (~/.gestura/config.json)
+//! 2. Config file (`~/.gestura/config.yaml`)
 //! 3. Default values
 //!
 //! See [`crate::config_env`] for environment variable documentation.
@@ -231,7 +237,7 @@ impl PromptEnhancementSettings {
     }
 }
 
-/// Application configuration persisted to a JSON file.
+/// Application configuration persisted to a YAML file.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppConfig {
     /// Global hotkey to toggle the app or trigger recording.
@@ -581,14 +587,24 @@ impl AppConfig {
         home.join(".gestura")
     }
 
-    /// Returns the default config path: ~/.gestura/config.json
+    /// Returns the default config path: `~/.gestura/config.yaml`
     pub fn default_path() -> PathBuf {
+        Self::data_dir().join("config.yaml")
+    }
+
+    /// Returns the legacy config path used by older versions: `~/.gestura/config.json`
+    fn legacy_json_path() -> PathBuf {
         Self::data_dir().join("config.json")
+    }
+
+    /// Returns the legacy config backup path: `~/.gestura/config.json.backup`
+    fn legacy_json_backup_path() -> PathBuf {
+        Self::data_dir().join("config.json.backup")
     }
 
     /// Check if a configuration file exists
     pub fn exists() -> bool {
-        Self::default_path().exists()
+        Self::default_path().exists() || Self::legacy_json_path().exists()
     }
 
     /// Check if this is the first run of the application
@@ -616,14 +632,46 @@ impl AppConfig {
     pub fn load_from_path(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref();
         match fs::read_to_string(path) {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+            Ok(s) => {
+                let is_json = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("json"));
+
+                if is_json {
+                    serde_json::from_str(&s).unwrap_or_default()
+                } else {
+                    serde_yaml::from_str(&s).unwrap_or_default()
+                }
+            }
             Err(_) => Self::default(),
         }
     }
 
     /// Load configuration from disk, falling back to defaults if missing (sync version).
+    ///
+    /// If `~/.gestura/config.yaml` is missing but `~/.gestura/config.json` exists,
+    /// this will automatically migrate the JSON file to YAML.
     pub fn load() -> Self {
-        Self::load_from_path(Self::default_path())
+        let yaml_path = Self::default_path();
+        if yaml_path.exists() {
+            return Self::load_from_path(&yaml_path);
+        }
+
+        let json_path = Self::legacy_json_path();
+        if json_path.exists()
+            && let Ok(s) = fs::read_to_string(&json_path)
+            && let Ok(cfg) = serde_json::from_str::<Self>(&s)
+        {
+            // Best-effort migration: write YAML and optionally back up the JSON.
+            let _ = cfg.save_to_path(&yaml_path);
+            if !Self::legacy_json_backup_path().exists() {
+                let _ = fs::rename(&json_path, Self::legacy_json_backup_path());
+            }
+            return cfg;
+        }
+
+        Self::default()
     }
 
     /// Load configuration from disk at an explicit path (async).
@@ -633,7 +681,18 @@ impl AppConfig {
     pub async fn load_from_path_async(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref().to_path_buf();
         match tokio::fs::read_to_string(&path).await {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+            Ok(s) => {
+                let is_json = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("json"));
+
+                if is_json {
+                    serde_json::from_str(&s).unwrap_or_default()
+                } else {
+                    serde_yaml::from_str(&s).unwrap_or_default()
+                }
+            }
             Err(_) => Self::default(),
         }
     }
@@ -642,7 +701,26 @@ impl AppConfig {
     ///
     /// This is the preferred method for GUI/Tauri commands to avoid blocking the UI thread.
     pub async fn load_async() -> Self {
-        Self::load_from_path_async(Self::default_path()).await
+        let yaml_path = Self::default_path();
+        if tokio::fs::try_exists(&yaml_path).await.unwrap_or(false) {
+            return Self::load_from_path_async(&yaml_path).await;
+        }
+
+        let json_path = Self::legacy_json_path();
+        if tokio::fs::try_exists(&json_path).await.unwrap_or(false)
+            && let Ok(s) = tokio::fs::read_to_string(&json_path).await
+            && let Ok(cfg) = serde_json::from_str::<Self>(&s)
+        {
+            // Best-effort migration: write YAML and optionally back up the JSON.
+            let _ = cfg.save_to_path_async(&yaml_path).await;
+            let backup_path = Self::legacy_json_backup_path();
+            if !tokio::fs::try_exists(&backup_path).await.unwrap_or(false) {
+                let _ = tokio::fs::rename(&json_path, backup_path).await;
+            }
+            return cfg;
+        }
+
+        Self::default()
     }
 
     /// Save configuration to disk at an explicit path.
@@ -654,7 +732,7 @@ impl AppConfig {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let data = serde_json::to_string_pretty(self)
+        let data = serde_yaml::to_string(self)
             .map_err(|e| AppError::Config(format!("Failed to serialize config: {}", e)))?;
         fs::write(path, data)?;
         Ok(())
@@ -673,7 +751,7 @@ impl AppConfig {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let data = serde_json::to_string_pretty(self)
+        let data = serde_yaml::to_string(self)
             .map_err(|e| AppError::Config(format!("Failed to serialize config: {}", e)))?;
         tokio::fs::write(path, data).await?;
         Ok(())
@@ -950,6 +1028,7 @@ impl WhisperModelInfo {
 mod tests {
     use super::*;
     use crate::pipeline::CompactionStrategy;
+    use std::sync::{Mutex, OnceLock};
 
     #[test]
     fn default_config_has_expected_values() {
@@ -1044,11 +1123,11 @@ mod tests {
         config.pipeline.max_context_tokens = 50000;
         config.pipeline.log_token_usage = false;
 
-        // Serialize to JSON
-        let json = serde_json::to_string(&config).unwrap();
+        // Serialize to YAML
+        let yaml = serde_yaml::to_string(&config).unwrap();
 
         // Deserialize back
-        let deserialized: AppConfig = serde_json::from_str(&json).unwrap();
+        let deserialized: AppConfig = serde_yaml::from_str(&yaml).unwrap();
 
         // Verify all pipeline settings are preserved
         assert_eq!(deserialized.pipeline.max_history_messages, 15);
@@ -1059,5 +1138,81 @@ mod tests {
         );
         assert_eq!(deserialized.pipeline.max_context_tokens, 50000);
         assert!(!deserialized.pipeline.log_token_usage);
+    }
+
+    /// Global lock used to serialize environment-variable mutation across tests.
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// RAII helper for setting a process-wide environment variable for the duration of a scope.
+    ///
+    /// ## Safety / Concurrency
+    /// Environment variables are process-global state. Tests that use this helper should
+    /// serialize access (e.g. by holding `env_lock()`) to avoid concurrent mutation.
+    struct ScopedEnvVar {
+        key: &'static str,
+        old: Option<String>,
+    }
+
+    impl ScopedEnvVar {
+        fn set(key: &'static str, value: String) -> Self {
+            let old = std::env::var(key).ok();
+            // Rust 2024: mutating process-wide environment variables is `unsafe`.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, old }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            match &self.old {
+                Some(v) => unsafe {
+                    std::env::set_var(self.key, v);
+                },
+                None => unsafe {
+                    std::env::remove_var(self.key);
+                },
+            }
+        }
+    }
+
+    #[test]
+    fn migrates_legacy_json_config_to_yaml_on_load() {
+        // This test mutates process-wide env vars; serialize it.
+        let _guard = env_lock().lock().unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().to_path_buf();
+        let _home = ScopedEnvVar::set("HOME", home.to_string_lossy().to_string());
+        let _userprofile = ScopedEnvVar::set("USERPROFILE", home.to_string_lossy().to_string());
+        let _homedrive = ScopedEnvVar::set("HOMEDRIVE", "C:".to_string());
+        let _homepath = ScopedEnvVar::set("HOMEPATH", "\\".to_string());
+
+        let gestura_dir = home.join(".gestura");
+        fs::create_dir_all(&gestura_dir).unwrap();
+
+        let json_path = gestura_dir.join("config.json");
+        let yaml_path = gestura_dir.join("config.yaml");
+        let backup_path = gestura_dir.join("config.json.backup");
+
+        // Write legacy JSON config
+        let cfg = AppConfig::default();
+        let json = serde_json::to_string_pretty(&cfg).unwrap();
+        fs::write(&json_path, json).unwrap();
+        assert!(!yaml_path.exists());
+
+        // Loading should migrate and return the legacy config contents.
+        let loaded = AppConfig::load();
+        assert_eq!(loaded, cfg);
+
+        // YAML should exist after migration.
+        assert!(yaml_path.exists());
+
+        // Legacy JSON should be backed up (best-effort).
+        assert!(!json_path.exists() || backup_path.exists());
     }
 }
