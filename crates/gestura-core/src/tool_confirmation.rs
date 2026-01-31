@@ -154,7 +154,11 @@ impl ToolConfirmationManager {
         session_id: Option<&str>,
         approved: bool,
     ) -> Result<(), String> {
-        self.resolve_decision(confirmation_id, session_id, ToolConfirmationDecision::from(approved))
+        self.resolve_decision(
+            confirmation_id,
+            session_id,
+            ToolConfirmationDecision::from(approved),
+        )
     }
 
     /// Resolve a pending confirmation with a scoped decision.
