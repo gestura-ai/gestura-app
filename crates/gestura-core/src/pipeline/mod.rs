@@ -2083,10 +2083,11 @@ impl AgentPipeline {
                 Some(sid) if TOOL_CONFIRMATIONS.is_tool_allowed_for_session(sid, &pending.name) => {
                     false
                 }
-                _ => match self
-                    .permission_manager
-                    .check(&pending.name, "execute", Some(&pending.arguments))
-                {
+                _ => match self.permission_manager.check(
+                    &pending.name,
+                    "execute",
+                    Some(&pending.arguments),
+                ) {
                     Ok(check) => !check.allowed,
                     Err(_) => true,
                 },
@@ -2095,90 +2096,97 @@ impl AgentPipeline {
             if !needs_confirmation {
                 // Approved: continue to normal execution flow below.
             } else {
+                const CONFIRMATION_TIMEOUT_SECS: u64 = 300;
+                let confirmation_id = format!("tool_confirm_{}", uuid::Uuid::new_v4());
 
-            const CONFIRMATION_TIMEOUT_SECS: u64 = 300;
-            let confirmation_id = format!("tool_confirm_{}", uuid::Uuid::new_v4());
-
-            // Register pending confirmation before emitting the event, so the UI can
-            // resolve it immediately without racing.
-            let rx = TOOL_CONFIRMATIONS.register(
-                confirmation_id.clone(),
-                session_id.clone(),
-                pending.name.clone(),
-                pending.arguments.clone(),
-            );
-
-            let _ = tx
-                .send(StreamChunk::ToolConfirmationRequired {
-                    confirmation_id: confirmation_id.clone(),
-                    tool_name: pending.name.clone(),
-                    tool_args: pending.arguments.clone(),
-                    description: info.description.clone(),
-                    risk_level: info.risk_level,
-                    category: info.category.clone(),
-                })
-                .await;
-
-            // Await UI decision with timeout and cancellation.
-            let default_decision = crate::tool_confirmation::ToolConfirmationDecision::DenyOnce;
-            let decision: crate::tool_confirmation::ToolConfirmationDecision = tokio::select! {
-                decision = rx => decision.unwrap_or(default_decision),
-                _ = tokio::time::sleep(std::time::Duration::from_secs(CONFIRMATION_TIMEOUT_SECS)) => {
-                    TOOL_CONFIRMATIONS.abandon(&confirmation_id);
-                    default_decision
-                }
-                _ = async {
-                    while !cancel_token.is_cancelled() {
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    }
-                } => {
-                    TOOL_CONFIRMATIONS.abandon(&confirmation_id);
-                    default_decision
-                }
-            };
-
-            // Apply scoped policy decisions.
-            if let Some(session_id) = session_id.as_deref() {
-                TOOL_CONFIRMATIONS.apply_session_policy_decision(session_id, &pending.name, decision);
-            }
-            if decision == crate::tool_confirmation::ToolConfirmationDecision::AllowAlways {
-                if let Err(e) = self.permission_manager.grant(
-                    &pending.name,
-                    "execute",
-                    crate::tools::permissions::PermissionScope::Global,
-                    None,
-                ) {
-                    tracing::warn!(error = %e, tool = %pending.name, "Failed to persist AllowAlways permission");
-                }
-            }
-
-            if !decision.is_allowed() {
-                let duration_ms = pending.start_time.elapsed().as_millis() as u64;
-                let msg = format!(
-                    "Skipped: tool confirmation denied/timed-out (id: {})",
-                    confirmation_id
+                // Register pending confirmation before emitting the event, so the UI can
+                // resolve it immediately without racing.
+                let rx = TOOL_CONFIRMATIONS.register(
+                    confirmation_id.clone(),
+                    session_id.clone(),
+                    pending.name.clone(),
+                    pending.arguments.clone(),
                 );
+
                 let _ = tx
-                    .send(StreamChunk::ToolCallResult {
-                        name: pending.name.clone(),
-                        success: false,
-                        output: msg.clone(),
-                        duration_ms,
+                    .send(StreamChunk::ToolConfirmationRequired {
+                        confirmation_id: confirmation_id.clone(),
+                        tool_name: pending.name.clone(),
+                        tool_args: pending.arguments.clone(),
+                        description: info.description.clone(),
+                        risk_level: info.risk_level,
+                        category: info.category.clone(),
                     })
                     .await;
 
-                let record = ToolCallRecord {
-                    id: pending.id,
-                    name: pending.name,
-                    arguments: pending.arguments,
-                    result: ToolResult::Skipped(msg),
-                    duration_ms,
+                // Await UI decision with timeout and cancellation.
+                let default_decision = crate::tool_confirmation::ToolConfirmationDecision::DenyOnce;
+                let decision: crate::tool_confirmation::ToolConfirmationDecision = tokio::select! {
+                    decision = rx => decision.unwrap_or(default_decision),
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(CONFIRMATION_TIMEOUT_SECS)) => {
+                        TOOL_CONFIRMATIONS.abandon(&confirmation_id);
+                        default_decision
+                    }
+                    _ = async {
+                        while !cancel_token.is_cancelled() {
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                    } => {
+                        TOOL_CONFIRMATIONS.abandon(&confirmation_id);
+                        default_decision
+                    }
                 };
-                tool_calls_in_iteration.push(record.clone());
-                response.tool_calls.push(record);
-                return;
-            }
-            // Approved: continue to normal execution flow below.
+
+                // Apply scoped policy decisions.
+                if let Some(session_id) = session_id.as_deref() {
+                    TOOL_CONFIRMATIONS.apply_session_policy_decision(
+                        session_id,
+                        &pending.name,
+                        decision,
+                    );
+                }
+                if decision == crate::tool_confirmation::ToolConfirmationDecision::AllowAlways
+                    && let Err(e) = self.permission_manager.grant(
+                        &pending.name,
+                        "execute",
+                        crate::tools::permissions::PermissionScope::Global,
+                        None,
+                    )
+                {
+                    tracing::warn!(
+                        error = %e,
+                        tool = %pending.name,
+                        "Failed to persist AllowAlways permission"
+                    );
+                }
+
+                if !decision.is_allowed() {
+                    let duration_ms = pending.start_time.elapsed().as_millis() as u64;
+                    let msg = format!(
+                        "Skipped: tool confirmation denied/timed-out (id: {})",
+                        confirmation_id
+                    );
+                    let _ = tx
+                        .send(StreamChunk::ToolCallResult {
+                            name: pending.name.clone(),
+                            success: false,
+                            output: msg.clone(),
+                            duration_ms,
+                        })
+                        .await;
+
+                    let record = ToolCallRecord {
+                        id: pending.id,
+                        name: pending.name,
+                        arguments: pending.arguments,
+                        result: ToolResult::Skipped(msg),
+                        duration_ms,
+                    };
+                    tool_calls_in_iteration.push(record.clone());
+                    response.tool_calls.push(record);
+                    return;
+                }
+                // Approved: continue to normal execution flow below.
             }
         }
 
