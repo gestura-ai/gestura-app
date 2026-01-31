@@ -417,6 +417,8 @@ pub fn render(app: &mut TuiApp, frame: &mut Frame) {
         render_help_overlay(app, frame, area);
     } else if app.mode == TuiMode::Confirm {
         render_confirm_dialog(app, frame, area);
+    } else if app.mode == TuiMode::ToolConfirm {
+        render_tool_confirm_overlay(app, frame, area);
     } else if app.mode == TuiMode::ModelPicker {
         render_model_picker_overlay(app, frame, area);
     } else if app.mode == TuiMode::Activity {
@@ -458,6 +460,7 @@ fn render_compact_header(app: &TuiApp, frame: &mut Frame, area: Rect) {
         TuiMode::Command => ":",
         TuiMode::Help => "?",
         TuiMode::Confirm => "!",
+        TuiMode::ToolConfirm => "TC",
         TuiMode::Search => "/",
         TuiMode::ModelPicker => "M",
         TuiMode::Activity => "A",
@@ -1397,6 +1400,61 @@ fn render_confirm_dialog(app: &TuiApp, frame: &mut Frame, area: Rect) {
                 )),
         )
         .style(Style::default().fg(app.theme.header_fg))
+        .wrap(Wrap { trim: false });
+
+    frame.render_widget(paragraph, popup_area);
+}
+
+/// Render a tool confirmation overlay (modal).
+///
+/// This is displayed when the core pipeline requires a scoped decision for a tool call.
+fn render_tool_confirm_overlay(app: &TuiApp, frame: &mut Frame, area: Rect) {
+    let Some(pending) = app.pending_tool_confirmation.as_ref() else {
+        return;
+    };
+
+    // Center the popup
+    let popup_width = 74.min(area.width.saturating_sub(4));
+    let popup_height = 12.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(popup_width)) / 2;
+    let y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    /// Truncate a string to a maximum character count for compact UI previews.
+    fn truncate_preview(s: &str, max_chars: usize) -> String {
+        let mut out: String = s.chars().take(max_chars).collect();
+        if s.chars().count() > max_chars {
+            out.push('…');
+        }
+        out
+    }
+
+    let args_preview = truncate_preview(&pending.tool_args.replace('\n', " "), 140);
+
+    let message = format!(
+        "Tool: {tool}\nCategory: {cat}   Risk: {risk}\n\n{desc}\n\nArgs: {args}\n\n[1] Allow once  [2] Allow session  [3] Allow always\n[4] Deny once   [5] Deny session   [Esc] Deny once",
+        tool = pending.tool_name,
+        cat = pending.category,
+        risk = pending.risk_level,
+        desc = pending.description,
+        args = args_preview
+    );
+
+    let paragraph = Paragraph::new(message)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.error_msg))
+                .title(Span::styled(
+                    " Tool Confirmation Required ",
+                    Style::default()
+                        .fg(app.theme.error_msg)
+                        .add_modifier(Modifier::BOLD),
+                )),
+        )
         .wrap(Wrap { trim: false });
 
     frame.render_widget(paragraph, popup_area);

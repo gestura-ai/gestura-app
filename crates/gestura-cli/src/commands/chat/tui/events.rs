@@ -5,7 +5,9 @@
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
-use super::app::{Action, ConfirmAction, TuiApp, TuiMode};
+use gestura_core::tool_confirmation::{TOOL_CONFIRMATIONS, ToolConfirmationDecision};
+
+use super::app::{Action, ConfirmAction, PendingToolConfirmation, TuiApp, TuiMode};
 
 /// Handle an event and return the appropriate action
 pub fn handle_event(app: &mut TuiApp, event: Event) -> Action {
@@ -53,10 +55,54 @@ fn handle_key_event(app: &mut TuiApp, key: KeyEvent) -> Action {
         TuiMode::Command => handle_command_mode(app, key),
         TuiMode::Help => handle_help_mode(app, key),
         TuiMode::Confirm => handle_confirm_mode(app, key),
+        TuiMode::ToolConfirm => handle_tool_confirm_mode(app, key),
         TuiMode::Search => handle_search_mode(app, key),
         TuiMode::ModelPicker => handle_model_picker_mode(app, key),
         TuiMode::Activity => handle_activity_mode(app, key),
     }
+}
+
+/// Handle ToolConfirm mode keys (scoped tool confirmation decisions).
+///
+/// Key mapping (Claude Code-like):
+/// - 1: allow once
+/// - 2: allow for this session
+/// - 3: allow always
+/// - 4: deny once
+/// - 5: deny for this session
+/// - Esc/q: deny once
+fn handle_tool_confirm_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    let decision = match key.code {
+        KeyCode::Char('1') => ToolConfirmationDecision::AllowOnce,
+        KeyCode::Char('2') => ToolConfirmationDecision::AllowSession,
+        KeyCode::Char('3') => ToolConfirmationDecision::AllowAlways,
+        KeyCode::Char('4') => ToolConfirmationDecision::DenyOnce,
+        KeyCode::Char('5') => ToolConfirmationDecision::DenySession,
+        KeyCode::Esc | KeyCode::Char('q') => ToolConfirmationDecision::DenyOnce,
+        _ => return Action::Continue,
+    };
+
+    let Some(PendingToolConfirmation {
+        confirmation_id,
+        tool_name,
+        ..
+    }) = app.take_tool_confirmation()
+    else {
+        app.set_status("No pending tool confirmation");
+        return Action::Continue;
+    };
+
+    if let Err(e) = TOOL_CONFIRMATIONS.resolve_decision(
+        &confirmation_id,
+        Some(app.session.id.as_str()),
+        decision,
+    ) {
+        app.set_error(format!("Failed to resolve tool confirmation: {e}"));
+    } else {
+        app.set_status(format!("Tool confirmation resolved: {tool_name}"));
+    }
+
+    Action::Continue
 }
 
 /// Handle ModelPicker overlay keys.
@@ -583,6 +629,7 @@ fn handle_mouse_event(app: &mut TuiApp, mouse: MouseEvent) -> Action {
             match app.mode {
                 TuiMode::Activity => app.activity_state.scroll_up(),
                 TuiMode::ModelPicker => app.model_picker_state.select_prev(),
+                TuiMode::ToolConfirm => {}
                 _ => app.scroll_up(),
             }
             Action::Continue
@@ -591,6 +638,7 @@ fn handle_mouse_event(app: &mut TuiApp, mouse: MouseEvent) -> Action {
             match app.mode {
                 TuiMode::Activity => app.activity_state.scroll_down(),
                 TuiMode::ModelPicker => app.model_picker_state.select_next(),
+                TuiMode::ToolConfirm => {}
                 _ => app.scroll_down(),
             }
             Action::Continue
@@ -774,6 +822,29 @@ mod tests {
         let session = new_cli_session(None).unwrap();
         let config = AppConfig::default();
         TuiApp::new(session, config, None)
+    }
+
+    #[test]
+    fn tool_confirm_mode_esc_clears_pending_and_returns_to_insert() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::ToolConfirm;
+        app.pending_tool_confirmation = Some(PendingToolConfirmation {
+            confirmation_id: "test".to_string(),
+            tool_name: "fake-tool".to_string(),
+            tool_args: "{}".to_string(),
+            description: "testing".to_string(),
+            risk_level: 1,
+            category: "test".to_string(),
+        });
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Insert);
+        assert!(app.pending_tool_confirmation.is_none());
     }
 
     #[test]

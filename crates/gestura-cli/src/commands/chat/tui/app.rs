@@ -280,6 +280,11 @@ pub enum TuiMode {
     Help,
     /// Confirmation dialog is displayed
     Confirm,
+    /// Tool confirmation dialog is displayed
+    ///
+    /// This is shown when the core pipeline emits a `StreamChunk::ToolConfirmationRequired`.
+    /// The user must choose a scoped decision (allow/deny once/session/always).
+    ToolConfirm,
     /// Search mode - searching through messages
     Search,
     /// Model picker overlay is displayed
@@ -297,6 +302,26 @@ pub enum ConfirmAction {
     ClearMessages,
     /// Confirm starting a new session
     NewSession,
+}
+
+/// Pending tool confirmation request that must be resolved by the user.
+///
+/// This is a thin TUI adapter payload; all policy and caching is enforced in
+/// `gestura-core` via `TOOL_CONFIRMATIONS`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingToolConfirmation {
+    /// Confirmation id emitted by the core pipeline.
+    pub confirmation_id: String,
+    /// Tool name that is requesting confirmation.
+    pub tool_name: String,
+    /// Tool arguments (stringified) to preview in the UI.
+    pub tool_args: String,
+    /// Human-readable description of the tool action.
+    pub description: String,
+    /// Risk level (0-100-ish) provided by the core tool inspection.
+    pub risk_level: u8,
+    /// Tool category (e.g. "filesystem", "network") provided by core inspection.
+    pub category: String,
 }
 
 /// Actions that can be triggered by user input
@@ -436,6 +461,8 @@ pub struct TuiApp {
     pub command_history_pos: Option<usize>,
     /// Pending confirmation action
     pub pending_confirm: Option<ConfirmAction>,
+    /// Pending tool confirmation request (scoped allow/deny decision).
+    pub pending_tool_confirmation: Option<PendingToolConfirmation>,
     /// Layout areas for mouse click detection (set during render)
     pub layout_areas: LayoutAreas,
     /// Current theme
@@ -708,6 +735,7 @@ impl TuiApp {
             command_history: Vec::new(),
             command_history_pos: None,
             pending_confirm: None,
+            pending_tool_confirmation: None,
             layout_areas: LayoutAreas::default(),
             theme: initial_theme,
             search_query: String::new(),
@@ -782,6 +810,14 @@ impl TuiApp {
         self.mode = TuiMode::Confirm;
     }
 
+    /// Show a tool confirmation overlay.
+    ///
+    /// The decision itself is resolved via `gestura-core` once the user chooses.
+    pub fn show_tool_confirmation(&mut self, pending: PendingToolConfirmation) {
+        self.pending_tool_confirmation = Some(pending);
+        self.mode = TuiMode::ToolConfirm;
+    }
+
     /// Cancel the confirmation dialog
     pub fn cancel_confirm(&mut self) {
         self.pending_confirm = None;
@@ -792,6 +828,14 @@ impl TuiApp {
     pub fn take_confirm(&mut self) -> Option<ConfirmAction> {
         self.mode = TuiMode::Insert;
         self.pending_confirm.take()
+    }
+
+    /// Get the pending tool confirmation and clear it.
+    ///
+    /// This returns the pending payload and returns the UI to Insert mode.
+    pub fn take_tool_confirmation(&mut self) -> Option<PendingToolConfirmation> {
+        self.mode = TuiMode::Insert;
+        self.pending_tool_confirmation.take()
     }
 
     /// Return the command token (the first whitespace-delimited segment) from a command spec.

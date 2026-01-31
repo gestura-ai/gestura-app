@@ -35,7 +35,7 @@ mod widgets;
 
 pub use app::{Action, TuiApp, TuiMode};
 
-use app::ConfirmAction;
+use app::{ConfirmAction, PendingToolConfirmation};
 
 use std::io;
 use std::time::Duration;
@@ -566,18 +566,32 @@ fn run_main_loop(
                             push_activity_info(app, msg);
                         }
                         StreamChunk::ToolConfirmationRequired {
+                            confirmation_id,
                             tool_name,
+                            tool_args,
                             description,
+                            risk_level,
+                            category,
                             ..
                         } => {
+                            let pending = PendingToolConfirmation {
+                                confirmation_id,
+                                tool_name,
+                                tool_args,
+                                description,
+                                risk_level,
+                                category,
+                            };
+
                             app.activity_state.push(app::ActivityEntry {
                                 text: format!(
                                     "⚠️ Tool '{}' requires confirmation: {}",
-                                    tool_name, description
+                                    pending.tool_name, pending.description
                                 ),
                                 is_error: false,
                             });
-                            app.set_status(format!("Confirmation required: {}", tool_name));
+                            app.set_status(format!("Confirmation required: {}", pending.tool_name));
+                            app.show_tool_confirmation(pending);
                         }
                         StreamChunk::ToolBlocked { tool_name, reason } => {
                             app.activity_state.push(app::ActivityEntry {

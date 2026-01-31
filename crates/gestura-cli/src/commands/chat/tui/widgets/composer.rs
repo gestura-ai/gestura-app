@@ -22,6 +22,7 @@ pub(crate) fn render_input(app: &TuiApp, frame: &mut Frame, area: Rect) {
         TuiMode::Command => ("COMMAND", app.theme.mode_command),
         TuiMode::Help => ("HELP", app.theme.mode_normal),
         TuiMode::Confirm => ("CONFIRM", app.theme.error_msg),
+        TuiMode::ToolConfirm => ("TOOLCONF", app.theme.error_msg),
         TuiMode::Search => ("SEARCH", app.theme.streaming),
         TuiMode::ModelPicker => ("MODEL", app.theme.mode_normal),
         TuiMode::Activity => ("ACTIVITY", app.theme.mode_normal),
