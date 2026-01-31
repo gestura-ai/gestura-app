@@ -49,6 +49,8 @@ pub mod error;
 pub mod events;
 pub mod execution_mode;
 pub mod gdpr;
+pub mod guardrails;
+pub mod hooks;
 pub mod interaction;
 pub mod knowledge;
 pub mod llm_overrides;
@@ -56,6 +58,7 @@ pub mod llm_provider;
 pub mod llm_validation;
 pub mod mcp;
 pub mod memory_bank;
+pub mod model_display;
 pub mod nats_mq;
 /// OpenAI(-compatible) API compatibility helpers (e.g., parameter support quirks).
 pub mod openai_compat;
@@ -135,6 +138,7 @@ pub use gdpr::{
     ConsentRecord, ConsentStatus, DataAuditEntry, DataCategory, DataOperation, GdprManager,
     get_gdpr_manager,
 };
+pub use hooks::{HookContext, HookEngine, HookEvent, HookExecutionRecord, HooksSettings};
 pub use interaction::{
     ButtonPressType, GestureType, HapticFeedback, HapticPattern, InteractionContext,
     InteractionEvent, InteractionType, SlideDirection, ToolHint,
@@ -146,6 +150,10 @@ pub use knowledge::{
 };
 pub use llm_provider::{
     AgentContext, LlmCallResponse, LlmProvider, TokenUsage, UnconfiguredProvider, select_provider,
+};
+pub use model_display::{
+    format_anthropic_model_name, format_grok_model_name, format_model_name,
+    format_openai_model_name, is_local_provider,
 };
 pub use mcp::{
     CachedTool, JsonRpcError, JsonRpcRequest, JsonRpcResponse, LocalMcp, McpCacheStats,

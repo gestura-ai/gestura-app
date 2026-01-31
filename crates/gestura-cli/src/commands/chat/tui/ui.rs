@@ -453,38 +453,69 @@ fn render_too_small_message(app: &TuiApp, frame: &mut Frame, area: Rect) {
 }
 
 /// Render compact header for small terminals (single line, no tabs)
+///
+/// Displays a Claude Code-like header with:
+/// - Left-aligned content with bounding box
+/// - Formatted model name (GPT-4o, Claude 3.5 Sonnet, etc.)
+/// - Voice model when enabled
 fn render_compact_header(app: &TuiApp, frame: &mut Frame, area: Rect) {
+    use ratatui::widgets::{Block, Borders};
+
+    // Get provider and model info
+    let provider = app.config.llm.primary.as_str();
+    let model_id = app.model_name();
+    let formatted_model = gestura_core::format_model_name(provider, model_id);
+
+    // Build header content parts
+    let mut parts: Vec<String> = vec![formatted_model];
+
+    // Add voice model if enabled
+    let voice_provider = app.config.voice.provider.as_str();
+    if voice_provider != "none" {
+        let voice_label = match voice_provider {
+            "openai" => {
+                let model = app
+                    .config
+                    .voice
+                    .openai_model
+                    .as_deref()
+                    .unwrap_or("whisper-1");
+                format!("Voice: {}", model)
+            }
+            "local" => "Voice: Local".to_string(),
+            other => format!("Voice: {}", other),
+        };
+        parts.push(voice_label);
+    }
+
+    // Add mode indicator
     let mode_str = match app.mode {
-        TuiMode::Normal => "N",
-        TuiMode::Insert => "I",
-        TuiMode::Command => ":",
-        TuiMode::Help => "?",
-        TuiMode::Confirm => "!",
-        TuiMode::ToolConfirm => "TC",
-        TuiMode::Search => "/",
-        TuiMode::ModelPicker => "M",
-        TuiMode::Activity => "A",
+        TuiMode::Normal => "NORMAL",
+        TuiMode::Insert => "INSERT",
+        TuiMode::Command => "COMMAND",
+        TuiMode::Help => "HELP",
+        TuiMode::Confirm => "CONFIRM",
+        TuiMode::ToolConfirm => "CONFIRM",
+        TuiMode::Search => "SEARCH",
+        TuiMode::ModelPicker => "MODEL",
+        TuiMode::Activity => "ACTIVITY",
     };
+    parts.push(mode_str.to_string());
 
-    let tab_str = match app.active_tab {
-        0 => "Chat",
-        1 => "Tools",
-        2 => "Settings",
-        _ => "?",
-    };
+    let header_text = format!(" {} ", parts.join(" │ "));
 
-    let header_text = format!(
-        " {} │ {} │ {} ",
-        tab_str.to_lowercase(),
-        &app.session.id[..8.min(app.session.id.len())],
-        mode_str
-    );
+    // Create block with bottom border (Claude Code-like bounding box)
+    let block = Block::default()
+        .borders(Borders::BOTTOM)
+        .border_style(Style::default().fg(app.theme.border).add_modifier(Modifier::DIM));
 
-    let paragraph = Paragraph::new(header_text).style(
-        Style::default()
-            .fg(app.theme.status_fg)
-            .add_modifier(Modifier::DIM),
-    );
+    let paragraph = Paragraph::new(header_text)
+        .style(
+            Style::default()
+                .fg(app.theme.header_fg)
+                .add_modifier(Modifier::BOLD),
+        )
+        .block(block);
 
     frame.render_widget(paragraph, area);
 }
@@ -1093,31 +1124,58 @@ fn render_status_bar(app: &TuiApp, frame: &mut Frame, area: Rect) {
         .fg(app.theme.status_fg)
         .add_modifier(Modifier::DIM);
 
+    let provider = app.config.llm.primary.as_str();
     let model = app.model_name();
+    let formatted_model = gestura_core::format_model_name(provider, model);
+    let is_local = gestura_core::is_local_provider(provider);
 
     let mut stats_text = if is_compact {
-        // Compact format: "1.2K|$0.01 | gpt-4"
-        let compact_tokens = app.format_token_usage_compact();
-        let short_model = if model.len() > 10 {
-            &model[..10]
+        // Compact format for narrow terminals
+        let token_total = app.session_input_tokens + app.session_output_tokens;
+        let short_model = if formatted_model.len() > 12 {
+            &formatted_model[..12]
         } else {
-            model
+            &formatted_model
         };
-        if compact_tokens.is_empty() {
+        if token_total == 0 {
             format!("{} ", short_model)
+        } else if is_local {
+            // Local providers: show only tokens, no cost
+            format!(
+                "{} | {} ",
+                gestura_core::token_tracker::format_token_count(token_total),
+                short_model
+            )
         } else {
-            format!("{} | {} ", compact_tokens, short_model)
+            // Remote providers: show tokens and cost
+            let cost = app.session_cost_usd;
+            format!(
+                "{}|${:.2} | {} ",
+                gestura_core::token_tracker::format_token_count(token_total),
+                cost,
+                short_model
+            )
         }
     } else {
-        // Verbose format: "Tokens: 1.2K | Cost: $0.0100 | Model: gpt-4"
+        // Verbose format for wide terminals
         let token_total = app.session_input_tokens + app.session_output_tokens;
-        let cost = app.session_cost_usd;
-        format!(
-            "Tokens: {} | Cost: ${:.4} | Model: {} ",
-            gestura_core::token_tracker::format_token_count(token_total),
-            cost,
-            model
-        )
+        if is_local {
+            // Local providers: show only tokens, no cost
+            format!(
+                "Tokens: {} | Model: {} ",
+                gestura_core::token_tracker::format_token_count(token_total),
+                formatted_model
+            )
+        } else {
+            // Remote providers: show tokens and cost
+            let cost = app.session_cost_usd;
+            format!(
+                "Tokens: {} | Cost: ${:.4} | Model: {} ",
+                gestura_core::token_tracker::format_token_count(token_total),
+                cost,
+                formatted_model
+            )
+        }
     };
 
     // When the user has scrolled away from the bottom, show a subtle position indicator.
