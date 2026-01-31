@@ -148,4 +148,3 @@ mod tests {
         assert!(!is_local_provider("openai"));
     }
 }
-

@@ -146,6 +146,28 @@ impl LlmProvider for UnconfiguredProvider {
     }
 }
 
+/// A deterministic LLM provider for development/testing.
+///
+/// This provider simply returns the prompt verbatim ("echo"). It is only available
+/// during tests or when the `dev` feature is enabled.
+#[cfg(any(test, feature = "dev"))]
+pub struct EchoProvider;
+
+#[cfg(any(test, feature = "dev"))]
+#[async_trait::async_trait]
+impl LlmProvider for EchoProvider {
+    /// Return the prompt as-is.
+    async fn call(&self, prompt: &str) -> Result<String, AppError> {
+        Ok(prompt.to_string())
+    }
+
+    /// Return the prompt as-is with a zero-cost, "echo" usage marker.
+    async fn call_with_usage(&self, prompt: &str) -> Result<LlmCallResponse, AppError> {
+        let usage = TokenUsage::unknown().with_provider("echo").with_cost(0.0);
+        Ok(LlmCallResponse::new(prompt.to_string(), usage))
+    }
+}
+
 /// HTTP-based OpenAI chat completion provider
 pub struct OpenAiProvider {
     pub api_key: String,
@@ -506,6 +528,10 @@ fn unconfigured_provider(provider_name: &str) -> Box<dyn LlmProvider> {
 /// will return an error when called. This prevents silent failures.
 pub fn select_provider(config: &AppConfig, _ctx: &AgentContext) -> Box<dyn LlmProvider> {
     match config.llm.primary.as_str() {
+        #[cfg(any(test, feature = "dev"))]
+        "echo" => Box::new(EchoProvider),
+        #[cfg(not(any(test, feature = "dev")))]
+        "echo" => unconfigured_provider("echo"),
         "openai" => {
             if let Some(c) = &config.llm.openai {
                 Box::new(OpenAiProvider {

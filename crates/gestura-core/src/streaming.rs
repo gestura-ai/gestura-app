@@ -901,6 +901,41 @@ async fn stream_unconfigured_error(
     Err(AppError::Llm(message))
 }
 
+/// Returns `true` if a message indicates the provider is not configured.
+///
+/// We use this to skip pointless retry delays when failure is caused solely by
+/// missing local configuration (e.g., absent API key).
+fn is_unconfigured_provider_message(message: &str) -> bool {
+    message.contains("is not configured") || message.contains("not configured")
+}
+
+/// Returns `true` if an [`AppError`] indicates a provider is not configured.
+fn is_unconfigured_provider_error(err: &AppError) -> bool {
+    match err {
+        AppError::Llm(msg) => is_unconfigured_provider_message(msg),
+        _ => false,
+    }
+}
+
+/// Stream using the deterministic "echo" provider.
+///
+/// This provider is intended for dev/test and never performs network I/O.
+#[cfg(any(test, feature = "dev"))]
+async fn stream_echo(
+    prompt: &str,
+    tx: mpsc::Sender<StreamChunk>,
+    cancel_token: CancellationToken,
+) -> Result<(), AppError> {
+    if cancel_token.is_cancelled() {
+        let _ = tx.send(StreamChunk::Cancelled).await;
+        return Ok(());
+    }
+
+    let _ = tx.send(StreamChunk::Text(prompt.to_string())).await;
+    let _ = tx.send(StreamChunk::Done(None)).await;
+    Ok(())
+}
+
 /// Start a streaming LLM request based on config.
 ///
 /// Returns an error if the selected provider is not configured.
@@ -912,6 +947,10 @@ pub async fn start_streaming(
     cancel_token: CancellationToken,
 ) -> Result<(), AppError> {
     match config.llm.primary.as_str() {
+        #[cfg(any(test, feature = "dev"))]
+        "echo" => stream_echo(prompt, tx, cancel_token).await,
+        #[cfg(not(any(test, feature = "dev")))]
+        "echo" => stream_unconfigured_error("echo", tx).await,
         "openai" => {
             if let Some(c) = &config.llm.openai {
                 stream_openai(
@@ -985,6 +1024,7 @@ pub async fn start_streaming_with_fallback(
     // Try primary provider with retries
     let retry_delays = [1, 2, 4]; // seconds
     let mut last_error: Option<AppError> = None;
+    let mut skipped_retries_due_to_unconfigured = false;
 
     for (attempt, delay) in retry_delays.iter().enumerate() {
         if cancel_token.is_cancelled() {
@@ -1056,39 +1096,66 @@ pub async fn start_streaming_with_fallback(
             }
         }
 
-        // Log retry attempt and notify frontend
-        let error_msg = last_error
-            .as_ref()
-            .map(|e| e.to_string())
-            .unwrap_or_else(|| "Unknown error".to_string());
+        // If the provider is simply not configured, retries won't help.
+        // Skip backoff and jump directly to fallback (if configured).
+        let unconfigured = forward
+            .error
+            .as_deref()
+            .map(is_unconfigured_provider_message)
+            .unwrap_or(false)
+            || last_error
+                .as_ref()
+                .map(is_unconfigured_provider_error)
+                .unwrap_or(false);
 
-        tracing::warn!(
-            attempt = attempt + 1,
-            delay = delay,
-            error = %error_msg,
-            "Primary LLM failed, retrying in {}s",
-            delay
-        );
+        if unconfigured {
+            skipped_retries_due_to_unconfigured = true;
+            break;
+        }
 
-        // Emit retry notification to frontend
-        let _ = tx
-            .send(StreamChunk::RetryAttempt {
-                attempt: attempt as u32 + 1,
-                max_attempts: retry_delays.len() as u32,
-                delay_ms: *delay * 1000,
-                error_message: error_msg,
-            })
-            .await;
+        // Only back off if we will actually perform another attempt.
+        if attempt + 1 < retry_delays.len() {
+            // Log retry attempt and notify frontend
+            let error_msg = last_error
+                .as_ref()
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "Unknown error".to_string());
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(*delay)).await;
+            tracing::warn!(
+                attempt = attempt + 1,
+                delay = delay,
+                error = %error_msg,
+                "Primary LLM failed, retrying in {}s",
+                delay
+            );
+
+            // Emit retry notification to frontend
+            let _ = tx
+                .send(StreamChunk::RetryAttempt {
+                    attempt: attempt as u32 + 1,
+                    max_attempts: retry_delays.len() as u32,
+                    delay_ms: *delay * 1000,
+                    error_message: error_msg,
+                })
+                .await;
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(*delay)).await;
+        }
     }
 
     // Primary failed after retries, try fallback if configured
     if let Some(ref fallback_provider) = config.llm.fallback {
-        tracing::info!(
-            fallback = fallback_provider,
-            "Primary LLM exhausted retries, trying fallback provider"
-        );
+        if skipped_retries_due_to_unconfigured {
+            tracing::info!(
+                fallback = fallback_provider,
+                "Primary LLM is not configured, trying fallback provider"
+            );
+        } else {
+            tracing::info!(
+                fallback = fallback_provider,
+                "Primary LLM exhausted retries, trying fallback provider"
+            );
+        }
 
         // Create a modified config with fallback as primary
         let mut fallback_config = config.clone();
@@ -1384,5 +1451,40 @@ mod tests {
 
         let result = forward_handle.await.unwrap();
         assert_eq!(result.outcome, AttemptOutcome::FatalError);
+    }
+
+    #[tokio::test]
+    async fn start_streaming_with_fallback_unconfigured_primary_skips_retries_and_uses_fallback() {
+        let mut cfg = AppConfig::default();
+        cfg.llm.primary = "openai".to_string();
+        cfg.llm.openai = None;
+        cfg.llm.fallback = Some("echo".to_string());
+
+        let (tx, mut rx) = mpsc::channel(128);
+        let cancel = CancellationToken::new();
+
+        let res = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            start_streaming_with_fallback(&cfg, "hi", None, tx, cancel),
+        )
+        .await;
+        assert!(res.is_ok(), "expected fallback to complete quickly");
+        assert!(res.unwrap().is_ok());
+
+        // Primary emits Status (unconfigured) which is forwarded.
+        match rx.recv().await {
+            Some(StreamChunk::Status { message }) => assert!(message.contains("not configured")),
+            other => panic!("Expected Status chunk, got: {other:?}"),
+        }
+
+        // Fallback echoes the prompt.
+        match rx.recv().await {
+            Some(StreamChunk::Text(t)) => assert_eq!(t, "hi"),
+            other => panic!("Expected Text chunk, got: {other:?}"),
+        }
+        match rx.recv().await {
+            Some(StreamChunk::Done(_)) => {}
+            other => panic!("Expected Done chunk, got: {other:?}"),
+        }
     }
 }
