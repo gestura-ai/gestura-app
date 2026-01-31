@@ -24,7 +24,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -54,6 +54,52 @@ pub enum TaskSource {
     Orchestrator,
 }
 
+/// Background execution status for tasks that represent long-running work.
+///
+/// This is primarily intended for UI dashboards to reflect delegated work
+/// (e.g. orchestrator / agent tasks) that may run asynchronously.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskBackgroundStatus {
+    /// The background job has been queued but has not started.
+    Queued,
+    /// The background job is currently running.
+    Running,
+    /// The background job completed successfully.
+    Succeeded,
+    /// The background job failed.
+    Failed,
+    /// The background job was cancelled.
+    Cancelled,
+}
+
+/// Background job metadata attached to a task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskBackgroundJob {
+    /// Current background job status.
+    pub status: TaskBackgroundStatus,
+    /// Optional identifier for the job in an external system.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    /// Optional human-readable status message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl TaskBackgroundJob {
+    /// Create a new background job record.
+    pub fn new(
+        status: TaskBackgroundStatus,
+        job_id: Option<String>,
+        message: Option<String>,
+    ) -> Self {
+        Self {
+            status,
+            job_id,
+            message,
+        }
+    }
+}
+
 /// A task represents a unit of work to be tracked
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
@@ -67,6 +113,25 @@ pub struct Task {
     pub status: TaskStatus,
     /// Parent task ID (for subtasks)
     pub parent_id: Option<String>,
+
+    /// IDs of tasks that block this task from being started/completed.
+    ///
+    /// This is modeled as a dependency list ("blocked by") so we can derive
+    /// the inverse relationship ("blocks") on demand.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<String>,
+
+    /// Optional background job state for tasks that run asynchronously.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_job: Option<TaskBackgroundJob>,
+
+    /// Optional ordering hint for UI dashboards (lower first).
+    #[serde(default)]
+    pub sort_order: i32,
+
+    /// Optional phase/group label for UI dashboards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
     /// When the task was created
     pub created_at: DateTime<Utc>,
     /// When the task was last updated
@@ -102,6 +167,10 @@ impl Task {
             description: description.into(),
             status: TaskStatus::NotStarted,
             parent_id,
+            blocked_by: Vec::new(),
+            background_job: None,
+            sort_order: 0,
+            phase: None,
             created_at: now,
             updated_at: now,
             session_id: session_id.into(),
@@ -128,6 +197,10 @@ impl Task {
             description: description.into(),
             status: TaskStatus::NotStarted,
             parent_id,
+            blocked_by: Vec::new(),
+            background_job: None,
+            sort_order: 0,
+            phase: None,
             created_at: now,
             updated_at: now,
             session_id: session_id.into(),
@@ -154,6 +227,14 @@ impl Task {
             description: description.into(),
             status: TaskStatus::NotStarted,
             parent_id: None,
+            blocked_by: Vec::new(),
+            background_job: Some(TaskBackgroundJob::new(
+                TaskBackgroundStatus::Queued,
+                None,
+                Some("Created by orchestrator".to_string()),
+            )),
+            sort_order: 0,
+            phase: None,
             created_at: now,
             updated_at: now,
             session_id: session_id.into(),
@@ -187,6 +268,34 @@ impl Task {
         self.description = description.into();
         self.updated_at = Utc::now();
     }
+
+    /// Returns `true` when the task is in a terminal (non-active) status.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self.status, TaskStatus::Completed | TaskStatus::Cancelled)
+    }
+
+    /// Replace the background job state and update timestamps.
+    pub fn set_background_job(&mut self, job: Option<TaskBackgroundJob>) {
+        self.background_job = job;
+        self.updated_at = Utc::now();
+    }
+
+    /// Add a dependency ("blocked by") to this task.
+    ///
+    /// This does not validate existence; callers should validate using the session's `TaskList`.
+    pub fn add_blocked_by(&mut self, task_id: impl Into<String>) {
+        let id = task_id.into();
+        if !self.blocked_by.iter().any(|x| x == &id) {
+            self.blocked_by.push(id);
+            self.updated_at = Utc::now();
+        }
+    }
+
+    /// Set the phase/group label for dashboard grouping.
+    pub fn set_phase(&mut self, phase: Option<String>) {
+        self.phase = phase;
+        self.updated_at = Utc::now();
+    }
 }
 
 /// A list of tasks for a session
@@ -202,6 +311,15 @@ pub struct TaskList {
     /// user's current focus when resuming a session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_task_id: Option<String>,
+}
+
+/// A hierarchical node for rendering task trees in dashboards.
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskTreeNode {
+    /// The task for this node.
+    pub task: Task,
+    /// Child tasks.
+    pub children: Vec<TaskTreeNode>,
 }
 
 impl TaskList {
@@ -223,12 +341,12 @@ impl TaskList {
     ///
     /// If `task_id` is `Some`, the id must exist in this task list.
     pub fn set_current_task_id(&mut self, task_id: Option<String>) -> Result<(), TaskError> {
-        if let Some(ref id) = task_id {
-            if self.find_task(id.as_str()).is_none() {
-                return Err(TaskError::InvalidInput(format!(
-                    "current_task_id '{id}' does not exist in task list"
-                )));
-            }
+        if let Some(ref id) = task_id
+            && self.find_task(id.as_str()).is_none()
+        {
+            return Err(TaskError::InvalidInput(format!(
+                "current_task_id '{id}' does not exist in task list"
+            )));
         }
 
         self.current_task_id = task_id;
@@ -276,6 +394,142 @@ impl TaskList {
             .iter()
             .filter(|t| t.parent_id.as_deref() == Some(parent_id))
             .collect()
+    }
+
+    /// Return `true` when the task is blocked by any dependency that is not terminal.
+    pub fn is_task_blocked(&self, task_id: &str) -> Result<bool, TaskError> {
+        let task = self
+            .find_task(task_id)
+            .ok_or_else(|| TaskError::NotFound(task_id.to_string()))?;
+
+        for dep_id in &task.blocked_by {
+            // Missing dependency is treated as blocking; it's a data integrity issue.
+            let Some(dep) = self.find_task(dep_id) else {
+                return Ok(true);
+            };
+            if !dep.is_terminal() {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Add a dependency relationship: `task_id` is blocked by `blocked_by_id`.
+    ///
+    /// This enforces:
+    /// - both tasks must exist
+    /// - no self-dependencies
+    /// - no cycles across `blocked_by` relationships
+    pub fn add_dependency(&mut self, task_id: &str, blocked_by_id: &str) -> Result<(), TaskError> {
+        if task_id == blocked_by_id {
+            return Err(TaskError::InvalidInput(
+                "task cannot be blocked by itself".to_string(),
+            ));
+        }
+
+        // Ensure both exist.
+        if self.find_task(task_id).is_none() {
+            return Err(TaskError::NotFound(task_id.to_string()));
+        }
+        if self.find_task(blocked_by_id).is_none() {
+            return Err(TaskError::NotFound(blocked_by_id.to_string()));
+        }
+
+        // Reject cycles: if `blocked_by_id` depends on `task_id` already, we'd create a cycle.
+        if self.depends_on_transitively(blocked_by_id, task_id) {
+            return Err(TaskError::InvalidInput(
+                "dependency would create a cycle".to_string(),
+            ));
+        }
+
+        let task = self
+            .find_task_mut(task_id)
+            .ok_or_else(|| TaskError::NotFound(task_id.to_string()))?;
+        task.add_blocked_by(blocked_by_id.to_string());
+        Ok(())
+    }
+
+    /// Build a recursive task tree.
+    ///
+    /// Nodes are ordered by `sort_order` then creation time.
+    ///
+    /// Tasks referencing a missing parent are treated as roots.
+    pub fn build_tree(&self) -> Vec<TaskTreeNode> {
+        let ids: HashSet<String> = self.tasks.iter().map(|t| t.id.clone()).collect();
+        self.build_tree_for_parent(None, &ids)
+    }
+
+    /// Internal helper for building a task tree for a given parent.
+    ///
+    /// - `parent_id=None` means "roots".
+    /// - Any task whose parent is missing from `ids` is treated as a root.
+    fn build_tree_for_parent(
+        &self,
+        parent_id: Option<&str>,
+        ids: &HashSet<String>,
+    ) -> Vec<TaskTreeNode> {
+        let mut children: Vec<Task> = self
+            .tasks
+            .iter()
+            .filter(|t| match parent_id {
+                Some(pid) => t.parent_id.as_deref() == Some(pid),
+                None => {
+                    t.parent_id.is_none()
+                        || t.parent_id.as_deref().is_some_and(|p| !ids.contains(p))
+                }
+            })
+            .cloned()
+            .collect();
+
+        children.sort_by(|a, b| {
+            a.sort_order
+                .cmp(&b.sort_order)
+                .then_with(|| a.created_at.cmp(&b.created_at))
+        });
+
+        children
+            .into_iter()
+            .map(|task| TaskTreeNode {
+                children: self.build_tree_for_parent(Some(task.id.as_str()), ids),
+                task,
+            })
+            .collect()
+    }
+
+    /// Returns `true` if `start` depends on `target` directly or transitively.
+    fn depends_on_transitively(&self, start: &str, target: &str) -> bool {
+        let mut visited: HashSet<String> = HashSet::new();
+        self.depends_on_transitively_inner(start, target, &mut visited)
+    }
+
+    /// DFS helper for `depends_on_transitively`.
+    fn depends_on_transitively_inner(
+        &self,
+        start: &str,
+        target: &str,
+        visited: &mut HashSet<String>,
+    ) -> bool {
+        if start == target {
+            return true;
+        }
+
+        if visited.contains(start) {
+            return false;
+        }
+        visited.insert(start.to_string());
+
+        let Some(task) = self.find_task(start) else {
+            return false;
+        };
+
+        for dep in &task.blocked_by {
+            if self.depends_on_transitively_inner(dep, target, visited) {
+                return true;
+            }
+        }
+
+        false
     }
 }
 
@@ -497,6 +751,39 @@ impl TaskManager {
         Ok(hierarchy)
     }
 
+    /// Get a full recursive task tree for a session.
+    pub fn get_task_tree(&self, session_id: &str) -> Result<Vec<TaskTreeNode>, TaskError> {
+        let task_list = self.get_or_load(session_id)?;
+        Ok(task_list.build_tree())
+    }
+
+    /// Add a dependency relationship to a task.
+    pub fn add_task_dependency(
+        &self,
+        session_id: &str,
+        task_id: &str,
+        blocked_by_id: &str,
+    ) -> Result<(), TaskError> {
+        let mut task_list = self.get_or_load(session_id)?;
+        task_list.add_dependency(task_id, blocked_by_id)?;
+        self.update_and_save(task_list)
+    }
+
+    /// Update background job state for a task.
+    pub fn set_task_background_job(
+        &self,
+        session_id: &str,
+        task_id: &str,
+        job: Option<TaskBackgroundJob>,
+    ) -> Result<(), TaskError> {
+        let mut task_list = self.get_or_load(session_id)?;
+        let task = task_list
+            .find_task_mut(task_id)
+            .ok_or_else(|| TaskError::NotFound(task_id.to_string()))?;
+        task.set_background_job(job);
+        self.update_and_save(task_list)
+    }
+
     /// Create a task from an agent (during LLM processing)
     pub fn create_agent_task(
         &self,
@@ -594,6 +881,8 @@ mod tests {
         assert_eq!(task.description, "Test description");
         assert_eq!(task.status, TaskStatus::NotStarted);
         assert!(task.parent_id.is_none());
+        assert!(task.blocked_by.is_empty());
+        assert!(task.background_job.is_none());
         assert!(!task.id.is_empty());
     }
 
@@ -823,5 +1112,77 @@ mod tests {
         assert_eq!(hierarchy.len(), 1);
         assert_eq!(hierarchy[0].0.id, root.id);
         assert_eq!(hierarchy[0].1.len(), 2);
+    }
+
+    #[test]
+    fn test_task_dependencies_blocking() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+
+        let session_id = "session-123";
+        let dep = manager
+            .create_task(session_id, "Dep", "Dependency", None)
+            .unwrap();
+        let task = manager
+            .create_task(session_id, "Task", "Work", None)
+            .unwrap();
+
+        manager
+            .add_task_dependency(session_id, &task.id, &dep.id)
+            .unwrap();
+
+        let list = manager.load_task_list(session_id).unwrap();
+        assert!(list.is_task_blocked(&task.id).unwrap());
+
+        manager
+            .update_task_status(session_id, &dep.id, TaskStatus::Completed)
+            .unwrap();
+
+        let list = manager.load_task_list(session_id).unwrap();
+        assert!(!list.is_task_blocked(&task.id).unwrap());
+    }
+
+    #[test]
+    fn test_task_dependency_cycle_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let session_id = "session-123";
+
+        let a = manager.create_task(session_id, "A", "A", None).unwrap();
+        let b = manager.create_task(session_id, "B", "B", None).unwrap();
+
+        manager
+            .add_task_dependency(session_id, &a.id, &b.id)
+            .unwrap();
+
+        let err = manager
+            .add_task_dependency(session_id, &b.id, &a.id)
+            .unwrap_err();
+
+        assert!(matches!(err, TaskError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn test_task_tree_recursive() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let session_id = "session-123";
+
+        let root = manager
+            .create_task(session_id, "Root", "Root", None)
+            .unwrap();
+        let child = manager
+            .create_task(session_id, "Child", "Child", Some(root.id.clone()))
+            .unwrap();
+        manager
+            .create_task(session_id, "Grand", "Grand", Some(child.id.clone()))
+            .unwrap();
+
+        let tree = manager.get_task_tree(session_id).unwrap();
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].task.id, root.id);
+        assert_eq!(tree[0].children.len(), 1);
+        assert_eq!(tree[0].children[0].task.id, child.id);
+        assert_eq!(tree[0].children[0].children.len(), 1);
     }
 }
