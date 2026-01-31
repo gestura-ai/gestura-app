@@ -17,15 +17,19 @@ use std::path::Path;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
+use crate::chat_sessions::FileChatSessionStore;
+use crate::checkpoints::{CheckpointManager, CheckpointRetentionPolicy, FileCheckpointStore};
 use crate::config::AppConfig;
 use crate::context::{ContextManager, RequestAnalyzer};
 use crate::error::AppError;
+use crate::hooks::{HookContext, HookEngine, HookEvent};
 use crate::knowledge::{KnowledgeSettingsManager, KnowledgeStore};
 use crate::llm_provider::{AgentContext, select_provider};
 use crate::session_workspace::SessionWorkspace;
 use crate::streaming::{
     CancellationToken, StreamChunk, start_streaming, start_streaming_with_fallback,
 };
+use crate::tasks::TaskManager;
 use crate::tool_confirmation::TOOL_CONFIRMATIONS;
 use crate::tools::PermissionManager;
 use crate::tools::registry::{ToolDefinition, all_tools};
@@ -88,6 +92,83 @@ impl AgentPipeline {
         self.knowledge_store = Some(store);
         self.knowledge_settings = Some(settings);
         self
+    }
+
+    /// Create a HookEngine from the current configuration.
+    ///
+    /// Returns `None` if hooks are disabled or empty.
+    fn create_hook_engine(&self) -> Option<HookEngine> {
+        if !self.config.hooks.enabled || self.config.hooks.hooks.is_empty() {
+            return None;
+        }
+        Some(HookEngine::new(self.config.hooks.clone()))
+    }
+
+    /// Run a hook event, logging any failures but not propagating them.
+    ///
+    /// This is used for best-effort hooks (PostPipeline, PostTool) where failures
+    /// should not affect the main flow.
+    async fn run_hook_best_effort(&self, engine: &HookEngine, event: HookEvent, ctx: &HookContext) {
+        match engine.run(event, ctx).await {
+            Ok(records) => {
+                for record in &records {
+                    tracing::debug!(
+                        hook = %record.name,
+                        event = ?record.event,
+                        exit_code = record.output.exit_code,
+                        "Hook executed (best-effort)"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    event = ?event,
+                    error = %e,
+                    "Hook execution failed (best-effort, continuing)"
+                );
+            }
+        }
+    }
+
+    /// Create a checkpoint before a write tool execution.
+    ///
+    /// This is a best-effort operation: failures are logged but do not block tool execution.
+    fn try_create_checkpoint_before_tool(&self, session_id: &str, tool_name: &str) {
+        let label = format!("before:{}", tool_name);
+
+        // Use default stores - these are lightweight to construct
+        let session_store = FileChatSessionStore::new_default();
+        let checkpoint_store = FileCheckpointStore::new_default();
+        let manager =
+            CheckpointManager::new(checkpoint_store, CheckpointRetentionPolicy::default());
+
+        // TaskManager needs a base directory
+        let task_manager = TaskManager::new(AppConfig::data_dir());
+
+        match manager.create_session_checkpoint(
+            session_id,
+            &session_store,
+            &task_manager,
+            &self.config,
+            Some(label),
+        ) {
+            Ok(meta) => {
+                tracing::info!(
+                    checkpoint_id = %meta.id,
+                    session_id = session_id,
+                    tool = tool_name,
+                    "Created auto-checkpoint before write tool"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    session_id = session_id,
+                    tool = tool_name,
+                    error = %e,
+                    "Failed to create auto-checkpoint (continuing with tool execution)"
+                );
+            }
+        }
     }
 
     /// Create a pipeline with configuration optimized for the current LLM provider
@@ -287,6 +368,20 @@ impl AgentPipeline {
         let token_usage_chunk = self.create_token_usage_update(&prompt);
         let _ = tx.send(token_usage_chunk).await;
 
+        // 4.7. Run PrePipeline hooks (if enabled)
+        let hook_engine = self.create_hook_engine();
+        if let Some(ref engine) = hook_engine {
+            let hook_ctx = HookContext {
+                workspace_dir: request.metadata.workspace_dir.clone(),
+                session_id: request.metadata.session_id.clone(),
+                pipeline_prompt: Some(prompt.clone()),
+                ..Default::default()
+            };
+            if let Err(e) = engine.run(HookEvent::PrePipeline, &hook_ctx).await {
+                tracing::warn!(error = %e, "PrePipeline hook failed (continuing)");
+            }
+        }
+
         // 5. Execute the agentic loop with workspace sandboxing
         let mut response = self
             .execute_agentic_loop_streaming(
@@ -300,6 +395,17 @@ impl AgentPipeline {
                 request.metadata.permission_level,
             )
             .await?;
+
+        // 5.1. Run PostPipeline hooks (best-effort)
+        if let Some(ref engine) = hook_engine {
+            let hook_ctx = HookContext {
+                workspace_dir: request.metadata.workspace_dir.clone(),
+                session_id: request.metadata.session_id.clone(),
+                ..Default::default()
+            };
+            self.run_hook_best_effort(engine, HookEvent::PostPipeline, &hook_ctx)
+                .await;
+        }
 
         response.truncated = truncated;
 
@@ -699,6 +805,20 @@ impl AgentPipeline {
             );
         }
 
+        // 4.7. Run PrePipeline hooks (if enabled)
+        let hook_engine = self.create_hook_engine();
+        if let Some(ref engine) = hook_engine {
+            let hook_ctx = HookContext {
+                workspace_dir: request.metadata.workspace_dir.clone(),
+                session_id: request.metadata.session_id.clone(),
+                pipeline_prompt: Some(prompt.clone()),
+                ..Default::default()
+            };
+            if let Err(e) = engine.run(HookEvent::PrePipeline, &hook_ctx).await {
+                tracing::warn!(error = %e, "PrePipeline hook failed in blocking mode (continuing)");
+            }
+        }
+
         // 5. Execute blocking agentic loop with workspace sandboxing
         let workspace = request.metadata.workspace_dir.as_ref().and_then(|p| {
             SessionWorkspace::from_directory(
@@ -716,6 +836,17 @@ impl AgentPipeline {
                 workspace.as_ref(),
             )
             .await?;
+
+        // 5.1. Run PostPipeline hooks (best-effort)
+        if let Some(ref engine) = hook_engine {
+            let hook_ctx = HookContext {
+                workspace_dir: request.metadata.workspace_dir.clone(),
+                session_id: request.metadata.session_id.clone(),
+                ..Default::default()
+            };
+            self.run_hook_best_effort(engine, HookEvent::PostPipeline, &hook_ctx)
+                .await;
+        }
 
         response.truncated = truncated;
 
@@ -938,6 +1069,9 @@ impl AgentPipeline {
             .unwrap_or_else(|| crate::persona::default_system_prompt(&request.metadata));
         prompt.push_str(&format!("System: {}\n\n", sys));
 
+        // Inject repository-local guardrails (AGENTS.md, .gestura/guardrails) when available.
+        self.append_project_guardrails(&mut prompt, request);
+
         // Add tool descriptions if tools are available
         if !tools.is_empty() {
             prompt.push_str("Available tools:\n");
@@ -1009,6 +1143,40 @@ impl AgentPipeline {
         prompt.push_str(&format!("User: {}\n", request.input));
 
         prompt
+    }
+
+    /// Append project guardrails to the prompt when enabled and a workspace root is available.
+    ///
+    /// Guardrails are discovered from the request's `workspace_dir` (no filesystem scanning)
+    /// and are bounded by `PipelineSettings.project_guardrails.max_chars`.
+    fn append_project_guardrails(&self, prompt: &mut String, request: &AgentRequest) {
+        let Some(workspace_dir) = request.metadata.workspace_dir.as_deref() else {
+            return;
+        };
+
+        let settings = &self.config.pipeline.project_guardrails;
+        let Some(guardrails) = crate::guardrails::load_project_guardrails(workspace_dir, settings)
+        else {
+            return;
+        };
+
+        let truncation_note = if guardrails.truncated {
+            format!(" (truncated to {} chars)", settings.max_chars)
+        } else {
+            String::new()
+        };
+
+        prompt.push_str("Project guardrails:\n");
+        prompt.push_str(&format!(
+            "Source: {}{}\n",
+            guardrails.source.relative_path(),
+            truncation_note
+        ));
+        prompt.push_str(&guardrails.content);
+        if !guardrails.content.ends_with('\n') {
+            prompt.push('\n');
+        }
+        prompt.push('\n');
     }
 
     /// Estimate token count for a string
@@ -2190,6 +2358,54 @@ impl AgentPipeline {
             }
         }
 
+        // After confirmation granted, before side effects:
+        // 1. Create checkpoint for write operations (best-effort)
+        if policy.is_write_operation {
+            if let Some(sid) = session_id.as_deref() {
+                self.try_create_checkpoint_before_tool(sid, &pending.name);
+            }
+        }
+
+        // 2. Run PreTool hook (if enabled) - failures skip tool execution
+        let hook_engine = self.create_hook_engine();
+        if let Some(ref engine) = hook_engine {
+            let hook_ctx = HookContext {
+                workspace_dir: workspace.map(|w| w.root().to_path_buf()),
+                session_id: session_id.clone(),
+                tool_name: Some(pending.name.clone()),
+                tool_arguments_json: Some(pending.arguments.clone()),
+                ..Default::default()
+            };
+            if let Err(e) = engine.run(HookEvent::PreTool, &hook_ctx).await {
+                tracing::warn!(
+                    tool = %pending.name,
+                    error = %e,
+                    "PreTool hook failed; skipping tool execution"
+                );
+                let duration_ms = pending.start_time.elapsed().as_millis() as u64;
+                let msg = format!("Skipped: PreTool hook failed: {}", e);
+                let _ = tx
+                    .send(StreamChunk::ToolCallResult {
+                        name: pending.name.clone(),
+                        success: false,
+                        output: msg.clone(),
+                        duration_ms,
+                    })
+                    .await;
+
+                let record = ToolCallRecord {
+                    id: pending.id,
+                    name: pending.name,
+                    arguments: pending.arguments,
+                    result: ToolResult::Skipped(msg),
+                    duration_ms,
+                };
+                tool_calls_in_iteration.push(record.clone());
+                response.tool_calls.push(record);
+                return;
+            }
+        }
+
         // Execute the tool with workspace sandboxing
         let result = self
             .execute_tool(&pending.name, &pending.arguments, workspace)
@@ -2206,10 +2422,25 @@ impl AgentPipeline {
             .send(StreamChunk::ToolCallResult {
                 name: pending.name.clone(),
                 success,
-                output,
+                output: output.clone(),
                 duration_ms,
             })
             .await;
+
+        // Run PostTool hook (best-effort)
+        if let Some(ref engine) = hook_engine {
+            let hook_ctx = HookContext {
+                workspace_dir: workspace.map(|w| w.root().to_path_buf()),
+                session_id: session_id.clone(),
+                tool_name: Some(pending.name.clone()),
+                tool_arguments_json: Some(pending.arguments.clone()),
+                tool_success: Some(success),
+                tool_output: Some(output),
+                ..Default::default()
+            };
+            self.run_hook_best_effort(engine, HookEvent::PostTool, &hook_ctx)
+                .await;
+        }
 
         let record = ToolCallRecord {
             id: pending.id,
@@ -3033,6 +3264,8 @@ struct FinalizePendingToolCallCtx<'a> {
 mod tests {
     use super::*;
 
+    use tempfile::tempdir;
+
     #[test]
     fn test_agent_request_builder() {
         let request = AgentRequest::new("Hello world")
@@ -3055,6 +3288,63 @@ mod tests {
         let tool_msg = Message::tool_result("call_123", "result data");
         assert_eq!(tool_msg.role, "tool");
         assert_eq!(tool_msg.tool_call_id, Some("call_123".to_string()));
+    }
+
+    #[test]
+    fn build_prompt_includes_project_guardrails_when_workspace_present() {
+        let temp = tempdir().unwrap();
+        std::fs::write(temp.path().join("AGENTS.md"), "Always run tests.\n").unwrap();
+
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let request = AgentRequest::new("hi").with_workspace(temp.path());
+        let context = crate::context::ResolvedContext::default();
+        let tools: Vec<&'static ToolDefinition> = Vec::new();
+
+        let prompt = pipeline.build_prompt(&request, &context, &tools);
+
+        assert!(prompt.contains("Project guardrails:"));
+        assert!(prompt.contains("Always run tests."));
+        assert!(prompt.contains("Source: AGENTS.md"));
+    }
+
+    #[test]
+    fn build_prompt_uses_dot_gestura_guardrails_over_agents_md() {
+        let temp = tempdir().unwrap();
+        std::fs::write(temp.path().join("AGENTS.md"), "agents-rule\n").unwrap();
+        std::fs::create_dir_all(temp.path().join(".gestura")).unwrap();
+        std::fs::write(temp.path().join(".gestura/guardrails"), "guardrails-rule\n").unwrap();
+
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let request = AgentRequest::new("hi").with_workspace(temp.path());
+        let context = crate::context::ResolvedContext::default();
+        let tools: Vec<&'static ToolDefinition> = Vec::new();
+
+        let prompt = pipeline.build_prompt(&request, &context, &tools);
+
+        assert!(prompt.contains("guardrails-rule"));
+        assert!(!prompt.contains("agents-rule"));
+        assert!(prompt.contains("Source: .gestura/guardrails"));
+    }
+
+    #[test]
+    fn build_prompt_skips_guardrails_when_disabled() {
+        let temp = tempdir().unwrap();
+        std::fs::write(temp.path().join("AGENTS.md"), "agents-rule\n").unwrap();
+
+        let mut config = AppConfig::default();
+        config.pipeline.project_guardrails.enabled = false;
+        let pipeline = AgentPipeline::new(config);
+
+        let request = AgentRequest::new("hi").with_workspace(temp.path());
+        let context = crate::context::ResolvedContext::default();
+        let tools: Vec<&'static ToolDefinition> = Vec::new();
+
+        let prompt = pipeline.build_prompt(&request, &context, &tools);
+
+        assert!(!prompt.contains("Project guardrails:"));
+        assert!(!prompt.contains("agents-rule"));
     }
 
     #[test]
