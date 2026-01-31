@@ -214,10 +214,10 @@ impl ToolConfirmationManager {
                         .insert(tool_name.to_string());
                 }
                 // An allow should override a prior session block for the same tool.
-                if let Ok(mut map) = self.session_blocked.write() {
-                    if let Some(set) = map.get_mut(session_id) {
-                        set.remove(tool_name);
-                    }
+                if let Ok(mut map) = self.session_blocked.write()
+                    && let Some(set) = map.get_mut(session_id)
+                {
+                    set.remove(tool_name);
                 }
             }
             ToolConfirmationDecision::DenySession => {
@@ -227,10 +227,10 @@ impl ToolConfirmationManager {
                         .insert(tool_name.to_string());
                 }
                 // A deny-session should override any previous allow-session.
-                if let Ok(mut map) = self.session_confirmed.write() {
-                    if let Some(set) = map.get_mut(session_id) {
-                        set.remove(tool_name);
-                    }
+                if let Ok(mut map) = self.session_confirmed.write()
+                    && let Some(set) = map.get_mut(session_id)
+                {
+                    set.remove(tool_name);
                 }
             }
             ToolConfirmationDecision::AllowOnce | ToolConfirmationDecision::DenyOnce => {}

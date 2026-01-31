@@ -27,6 +27,7 @@ use crate::streaming::{
     CancellationToken, StreamChunk, start_streaming, start_streaming_with_fallback,
 };
 use crate::tool_confirmation::TOOL_CONFIRMATIONS;
+use crate::tools::PermissionManager;
 use crate::tools::registry::{ToolDefinition, all_tools};
 
 pub use types::*;
@@ -41,6 +42,10 @@ pub struct AgentPipeline {
     analyzer: RequestAnalyzer,
     /// Pipeline-specific configuration
     pipeline_config: PipelineConfig,
+    /// Persistent permission manager used for tool confirmation decisions.
+    ///
+    /// This enables "Allow always" semantics for tool confirmations.
+    permission_manager: PermissionManager,
     /// Knowledge store for specialized expertise
     knowledge_store: Option<&'static KnowledgeStore>,
     /// Knowledge settings manager for session-scoped activation
@@ -55,6 +60,7 @@ impl AgentPipeline {
             context_manager: ContextManager::new(),
             analyzer: RequestAnalyzer::new(),
             pipeline_config: PipelineConfig::default(),
+            permission_manager: PermissionManager::new(),
             knowledge_store: None,
             knowledge_settings: None,
         }
@@ -67,6 +73,7 @@ impl AgentPipeline {
             context_manager: ContextManager::new(),
             analyzer: RequestAnalyzer::new(),
             pipeline_config,
+            permission_manager: PermissionManager::new(),
             knowledge_store: None,
             knowledge_settings: None,
         }
@@ -106,6 +113,7 @@ impl AgentPipeline {
             context_manager: ContextManager::new(),
             analyzer: RequestAnalyzer::new(),
             pipeline_config,
+            permission_manager: PermissionManager::new(),
             knowledge_store: None,
             knowledge_settings: None,
         }
@@ -2020,6 +2028,74 @@ impl AgentPipeline {
             // Tool requires confirmation (write operation in Restricted mode).
             // We pause tool execution until the UI approves/denies.
 
+            // Session/persisted fast paths (Claude Code parity): if the user has already
+            // allowed/blocked this tool for the session, or has a persisted allow rule,
+            // skip the confirmation dialog.
+            if let Some(session_id) = session_id.as_deref() {
+                if TOOL_CONFIRMATIONS.is_tool_allowed_for_session(session_id, &pending.name) {
+                    // Already allowed for this session: proceed to execution.
+                } else if TOOL_CONFIRMATIONS.is_tool_blocked_for_session(session_id, &pending.name)
+                {
+                    let duration_ms = pending.start_time.elapsed().as_millis() as u64;
+                    let msg = "Skipped: tool blocked for session".to_string();
+                    let _ = tx
+                        .send(StreamChunk::ToolCallResult {
+                            name: pending.name.clone(),
+                            success: false,
+                            output: msg.clone(),
+                            duration_ms,
+                        })
+                        .await;
+
+                    let record = ToolCallRecord {
+                        id: pending.id,
+                        name: pending.name,
+                        arguments: pending.arguments,
+                        result: ToolResult::Skipped(msg),
+                        duration_ms,
+                    };
+                    tool_calls_in_iteration.push(record.clone());
+                    response.tool_calls.push(record);
+                    return;
+                }
+            }
+
+            // Persisted permission fast path: if the user previously chose "Allow always"
+            // for this tool, proceed without prompting.
+            match self
+                .permission_manager
+                .check(&pending.name, "execute", Some(&pending.arguments))
+            {
+                Ok(check) if check.allowed => {
+                    // Allowed: proceed to execution.
+                }
+                Ok(_) => {
+                    // No persisted allow rule: continue to confirmation.
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, tool = %pending.name, "Permission check failed; falling back to confirmation");
+                }
+            }
+
+            // If the tool is allowed for this session or via persisted permissions, the
+            // early returns/branches above will have proceeded; otherwise continue to prompt.
+            let needs_confirmation = match session_id.as_deref() {
+                Some(sid) if TOOL_CONFIRMATIONS.is_tool_allowed_for_session(sid, &pending.name) => {
+                    false
+                }
+                _ => match self
+                    .permission_manager
+                    .check(&pending.name, "execute", Some(&pending.arguments))
+                {
+                    Ok(check) => !check.allowed,
+                    Err(_) => true,
+                },
+            };
+
+            if !needs_confirmation {
+                // Approved: continue to normal execution flow below.
+            } else {
+
             const CONFIRMATION_TIMEOUT_SECS: u64 = 300;
             let confirmation_id = format!("tool_confirm_{}", uuid::Uuid::new_v4());
 
@@ -2044,11 +2120,12 @@ impl AgentPipeline {
                 .await;
 
             // Await UI decision with timeout and cancellation.
-            let approved = tokio::select! {
-                decision = rx => decision.unwrap_or(false),
+            let default_decision = crate::tool_confirmation::ToolConfirmationDecision::DenyOnce;
+            let decision: crate::tool_confirmation::ToolConfirmationDecision = tokio::select! {
+                decision = rx => decision.unwrap_or(default_decision),
                 _ = tokio::time::sleep(std::time::Duration::from_secs(CONFIRMATION_TIMEOUT_SECS)) => {
                     TOOL_CONFIRMATIONS.abandon(&confirmation_id);
-                    false
+                    default_decision
                 }
                 _ = async {
                     while !cancel_token.is_cancelled() {
@@ -2056,11 +2133,26 @@ impl AgentPipeline {
                     }
                 } => {
                     TOOL_CONFIRMATIONS.abandon(&confirmation_id);
-                    false
+                    default_decision
                 }
             };
 
-            if !approved {
+            // Apply scoped policy decisions.
+            if let Some(session_id) = session_id.as_deref() {
+                TOOL_CONFIRMATIONS.apply_session_policy_decision(session_id, &pending.name, decision);
+            }
+            if decision == crate::tool_confirmation::ToolConfirmationDecision::AllowAlways {
+                if let Err(e) = self.permission_manager.grant(
+                    &pending.name,
+                    "execute",
+                    crate::tools::permissions::PermissionScope::Global,
+                    None,
+                ) {
+                    tracing::warn!(error = %e, tool = %pending.name, "Failed to persist AllowAlways permission");
+                }
+            }
+
+            if !decision.is_allowed() {
                 let duration_ms = pending.start_time.elapsed().as_millis() as u64;
                 let msg = format!(
                     "Skipped: tool confirmation denied/timed-out (id: {})",
@@ -2087,6 +2179,7 @@ impl AgentPipeline {
                 return;
             }
             // Approved: continue to normal execution flow below.
+            }
         }
 
         // Execute the tool with workspace sandboxing
@@ -3252,7 +3345,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         use crate::session_workspace::SessionWorkspace;
-        use crate::tool_confirmation::TOOL_CONFIRMATIONS;
+        use crate::tool_confirmation::{TOOL_CONFIRMATIONS, ToolConfirmationDecision};
 
         let pipeline = AgentPipeline::new(AppConfig::default());
         let temp = tempdir().unwrap();
@@ -3315,7 +3408,11 @@ mod tests {
         let confirmation_id = confirmation_id.expect("expected ToolConfirmationRequired");
 
         TOOL_CONFIRMATIONS
-            .resolve(&confirmation_id, Some("s1"), false)
+            .resolve_decision(
+                &confirmation_id,
+                Some("s1"),
+                ToolConfirmationDecision::DenyOnce,
+            )
             .expect("resolve should succeed");
 
         // Ensure we emit a tool call result with success=false.
@@ -3337,7 +3434,11 @@ mod tests {
         // Ensure this specific confirmation has been cleared, without depending on
         // global pending count (tests may run concurrently).
         let err = TOOL_CONFIRMATIONS
-            .resolve(&confirmation_id, Some("s1"), true)
+            .resolve_decision(
+                &confirmation_id,
+                Some("s1"),
+                ToolConfirmationDecision::AllowOnce,
+            )
             .unwrap_err();
         assert!(err.contains("Unknown confirmation id"));
         assert!(!temp.path().join("out.txt").exists());
@@ -3366,7 +3467,7 @@ mod tests {
         use tokio::sync::mpsc;
 
         use crate::session_workspace::SessionWorkspace;
-        use crate::tool_confirmation::TOOL_CONFIRMATIONS;
+        use crate::tool_confirmation::{TOOL_CONFIRMATIONS, ToolConfirmationDecision};
 
         let pipeline = AgentPipeline::new(AppConfig::default());
         let temp = tempdir().unwrap();
@@ -3450,7 +3551,11 @@ mod tests {
         // Ensure this specific confirmation has been cleared, without depending on
         // global pending count (tests may run concurrently).
         let err = TOOL_CONFIRMATIONS
-            .resolve(&confirmation_id, Some("s1"), true)
+            .resolve_decision(
+                &confirmation_id,
+                Some("s1"),
+                ToolConfirmationDecision::AllowOnce,
+            )
             .unwrap_err();
         assert!(err.contains("Unknown confirmation id"));
         assert!(!temp.path().join("out_timeout.txt").exists());
