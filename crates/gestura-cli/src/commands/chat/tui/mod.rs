@@ -1078,6 +1078,9 @@ fn handle_command(app: &mut TuiApp, command: &str) -> Result<Option<Action>> {
         "/workflow" | "/workflows" => {
             handle_workflow_command(app, args, &get_workflows_dir())?;
         }
+        "/config" => {
+            handle_config_command(app, args)?;
+        }
         _ => {
             app.set_error(format!("Unknown command: {}", cmd));
         }
@@ -1449,6 +1452,150 @@ fn handle_workflow_command(app: &mut TuiApp, args: &[&str], dir: &std::path::Pat
         Some(cmd) => app.set_error(format!("Unknown workflow command: {}", cmd)),
     }
     Ok(())
+}
+
+/// Handle /config slash command for session-only config viewing.
+///
+/// Subcommands:
+/// - `/config` or `/config list` - Show current configuration values
+/// - `/config get <key>` - Get a specific config value
+/// - `/config keys` - List available config keys
+fn handle_config_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
+    let subcommand = args.first().map(|s| s.to_lowercase());
+
+    match subcommand.as_deref() {
+        None | Some("list") => {
+            // Show current config summary
+            let config = &app.config;
+            let mut lines = vec![
+                "━━━ Current Configuration ━━━".to_string(),
+                String::new(),
+                "LLM Settings:".to_string(),
+                format!("  primary: {}", config.llm.primary),
+            ];
+
+            // Show provider-specific settings if configured
+            if let Some(ref openai) = config.llm.openai {
+                if !openai.model.is_empty() {
+                    lines.push(format!("  openai.model: {}", openai.model));
+                }
+            }
+            if let Some(ref anthropic) = config.llm.anthropic {
+                if !anthropic.model.is_empty() {
+                    lines.push(format!("  anthropic.model: {}", anthropic.model));
+                }
+            }
+            if let Some(ref grok) = config.llm.grok {
+                if !grok.model.is_empty() {
+                    lines.push(format!("  grok.model: {}", grok.model));
+                }
+            }
+            if let Some(ref ollama) = config.llm.ollama {
+                if !ollama.model.is_empty() {
+                    lines.push(format!("  ollama.model: {}", ollama.model));
+                }
+            }
+
+            lines.push(String::new());
+            lines.push("Voice Settings:".to_string());
+            lines.push(format!("  provider: {}", config.voice.provider));
+
+            lines.push(String::new());
+            lines.push("Pipeline Settings:".to_string());
+            lines.push(format!(
+                "  max_history_messages: {}",
+                config.pipeline.max_history_messages
+            ));
+            lines.push(format!(
+                "  auto_compact_threshold: {}%",
+                config.pipeline.auto_compact_threshold_percent
+            ));
+
+            lines.push(String::new());
+            lines.push("UI:".to_string());
+            lines.push(format!("  theme_mode: {}", config.ui.theme_mode));
+
+            lines.push(String::new());
+            lines.push("Use /config get <key> for specific values".to_string());
+            lines.push("Use /config keys to list all available keys".to_string());
+
+            app.messages.push(app::TuiMessage {
+                role: "system".to_string(),
+                content: lines.join("\n"),
+                thinking: None,
+                is_streaming: false,
+                is_error: false,
+            });
+        }
+        Some("get") => {
+            if let Some(key) = args.get(1) {
+                if let Some(value) = get_tui_config_value(&app.config, key) {
+                    app.set_status(format!("{} = {}", key, value));
+                } else {
+                    app.set_error(format!("Unknown config key: {}", key));
+                }
+            } else {
+                app.set_error("Usage: /config get <key>");
+            }
+        }
+        Some("keys") => {
+            let keys = vec![
+                "llm.primary",
+                "voice.provider",
+                "voice.local_model_path",
+                "ui.theme_mode",
+                "pipeline.max_history_messages",
+                "pipeline.auto_compact_threshold_percent",
+                "pipeline.compaction_strategy",
+                "pipeline.max_context_tokens",
+                "pipeline.log_token_usage",
+            ];
+            let content = format!(
+                "━━━ Available Config Keys ━━━\n\n{}\n\nUse /config get <key> to view a value",
+                keys.join("\n")
+            );
+            app.messages.push(app::TuiMessage {
+                role: "system".to_string(),
+                content,
+                thinking: None,
+                is_streaming: false,
+                is_error: false,
+            });
+        }
+        Some(cmd) => {
+            app.set_error(format!(
+                "Unknown config subcommand: {}. Use: list, get, keys",
+                cmd
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Get a config value by key for TUI display.
+fn get_tui_config_value(config: &gestura_core::AppConfig, key: &str) -> Option<String> {
+    match key {
+        "llm.primary" => Some(config.llm.primary.clone()),
+        "voice.provider" => Some(config.voice.provider.clone()),
+        "voice.local_model_path" => Some(
+            config
+                .voice
+                .local_model_path
+                .clone()
+                .unwrap_or_else(|| "(not set)".to_string()),
+        ),
+        "ui.theme_mode" => Some(config.ui.theme_mode.clone()),
+        "pipeline.max_history_messages" => Some(config.pipeline.max_history_messages.to_string()),
+        "pipeline.auto_compact_threshold_percent" => {
+            Some(config.pipeline.auto_compact_threshold_percent.to_string())
+        }
+        "pipeline.compaction_strategy" => {
+            Some(format!("{:?}", config.pipeline.compaction_strategy))
+        }
+        "pipeline.max_context_tokens" => Some(config.pipeline.max_context_tokens.to_string()),
+        "pipeline.log_token_usage" => Some(config.pipeline.log_token_usage.to_string()),
+        _ => None,
+    }
 }
 
 /// Format tool output for TUI with pretty printing for JSON
