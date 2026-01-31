@@ -1,0 +1,4 @@
+# Ignore staged binaries; keep docs.
+*
+!.gitignore
+!README.md
