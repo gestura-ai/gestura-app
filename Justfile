@@ -216,9 +216,25 @@ build-macos-signed:
 	cargo build --release -p gestura-cli --features voice-local --target x86_64-apple-darwin
 	mkdir -p target/universal-apple-darwin/release
 	lipo -create \
-		target/aarch64-apple-darwin/release/gestura \
-		target/x86_64-apple-darwin/release/gestura \
-		-output target/universal-apple-darwin/release/gestura
+	  target/aarch64-apple-darwin/release/gestura \
+	  target/x86_64-apple-darwin/release/gestura \
+	  -output target/universal-apple-darwin/release/gestura
+	# 2b. Stage the CLI for Tauri `bundle.externalBin`.
+	#
+	# Tauri expects the `externalBin` base name plus a target triple suffix.
+	# For macOS universal builds, Tauri builds per-arch slices and will look for:
+	#   - binaries/gestura-aarch64-apple-darwin
+	#   - binaries/gestura-x86_64-apple-darwin
+	# We also stage the universal binary for completeness:
+	#   - binaries/gestura-universal-apple-darwin
+	mkdir -p {{gui_dir}}/binaries
+	cp target/aarch64-apple-darwin/release/gestura {{gui_dir}}/binaries/gestura-aarch64-apple-darwin
+	cp target/x86_64-apple-darwin/release/gestura {{gui_dir}}/binaries/gestura-x86_64-apple-darwin
+	cp target/universal-apple-darwin/release/gestura {{gui_dir}}/binaries/gestura-universal-apple-darwin
+	chmod +x \
+	  {{gui_dir}}/binaries/gestura-aarch64-apple-darwin \
+	  {{gui_dir}}/binaries/gestura-x86_64-apple-darwin \
+	  {{gui_dir}}/binaries/gestura-universal-apple-darwin
 	@echo "✅ Universal CLI binary created"
 	# 3. Build the macOS app bundle without letting Tauri perform notarization
 	#    We *unset* APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID for this command so
