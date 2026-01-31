@@ -1,0 +1,19 @@
+# cargo-audit configuration
+# This file configures which security advisories to ignore.
+# Only ignore advisories after careful review - document the reason.
+
+[advisories]
+# owning_ref 0.4.1: Multiple soundness issues (RUSTSEC-2022-0040)
+# No fixed version available. This is a transitive dependency from:
+# json-ld -> json-ld-context-processing -> owning_ref
+# The json-ld crate is used for structured data processing.
+# Risk: Low - we don't use the unsafe features that cause the soundness issues.
+# Monitor: https://github.com/RustSec/advisory-db/issues for updates.
+ignore = [
+    "RUSTSEC-2022-0040", # owning_ref - no fix available, transitive dep
+]
+
+# Treat unmaintained/unsound advisories as informational warnings, not errors
+# Many Tauri dependencies (GTK3 bindings) are marked unmaintained
+informational_warnings = ["unmaintained", "unsound"]
+

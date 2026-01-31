@@ -123,7 +123,7 @@ pub fn run() -> Result<()> {
         }
     }
     #[cfg(not(feature = "voice-local"))]
-    println!("  Local Whisper: {} {}", "disabled", "○".dimmed());
+    println!("  Local Whisper: disabled {}", "○".dimmed());
     println!();
 
     // Audio

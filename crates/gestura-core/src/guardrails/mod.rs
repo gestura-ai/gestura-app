@@ -101,10 +101,7 @@ pub fn load_project_guardrails(
 fn read_guardrails_file_limited(path: &Path, max_chars: usize) -> std::io::Result<(String, bool)> {
     use std::io::Read;
 
-    let max_bytes = max_chars
-        .saturating_mul(4)
-        .min(512 * 1024) // 512KiB hard cap
-        .max(1);
+    let max_bytes = max_chars.saturating_mul(4).clamp(1, 512 * 1024); // 512KiB hard cap
 
     let f = std::fs::File::open(path)?;
     let mut buf = Vec::new();

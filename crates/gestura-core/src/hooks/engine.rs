@@ -148,8 +148,10 @@ mod tests {
 
     #[tokio::test]
     async fn engine_denies_disallowed_program() {
-        let mut settings = HooksSettings::default();
-        settings.enabled = true;
+        let mut settings = HooksSettings {
+            enabled: true,
+            ..Default::default()
+        };
         settings.hooks.push(HookDefinition {
             name: "deny".to_string(),
             event: HookEvent::PrePipeline,
@@ -168,9 +170,11 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn engine_executes_allowed_program_and_renders_templates() {
-        let mut settings = HooksSettings::default();
-        settings.enabled = true;
-        settings.allowed_programs = vec!["sh".to_string()];
+        let mut settings = HooksSettings {
+            enabled: true,
+            allowed_programs: vec!["sh".to_string()],
+            ..Default::default()
+        };
         settings.hooks.push(HookDefinition {
             name: "echo-tool".to_string(),
             event: HookEvent::PreTool,
@@ -181,8 +185,10 @@ mod tests {
         });
 
         let engine = HookEngine::new(settings);
-        let mut ctx = HookContext::default();
-        ctx.tool_name = Some("git".to_string());
+        let ctx = HookContext {
+            tool_name: Some("git".to_string()),
+            ..Default::default()
+        };
 
         let out = engine.run(HookEvent::PreTool, &ctx).await.unwrap();
         assert_eq!(out.len(), 1);

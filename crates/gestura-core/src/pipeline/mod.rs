@@ -2360,10 +2360,10 @@ impl AgentPipeline {
 
         // After confirmation granted, before side effects:
         // 1. Create checkpoint for write operations (best-effort)
-        if policy.is_write_operation {
-            if let Some(sid) = session_id.as_deref() {
-                self.try_create_checkpoint_before_tool(sid, &pending.name);
-            }
+        if policy.is_write_operation
+            && let Some(sid) = session_id.as_deref()
+        {
+            self.try_create_checkpoint_before_tool(sid, &pending.name);
         }
 
         // 2. Run PreTool hook (if enabled) - failures skip tool execution

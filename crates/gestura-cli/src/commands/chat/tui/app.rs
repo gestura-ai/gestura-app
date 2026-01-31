@@ -774,6 +774,7 @@ impl TuiApp {
 
     /// Get compact formatted token usage for status bar (format: "1.2K|$0.01")
     /// Used when terminal width is limited (< 80 columns)
+    #[allow(dead_code)]
     pub fn format_token_usage_compact(&self) -> String {
         let total = self.session_input_tokens + self.session_output_tokens;
         if total == 0 {

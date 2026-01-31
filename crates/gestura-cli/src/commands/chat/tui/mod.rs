@@ -1490,25 +1490,25 @@ fn handle_config_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
             ];
 
             // Show provider-specific settings if configured
-            if let Some(ref openai) = config.llm.openai {
-                if !openai.model.is_empty() {
-                    lines.push(format!("  openai.model: {}", openai.model));
-                }
+            if let Some(ref openai) = config.llm.openai
+                && !openai.model.is_empty()
+            {
+                lines.push(format!("  openai.model: {}", openai.model));
             }
-            if let Some(ref anthropic) = config.llm.anthropic {
-                if !anthropic.model.is_empty() {
-                    lines.push(format!("  anthropic.model: {}", anthropic.model));
-                }
+            if let Some(ref anthropic) = config.llm.anthropic
+                && !anthropic.model.is_empty()
+            {
+                lines.push(format!("  anthropic.model: {}", anthropic.model));
             }
-            if let Some(ref grok) = config.llm.grok {
-                if !grok.model.is_empty() {
-                    lines.push(format!("  grok.model: {}", grok.model));
-                }
+            if let Some(ref grok) = config.llm.grok
+                && !grok.model.is_empty()
+            {
+                lines.push(format!("  grok.model: {}", grok.model));
             }
-            if let Some(ref ollama) = config.llm.ollama {
-                if !ollama.model.is_empty() {
-                    lines.push(format!("  ollama.model: {}", ollama.model));
-                }
+            if let Some(ref ollama) = config.llm.ollama
+                && !ollama.model.is_empty()
+            {
+                lines.push(format!("  ollama.model: {}", ollama.model));
             }
 
             lines.push(String::new());
@@ -1554,7 +1554,7 @@ fn handle_config_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
             }
         }
         Some("keys") => {
-            let keys = vec![
+            let keys = [
                 "llm.primary",
                 "voice.provider",
                 "voice.local_model_path",
