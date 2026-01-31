@@ -184,15 +184,13 @@
         }
 
         .section-description {
-            color: var(--text-color);
-            opacity: 0.8;
-            font-size: 0.9rem;
+            color: var(--text-muted, #6c757d);
+            font-size: 0.875rem;
             line-height: 1.5;
-            margin-bottom: 1.5rem;
-            padding: 0.75rem;
-            background: var(--section-background, #f8f9fa);
-            border-radius: 6px;
-            border-left: 3px solid #007bff;
+            margin-bottom: 1.25rem;
+            padding: 0;
+            border-left: 3px solid var(--border-color, #dee2e6);
+            padding-left: 0.75rem;
         }
 
         .subsection {
@@ -518,6 +516,77 @@
             font-size: 0.85rem;
             color: #6c757d;
             margin-top: 0.25rem;
+        }
+
+        /* Info hint tooltips */
+        .info-hint {
+            cursor: help;
+            opacity: 0.7;
+            font-size: 0.9em;
+            margin-left: 4px;
+        }
+        .info-hint:hover {
+            opacity: 1;
+        }
+
+        /* Badge styles */
+        .badge {
+            font-size: 0.7rem;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 500;
+            text-transform: uppercase;
+            vertical-align: middle;
+            margin-left: 6px;
+        }
+        .badge-warning {
+            background: #fff3cd;
+            color: #856404;
+        }
+        .badge-info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+
+        /* Tool inline configuration */
+        .tool-with-config .checkbox-label {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+        }
+        .tool-config-toggle {
+            margin-top: 6px;
+            padding: 4px 10px;
+            font-size: 0.8rem;
+            color: #667eea;
+            border: 1px solid #667eea;
+            background: transparent;
+            border-radius: 4px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .tool-config-toggle:hover {
+            background: rgba(102, 126, 234, 0.1);
+        }
+        .tool-config-toggle .icon {
+            font-size: 0.9em;
+        }
+        .tool-inline-config {
+            margin-left: 32px;
+            margin-top: 8px;
+            margin-bottom: 16px;
+            padding: 16px;
+            background: var(--section-background, #f8f9fa);
+            border: 1px solid var(--border-color, #e0e0e0);
+            border-radius: 8px;
+            border-left: 3px solid #667eea;
+        }
+        .inline-config-content {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
         }
 
         .actions {
@@ -898,6 +967,70 @@
         .modal-btn-confirm:hover {
             background: #0056b3;
         }
+
+        /* Collapsible Sidebar Groups */
+        .toc-group {
+            margin-bottom: 0.5rem;
+        }
+
+        .toc-group-header {
+            display: flex;
+            align-items: center;
+            padding: 0.75rem 1.5rem;
+            cursor: pointer;
+            user-select: none;
+            font-weight: 600;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-color);
+            opacity: 0.7;
+            transition: all 0.2s;
+        }
+
+        .toc-group-header:hover {
+            opacity: 1;
+            background: rgba(0, 123, 255, 0.05);
+        }
+
+        .toc-group-header .toc-chevron {
+            margin-right: 0.5rem;
+            transition: transform 0.2s ease;
+            font-size: 0.75rem;
+        }
+
+        .toc-group.collapsed .toc-chevron {
+            transform: rotate(-90deg);
+        }
+
+        .toc-group-items {
+            list-style: none;
+            overflow: hidden;
+            max-height: 500px;
+            transition: max-height 0.3s ease-out;
+        }
+
+        .toc-group.collapsed .toc-group-items {
+            max-height: 0;
+        }
+
+        .toc-group-items .toc-item {
+            margin-bottom: 0;
+        }
+
+        .toc-group-items .toc-link {
+            padding-left: 2.5rem;
+            font-size: 0.85rem;
+        }
+
+        /* Non-collapsible standalone items */
+        .toc-standalone {
+            margin-bottom: 0.25rem;
+        }
+
+        .toc-standalone .toc-link {
+            font-weight: 500;
+        }
     </style>
 </head>
 
@@ -921,46 +1054,107 @@
                 <h2><span class="icon-settings"></span> Configuration</h2>
             </div>
             <ul class="toc-list">
-                <li class="toc-item">
-                    <a href="#permissions-settings" class="toc-link active" data-section="permissions-settings">
-                        <span class="toc-icon icon-lock-open"></span>System Permissions
-                    </a>
+                <!-- System Settings Group (collapsible) -->
+                <li class="toc-group" data-group="system-settings-group">
+                    <div class="toc-group-header">
+                        <span class="toc-chevron">▼</span>
+                        System Settings
+                    </div>
+                    <ul class="toc-group-items">
+                        <li class="toc-item">
+                            <a href="#permissions-settings" class="toc-link active" data-section="permissions-settings">
+                                <span class="toc-icon icon-lock-open"></span>Permissions
+                            </a>
+                        </li>
+                        <li class="toc-item">
+                            <a href="#notifications-settings" class="toc-link" data-section="notifications-settings">
+                                <span class="toc-icon icon-bell"></span>Notifications
+                            </a>
+                        </li>
+                        <li class="toc-item">
+                            <a href="#security-settings" class="toc-link" data-section="security-settings">
+                                <span class="toc-icon icon-lock"></span>Security & Privacy
+                            </a>
+                        </li>
+                        <li class="toc-item">
+                            <a href="#voice-settings" class="toc-link" data-section="voice-settings">
+                                <span class="toc-icon icon-microphone"></span>Voice & Audio
+                            </a>
+                        </li>
+                        <li class="toc-item">
+                            <a href="#system-settings" class="toc-link" data-section="system-settings">
+                                <span class="toc-icon icon-settings"></span>General
+                            </a>
+                        </li>
+                    </ul>
                 </li>
-                <li class="toc-item">
-                    <a href="#voice-settings" class="toc-link" data-section="voice-settings">
-                        <span class="toc-icon icon-microphone"></span>Voice & Audio
-                    </a>
+
+                <!-- Providers Group (collapsible) -->
+                <li class="toc-group" data-group="providers-group">
+                    <div class="toc-group-header">
+                        <span class="toc-chevron">▼</span>
+                        Providers
+                    </div>
+                    <ul class="toc-group-items">
+                        <li class="toc-item">
+                            <a href="#stt-providers-settings" class="toc-link" data-section="stt-providers-settings">
+                                <span class="toc-icon icon-microphone"></span>STT Providers
+                            </a>
+                        </li>
+                        <li class="toc-item">
+                            <a href="#llm-providers-settings" class="toc-link" data-section="llm-providers-settings">
+                                <span class="toc-icon icon-robot"></span>LLM Providers
+                            </a>
+                        </li>
+                    </ul>
                 </li>
-                <li class="toc-item">
-                    <a href="#providers-settings" class="toc-link" data-section="providers-settings">
-                        <span class="toc-icon icon-robot"></span>AI Providers
-                    </a>
+
+                <!-- Tools Group (collapsible) -->
+                <li class="toc-group" data-group="tools-group">
+                    <div class="toc-group-header">
+                        <span class="toc-chevron">▼</span>
+                        Tools
+                    </div>
+                    <ul class="toc-group-items">
+                        <li class="toc-item">
+                            <a href="#builtin-tools-settings" class="toc-link" data-section="builtin-tools-settings">
+                                <span class="toc-icon icon-tools"></span>Built-in Tools
+                            </a>
+                        </li>
+                        <li class="toc-item">
+                            <a href="#mcp-servers-settings" class="toc-link" data-section="mcp-servers-settings">
+                                <span class="toc-icon icon-plug"></span>MCP Servers
+                            </a>
+                        </li>
+                        <!-- Web Search and Prompt Enhancement are now inline within Built-in Tools -->
+                    </ul>
                 </li>
-                <li class="toc-item">
-                    <a href="#device-settings" class="toc-link" data-section="device-settings">
-                        <span class="toc-icon icon-phone"></span>Device & MDH
-                    </a>
+
+                <!-- Device Management Group (collapsible) -->
+                <li class="toc-group" data-group="device-group">
+                    <div class="toc-group-header">
+                        <span class="toc-chevron">▼</span>
+                        Device Management
+                    </div>
+                    <ul class="toc-group-items">
+                        <li class="toc-item">
+                            <a href="#device-discovery-settings" class="toc-link" data-section="device-discovery-settings">
+                                <span class="toc-icon icon-search"></span>Discovery & Connection
+                            </a>
+                        </li>
+                        <li class="toc-item">
+                            <a href="#device-security-settings" class="toc-link" data-section="device-security-settings">
+                                <span class="toc-icon icon-lock"></span>Device Security
+                            </a>
+                        </li>
+                        <li class="toc-item">
+                            <a href="#mdh-settings" class="toc-link" data-section="mdh-settings">
+                                <span class="toc-icon icon-target"></span>Multi-Device Harmony
+                            </a>
+                        </li>
+                    </ul>
                 </li>
-                <li class="toc-item">
-                    <a href="#notifications-settings" class="toc-link" data-section="notifications-settings">
-                        <span class="toc-icon icon-bell"></span>Notifications
-                    </a>
-                </li>
-                <li class="toc-item">
-                    <a href="#tools-settings" class="toc-link" data-section="tools-settings">
-                        <span class="toc-icon icon-wrench"></span>Tools
-                    </a>
-                </li>
-                <li class="toc-item">
-                    <a href="#security-settings" class="toc-link" data-section="security-settings">
-                        <span class="toc-icon icon-lock"></span>Security & Privacy
-                    </a>
-                </li>
-                <li class="toc-item">
-                    <a href="#system-settings" class="toc-link" data-section="system-settings">
-                        <span class="toc-icon icon-settings"></span>System Settings
-                    </a>
-                </li>
+
                 <!-- Advanced section hidden - only contains NATS config which is hidden -->
                 <!-- TODO: Re-enable when there are visible advanced settings -->
                 <li class="toc-item" style="display: none;">
@@ -1038,6 +1232,24 @@
                         <button type="button" class="button secondary" onclick="refreshPermissions()"><span
                                 class="icon-refresh"></span> Refresh
                             Permissions</button>
+                    </div>
+
+                    <div class="subsection">
+                        <div class="subsection-title">
+                            <span class="icon icon-lock"></span>Default Agent Permission Level
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="defaultPermissionLevel">Permission Level for New Sessions</label>
+                            <select class="form-select" id="defaultPermissionLevel" name="default_permission_level">
+                                <option value="Sandbox">Sandbox (Read-only)</option>
+                                <option value="Restricted" selected>Restricted (Ask before write)</option>
+                                <option value="Full">Full Access (Careful!)</option>
+                            </select>
+                            <div class="help-text">
+                                New chat sessions will inherit this permission level by default. You can override per-session in the chat settings panel.
+                            </div>
+                        </div>
                     </div>
                 </section>
 
@@ -1121,20 +1333,20 @@
                     </div>
                 </section>
 
-                <!-- AI Providers Settings -->
-                <section class="config-section" id="providers-settings">
+                <!-- STT Providers Settings -->
+                <section class="config-section" id="stt-providers-settings">
                     <div class="section-title">
-                        <span class="icon icon-robot"></span>AI Providers
+                        <span class="icon icon-microphone"></span>STT Providers
                     </div>
                     <div class="section-description">
-                        Configure AI and speech processing providers. Set up API keys for speech-to-text conversion and
-                        AI language models to power your voice commands and conversations.
+                        Configure speech-to-text providers for voice recognition. Set up API keys and select your
+                        preferred provider for converting voice commands to text.
                     </div>
 
                     <!-- Speech-to-Text Provider Selection -->
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon icon-microphone"></span>Speech-to-Text Provider
+                            <span class="icon icon-microphone"></span>Provider Selection
                         </div>
 
                         <div class="form-group">
@@ -1212,15 +1424,6 @@
                         <div class="form-group provider-config-section" id="localWhisperConfig" style="display: none;">
                             <label class="form-label">Local Whisper Configuration</label>
                             <div class="provider-config-box">
-                                <!-- Model Status Banner -->
-                                <div id="whisperModelStatus" class="model-status-banner hidden">
-                                    <div class="status-icon"><span class="icon-warning"></span></div>
-                                    <div class="status-message">
-                                        <strong>No Whisper model configured</strong>
-                                        <p>Download a model to enable local speech recognition.</p>
-                                    </div>
-                                </div>
-
                                 <!-- Model Selection Dropdown -->
                                 <div class="form-group">
                                     <label class="form-label" for="whisperModelSelect">Select Model</label>
@@ -1352,10 +1555,21 @@
                             </div>
                         </div>
                     </div>
+                </section>
+
+                <!-- LLM Providers Settings -->
+                <section class="config-section" id="llm-providers-settings">
+                    <div class="section-title">
+                        <span class="icon icon-robot"></span>LLM Providers
+                    </div>
+                    <div class="section-description">
+                        Configure AI language model providers for processing commands and conversations. Set up API keys
+                        and select your preferred AI assistant.
+                    </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon icon-robot"></span>AI Language Model Providers
+                            <span class="icon icon-robot"></span>Provider Selection
                         </div>
 
                         <div class="form-group">
@@ -1536,24 +1750,22 @@
                     </div>
                 </section>
 
-                <!-- Device Management Settings -->
-                <section class="config-section" id="device-settings">
+                <!-- Device Discovery & Connection Settings -->
+                <section class="config-section" id="device-discovery-settings">
                     <div class="section-title">
-                        <span class="icon icon-phone"></span>Device & MDH Management
+                        <span class="icon icon-search"></span>Device Discovery & Connection
                     </div>
                     <div class="section-description">
-                        Connect and manage external devices like the Haptic Harmony Ring. Configure device
-                        authentication, security, and Multi-Device Harmony (MDH) targeting for coordinated
-                        control across multiple devices.
+                        Scan for and connect to external devices like the Haptic Harmony Ring.
                     </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon icon-lock-open"></span>Authenticated Devices
+                            <span class="icon icon-phone"></span>Connected Devices
                         </div>
 
                         <div class="form-group">
-                            <label class="form-label">Connected Devices</label>
+                            <label class="form-label">Device List</label>
                             <div id="deviceList" class="device-list">
                                 <div class="device-item">
                                     <div class="device-info">
@@ -1574,10 +1786,20 @@
                                 Refresh</button>
                         </div>
                     </div>
+                </section>
+
+                <!-- Device Security Settings -->
+                <section class="config-section" id="device-security-settings">
+                    <div class="section-title">
+                        <span class="icon icon-lock"></span>Device Security
+                    </div>
+                    <div class="section-description">
+                        Configure authentication and encryption for device communications.
+                    </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon icon-wrench"></span>Device Security
+                            <span class="icon icon-shield"></span>Security Settings
                         </div>
 
                         <div class="checkbox-group">
@@ -1607,10 +1829,20 @@
                             </div>
                         </div>
                     </div>
+                </section>
+
+                <!-- Multi-Device Harmony (MDH) Settings -->
+                <section class="config-section" id="mdh-settings">
+                    <div class="section-title">
+                        <span class="icon icon-target"></span>Multi-Device Harmony (MDH)
+                    </div>
+                    <div class="section-description">
+                        Configure MDH targeting for coordinated control across multiple devices.
+                    </div>
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon icon-target"></span>Multi-Device Harmony (MDH)
+                            <span class="icon icon-settings"></span>MDH Configuration
                         </div>
 
                         <div class="form-group">
@@ -1871,20 +2103,22 @@
                     </div>
                 </section>
 
-                <!-- Tools Settings -->
-                <section class="config-section" id="tools-settings">
+                <!-- Built-in Tools Settings -->
+                <section class="config-section" id="builtin-tools-settings">
                     <div class="section-title">
-                        <span class="icon icon-wrench"></span>Tools
+                        <span class="icon icon-tools"></span>Built-in Tools
                     </div>
                     <div class="section-description">
-                        Configure built-in tools, MCP integrations, and external services that extend Gestura's
-                        capabilities. Manage web search, file access, and Model Context Protocol servers.
+                        Built-in tools extend Gestura's capabilities beyond conversation. Each tool grants the AI specific permissions to interact with your system, files, or external services. Enable only the tools you need for your workflow.
                     </div>
 
                     <!-- Built-in Tools Configuration -->
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon icon-tools"></span>Built-in Tools
+                            <span class="icon icon-tools"></span>Tool Permissions
+                        </div>
+                        <div class="help-text" style="margin-bottom: 16px;">
+                            Control which tools the AI assistant can use. Disabling a tool prevents Gestura from performing those actions, even if requested.
                         </div>
 
                         <div class="checkbox-group">
@@ -1892,8 +2126,7 @@
                                 checked>
                             <div class="checkbox-label">
                                 File Access
-                                <div class="checkbox-description">Allow reading and writing files on the local
-                                    filesystem</div>
+                                <div class="checkbox-description">Read, write, and list files within the session workspace. Respects sandbox boundaries—cannot access files outside the workspace without explicit permission. <span class="info-hint" title="File operations are scoped to the session workspace by default. The AI will ask for confirmation before writing or modifying files.">ℹ️</span></div>
                             </div>
                         </div>
 
@@ -1902,7 +2135,7 @@
                                 checked>
                             <div class="checkbox-label">
                                 Shell Commands
-                                <div class="checkbox-description">Allow executing shell commands and scripts</div>
+                                <div class="checkbox-description">Execute shell commands in a controlled environment. Commands run in the session workspace with configurable timeout limits. <span class="info-hint" title="Shell access is powerful—commands can modify system state. Commands are logged and can be reviewed. Consider disabling for untrusted tasks.">ℹ️</span></div>
                             </div>
                         </div>
 
@@ -1911,8 +2144,7 @@
                                 checked>
                             <div class="checkbox-label">
                                 Git Operations
-                                <div class="checkbox-description">Allow git repository operations (commit, push, pull,
-                                    etc.)</div>
+                                <div class="checkbox-description">View git status, diffs, logs, and commit history. Supports code review workflows and understanding project history. <span class="info-hint" title="Git read operations are safe. Write operations (commit, push) require explicit confirmation.">ℹ️</span></div>
                             </div>
                         </div>
 
@@ -1921,15 +2153,174 @@
                                 checked>
                             <div class="checkbox-label">
                                 Code Analysis
-                                <div class="checkbox-description">Allow code analysis and refactoring tools</div>
+                                <div class="checkbox-description">Search, summarize, and inspect code across your project. Useful for understanding codebases, finding patterns, and exploring dependencies.</div>
+                            </div>
+                        </div>
+
+                        <div class="checkbox-group">
+                            <input type="checkbox" class="form-checkbox" id="toolWeb" name="tool_web"
+                                checked>
+                            <div class="checkbox-label">
+                                Web Fetch
+                                <div class="checkbox-description">Fetch and extract content from web pages. Enables reading documentation, articles, and online resources. <span class="info-hint" title="Performs HTTP requests to fetch page content. No data is sent to third-party APIs.">ℹ️</span></div>
+                            </div>
+                        </div>
+
+                        <div class="checkbox-group tool-with-config">
+                            <input type="checkbox" class="form-checkbox" id="toolWebSearch" name="tool_web_search"
+                                checked>
+                            <div class="checkbox-label">
+                                Web Search
+                                <div class="checkbox-description">Search the web using configurable providers (DuckDuckGo, Brave, SerpAPI). Find current information and research topics online. <span class="info-hint" title="Uses selected search provider. 'Local' mode uses DuckDuckGo HTML scraping (free, no API key). Other providers may require API keys and use quotas.">ℹ️</span></div>
+                                <button type="button" class="btn btn-sm btn-link tool-config-toggle" data-target="webSearchConfig">
+                                    <span class="icon icon-settings"></span> Configure
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Web Search Inline Configuration (hidden by default) -->
+                        <div class="tool-inline-config" id="webSearchConfig" style="display: none;">
+                            <div class="inline-config-content">
+                                <div class="form-group">
+                                    <label class="form-label" for="webSearchProvider">Search Provider</label>
+                                    <select class="form-select" id="webSearchProvider" name="web_search_provider">
+                                        <option value="local">Local (Free, No Registration) - DuckDuckGo HTML</option>
+                                        <option value="duckduckgo">DuckDuckGo API (Free, Limited Results)</option>
+                                        <option value="brave">Brave Search API (Requires API Key)</option>
+                                        <option value="serpapi">SerpAPI (Requires API Key)</option>
+                                    </select>
+                                    <div class="help-text">
+                                        <strong>Local</strong> is the default and requires no setup - uses DuckDuckGo HTML scraping (completely free, no registration).
+                                        For more reliable results, consider Brave Search API (free tier available).
+                                    </div>
+                                </div>
+
+                                <div class="form-group" id="braveKeyGroup" style="display: none;">
+                                    <label class="form-label" for="braveSearchKey">
+                                        Brave Search API Key <span class="label-hint">(optional)</span>
+                                    </label>
+                                    <input type="password" class="form-input" id="braveSearchKey" name="brave_search_key"
+                                        placeholder="Enter your Brave Search API key">
+                                    <div class="help-text">
+                                        Get a free API key at <a href="https://brave.com/search/api/" target="_blank">brave.com/search/api</a>.
+                                        Free tier: 2,000 queries/month.
+                                    </div>
+                                </div>
+
+                                <div class="form-group" id="serpapiKeyGroup" style="display: none;">
+                                    <label class="form-label" for="serpapiKey">
+                                        SerpAPI Key <span class="label-hint">(optional)</span>
+                                    </label>
+                                    <input type="password" class="form-input" id="serpapiKey" name="serpapi_key"
+                                        placeholder="Enter your SerpAPI key">
+                                    <div class="help-text">
+                                        Get an API key at <a href="https://serpapi.com/" target="_blank">serpapi.com</a>.
+                                        Free tier: 100 searches/month.
+                                    </div>
+                                </div>
+
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label class="form-label" for="maxSearchResults">Max Search Results</label>
+                                        <input type="number" class="form-input" id="maxSearchResults" name="max_search_results"
+                                            value="5" min="1" max="20">
+                                        <div class="help-text">Number of search results to return (1-20)</div>
+                                    </div>
+
+                                    <div class="form-group">
+                                        <label class="form-label" for="searchTimeout">Search Timeout (seconds)</label>
+                                        <input type="number" class="form-input" id="searchTimeout" name="search_timeout"
+                                            value="30" min="5" max="120">
+                                        <div class="help-text">Request timeout for web searches</div>
+                                    </div>
+                                </div>
+
+                                <div class="checkbox-group">
+                                    <input type="checkbox" class="form-checkbox" id="extractContent" name="extract_content" checked>
+                                    <div class="checkbox-label">
+                                        Extract content from search results
+                                        <div class="checkbox-description">Fetch and extract main content from search result pages (slower but more informative)</div>
+                                    </div>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label" for="maxContentLength">Max Content Length (characters)</label>
+                                    <input type="number" class="form-input" id="maxContentLength" name="max_content_length"
+                                        value="10000" min="1000" max="50000" step="1000">
+                                    <div class="help-text">Maximum content to extract from each page</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="checkbox-group">
+                            <input type="checkbox" class="form-checkbox" id="toolTask" name="tool_task"
+                                checked>
+                            <div class="checkbox-label">
+                                Task Management
+                                <div class="checkbox-description">Create, update, and organize tasks for the current session. Tasks are persisted locally and help track complex multi-step work.</div>
+                            </div>
+                        </div>
+
+                        <div class="checkbox-group">
+                            <input type="checkbox" class="form-checkbox" id="toolA2a" name="tool_a2a">
+                            <div class="checkbox-label">
+                                Agent-to-Agent (A2A) <span class="badge badge-warning">Experimental</span>
+                                <div class="checkbox-description">Delegate tasks to remote AI agents using the A2A protocol. Enables collaboration between multiple AI systems. <span class="info-hint" title="Sends requests to external agent endpoints. Only enable if you understand the security implications of remote agent communication.">ℹ️</span></div>
                             </div>
                         </div>
                     </div>
 
-                    <!-- MCP Integration (moved from standalone section) -->
+                    <!-- Prompt Enhancement Subsection -->
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon icon-plug"></span>MCP Servers
+                            <span class="icon icon-sparkles"></span>Prompt Enhancement
+                        </div>
+                        <div class="help-text" style="margin-bottom: 16px;">
+                            AI-powered prompt enhancement helps improve your voice commands and conversations for better results. Use Cmd+K (or Ctrl+K) to enhance selected text.
+                        </div>
+
+                        <div class="form-group">
+                            <label class="toggle-label">
+                                <input type="checkbox" id="autoEnhance" name="auto_enhance">
+                                <span class="toggle-slider"></span>
+                                <span class="toggle-text">Auto-enhance prompts while typing</span>
+                            </label>
+                            <div class="help-text">Automatically enhance prompts as you type (debounced, opt-in feature)</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="enhancementStyle">Enhancement Style</label>
+                            <select class="form-select" id="enhancementStyle" name="enhancement_style">
+                                <option value="concise">Concise - Brief and to the point</option>
+                                <option value="detailed">Detailed - Thorough and comprehensive</option>
+                                <option value="technical">Technical - Precise technical language</option>
+                            </select>
+                            <div class="help-text">Choose how prompts should be enhanced</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="maxLengthMultiplier">Max Length Multiplier: <span id="maxLengthValue">3.0x</span></label>
+                            <input type="range" class="form-range" id="maxLengthMultiplier" name="max_length_multiplier"
+                                min="10" max="50" step="5" value="30">
+                            <div class="help-text">Maximum expansion ratio for enhanced prompts (1.0x - 5.0x)</div>
+                        </div>
+                    </div>
+
+                </section>
+
+                <!-- MCP Servers Settings -->
+                <section class="config-section" id="mcp-servers-settings">
+                    <div class="section-title">
+                        <span class="icon icon-plug"></span>MCP Servers
+                    </div>
+                    <div class="section-description">
+                        Configure Model Context Protocol (MCP) servers for extended functionality. MCP servers
+                        provide additional tools and capabilities that can be used by the AI assistant.
+                    </div>
+
+                    <div class="subsection">
+                        <div class="subsection-title">
+                            <span class="icon icon-plug"></span>Server Configuration
                         </div>
 
                         <div class="form-group">
@@ -1962,115 +2353,6 @@
                                 <input type="number" class="form-input" id="mcpRetries" name="mcp_retries" value="3"
                                     min="0" max="10">
                             </div>
-                        </div>
-                    </div>
-
-                    <!-- Web Search & Content Retrieval (moved from Advanced section) -->
-                    <div class="subsection">
-                        <div class="subsection-title">
-                            <span class="icon icon-globe"></span>Web Search & Content Retrieval
-                        </div>
-
-                        <div class="form-group">
-                            <label class="form-label" for="webSearchProvider">Search Provider</label>
-                            <select class="form-select" id="webSearchProvider" name="web_search_provider">
-                                <option value="local">Local (Free, No Registration) - DuckDuckGo HTML</option>
-                                <option value="duckduckgo">DuckDuckGo API (Free, Limited Results)</option>
-                                <option value="brave">Brave Search API (Requires API Key)</option>
-                                <option value="serpapi">SerpAPI (Requires API Key)</option>
-                            </select>
-                            <div class="help-text">
-                                <strong>Local</strong> is the default and requires no setup - uses DuckDuckGo HTML scraping (completely free, no registration).
-                                For more reliable results, consider Brave Search API (free tier available).
-                            </div>
-                        </div>
-
-                        <div class="form-group" id="braveKeyGroup" style="display: none;">
-                            <label class="form-label" for="braveSearchKey">
-                                Brave Search API Key <span class="label-hint">(optional)</span>
-                            </label>
-                            <input type="password" class="form-input" id="braveSearchKey" name="brave_search_key"
-                                placeholder="Enter your Brave Search API key">
-                            <div class="help-text">
-                                Get a free API key at <a href="https://brave.com/search/api/" target="_blank">brave.com/search/api</a>.
-                                Free tier: 2,000 queries/month.
-                            </div>
-                        </div>
-
-                        <div class="form-group" id="serpapiKeyGroup" style="display: none;">
-                            <label class="form-label" for="serpapiKey">
-                                SerpAPI Key <span class="label-hint">(optional)</span>
-                            </label>
-                            <input type="password" class="form-input" id="serpapiKey" name="serpapi_key"
-                                placeholder="Enter your SerpAPI key">
-                            <div class="help-text">
-                                Get an API key at <a href="https://serpapi.com/" target="_blank">serpapi.com</a>.
-                                Free tier: 100 searches/month.
-                            </div>
-                        </div>
-
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label class="form-label" for="maxSearchResults">Max Search Results</label>
-                                <input type="number" class="form-input" id="maxSearchResults" name="max_search_results"
-                                    value="5" min="1" max="20">
-                                <div class="help-text">Number of search results to return (1-20)</div>
-                            </div>
-
-                            <div class="form-group">
-                                <label class="form-label" for="searchTimeout">Search Timeout (seconds)</label>
-                                <input type="number" class="form-input" id="searchTimeout" name="search_timeout"
-                                    value="30" min="5" max="120">
-                                <div class="help-text">Request timeout for web searches</div>
-                            </div>
-                        </div>
-
-                        <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="extractContent" name="extract_content" checked>
-                            <div class="checkbox-label">
-                                Extract content from search results
-                                <div class="checkbox-description">Fetch and extract main content from search result pages (slower but more informative)</div>
-                            </div>
-                        </div>
-
-                        <div class="form-group">
-                            <label class="form-label" for="maxContentLength">Max Content Length (characters)</label>
-                            <input type="number" class="form-input" id="maxContentLength" name="max_content_length"
-                                value="10000" min="1000" max="50000" step="1000">
-                            <div class="help-text">Maximum content to extract from each page</div>
-                        </div>
-                    </div>
-
-                    <!-- Prompt Enhancement -->
-                    <div class="subsection">
-                        <div class="subsection-title">
-                            <span class="icon icon-sparkles"></span>Prompt Enhancement
-                        </div>
-
-                        <div class="form-group">
-                            <label class="toggle-label">
-                                <input type="checkbox" id="autoEnhance" name="auto_enhance">
-                                <span class="toggle-slider"></span>
-                                <span class="toggle-text">Auto-enhance prompts while typing</span>
-                            </label>
-                            <div class="help-text">Automatically enhance prompts as you type (debounced, opt-in feature)</div>
-                        </div>
-
-                        <div class="form-group">
-                            <label class="form-label" for="enhancementStyle">Enhancement Style</label>
-                            <select class="form-select" id="enhancementStyle" name="enhancement_style">
-                                <option value="concise">Concise - Brief and to the point</option>
-                                <option value="detailed">Detailed - Thorough and comprehensive</option>
-                                <option value="technical">Technical - Precise technical language</option>
-                            </select>
-                            <div class="help-text">Choose how prompts should be enhanced when using Cmd+K</div>
-                        </div>
-
-                        <div class="form-group">
-                            <label class="form-label" for="maxLengthMultiplier">Max Length Multiplier: <span id="maxLengthValue">3.0x</span></label>
-                            <input type="range" class="form-range" id="maxLengthMultiplier" name="max_length_multiplier"
-                                min="10" max="50" step="5" value="30">
-                            <div class="help-text">Maximum expansion ratio for enhanced prompts (1.0x - 5.0x)</div>
                         </div>
                     </div>
                 </section>
@@ -2438,6 +2720,130 @@
             });
         });
 
+        // =====================================================================
+        // Collapsible Sidebar Groups
+        // =====================================================================
+        const SIDEBAR_STORAGE_KEY = 'gestura-sidebar-collapsed';
+
+        /**
+         * Get the collapsed state of sidebar groups from localStorage.
+         * @returns {Object} Map of group names to their collapsed state
+         */
+        function getSidebarCollapsedState() {
+            try {
+                const stored = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+                return stored ? JSON.parse(stored) : {};
+            } catch (e) {
+                console.warn('[Sidebar] Error reading collapsed state:', e);
+                return {};
+            }
+        }
+
+        /**
+         * Save the collapsed state of sidebar groups to localStorage.
+         * @param {Object} state - Map of group names to their collapsed state
+         */
+        function saveSidebarCollapsedState(state) {
+            try {
+                localStorage.setItem(SIDEBAR_STORAGE_KEY, JSON.stringify(state));
+            } catch (e) {
+                console.warn('[Sidebar] Error saving collapsed state:', e);
+            }
+        }
+
+        /**
+         * Toggle a sidebar group's collapsed state.
+         * @param {HTMLElement} group - The .toc-group element
+         */
+        function toggleSidebarGroup(group) {
+            const groupName = group.getAttribute('data-group');
+            const isCollapsed = group.classList.toggle('collapsed');
+
+            // Update chevron icon
+            const chevron = group.querySelector('.toc-chevron');
+            if (chevron) {
+                chevron.textContent = isCollapsed ? '▶' : '▼';
+            }
+
+            // Save state to localStorage
+            const state = getSidebarCollapsedState();
+            state[groupName] = isCollapsed;
+            saveSidebarCollapsedState(state);
+        }
+
+        /**
+         * Initialize collapsible sidebar groups.
+         * - Sets up click handlers on group headers
+         * - Restores collapsed state from localStorage
+         * - Defaults to expanded (not collapsed)
+         */
+        function initSidebarGroups() {
+            const groups = document.querySelectorAll('.toc-group');
+            const savedState = getSidebarCollapsedState();
+
+            groups.forEach(group => {
+                const groupName = group.getAttribute('data-group');
+                const header = group.querySelector('.toc-group-header');
+                const chevron = group.querySelector('.toc-chevron');
+
+                // Restore saved state (default to expanded)
+                if (savedState[groupName] === true) {
+                    group.classList.add('collapsed');
+                    if (chevron) chevron.textContent = '▶';
+                } else {
+                    group.classList.remove('collapsed');
+                    if (chevron) chevron.textContent = '▼';
+                }
+
+                // Add click handler to header
+                if (header) {
+                    header.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        toggleSidebarGroup(group);
+                    });
+                }
+            });
+
+            console.log('[Sidebar] Collapsible groups initialized');
+        }
+
+        // Initialize sidebar groups on page load
+        initSidebarGroups();
+
+        // =====================================================================
+        // Tool Inline Configuration Toggles
+        // =====================================================================
+        /**
+         * Setup toggle buttons for inline tool configuration sections.
+         * Allows expanding/collapsing configuration forms within tool checkboxes.
+         */
+        function setupToolConfigToggles() {
+            document.querySelectorAll('.tool-config-toggle').forEach(button => {
+                button.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const targetId = button.getAttribute('data-target');
+                    const configSection = document.getElementById(targetId);
+                    if (configSection) {
+                        const isVisible = configSection.style.display !== 'none';
+                        configSection.style.display = isVisible ? 'none' : 'block';
+                        // Update button text
+                        const icon = button.querySelector('.icon');
+                        if (isVisible) {
+                            button.innerHTML = '<span class="icon icon-settings"></span> Configure';
+                        } else {
+                            button.innerHTML = '<span class="icon icon-close"></span> Hide';
+                        }
+                    }
+                });
+            });
+            console.log('[Tools] Inline config toggles initialized');
+        }
+
+        // Initialize tool config toggles on page load
+        setupToolConfigToggles();
+
         // Provider selection functionality
         function setupProviderSelection() {
             // Setup STT provider visibility
@@ -2699,9 +3105,6 @@
                 setupLlmProviderVisibility();
 
                 // Device Management defaults
-                document.getElementById('enableHapticRing').checked = true;
-                document.getElementById('hapticIntensity').value = 75;
-                document.getElementById('enableTapGestures').checked = true;
                 document.getElementById('requireDeviceAuth').checked = true;
                 document.getElementById('deviceTimeout').value = 60;
                 document.getElementById('encryptDeviceComm').checked = true;
@@ -2743,6 +3146,14 @@
                 const themeModeSelect = document.getElementById('themeMode');
                 if (themeModeSelect) {
                     themeModeSelect.value = uiConfig?.theme_mode || 'system';
+                }
+
+                // Default Permission Level (load from backend config if available)
+                const permissionsConfig = backendConfig?.permissions;
+                const defaultPermissionLevelEl = document.getElementById('defaultPermissionLevel');
+                if (defaultPermissionLevelEl) {
+                    // Backend uses GlobalPermissionLevel enum: "Sandbox", "Restricted", "Full"
+                    defaultPermissionLevelEl.value = permissionsConfig?.default_level || 'Restricted';
                 }
 
                 // Prompt Enhancement settings (load from backend config if available)
@@ -3726,36 +4137,20 @@
             }
         }
 
-        // Check model status
+        // Check model status and update the model path input placeholder
         async function checkWhisperModelStatus() {
             try {
                 const status = await window.__TAURI__.core.invoke('get_whisper_model_status');
-                const banner = document.getElementById('whisperModelStatus');
                 const modelPathInput = document.getElementById('localWhisperModelPath');
 
                 if (status.exists && status.validation?.is_valid) {
-                    banner.classList.add('ready');
-                    banner.classList.remove('hidden');
-                    banner.innerHTML = `
-                        <div class="status-icon"><span class="icon-check-circle"></span></div>
-                        <div class="status-message">
-                            <strong>Whisper model ready</strong>
-                            <p>${status.default_path} (${status.validation.file_size_mb.toFixed(1)} MB)</p>
-                        </div>
-                    `;
-                    // Set the path in the input if it's empty
-                    if (!modelPathInput.value) {
+                    // Set the path placeholder if input is empty
+                    if (modelPathInput && !modelPathInput.value) {
                         modelPathInput.placeholder = status.default_path;
                     }
+                    console.log('[Whisper] Model ready:', status.default_path);
                 } else {
-                    banner.classList.remove('ready', 'hidden');
-                    banner.innerHTML = `
-                        <div class="status-icon"><span class="icon-warning"></span></div>
-                        <div class="status-message">
-                            <strong>No Whisper model configured</strong>
-                            <p>Download a model below to enable local speech recognition.</p>
-                        </div>
-                    `;
+                    console.log('[Whisper] No valid model configured');
                 }
             } catch (error) {
                 console.error('Failed to check Whisper model status:', error);
@@ -4336,6 +4731,25 @@
                         console.log('[Theme] Saved theme preference to config');
                     } catch (e) {
                         console.error('[Theme] Failed to save theme preference:', e);
+                    }
+                });
+            }
+
+            // Setup default permission level selector event listener
+            const defaultPermissionLevelEl = document.getElementById('defaultPermissionLevel');
+            if (defaultPermissionLevelEl) {
+                defaultPermissionLevelEl.addEventListener('change', async (e) => {
+                    const level = e.target.value;
+                    try {
+                        const config = await window.__TAURI__.core.invoke('get_config');
+                        if (!config.permissions) config.permissions = {};
+                        config.permissions.default_level = level;
+                        await window.__TAURI__.core.invoke('save_config', { cfg: config });
+                        console.log('[Permissions] Default permission level saved:', level);
+                        showStatus('Default permission level updated to: ' + level);
+                    } catch (e) {
+                        console.error('[Permissions] Failed to save default permission level:', e);
+                        showStatus('Failed to save permission level', 'error');
                     }
                 });
             }
