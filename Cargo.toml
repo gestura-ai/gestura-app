@@ -97,7 +97,9 @@ objc = "0.2"
 cocoa = "0.25"
 
 # Internal crates
-gestura-core = { path = "crates/gestura-core" }
+# default-features = false so that dependent crates can opt-in to voice-local
+# This prevents whisper-rs from being built on platforms where it's problematic
+gestura-core = { path = "crates/gestura-core", default-features = false }
 
 [profile.dev]
 opt-level = 0

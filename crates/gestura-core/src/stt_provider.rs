@@ -3,7 +3,9 @@
 //! This mirrors the `llm_provider` module: a small trait, provider implementations,
 //! and a selection function based on `AppConfig`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(feature = "voice-local")]
+use std::path::PathBuf;
 
 use crate::chat_sessions::SessionVoiceConfig;
 use crate::config::AppConfig;
