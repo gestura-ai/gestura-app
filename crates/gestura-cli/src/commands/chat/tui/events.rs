@@ -95,6 +95,7 @@ fn handle_normal_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
             app.mode = TuiMode::Command;
             app.clear_input();
             app.insert_char('/');
+            app.update_command_suggestions();
             Action::Continue
         }
         // Navigation
@@ -201,14 +202,36 @@ fn handle_normal_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
     }
 }
 
+/// Apply the currently highlighted command suggestion while preserving any already-typed arguments.
+///
+/// The command palette suggestions can include placeholders like `"/session load <id>"`.
+/// In command mode, users often type arguments (e.g., `"/session load last"`) while navigating
+/// suggestions with the arrow keys. This helper replaces only the *base command* (first token)
+/// with the highlighted suggestion's base, keeping the rest of the user's input intact.
+fn apply_selected_command_suggestion_preserving_args(app: &mut TuiApp) {
+    let Some((cmd, _)) = app.command_suggestions.get(app.command_selection) else {
+        return;
+    };
+
+    let selected_base = cmd.split_whitespace().next().unwrap_or(cmd);
+
+    let mut parts = app.input.split_whitespace();
+    let _typed_base = parts.next();
+    let args: Vec<&str> = parts.collect();
+
+    if args.is_empty() {
+        app.input = selected_base.to_string();
+    } else {
+        app.input = format!("{} {}", selected_base, args.join(" "));
+    }
+    app.cursor_pos = app.input.len();
+}
+
 /// Handle Insert mode keys (typing messages)
 fn handle_insert_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
-    // Don't process keys while loading
-    if app.is_loading {
-        return match key.code {
-            KeyCode::Esc => Action::Cancel,
-            _ => Action::Continue,
-        };
+    // While streaming, keep the UI responsive. We still allow Esc to cancel the active stream.
+    if app.is_loading && key.code == KeyCode::Esc {
+        return Action::Cancel;
     }
 
     match key.code {
@@ -224,6 +247,10 @@ fn handle_insert_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
             {
                 // Multi-line: insert newline
                 app.insert_char('\n');
+                Action::Continue
+            } else if app.is_loading {
+                // Prevent accidental send (and input loss via take_input) while a stream is active.
+                app.set_status("Still streaming… press Esc to cancel".to_string());
                 Action::Continue
             } else if !app.input.is_empty() {
                 let input = app.take_input();
@@ -299,6 +326,7 @@ fn handle_insert_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
             // Auto-switch to command mode if starting with /
             if app.input == "/" {
                 app.mode = TuiMode::Command;
+                app.update_command_suggestions();
             }
             Action::Continue
         }
@@ -341,14 +369,21 @@ fn handle_command_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
     match key.code {
         // Cancel command
         KeyCode::Esc => {
-            app.mode = TuiMode::Insert;
-            app.clear_input();
-            app.command_suggestions.clear();
+            // First Esc dismisses the suggestion menu, preserving the user's input.
+            // Second Esc exits command mode.
+            if !app.command_suggestions.is_empty() {
+                app.command_suggestions.clear();
+            } else {
+                app.mode = TuiMode::Insert;
+            }
             Action::Continue
         }
         // Execute command
         KeyCode::Enter => {
             if !app.input.is_empty() {
+                if !app.command_suggestions.is_empty() {
+                    apply_selected_command_suggestion_preserving_args(app);
+                }
                 let input = app.take_input();
                 app.add_to_command_history(&input);
                 app.mode = TuiMode::Insert;

@@ -732,16 +732,35 @@ enum PermissionsToolAction {
 fn main() {
     let cli = Cli::parse();
 
+    // The TUI uses an alternate screen; any writes to stdout/stderr from tracing can corrupt the
+    // layout. When running `chat` in TUI mode, we default tracing output to a sink.
+    let is_tui_chat = matches!(&cli.command, Some(Commands::Chat { basic, .. }) if !*basic);
+
     // Initialize logging
     if cli.verbose {
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
-            .init();
+        if is_tui_chat {
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::DEBUG)
+                .with_writer(std::io::sink)
+                .init();
+        } else {
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::DEBUG)
+                .init();
+        }
     } else if !cli.quiet {
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
-            .with_target(false)
-            .init();
+        if is_tui_chat {
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::INFO)
+                .with_target(false)
+                .with_writer(std::io::sink)
+                .init();
+        } else {
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::INFO)
+                .with_target(false)
+                .init();
+        }
     }
 
     // Handle commands

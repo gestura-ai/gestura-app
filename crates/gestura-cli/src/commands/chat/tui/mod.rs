@@ -65,6 +65,32 @@ struct StreamingState {
     thinking_content: String,
 }
 
+/// In-flight prompt enhancement state.
+///
+/// Prompt enhancement must never block the TUI event loop; we run the LLM call on the Tokio
+/// runtime and poll the receiver from the main loop (similar to streaming responses).
+struct PromptEnhancementState {
+    /// Receiver for the enhancement result.
+    receiver: mpsc::Receiver<std::result::Result<String, String>>,
+    /// The original input captured when enhancement started (used for undo).
+    original_input: String,
+}
+
+/// Whether a command should be allowed to run while a stream is in progress.
+///
+/// Some commands mutate the message list/session state (e.g., `/clear`, `/new`) and can corrupt
+/// the UI while streaming updates are still being applied. We allow only safe, user-initiated exit
+/// commands during active streaming.
+fn command_allowed_while_streaming(command: &str) -> bool {
+    let cmd = command
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_lowercase();
+
+    matches!(cmd.as_str(), "/quit" | "/q" | "/exit" | "/quit!")
+}
+
 /// Run the TUI chat interface
 pub fn run_tui(opts: ChatOptions<'_>) -> Result<()> {
     // Load or create session
@@ -150,6 +176,8 @@ fn run_main_loop(
 ) -> Result<()> {
     // Optional streaming state
     let mut streaming: Option<StreamingState> = None;
+    // Optional prompt enhancement state
+    let mut prompt_enhancement: Option<PromptEnhancementState> = None;
 
     loop {
         // Check for auto-dismiss of transient errors (15 second timeout)
@@ -388,6 +416,39 @@ fn run_main_loop(
             }
         }
 
+        // Process prompt enhancement results (non-blocking)
+        if let Some(ref mut enhance_state) = prompt_enhancement {
+            let mut completed = false;
+            match enhance_state.receiver.try_recv() {
+                Ok(Ok(enhanced)) => {
+                    // Store original for undo
+                    app.original_prompt = Some(enhance_state.original_input.clone());
+                    // Replace with enhanced prompt
+                    app.input = enhanced;
+                    app.cursor_pos = app.input.len();
+                    app.set_status(format!(
+                        "✨ Prompt enhanced! (was {} chars, now {} chars) - Press Cmd+Z to undo",
+                        enhance_state.original_input.len(),
+                        app.input.len()
+                    ));
+                    completed = true;
+                }
+                Ok(Err(e)) => {
+                    app.set_error(format!("Enhancement failed: {}", e));
+                    completed = true;
+                }
+                Err(mpsc::error::TryRecvError::Empty) => {}
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    app.set_error("Enhancement task ended unexpectedly".to_string());
+                    completed = true;
+                }
+            }
+
+            if completed {
+                prompt_enhancement = None;
+            }
+        }
+
         // Poll for events with timeout (allows for streaming updates)
         if event::poll(Duration::from_millis(50))? {
             let event = event::read()?;
@@ -408,7 +469,12 @@ fn run_main_loop(
                     }
                 }
                 Action::ExecuteCommand(cmd) => {
-                    if let Some(Action::Quit) = handle_command(app, &cmd)? {
+                    if streaming.is_some() && !command_allowed_while_streaming(&cmd) {
+                        app.set_status(
+                            "Still streaming — press Esc to cancel before running commands"
+                                .to_string(),
+                        );
+                    } else if let Some(Action::Quit) = handle_command(app, &cmd)? {
                         break;
                     }
                 }
@@ -445,10 +511,18 @@ fn run_main_loop(
                     app.set_status("Voice recording not available in CLI mode");
                 }
                 Action::EnhancePrompt => {
-                    // Don't enhance while streaming or if input is empty
-                    if streaming.is_none() && !app.input.is_empty() {
+                    // Don't enhance while streaming, while enhancement is already running, or if input is empty.
+                    if streaming.is_some() {
+                        app.set_status(
+                            "Can't enhance prompt while streaming (press Esc to cancel)"
+                                .to_string(),
+                        );
+                    } else if prompt_enhancement.is_some() {
+                        app.set_status("Enhancement already in progress...".to_string());
+                    } else if !app.input.is_empty() {
                         let original_input = app.input.clone();
-                        app.set_status("Enhancing prompt...");
+                        let original_input_for_state = original_input.clone();
+                        app.set_status("Enhancing prompt...".to_string());
 
                         // Build context from session history
                         let session_history: Vec<(String, String)> = app
@@ -462,39 +536,31 @@ fn run_main_loop(
                             .map(|msg| (msg.role.clone(), msg.content.clone()))
                             .collect();
 
-                        // Call the enhancement function with context
-                        match rt.block_on(async {
+                        let (tx, rx) = mpsc::channel::<std::result::Result<String, String>>(1);
+                        rt.spawn(async move {
                             use gestura_core::prompt_enhancement::{
                                 PromptContext, enhance_prompt_with_llm,
                             };
-                            let cfg = gestura_core::config::AppConfig::load_async().await;
 
-                            let context = if !session_history.is_empty() {
-                                Some(PromptContext::new().with_session_history(session_history))
-                            } else {
+                            let cfg = gestura_core::config::AppConfig::load_async().await;
+                            let context = if session_history.is_empty() {
                                 None
+                            } else {
+                                Some(PromptContext::new().with_session_history(session_history))
                             };
 
-                            enhance_prompt_with_llm(&original_input, &cfg, context).await
-                        }) {
-                            Ok(enhanced) => {
-                                // Store original for undo
-                                app.original_prompt = Some(original_input.clone());
-                                // Replace with enhanced prompt
-                                app.input = enhanced;
-                                app.cursor_pos = app.input.len();
-                                app.set_status(format!(
-                                    "✨ Prompt enhanced! (was {} chars, now {} chars) - Press Cmd+Z to undo",
-                                    original_input.len(),
-                                    app.input.len()
-                                ));
-                            }
-                            Err(e) => {
-                                app.set_error(format!("Enhancement failed: {}", e));
-                            }
-                        }
-                    } else if app.input.is_empty() {
-                        app.set_status("Please enter a prompt first");
+                            let res = enhance_prompt_with_llm(&original_input, &cfg, context)
+                                .await
+                                .map_err(|e| e.to_string());
+                            let _ = tx.send(res).await;
+                        });
+
+                        prompt_enhancement = Some(PromptEnhancementState {
+                            receiver: rx,
+                            original_input: original_input_for_state,
+                        });
+                    } else {
+                        app.set_status("Please enter a prompt first".to_string());
                     }
                 }
                 Action::Continue => {}
