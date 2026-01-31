@@ -1135,39 +1135,38 @@
                     </div>
 
                     <!-- Speech-to-Text Provider Selection -->
-                    <div class="provider-selector">
+                    <div class="subsection">
                         <div class="subsection-title">
                             <span class="icon icon-microphone"></span>Speech-to-Text Provider
                         </div>
 
-                        <div class="provider-options">
-                            <div class="provider-option" data-provider="openai-whisper">
-                                <div class="provider-header">
-                                    <input type="radio" name="stt_provider" value="openai-whisper" id="stt-openai"
-                                        checked>
-                                    <label for="stt-openai" class="provider-label">
-                                        <div class="provider-name">OpenAI Speech-to-Text</div>
-                                        <div class="provider-description">Industry-leading speech recognition with
-                                            multiple model options</div>
-                                    </label>
-                                </div>
-                                <div class="provider-config">
+                        <div class="form-group">
+                            <label class="form-label" for="sttProvider">Primary STT Provider</label>
+                            <select class="form-select" id="sttProvider" name="stt_provider">
+                                <option value="openai-whisper">OpenAI Speech-to-Text</option>
+                                <option value="google-speech">Google Cloud Speech</option>
+                                <option value="azure-speech">Azure Speech Services</option>
+                                <option value="local-whisper">Local Whisper</option>
+                            </select>
+                            <div class="help-text">Choose your preferred speech recognition provider</div>
+                        </div>
+
+                        <!-- OpenAI STT Configuration -->
+                        <div class="form-group provider-config-section" id="openaiSttConfig" style="display: none;">
+                            <label class="form-label">OpenAI Configuration</label>
+                            <div class="provider-config-box">
+                                <div class="form-row">
                                     <div class="form-group">
-                                        <label class="form-label" for="openaiApiKey">OpenAI API Key</label>
+                                        <label class="form-label" for="openaiApiKey">API Key</label>
                                         <input type="password" class="form-input" id="openaiApiKey"
                                             name="openai_api_key" placeholder="sk-proj-...">
-                                        <div class="help-text">Get your API key from <a
-                                                href="https://platform.openai.com/api-keys" target="_blank">OpenAI
-                                                Platform</a></div>
                                     </div>
                                     <div class="form-group">
                                         <label class="form-label" for="openaiSttModel">Transcription Model</label>
-                                        <div class="model-select-container">
-                                            <select class="form-input" id="openaiSttModel" name="openai_stt_model">
-                                                <option value="gpt-4o-transcribe">GPT-4o Transcribe (Best Quality)
-                                                </option>
-                                                <option value="gpt-4o-mini-transcribe">GPT-4o Mini Transcribe (Balanced)
-                                                </option>
+                                        <div class="input-with-button">
+                                            <select class="form-select" id="openaiSttModel" name="openai_stt_model">
+                                                <option value="gpt-4o-transcribe">GPT-4o Transcribe (Best)</option>
+                                                <option value="gpt-4o-mini-transcribe">GPT-4o Mini Transcribe</option>
                                                 <option value="whisper-1">Whisper V2 (Classic)</option>
                                             </select>
                                             <button type="button" class="btn btn-secondary btn-sm" id="refreshSttModels"
@@ -1175,201 +1174,180 @@
                                                 <span class="icon icon-refresh"></span>
                                             </button>
                                         </div>
-                                        <div class="help-text">GPT-4o models offer improved accuracy over Whisper. <span
-                                                id="sttModelStatus"></span></div>
                                     </div>
                                 </div>
+                                <div class="help-text">Get your API key from <a
+                                        href="https://platform.openai.com/api-keys" target="_blank">OpenAI Platform</a>.
+                                    GPT-4o models offer improved accuracy. <span id="sttModelStatus"></span></div>
                             </div>
+                        </div>
 
-                            <div class="provider-option" data-provider="google-speech">
-                                <div class="provider-header">
-                                    <input type="radio" name="stt_provider" value="google-speech" id="stt-google">
-                                    <label for="stt-google" class="provider-label">
-                                        <div class="provider-name">Google Cloud Speech</div>
-                                        <div class="provider-description">Google's powerful speech recognition with
-                                            multiple language support</div>
-                                    </label>
+                        <!-- Google Cloud Speech Configuration -->
+                        <div class="form-group provider-config-section" id="googleSttConfig" style="display: none;">
+                            <label class="form-label">Google Cloud Configuration</label>
+                            <div class="provider-config-box">
+                                <div class="form-group">
+                                    <label class="form-label" for="googleApiKey">API Key</label>
+                                    <input type="password" class="form-input" id="googleApiKey"
+                                        name="google_api_key" placeholder="AIza...">
                                 </div>
-                                <div class="provider-config">
-                                    <div class="form-group">
-                                        <label class="form-label" for="googleApiKey">Google Cloud API Key</label>
-                                        <input type="password" class="form-input" id="googleApiKey"
-                                            name="google_api_key" placeholder="AIza...">
-                                        <div class="help-text">Get your API key from <a
-                                                href="https://console.cloud.google.com/apis/credentials"
-                                                target="_blank">Google Cloud Console</a></div>
-                                    </div>
-                                </div>
+                                <div class="help-text">Get your API key from <a
+                                        href="https://console.cloud.google.com/apis/credentials"
+                                        target="_blank">Google Cloud Console</a></div>
                             </div>
+                        </div>
 
-                            <div class="provider-option" data-provider="azure-speech">
-                                <div class="provider-header">
-                                    <input type="radio" name="stt_provider" value="azure-speech" id="stt-azure">
-                                    <label for="stt-azure" class="provider-label">
-                                        <div class="provider-name">Azure Speech Services</div>
-                                        <div class="provider-description">Microsoft's enterprise-grade speech
-                                            recognition</div>
-                                    </label>
+                        <!-- Azure Speech Configuration -->
+                        <div class="form-group provider-config-section" id="azureSttConfig" style="display: none;">
+                            <label class="form-label">Azure Speech Configuration</label>
+                            <div class="provider-config-box">
+                                <div class="form-group">
+                                    <label class="form-label" for="azureApiKey">API Key</label>
+                                    <input type="password" class="form-input" id="azureApiKey" name="azure_api_key"
+                                        placeholder="Your Azure key">
                                 </div>
-                                <div class="provider-config">
-                                    <div class="form-group">
-                                        <label class="form-label" for="azureApiKey">Azure Speech API Key</label>
-                                        <input type="password" class="form-input" id="azureApiKey" name="azure_api_key"
-                                            placeholder="Your Azure key">
-                                        <div class="help-text">Get your key from <a href="https://portal.azure.com/"
-                                                target="_blank">Azure Portal</a></div>
-                                    </div>
-                                </div>
+                                <div class="help-text">Get your key from <a href="https://portal.azure.com/"
+                                        target="_blank">Azure Portal</a></div>
                             </div>
+                        </div>
 
-                            <div class="provider-option" data-provider="local-whisper">
-                                <div class="provider-header">
-                                    <input type="radio" name="stt_provider" value="local-whisper" id="stt-local">
-                                    <label for="stt-local" class="provider-label">
-                                        <div class="provider-name">Local Whisper</div>
-                                        <div class="provider-description">Run Whisper locally for complete privacy
-                                            (requires setup)</div>
-                                    </label>
+                        <!-- Local Whisper Configuration -->
+                        <div class="form-group provider-config-section" id="localWhisperConfig" style="display: none;">
+                            <label class="form-label">Local Whisper Configuration</label>
+                            <div class="provider-config-box">
+                                <!-- Model Status Banner -->
+                                <div id="whisperModelStatus" class="model-status-banner hidden">
+                                    <div class="status-icon"><span class="icon-warning"></span></div>
+                                    <div class="status-message">
+                                        <strong>No Whisper model configured</strong>
+                                        <p>Download a model to enable local speech recognition.</p>
+                                    </div>
                                 </div>
-                                <div class="provider-config">
-                                    <!-- Model Status Banner -->
-                                    <div id="whisperModelStatus" class="model-status-banner hidden">
-                                        <div class="status-icon"><span class="icon-warning"></span></div>
-                                        <div class="status-message">
-                                            <strong>No Whisper model configured</strong>
-                                            <p>Download a model to enable local speech recognition.</p>
-                                        </div>
-                                    </div>
 
-                                    <!-- Model Selection Dropdown -->
-                                    <div class="form-group">
-                                        <label class="form-label" for="whisperModelSelect">Select Model</label>
-                                        <div class="model-select-container">
-                                            <select class="form-select" id="whisperModelSelect">
-                                                <option value="">-- Select a model --</option>
-                                            </select>
-                                            <button type="button" class="btn btn-primary hidden"
-                                                id="downloadWhisperModel">
-                                                <span class="icon icon-download"></span> Download
-                                            </button>
-                                            <span id="modelReadyIndicator" class="model-ready-indicator hidden">
-                                                <span class="icon icon-check-circle"></span> Ready
-                                            </span>
-                                        </div>
-                                        <div id="selectedModelInfo" class="model-info hidden">
-                                            <div class="model-info-row">
-                                                <span class="model-info-label">Size:</span>
-                                                <span id="modelInfoSize">-</span>
-                                            </div>
-                                            <div class="model-info-row">
-                                                <span class="model-info-label">Language:</span>
-                                                <span id="modelInfoLanguage">-</span>
-                                            </div>
-                                            <div class="model-info-row">
-                                                <span class="model-info-label">Description:</span>
-                                                <span id="modelInfoDescription">-</span>
-                                            </div>
-                                            <div id="modelStatusRow" class="model-info-row hidden">
-                                                <span class="model-info-label">Status:</span>
-                                                <span id="modelInfoStatus">-</span>
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <!-- Download Progress -->
-                                    <div id="whisperDownloadProgress" class="download-progress hidden">
-                                        <div class="progress-header">
-                                            <span id="downloadProgressText">Downloading...</span>
-                                            <span id="downloadProgressPercent">0%</span>
-                                        </div>
-                                        <div class="progress-bar-container">
-                                            <div id="downloadProgressBar" class="progress-bar" style="width: 0%"></div>
-                                        </div>
-                                        <div class="progress-details">
-                                            <span id="downloadedSize">0 MB</span> / <span id="totalSize">0 MB</span>
-                                        </div>
-                                    </div>
-
-                                    <hr class="divider" />
-
-                                    <!-- Custom Model Path -->
-                                    <div class="form-group">
-                                        <label class="form-label" for="localWhisperModelPath">
-                                            Custom Model Path <span class="label-hint">(optional)</span>
-                                        </label>
-                                        <div class="input-with-button" style="display: flex; gap: 8px;">
-                                            <input type="text" class="form-input" id="localWhisperModelPath"
-                                                placeholder="Auto-detected or enter custom path"
-                                                title="Path to whisper.cpp compatible model file (.bin)"
-                                                style="flex: 1;">
-                                            <button type="button" class="btn btn-secondary" id="browseWhisperModel"
-                                                style="white-space: nowrap;">
-                                                <span class="icon icon-folder"></span> Browse...
-                                            </button>
-                                        </div>
-                                        <div class="help-text">
-                                            Leave empty to use the default downloaded model, or specify a custom model
-                                            path.
-                                        </div>
-                                    </div>
-
-                                    <div class="form-group">
-                                        <button type="button" class="btn btn-secondary" id="testLocalWhisper">
-                                            <span class="icon icon-microphone"></span> Test Local Whisper
+                                <!-- Model Selection Dropdown -->
+                                <div class="form-group">
+                                    <label class="form-label" for="whisperModelSelect">Select Model</label>
+                                    <div class="model-select-container">
+                                        <select class="form-select" id="whisperModelSelect">
+                                            <option value="">-- Select a model --</option>
+                                        </select>
+                                        <button type="button" class="btn btn-primary hidden" id="downloadWhisperModel">
+                                            <span class="icon icon-download"></span> Download
                                         </button>
-                                        <span id="localWhisperTestResult" class="test-result"></span>
+                                        <span id="modelReadyIndicator" class="model-ready-indicator hidden">
+                                            <span class="icon icon-check-circle"></span> Ready
+                                        </span>
                                     </div>
+                                    <div id="selectedModelInfo" class="model-info hidden">
+                                        <div class="model-info-row">
+                                            <span class="model-info-label">Size:</span>
+                                            <span id="modelInfoSize">-</span>
+                                        </div>
+                                        <div class="model-info-row">
+                                            <span class="model-info-label">Language:</span>
+                                            <span id="modelInfoLanguage">-</span>
+                                        </div>
+                                        <div class="model-info-row">
+                                            <span class="model-info-label">Description:</span>
+                                            <span id="modelInfoDescription">-</span>
+                                        </div>
+                                        <div id="modelStatusRow" class="model-info-row hidden">
+                                            <span class="model-info-label">Status:</span>
+                                            <span id="modelInfoStatus">-</span>
+                                        </div>
+                                    </div>
+                                </div>
 
-                                    <!-- Add Custom Model -->
-                                    <div class="form-group">
-                                        <label class="form-label">Add Custom Whisper Model</label>
-                                        <div class="help-text">
-                                            Use this form to register an existing Whisper model file on disk.
-                                            Gestura will validate the file and use it as the active local model.
-                                        </div>
-                                        <div class="form-group">
-                                            <label class="form-label" for="customModelPath">Model file path</label>
-                                            <input type="text" class="form-input" id="customModelPath"
-                                                placeholder="/path/to/your/whisper-model.bin">
-                                        </div>
-                                        <div class="form-group">
-                                            <label class="form-label" for="customModelName">Display name</label>
-                                            <input type="text" class="form-input" id="customModelName"
-                                                placeholder="My Custom Whisper Model">
-                                        </div>
-                                        <div class="form-group form-grid">
-                                            <div>
-                                                <label class="form-label" for="customModelSize">Size (MB)</label>
-                                                <input type="number" class="form-input" id="customModelSize" min="1"
-                                                    step="1" placeholder="e.g., 142">
-                                            </div>
-                                            <div>
-                                                <label class="form-label" for="customModelLanguage">Language</label>
-                                                <input type="text" class="form-input" id="customModelLanguage"
-                                                    placeholder="English / Multilingual">
-                                            </div>
-                                        </div>
-                                        <div class="form-group">
-                                            <label class="form-label" for="customModelDescription">Description</label>
-                                            <textarea class="form-input" id="customModelDescription" rows="2"
-                                                placeholder="Short description of this model (e.g., accuracy/speed tradeoffs)"></textarea>
-                                        </div>
-                                        <div class="checkbox-group">
-                                            <input type="checkbox" class="form-checkbox" id="customModelSetActive"
-                                                checked>
-                                            <div class="checkbox-label">
-                                                Use this model as the active local Whisper model
-                                                <div class="checkbox-description">Updates the configuration to use this
-                                                    path for
-                                                    local speech recognition.</div>
-                                            </div>
-                                        </div>
-                                        <button type="button" class="btn btn-primary" id="addCustomWhisperModel">
-                                            <span class="icon icon-plus"></span> Add Custom Model
-                                        </button>
-                                        <div class="help-text" id="customModelError"
-                                            style="color: #b00020; display: none;"></div>
+                                <!-- Download Progress -->
+                                <div id="whisperDownloadProgress" class="download-progress hidden">
+                                    <div class="progress-header">
+                                        <span id="downloadProgressText">Downloading...</span>
+                                        <span id="downloadProgressPercent">0%</span>
                                     </div>
+                                    <div class="progress-bar-container">
+                                        <div id="downloadProgressBar" class="progress-bar" style="width: 0%"></div>
+                                    </div>
+                                    <div class="progress-details">
+                                        <span id="downloadedSize">0 MB</span> / <span id="totalSize">0 MB</span>
+                                    </div>
+                                </div>
+
+                                <hr class="divider" />
+
+                                <!-- Custom Model Path -->
+                                <div class="form-group">
+                                    <label class="form-label" for="localWhisperModelPath">
+                                        Custom Model Path <span class="label-hint">(optional)</span>
+                                    </label>
+                                    <div class="input-with-button" style="display: flex; gap: 8px;">
+                                        <input type="text" class="form-input" id="localWhisperModelPath"
+                                            placeholder="Auto-detected or enter custom path"
+                                            title="Path to whisper.cpp compatible model file (.bin)"
+                                            style="flex: 1;">
+                                        <button type="button" class="btn btn-secondary" id="browseWhisperModel"
+                                            style="white-space: nowrap;">
+                                            <span class="icon icon-folder"></span> Browse...
+                                        </button>
+                                    </div>
+                                    <div class="help-text">
+                                        Leave empty to use the default downloaded model, or specify a custom path.
+                                    </div>
+                                </div>
+
+                                <div class="form-group">
+                                    <button type="button" class="btn btn-secondary" id="testLocalWhisper">
+                                        <span class="icon icon-microphone"></span> Test Local Whisper
+                                    </button>
+                                    <span id="localWhisperTestResult" class="test-result"></span>
+                                </div>
+
+                                <!-- Add Custom Model -->
+                                <div class="form-group">
+                                    <label class="form-label">Add Custom Whisper Model</label>
+                                    <div class="help-text">
+                                        Use this form to register an existing Whisper model file on disk.
+                                        Gestura will validate the file and use it as the active local model.
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="customModelPath">Model file path</label>
+                                        <input type="text" class="form-input" id="customModelPath"
+                                            placeholder="/path/to/your/whisper-model.bin">
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="customModelName">Display name</label>
+                                        <input type="text" class="form-input" id="customModelName"
+                                            placeholder="My Custom Whisper Model">
+                                    </div>
+                                    <div class="form-group form-grid">
+                                        <div>
+                                            <label class="form-label" for="customModelSize">Size (MB)</label>
+                                            <input type="number" class="form-input" id="customModelSize" min="1"
+                                                step="1" placeholder="e.g., 142">
+                                        </div>
+                                        <div>
+                                            <label class="form-label" for="customModelLanguage">Language</label>
+                                            <input type="text" class="form-input" id="customModelLanguage"
+                                                placeholder="English / Multilingual">
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="customModelDescription">Description</label>
+                                        <textarea class="form-input" id="customModelDescription" rows="2"
+                                            placeholder="Short description of this model (e.g., accuracy/speed tradeoffs)"></textarea>
+                                    </div>
+                                    <div class="checkbox-group">
+                                        <input type="checkbox" class="form-checkbox" id="customModelSetActive" checked>
+                                        <div class="checkbox-label">
+                                            Use this model as the active local Whisper model
+                                            <div class="checkbox-description">Updates the configuration to use this
+                                                path for local speech recognition.</div>
+                                        </div>
+                                    </div>
+                                    <button type="button" class="btn btn-primary" id="addCustomWhisperModel">
+                                        <span class="icon icon-plus"></span> Add Custom Model
+                                    </button>
+                                    <div class="help-text" id="customModelError"
+                                        style="color: #b00020; display: none;"></div>
                                 </div>
                             </div>
                         </div>
@@ -2464,35 +2442,54 @@
 
         // Provider selection functionality
         function setupProviderSelection() {
-            const providerOptions = document.querySelectorAll('.provider-option');
-            const radioButtons = document.querySelectorAll('input[name="stt_provider"]');
-
-            radioButtons.forEach(radio => {
-                radio.addEventListener('change', (e) => {
-                    // Remove selected class from all options
-                    providerOptions.forEach(option => {
-                        option.classList.remove('selected');
-                    });
-
-                    // Add selected class to the chosen option
-                    const selectedOption = e.target.closest('.provider-option');
-                    if (selectedOption) {
-                        selectedOption.classList.add('selected');
-                    }
-                });
-            });
-
-            // Set initial selection
-            const checkedRadio = document.querySelector('input[name="stt_provider"]:checked');
-            if (checkedRadio) {
-                const selectedOption = checkedRadio.closest('.provider-option');
-                if (selectedOption) {
-                    selectedOption.classList.add('selected');
-                }
-            }
+            // Setup STT provider visibility
+            setupSttProviderVisibility();
 
             // Setup LLM provider visibility
             setupLlmProviderVisibility();
+        }
+
+        // Handle STT provider configuration visibility
+        function setupSttProviderVisibility() {
+            const sttProviderSelect = document.getElementById('sttProvider');
+            if (!sttProviderSelect) return;
+
+            function updateSttProviderVisibility() {
+                const provider = sttProviderSelect.value;
+
+                // Hide all STT provider config sections
+                document.querySelectorAll('#openaiSttConfig, #googleSttConfig, #azureSttConfig, #localWhisperConfig')
+                    .forEach(section => {
+                        section.style.display = 'none';
+                    });
+
+                // Show the selected provider's config section
+                const sectionMap = {
+                    'openai-whisper': 'openaiSttConfig',
+                    'google-speech': 'googleSttConfig',
+                    'azure-speech': 'azureSttConfig',
+                    'local-whisper': 'localWhisperConfig'
+                };
+
+                const sectionId = sectionMap[provider];
+                if (sectionId) {
+                    const section = document.getElementById(sectionId);
+                    if (section) {
+                        section.style.display = 'block';
+                    }
+                }
+
+                // Initialize local whisper model list if selected
+                if (provider === 'local-whisper') {
+                    loadWhisperModels();
+                }
+            }
+
+            // Listen for changes
+            sttProviderSelect.addEventListener('change', updateSttProviderVisibility);
+
+            // Set initial visibility
+            updateSttProviderVisibility();
         }
 
         // Handle LLM provider configuration visibility
@@ -2659,13 +2656,13 @@
                 const voiceConfig = backendConfig?.voice || {};
                 const sttProvider = voiceConfig.provider || 'local';
 
-                // Map backend voice provider -> STT provider radio group value
+                // Map backend voice provider -> STT provider select value
                 // "local" voice => "local-whisper" STT, anything else => "openai-whisper" for now
                 const sttValue = sttProvider === 'local' ? 'local-whisper' : 'openai-whisper';
-                const sttRadios = document.querySelectorAll('input[name="stt_provider"]');
-                sttRadios.forEach(radio => {
-                    radio.checked = radio.value === sttValue;
-                });
+                const sttProviderSelect = document.getElementById('sttProvider');
+                if (sttProviderSelect) {
+                    sttProviderSelect.value = sttValue;
+                }
 
                 // OpenAI STT API key (separate from LLM)
                 const openaiApiKey = document.getElementById('openaiApiKey');
@@ -2699,7 +2696,8 @@
                 document.getElementById('enableFallback').checked = true;
                 document.getElementById('cacheResponses').checked = true;
 
-                // Trigger LLM provider visibility update
+                // Trigger provider visibility updates
+                setupSttProviderVisibility();
                 setupLlmProviderVisibility();
 
                 // Device Management defaults
