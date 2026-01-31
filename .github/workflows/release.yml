@@ -77,7 +77,10 @@ jobs:
         if: matrix.platform == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake pkg-config libdbus-1-dev libwebkit2gtk-4.0-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+          # Ubuntu 24.04+ uses webkit2gtk-4.1, older versions use 4.0
+          # Try 4.1 first (Ubuntu 24.04+), fall back to 4.0 (Ubuntu 22.04)
+          sudo apt-get install -y build-essential cmake pkg-config libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev 2>/dev/null || sudo apt-get install -y libwebkit2gtk-4.0-dev
 
       - name: Install system dependencies (macOS)
         if: matrix.platform == 'macos-latest'
