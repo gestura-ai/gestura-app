@@ -961,7 +961,9 @@
                         <span class="toc-icon icon-settings"></span>System Settings
                     </a>
                 </li>
-                <li class="toc-item">
+                <!-- Advanced section hidden - only contains NATS config which is hidden -->
+                <!-- TODO: Re-enable when there are visible advanced settings -->
+                <li class="toc-item" style="display: none;">
                     <a href="#advanced-settings" class="toc-link" data-section="advanced-settings">
                         <span class="toc-icon icon-wrench"></span>Advanced
                     </a>
@@ -1269,80 +1271,83 @@
 
                                 <hr class="divider" />
 
-                                <!-- Custom Model Path -->
+                                <!-- Toggle button to show custom model options -->
                                 <div class="form-group">
-                                    <label class="form-label" for="localWhisperModelPath">
-                                        Custom Model Path <span class="label-hint">(optional)</span>
-                                    </label>
-                                    <div class="input-with-button" style="display: flex; gap: 8px;">
-                                        <input type="text" class="form-input" id="localWhisperModelPath"
-                                            placeholder="Auto-detected or enter custom path"
-                                            title="Path to whisper.cpp compatible model file (.bin)"
-                                            style="flex: 1;">
-                                        <button type="button" class="btn btn-secondary" id="browseWhisperModel"
-                                            style="white-space: nowrap;">
-                                            <span class="icon icon-folder"></span> Browse...
+                                    <button type="button" class="btn btn-secondary" id="toggleCustomModelSection">
+                                        <span class="icon icon-plus"></span> Add Custom Model...
+                                    </button>
+                                    <div class="help-text">Add a custom Whisper model file from your local disk.</div>
+                                </div>
+
+                                <!-- Collapsible Custom Model Section (hidden by default) -->
+                                <div id="customModelSection" style="display: none;">
+                                    <!-- Custom Model Path -->
+                                    <div class="form-group">
+                                        <label class="form-label" for="localWhisperModelPath">
+                                            Custom Model Path <span class="label-hint">(optional)</span>
+                                        </label>
+                                        <div class="input-with-button" style="display: flex; gap: 8px;">
+                                            <input type="text" class="form-input" id="localWhisperModelPath"
+                                                placeholder="Auto-detected or enter custom path"
+                                                title="Path to whisper.cpp compatible model file (.bin)"
+                                                style="flex: 1;">
+                                            <button type="button" class="btn btn-secondary" id="browseWhisperModel"
+                                                style="white-space: nowrap;">
+                                                <span class="icon icon-folder"></span> Browse...
+                                            </button>
+                                        </div>
+                                        <div class="help-text">
+                                            Leave empty to use the default downloaded model, or specify a custom path.
+                                        </div>
+                                    </div>
+
+                                    <div class="form-group">
+                                        <button type="button" class="btn btn-secondary" id="testLocalWhisper">
+                                            <span class="icon icon-microphone"></span> Test Local Whisper
                                         </button>
+                                        <span id="localWhisperTestResult" class="test-result"></span>
                                     </div>
-                                    <div class="help-text">
-                                        Leave empty to use the default downloaded model, or specify a custom path.
-                                    </div>
-                                </div>
 
-                                <div class="form-group">
-                                    <button type="button" class="btn btn-secondary" id="testLocalWhisper">
-                                        <span class="icon icon-microphone"></span> Test Local Whisper
-                                    </button>
-                                    <span id="localWhisperTestResult" class="test-result"></span>
-                                </div>
-
-                                <!-- Add Custom Model -->
-                                <div class="form-group">
-                                    <label class="form-label">Add Custom Whisper Model</label>
-                                    <div class="help-text">
-                                        Use this form to register an existing Whisper model file on disk.
-                                        Gestura will validate the file and use it as the active local model.
-                                    </div>
+                                    <!-- Add Custom Model Form -->
                                     <div class="form-group">
-                                        <label class="form-label" for="customModelPath">Model file path</label>
-                                        <input type="text" class="form-input" id="customModelPath"
-                                            placeholder="/path/to/your/whisper-model.bin">
-                                    </div>
-                                    <div class="form-group">
-                                        <label class="form-label" for="customModelName">Display name</label>
-                                        <input type="text" class="form-input" id="customModelName"
-                                            placeholder="My Custom Whisper Model">
-                                    </div>
-                                    <div class="form-group form-grid">
-                                        <div>
-                                            <label class="form-label" for="customModelSize">Size (MB)</label>
-                                            <input type="number" class="form-input" id="customModelSize" min="1"
-                                                step="1" placeholder="e.g., 142">
+                                        <label class="form-label">Register Custom Whisper Model</label>
+                                        <div class="help-text">
+                                            Use this form to register an existing Whisper model file on disk.
+                                            Gestura will validate the file and set it as the active local model.
                                         </div>
-                                        <div>
-                                            <label class="form-label" for="customModelLanguage">Language</label>
-                                            <input type="text" class="form-input" id="customModelLanguage"
-                                                placeholder="English / Multilingual">
+                                        <div class="form-group">
+                                            <label class="form-label" for="customModelPath">Model file path</label>
+                                            <input type="text" class="form-input" id="customModelPath"
+                                                placeholder="/path/to/your/whisper-model.bin">
                                         </div>
-                                    </div>
-                                    <div class="form-group">
-                                        <label class="form-label" for="customModelDescription">Description</label>
-                                        <textarea class="form-input" id="customModelDescription" rows="2"
-                                            placeholder="Short description of this model (e.g., accuracy/speed tradeoffs)"></textarea>
-                                    </div>
-                                    <div class="checkbox-group">
-                                        <input type="checkbox" class="form-checkbox" id="customModelSetActive" checked>
-                                        <div class="checkbox-label">
-                                            Use this model as the active local Whisper model
-                                            <div class="checkbox-description">Updates the configuration to use this
-                                                path for local speech recognition.</div>
+                                        <div class="form-group">
+                                            <label class="form-label" for="customModelName">Display name</label>
+                                            <input type="text" class="form-input" id="customModelName"
+                                                placeholder="My Custom Whisper Model">
                                         </div>
+                                        <div class="form-group form-grid">
+                                            <div>
+                                                <label class="form-label" for="customModelSize">Size (MB)</label>
+                                                <input type="number" class="form-input" id="customModelSize" min="1"
+                                                    step="1" placeholder="e.g., 142">
+                                            </div>
+                                            <div>
+                                                <label class="form-label" for="customModelLanguage">Language</label>
+                                                <input type="text" class="form-input" id="customModelLanguage"
+                                                    placeholder="English / Multilingual">
+                                            </div>
+                                        </div>
+                                        <div class="form-group">
+                                            <label class="form-label" for="customModelDescription">Description</label>
+                                            <textarea class="form-input" id="customModelDescription" rows="2"
+                                                placeholder="Short description of this model (e.g., accuracy/speed tradeoffs)"></textarea>
+                                        </div>
+                                        <button type="button" class="btn btn-primary" id="addCustomWhisperModel">
+                                            <span class="icon icon-plus"></span> Add Custom Model
+                                        </button>
+                                        <div class="help-text" id="customModelError"
+                                            style="color: #b00020; display: none;"></div>
                                     </div>
-                                    <button type="button" class="btn btn-primary" id="addCustomWhisperModel">
-                                        <span class="icon icon-plus"></span> Add Custom Model
-                                    </button>
-                                    <div class="help-text" id="customModelError"
-                                        style="color: #b00020; display: none;"></div>
                                 </div>
                             </div>
                         </div>
@@ -2035,6 +2040,39 @@
                             <div class="help-text">Maximum content to extract from each page</div>
                         </div>
                     </div>
+
+                    <!-- Prompt Enhancement -->
+                    <div class="subsection">
+                        <div class="subsection-title">
+                            <span class="icon icon-sparkles"></span>Prompt Enhancement
+                        </div>
+
+                        <div class="form-group">
+                            <label class="toggle-label">
+                                <input type="checkbox" id="autoEnhance" name="auto_enhance">
+                                <span class="toggle-slider"></span>
+                                <span class="toggle-text">Auto-enhance prompts while typing</span>
+                            </label>
+                            <div class="help-text">Automatically enhance prompts as you type (debounced, opt-in feature)</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="enhancementStyle">Enhancement Style</label>
+                            <select class="form-select" id="enhancementStyle" name="enhancement_style">
+                                <option value="concise">Concise - Brief and to the point</option>
+                                <option value="detailed">Detailed - Thorough and comprehensive</option>
+                                <option value="technical">Technical - Precise technical language</option>
+                            </select>
+                            <div class="help-text">Choose how prompts should be enhanced when using Cmd+K</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="maxLengthMultiplier">Max Length Multiplier: <span id="maxLengthValue">3.0x</span></label>
+                            <input type="range" class="form-range" id="maxLengthMultiplier" name="max_length_multiplier"
+                                min="10" max="50" step="5" value="30">
+                            <div class="help-text">Maximum expansion ratio for enhanced prompts (1.0x - 5.0x)</div>
+                        </div>
+                    </div>
                 </section>
 
                 <!-- Security & Privacy Settings -->
@@ -2210,14 +2248,14 @@
                     </div>
                 </section>
 
-                <!-- Advanced Settings -->
-                <section class="config-section" id="advanced-settings">
+                <!-- Advanced Settings - Hidden (only contains NATS config which is also hidden) -->
+                <!-- TODO: Re-enable when there are visible advanced settings to configure -->
+                <section class="config-section" id="advanced-settings" style="display: none;">
                     <div class="section-title">
                         <span class="icon icon-sparkles"></span>Advanced Settings
                     </div>
                     <div class="section-description">
-                        Advanced features for power users. Configure AI prompt enhancement and other
-                        experimental features.
+                        Advanced features for power users.
                     </div>
 
                     <!-- NATS Network Configuration - Hidden for future integration -->
@@ -2249,38 +2287,6 @@
                                 <div class="checkbox-description">Use secure communication with authentication and
                                     encryption</div>
                             </div>
-                        </div>
-                    </div>
-
-                    <div class="subsection">
-                        <div class="subsection-title">
-                            <span class="icon icon-sparkles"></span>Prompt Enhancement
-                        </div>
-
-                        <div class="form-group">
-                            <label class="toggle-label">
-                                <input type="checkbox" id="autoEnhance" name="auto_enhance">
-                                <span class="toggle-slider"></span>
-                                <span class="toggle-text">Auto-enhance prompts while typing</span>
-                            </label>
-                            <div class="help-text">Automatically enhance prompts as you type (debounced, opt-in feature)</div>
-                        </div>
-
-                        <div class="form-group">
-                            <label class="form-label" for="enhancementStyle">Enhancement Style</label>
-                            <select class="form-select" id="enhancementStyle" name="enhancement_style">
-                                <option value="concise">Concise - Brief and to the point</option>
-                                <option value="detailed">Detailed - Thorough and comprehensive</option>
-                                <option value="technical">Technical - Precise technical language</option>
-                            </select>
-                            <div class="help-text">Choose how prompts should be enhanced when using Cmd+K</div>
-                        </div>
-
-                        <div class="form-group">
-                            <label class="form-label" for="maxLengthMultiplier">Max Length Multiplier: <span id="maxLengthValue">3.0x</span></label>
-                            <input type="range" class="form-range" id="maxLengthMultiplier" name="max_length_multiplier"
-                                min="10" max="50" step="5" value="30">
-                            <div class="help-text">Maximum expansion ratio for enhanced prompts (1.0x - 5.0x)</div>
                         </div>
                     </div>
                 </section>
@@ -3995,6 +4001,20 @@
         });
 
         // Add custom Whisper model handler
+        // Toggle custom model section visibility
+        document.getElementById('toggleCustomModelSection')?.addEventListener('click', () => {
+            const section = document.getElementById('customModelSection');
+            const toggleBtn = document.getElementById('toggleCustomModelSection');
+            if (section && toggleBtn) {
+                const isHidden = section.style.display === 'none';
+                section.style.display = isHidden ? 'block' : 'none';
+                toggleBtn.innerHTML = isHidden
+                    ? '<span class="icon icon-minus"></span> Hide Custom Model Options'
+                    : '<span class="icon icon-plus"></span> Add Custom Model...';
+            }
+        });
+
+        // Add custom Whisper model handler
         document.getElementById('addCustomWhisperModel')?.addEventListener('click', async () => {
             if (!isTauriAvailable()) {
                 alert('Custom models require the Gestura desktop app. Please open this page within the app.');
@@ -4010,14 +4030,12 @@
             const sizeInput = document.getElementById('customModelSize');
             const langInput = document.getElementById('customModelLanguage');
             const descInput = document.getElementById('customModelDescription');
-            const setActiveCheckbox = document.getElementById('customModelSetActive');
 
             const modelPath = pathInput.value.trim();
             const displayName = nameInput.value.trim();
             const sizeMb = parseInt(sizeInput.value, 10) || null;
             const language = langInput.value.trim() || 'Unknown';
             const description = descInput.value.trim() || 'Custom Whisper model';
-            const setActive = !!setActiveCheckbox.checked;
 
             if (!modelPath) {
                 errorEl.textContent = 'Please enter a model file path.';
@@ -4036,13 +4054,11 @@
 
                 console.log('✅ Custom model validation succeeded:', validation);
 
-                // Update the config to point to this path
+                // Update the config to point to this path (always set as active)
                 const config = await window.__TAURI__.core.invoke('get_config');
                 config.voice = config.voice || {};
-                if (setActive) {
-                    config.voice.local_model_path = modelPath;
-                    config.voice.provider = 'local';
-                }
+                config.voice.local_model_path = modelPath;
+                config.voice.provider = 'local';
 
                 await window.__TAURI__.core.invoke('save_config', { cfg: config });
                 console.log('💾 Custom model path saved to config:', modelPath);
@@ -4054,7 +4070,7 @@
 
                 errorEl.style.display = 'block';
                 errorEl.style.color = '#0c7a34';
-                errorEl.innerHTML = '<span class="icon-check-circle"></span> Custom model registered successfully.';
+                errorEl.innerHTML = '<span class="icon-check-circle"></span> Custom model registered and set as active.';
             } catch (e) {
                 console.error('Failed to add custom Whisper model:', e);
                 errorEl.style.display = 'block';
