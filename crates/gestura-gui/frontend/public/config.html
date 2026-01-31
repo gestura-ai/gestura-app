@@ -1966,6 +1966,82 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Web Search & Content Retrieval (moved from Advanced section) -->
+                    <div class="subsection">
+                        <div class="subsection-title">
+                            <span class="icon icon-globe"></span>Web Search & Content Retrieval
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="webSearchProvider">Search Provider</label>
+                            <select class="form-select" id="webSearchProvider" name="web_search_provider">
+                                <option value="local">Local (Free, No Registration) - DuckDuckGo HTML</option>
+                                <option value="duckduckgo">DuckDuckGo API (Free, Limited Results)</option>
+                                <option value="brave">Brave Search API (Requires API Key)</option>
+                                <option value="serpapi">SerpAPI (Requires API Key)</option>
+                            </select>
+                            <div class="help-text">
+                                <strong>Local</strong> is the default and requires no setup - uses DuckDuckGo HTML scraping (completely free, no registration).
+                                For more reliable results, consider Brave Search API (free tier available).
+                            </div>
+                        </div>
+
+                        <div class="form-group" id="braveKeyGroup" style="display: none;">
+                            <label class="form-label" for="braveSearchKey">
+                                Brave Search API Key <span class="label-hint">(optional)</span>
+                            </label>
+                            <input type="password" class="form-input" id="braveSearchKey" name="brave_search_key"
+                                placeholder="Enter your Brave Search API key">
+                            <div class="help-text">
+                                Get a free API key at <a href="https://brave.com/search/api/" target="_blank">brave.com/search/api</a>.
+                                Free tier: 2,000 queries/month.
+                            </div>
+                        </div>
+
+                        <div class="form-group" id="serpapiKeyGroup" style="display: none;">
+                            <label class="form-label" for="serpapiKey">
+                                SerpAPI Key <span class="label-hint">(optional)</span>
+                            </label>
+                            <input type="password" class="form-input" id="serpapiKey" name="serpapi_key"
+                                placeholder="Enter your SerpAPI key">
+                            <div class="help-text">
+                                Get an API key at <a href="https://serpapi.com/" target="_blank">serpapi.com</a>.
+                                Free tier: 100 searches/month.
+                            </div>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label" for="maxSearchResults">Max Search Results</label>
+                                <input type="number" class="form-input" id="maxSearchResults" name="max_search_results"
+                                    value="5" min="1" max="20">
+                                <div class="help-text">Number of search results to return (1-20)</div>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label" for="searchTimeout">Search Timeout (seconds)</label>
+                                <input type="number" class="form-input" id="searchTimeout" name="search_timeout"
+                                    value="30" min="5" max="120">
+                                <div class="help-text">Request timeout for web searches</div>
+                            </div>
+                        </div>
+
+                        <div class="checkbox-group">
+                            <input type="checkbox" class="form-checkbox" id="extractContent" name="extract_content" checked>
+                            <div class="checkbox-label">
+                                Extract content from search results
+                                <div class="checkbox-description">Fetch and extract main content from search result pages (slower but more informative)</div>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="maxContentLength">Max Content Length (characters)</label>
+                            <input type="number" class="form-input" id="maxContentLength" name="max_content_length"
+                                value="10000" min="1000" max="50000" step="1000">
+                            <div class="help-text">Maximum content to extract from each page</div>
+                        </div>
+                    </div>
                 </section>
 
                 <!-- MDH Targeting Settings -->
@@ -2232,81 +2308,6 @@
                             <input type="range" class="form-range" id="maxLengthMultiplier" name="max_length_multiplier"
                                 min="10" max="50" step="5" value="30">
                             <div class="help-text">Maximum expansion ratio for enhanced prompts (1.0x - 5.0x)</div>
-                        </div>
-                    </div>
-
-                    <div class="subsection">
-                        <div class="subsection-title">
-                            <span class="icon icon-globe"></span>Web Search & Content Retrieval
-                        </div>
-
-                        <div class="form-group">
-                            <label class="form-label" for="webSearchProvider">Search Provider</label>
-                            <select class="form-select" id="webSearchProvider" name="web_search_provider">
-                                <option value="local">Local (Free, No Registration) - DuckDuckGo HTML</option>
-                                <option value="duckduckgo">DuckDuckGo API (Free, Limited Results)</option>
-                                <option value="brave">Brave Search API (Requires API Key)</option>
-                                <option value="serpapi">SerpAPI (Requires API Key)</option>
-                            </select>
-                            <div class="help-text">
-                                <strong>Local</strong> is the default and requires no setup - uses DuckDuckGo HTML scraping (completely free, no registration).
-                                For more reliable results, consider Brave Search API (free tier available).
-                            </div>
-                        </div>
-
-                        <div class="form-group" id="braveKeyGroup" style="display: none;">
-                            <label class="form-label" for="braveSearchKey">
-                                Brave Search API Key <span class="label-hint">(optional)</span>
-                            </label>
-                            <input type="password" class="form-input" id="braveSearchKey" name="brave_search_key"
-                                placeholder="Enter your Brave Search API key">
-                            <div class="help-text">
-                                Get a free API key at <a href="https://brave.com/search/api/" target="_blank">brave.com/search/api</a>.
-                                Free tier: 2,000 queries/month.
-                            </div>
-                        </div>
-
-                        <div class="form-group" id="serpapiKeyGroup" style="display: none;">
-                            <label class="form-label" for="serpapiKey">
-                                SerpAPI Key <span class="label-hint">(optional)</span>
-                            </label>
-                            <input type="password" class="form-input" id="serpapiKey" name="serpapi_key"
-                                placeholder="Enter your SerpAPI key">
-                            <div class="help-text">
-                                Get an API key at <a href="https://serpapi.com/" target="_blank">serpapi.com</a>.
-                                Free tier: 100 searches/month.
-                            </div>
-                        </div>
-
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label class="form-label" for="maxSearchResults">Max Search Results</label>
-                                <input type="number" class="form-input" id="maxSearchResults" name="max_search_results"
-                                    value="5" min="1" max="20">
-                                <div class="help-text">Number of search results to return (1-20)</div>
-                            </div>
-
-                            <div class="form-group">
-                                <label class="form-label" for="searchTimeout">Search Timeout (seconds)</label>
-                                <input type="number" class="form-input" id="searchTimeout" name="search_timeout"
-                                    value="30" min="5" max="120">
-                                <div class="help-text">Request timeout for web searches</div>
-                            </div>
-                        </div>
-
-                        <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="extractContent" name="extract_content" checked>
-                            <div class="checkbox-label">
-                                Extract content from search results
-                                <div class="checkbox-description">Fetch and extract main content from search result pages (slower but more informative)</div>
-                            </div>
-                        </div>
-
-                        <div class="form-group">
-                            <label class="form-label" for="maxContentLength">Max Content Length (characters)</label>
-                            <input type="number" class="form-input" id="maxContentLength" name="max_content_length"
-                                value="10000" min="1000" max="50000" step="1000">
-                            <div class="help-text">Maximum content to extract from each page</div>
                         </div>
                     </div>
 
