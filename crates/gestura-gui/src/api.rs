@@ -2604,8 +2604,11 @@ pub fn resolve_tool_confirmation_decision(
     let decision = gestura_core::tool_confirmation::ToolConfirmationDecision::parse(&decision)
         .map_err(|e| e.to_string())?;
 
-    gestura_core::tool_confirmation::TOOL_CONFIRMATIONS
-        .resolve_decision(&confirmation_id, session_id.as_deref(), decision)
+    gestura_core::tool_confirmation::TOOL_CONFIRMATIONS.resolve_decision(
+        &confirmation_id,
+        session_id.as_deref(),
+        decision,
+    )
 }
 
 /// Deny a pending tool confirmation request.
