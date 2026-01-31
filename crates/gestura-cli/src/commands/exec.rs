@@ -2,7 +2,7 @@
 
 use super::Result;
 use colored::Colorize;
-use gestura_core::{AgentContext, AppConfig, select_provider};
+use gestura_core::{AgentPipeline, AgentRequest, AppConfig, RequestSource};
 use std::io::{self, IsTerminal, Read};
 use std::path::Path;
 
@@ -29,47 +29,36 @@ pub fn run(prompt: Option<&str>, file: Option<&Path>, model: Option<&str>) -> Re
         );
     }
 
-    // Load config and optionally override model
+    // Load config and apply optional CLI model override in core
     let mut config = AppConfig::load();
-    if let Some(m) = model {
-        // Parse model string - could be "provider:model" or just "model"
-        if let Some((provider, model_name)) = m.split_once(':') {
-            config.llm.primary = provider.to_string();
-            // Update the model in the appropriate provider config
-            match provider {
-                "openai" => {
-                    if let Some(ref mut openai) = config.llm.openai {
-                        openai.model = model_name.to_string();
-                    }
-                }
-                "anthropic" => {
-                    if let Some(ref mut anthropic) = config.llm.anthropic {
-                        anthropic.model = model_name.to_string();
-                    }
-                }
-                _ => {}
-            }
-        }
-        tracing::debug!("Using model: {}", m);
+    let effective = gestura_core::llm_overrides::apply_cli_model_arg_overrides(&mut config, model);
+    if !effective.model.trim().is_empty() {
+        tracing::debug!(
+            provider = %effective.provider,
+            model = %effective.model,
+            "Using CLI model override"
+        );
     }
 
     // Create runtime for async execution
     let rt = tokio::runtime::Runtime::new()?;
 
     rt.block_on(async {
-        let provider = select_provider(
-            &config,
-            &AgentContext {
-                agent_id: "cli-exec".into(),
-            },
+        tracing::debug!(
+            "Sending prompt via AgentPipeline to {} provider",
+            effective.provider
         );
 
-        tracing::debug!("Sending prompt to {} provider", config.llm.primary);
+        let pipeline = AgentPipeline::with_provider_optimized_config(config);
+        let request = AgentRequest::new(prompt_text)
+            .with_streaming(false)
+            .with_source(RequestSource::CliBasic)
+            .with_tools_enabled(false);
 
-        match provider.call(&prompt_text).await {
+        match pipeline.process_blocking(request).await {
             Ok(response) => {
                 // Output response to stdout (no formatting for piping)
-                println!("{}", response);
+                println!("{}", response.content);
                 Ok(())
             }
             Err(e) => {

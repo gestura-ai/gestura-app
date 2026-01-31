@@ -597,7 +597,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                         "/tools" => {
                             println!();
                             if let Some(name) = args.first() {
-                                match crate::tool_registry::render_tool_detail(name) {
+                                match gestura_core::tools::render_tool_detail(name) {
                                     Some(text) => println!("{}", text),
                                     None => println!(
                                         "{}: Unknown tool '{}'. Try /tools to list tools.",
@@ -606,7 +606,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                     ),
                                 }
                             } else {
-                                println!("{}", crate::tool_registry::render_tools_overview());
+                                println!("{}", gestura_core::tools::render_tools_overview());
                             }
                             println!();
                             continue;
@@ -969,7 +969,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 // Handle explicit /tools command only (not natural language questions)
                 // Natural language questions should go through the LLM for dynamic, session-aware responses
                 if input.trim().starts_with("/tools") {
-                    let text = crate::tool_registry::render_tools_overview();
+                    let text = gestura_core::tools::render_tools_overview();
                     println!();
                     println!(
                         "{} {}",
@@ -1278,7 +1278,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                     let cancel_for_task = cancel_token.clone();
 
                     let stream_task = tokio::spawn(async move {
-                        let pipeline = AgentPipeline::new(config_clone);
+                        let pipeline = AgentPipeline::with_provider_optimized_config(config_clone);
                         pipeline
                             .process_streaming(request, tx, cancel_for_task)
                             .await
@@ -1287,6 +1287,12 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                     let mut saw_done = false;
                     while let Some(chunk) = rx.recv().await {
                         match chunk {
+                            StreamChunk::Status { message } => {
+                                println!();
+                                println!("  {} {}", "ℹ".cyan(), message.dimmed());
+                                print!("  ");
+                                let _ = std::io::stdout().flush();
+                            }
                             StreamChunk::Text(t) => {
                                 // Maintain indentation across newlines.
                                 let rendered = t.replace("\n", "\n  ");

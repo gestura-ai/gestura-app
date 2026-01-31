@@ -89,6 +89,20 @@ pub struct SessionLlmConfig {
 }
 
 /// Session-scoped Voice/STT configuration override.
+///
+/// The GUI/CLI may allow users to override speech-to-text settings for a single
+/// chat session without changing the global `AppConfig.voice` defaults.
+///
+/// ## Field interpretation
+/// - `provider`: STT provider id (currently `"local"`, `"openai"`, or `"none"`).
+/// - `model`: Provider-specific model selector.
+///   - When the effective provider is `"openai"`, this is an OpenAI model id
+///     (e.g. `"whisper-1"`, `"gpt-4o-transcribe"`).
+///   - When the effective provider is `"local"`, this is either:
+///     - a full filesystem path to a whisper.cpp-compatible model file, or
+///     - a filename to be resolved under the configured models directory.
+///
+/// Empty/whitespace-only strings should be treated as `None` by consumers.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionVoiceConfig {
     /// Override STT provider for this session.

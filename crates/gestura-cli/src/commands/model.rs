@@ -3,7 +3,7 @@
 use super::Result;
 use crate::{ModelAction, WhisperAction};
 use colored::Colorize;
-use gestura_core::AppConfig;
+use gestura_core::{AgentPipeline, AgentRequest, AppConfig, RequestSource};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -42,10 +42,11 @@ pub fn run(action: &ModelAction) -> Result<()> {
             rt.block_on(async {
                 let mut config = AppConfig::load();
 
-                // If a specific provider is requested, temporarily set it
-                if let Some(p) = provider {
-                    config.llm.primary = p.clone();
-                }
+                // Apply optional CLI provider override in core (thin CLI)
+                let _effective = gestura_core::llm_overrides::apply_cli_provider_arg_override(
+                    &mut config,
+                    provider.as_deref(),
+                );
 
                 let provider_name = config.llm.primary.clone();
 
@@ -61,19 +62,21 @@ pub fn run(action: &ModelAction) -> Result<()> {
                 spinner.enable_steady_tick(Duration::from_millis(100));
                 spinner.set_message("Connecting...");
 
-                // Create provider and send a test message
-                let ctx = gestura_core::AgentContext::default();
-                let llm_provider = gestura_core::select_provider(&config, &ctx);
-
                 spinner.set_message("Sending test message...");
 
-                match llm_provider.call("Say 'OK' and nothing else.").await {
+                let pipeline = AgentPipeline::with_provider_optimized_config(config);
+                let request = AgentRequest::new("Say 'OK' and nothing else.")
+                    .with_streaming(false)
+                    .with_source(RequestSource::CliBasic)
+                    .with_tools_enabled(false);
+
+                match pipeline.process_blocking(request).await {
                     Ok(response) => {
                         spinner.finish_and_clear();
                         println!("{} Connection successful!", "✓".green());
                         println!();
                         println!("Provider: {}", provider_name.cyan());
-                        println!("Response: {}", response.trim().dimmed());
+                        println!("Response: {}", response.content.trim().dimmed());
                     }
                     Err(e) => {
                         spinner.finish_and_clear();

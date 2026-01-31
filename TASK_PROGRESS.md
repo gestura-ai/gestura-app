@@ -1172,7 +1172,7 @@ All 4 sub-tasks completed:
 - 7 unit tests for environment variable handling
 
 #### 40.2 Runtime Configuration Reloading ✅ COMPLETE
-- [x] Add file watcher for config.json changes
+- [x] Add file watcher for config.yaml changes
 - [x] Implement config change notification system
 - [x] Add hot-reload support for non-critical settings
 - [x] Emit events when configuration changes
@@ -1202,7 +1202,7 @@ All 4 sub-tasks completed:
 - 5 new unit tests for validation
 
 #### 40.4 Configuration Validation ✅ COMPLETE
-- [x] Add schema validation for config.json
+- [x] Add schema validation for config.yaml
 - [x] Implement config migration for version upgrades (handled via serde defaults)
 - [x] Add helpful error messages for invalid configuration
 - [x] Add config health check command

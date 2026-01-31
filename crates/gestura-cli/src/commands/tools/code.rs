@@ -12,15 +12,16 @@
 
 use super::super::Result;
 use colored::Colorize;
+use gestura_core::error::AppError;
 use gestura_core::tools::code::CodeTools;
-use std::collections::HashMap;
-use std::fs;
+use gestura_core::tools::code::SymbolKind;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// Global code tools instance
 static CODE_TOOLS: OnceLock<CodeTools> = OnceLock::new();
 
+/// Get the global [`CodeTools`] instance.
 fn get_code_tools() -> &'static CodeTools {
     CODE_TOOLS.get_or_init(CodeTools::default)
 }
@@ -72,6 +73,9 @@ pub fn run(cmd: CodeSubcommand) -> Result<()> {
     }
 }
 
+/// Render a lightweight repository "map" (file type histogram + key files).
+///
+/// Business logic is owned by `gestura-core`; CLI is responsible only for formatting.
 fn run_map(path: Option<&Path>, depth: Option<usize>) -> Result<()> {
     let root = path.unwrap_or(Path::new("."));
     let max_depth = depth.unwrap_or(2);
@@ -79,17 +83,16 @@ fn run_map(path: Option<&Path>, depth: Option<usize>) -> Result<()> {
     println!("{}", "Repository Map".bold().underline());
     println!();
 
-    // Collect file info
-    let mut file_counts: HashMap<String, usize> = HashMap::new();
-    count_files(root, &mut file_counts, max_depth, 0)?;
+    let map = get_code_tools().repository_map(root, max_depth)?;
 
     // Sort by count
-    let mut sorted: Vec<_> = file_counts.into_iter().collect();
+    let mut sorted: Vec<_> = map.file_types.into_iter().collect();
     sorted.sort_by(|a, b| b.1.cmp(&a.1));
 
     println!("{}", "File Types:".dimmed());
+    let max = sorted.first().map(|x| x.1).unwrap_or(1).max(1);
     for (ext, count) in sorted.iter().take(10) {
-        let bar_len = (*count as f64 / sorted[0].1 as f64 * 20.0) as usize;
+        let bar_len = (*count as f64 / max as f64 * 20.0) as usize;
         let bar = "█".repeat(bar_len);
         println!("  {:>8} {:>4} {}", ext.cyan(), count, bar.green());
     }
@@ -97,64 +100,16 @@ fn run_map(path: Option<&Path>, depth: Option<usize>) -> Result<()> {
     println!();
     println!("{}", "Key Files:".dimmed());
 
-    // Look for common important files
-    let key_files = [
-        "README.md",
-        "Cargo.toml",
-        "package.json",
-        "pyproject.toml",
-        "Makefile",
-        "Justfile",
-        ".gitignore",
-        "LICENSE",
-    ];
-
-    for file in key_files {
-        let file_path = root.join(file);
-        if file_path.exists() {
-            println!("  {} {}", "✓".green(), file.cyan());
-        }
+    for file in map.key_files_found {
+        println!("  {} {}", "✓".green(), file.cyan());
     }
 
     Ok(())
 }
 
-fn count_files(
-    path: &Path,
-    counts: &mut HashMap<String, usize>,
-    max_depth: usize,
-    depth: usize,
-) -> Result<()> {
-    if depth > max_depth || !path.is_dir() {
-        return Ok(());
-    }
-
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        // Skip hidden and common ignore patterns
-        if let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && (name.starts_with('.') || name == "node_modules" || name == "target")
-        {
-            continue;
-        }
-
-        if path.is_file() {
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("(none)")
-                .to_string();
-            *counts.entry(ext).or_insert(0) += 1;
-        } else if path.is_dir() {
-            count_files(&path, counts, max_depth, depth + 1)?;
-        }
-    }
-
-    Ok(())
-}
-
+/// List top-level symbols for a file.
+///
+/// Extraction is performed by `gestura-core`; CLI is responsible only for formatting.
 fn run_symbols(path: &Path) -> Result<()> {
     println!(
         "{} {}",
@@ -163,40 +118,40 @@ fn run_symbols(path: &Path) -> Result<()> {
     );
     println!();
 
-    // Simple regex-based symbol extraction (tree-sitter would be better)
-    let content = fs::read_to_string(path)?;
-
-    let fn_regex = regex::Regex::new(r"(?m)^(?:pub\s+)?(?:async\s+)?fn\s+(\w+)")?;
-    let struct_regex = regex::Regex::new(r"(?m)^(?:pub\s+)?struct\s+(\w+)")?;
-    let enum_regex = regex::Regex::new(r"(?m)^(?:pub\s+)?enum\s+(\w+)")?;
-    let impl_regex = regex::Regex::new(r"(?m)^impl(?:<[^>]+>)?\s+(\w+)")?;
+    let syms = get_code_tools().symbols(path)?;
 
     println!("{}", "Functions:".dimmed());
-    for cap in fn_regex.captures_iter(&content) {
-        println!("  {} {}", "fn".blue(), &cap[1]);
+    for s in syms
+        .iter()
+        .filter(|s| matches!(s.kind, SymbolKind::Function))
+    {
+        println!("  {} {}", "fn".blue(), s.name);
     }
 
     println!();
     println!("{}", "Structs:".dimmed());
-    for cap in struct_regex.captures_iter(&content) {
-        println!("  {} {}", "struct".yellow(), &cap[1]);
+    for s in syms.iter().filter(|s| matches!(s.kind, SymbolKind::Struct)) {
+        println!("  {} {}", "struct".yellow(), s.name);
     }
 
     println!();
     println!("{}", "Enums:".dimmed());
-    for cap in enum_regex.captures_iter(&content) {
-        println!("  {} {}", "enum".magenta(), &cap[1]);
+    for s in syms.iter().filter(|s| matches!(s.kind, SymbolKind::Enum)) {
+        println!("  {} {}", "enum".magenta(), s.name);
     }
 
     println!();
     println!("{}", "Implementations:".dimmed());
-    for cap in impl_regex.captures_iter(&content) {
-        println!("  {} {}", "impl".cyan(), &cap[1]);
+    for s in syms.iter().filter(|s| matches!(s.kind, SymbolKind::Impl)) {
+        println!("  {} {}", "impl".cyan(), s.name);
     }
 
     Ok(())
 }
 
+/// Find line-level references to a symbol under a directory tree.
+///
+/// Search logic is performed by `gestura-core`; CLI is responsible only for formatting.
 fn run_references(symbol: &str, path: Option<&Path>) -> Result<()> {
     let search_path = path.unwrap_or(Path::new("."));
 
@@ -208,115 +163,40 @@ fn run_references(symbol: &str, path: Option<&Path>) -> Result<()> {
     );
     println!("{}", "─".repeat(60).dimmed());
 
-    // Use grep-like search
-    let pattern = format!(r"\b{}\b", regex::escape(symbol));
-    let regex = regex::Regex::new(&pattern)?;
-
-    fn search_refs(path: &Path, regex: &regex::Regex, count: &mut usize) -> Result<()> {
-        if path.is_file() {
-            if let Ok(content) = fs::read_to_string(path) {
-                for (line_num, line) in content.lines().enumerate() {
-                    if regex.is_match(line) {
-                        println!(
-                            "{}:{}:{}",
-                            path.display().to_string().cyan(),
-                            (line_num + 1).to_string().yellow(),
-                            line.trim()
-                        );
-                        *count += 1;
-                    }
-                }
-            }
-        } else if path.is_dir() {
-            for entry in fs::read_dir(path)? {
-                let entry = entry?;
-                let p = entry.path();
-                if let Some(name) = p.file_name().and_then(|n| n.to_str())
-                    && (name.starts_with('.') || name == "node_modules" || name == "target")
-                {
-                    continue;
-                }
-                search_refs(&p, regex, count)?;
-            }
-        }
-        Ok(())
+    let hits = get_code_tools().references(symbol, search_path)?;
+    for h in &hits {
+        println!(
+            "{}:{}:{}",
+            h.path.display().to_string().cyan(),
+            h.line.to_string().yellow(),
+            h.content.trim()
+        );
     }
 
-    let mut count = 0;
-    search_refs(search_path, &regex, &mut count)?;
-
     println!("{}", "─".repeat(60).dimmed());
-    println!("{} {} references found", "Total:".bold(), count);
+    println!("{} {} references found", "Total:".bold(), hits.len());
 
     Ok(())
 }
 
+/// Find the first definition of a symbol under a directory tree.
+///
+/// Definition search is performed by `gestura-core`; CLI is responsible only for formatting.
 fn run_definition(symbol: &str, path: Option<&Path>) -> Result<()> {
     let search_path = path.unwrap_or(Path::new("."));
 
     println!("{} {}", "Definition of".bold(), symbol.cyan());
     println!();
 
-    // Look for definition patterns
-    let patterns = [
-        format!(
-            r"(?m)^(?:pub\s+)?(?:async\s+)?fn\s+{}\s*[<(]",
-            regex::escape(symbol)
-        ),
-        format!(
-            r"(?m)^(?:pub\s+)?struct\s+{}\s*[<{{]",
-            regex::escape(symbol)
-        ),
-        format!(r"(?m)^(?:pub\s+)?enum\s+{}\s*[<{{]", regex::escape(symbol)),
-        format!(r"(?m)^(?:pub\s+)?type\s+{}\s*=", regex::escape(symbol)),
-        format!(r"(?m)^(?:pub\s+)?const\s+{}\s*:", regex::escape(symbol)),
-    ];
-
-    fn find_def(
-        path: &Path,
-        patterns: &[regex::Regex],
-    ) -> Result<Option<(PathBuf, usize, String)>> {
-        if path.is_file() {
-            if let Ok(content) = fs::read_to_string(path) {
-                for (line_num, line) in content.lines().enumerate() {
-                    for pattern in patterns {
-                        if pattern.is_match(line) {
-                            return Ok(Some((path.to_path_buf(), line_num + 1, line.to_string())));
-                        }
-                    }
-                }
-            }
-        } else if path.is_dir() {
-            for entry in fs::read_dir(path)? {
-                let entry = entry?;
-                let p = entry.path();
-                if let Some(name) = p.file_name().and_then(|n| n.to_str())
-                    && (name.starts_with('.') || name == "node_modules" || name == "target")
-                {
-                    continue;
-                }
-                if let Some(result) = find_def(&p, patterns)? {
-                    return Ok(Some(result));
-                }
-            }
-        }
-        Ok(None)
-    }
-
-    let regexes: Vec<_> = patterns
-        .iter()
-        .filter_map(|p| regex::Regex::new(p).ok())
-        .collect();
-
-    match find_def(search_path, &regexes)? {
-        Some((path, line, content)) => {
+    match get_code_tools().definition(symbol, search_path)? {
+        Some(hit) => {
             println!(
                 "  {} {}:{}",
                 "Found:".green(),
-                path.display().to_string().cyan(),
-                line
+                hit.path.display().to_string().cyan(),
+                hit.line
             );
-            println!("  {}", content.trim());
+            println!("  {}", hit.content.trim());
         }
         None => {
             println!("  {}", "Definition not found".red());
@@ -326,72 +206,83 @@ fn run_definition(symbol: &str, path: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-fn run_lint(_path: Option<&Path>, fix: bool) -> Result<()> {
+/// Run lints for the current workspace.
+///
+/// Lint execution is owned by `gestura-core`; CLI is responsible only for formatting.
+fn run_lint(path: Option<&Path>, fix: bool) -> Result<()> {
     println!("{}", "Running linter...".bold());
 
-    // Try cargo clippy for Rust projects
-    if Path::new("Cargo.toml").exists() {
-        let mut args = vec!["clippy"];
-        if fix {
-            args.push("--fix");
-        }
+    let root = path.unwrap_or(Path::new("."));
+    let result = get_code_tools().cargo_clippy(root, fix)?;
 
-        let output = std::process::Command::new("cargo").args(&args).output()?;
-
-        print!("{}", String::from_utf8_lossy(&output.stdout));
-        eprint!("{}", String::from_utf8_lossy(&output.stderr));
-    } else {
-        println!("{}", "No supported linter found for this project".yellow());
+    if !result.stdout.is_empty() {
+        print!("{}", result.stdout);
+    }
+    if !result.stderr.is_empty() {
+        eprint!("{}", result.stderr);
     }
 
     Ok(())
 }
 
-fn run_test(_path: Option<&Path>, filter: Option<&str>) -> Result<()> {
+/// Run tests for the current workspace.
+///
+/// Test execution is owned by `gestura-core`; CLI is responsible only for formatting.
+fn run_test(path: Option<&Path>, filter: Option<&str>) -> Result<()> {
     println!("{}", "Running tests...".bold());
 
-    if Path::new("Cargo.toml").exists() {
-        let mut args = vec!["test"];
-        if let Some(f) = filter {
-            args.push(f);
-        }
+    let root = path.unwrap_or(Path::new("."));
+    let result = get_code_tools().cargo_test(root, filter)?;
 
-        let output = std::process::Command::new("cargo").args(&args).output()?;
-
-        print!("{}", String::from_utf8_lossy(&output.stdout));
-        eprint!("{}", String::from_utf8_lossy(&output.stderr));
-    } else {
-        println!("{}", "No supported test runner found".yellow());
+    if !result.stdout.is_empty() {
+        print!("{}", result.stdout);
+    }
+    if !result.stderr.is_empty() {
+        eprint!("{}", result.stderr);
     }
 
     Ok(())
 }
 
-fn run_deps(_path: Option<&Path>) -> Result<()> {
+/// Print dependency sections from a local Cargo.toml (best-effort).
+///
+/// Dependency parsing is owned by `gestura-core`; CLI is responsible only for formatting.
+fn run_deps(path: Option<&Path>) -> Result<()> {
     println!("{}", "Dependencies".bold().underline());
     println!();
 
-    if Path::new("Cargo.toml").exists() {
-        let content = fs::read_to_string("Cargo.toml")?;
-        let mut in_deps = false;
+    let root = path.unwrap_or(Path::new("."));
+    match get_code_tools().cargo_dependencies(root) {
+        Ok(groups) => {
+            for group in groups {
+                println!("{}", format!("[{}]", group.section).cyan());
 
-        for line in content.lines() {
-            if line.starts_with("[dependencies]") || line.starts_with("[dev-dependencies]") {
-                in_deps = true;
-                println!("{}", line.cyan());
-            } else if line.starts_with('[') {
-                in_deps = false;
-            } else if in_deps && !line.trim().is_empty() {
-                println!("  {}", line);
+                for dep in group.dependencies {
+                    print!("  {}", dep.name.cyan());
+                    if !dep.version.is_empty() {
+                        print!(" = {}", dep.version);
+                    }
+                    if dep.source != "crates.io" && dep.source != "unknown" {
+                        print!(" {}", format!("({})", dep.source).dimmed());
+                    }
+                    println!();
+                }
+
+                println!();
             }
         }
-    } else {
-        println!("{}", "No Cargo.toml found".yellow());
+        Err(AppError::NotFound(_)) => {
+            println!("{}", "No Cargo.toml found".yellow());
+        }
+        Err(e) => return Err(e.into()),
     }
 
     Ok(())
 }
 
+/// Compute and display repository statistics.
+///
+/// Statistics are computed by `gestura-core`; CLI is responsible only for formatting.
 fn run_stats(path: Option<&Path>) -> Result<()> {
     let root = path.unwrap_or(Path::new("."));
 

@@ -223,7 +223,7 @@ async fn test_mdh_translation() {
 async fn test_configuration_persistence() {
     // Test configuration loading and saving
     let temp_dir = tempfile::tempdir().unwrap();
-    let config_path = temp_dir.path().join("config.json");
+    let config_path = temp_dir.path().join("config.yaml");
     let mut config = AppConfig::load_from_path(&config_path);
 
     // Modify config
@@ -248,7 +248,7 @@ async fn test_pipeline_settings_persistence() {
 
     // Test pipeline settings loading and saving
     let temp_dir = tempfile::tempdir().unwrap();
-    let config_path = temp_dir.path().join("config.json");
+    let config_path = temp_dir.path().join("config.yaml");
     let mut config = AppConfig::load_from_path(&config_path);
 
     // Modify pipeline settings

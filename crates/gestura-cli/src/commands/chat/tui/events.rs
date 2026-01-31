@@ -54,6 +54,87 @@ fn handle_key_event(app: &mut TuiApp, key: KeyEvent) -> Action {
         TuiMode::Help => handle_help_mode(app, key),
         TuiMode::Confirm => handle_confirm_mode(app, key),
         TuiMode::Search => handle_search_mode(app, key),
+        TuiMode::ModelPicker => handle_model_picker_mode(app, key),
+        TuiMode::Activity => handle_activity_mode(app, key),
+    }
+}
+
+/// Handle ModelPicker overlay keys.
+///
+/// This overlay is Claude Code-like: type to filter, use arrows to select, Enter to apply.
+fn handle_model_picker_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Esc => {
+            app.mode = TuiMode::Insert;
+            Action::Continue
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.model_picker_state.select_prev();
+            Action::Continue
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.model_picker_state.select_next();
+            Action::Continue
+        }
+        KeyCode::Enter => {
+            if let Some(item) = app.model_picker_state.selected_item() {
+                Action::ExecuteCommand(format!("/model {}", item.label))
+            } else {
+                let typed = app.model_picker_state.query.trim();
+                if typed.is_empty() {
+                    Action::Continue
+                } else {
+                    Action::ExecuteCommand(format!("/model {}", typed))
+                }
+            }
+        }
+        KeyCode::Backspace => {
+            app.model_picker_state.query.pop();
+            app.model_picker_state.refilter();
+            Action::Continue
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.model_picker_state.query.clear();
+            app.model_picker_state.refilter();
+            Action::Continue
+        }
+        KeyCode::Char(c) => {
+            app.model_picker_state.query.push(c);
+            app.model_picker_state.refilter();
+            Action::Continue
+        }
+        _ => Action::Continue,
+    }
+}
+
+/// Handle Activity overlay keys.
+///
+/// The activity transcript is a scrollable view used to display tool-call progress/results.
+fn handle_activity_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.mode = TuiMode::Insert;
+            Action::Continue
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.activity_state.scroll_up();
+            Action::Continue
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.activity_state.scroll_down();
+            Action::Continue
+        }
+        KeyCode::Char('G') => {
+            app.activity_state.scroll_to_bottom();
+            Action::Continue
+        }
+        KeyCode::Char('g') => {
+            // Jump to top.
+            app.activity_state.list_state.select(Some(0));
+            app.activity_state.user_scrolled = true;
+            Action::Continue
+        }
+        _ => Action::Continue,
     }
 }
 
@@ -95,6 +176,7 @@ fn handle_normal_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
             app.mode = TuiMode::Command;
             app.clear_input();
             app.insert_char('/');
+            app.update_command_suggestions();
             Action::Continue
         }
         // Navigation
@@ -299,6 +381,7 @@ fn handle_insert_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
             // Auto-switch to command mode if starting with /
             if app.input == "/" {
                 app.mode = TuiMode::Command;
+                app.update_command_suggestions();
             }
             Action::Continue
         }
@@ -433,6 +516,7 @@ fn handle_confirm_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
                     }
                     ConfirmAction::ClearMessages => {
                         app.messages.clear();
+                        app.activity_state.clear();
                         app.message_list_state.select(None);
                         app.set_status("Messages cleared");
                         Action::Continue
@@ -463,11 +547,19 @@ fn handle_mouse_event(app: &mut TuiApp, mouse: MouseEvent) -> Action {
 
     match mouse.kind {
         MouseEventKind::ScrollUp => {
-            app.scroll_up();
+            match app.mode {
+                TuiMode::Activity => app.activity_state.scroll_up(),
+                TuiMode::ModelPicker => app.model_picker_state.select_prev(),
+                _ => app.scroll_up(),
+            }
             Action::Continue
         }
         MouseEventKind::ScrollDown => {
-            app.scroll_down();
+            match app.mode {
+                TuiMode::Activity => app.activity_state.scroll_down(),
+                TuiMode::ModelPicker => app.model_picker_state.select_next(),
+                _ => app.scroll_down(),
+            }
             Action::Continue
         }
         MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
@@ -635,5 +727,47 @@ fn handle_settings_tab(app: &mut TuiApp, key: KeyEvent) -> Action {
         }
         // Passthrough for tab switching etc.
         _ => Action::Continue,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::chat::new_cli_session;
+    use gestura_core::AppConfig;
+
+    /// Helper to create a test app instance for event handling tests.
+    fn create_test_app() -> TuiApp {
+        let session = new_cli_session(None).unwrap();
+        let config = AppConfig::default();
+        TuiApp::new(session, config, None)
+    }
+
+    #[test]
+    fn entering_command_mode_from_normal_populates_suggestions() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Normal;
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)),
+        );
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Command);
+        assert!(!app.command_suggestions.is_empty());
+    }
+
+    #[test]
+    fn entering_command_mode_from_insert_populates_suggestions() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Insert;
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)),
+        );
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Command);
+        assert!(!app.command_suggestions.is_empty());
     }
 }

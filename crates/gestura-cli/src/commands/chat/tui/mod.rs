@@ -31,6 +31,7 @@
 mod app;
 mod events;
 mod ui;
+mod widgets;
 
 pub use app::{Action, TuiApp, TuiMode};
 
@@ -53,6 +54,191 @@ use tokio::sync::mpsc;
 
 use super::{ChatOptions, Result};
 
+/// Resolve the session-scoped LLM override for the current TUI session.
+///
+/// Precedence:
+/// 1) `app.session.state.llm_config` (canonical persisted override)
+/// 2) legacy `app.session.model` (CLI-style selector string)
+fn resolve_session_llm_override(
+    app: &TuiApp,
+) -> Option<gestura_core::chat_sessions::SessionLlmConfig> {
+    if let Some(cfg) = app.session.state.llm_config.as_ref() {
+        return Some(cfg.clone());
+    }
+
+    app.session
+        .model
+        .as_deref()
+        .and_then(gestura_core::llm_overrides::session_llm_config_from_cli_model_arg)
+}
+
+/// Return true if the token looks like a CLI flag (e.g. `--confirmed`).
+fn is_flag_token(tok: &str) -> bool {
+    tok.trim_start().starts_with("--")
+}
+
+/// Get the first non-flag argument from a slice of parsed command args.
+fn first_non_flag_arg<'a>(args: &'a [&'a str]) -> Option<&'a str> {
+    args.iter().copied().find(|a| !is_flag_token(a))
+}
+
+/// Compute the best-effort provider+model selection for the current TUI session.
+///
+/// Precedence:
+/// 1) `session.state.llm_config` (session-scoped overrides)
+/// 2) legacy `session.model` hint (supports `provider:model`)
+/// 3) `app.config.llm.primary` + provider default model
+fn effective_provider_model_for_ui(app: &TuiApp) -> (String, String) {
+    if let Some(cfg) = app.session.state.llm_config.as_ref() {
+        let provider = cfg.provider.as_deref().unwrap_or("").trim().to_string();
+        let model = cfg.model.as_deref().unwrap_or("").trim().to_string();
+        if !provider.is_empty() {
+            let effective_model = if !model.is_empty() {
+                model
+            } else {
+                model_for_provider(&app.config, &provider).unwrap_or_default()
+            };
+            return (provider, effective_model);
+        }
+    }
+
+    if let Some(m) = app.session.model.as_deref() {
+        let m = m.trim();
+        if let Some((p, model)) = m.split_once(':') {
+            let p = p.trim();
+            let model = model.trim();
+            if !p.is_empty() {
+                return (p.to_string(), model.to_string());
+            }
+        }
+    }
+
+    let provider = app.config.llm.primary.clone();
+    let model = model_for_provider(&app.config, &provider).unwrap_or_default();
+    (provider, model)
+}
+
+/// Populate and open the model picker overlay.
+fn open_model_picker(app: &mut TuiApp) {
+    let primary = app.config.llm.primary.clone();
+    let mut items: Vec<app::ModelPickerItem> = Vec::new();
+
+    // Keep ordering predictable (primary first).
+    let mut providers: Vec<&str> = Vec::new();
+    providers.push(primary.as_str());
+    for p in ["openai", "anthropic", "grok", "ollama"] {
+        if p != primary.as_str() {
+            providers.push(p);
+        }
+    }
+    providers.dedup();
+
+    for provider in providers {
+        // Only show providers that exist in config (and have a model).
+        let Some(model) = model_for_provider(&app.config, provider) else {
+            continue;
+        };
+        let model = model.trim().to_string();
+        if model.is_empty() {
+            continue;
+        }
+        items.push(app::ModelPickerItem {
+            label: format!("{}:{}", provider, model),
+            provider: provider.to_string(),
+            model,
+        });
+    }
+
+    app.model_picker_state.items = items;
+    app.model_picker_state.reset();
+
+    // Preselect the effective provider/model when possible.
+    let (provider, model) = effective_provider_model_for_ui(app);
+    if let Some(pos) = app.model_picker_state.filtered.iter().position(|idx| {
+        app.model_picker_state
+            .items
+            .get(*idx)
+            .is_some_and(|it| it.provider == provider && it.model == model)
+    }) {
+        app.model_picker_state.list_state.select(Some(pos));
+    }
+
+    app.mode = TuiMode::ModelPicker;
+    app.set_status("Model picker: type to filter, Enter to select, Esc to close");
+}
+
+/// Apply a `/model` selection to the current session and persist it.
+///
+/// Accepted forms:
+/// - `provider:model` (explicit)
+/// - `provider` (provider only; selects provider default model)
+/// - `model` (model id only; will infer provider from model prefix when possible)
+fn apply_model_selection(app: &mut TuiApp, spec: &str) -> Result<()> {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        open_model_picker(app);
+        return Ok(());
+    }
+
+    let (mut provider, mut model) = if let Some((p, m)) = spec.split_once(':') {
+        (p.trim().to_string(), m.trim().to_string())
+    } else {
+        // Distinguish provider-only vs model-only.
+        match spec.to_ascii_lowercase().as_str() {
+            "openai" | "anthropic" | "grok" | "ollama" => {
+                let p = spec.trim().to_string();
+                let m = model_for_provider(&app.config, &p).unwrap_or_default();
+                (p, m)
+            }
+            _ => {
+                // Model-only. Prefer inferred provider, else keep the current provider.
+                let inferred = gestura_core::llm_validation::infer_provider_from_model_id(spec)
+                    .map(|p| p.to_string());
+
+                let current_provider = app
+                    .session
+                    .state
+                    .llm_config
+                    .as_ref()
+                    .and_then(|c| c.provider.as_deref())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| app.config.llm.primary.clone());
+
+                (inferred.unwrap_or(current_provider), spec.to_string())
+            }
+        }
+    };
+
+    provider = provider.trim().to_string();
+    model = model.trim().to_string();
+    if provider.is_empty() {
+        app.set_error("Model selection is missing provider".to_string());
+        return Ok(());
+    }
+    if model.is_empty() {
+        app.set_error("Model selection is missing model".to_string());
+        return Ok(());
+    }
+
+    if let Err(msg) = gestura_core::llm_validation::validate_model_for_provider(&provider, &model) {
+        app.set_error(msg);
+        return Ok(());
+    }
+
+    app.session.state.llm_config = Some(gestura_core::chat_sessions::SessionLlmConfig {
+        provider: Some(provider.clone()),
+        model: Some(model.clone()),
+    });
+    // Keep the legacy hint in sync for compatibility across CLI modes.
+    app.session.model = Some(format!("{}:{}", provider, model));
+
+    super::save_cli_session(&app.session)?;
+    app.mode = TuiMode::Insert;
+    app.set_status(format!("Model set: {}:{}", provider, model));
+    Ok(())
+}
+
 /// Streaming state for async LLM responses
 struct StreamingState {
     /// Receiver for stream chunks
@@ -63,6 +249,62 @@ struct StreamingState {
     content: String,
     /// Accumulated thinking content
     thinking_content: String,
+}
+
+/// Truncate a string by *character count* for safe UI previews.
+///
+/// This avoids panics from slicing UTF-8 strings on non-char boundaries.
+fn truncate_for_preview(s: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for (count, ch) in s.chars().enumerate() {
+        if count >= max_chars {
+            out.push_str("...");
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Append an entry to the agent activity transcript.
+///
+/// This is used to keep non-response streaming events (tool calls, retries, token usage, etc.)
+/// out of the main assistant transcript while still exposing them to the user.
+fn push_activity_entry(tui: &mut TuiApp, text: impl Into<String>, is_error: bool) {
+    tui.activity_state.push(app::ActivityEntry {
+        text: text.into(),
+        is_error,
+    });
+}
+
+/// Append an informational activity entry.
+fn push_activity_info(tui: &mut TuiApp, text: impl Into<String>) {
+    push_activity_entry(tui, text, false);
+}
+
+/// Append an error activity entry.
+fn push_activity_error(tui: &mut TuiApp, text: impl Into<String>) {
+    push_activity_entry(tui, text, true);
+}
+
+/// Format a token usage line suitable for both the status bar and the activity transcript.
+fn format_token_usage_line(
+    estimated: usize,
+    limit: usize,
+    percentage: u8,
+    status: gestura_core::streaming::TokenUsageStatus,
+    estimated_cost: f64,
+) -> String {
+    let status_icon = match status {
+        gestura_core::streaming::TokenUsageStatus::Green => "🟢",
+        gestura_core::streaming::TokenUsageStatus::Yellow => "🟡",
+        gestura_core::streaming::TokenUsageStatus::Red => "🔴",
+    };
+
+    format!(
+        "{} Tokens: {}/{} ({}%) - ${:.4}",
+        status_icon, estimated, limit, percentage, estimated_cost
+    )
 }
 
 /// Run the TUI chat interface
@@ -171,23 +413,22 @@ fn run_main_loop(
                             stream_state.thinking_content.push_str(&text);
                             app.update_last_message_thinking(&stream_state.thinking_content);
                         }
+                        StreamChunk::Status { message } => {
+                            let msg = message;
+                            app.set_status(msg.clone());
+                            push_activity_info(app, format!("ℹ️ {}", msg));
+                        }
                         StreamChunk::Text(text) => {
                             stream_state.content.push_str(&text);
                             app.update_last_message(&stream_state.content);
                         }
                         StreamChunk::ToolCallStart { id: _, name } => {
-                            stream_state
-                                .content
-                                .push_str(&format!("\n\n🔧 *Using tool: {}*\n", name));
-                            app.update_last_message(&stream_state.content);
+                            push_activity_info(app, format!("🔧 Using tool: {}", name));
+                            app.set_status(format!("Using tool: {}", name));
                         }
                         StreamChunk::ToolCallArgs(args) => {
-                            // Accumulate tool arguments (could display progress)
-                            stream_state.content.push_str(&format!(
-                                "  ⏳ Args: {}...\n",
-                                &args[..args.len().min(50)]
-                            ));
-                            app.update_last_message(&stream_state.content);
+                            let preview = truncate_for_preview(&args, 160);
+                            push_activity_info(app, format!("  ⏳ Args: {}", preview));
                         }
                         StreamChunk::ToolCallEnd => {
                             // Tool specification ended, waiting for result
@@ -198,20 +439,25 @@ fn run_main_loop(
                             output,
                             duration_ms,
                         } => {
-                            if success {
-                                let formatted = format_tool_output_tui(&output);
-                                stream_state.content.push_str(&format!(
-                                    "  ✅ {} ({}ms):\n{}\n",
-                                    name, duration_ms, formatted
-                                ));
+                            let formatted = format_tool_output_tui(&output);
+                            let (prefix, is_error) = if success {
+                                ("✅", false)
                             } else {
-                                let formatted = format_tool_output_tui(&output);
-                                stream_state.content.push_str(&format!(
-                                    "  ❌ {} failed ({}ms):\n{}\n",
-                                    name, duration_ms, formatted
-                                ));
-                            }
-                            app.update_last_message(&stream_state.content);
+                                ("❌", true)
+                            };
+                            push_activity_entry(
+                                app,
+                                format!(
+                                    "  {} {} ({}ms):\n{}",
+                                    prefix, name, duration_ms, formatted
+                                ),
+                                is_error,
+                            );
+                            app.set_status(format!(
+                                "Tool {}: {}",
+                                if success { "ok" } else { "failed" },
+                                name
+                            ));
                         }
                         StreamChunk::RetryAttempt {
                             attempt,
@@ -219,12 +465,14 @@ fn run_main_loop(
                             delay_ms,
                             error_message,
                         } => {
-                            // Show retry notification in the stream
-                            stream_state.content.push_str(&format!(
-                                "\n⟳ Retry {}/{} in {}ms: {}\n",
-                                attempt, max_attempts, delay_ms, error_message
-                            ));
-                            app.update_last_message(&stream_state.content);
+                            let preview = truncate_for_preview(&error_message, 200);
+                            push_activity_info(
+                                app,
+                                format!(
+                                    "🔁 Retry {}/{} in {}ms: {}",
+                                    attempt, max_attempts, delay_ms, preview
+                                ),
+                            );
                             app.set_status(format!("Retrying ({}/{})", attempt, max_attempts));
                         }
                         StreamChunk::ContextCompacted {
@@ -233,15 +481,16 @@ fn run_main_loop(
                             tokens_saved,
                             summary,
                         } => {
-                            // Show compaction notification in the stream
-                            stream_state.content.push_str(&format!(
-                                "\n📦 Context compacted: {} → {} messages ({} tokens saved)\n",
+                            let mut line = format!(
+                                "📦 Context compacted: {} → {} messages ({} tokens saved)",
                                 messages_before, messages_after, tokens_saved
-                            ));
-                            if !summary.is_empty() {
-                                stream_state.content.push_str(&format!("   {}\n", summary));
+                            );
+                            if !summary.trim().is_empty() {
+                                let preview =
+                                    truncate_for_preview(&summary.replace('\n', " "), 240);
+                                line.push_str(&format!("\n  Summary: {}", preview));
                             }
-                            app.update_last_message(&stream_state.content);
+                            push_activity_info(app, line);
                             app.set_status("Context compacted".to_string());
                         }
                         StreamChunk::MemoryBankSaved {
@@ -250,20 +499,16 @@ fn run_main_loop(
                             summary,
                             messages_saved,
                         } => {
-                            // Show memory bank save notification in the stream
-                            stream_state.content.push_str(&format!(
-                                "\n💾 Memory bank saved: {} messages\n",
-                                messages_saved
-                            ));
-                            stream_state
-                                .content
-                                .push_str(&format!("   File: {}\n", file_path));
-                            if !summary.is_empty() {
-                                stream_state
-                                    .content
-                                    .push_str(&format!("   Summary: {}\n", summary));
+                            let mut line = format!(
+                                "💾 Memory bank saved: {} messages\n  File: {}",
+                                messages_saved, file_path
+                            );
+                            if !summary.trim().is_empty() {
+                                let preview =
+                                    truncate_for_preview(&summary.replace('\n', " "), 240);
+                                line.push_str(&format!("\n  Summary: {}", preview));
                             }
-                            app.update_last_message(&stream_state.content);
+                            push_activity_info(app, line);
                             app.set_status(format!("Memory saved (session: {})", session_id));
                         }
                         StreamChunk::Done(usage) => {
@@ -289,31 +534,32 @@ fn run_main_loop(
                             } else {
                                 format!("📋 Config query: {}", key)
                             };
-                            app.set_status(msg);
+                            app.set_status(msg.clone());
+                            push_activity_info(app, msg);
                         }
                         StreamChunk::ToolConfirmationRequired {
                             tool_name,
                             description,
                             ..
                         } => {
-                            // In CLI TUI, show confirmation request as status
-                            stream_state.content.push_str(&format!(
-                                "\n⚠️ Tool '{}' requires confirmation: {}\n",
-                                tool_name, description
-                            ));
-                            app.update_last_message(&stream_state.content);
+                            app.activity_state.push(app::ActivityEntry {
+                                text: format!(
+                                    "⚠️ Tool '{}' requires confirmation: {}",
+                                    tool_name, description
+                                ),
+                                is_error: false,
+                            });
                             app.set_status(format!("Confirmation required: {}", tool_name));
                         }
                         StreamChunk::ToolBlocked { tool_name, reason } => {
-                            // In CLI TUI, show blocked tool as error
-                            stream_state.content.push_str(&format!(
-                                "\n🚫 Tool '{}' blocked: {}\n",
-                                tool_name, reason
-                            ));
-                            app.update_last_message(&stream_state.content);
+                            app.activity_state.push(app::ActivityEntry {
+                                text: format!("🚫 Tool '{}' blocked: {}", tool_name, reason),
+                                is_error: true,
+                            });
                             app.set_status(format!("Tool blocked: {}", tool_name));
                         }
                         StreamChunk::Cancelled => {
+                            push_activity_info(app, "⏹ Cancelled");
                             // Keep partial content but mark as cancelled
                             if !stream_state.content.is_empty() {
                                 app.update_last_message(&format!(
@@ -337,20 +583,20 @@ fn run_main_loop(
                             status,
                             estimated_cost,
                         } => {
-                            // Display token usage in status bar
-                            let status_icon = match status {
-                                gestura_core::streaming::TokenUsageStatus::Green => "🟢",
-                                gestura_core::streaming::TokenUsageStatus::Yellow => "🟡",
-                                gestura_core::streaming::TokenUsageStatus::Red => "🔴",
-                            };
-                            app.set_status(format!(
-                                "{} Tokens: {}/{} ({}%) - ${:.4}",
-                                status_icon, estimated, limit, percentage, estimated_cost
-                            ));
+                            let line = format_token_usage_line(
+                                estimated,
+                                limit,
+                                percentage,
+                                status,
+                                estimated_cost,
+                            );
+                            app.set_status(line.clone());
+                            push_activity_info(app, line);
                         }
                         StreamChunk::Error(err) => {
                             let error_msg = format!("Stream error: {}", err);
                             app.set_error(&error_msg);
+                            push_activity_error(app, format!("❌ {}", error_msg));
 
                             // Push critical error as visible message in chat
                             // (connection failures, API quota exceeded, etc.)
@@ -405,6 +651,13 @@ fn run_main_loop(
                     // Don't allow sending while streaming
                     if streaming.is_none() {
                         streaming = start_streaming_message(app, rt, &msg)?;
+                    } else {
+                        // Preserve the user's input so it isn't lost while a stream is active.
+                        app.input = msg;
+                        app.cursor_pos = app.input.len();
+                        app.set_status(
+							"Response streaming; wait for completion (Esc to cancel), then press Enter",
+						);
                     }
                 }
                 Action::ExecuteCommand(cmd) => {
@@ -515,7 +768,7 @@ fn start_streaming_message(
     // Natural language questions should go through the LLM for dynamic, session-aware responses
     if message.trim().starts_with("/tools") {
         app.add_message("user", message);
-        let response = crate::tool_registry::render_tools_overview();
+        let response = gestura_core::tools::render_tools_overview();
         app.add_message("assistant", &response);
         return Ok(None);
     }
@@ -557,13 +810,23 @@ fn start_streaming_message(
     if let Some(ws) = app.session.workspace_dir() {
         request = request.with_workspace(ws.clone());
     }
-    let provider_name = app.config.llm.primary.clone();
-    let model_name = app
-        .session
-        .model
-        .clone()
-        .or_else(|| model_for_provider(&app.config, &provider_name))
-        .unwrap_or_default();
+
+    // Compute and apply the effective provider/model for this session.
+    //
+    // IMPORTANT: we apply overrides to the *pipeline config* so the underlying LLM call
+    // matches what the UI shows (/model picker), instead of only changing labels.
+    let session_llm = resolve_session_llm_override(app);
+    let mut config = app.config.clone();
+    let effective = gestura_core::llm_overrides::apply_cli_session_llm_overrides(
+        &mut config,
+        session_llm.as_ref(),
+    );
+    let provider_name = effective.provider;
+    let model_name = if !effective.model.trim().is_empty() {
+        effective.model
+    } else {
+        model_for_provider(&config, &provider_name).unwrap_or_default()
+    };
     let (permission_level, allowed_tools) = super::derive_request_policy(&app.session);
     request = request
         .with_session_llm_config(provider_name, model_name)
@@ -579,11 +842,9 @@ fn start_streaming_message(
     let (tx, rx) = mpsc::channel::<StreamChunk>(100);
     let cancel_token = CancellationToken::new();
     let cancel_token_clone = cancel_token.clone();
-    let config = app.config.clone();
-
     // Spawn streaming task using AgentPipeline
     rt.spawn(async move {
-        let pipeline = AgentPipeline::new(config);
+        let pipeline = AgentPipeline::with_provider_optimized_config(config);
         if let Err(e) = pipeline
             .process_streaming(request, tx.clone(), cancel_token_clone)
             .await
@@ -621,9 +882,26 @@ fn handle_command(app: &mut TuiApp, command: &str) -> Result<Option<Action>> {
         "/help" | "/?" => {
             app.mode = TuiMode::Help;
         }
+        "/activity" => {
+            if app.mode == TuiMode::Activity {
+                app.mode = TuiMode::Insert;
+                app.set_status("Activity closed");
+            } else {
+                app.activity_state.scroll_to_bottom();
+                app.mode = TuiMode::Activity;
+                app.set_status("Activity: ↑/↓ to scroll, Esc to close");
+            }
+        }
+        "/model" => {
+            if let Some(spec) = first_non_flag_arg(args) {
+                apply_model_selection(app, spec)?;
+            } else {
+                open_model_picker(app);
+            }
+        }
         "/tools" => {
             if let Some(name) = args.first() {
-                if let Some(detail) = crate::tool_registry::render_tool_detail(name) {
+                if let Some(detail) = gestura_core::tools::render_tool_detail(name) {
                     app.messages.push(app::TuiMessage {
                         role: "system".to_string(),
                         content: detail,
@@ -679,7 +957,7 @@ fn handle_command(app: &mut TuiApp, command: &str) -> Result<Option<Action>> {
             app.active_tab = 3; // Switch to settings tab
         }
         "/capabilities" => {
-            let caps = crate::tool_registry::render_capabilities();
+            let caps = gestura_core::tools::render_capabilities(&app.config);
             app.messages.push(app::TuiMessage {
                 role: "system".to_string(),
                 content: caps,

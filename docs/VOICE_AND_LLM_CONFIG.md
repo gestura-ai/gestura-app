@@ -45,7 +45,30 @@ Uses OpenAI's cloud-based Whisper API.
 **Configuration:**
 1. Go to **Settings → Voice & Audio**
 2. Select **OpenAI Whisper** as the provider
-3. Enter your OpenAI API key in **Settings → AI Providers → OpenAI**
+3. Provide an OpenAI API key (any of the following works):
+   - **Settings → Voice & Audio** (voice/STT-specific key), or
+   - **Settings → AI Providers → OpenAI** (shared OpenAI key)
+
+**API key resolution (highest precedence first):**
+
+1. `config.voice.openai_api_key`
+2. secure storage secret `VoiceOpenAi`
+3. secure storage secret `OpenAi` (shared OpenAI key)
+4. legacy `config.llm.openai.api_key` (backwards compatibility)
+
+> Note: When secure storage is available, Gestura stores secrets in the OS keychain. Prefer that over
+> keeping API keys in plaintext config files.
+
+### Session voice overrides (optional)
+
+Gestura can apply a per-session voice/STT override (provider and/or model) when voice input is routed
+to an “active” chat session.
+
+**Precedence:**
+
+1. Session override (non-empty)
+2. Global config (`config.voice.*`)
+3. Default values (e.g. `gpt-4o-transcribe` for OpenAI transcription)
 
 **Requirements:**
 - OpenAI API key with Whisper access
@@ -141,7 +164,7 @@ Gestura validates configuration before starting voice listening. Common errors:
 |------------|---------|----------|
 | `NO_PROVIDER_CONFIGURED` | No STT provider configured | Select a provider in Settings → Voice & Audio |
 | `LOCAL_MODEL_NOT_FOUND` | Local Whisper model not found | Download a model or check the path |
-| `OPENAI_API_KEY_MISSING` | OpenAI API key not configured | Add key in Settings → AI Providers → OpenAI |
+| `OPENAI_API_KEY_MISSING` | OpenAI API key not configured | Add an OpenAI key in Settings → Voice & Audio **or** Settings → AI Providers → OpenAI |
 | `UNKNOWN_PROVIDER` | Unknown STT provider | Select a valid provider |
 
 ### LLM Errors

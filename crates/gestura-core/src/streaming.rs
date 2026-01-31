@@ -129,6 +129,16 @@ pub enum StreamChunk {
         /// Estimated cost in USD for this request (input only)
         estimated_cost: f64,
     },
+
+    /// A user-facing status message intended for UIs.
+    ///
+    /// This is for short, transient notifications that should not count as
+    /// streamed "output" (i.e., it must not prevent retry when a provider
+    /// attempt fails before any actual response content is forwarded).
+    Status {
+        /// Human-readable status message.
+        message: String,
+    },
     /// A request from the agent to change configuration.
     ///
     /// This is surfaced to UIs (GUI/TUI) so they can prompt for confirmation or
@@ -242,6 +252,10 @@ async fn forward_attempt_stream(
             }
             StreamChunk::TokenUsageUpdate { .. } => {
                 // Forward token usage updates without marking as output
+                let _ = tx.send(chunk).await;
+            }
+            StreamChunk::Status { .. } => {
+                // Forward status updates without marking as output
                 let _ = tx.send(chunk).await;
             }
             StreamChunk::ConfigRequest { .. } => {

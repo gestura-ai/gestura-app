@@ -46,10 +46,16 @@ async fn main() {
         Some(std::sync::Arc::from(gestura_gui::ble::create_ring_manager()));
 
     // Build shared state and wire event forwarding
+    let orchestrator = Arc::new(gestura_gui::orchestrator::AgentOrchestrator::new(
+        manager.clone(),
+        config.clone(),
+    ));
+
     let state = AppState {
         nats: nats_conn,
         agents: manager,
         config: config.clone(),
+        orchestrator,
         ring_manager,
     };
 
@@ -214,6 +220,8 @@ async fn main() {
             gestura_gui::api::get_session_workspace_by_id,
             gestura_gui::api::set_session_workspace,
             gestura_gui::api::pick_workspace_directory,
+            // Session convenience actions
+            gestura_gui::api::open_shell_for_session,
             // Session LLM config (session-scoped, doesn't modify global config)
             gestura_gui::api::get_session_llm_config,
             gestura_gui::api::set_session_llm_provider,
@@ -290,6 +298,18 @@ async fn main() {
             gestura_gui::api::migrate_api_keys_to_keychain
         ])
         .setup(move |app| {
+            // Attach the GUI observer for core orchestrator task lifecycle events.
+            //
+            // This keeps the orchestrator core-owned (tauri-free) while still enabling
+            // task panel syncing in the GUI.
+            let orchestrator = app.state::<AppState>().orchestrator.clone();
+            let observer = Arc::new(gestura_gui::orchestrator::TauriTaskObserver::new(
+                app.handle().clone(),
+            ));
+            tauri::async_runtime::spawn(async move {
+                orchestrator.set_observer(observer).await;
+            });
+
             gestura_gui::tray::init_tray(app.handle())?;
             register_hotkey(app.handle(), &config.hotkey_listen);
 

@@ -50,23 +50,29 @@ pub mod execution_mode;
 pub mod gdpr;
 pub mod interaction;
 pub mod knowledge;
+pub mod llm_overrides;
 pub mod llm_provider;
+pub mod llm_validation;
 pub mod mcp;
 pub mod memory_bank;
 pub mod nats_mq;
 /// OpenAI(-compatible) API compatibility helpers (e.g., parameter support quirks).
 pub mod openai_compat;
+pub mod orchestrator;
 mod persona;
 pub mod pipeline;
+pub mod plugin_system;
 pub mod prompt_enhancement;
 pub mod recommendations;
 pub mod retry;
 pub mod sandbox;
 pub mod scripting;
+pub mod secrets;
 pub mod security;
 pub mod session_manager;
 pub mod session_workspace;
 pub mod speech;
+pub mod stream_cancellation;
 pub mod stream_error;
 pub mod stream_health;
 pub mod stream_reconnect;
@@ -228,6 +234,9 @@ pub use agents::{
     AgentCommand, AgentEnvelope, AgentInfo, AgentManager, AgentSpawner, AgentStatus, DelegatedTask,
     OrchestratorToolCall, TaskResult,
 };
+
+// Orchestrator exports (core-owned orchestration implementation)
+pub use orchestrator::{AgentOrchestrator, OrchestratorAgentManager, OrchestratorObserver};
 
 #[cfg(test)]
 mod tests {

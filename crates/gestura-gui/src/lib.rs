@@ -111,9 +111,6 @@ pub mod chat_events;
 /// Small shared utilities.
 pub(crate) mod text_utils;
 
-/// Best-effort provider/model compatibility validation helpers.
-pub(crate) mod llm_validation;
-
 /// Frontend receipt tracing utilities (diagnostics-only).
 pub mod chat_receipts;
 
@@ -143,6 +140,11 @@ pub struct AppState {
     pub agents: agents::AgentManager,
     /// Application configuration
     pub config: AppConfig,
+    /// Core-owned subagent orchestrator shared across all Tauri commands.
+    ///
+    /// The GUI attaches a Tauri-backed observer at runtime to mirror task lifecycle
+    /// updates into the UI task panel.
+    pub orchestrator: std::sync::Arc<crate::orchestrator::AgentOrchestrator<agents::AgentManager>>,
     /// Ring manager for BLE operations (optional)
     pub ring_manager: Option<std::sync::Arc<dyn ble::RingManager>>,
 }

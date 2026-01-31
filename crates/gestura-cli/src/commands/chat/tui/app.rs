@@ -15,6 +15,11 @@ use super::super::{ChatMessage, ChatSession};
 #[derive(Debug, Clone)]
 pub struct Theme {
     pub name: &'static str,
+    /// Background token for legacy/alternate header styles.
+    ///
+    /// The current Claude-like minimal header renders without a background bar, but we retain this
+    /// token for other UI variants/themes.
+    #[allow(dead_code)]
     pub header_bg: Color,
     pub header_fg: Color,
     pub user_msg: Color,
@@ -24,12 +29,21 @@ pub struct Theme {
     pub streaming: Color,
     pub border: Color,
     pub border_focused: Color,
+    /// Background token for legacy/alternate status bar styles.
+    ///
+    /// The current minimal status line avoids heavy background blocks, but we keep this token for
+    /// future/alternative renderers.
+    #[allow(dead_code)]
     pub status_bg: Color,
     pub status_fg: Color,
     pub mode_normal: Color,
     pub mode_insert: Color,
     pub mode_command: Color,
     pub tab_active: Color,
+    /// Color token for inactive tab labels in the full tab-bar UI.
+    ///
+    /// The current Claude-like header doesn't render inactive tabs.
+    #[allow(dead_code)]
     pub tab_inactive: Color,
     pub selection_bg: Color,
     // Code highlighting colors
@@ -50,6 +64,25 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// Select an initial TUI theme based on the configured UI theme mode.
+    ///
+    /// Gestura’s config stores a *mode* (`"system" | "light" | "dark"`) rather than a
+    /// specific palette name. For the TUI, we map that mode into one of the built-in
+    /// terminal-first themes:
+    ///
+    /// - `light`  → [`Theme::light`]
+    /// - `dark`   → [`Theme::pro`] (Claude-like, dark)
+    /// - `system` → [`Theme::pro`] (we currently treat system as dark for the TUI)
+    ///
+    /// Any unknown value falls back to [`Theme::default`].
+    pub fn from_theme_mode(theme_mode: &str) -> Self {
+        match theme_mode.trim().to_lowercase().as_str() {
+            "light" => Self::light(),
+            "dark" | "system" => Self::pro(),
+            _ => Self::default(),
+        }
+    }
+
     /// Catppuccin Mocha theme (default dark theme)
     pub fn catppuccin_mocha() -> Self {
         Self {
@@ -249,6 +282,10 @@ pub enum TuiMode {
     Confirm,
     /// Search mode - searching through messages
     Search,
+    /// Model picker overlay is displayed
+    ModelPicker,
+    /// Agent activity overlay is displayed
+    Activity,
 }
 
 /// Types of confirmation dialogs
@@ -325,6 +362,12 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/quit", "Exit the application"),
     ("/settings", "Switch to settings tab"),
     ("/capabilities", "Show AI capabilities"),
+    ("/model", "Select active model (interactive picker)"),
+    (
+        "/model <provider:model|model>",
+        "Set session model (e.g. openai:gpt-4o or claude-3-5-sonnet)",
+    ),
+    ("/activity", "Toggle agent activity view"),
     ("/theme", "List available themes"),
     (
         "/theme <name>",
@@ -413,6 +456,168 @@ pub struct TuiApp {
     pub session_cost_usd: f64,
     /// Original prompt before enhancement (for undo with Cmd+Z)
     pub original_prompt: Option<String>,
+
+    /// Agent activity state (tool-call transcript, separate from chat transcript).
+    pub activity_state: ActivityState,
+    /// Model picker overlay state.
+    pub model_picker_state: ModelPickerState,
+}
+
+/// A single line in the agent activity transcript.
+#[derive(Debug, Clone)]
+pub struct ActivityEntry {
+    /// Rendered activity text.
+    pub text: String,
+    /// Whether the entry represents an error.
+    pub is_error: bool,
+}
+
+/// State for the agent activity overlay.
+#[derive(Debug, Clone, Default)]
+pub struct ActivityState {
+    /// Activity entries in chronological order.
+    pub entries: Vec<ActivityEntry>,
+    /// Selection state used to implement scrolling in the activity view.
+    pub list_state: ListState,
+    /// Whether the user has manually scrolled (disables auto-scroll).
+    pub user_scrolled: bool,
+}
+
+impl ActivityState {
+    /// Append a new activity entry.
+    pub fn push(&mut self, entry: ActivityEntry) {
+        self.entries.push(entry);
+        if !self.user_scrolled {
+            self.scroll_to_bottom();
+        }
+    }
+
+    /// Clear all activity entries.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.list_state.select(None);
+        self.user_scrolled = false;
+    }
+
+    /// Scroll to the bottom of activity entries.
+    pub fn scroll_to_bottom(&mut self) {
+        if !self.entries.is_empty() {
+            self.list_state
+                .select(Some(self.entries.len().saturating_sub(1)));
+        }
+        self.user_scrolled = false;
+    }
+
+    /// Scroll up in the activity list.
+    pub fn scroll_up(&mut self) {
+        self.user_scrolled = true;
+        let current = self.list_state.selected().unwrap_or(0);
+        if current > 0 {
+            self.list_state.select(Some(current - 1));
+        }
+    }
+
+    /// Scroll down in the activity list.
+    pub fn scroll_down(&mut self) {
+        let current = self.list_state.selected().unwrap_or(0);
+        let max = self.entries.len().saturating_sub(1);
+        if current < max {
+            self.list_state.select(Some(current + 1));
+        }
+        if self.is_at_bottom() {
+            self.user_scrolled = false;
+        }
+    }
+
+    /// Returns true if the activity view is currently at the bottom.
+    pub fn is_at_bottom(&self) -> bool {
+        let selected = self.list_state.selected().unwrap_or(0);
+        selected >= self.entries.len().saturating_sub(1)
+    }
+}
+
+/// A model picker option.
+#[derive(Debug, Clone)]
+pub struct ModelPickerItem {
+    /// Display label (typically `provider:model`).
+    pub label: String,
+    /// Provider id (e.g. `openai`).
+    pub provider: String,
+    /// Model id (provider-specific).
+    pub model: String,
+}
+
+/// State for the model picker overlay.
+#[derive(Debug, Clone, Default)]
+pub struct ModelPickerState {
+    /// User-entered filter string.
+    pub query: String,
+    /// All available picker options.
+    pub items: Vec<ModelPickerItem>,
+    /// Indices into `items` representing the filtered view.
+    pub filtered: Vec<usize>,
+    /// Selection state for the filtered list.
+    pub list_state: ListState,
+}
+
+impl ModelPickerState {
+    /// Reset the picker query and selection.
+    pub fn reset(&mut self) {
+        self.query.clear();
+        self.filtered = (0..self.items.len()).collect();
+        self.list_state.select(self.filtered.first().copied());
+    }
+
+    /// Recompute `filtered` based on the current query.
+    pub fn refilter(&mut self) {
+        let q = self.query.trim().to_ascii_lowercase();
+        if q.is_empty() {
+            self.filtered = (0..self.items.len()).collect();
+        } else {
+            self.filtered = self
+                .items
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, item)| {
+                    let hay = item.label.to_ascii_lowercase();
+                    hay.contains(&q).then_some(idx)
+                })
+                .collect();
+        }
+
+        // Clamp selection into the filtered list.
+        if self.filtered.is_empty() {
+            self.list_state.select(None);
+        } else {
+            let selected = self.list_state.selected().unwrap_or(0);
+            let clamped = selected.min(self.filtered.len() - 1);
+            self.list_state.select(Some(clamped));
+        }
+    }
+
+    /// Move selection up (within the filtered list).
+    pub fn select_prev(&mut self) {
+        let current = self.list_state.selected().unwrap_or(0);
+        if current > 0 {
+            self.list_state.select(Some(current - 1));
+        }
+    }
+
+    /// Move selection down (within the filtered list).
+    pub fn select_next(&mut self) {
+        let current = self.list_state.selected().unwrap_or(0);
+        let max = self.filtered.len().saturating_sub(1);
+        if current < max {
+            self.list_state.select(Some(current + 1));
+        }
+    }
+
+    /// Return the currently selected picker item.
+    pub fn selected_item(&self) -> Option<&ModelPickerItem> {
+        let selected = self.list_state.selected()?;
+        let idx = *self.filtered.get(selected)?;
+        self.items.get(idx)
+    }
 }
 
 /// State for the interactive settings editor
@@ -470,6 +675,8 @@ impl TuiApp {
             .map(TuiMessage::from)
             .collect();
 
+        let initial_theme = Theme::from_theme_mode(&config.ui.theme_mode);
+
         let mut message_list_state = ListState::default();
         // Select the last message if any exist
         if !messages.is_empty() {
@@ -502,7 +709,7 @@ impl TuiApp {
             command_history_pos: None,
             pending_confirm: None,
             layout_areas: LayoutAreas::default(),
-            theme: Theme::default(),
+            theme: initial_theme,
             search_query: String::new(),
             search_matches: Vec::new(),
             current_match_idx: 0,
@@ -511,6 +718,9 @@ impl TuiApp {
             session_output_tokens: 0,
             session_cost_usd: 0.0,
             original_prompt: None,
+
+            activity_state: ActivityState::default(),
+            model_picker_state: ModelPickerState::default(),
         }
     }
 
@@ -584,17 +794,88 @@ impl TuiApp {
         self.pending_confirm.take()
     }
 
-    /// Update command suggestions based on current input (fuzzy filter)
+    /// Return the command token (the first whitespace-delimited segment) from a command spec.
+    ///
+    /// For example, `"/tools <name>"` becomes `"/tools"`.
+    fn command_token(cmd: &str) -> &str {
+        cmd.split_whitespace().next().unwrap_or(cmd)
+    }
+
+    /// Return the byte range of the command token currently being edited.
+    ///
+    /// If the cursor is already past the first whitespace (i.e. editing arguments), this
+    /// returns `None` so the command palette can be hidden.
+    fn command_token_range(&self) -> Option<std::ops::Range<usize>> {
+        if self.input.is_empty() {
+            return None;
+        }
+
+        let token_end = self
+            .input
+            .find(|c: char| c.is_whitespace())
+            .unwrap_or(self.input.len());
+
+        // If the cursor is past the token, we consider the user to be typing args.
+        if self.cursor_pos > token_end {
+            return None;
+        }
+
+        Some(0..token_end)
+    }
+
+    /// Update command suggestions based on the current command token.
+    ///
+    /// UX goals:
+    /// - Prefer prefix matches (e.g. `/h` ranks `/help` above `/history`).
+    /// - Allow description matches as a fallback.
+    /// - Hide suggestions once the user is typing arguments (after a space).
     pub fn update_command_suggestions(&mut self) {
-        let query = self.input.to_lowercase();
-        self.command_suggestions = COMMANDS
-            .iter()
-            .filter(|(cmd, desc)| {
-                cmd.to_lowercase().contains(&query) || desc.to_lowercase().contains(&query)
-            })
-            .map(|(cmd, desc)| (cmd.to_string(), desc.to_string()))
+        let Some(range) = self.command_token_range() else {
+            self.command_suggestions.clear();
+            self.command_selection = 0;
+            return;
+        };
+
+        let query = self.input[range].to_lowercase();
+        if !query.starts_with('/') {
+            self.command_suggestions.clear();
+            self.command_selection = 0;
+            return;
+        }
+
+        let query_no_slash = query.trim_start_matches('/');
+        let show_all = query_no_slash.is_empty();
+
+        let mut scored: Vec<(i32, String, String)> = Vec::new();
+        for (cmd, desc) in COMMANDS.iter() {
+            let cmd_token = Self::command_token(cmd).to_lowercase();
+            let desc_lc = desc.to_lowercase();
+
+            let score = if show_all || cmd_token == query {
+                Some(0)
+            } else if cmd_token.starts_with(&query) {
+                // Prefer shorter completions when both are prefix matches.
+                Some(10 + (cmd_token.len().saturating_sub(query.len()) as i32))
+            } else if let Some(pos) = cmd_token.find(&query) {
+                Some(100 + (pos as i32))
+            } else if desc_lc.contains(query_no_slash) {
+                Some(200)
+            } else {
+                None
+            };
+
+            if let Some(score) = score {
+                scored.push((score, (*cmd).to_string(), (*desc).to_string()));
+            }
+        }
+
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        self.command_suggestions = scored
+            .into_iter()
+            .map(|(_, cmd, desc)| (cmd, desc))
             .collect();
-        // Reset selection if out of bounds
+
+        // Clamp selection to new list.
         if self.command_selection >= self.command_suggestions.len() {
             self.command_selection = 0;
         }
@@ -620,12 +901,24 @@ impl TuiApp {
 
     /// Apply selected command suggestion to input
     pub fn apply_command_suggestion(&mut self) {
-        if let Some((cmd, _)) = self.command_suggestions.get(self.command_selection) {
-            // Extract just the command part (before any <arg>)
-            let cmd_base = cmd.split_whitespace().next().unwrap_or(cmd);
-            self.input = cmd_base.to_string();
-            self.cursor_pos = self.input.len();
-        }
+        let Some((cmd, _)) = self.command_suggestions.get(self.command_selection) else {
+            return;
+        };
+        let Some(range) = self.command_token_range() else {
+            return;
+        };
+
+        // Extract just the command token (before any <arg> template).
+        let cmd_token = Self::command_token(cmd);
+        let suffix = &self.input[range.end..];
+        let new_suffix = if suffix.is_empty() {
+            " ".to_string()
+        } else {
+            suffix.to_string()
+        };
+
+        self.input = format!("{}{}", cmd_token, new_suffix);
+        self.cursor_pos = self.input.len();
     }
 
     /// Add command to history
@@ -1202,12 +1495,6 @@ impl TuiApp {
         self.status = "Search cleared".to_string();
     }
 
-    /// Check if a message has search matches.
-    /// Used in UI rendering to highlight messages that contain search matches.
-    pub fn message_has_match(&self, msg_idx: usize) -> bool {
-        self.search_matches.iter().any(|(idx, _)| *idx == msg_idx)
-    }
-
     /// Get match ranges for a specific message
     pub fn get_match_ranges(&self, msg_idx: usize) -> Option<&Vec<std::ops::Range<usize>>> {
         self.search_matches
@@ -1549,19 +1836,45 @@ mod tests {
     // ==================== Command Suggestion Tests ====================
 
     #[test]
-    fn test_command_suggestions() {
+    fn test_command_suggestions_prefix_ranking() {
         let mut app = create_test_app();
 
-        app.input = "/he".to_string();
+        // Both /help and /history should match, but /help should rank first (shorter prefix match).
+        app.input = "/h".to_string();
         app.update_command_suggestions();
 
-        // Should match /help
         assert!(!app.command_suggestions.is_empty());
-        assert!(
-            app.command_suggestions
-                .iter()
-                .any(|(cmd, _)| cmd.contains("help"))
-        );
+        let first = &app.command_suggestions[0].0;
+        assert!(first.starts_with("/help"));
+    }
+
+    #[test]
+    fn test_command_suggestions_hide_when_typing_args() {
+        let mut app = create_test_app();
+        app.input = "/tools ".to_string();
+        app.cursor_pos = app.input.len();
+        app.update_command_suggestions();
+        assert!(app.command_suggestions.is_empty());
+    }
+
+    #[test]
+    fn test_apply_command_suggestion_completes_token_and_adds_space() {
+        let mut app = create_test_app();
+
+        app.input = "/to".to_string();
+        app.cursor_pos = app.input.len();
+        app.update_command_suggestions();
+
+        let idx = app
+            .command_suggestions
+            .iter()
+            .position(|(cmd, _)| cmd.contains("/tools <name>"))
+            .expect("expected /tools <name> to be suggested");
+        app.command_selection = idx;
+
+        app.apply_command_suggestion();
+        assert_eq!(app.input, "/tools ");
+        assert_eq!(app.cursor_pos, app.input.len());
     }
 
     #[test]

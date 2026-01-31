@@ -2,315 +2,444 @@
 
 ## System Overview
 
-Gestura.app is a comprehensive voice and gesture control application built with modern technologies and designed for scalability, security, and extensibility.
+Gestura.app is a comprehensive voice and gesture control application built with modern technologies and designed for scalability, security, and extensibility. The architecture follows a **Core-First** pattern where all business logic resides in `gestura-core`, with CLI and GUI serving as thin presentation layers.
+
+## Core-First Architecture
+
+The codebase is organized as a Rust workspace with three crates:
+
+```
+gestura-app/
+├── crates/
+│   ├── gestura-core/     # Shared business logic (source of truth)
+│   ├── gestura-cli/      # CLI binary (thin presentation layer)
+│   └── gestura-gui/      # Tauri desktop app (thin presentation layer)
+```
+
+### Design Principles
+
+1. **Single Source of Truth**: All business logic, data models, and algorithms live in `gestura-core`
+2. **Thin Shells**: CLI and GUI are presentation layers that delegate to core
+3. **Re-export Pattern**: GUI/CLI modules re-export core types for local usage
+4. **Feature Gates**: Optional functionality controlled via Cargo features
 
 ## High-Level Architecture
 
 ```mermaid
 graph TB
-    subgraph "Frontend Layer"
-        UI[React UI]
-        WEB[Web Interface]
+    subgraph "Presentation Layer"
+        CLI[gestura-cli]
+        GUI[gestura-gui / Tauri]
+        WEB[Web Frontend]
     end
-    
-    subgraph "Application Layer"
-        TAURI[Tauri Runtime]
-        RUST[Rust Backend]
-        IPC[IPC Bridge]
+
+    subgraph "gestura-core (Business Logic)"
+        subgraph "AI & Voice"
+            VOICE[Speech/STT]
+            LLM[LLM Provider]
+            PIPELINE[Agent Pipeline]
+            PERSONA[Persona System]
+        end
+
+        subgraph "Session & State"
+            SESSIONS[Chat Sessions]
+            CONFIG[Configuration]
+            CONTEXT[Context Manager]
+            MEMORY[Memory Bank]
+        end
+
+        subgraph "Tools & Permissions"
+            TOOLS[Tool Registry]
+            PERMS[Permission Manager]
+            POLICY[Policy Evaluation]
+            CONFIRM[Tool Confirmation]
+        end
+
+        subgraph "Protocols"
+            MCP[MCP Server]
+            A2A[A2A Protocol]
+            NATS[NATS MQ]
+        end
+
+        subgraph "Security & Analytics"
+            SECURITY[Encryption/Storage]
+            SANDBOX[Sandbox Manager]
+            ANALYTICS[Usage Analytics]
+            RECOMMEND[Recommendations]
+        end
+
+        subgraph "Extensibility"
+            SCRIPTING[Scripting Engine]
+            AGENTS[Agent Spawner]
+            AUDIO[Noise Cancellation]
+        end
     end
-    
-    subgraph "Core Services"
-        VOICE[Voice Processing]
-        GESTURE[Gesture Recognition]
-        RING[Ring Integration]
-        MCP[MCP Server]
-        AGENT[Agent Manager]
-    end
-    
-    subgraph "AI/ML Layer"
-        PATTERN[Pattern Learning]
-        ANALYTICS[Usage Analytics]
-        RECOMMEND[Recommendations]
-        PREDICT[Predictive Text]
-        FEDERATED[Federated Learning]
-    end
-    
-    subgraph "Extensibility"
-        PLUGINS[Plugin System]
-        SCRIPTS[Scripting Engine]
-        CUSTOM[Custom Gestures]
-        INTEGRATIONS[3rd Party APIs]
-        SDK[Developer SDK]
-    end
-    
-    subgraph "Data Layer"
-        ENCRYPT[Encrypted Storage]
-        CACHE[Memory Cache]
-        TELEMETRY[Telemetry Store]
-    end
-    
+
     subgraph "External"
         RING_HW[Haptic Harmony Ring]
-        WHISPER[Faster-Whisper]
-        APIS[External APIs]
+        WHISPER[Whisper ASR]
+        APIS[LLM APIs]
     end
-    
-    UI --> TAURI
-    WEB --> TAURI
-    TAURI --> RUST
-    RUST --> IPC
-    IPC --> VOICE
-    IPC --> GESTURE
-    IPC --> RING
-    IPC --> MCP
-    IPC --> AGENT
-    
-    VOICE --> PATTERN
-    GESTURE --> PATTERN
-    RING --> ANALYTICS
-    MCP --> RECOMMEND
-    AGENT --> PREDICT
-    
-    PATTERN --> FEDERATED
-    ANALYTICS --> FEDERATED
-    RECOMMEND --> FEDERATED
-    PREDICT --> FEDERATED
-    
-    PLUGINS --> SCRIPTS
-    SCRIPTS --> CUSTOM
-    CUSTOM --> INTEGRATIONS
-    INTEGRATIONS --> SDK
-    
-    RUST --> ENCRYPT
-    RUST --> CACHE
-    RUST --> TELEMETRY
-    
-    RING --> RING_HW
+
+    CLI --> PIPELINE
+    CLI --> SESSIONS
+    CLI --> TOOLS
+    CLI --> MCP
+
+    GUI --> PIPELINE
+    GUI --> SESSIONS
+    GUI --> TOOLS
+    GUI --> MCP
+    WEB --> GUI
+
+    PIPELINE --> LLM
+    PIPELINE --> VOICE
+    PIPELINE --> PERSONA
+    PIPELINE --> CONTEXT
+
+    TOOLS --> PERMS
+    TOOLS --> POLICY
+    TOOLS --> CONFIRM
+
+    MCP --> TOOLS
+    A2A --> AGENTS
+
     VOICE --> WHISPER
-    INTEGRATIONS --> APIS
+    LLM --> APIS
+    GUI --> RING_HW
 ```
 
-## Component Architecture
+## Crate Architecture
 
-### Frontend Components
+### gestura-core (Shared Library)
 
-```mermaid
-graph LR
-    subgraph "React Frontend"
-        APP[App Component]
-        ONBOARD[Onboarding Wizard]
-        SETTINGS[Settings Panel]
-        VOICE_UI[Voice Interface]
-        GESTURE_UI[Gesture Controls]
-        RING_UI[Ring Management]
-        HELP[Help System]
-        DIAG[Diagnostics]
-    end
-    
-    APP --> ONBOARD
-    APP --> SETTINGS
-    APP --> VOICE_UI
-    APP --> GESTURE_UI
-    APP --> RING_UI
-    APP --> HELP
-    APP --> DIAG
-```
-
-### Backend Services
+The core crate contains all business logic organized into modules:
 
 ```mermaid
 graph TB
-    subgraph "Rust Backend Services"
-        MAIN[Main Application]
-        
-        subgraph "Voice Processing"
-            VAD[Voice Activity Detection]
-            SPEAKER[Speaker Identification]
-            NOISE[Noise Cancellation]
-            TUNING[Model Fine-tuning]
+    subgraph "gestura-core/src/"
+        subgraph "AI & Pipeline"
+            pipeline[pipeline/]
+            llm_provider[llm_provider.rs]
+            persona[persona.rs]
+            speech[speech.rs]
+            stt_provider[stt_provider.rs]
         end
-        
-        subgraph "Gesture Processing"
-            PATTERN_LEARN[Pattern Learning]
-            CUSTOM_GEST[Custom Gestures]
-            RECOGNITION[Recognition Engine]
+
+        subgraph "Session Management"
+            chat_sessions[chat_sessions/]
+            session_manager[session_manager.rs]
+            context[context/]
+            memory_bank[memory_bank/]
         end
-        
-        subgraph "Communication"
-            BLE[BLE Manager]
-            IPC_SEC[Secure IPC]
-            MCP_SRV[MCP Server]
+
+        subgraph "Tools & Permissions"
+            tools[tools/]
+            tool_confirmation[tool_confirmation.rs]
         end
-        
-        subgraph "Security & Privacy"
-            ENCRYPT_SRV[Encryption Service]
-            PERM[Permission System]
-            GDPR[GDPR Compliance]
-            SESSION[Session Manager]
+
+        subgraph "Protocols"
+            mcp[mcp/]
+            a2a[a2a/]
+            nats_mq[nats_mq/]
         end
-        
+
+        subgraph "Security"
+            security[security/]
+            sandbox[sandbox/]
+        end
+
+        subgraph "Analytics & AI"
+            analytics[analytics/]
+            recommendations[recommendations/]
+            audio[audio/]
+        end
+
         subgraph "Extensibility"
-            PLUGIN_MGR[Plugin Manager]
-            SCRIPT_ENG[Scripting Engine]
-            THIRD_PARTY[3rd Party Integrations]
-            DEV_SDK[Developer SDK]
+            scripting[scripting/]
+            agents[agents/]
+            tasks[tasks/]
+        end
+
+        subgraph "Infrastructure"
+            config[config.rs]
+            audio_capture[audio_capture.rs]
+            error[error.rs]
+            telemetry[telemetry.rs]
+            gdpr[gdpr.rs]
         end
     end
-    
-    MAIN --> VAD
-    MAIN --> SPEAKER
-    MAIN --> NOISE
-    MAIN --> TUNING
-    
-    MAIN --> PATTERN_LEARN
-    MAIN --> CUSTOM_GEST
-    MAIN --> RECOGNITION
-    
-    MAIN --> BLE
-    MAIN --> IPC_SEC
-    MAIN --> MCP_SRV
-    
-    MAIN --> ENCRYPT_SRV
-    MAIN --> PERM
-    MAIN --> GDPR
-    MAIN --> SESSION
-    
-    MAIN --> PLUGIN_MGR
-    MAIN --> SCRIPT_ENG
-    MAIN --> THIRD_PARTY
-    MAIN --> DEV_SDK
 ```
 
+### gestura-cli (CLI Binary)
+
+Thin presentation layer with command routing:
+
+```
+gestura-cli/src/
+├── main.rs              # Entry point with clap
+├── tool_registry.rs     # CLI tool registration
+└── commands/
+    ├── chat/            # Interactive chat TUI
+    ├── exec.rs          # One-shot execution
+    ├── listen.rs        # Voice capture
+    ├── session.rs       # Session management
+    ├── mcp.rs           # MCP commands
+    ├── a2a.rs           # A2A protocol
+    ├── tools/           # System tools
+    └── ...
+```
+
+### gestura-gui (Tauri Desktop App)
+
+Thin Tauri shell with platform-specific integrations:
+
+```
+gestura-gui/src/
+├── main.rs              # Tauri entry point
+├── lib.rs               # Module exports
+├── api.rs               # Tauri commands
+├── window_manager.rs    # Window/session management
+├── tray.rs              # System tray
+├── hotkeys.rs           # Global shortcuts
+├── permissions.rs       # OS permission checks
+├── mcp_server.rs        # MCP transport adapter
+└── ...                  # Thin re-export wrappers
+```
+
+## Module Details
+
+### Core Modules (gestura-core)
+
+| Module | Description | Key Types |
+|--------|-------------|-----------|
+| `pipeline/` | Agent request/response pipeline | `AgentRequest`, `AgentResponse`, `Pipeline` |
+| `chat_sessions/` | Session persistence | `ChatSession`, `ChatSessionStore`, `FileChatSessionStore` |
+| `tools/` | Tool registry and execution | `ToolRegistry`, `ToolDefinition`, `PermissionManager` |
+| `mcp/` | MCP server implementation | `McpServer`, `McpToolHandler`, `McpResourceHandler` |
+| `a2a/` | Agent-to-Agent protocol | `A2AServer`, `A2AClient`, `AgentProfile` |
+| `security/` | Encryption and secure storage | `SecureStorage`, `Encryptor`, `McpToken` |
+| `secrets/` | Secret resolution for providers (secure storage, config fallbacks) | `SecretKey`, `SecretProvider`, `SecureStorageSecretProvider` |
+| `sandbox/` | Sandboxed execution | `SandboxConfig`, `SandboxManager` |
+| `speech.rs` | Speech and transcription types/utilities | `TranscriptionResult` |
+| `stt_provider.rs` | STT provider selection + transcription providers | `SttProvider`, `select_provider_with_session_voice_config` |
+| `scripting/` | Multi-language scripting | `ScriptingEngine`, `Script`, `ScriptContext` |
+| `analytics/` | Usage tracking | `UsageAnalytics`, `AnalyticsInsights`, `PrivacyMode` |
+| `recommendations/` | ML-based recommendations | `PersonalizedRecommendationEngine`, `Recommendation` |
+| `audio/` | Noise cancellation | `NoiseCancellationProcessor`, `NoiseCancellationConfig` |
+| `agents/` | Agent orchestration | `AgentEnvelope`, `AgentSpawner`, `OrchestratorToolCall` |
+| `nats_mq/` | NATS messaging | `Connection`, `Publisher`, `Subscriber` |
+
+### GUI Thin Wrappers
+
+After the Core-First migration, GUI modules are thin re-export wrappers:
+
+```rust
+// Example: crates/gestura-gui/src/security.rs (18 lines)
+//! Security primitives - thin wrapper over gestura_core::security
+pub use gestura_core::security::{
+    Encryptor, McpToken, SecureStorage, create_secure_storage,
+};
+```
+
+Key shims in this migration include:
+
+- `crates/gestura-gui/src/gdpr.rs` → re-exports `gestura_core::gdpr::*`
+- `crates/gestura-gui/src/audio_capture.rs` → re-exports core audio types and provides a tiny
+  adapter to apply GUI config defaults (selected input device) before delegating to core.
+
 ## Data Flow Architecture
+
+### Agent Pipeline Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant GUI/CLI
+    participant Core as gestura-core
+    participant Pipeline
+    participant Tools
+    participant LLM
+
+    User->>GUI/CLI: Request (text/voice)
+    GUI/CLI->>Core: AgentRequest
+    Core->>Pipeline: process()
+    Pipeline->>Tools: gather_context()
+    Tools->>Pipeline: Context
+    Pipeline->>LLM: completion()
+    LLM->>Pipeline: Response + ToolCalls
+    Pipeline->>Tools: execute_tools()
+    Tools->>Pipeline: ToolResults
+    Pipeline->>Core: AgentResponse
+    Core->>GUI/CLI: Response
+    GUI/CLI->>User: Display
+```
+
+#### Adapter responsibilities (CLI/GUI) vs core responsibilities
+
+In a Core-First architecture, the presentation layers (CLI/GUI) should *construct requests* and
+*render results*, while `gestura-core` is the sole owner of execution policy.
+
+- **CLI/GUI (thin adapter)**
+  - Build an `AgentRequest` and tag it with `RequestSource` (e.g. `CliTui`, `GuiText`).
+  - For flows that must not execute tools (e.g. legacy single-shot UX or background event handlers),
+    set `tools_enabled=false` on the request.
+  - Avoid direct provider selection/calls in adapters; route all LLM/tool work through the core pipeline.
+
+- **gestura-core (business logic)**
+  - Runs request analysis and selects providers/tools.
+  - Enforces tool policy/confirmation.
+  - Applies tool gating using:
+    - pipeline config (`PipelineConfig.enable_tools`)
+    - per-request override (`AgentRequest.metadata.tools_enabled`)
+    - request analysis (`analysis.needs_tools`)
+
+This separation keeps UX code (GUI/CLI) simple, and ensures that security policy and tool execution
+cannot drift between adapters.
 
 ### Voice Recognition Flow
 
 ```mermaid
 sequenceDiagram
     participant User
-    participant UI
-    participant Backend
-    participant VAD
+    participant GUI
+    participant Core as gestura-core
+    participant STT as STTProvider
     participant Whisper
-    participant Analytics
-    
-    User->>UI: Speak
-    UI->>Backend: Audio Data
-    Backend->>VAD: Detect Voice Activity
-    VAD->>Backend: Voice Segments
-    Backend->>Whisper: Process Audio
-    Whisper->>Backend: Transcription
-    Backend->>Analytics: Log Usage
-    Backend->>UI: Text Result
-    UI->>User: Display Text
+
+    User->>GUI: Speak
+    GUI->>Core: audio_capture()
+    Core->>STT: transcribe()
+    STT->>Whisper: Process Audio
+    Whisper->>STT: Transcription
+    STT->>Core: TranscriptionResult
+    Core->>GUI: Text
+    GUI->>User: Display
 ```
 
-### Gesture Recognition Flow
+**Ownership and precedence (Core-First):**
+
+- `gestura-core` owns STT provider selection, session override precedence, secret/key resolution, and error semantics.
+- `gestura-gui` is a thin adapter that:
+  - records audio
+  - passes the active session's voice overrides (if any)
+  - wires secure storage into core via `SecureStorageSecretProvider`
+
+**OpenAI STT API key resolution (high-level):**
+
+1. `config.voice.openai_api_key`
+2. secure storage secret `VoiceOpenAi`
+3. secure storage secret `OpenAi`
+4. legacy `config.llm.openai.api_key` (backwards compatibility)
+
+### MCP Tool Execution Flow
 
 ```mermaid
 sequenceDiagram
-    participant Ring as Haptic Ring
-    participant BLE
-    participant Backend
-    participant Pattern as Pattern Learning
-    participant Custom as Custom Gestures
-    participant Actions
-    
-    Ring->>BLE: Sensor Data
-    BLE->>Backend: Raw Data
-    Backend->>Pattern: Extract Features
-    Pattern->>Backend: Feature Vector
-    Backend->>Custom: Match Gestures
-    Custom->>Backend: Recognized Gesture
-    Backend->>Actions: Execute Action
-    Actions->>Ring: Haptic Feedback
+    participant Client
+    participant Transport as MCP Transport
+    participant Server as McpServer
+    participant Registry as ToolRegistry
+    participant Permission as PermissionManager
+    participant Executor
+
+    Client->>Transport: tools/call
+    Transport->>Server: handle_call()
+    Server->>Permission: check_permission()
+    Permission->>Server: Allowed/Denied
+    Server->>Registry: get_tool()
+    Registry->>Server: ToolDefinition
+    Server->>Executor: execute()
+    Executor->>Server: ToolResult
+    Server->>Transport: Response
+    Transport->>Client: Result
 ```
 
 ## Security Architecture
 
-```mermaid
-graph TB
-    subgraph "Security Layers"
-        AUTH[Authentication]
-        AUTHZ[Authorization]
-        ENCRYPT[Encryption]
-        AUDIT[Audit Logging]
-    end
-    
-    subgraph "Data Protection"
-        AES[AES-256 Encryption]
-        KEY_MGMT[Key Management]
-        SECURE_STORE[Secure Storage]
-    end
-    
-    subgraph "Privacy"
-        GDPR_COMP[GDPR Compliance]
-        DATA_MIN[Data Minimization]
-        ANON[Anonymization]
-        CONSENT[Consent Management]
-    end
-    
-    subgraph "Network Security"
-        TLS[TLS 1.3]
-        CERT_PIN[Certificate Pinning]
-        RATE_LIMIT[Rate Limiting]
-    end
-    
-    AUTH --> AUTHZ
-    AUTHZ --> ENCRYPT
-    ENCRYPT --> AUDIT
-    
-    ENCRYPT --> AES
-    AES --> KEY_MGMT
-    KEY_MGMT --> SECURE_STORE
-    
-    GDPR_COMP --> DATA_MIN
-    DATA_MIN --> ANON
-    ANON --> CONSENT
-    
-    TLS --> CERT_PIN
-    CERT_PIN --> RATE_LIMIT
-```
-
-## Plugin Architecture
+### Core Security Model
 
 ```mermaid
 graph TB
-    subgraph "Plugin System"
-        PLUGIN_MGR[Plugin Manager]
-        PLUGIN_API[Plugin API]
-        SANDBOX[Sandboxing]
-        PERM_SYS[Permission System]
+    subgraph "gestura-core/security/"
+        ENCRYPT[Encryptor]
+        STORAGE[SecureStorage]
+        TOKENS[McpToken]
     end
-    
-    subgraph "Plugin Types"
-        VOICE_PLUGIN[Voice Plugins]
-        GESTURE_PLUGIN[Gesture Plugins]
-        UI_PLUGIN[UI Plugins]
-        INTEGRATION_PLUGIN[Integration Plugins]
+
+    subgraph "gestura-core/tools/"
+        PERMS[PermissionManager]
+        POLICY[policy.rs]
+        CONFIRM[tool_confirmation.rs]
     end
-    
-    subgraph "Plugin Runtime"
-        LUA[Lua Runtime]
-        PYTHON[Python Runtime]
-        JS[JavaScript Runtime]
-        WASM[WebAssembly Runtime]
+
+    subgraph "gestura-core/sandbox/"
+        SANDBOX[SandboxManager]
+        CONFIG[SandboxConfig]
     end
-    
-    PLUGIN_MGR --> PLUGIN_API
-    PLUGIN_API --> SANDBOX
-    SANDBOX --> PERM_SYS
-    
-    PLUGIN_API --> VOICE_PLUGIN
-    PLUGIN_API --> GESTURE_PLUGIN
-    PLUGIN_API --> UI_PLUGIN
-    PLUGIN_API --> INTEGRATION_PLUGIN
-    
-    VOICE_PLUGIN --> LUA
-    GESTURE_PLUGIN --> PYTHON
-    UI_PLUGIN --> JS
-    INTEGRATION_PLUGIN --> WASM
+
+    ENCRYPT --> STORAGE
+    STORAGE --> TOKENS
+
+    PERMS --> POLICY
+    POLICY --> CONFIRM
+
+    SANDBOX --> CONFIG
 ```
+
+### Permission System
+
+| Level | Description | Example Actions |
+|-------|-------------|-----------------|
+| `ReadOnly` | Read files, view context | `file_read`, `git_status` |
+| `WriteLocal` | Write to allowed paths | `file_write`, `file_edit` |
+| `Execute` | Run local commands | `shell_exec`, `script_run` |
+| `Network` | External API calls | `web_fetch`, `api_call` |
+| `Admin` | Full system access | `install_package`, `root_exec` |
+
+### Privacy Modes (Analytics)
+
+```rust
+pub enum PrivacyMode {
+    Full,       // Collect all anonymous analytics
+    Limited,    // Only essential metrics
+    Anonymous,  // Fully anonymized data
+    Disabled,   // No data collection
+}
+```
+
+## Extensibility Architecture
+
+### Scripting Engine
+
+```mermaid
+graph TB
+    subgraph "gestura-core/scripting/"
+        ENGINE[ScriptingEngine]
+        RUNTIME[ScriptRuntime]
+        CONTEXT[ScriptContext]
+    end
+
+    subgraph "Languages"
+        LUA[Lua 5.4]
+        RHAI[Rhai Script]
+        WASM[WebAssembly]
+    end
+
+    ENGINE --> RUNTIME
+    RUNTIME --> CONTEXT
+
+    RUNTIME --> LUA
+    RUNTIME --> RHAI
+    RUNTIME --> WASM
+```
+
+### Plugin Sandboxing
+
+All scripts execute in sandboxed environments with:
+- **Resource limits**: CPU time, memory, file handles
+- **Capability restrictions**: No network without permission
+- **Isolation**: Separate execution contexts
 
 ## Deployment Architecture
 
@@ -323,180 +452,131 @@ graph TB
         MAC_SIGN[Code Signing]
         MAC_NOTARY[Notarization]
     end
-    
+
     subgraph "Windows"
         WIN_EXE[Gestura.exe]
         WIN_MSI[MSI Installer]
         WIN_SIGN[Authenticode Signing]
     end
-    
+
     subgraph "Linux"
         LINUX_BIN[Binary]
         DEB[.deb Package]
-        RPM[.rpm Package]
         APPIMAGE[AppImage]
     end
-    
+
     MAC_APP --> MAC_SIGN
     MAC_SIGN --> MAC_NOTARY
-    
+
     WIN_EXE --> WIN_MSI
     WIN_MSI --> WIN_SIGN
-    
+
     LINUX_BIN --> DEB
-    LINUX_BIN --> RPM
     LINUX_BIN --> APPIMAGE
 ```
 
-### Cloud Infrastructure
+### Build Outputs
 
-```mermaid
-graph TB
-    subgraph "CDN"
-        CLOUDFLARE[Cloudflare]
-        EDGE[Edge Locations]
-    end
-    
-    subgraph "API Gateway"
-        GATEWAY[API Gateway]
-        RATE_LIMITER[Rate Limiter]
-        AUTH_SRV[Auth Service]
-    end
-    
-    subgraph "Application Services"
-        API_SRV[API Servers]
-        VOICE_SRV[Voice Processing]
-        ML_SRV[ML Services]
-    end
-    
-    subgraph "Data Layer"
-        POSTGRES[PostgreSQL]
-        REDIS[Redis Cache]
-        S3[Object Storage]
-    end
-    
-    subgraph "Monitoring"
-        METRICS[Metrics Collection]
-        LOGS[Log Aggregation]
-        ALERTS[Alerting]
-    end
-    
-    CLOUDFLARE --> EDGE
-    EDGE --> GATEWAY
-    GATEWAY --> RATE_LIMITER
-    RATE_LIMITER --> AUTH_SRV
-    AUTH_SRV --> API_SRV
-    
-    API_SRV --> VOICE_SRV
-    API_SRV --> ML_SRV
-    
-    API_SRV --> POSTGRES
-    API_SRV --> REDIS
-    API_SRV --> S3
-    
-    API_SRV --> METRICS
-    API_SRV --> LOGS
-    LOGS --> ALERTS
-```
+| Crate | Output | Description |
+|-------|--------|-------------|
+| `gestura-core` | `libgestura_core.rlib` | Shared library |
+| `gestura-cli` | `gestura-cli` binary | Command-line tool |
+| `gestura-gui` | Platform bundle | Tauri desktop app |
 
 ## Technology Stack
 
-### Frontend
-- **Framework**: React 18 with TypeScript
-- **Build Tool**: Vite
-- **Styling**: Tailwind CSS
-- **State Management**: Zustand
-- **UI Components**: Radix UI
-- **Icons**: Lucide React
-
-### Backend
-- **Runtime**: Tauri (Rust + WebView)
-- **Language**: Rust 1.75+
-- **Async Runtime**: Tokio
-- **Serialization**: Serde
+### Core (Rust)
+- **Edition**: Rust 2024
+- **Async Runtime**: Tokio 1.x
+- **Serialization**: Serde + serde_json
 - **HTTP Client**: Reqwest
-- **Database**: SQLite with SQLx
-- **Encryption**: AES-GCM, ChaCha20-Poly1305
+- **Error Handling**: thiserror + anyhow
+- **Encryption**: ring, aes-gcm, chacha20poly1305
+- **Secure Storage**: keyring (OS keychain)
+
+### Protocols
+- **MCP**: Model Context Protocol 2025-11-25 (JSON-RPC 2.0)
+- **A2A**: Google Agent2Agent Protocol
+- **NATS**: Message queue for event-driven architecture
+
+### GUI (Tauri v2)
+- **Framework**: Tauri 2.x with WebView
+- **Frontend**: HTML/CSS/JavaScript
+- **Styling**: Tailwind CSS
+- **IPC**: Tauri Commands
+
+### CLI
+- **Parser**: Clap 4.x with derive
+- **TUI**: Ratatui for interactive chat
+- **Completions**: Shell completion generation
 
 ### AI/ML
-- **Speech Recognition**: Faster-Whisper
-- **Feature Extraction**: Custom Rust implementations
-- **Pattern Matching**: Cosine similarity, DTW
-- **Privacy**: Differential Privacy, Federated Learning
-
-### Communication
-- **BLE**: Cross-platform BLE libraries
-- **IPC**: Tauri's secure IPC
-- **MCP**: JSON-RPC over STDIO
-- **WebSockets**: For real-time communication
+- **Speech Recognition**: Whisper (faster-whisper)
+- **LLM Providers**: OpenAI, Anthropic, local
+- **Noise Cancellation**: Spectral subtraction (DFT/IDFT)
 
 ### Development
-- **Build System**: Cargo + Tauri CLI
-- **Testing**: Cargo test + Jest
+- **Build**: Cargo (workspace), Tauri CLI
+- **Testing**: Cargo test (462+ tests)
+- **Linting**: Clippy with -D warnings
 - **CI/CD**: GitHub Actions
-- **Documentation**: mdBook
-- **Packaging**: Platform-specific tools
+
+## Quality Gates
+
+All changes must pass:
+```bash
+cargo fmt -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+```
 
 ## Performance Characteristics
 
 ### Latency Targets
+- **Tool Execution**: < 100ms local, < 2s network
 - **Voice Recognition**: < 500ms
-- **Gesture Recognition**: < 100ms
-- **Haptic Feedback**: < 50ms
 - **UI Response**: < 16ms (60 FPS)
-
-### Throughput
-- **Voice Processing**: 10x real-time
-- **Gesture Processing**: 1000 gestures/second
-- **API Requests**: 10,000 requests/second
-- **Plugin Execution**: 100 plugins/second
+- **MCP Round-trip**: < 50ms local
 
 ### Resource Usage
 - **Memory**: < 200MB baseline
-- **CPU**: < 5% idle, < 50% active
+- **CPU**: < 5% idle, < 30% active
 - **Storage**: < 100MB installation
-- **Network**: < 1MB/hour telemetry
+- **Disk I/O**: Async, non-blocking
 
-## Scalability Considerations
+## Core-First Development Guidelines
 
-### Horizontal Scaling
-- Stateless API services
-- Load balancer distribution
-- Database read replicas
-- CDN for static assets
+### Adding New Features
 
-### Vertical Scaling
-- Multi-core processing
-- Memory-mapped files
-- Async I/O operations
-- Hardware acceleration
+1. **Implement in Core**: Add business logic to `gestura-core`
+2. **Export Types**: Add re-exports to `lib.rs`
+3. **CLI Integration**: Add command to `gestura-cli/src/commands/`
+4. **GUI Integration**: Create thin wrapper in `gestura-gui/src/`
 
-### Data Scaling
-- Partitioned databases
-- Compressed storage
-- Efficient indexing
-- Data lifecycle management
+### Module Organization
 
-## Security Considerations
+```rust
+// gestura-core/src/new_feature/mod.rs
+pub mod types;
+pub mod implementation;
 
-### Threat Model
-- **Data Interception**: TLS encryption
-- **Unauthorized Access**: Authentication + authorization
-- **Data Tampering**: Digital signatures
-- **Privacy Violations**: Data minimization + anonymization
+pub use types::*;
+pub use implementation::*;
 
-### Security Controls
-- **Encryption**: End-to-end encryption
-- **Authentication**: Multi-factor authentication
-- **Authorization**: Role-based access control
-- **Auditing**: Comprehensive audit logs
-- **Monitoring**: Real-time security monitoring
+// gestura-gui/src/new_feature.rs
+//! New feature - thin wrapper over gestura_core::new_feature
+pub use gestura_core::new_feature::*;
+```
 
-## Future Architecture
+### Error Handling
 
-### Planned Enhancements
-- **Edge Computing**: Local AI processing
-- **Blockchain**: Decentralized identity
-- **AR/VR**: Spatial gesture recognition
-- **IoT Integration**: Smart home control
-- **Multi-modal**: Combined voice + gesture + eye tracking
+```rust
+// Use thiserror for error types
+#[derive(Debug, thiserror::Error)]
+pub enum NewFeatureError {
+    #[error("Configuration error: {0}")]
+    Config(String),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+}
+```

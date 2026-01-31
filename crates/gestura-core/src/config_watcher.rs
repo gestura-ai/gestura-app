@@ -214,9 +214,9 @@ mod tests {
     #[tokio::test]
     async fn test_config_watcher_creation() {
         let temp_dir = TempDir::new().unwrap();
-        let config_path = temp_dir.path().join("config.json");
+        let config_path = temp_dir.path().join("config.yaml");
         let config = AppConfig::default();
-        std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+        std::fs::write(&config_path, serde_yaml::to_string(&config).unwrap()).unwrap();
 
         let result = ConfigWatcher::with_path(config_path.clone());
         assert!(result.is_ok());

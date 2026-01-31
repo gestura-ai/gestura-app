@@ -14,8 +14,10 @@
 //! The default file-backed store writes one JSON file per session under:
 //! `AppConfig::data_dir()/chat_sessions/<session_id>.json`.
 
+mod legacy_gui_migration;
 mod store;
 mod types;
 
+pub use legacy_gui_migration::*;
 pub use store::*;
 pub use types::*;

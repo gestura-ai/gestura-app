@@ -60,6 +60,12 @@ pub struct ShellSessionConfig {
     pub id: String,
     /// Working directory for the shell
     pub working_directory: Option<PathBuf>,
+    /// Optional command to run automatically when the terminal opens.
+    ///
+    /// The command is executed after setting the working directory and applying
+    /// environment variables. The terminal remains open after the command
+    /// completes.
+    pub initial_command: Option<String>,
     /// Environment variables to set in the shell
     pub env_vars: HashMap<String, String>,
     /// Sandbox configuration for resource limits
@@ -71,6 +77,7 @@ impl Default for ShellSessionConfig {
         Self {
             id: Uuid::new_v4().to_string(),
             working_directory: std::env::current_dir().ok(),
+            initial_command: None,
             env_vars: HashMap::new(),
             sandbox: create_default_sandbox("shell-agent"),
         }
@@ -81,6 +88,15 @@ impl ShellSessionConfig {
     /// Create a new shell session configuration with a specific working directory
     pub fn with_working_directory(mut self, path: PathBuf) -> Self {
         self.working_directory = Some(path);
+        self
+    }
+
+    /// Set an initial command to run when the terminal opens.
+    ///
+    /// This is useful for resuming a session automatically (e.g.
+    /// `gestura chat --resume --session <id>`).
+    pub fn with_initial_command(mut self, command: impl Into<String>) -> Self {
+        self.initial_command = Some(command.into());
         self
     }
 
@@ -164,6 +180,41 @@ pub fn open_shell_session(config: ShellSessionConfig) -> ShellResult<()> {
             "Unsupported platform".to_string(),
         ))
     }
+}
+
+/// Build the initialization command for Unix terminals.
+///
+/// The command:
+/// - changes to the target directory
+/// - exports Gestura environment variables
+/// - prints a short banner
+/// - optionally runs an initial command
+/// - leaves the terminal open by `exec $SHELL`
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn build_unix_init_cmd(
+    working_dir: &Path,
+    config: &ShellSessionConfig,
+    include_help_hint: bool,
+) -> String {
+    let dir_str = sh_escape_single_quotes(working_dir.to_string_lossy().as_ref());
+    let env_setup = build_env_script(&config.env_vars, &config.id);
+
+    let mut banner = format!("echo '🚀 Gestura Shell Session: {}'", config.id);
+    if include_help_hint {
+        banner.push_str(" && echo 'Type \"gestura --help\" for available commands'");
+    }
+
+    let initial_segment = config
+        .initial_command
+        .as_deref()
+        .map(|cmd| format!(" && {}", cmd))
+        .unwrap_or_default();
+
+    // Keep the terminal open regardless of the initial command exit status.
+    format!(
+        r#"cd '{}' && {} && {}{}; exec $SHELL"#,
+        dir_str, env_setup, banner, initial_segment
+    )
 }
 
 fn resolve_working_directory(config: &ShellSessionConfig) -> ShellResult<PathBuf> {
@@ -250,16 +301,8 @@ fn create_shell_session_directory(session_id: &str) -> ShellResult<PathBuf> {
 /// Open terminal on macOS using Terminal.app or iTerm2
 #[cfg(target_os = "macos")]
 fn open_macos_terminal(working_dir: &Path, config: &ShellSessionConfig) -> ShellResult<()> {
-    let dir_str = sh_escape_single_quotes(working_dir.to_string_lossy().as_ref());
-
-    // Build environment setup script
-    let env_setup = build_env_script(&config.env_vars, &config.id);
-
     // Build the initialization command that will run in the new terminal
-    let init_cmd = format!(
-        r#"cd '{}' && {} && echo '🚀 Gestura Shell Session: {}' && echo 'Type "gestura --help" for available commands' && exec $SHELL"#,
-        dir_str, env_setup, config.id
-    );
+    let init_cmd = build_unix_init_cmd(working_dir, config, true);
 
     // Try iTerm2 first (if installed), then fall back to Terminal.app
     if is_iterm_installed() {
@@ -342,13 +385,17 @@ fn open_windows_terminal(working_dir: &Path, config: &ShellSessionConfig) -> She
     let dir_str = working_dir.to_string_lossy();
 
     // Build environment setup for Windows
-    let env_setup = build_env_script_windows(&config.env_vars, &config.id);
+    let mut cmd_line = build_env_script_windows(&config.env_vars, &config.id);
+    if let Some(initial) = config.initial_command.as_deref() {
+        cmd_line.push_str(" && ");
+        cmd_line.push_str(initial);
+    }
 
     // Try Windows Terminal first (wt.exe), then fall back to cmd.exe
     if is_windows_terminal_installed() {
         // Windows Terminal
         Command::new("wt.exe")
-            .args(["-d", &dir_str, "cmd", "/k", &env_setup])
+            .args(["-d", &dir_str, "cmd", "/k", &cmd_line])
             .spawn()
             .map_err(ShellSessionError::SpawnFailed)?;
 
@@ -356,7 +403,7 @@ fn open_windows_terminal(working_dir: &Path, config: &ShellSessionConfig) -> She
     } else {
         // Fallback to cmd.exe
         Command::new("cmd")
-            .args(["/k", &format!("cd /d \"{}\" && {}", dir_str, env_setup)])
+            .args(["/k", &format!("cd /d \"{}\" && {}", dir_str, cmd_line)])
             .spawn()
             .map_err(ShellSessionError::SpawnFailed)?;
 
@@ -397,15 +444,7 @@ fn build_env_script_windows(env_vars: &HashMap<String, String>, session_id: &str
 /// Open terminal on Linux using the default terminal emulator
 #[cfg(target_os = "linux")]
 fn open_linux_terminal(working_dir: &Path, config: &ShellSessionConfig) -> ShellResult<()> {
-    let dir_str = sh_escape_single_quotes(working_dir.to_string_lossy().as_ref());
-
-    // Build environment setup script
-    let env_setup = build_env_script(&config.env_vars, &config.id);
-
-    let init_cmd = format!(
-        r#"cd '{}' && {} && echo '🚀 Gestura Shell Session: {}' && exec $SHELL"#,
-        dir_str, env_setup, config.id
-    );
+    let init_cmd = build_unix_init_cmd(working_dir, config, false);
 
     // Try common terminal emulators in order of preference
     let terminals = [
@@ -476,6 +515,28 @@ mod tests {
             config.env_vars.get("TEST_VAR"),
             Some(&"test_value".to_string())
         );
+    }
+
+    #[test]
+    fn test_shell_session_config_with_initial_command() {
+        let config = ShellSessionConfig::default().with_initial_command("echo hello");
+        assert_eq!(config.initial_command.as_deref(), Some("echo hello"));
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn test_build_unix_init_cmd_includes_initial_command() {
+        let working_dir = std::env::temp_dir();
+        let config = ShellSessionConfig::default().with_initial_command(
+            "gestura chat --resume --session 00000000-0000-0000-0000-000000000000",
+        );
+
+        let init_cmd = build_unix_init_cmd(&working_dir, &config, true);
+        assert!(
+            init_cmd
+                .contains("gestura chat --resume --session 00000000-0000-0000-0000-000000000000")
+        );
+        assert!(init_cmd.contains("exec $SHELL"));
     }
 
     #[test]

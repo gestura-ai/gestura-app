@@ -161,6 +161,17 @@ pub struct RequestMetadata {
     pub hints: HashMap<String, String>,
     /// Allowed tools (if empty, all tools are allowed)
     pub allowed_tools: Vec<String>,
+
+    /// Optional per-request override for whether tools may be executed.
+    ///
+    /// When `None`, the pipeline uses its default tool behavior (controlled by
+    /// [`PipelineConfig::enable_tools`]). When `Some(false)`, tool execution is
+    /// disabled for this request even if the pipeline is generally configured to
+    /// allow tools.
+    ///
+    /// This is useful for adapter layers (GUI/CLI) that expose legacy commands
+    /// which historically performed a single LLM call without tools.
+    pub tools_enabled: Option<bool>,
     /// Workspace directory for sandboxed file/shell operations
     /// If None, operations are unrestricted (legacy behavior)
     pub workspace_dir: Option<PathBuf>,
@@ -344,7 +355,9 @@ impl PipelineConfig {
     /// - `auto_compact_threshold`: Always use user setting (converted from percentage)
     /// - `compaction_strategy`: Always use user setting
     /// - `log_token_usage`: Always use user setting
-    /// - `max_context_tokens`: Only override if user set non-zero value (0 = keep provider default)
+    /// - `max_context_tokens`: Only override if user set non-zero value (0 = keep provider default).
+    ///   When the user sets a value, it is **clamped** to the base config's limit (typically the
+    ///   provider-optimized default) to avoid exceeding provider/model capabilities.
     ///
     /// # Arguments
     ///
@@ -381,9 +394,12 @@ impl PipelineConfig {
         self.compaction_strategy = settings.compaction_strategy;
         self.log_token_usage = settings.log_token_usage;
 
-        // Only override max_context_tokens if user has set a non-zero value
+        // Only override max_context_tokens if user has set a non-zero value.
+        //
+        // We clamp to the base config's limit (typically a provider-optimized default) so a
+        // user configuration cannot accidentally exceed the provider/model context window.
         if settings.max_context_tokens > 0 {
-            self.max_context_tokens = settings.max_context_tokens;
+            self.max_context_tokens = settings.max_context_tokens.min(self.max_context_tokens);
         }
 
         self
@@ -436,6 +452,15 @@ impl AgentRequest {
     /// Set allowed tools (for orchestrator/delegated tasks)
     pub fn with_allowed_tools(mut self, tools: Vec<String>) -> Self {
         self.metadata.allowed_tools = tools;
+        self
+    }
+
+    /// Enable or disable tool execution for this request.
+    ///
+    /// Setting this to `false` ensures the pipeline will not attempt to execute
+    /// tools (even if the model asks) for this request.
+    pub fn with_tools_enabled(mut self, enabled: bool) -> Self {
+        self.metadata.tools_enabled = Some(enabled);
         self
     }
 

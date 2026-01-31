@@ -111,6 +111,34 @@ impl AgentPipeline {
         }
     }
 
+    /// Build a user-facing status message for an auto-compaction event.
+    ///
+    /// This message is intended to be emitted as `StreamChunk::Status` **before** the
+    /// resulting compaction chunk (e.g., `StreamChunk::ContextCompacted`) so adapters can
+    /// immediately surface what's happening.
+    fn build_auto_compaction_status_message(&self, prompt_preview: &str) -> String {
+        let estimated_tokens = Self::estimate_tokens(prompt_preview);
+        let max_input = self
+            .pipeline_config
+            .max_context_tokens
+            .saturating_sub(self.pipeline_config.max_output_tokens);
+
+        let pct = (estimated_tokens.saturating_mul(100) / max_input.max(1)).min(999);
+        let threshold_pct = (self.pipeline_config.auto_compact_threshold * 100.0).round() as u32;
+
+        let strategy = match self.pipeline_config.compaction_strategy {
+            CompactionStrategy::Summarize => "summarization",
+            CompactionStrategy::Truncate => "truncation",
+            CompactionStrategy::Clear => "clearing history",
+            CompactionStrategy::Prompt => "prompting for choice",
+            CompactionStrategy::MemoryBank => "memory bank save",
+        };
+
+        format!(
+            "Context near token limit (~{pct}% of {max_input} input tokens; threshold {threshold_pct}%). Auto-compacting using {strategy}…"
+        )
+    }
+
     /// Process a request with streaming response
     ///
     /// This is the main entry point for streaming LLM interactions.
@@ -136,7 +164,12 @@ impl AgentPipeline {
         );
 
         // 2. Filter tools based on categories (and allowed_tools if specified)
-        let relevant_tools = if self.pipeline_config.enable_tools && analysis.needs_tools {
+        let tools_enabled_for_request = request.metadata.tools_enabled.unwrap_or(true);
+
+        let relevant_tools = if self.pipeline_config.enable_tools
+            && tools_enabled_for_request
+            && analysis.needs_tools
+        {
             self.get_tools_for_analysis(&analysis, &request.metadata.allowed_tools)
         } else {
             Vec::new()
@@ -162,6 +195,7 @@ impl AgentPipeline {
         // the user approves, but the provider doesn't emit a structured tool call so the
         // app appears to "hang" or never produces an answer.
         if self.pipeline_config.enable_tools
+            && tools_enabled_for_request
             && analysis.is_followup
             && Self::looks_like_approval(&request.input)
             && let Some(resp) = self
@@ -216,6 +250,10 @@ impl AgentPipeline {
             .check_and_apply_auto_compaction(&request.history, &preview_prompt, &request.metadata)
             .await
         {
+            // Emit user-visible status **before** the compaction result chunk.
+            let message = self.build_auto_compaction_status_message(&preview_prompt);
+            let _ = tx.send(StreamChunk::Status { message }).await;
+
             // Emit compaction notification to user
             let _ = tx.send(compaction_chunk).await;
 
@@ -524,7 +562,12 @@ impl AgentPipeline {
         let analysis = self.analyzer.analyze(&request.input);
 
         // 2. Filter tools (and allowed_tools if specified)
-        let relevant_tools = if self.pipeline_config.enable_tools && analysis.needs_tools {
+        let tools_enabled_for_request = request.metadata.tools_enabled.unwrap_or(true);
+
+        let relevant_tools = if self.pipeline_config.enable_tools
+            && tools_enabled_for_request
+            && analysis.needs_tools
+        {
             self.get_tools_for_analysis(&analysis, &request.metadata.allowed_tools)
         } else {
             Vec::new()
@@ -997,7 +1040,7 @@ impl AgentPipeline {
             TokenLimitStatus::Warning {
                 estimated: estimated_tokens,
                 limit: max_input,
-                percentage: (estimated_tokens * 100 / max_input) as u8,
+                percentage: ((estimated_tokens * 100) / max_input.max(1)) as u8,
             }
         } else {
             TokenLimitStatus::Ok {
@@ -1458,7 +1501,7 @@ impl AgentPipeline {
                     tracing::debug!(
                         estimated_tokens = estimated,
                         limit = limit,
-                        utilization_pct = (estimated * 100 / limit),
+                        utilization_pct = (estimated * 100 / limit.max(1)),
                         "Token validation passed"
                     );
                 }
@@ -1635,6 +1678,10 @@ impl AgentPipeline {
 
             while let Some(chunk) = inner_rx.recv().await {
                 match &chunk {
+                    StreamChunk::Status { .. } => {
+                        // Forward status updates to frontend
+                        let _ = tx.send(chunk).await;
+                    }
                     StreamChunk::Text(text) => {
                         iteration_content.push_str(text);
                         response.content.push_str(text);
@@ -2941,6 +2988,94 @@ mod tests {
         assert!(analysis.confidence >= 0.85);
     }
 
+    /// When adapter layers explicitly disable tools for a request, the pipeline must
+    /// not execute any tools (including the confirmed-tool follow-up heuristic).
+    #[tokio::test]
+    async fn tools_enabled_false_skips_confirmed_tool_followup_execution() {
+        use tokio::sync::mpsc;
+        use tokio::time::{Duration, timeout};
+
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        // Prior assistant message contains an explicit tool plan.
+        let history = vec![Message::assistant(
+            "We will use the shell tool to run 'pwd'. Then respond.",
+        )];
+
+        // User approval would normally trigger tool follow-up execution.
+        let request = AgentRequest::new("okay please proceed")
+            .with_history(history)
+            .with_tools_enabled(false);
+
+        // IMPORTANT: drain the stream concurrently to avoid backpressure deadlocks
+        // if the provider emits many chunks.
+        let (tx, mut rx) = mpsc::channel(256);
+        let cancel = CancellationToken::new();
+
+        let drain_handle = tokio::spawn(async move {
+            let mut saw_done = false;
+            while let Some(chunk) = rx.recv().await {
+                match chunk {
+                    other @ (StreamChunk::ToolCallStart { .. }
+                    | StreamChunk::ToolCallArgs(_)
+                    | StreamChunk::ToolCallEnd
+                    | StreamChunk::ToolCallResult { .. }
+                    | StreamChunk::ToolConfirmationRequired { .. }
+                    | StreamChunk::ToolBlocked { .. }) => {
+                        return Err(format!(
+                            "unexpected tool chunk emitted when tools are disabled: {other:?}"
+                        ));
+                    }
+                    StreamChunk::Done(_) => {
+                        saw_done = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            Ok::<bool, String>(saw_done)
+        });
+
+        let response = timeout(
+            Duration::from_secs(5),
+            pipeline.process_streaming(request, tx, cancel),
+        )
+        .await
+        .expect("process_streaming should not hang")
+        .expect("pipeline should complete");
+
+        // Strong assertion: the response should not record any tool calls.
+        assert!(response.tool_calls.is_empty());
+
+        // Avoid hangs if a regression causes the stream to never finalize.
+        let saw_done = timeout(Duration::from_secs(3), drain_handle)
+            .await
+            .expect("drain task should finish")
+            .expect("drain task should not panic")
+            .expect("no tool chunks should be emitted");
+
+        assert!(saw_done);
+    }
+
+    /// Even when request analysis would normally select tools, `tools_enabled=false`
+    /// must ensure the blocking pipeline path does not execute tools.
+    #[tokio::test]
+    async fn tools_enabled_false_disables_tools_for_blocking_requests() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let request = AgentRequest::new("Read the file 'Cargo.toml'.")
+            .with_streaming(false)
+            .with_tools_enabled(false);
+
+        let response = pipeline
+            .process_blocking(request)
+            .await
+            .expect("blocking pipeline should complete");
+
+        assert!(response.tool_calls.is_empty());
+        assert!(!response.content.trim().is_empty());
+    }
+
     #[test]
     fn extract_shell_command_from_plan_parses_quoted_command() {
         let text = "We will use the shell tool to run 'pwd'. Then respond.";
@@ -3914,6 +4049,31 @@ mod tests {
         assert!(
             compaction_result.is_none(),
             "Should not trigger compaction when below threshold"
+        );
+    }
+
+    #[test]
+    fn test_pipeline_config_user_max_context_tokens_is_clamped_to_provider_default() {
+        use crate::config::PipelineSettings;
+
+        // Base config is provider-optimized.
+        let base = PipelineConfig::for_provider("ollama");
+        assert_eq!(
+            base.max_context_tokens,
+            PipelineConfig::context_tokens_for_provider("ollama")
+        );
+
+        // User requests a larger context window than the provider default.
+        let settings = PipelineSettings {
+            max_context_tokens: 999_999,
+            ..Default::default()
+        };
+
+        let merged = base.with_user_settings(&settings);
+        assert_eq!(
+            merged.max_context_tokens,
+            PipelineConfig::context_tokens_for_provider("ollama"),
+            "User max_context_tokens should clamp to provider default"
         );
     }
 }
