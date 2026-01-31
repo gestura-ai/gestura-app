@@ -75,6 +75,14 @@ gestura-app/
 - Desktop: macOS 12+, Windows 10+, Linux (Ubuntu 20+)
 - Mobile: iOS/Android (Tauri mobile alpha; constraints apply)
 
+## Installation
+
+See `docs/INSTALL.md` for:
+
+- **Full** install (GUI + CLI) via PKG/DEB/RPM/MSI
+- **CLI-only** install via non-interactive bootstrap scripts
+- Automation-friendly examples (curl|bash, PowerShell)
+
 ## Build & Run
 
 ### Quick Start
