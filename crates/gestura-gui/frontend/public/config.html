@@ -2219,16 +2219,54 @@
                             </div>
                         </div>
                     </div>
+
+                    <div class="subsection">
+                        <div class="subsection-title">
+                            <span class="icon icon-monitor"></span>User Interface
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="themeMode">Theme Mode</label>
+                            <select class="form-select" id="themeMode" name="theme_mode">
+                                <option value="system">Auto (Follow System)</option>
+                                <option value="light">Light</option>
+                                <option value="dark">Dark</option>
+                            </select>
+                            <div class="help-text">Choose how the application appearance adapts to your system theme</div>
+                        </div>
+                    </div>
+
+                    <div class="subsection">
+                        <div class="subsection-title">
+                            <span class="icon icon-search"></span>Debug & Development
+                        </div>
+
+                        <div class="checkbox-group">
+                            <input type="checkbox" class="form-checkbox" id="debugMode" name="debug_mode">
+                            <div class="checkbox-label">
+                                Enable debug mode
+                                <div class="checkbox-description">Show additional debugging information and logs</div>
+                            </div>
+                        </div>
+
+                        <div class="checkbox-group">
+                            <input type="checkbox" class="form-checkbox" id="devTools" name="dev_tools">
+                            <div class="checkbox-label">
+                                Enable developer tools
+                                <div class="checkbox-description">Allow access to browser developer tools in windows</div>
+                            </div>
+                        </div>
+                    </div>
                 </section>
 
                 <!-- Advanced Settings -->
                 <section class="config-section" id="advanced-settings">
                     <div class="section-title">
-                        <span class="icon icon-wrench"></span>Advanced Settings
+                        <span class="icon icon-sparkles"></span>Advanced Settings
                     </div>
                     <div class="section-description">
-                        Advanced technical settings for power users. Configure network communication, debugging options,
-                        and developer tools. Only modify these settings if you understand their impact.
+                        Advanced features for power users. Configure AI prompt enhancement and other
+                        experimental features.
                     </div>
 
                     <!-- NATS Network Configuration - Hidden for future integration -->
@@ -2265,22 +2303,6 @@
 
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon icon-monitor"></span>User Interface
-                        </div>
-
-                        <div class="form-group">
-                            <label class="form-label" for="themeMode">Theme Mode</label>
-                            <select class="form-select" id="themeMode" name="theme_mode">
-                                <option value="system">Auto (Follow System)</option>
-                                <option value="light">Light</option>
-                                <option value="dark">Dark</option>
-                            </select>
-                            <div class="help-text">Choose how the application appearance adapts to your system theme</div>
-                        </div>
-                    </div>
-
-                    <div class="subsection">
-                        <div class="subsection-title">
                             <span class="icon icon-sparkles"></span>Prompt Enhancement
                         </div>
 
@@ -2308,29 +2330,6 @@
                             <input type="range" class="form-range" id="maxLengthMultiplier" name="max_length_multiplier"
                                 min="10" max="50" step="5" value="30">
                             <div class="help-text">Maximum expansion ratio for enhanced prompts (1.0x - 5.0x)</div>
-                        </div>
-                    </div>
-
-                    <div class="subsection">
-                        <div class="subsection-title">
-                            <span class="icon icon-search"></span>Debug & Development
-                        </div>
-
-                        <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="debugMode" name="debug_mode">
-                            <div class="checkbox-label">
-                                Enable debug mode
-                                <div class="checkbox-description">Show additional debugging information and logs</div>
-                            </div>
-                        </div>
-
-                        <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="devTools" name="dev_tools">
-                            <div class="checkbox-label">
-                                Enable developer tools
-                                <div class="checkbox-description">Allow access to browser developer tools in windows
-                                </div>
-                            </div>
                         </div>
                     </div>
                 </section>
