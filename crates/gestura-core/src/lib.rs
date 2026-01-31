@@ -151,10 +151,6 @@ pub use knowledge::{
 pub use llm_provider::{
     AgentContext, LlmCallResponse, LlmProvider, TokenUsage, UnconfiguredProvider, select_provider,
 };
-pub use model_display::{
-    format_anthropic_model_name, format_grok_model_name, format_model_name,
-    format_openai_model_name, is_local_provider,
-};
 pub use mcp::{
     CachedTool, JsonRpcError, JsonRpcRequest, JsonRpcResponse, LocalMcp, McpCacheStats,
     McpDiscoveryManager, McpIntegrator, McpRequestContext, McpResourceHandler, McpServer,
@@ -165,6 +161,10 @@ pub use memory_bank::{
     MemoryBankEntry, MemoryBankError, clear_memory_bank, ensure_memory_bank_dir,
     get_memory_bank_dir, list_memory_bank, load_from_memory_bank, save_to_memory_bank,
     search_memory_bank,
+};
+pub use model_display::{
+    format_anthropic_model_name, format_grok_model_name, format_model_name,
+    format_openai_model_name, is_local_provider,
 };
 pub use pipeline::{
     AgentPipeline, AgentRequest, AgentResponse, Message, PermissionLevel, PipelineConfig,

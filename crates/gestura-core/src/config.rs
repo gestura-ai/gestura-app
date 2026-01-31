@@ -23,6 +23,7 @@ use std::{collections::HashMap, fs, path::Path, path::PathBuf};
 
 use crate::config_env::{get_env, get_env_bool, get_env_u32};
 use crate::error::{AppError, Result};
+use crate::hooks::HooksSettings;
 
 /// Global permission level for new sessions.
 ///
@@ -164,6 +165,42 @@ pub struct PipelineSettings {
     ///
     /// Default: true
     pub log_token_usage: bool,
+
+    /// Project guardrails settings.
+    ///
+    /// When enabled and a workspace root is available for the request, the pipeline
+    /// will try to load a small, bounded set of project-specific instructions from
+    /// the repository (e.g. `AGENTS.md` or `.gestura/guardrails`).
+    ///
+    /// This helps keep the model aligned with repo-specific rules without requiring
+    /// every adapter to manually stitch guardrails into prompts.
+    #[serde(default)]
+    pub project_guardrails: ProjectGuardrailsSettings,
+}
+
+/// Settings for project-level guardrails discovery and prompt injection.
+///
+/// Guardrails are intentionally bounded to avoid token explosion.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ProjectGuardrailsSettings {
+    /// Enable project guardrails discovery and injection.
+    pub enabled: bool,
+
+    /// Maximum number of characters to include from the guardrails file.
+    ///
+    /// This is a character limit (not bytes) so it behaves sensibly with UTF-8.
+    pub max_chars: usize,
+}
+
+impl Default for ProjectGuardrailsSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            // Keep small by default to prevent prompt bloat.
+            max_chars: 12_000,
+        }
+    }
 }
 
 impl Default for PipelineSettings {
@@ -174,6 +211,7 @@ impl Default for PipelineSettings {
             compaction_strategy: crate::pipeline::CompactionStrategy::default(),
             max_context_tokens: 0, // 0 = use provider defaults
             log_token_usage: true,
+            project_guardrails: ProjectGuardrailsSettings::default(),
         }
     }
 }
@@ -273,6 +311,13 @@ pub struct AppConfig {
     /// Prompt enhancement settings
     #[serde(default)]
     pub prompt_enhancement: PromptEnhancementSettings,
+
+    /// Hooks configuration.
+    ///
+    /// Hooks are **disabled by default** and require explicit allow-listing of
+    /// programs before any local command is executed.
+    #[serde(default)]
+    pub hooks: HooksSettings,
 }
 
 /// Notification settings for response completion and MCP feedback
@@ -575,6 +620,7 @@ impl Default for AppConfig {
             permissions: GlobalPermissionSettings::default(),
             pipeline: PipelineSettings::default(),
             prompt_enhancement: PromptEnhancementSettings::default(),
+            hooks: HooksSettings::default(),
         }
     }
 }
