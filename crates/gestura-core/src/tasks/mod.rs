@@ -196,6 +196,12 @@ pub struct TaskList {
     pub session_id: String,
     /// All tasks in this session
     pub tasks: Vec<Task>,
+    /// Optional "current task" pointer for UI focus and checkpoint/rewind.
+    ///
+    /// This is persisted alongside the task list so the UI can restore the
+    /// user's current focus when resuming a session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_task_id: Option<String>,
 }
 
 impl TaskList {
@@ -204,7 +210,29 @@ impl TaskList {
         Self {
             session_id: session_id.into(),
             tasks: Vec::new(),
+            current_task_id: None,
         }
+    }
+
+    /// Get the currently focused task id.
+    pub fn current_task_id(&self) -> Option<&str> {
+        self.current_task_id.as_deref()
+    }
+
+    /// Set or clear the current task pointer.
+    ///
+    /// If `task_id` is `Some`, the id must exist in this task list.
+    pub fn set_current_task_id(&mut self, task_id: Option<String>) -> Result<(), TaskError> {
+        if let Some(ref id) = task_id {
+            if self.find_task(id.as_str()).is_none() {
+                return Err(TaskError::InvalidInput(format!(
+                    "current_task_id '{id}' does not exist in task list"
+                )));
+            }
+        }
+
+        self.current_task_id = task_id;
+        Ok(())
     }
 
     /// Add a task to the list
@@ -225,6 +253,9 @@ impl TaskList {
     /// Remove a task by ID
     pub fn remove_task(&mut self, task_id: &str) -> Option<Task> {
         if let Some(pos) = self.tasks.iter().position(|t| t.id == task_id) {
+            if self.current_task_id.as_deref() == Some(task_id) {
+                self.current_task_id = None;
+            }
             Some(self.tasks.remove(pos))
         } else {
             None
@@ -254,6 +285,9 @@ pub enum TaskError {
     /// Task not found
     #[error("Task not found: {0}")]
     NotFound(String),
+    /// Invalid input
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
     /// I/O error
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -342,6 +376,41 @@ impl TaskManager {
         }
 
         Ok(())
+    }
+
+    /// Load the full task list for a session.
+    ///
+    /// This returns the persisted state (or an empty list if none exists yet).
+    /// It is used by checkpoint/rewind to snapshot and restore task state.
+    pub fn load_task_list(&self, session_id: &str) -> Result<TaskList, TaskError> {
+        self.get_or_load(session_id)
+    }
+
+    /// Replace the persisted task list for a session.
+    ///
+    /// This is primarily used by checkpoint/rewind to restore a previous task
+    /// state.
+    pub fn replace_task_list(&self, task_list: TaskList) -> Result<(), TaskError> {
+        self.update_and_save(task_list)
+    }
+
+    /// Set or clear the current task pointer for a session.
+    ///
+    /// If `task_id` is `Some`, it must exist in the session's task list.
+    pub fn set_current_task_id(
+        &self,
+        session_id: &str,
+        task_id: Option<String>,
+    ) -> Result<(), TaskError> {
+        let mut task_list = self.get_or_load(session_id)?;
+        task_list.set_current_task_id(task_id)?;
+        self.update_and_save(task_list)
+    }
+
+    /// Get the current task pointer for a session.
+    pub fn get_current_task_id(&self, session_id: &str) -> Result<Option<String>, TaskError> {
+        let task_list = self.get_or_load(session_id)?;
+        Ok(task_list.current_task_id.clone())
     }
 
     /// Create a new task
@@ -545,6 +614,7 @@ mod tests {
     fn test_task_list_operations() {
         let mut list = TaskList::new("session-123");
         assert_eq!(list.tasks.len(), 0);
+        assert!(list.current_task_id().is_none());
 
         let task1 = Task::new("session-123", "Task 1", "Description 1", None);
         let task2 = Task::new(
@@ -557,6 +627,14 @@ mod tests {
         list.add_task(task1.clone());
         list.add_task(task2.clone());
         assert_eq!(list.tasks.len(), 2);
+
+        // Setting current task requires it to exist
+        assert!(list.set_current_task_id(Some(task1.id.clone())).is_ok());
+        assert_eq!(list.current_task_id(), Some(task1.id.as_str()));
+        assert!(matches!(
+            list.set_current_task_id(Some("does-not-exist".to_string())),
+            Err(TaskError::InvalidInput(_))
+        ));
 
         // Test find
         let found = list.find_task(&task1.id);
@@ -577,6 +655,48 @@ mod tests {
         let removed = list.remove_task(&task1.id);
         assert!(removed.is_some());
         assert_eq!(list.tasks.len(), 1);
+        // removing the current task clears the pointer
+        assert!(list.current_task_id().is_none());
+    }
+
+    #[test]
+    fn test_task_current_pointer_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let session_id = "session-123";
+        let task_id = {
+            let manager = TaskManager::new(temp_dir.path());
+            let task = manager
+                .create_task(session_id, "Test Task", "Test description", None)
+                .unwrap();
+            manager
+                .set_current_task_id(session_id, Some(task.id.clone()))
+                .unwrap();
+            task.id
+        };
+
+        let manager = TaskManager::new(temp_dir.path());
+        let loaded = manager.get_current_task_id(session_id).unwrap();
+        assert_eq!(loaded, Some(task_id));
+    }
+
+    #[test]
+    fn test_task_replace_task_list() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+
+        let session_id = "session-123";
+        let task = Task::new(session_id, "Task 1", "Description 1", None);
+
+        let mut list = TaskList::new(session_id);
+        list.add_task(task.clone());
+        list.set_current_task_id(Some(task.id.clone())).unwrap();
+
+        manager.replace_task_list(list).unwrap();
+
+        let loaded = manager.load_task_list(session_id).unwrap();
+        assert_eq!(loaded.tasks.len(), 1);
+        assert_eq!(loaded.current_task_id(), Some(task.id.as_str()));
     }
 
     #[test]

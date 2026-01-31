@@ -47,7 +47,7 @@ pub fn infer_provider_from_model_id(model_id: &str) -> Option<&'static str> {
 /// provider cannot be inferred for the model id, this returns `true` to avoid
 /// blocking legitimate custom/unknown model ids.
 ///
-/// Providers with user-defined model ids (`ollama`, `echo`) are always treated
+/// Providers with user-defined model ids (`ollama`) are always treated
 /// as compatible.
 pub fn is_model_compatible_with_provider(provider: &str, model_id: &str) -> bool {
     let p = provider.trim().to_ascii_lowercase();
@@ -55,7 +55,7 @@ pub fn is_model_compatible_with_provider(provider: &str, model_id: &str) -> bool
         return true;
     }
 
-    if p == "ollama" || p == "echo" {
+    if p == "ollama" {
         return true;
     }
 

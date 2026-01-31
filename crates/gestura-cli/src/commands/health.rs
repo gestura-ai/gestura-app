@@ -91,7 +91,6 @@ pub fn run() -> Result<()> {
         "anthropic" => anthropic_ok,
         "grok" => grok_ok,
         "ollama" => true, // Assume Ollama is available locally
-        "echo" => true,   // Echo provider always works
         _ => false,
     };
     if !primary_ok {

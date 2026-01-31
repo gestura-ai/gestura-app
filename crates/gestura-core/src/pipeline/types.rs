@@ -330,7 +330,6 @@ impl PipelineConfig {
             "openai" => 128_000,    // GPT-4o supports 128k
             "grok" => 131_072,      // Grok-2 supports 131k
             "ollama" => 32_000,     // Conservative default for local models
-            "echo" => 8_000,        // Echo provider (testing)
             _ => 32_000,            // Conservative default
         }
     }

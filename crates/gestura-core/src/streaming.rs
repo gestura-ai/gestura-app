@@ -13,12 +13,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-/// Character chunk size used for the built-in streaming echo fallback.
-///
-/// This intentionally emits *multiple* `StreamChunk::Text` events so the UI behaves like
-/// a true streaming experience even when no provider is configured.
-const ECHO_STREAM_CHUNK_CHARS: usize = 24;
-
 /// Default timeout for streaming LLM API calls
 const STREAMING_TIMEOUT_SECS: u64 = 300;
 
@@ -885,49 +879,31 @@ pub async fn stream_ollama(
     Ok(())
 }
 
-async fn stream_echo_fallback(
+/// Emit an error when the LLM provider is not configured.
+///
+/// Sends a `Status` message (which does not count as "output" for retry gating)
+/// followed by an `Error` chunk, then returns an error to the caller.
+async fn stream_unconfigured_error(
     provider_name: &str,
-    prompt: &str,
     tx: mpsc::Sender<StreamChunk>,
-    cancel_token: CancellationToken,
 ) -> Result<(), AppError> {
-    // Put the configuration hint into the *thinking* channel so it doesn't pollute
-    // the assistant's visible answer (but can still be shown in debug/advanced UI).
-    let note = format!(
-        "LLM provider '{provider_name}' is not configured. Configure llm.{provider_name} (api_key/model) to get real streaming + thinking. Falling back to Echo mode."
+    let message = format!(
+        "LLM provider '{}' is not configured. Please configure it in Settings or run 'gestura config edit'.",
+        provider_name
     );
-    let _ = tx.send(StreamChunk::Thinking(note)).await;
-    tokio::task::yield_now().await;
-
-    let full = format!("ECHO: {prompt}");
-    let mut rest = full.as_str();
-
-    while !rest.is_empty() {
-        if cancel_token.is_cancelled() {
-            let _ = tx.send(StreamChunk::Cancelled).await;
-            return Ok(());
-        }
-
-        let split_at = rest
-            .char_indices()
-            .nth(ECHO_STREAM_CHUNK_CHARS)
-            .map(|(i, _)| i)
-            .unwrap_or(rest.len());
-
-        let (chunk, next) = rest.split_at(split_at);
-        rest = next;
-
-        if !chunk.is_empty() {
-            let _ = tx.send(StreamChunk::Text(chunk.to_string())).await;
-            tokio::task::yield_now().await;
-        }
-    }
-
-    let _ = tx.send(StreamChunk::Done(None)).await;
-    Ok(())
+    // Status chunk does not count as output for retry purposes
+    let _ = tx
+        .send(StreamChunk::Status {
+            message: message.clone(),
+        })
+        .await;
+    let _ = tx.send(StreamChunk::Error(message.clone())).await;
+    Err(AppError::Llm(message))
 }
 
-/// Start a streaming LLM request based on config
+/// Start a streaming LLM request based on config.
+///
+/// Returns an error if the selected provider is not configured.
 pub async fn start_streaming(
     config: &AppConfig,
     prompt: &str,
@@ -949,7 +925,7 @@ pub async fn start_streaming(
                 )
                 .await
             } else {
-                stream_echo_fallback("openai", prompt, tx, cancel_token).await
+                stream_unconfigured_error("openai", tx).await
             }
         }
         "anthropic" => {
@@ -966,7 +942,7 @@ pub async fn start_streaming(
                 })
                 .await
             } else {
-                stream_echo_fallback("anthropic", prompt, tx, cancel_token).await
+                stream_unconfigured_error("anthropic", tx).await
             }
         }
         "grok" => {
@@ -983,17 +959,17 @@ pub async fn start_streaming(
                 )
                 .await
             } else {
-                stream_echo_fallback("grok", prompt, tx, cancel_token).await
+                stream_unconfigured_error("grok", tx).await
             }
         }
         "ollama" => {
             if let Some(c) = &config.llm.ollama {
                 stream_ollama(&c.base_url, &c.model, prompt, tx, cancel_token).await
             } else {
-                stream_echo_fallback("ollama", prompt, tx, cancel_token).await
+                stream_unconfigured_error("ollama", tx).await
             }
         }
-        _ => stream_echo_fallback("unknown", prompt, tx, cancel_token).await,
+        other => stream_unconfigured_error(other, tx).await,
     }
 }
 
@@ -1294,7 +1270,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_streaming_unconfigured_provider_still_feels_streaming() {
+    async fn start_streaming_unconfigured_provider_returns_error() {
         let mut cfg = AppConfig::default();
         cfg.llm.primary = "openai".to_string();
         cfg.llm.openai = None;
@@ -1303,34 +1279,25 @@ mod tests {
         let cancel = CancellationToken::new();
 
         tokio::spawn(async move {
-            let prompt = "hello world this is a deliberately long prompt to force the echo fallback to emit multiple chunks";
+            let prompt = "hello world";
             let _ = start_streaming(&cfg, prompt, None, tx, cancel).await;
         });
 
-        // First chunk should be a helpful note.
+        // First chunk should be a Status message (does not count as output for retry).
         match rx.recv().await {
-            Some(StreamChunk::Thinking(t)) => assert!(t.contains("not configured")),
-            other => panic!("Expected Thinking chunk, got: {other:?}"),
+            Some(StreamChunk::Status { message }) => {
+                assert!(message.contains("not configured"));
+            }
+            other => panic!("Expected Status chunk, got: {other:?}"),
         }
 
-        // Then we should get multiple Text chunks before Done.
-        let mut text_chunks = 0usize;
-        while let Some(chunk) = rx.recv().await {
-            match chunk {
-                StreamChunk::Text(_) => {
-                    text_chunks += 1;
-                    if text_chunks >= 2 {
-                        break;
-                    }
-                }
-                StreamChunk::Done(_) => break,
-                _ => {}
+        // Next chunk should be an Error.
+        match rx.recv().await {
+            Some(StreamChunk::Error(msg)) => {
+                assert!(msg.contains("not configured"));
             }
+            other => panic!("Expected Error chunk, got: {other:?}"),
         }
-        assert!(
-            text_chunks >= 2,
-            "Expected >=2 text chunks, got {text_chunks}"
-        );
     }
 
     #[tokio::test]
