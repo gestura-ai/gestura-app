@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g., v1.0.0)'
+        description: 'Tag to release (e.g., v1.0.0)'
         required: true
         type: string
 
@@ -19,17 +19,17 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.create-release.outputs.release_id }}
-      upload_url: ${{ steps.create-release.outputs.upload_url }}
+      tag: ${{ steps.get_tag.outputs.TAG }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get version
-        id: get_version
+      - name: Resolve tag
+        id: get_tag
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+            echo "TAG=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
           else
-            echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
       - name: Create release
@@ -40,14 +40,14 @@ jobs:
             const { data } = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              tag_name: '${{ steps.get_version.outputs.VERSION }}',
-              name: 'Gestura ${{ steps.get_version.outputs.VERSION }}',
-              body: 'Release ${{ steps.get_version.outputs.VERSION }}',
+              tag_name: '${{ steps.get_tag.outputs.TAG }}',
+              name: 'Gestura ${{ steps.get_tag.outputs.TAG }}',
+              body: 'Release ${{ steps.get_tag.outputs.TAG }}',
               draft: true,
               prerelease: false
             });
             core.setOutput('release_id', data.id);
-            core.setOutput('upload_url', data.upload_url);
+            
 
   build-release:
     needs: create-release
@@ -56,13 +56,15 @@ jobs:
       matrix:
         include:
           - platform: 'macos-latest'
-            args: '--target universal-apple-darwin'
+            tauri_args: '--target universal-apple-darwin'
           - platform: 'ubuntu-latest'
-            args: ''
+            tauri_args: ''
           - platform: 'windows-latest'
-            args: ''
+            tauri_args: ''
 
     runs-on: ${{ matrix.platform }}
+    env:
+      TAG: ${{ needs.create-release.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -108,9 +110,35 @@ jobs:
             target/x86_64-apple-darwin/release/gestura \
             -output target/universal-apple-darwin/release/gestura
 
+      - name: Stage CLI for Tauri bundling (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          mkdir -p crates/gestura-gui/binaries
+          cp target/aarch64-apple-darwin/release/gestura crates/gestura-gui/binaries/gestura-aarch64-apple-darwin
+          cp target/x86_64-apple-darwin/release/gestura crates/gestura-gui/binaries/gestura-x86_64-apple-darwin
+          cp target/universal-apple-darwin/release/gestura crates/gestura-gui/binaries/gestura-universal-apple-darwin
+          chmod +x \
+            crates/gestura-gui/binaries/gestura-aarch64-apple-darwin \
+            crates/gestura-gui/binaries/gestura-x86_64-apple-darwin \
+            crates/gestura-gui/binaries/gestura-universal-apple-darwin
+
       - name: Build CLI binary (Linux/Windows)
         if: matrix.platform != 'macos-latest'
         run: cargo build --release -p gestura-cli --features voice-local
+
+      - name: Stage CLI for Tauri bundling (Linux)
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          mkdir -p crates/gestura-gui/binaries
+          cp target/release/gestura crates/gestura-gui/binaries/gestura-x86_64-unknown-linux-gnu
+          chmod +x crates/gestura-gui/binaries/gestura-x86_64-unknown-linux-gnu
+
+      - name: Stage CLI for Tauri bundling (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path crates/gestura-gui/binaries | Out-Null
+          Copy-Item -Force target/release/gestura.exe crates/gestura-gui/binaries/gestura-x86_64-pc-windows-msvc.exe
 
       - name: Import Apple certificates (macOS)
         if: matrix.platform == 'macos-latest'
@@ -154,9 +182,8 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
         with:
-          releaseId: ${{ needs.create-release.outputs.release_id }}
           projectPath: crates/gestura-gui
-          args: '--features voice-local ${{ matrix.args }}'
+          args: '--features voice-local ${{ matrix.tauri_args }}'
 
       - name: Sign CLI binary (macOS)
         if: matrix.platform == 'macos-latest' && env.APPLE_SIGNING_IDENTITY != ''
@@ -168,14 +195,14 @@ jobs:
             target/universal-apple-darwin/release/gestura
           codesign --verify --deep --strict target/universal-apple-darwin/release/gestura
 
-      - name: Create signed PKG installer (macOS)
+      - name: Create Full installer (PKG) (macOS)
         if: matrix.platform == 'macos-latest'
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
         run: |
-          VERSION=$(grep -o '"version": "[^"]*"' crates/gestura-gui/frontend/package.json | cut -d'"' -f4)
-          DIST_DIR="dist/macos"
+          VERSION_NUM="${TAG#v}"
+          DIST_DIR="dist/release"
           PKGROOT_DIR="${DIST_DIR}/pkgroot"
 
           # Find the app bundle
@@ -196,76 +223,103 @@ jobs:
           pkgbuild \
             --root "${PKGROOT_DIR}" \
             --identifier "ai.gestura.desktop" \
-            --version "${VERSION}" \
+            --version "${VERSION_NUM}" \
             --install-location "/" \
-            "${DIST_DIR}/Gestura-${VERSION}-unsigned.pkg"
+            "${DIST_DIR}/Gestura-${TAG}-unsigned.pkg"
 
           # Sign PKG if installer identity is available
           if [ -n "$APPLE_INSTALLER_IDENTITY" ]; then
             productsign --sign "$APPLE_INSTALLER_IDENTITY" \
-              "${DIST_DIR}/Gestura-${VERSION}-unsigned.pkg" \
-              "${DIST_DIR}/Gestura-${VERSION}-universal.pkg"
-            rm -f "${DIST_DIR}/Gestura-${VERSION}-unsigned.pkg"
+              "${DIST_DIR}/Gestura-${TAG}-unsigned.pkg" \
+              "${DIST_DIR}/Gestura-${TAG}-universal.pkg"
+            rm -f "${DIST_DIR}/Gestura-${TAG}-unsigned.pkg"
           else
-            mv "${DIST_DIR}/Gestura-${VERSION}-unsigned.pkg" "${DIST_DIR}/Gestura-${VERSION}-universal.pkg"
+            mv "${DIST_DIR}/Gestura-${TAG}-unsigned.pkg" "${DIST_DIR}/Gestura-${TAG}-universal.pkg"
           fi
 
-      - name: Get version for PKG upload
+      - name: Package CLI-only archive (macOS)
         if: matrix.platform == 'macos-latest'
-        id: pkg_version
         run: |
-          VERSION=$(grep -o '"version": "[^"]*"' crates/gestura-gui/frontend/package.json | cut -d'"' -f4)
-          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          mkdir -p dist/release
+          tar -C target/universal-apple-darwin/release -czf "dist/release/gestura-cli-${TAG}-macos-universal.tar.gz" gestura
 
-      - name: Upload PKG installer (macOS)
-        if: matrix.platform == 'macos-latest'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: dist/macos/Gestura-${{ steps.pkg_version.outputs.VERSION }}-universal.pkg
-          asset_name: Gestura-${{ steps.pkg_version.outputs.VERSION }}-universal.pkg
-          asset_content_type: application/octet-stream
-
-      - name: Upload CLI binary (macOS)
-        if: matrix.platform == 'macos-latest'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: target/universal-apple-darwin/release/gestura
-          asset_name: gestura-cli-macos-universal
-          asset_content_type: application/octet-stream
-
-      - name: Upload CLI binary (Linux)
+      - name: Package CLI-only archive (Linux)
         if: matrix.platform == 'ubuntu-latest'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: target/release/gestura
-          asset_name: gestura-cli-linux-x86_64
-          asset_content_type: application/octet-stream
+        run: |
+          mkdir -p dist/release
+          tar -C target/release -czf "dist/release/gestura-cli-${TAG}-linux-x86_64.tar.gz" gestura
 
-      - name: Upload CLI binary (Windows)
+      - name: Package CLI-only archive (Windows)
         if: matrix.platform == 'windows-latest'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/release | Out-Null
+          Compress-Archive -Path target/release/gestura.exe -DestinationPath ("dist/release/gestura-cli-{0}-windows-x86_64.zip" -f $env:TAG) -Force
+
+      - name: Collect Full installer artifacts (Linux)
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+          deb_src="$(ls -1 crates/gestura-gui/target/release/bundle/deb/*.deb 2>/dev/null | head -1 || true)"
+          rpm_src="$(ls -1 crates/gestura-gui/target/release/bundle/rpm/*.rpm 2>/dev/null | head -1 || true)"
+          if [ -z "$deb_src" ]; then
+            deb_src="$(find crates/gestura-gui/target -type f -path '*/release/bundle/deb/*.deb' | head -1 || true)"
+          fi
+          if [ -z "$rpm_src" ]; then
+            rpm_src="$(find crates/gestura-gui/target -type f -path '*/release/bundle/rpm/*.rpm' | head -1 || true)"
+          fi
+          [ -n "$deb_src" ] || (echo "deb not found" && exit 1)
+          [ -n "$rpm_src" ] || (echo "rpm not found" && exit 1)
+          cp "$deb_src" "dist/release/gestura-${TAG}-linux-x86_64.deb"
+          cp "$rpm_src" "dist/release/gestura-${TAG}-linux-x86_64.rpm"
+
+      - name: Collect Full installer artifacts (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/release | Out-Null
+          $msi = Get-ChildItem -Path crates/gestura-gui/target -Recurse -Filter *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $msi) { throw "MSI not found" }
+          Copy-Item -Force $msi.FullName ("dist/release/Gestura-{0}-windows-x86_64.msi" -f $env:TAG)
+
+      - name: Upload release artifacts (workflow artifact)
+        uses: actions/upload-artifact@v4
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: target/release/gestura.exe
-          asset_name: gestura-cli-windows-x86_64.exe
-          asset_content_type: application/octet-stream
+          name: release-assets-${{ matrix.platform }}
+          path: dist/release/*
+          if-no-files-found: error
 
   publish-release:
     needs: [create-release, build-release]
     runs-on: ubuntu-latest
     steps:
-      - name: Publish release
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          path: dist/release
+          merge-multiple: true
+
+      - name: Generate unified SHA256SUMS manifest
+        env:
+          TAG: ${{ needs.create-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          source scripts/packaging/common.sh
+          write_sha256sums dist/release "gestura-${TAG}-SHA256SUMS.txt"
+
+      - name: Upload assets to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" dist/release/* --clobber
+
+      - name: Publish release (undraft)
         uses: actions/github-script@v7
         with:
           script: |
@@ -279,7 +333,7 @@ jobs:
   deploy-docs:
     needs: publish-release
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && hashFiles('package-lock.json') != ''
     steps:
       - uses: actions/checkout@v4
       
