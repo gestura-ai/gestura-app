@@ -4259,13 +4259,17 @@
 
 	        // --- Tool Confirmation Dialog (Restricted mode pause/resume) ---
 
-	        /**
-	         * Show a tool confirmation dialog.
-	         * @param {{ tool_name: string, tool_args: string, description?: string, risk_level?: string, category?: string }} payload
-	         * @returns {Promise<boolean>}
-	         */
-	        async function showToolConfirmationDialog(payload) {
-	            return new Promise((resolve) => {
+		        /**
+		         * Show a tool confirmation dialog.
+		         *
+		         * The decision strings are stable ids that mirror
+		         * `gestura_core::tool_confirmation::ToolConfirmationDecision::as_str()`.
+		         *
+		         * @param {{ tool_name: string, tool_args: string, description?: string, risk_level?: string, category?: string }} payload
+		         * @returns {Promise<"allow_once"|"allow_session"|"allow_always"|"deny_once"|"deny_session">}
+		         */
+		        async function showToolConfirmationDialog(payload) {
+		            return new Promise((resolve) => {
 	                const overlay = document.createElement('div');
 	                overlay.className = 'tool-confirm-overlay';
 	
@@ -4277,7 +4281,7 @@
 	
 	                overlay.innerHTML = `
 	                    <div class="tool-confirm-dialog" role="dialog" aria-modal="true">
-	                        <h3>Approve tool execution?</h3>
+		                        <h3>Allow tool execution?</h3>
 	                        <p>${escapeHtmlText(description)}</p>
 	                        <div class="tool-confirm-details">
 	                            <div class="meta">
@@ -4288,28 +4292,35 @@
 	                            </div>
 	                            <pre class="tool-confirm-args">${escapeHtmlText(toolArgs)}</pre>
 	                        </div>
-	                        <div class="tool-confirm-buttons">
-	                            <button class="btn-deny">Deny</button>
-	                            <button class="btn-approve">Approve</button>
-	                        </div>
+		                        <div class="tool-confirm-buttons">
+		                            <button class="btn-approve" data-decision="allow_once">Allow once</button>
+		                            <button class="btn-approve" data-decision="allow_session">Allow session</button>
+		                            <button class="btn-approve" data-decision="allow_always">Allow always</button>
+		                            <button class="btn-deny" data-decision="deny_once">Deny once</button>
+		                            <button class="btn-deny" data-decision="deny_session">Deny session</button>
+		                        </div>
 	                    </div>
 	                `;
 
 	                document.body.appendChild(overlay);
-	                const approveBtn = overlay.querySelector('.btn-approve');
-	                const denyBtn = overlay.querySelector('.btn-deny');
+		                const decisionButtons = overlay.querySelectorAll('button[data-decision]');
+		                const defaultBtn = overlay.querySelector('button[data-decision="allow_once"]');
 
-	                const cleanup = (value) => {
+		                const cleanup = (value) => {
 	                    overlay.remove();
 	                    resolve(value);
 	                };
 
-	                approveBtn?.addEventListener('click', () => cleanup(true));
-	                denyBtn?.addEventListener('click', () => cleanup(false));
+		                decisionButtons.forEach((btn) => {
+		                    btn.addEventListener('click', () => {
+		                        const decision = btn.getAttribute('data-decision') || 'deny_once';
+		                        cleanup(decision);
+		                    });
+		                });
 	                overlay.addEventListener('click', (e) => {
-	                    if (e.target === overlay) cleanup(false);
+		                    if (e.target === overlay) cleanup('deny_once');
 	                });
-	                approveBtn?.focus();
+		                defaultBtn?.focus();
 	            });
 	        }
 
@@ -4332,16 +4343,29 @@
 	                    const targetCard = currentToolCard || (streamingMessageElement ? streamingMessageElement.querySelector('.tool-call:last-of-type') : null);
 	                    if (targetCard) targetCard.classList.add('waiting-confirmation');
 
-	                    const approved = await showToolConfirmationDialog(next);
+		                    const decision = await showToolConfirmationDialog(next);
 	                    const sid = next.session_id || sessionId || null;
 	                    try {
-	                        if (approved) {
-	                            await window.__TAURI__.core.invoke('approve_tool_confirmation', { confirmation_id: next.confirmation_id, session_id: sid });
-	                            showToast('Approved tool execution', 'success');
-	                        } else {
-	                            await window.__TAURI__.core.invoke('deny_tool_confirmation', { confirmation_id: next.confirmation_id, session_id: sid });
-	                            showToast('Denied tool execution', 'warning');
-	                        }
+		                        // Prefer the scoped-decision command when available.
+		                        try {
+		                            await window.__TAURI__.core.invoke('resolve_tool_confirmation_decision', {
+		                                confirmation_id: next.confirmation_id,
+		                                session_id: sid,
+		                                decision,
+		                            });
+		                        } catch (innerErr) {
+		                            // Backward-compat fallback: map scoped decision to legacy approve/deny.
+		                            const allowed = String(decision || '').startsWith('allow_');
+		                            if (allowed) {
+		                                await window.__TAURI__.core.invoke('approve_tool_confirmation', { confirmation_id: next.confirmation_id, session_id: sid });
+		                            } else {
+		                                await window.__TAURI__.core.invoke('deny_tool_confirmation', { confirmation_id: next.confirmation_id, session_id: sid });
+		                            }
+		                            console.warn('resolve_tool_confirmation_decision not available; fell back to approve/deny:', innerErr);
+		                        }
+		
+		                        const allowed = String(decision || '').startsWith('allow_');
+		                        showToast(allowed ? 'Allowed tool execution' : 'Denied tool execution', allowed ? 'success' : 'warning');
 	                    } catch (err) {
 	                        console.error('Failed to resolve tool confirmation:', err);
 	                        showToast(`Failed to resolve tool confirmation: ${err}`, 'error');

@@ -2586,6 +2586,28 @@ pub fn approve_tool_confirmation(
     )
 }
 
+/// Resolve a pending tool confirmation request with a scoped decision.
+///
+/// This is the scoped-decision variant of tool confirmation resolution that supports:
+/// `allow_once`, `allow_session`, `allow_always`, `deny_once`, and `deny_session`.
+///
+/// JS↔Rust interop: The frontend calls this when the user selects a scoped action in the
+/// `chat-stream-tool-confirmation` dialog.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub fn resolve_tool_confirmation_decision(
+    confirmation_id: String,
+    session_id: Option<String>,
+    decision: String,
+) -> Result<(), String> {
+    let decision = gestura_core::tool_confirmation::ToolConfirmationDecision::parse(&decision)
+        .map_err(|e| e.to_string())?;
+
+    gestura_core::tool_confirmation::TOOL_CONFIRMATIONS
+        .resolve_decision(&confirmation_id, session_id.as_deref(), decision)
+}
+
 /// Deny a pending tool confirmation request.
 ///
 /// JS↔Rust interop: The frontend calls this when the user clicks "Deny" (or

@@ -163,6 +163,7 @@ async fn main() {
             gestura_gui::api::cancel_chat_streaming,
             // Tool confirmation (Restricted mode pause/resume)
             gestura_gui::api::approve_tool_confirmation,
+            gestura_gui::api::resolve_tool_confirmation_decision,
             gestura_gui::api::deny_tool_confirmation,
             // Chat diagnostics
             gestura_gui::api::get_chat_event_trace,
