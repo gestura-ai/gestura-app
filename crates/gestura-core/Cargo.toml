@@ -22,7 +22,7 @@ json-ld = ["dep:json-ld"]
 security = ["dep:ring", "dep:keyring"]
 # macOS permissions
 macos-permissions = ["dep:objc", "dep:cocoa"]
-# Development/testing features - includes EchoProvider and other dev tools
+# Development/testing features - enables dev-only code paths
 # WARNING: Do NOT enable in production releases
 dev = []
 

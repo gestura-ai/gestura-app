@@ -452,19 +452,17 @@ mod tests {
     use crate::config::PromptEnhancementSettings;
 
     #[tokio::test]
-    #[cfg(feature = "dev")]
-    async fn test_enhance_prompt_with_echo_provider() {
-        // Use echo provider for testing
-        let mut config = AppConfig::default();
-        config.llm.primary = "echo".to_string();
+    async fn test_enhance_prompt_with_unconfigured_provider() {
+        // Test that enhancement fails gracefully with unconfigured provider
+        let config = AppConfig::default();
 
         let original = "fix the bug";
         let result = enhance_prompt_with_llm(original, &config, None).await;
 
-        assert!(result.is_ok());
-        let enhanced = result.unwrap();
-        // Echo provider returns "ECHO: <prompt>"
-        assert!(enhanced.contains("ECHO:"));
+        // Should fail because no provider is configured
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not configured"));
     }
 
     #[test]
@@ -494,11 +492,10 @@ mod tests {
     }
 
     #[test]
-    fn test_enhance_with_session_context() {
+    fn test_enhance_with_session_context_unconfigured() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let mut config = AppConfig::default();
-            config.llm.primary = "echo".to_string();
+            let config = AppConfig::default();
 
             let context = PromptContext::new().with_session_history(vec![
                 (
@@ -508,8 +505,9 @@ mod tests {
                 ("assistant".to_string(), "I can help with that".to_string()),
             ]);
 
+            // Should fail because no provider is configured
             let result = enhance_prompt_with_llm("add login", &config, Some(context)).await;
-            assert!(result.is_ok());
+            assert!(result.is_err());
         });
     }
 
@@ -536,34 +534,13 @@ mod tests {
         assert!(formatted.is_empty());
     }
 
-    #[tokio::test]
-    #[cfg(feature = "dev")]
-    async fn test_prompt_caching() {
-        // Clear cache first
+    #[test]
+    fn test_cache_operations() {
+        // Test that cache clear works without errors
         clear_prompt_cache();
 
-        let mut config = AppConfig::default();
-        config.llm.primary = "echo".to_string();
-
-        let prompt = "test caching functionality";
-
-        // First call should hit the LLM
-        let result1 = enhance_prompt_with_llm(prompt, &config, None).await;
-        assert!(result1.is_ok());
-        let enhanced1 = result1.unwrap();
-
-        // Second call with same prompt should return cached result
-        let result2 = enhance_prompt_with_llm(prompt, &config, None).await;
-        assert!(result2.is_ok());
-        let enhanced2 = result2.unwrap();
-
-        // Results should be identical (from cache)
-        assert_eq!(enhanced1, enhanced2);
-
-        // Clear cache and verify it works
+        // Clear again to ensure idempotency
         clear_prompt_cache();
-        let result3 = enhance_prompt_with_llm(prompt, &config, None).await;
-        assert!(result3.is_ok());
     }
 
     #[test]
@@ -572,8 +549,7 @@ mod tests {
         let prompt2 = "test prompt";
         let prompt3 = "different prompt";
 
-        let mut config = AppConfig::default();
-        config.llm.primary = "echo".to_string();
+        let config = AppConfig::default();
 
         // Same prompt should generate same key
         let key1 = generate_cache_key(prompt1, &config, &None);
@@ -631,27 +607,22 @@ mod tests {
         assert!(unknown_prompt.contains("Be brief and to the point"));
     }
 
-    #[tokio::test]
-    #[cfg(feature = "dev")]
-    async fn test_user_preferences_applied() {
-        clear_prompt_cache();
-
+    #[test]
+    fn test_user_preferences_settings() {
+        // Test that user preferences can be set without calling the LLM
         let mut config = AppConfig::default();
-        config.llm.primary = "echo".to_string();
 
         // Test with detailed style
         config.prompt_enhancement.style = "detailed".to_string();
         config.prompt_enhancement.set_max_length_multiplier(4.0);
-
-        let result = enhance_prompt_with_llm("test prompt", &config, None).await;
-        assert!(result.is_ok());
+        assert_eq!(config.prompt_enhancement.style, "detailed");
+        assert_eq!(config.prompt_enhancement.max_length_multiplier(), 4.0);
 
         // Test with technical style
         config.prompt_enhancement.style = "technical".to_string();
         config.prompt_enhancement.set_max_length_multiplier(2.0);
-
-        let result2 = enhance_prompt_with_llm("test prompt 2", &config, None).await;
-        assert!(result2.is_ok());
+        assert_eq!(config.prompt_enhancement.style, "technical");
+        assert_eq!(config.prompt_enhancement.max_length_multiplier(), 2.0);
     }
 
     #[test]

@@ -102,12 +102,6 @@ to an “active” chat session.
 
 ## LLM Providers
 
-### Echo (Testing)
-
-A mock provider that echoes input. Useful for testing the voice pipeline without an LLM.
-
-**Configuration:** No configuration required.
-
 ### OpenAI
 
 Uses OpenAI's GPT models (GPT-4, GPT-4o, GPT-3.5-turbo).

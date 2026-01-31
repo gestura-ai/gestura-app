@@ -130,27 +130,8 @@ pub trait LlmProvider: Send + Sync {
     }
 }
 
-/// A provider that echoes the prompt for scaffolding and tests.
-///
-/// **WARNING**: This provider is only available when the `dev` feature is enabled.
-/// It should NEVER be used in production releases.
-///
-/// # Feature Flag
-/// Requires `dev` feature: `gestura-core = { features = ["dev"] }`
-#[cfg(any(feature = "dev", test))]
-pub struct EchoProvider;
-
-#[cfg(any(feature = "dev", test))]
-#[async_trait::async_trait]
-impl LlmProvider for EchoProvider {
-    async fn call(&self, prompt: &str) -> Result<String, AppError> {
-        tracing::warn!("EchoProvider is for development/testing only - not for production use");
-        Ok(format!("ECHO: {}", prompt))
-    }
-}
-
 /// A provider that returns an error when no real provider is configured.
-/// Used in production when config is missing.
+/// Used when config is missing or invalid.
 pub struct UnconfiguredProvider {
     pub provider_name: String,
 }
@@ -511,37 +492,20 @@ impl LlmProvider for OllamaProvider {
     }
 }
 
-/// Helper to create a fallback provider based on feature flags.
-/// In dev/test mode, returns EchoProvider. In production, returns UnconfiguredProvider.
-fn fallback_provider(provider_name: &str) -> Box<dyn LlmProvider> {
-    #[cfg(any(feature = "dev", test))]
-    {
-        tracing::warn!(
-            "Provider '{}' not configured, falling back to EchoProvider (dev mode)",
-            provider_name
-        );
-        Box::new(EchoProvider)
-    }
-    #[cfg(not(any(feature = "dev", test)))]
-    {
-        Box::new(UnconfiguredProvider {
-            provider_name: provider_name.to_string(),
-        })
-    }
+/// Create an unconfigured provider that returns an error when called.
+/// Used when a provider is not properly configured.
+fn unconfigured_provider(provider_name: &str) -> Box<dyn LlmProvider> {
+    Box::new(UnconfiguredProvider {
+        provider_name: provider_name.to_string(),
+    })
 }
 
 /// Select a provider based on config and context.
 ///
-/// # Production Behavior
 /// If the selected provider is not configured, returns `UnconfiguredProvider` which
-/// will return an error when called. This prevents silent failures in production.
-///
-/// # Development Behavior (with `dev` feature)
-/// Falls back to `EchoProvider` for testing convenience.
+/// will return an error when called. This prevents silent failures.
 pub fn select_provider(config: &AppConfig, _ctx: &AgentContext) -> Box<dyn LlmProvider> {
     match config.llm.primary.as_str() {
-        #[cfg(any(feature = "dev", test))]
-        "echo" => Box::new(EchoProvider),
         "openai" => {
             if let Some(c) = &config.llm.openai {
                 Box::new(OpenAiProvider {
@@ -553,7 +517,7 @@ pub fn select_provider(config: &AppConfig, _ctx: &AgentContext) -> Box<dyn LlmPr
                     model: c.model.clone(),
                 })
             } else {
-                fallback_provider("openai")
+                unconfigured_provider("openai")
             }
         }
         "anthropic" => {
@@ -568,7 +532,7 @@ pub fn select_provider(config: &AppConfig, _ctx: &AgentContext) -> Box<dyn LlmPr
                     thinking_budget_tokens: c.thinking_budget_tokens,
                 })
             } else {
-                fallback_provider("anthropic")
+                unconfigured_provider("anthropic")
             }
         }
         "grok" => {
@@ -582,7 +546,7 @@ pub fn select_provider(config: &AppConfig, _ctx: &AgentContext) -> Box<dyn LlmPr
                     model: c.model.clone(),
                 })
             } else {
-                fallback_provider("grok")
+                unconfigured_provider("grok")
             }
         }
         "ollama" => {
@@ -592,10 +556,10 @@ pub fn select_provider(config: &AppConfig, _ctx: &AgentContext) -> Box<dyn LlmPr
                     model: c.model.clone(),
                 })
             } else {
-                fallback_provider("ollama")
+                unconfigured_provider("ollama")
             }
         }
-        other => fallback_provider(other),
+        other => unconfigured_provider(other),
     }
 }
 
@@ -605,20 +569,24 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
-    async fn test_echo_provider() {
-        let provider = EchoProvider;
-        let result = provider.call("Hello").await.unwrap();
-        assert_eq!(result, "ECHO: Hello");
+    async fn test_unconfigured_provider_returns_error() {
+        let provider = UnconfiguredProvider {
+            provider_name: "test".to_string(),
+        };
+        let result = provider.call("Hello").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("not configured"));
     }
 
     #[test]
-    fn test_select_provider_default() {
+    fn test_select_provider_unconfigured() {
         let config = AppConfig::default();
         let ctx = AgentContext::default();
         // Default config has "anthropic" as primary, but no API key configured
-        // so select_provider should return fallback provider (EchoProvider in dev/test mode)
+        // so select_provider should return UnconfiguredProvider
         let _provider = select_provider(&config, &ctx);
-        // Provider is created successfully (can't easily test async call here)
+        // Provider is created successfully (returns error when called)
     }
 
     #[test]

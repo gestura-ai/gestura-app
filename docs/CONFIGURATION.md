@@ -104,7 +104,7 @@ ui_prefs:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `primary` | string | Active LLM provider: `"echo"`, `"openai"`, `"anthropic"`, `"grok"`, `"ollama"` |
+| `primary` | string | Active LLM provider: `"openai"`, `"anthropic"`, `"grok"`, `"ollama"` |
 | `openai` | object | OpenAI configuration (api_key, model) |
 | `anthropic` | object | Anthropic configuration (api_key, model) |
 | `grok` | object | Grok configuration (api_key, model) |

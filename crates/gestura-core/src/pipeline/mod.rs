@@ -3092,6 +3092,7 @@ mod tests {
     /// When adapter layers explicitly disable tools for a request, the pipeline must
     /// not execute any tools (including the confirmed-tool follow-up heuristic).
     #[tokio::test]
+    #[ignore = "requires Ollama with llama3.2 model installed"]
     async fn tools_enabled_false_skips_confirmed_tool_followup_execution() {
         use tokio::sync::mpsc;
         use tokio::time::{Duration, timeout};
@@ -3161,6 +3162,7 @@ mod tests {
     /// Even when request analysis would normally select tools, `tools_enabled=false`
     /// must ensure the blocking pipeline path does not execute tools.
     #[tokio::test]
+    #[ignore = "requires Ollama with llama3.2 model installed"]
     async fn tools_enabled_false_disables_tools_for_blocking_requests() {
         let pipeline = AgentPipeline::new(AppConfig::default());
 

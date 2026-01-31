@@ -18,7 +18,7 @@ voice-openai = ["gestura-core/voice-openai"]
 nats = ["gestura-core/nats"]
 ble = ["gestura-core/ble"]
 security = ["gestura-core/security"]
-# Development features - includes EchoProvider for testing
+# Development features - enables dev-only code paths
 dev = ["gestura-core/dev"]
 
 [dependencies]

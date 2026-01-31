@@ -38,6 +38,7 @@ pub mod analytics;
 pub mod audio;
 pub mod audio_capture;
 pub mod chat_sessions;
+pub mod checkpoints;
 pub mod compaction;
 pub mod config;
 pub mod config_env;
@@ -109,6 +110,10 @@ pub use chat_sessions::{
     SessionState, SessionToolCall, SessionToolSettings, SessionVoiceConfig,
     default_chat_sessions_dir,
 };
+pub use checkpoints::{
+    Checkpoint, CheckpointError, CheckpointId, CheckpointManager, CheckpointMetadata,
+    CheckpointRetentionPolicy, CheckpointSnapshot, FileCheckpointStore, default_checkpoints_dir,
+};
 pub use compaction::{
     CompactionConfig, CompactionEvent, CompactionEventType, CompactionResult, CompactionStrategy,
     ContextCompactor,
@@ -139,8 +144,6 @@ pub use knowledge::{
     KnowledgeSettingsManager, KnowledgeStore, LoadCondition, SessionKnowledgeSettings,
     register_builtin_knowledge,
 };
-#[cfg(any(feature = "dev", test))]
-pub use llm_provider::EchoProvider;
 pub use llm_provider::{
     AgentContext, LlmCallResponse, LlmProvider, TokenUsage, UnconfiguredProvider, select_provider,
 };
