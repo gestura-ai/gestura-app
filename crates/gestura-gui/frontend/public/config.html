@@ -3338,7 +3338,7 @@
             try {
                 setDropdownLoading('openaiLlmModel', true);
 
-	                const models = await window.__TAURI__.core.invoke('list_openai_models', { apiKey });
+	                const models = await window.__TAURI__.core.invoke('list_openai_models', { api_key: apiKey });
                 modelSelect.innerHTML = '';
 
 	                if (!Array.isArray(models) || models.length === 0) {
@@ -3390,7 +3390,7 @@
             try {
                 setDropdownLoading('anthropicLlmModel', true);
 
-	                const models = await window.__TAURI__.core.invoke('list_anthropic_models', { apiKey });
+	                const models = await window.__TAURI__.core.invoke('list_anthropic_models', { api_key: apiKey });
                 modelSelect.innerHTML = '';
 
 	                if (!Array.isArray(models) || models.length === 0) {
@@ -3435,7 +3435,7 @@
 
             try {
                 setDropdownLoading('grokLlmModel', true);
-	            	const models = await window.__TAURI__.core.invoke('list_grok_models', { apiKey });
+	            	const models = await window.__TAURI__.core.invoke('list_grok_models', { api_key: apiKey });
                 modelSelect.innerHTML = '';
 	
 	                if (!Array.isArray(models) || models.length === 0) {
