@@ -890,7 +890,10 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
           {(sessionTokens.input_tokens > 0 || sessionTokens.output_tokens > 0) && (
             <span className="token-display" title="Session token usage">
               📊 {sessionTokens.input_tokens + sessionTokens.output_tokens} tokens
-              {sessionTokens.estimated_cost_usd !== undefined && sessionTokens.estimated_cost_usd > 0 && (
+              {/* Hide cost for local providers (Ollama) and when cost is zero/unavailable */}
+              {sessionTokens.estimated_cost_usd !== undefined &&
+               sessionTokens.estimated_cost_usd > 0 &&
+               !['ollama', 'local'].includes(selectedModel) && (
                 <span className="cost-display"> (${sessionTokens.estimated_cost_usd.toFixed(4)})</span>
               )}
             </span>
