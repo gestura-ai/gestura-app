@@ -938,7 +938,7 @@
                 </li>
                 <li class="toc-item">
                     <a href="#device-settings" class="toc-link" data-section="device-settings">
-                        <span class="toc-icon icon-phone"></span>Device Management
+                        <span class="toc-icon icon-phone"></span>Device & MDH
                     </a>
                 </li>
                 <li class="toc-item">
@@ -949,11 +949,6 @@
                 <li class="toc-item">
                     <a href="#tools-settings" class="toc-link" data-section="tools-settings">
                         <span class="toc-icon icon-wrench"></span>Tools
-                    </a>
-                </li>
-                <li class="toc-item">
-                    <a href="#mdh-settings" class="toc-link" data-section="mdh-settings">
-                        <span class="toc-icon icon-target"></span>MDH Targeting
                     </a>
                 </li>
                 <li class="toc-item">
@@ -1539,11 +1534,12 @@
                 <!-- Device Management Settings -->
                 <section class="config-section" id="device-settings">
                     <div class="section-title">
-                        <span class="icon icon-phone"></span>Device Management
+                        <span class="icon icon-phone"></span>Device & MDH Management
                     </div>
                     <div class="section-description">
                         Connect and manage external devices like the Haptic Harmony Ring. Configure device
-                        authentication, security settings, and haptic feedback preferences for enhanced gesture control.
+                        authentication, security, haptic feedback, and Multi-Device Harmony (MDH) targeting
+                        for coordinated control across multiple devices.
                     </div>
 
                     <div class="subsection">
@@ -1637,6 +1633,37 @@
                                 Encrypt device communications
                                 <div class="checkbox-description">Use end-to-end encryption for all device
                                     communications</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="subsection">
+                        <div class="subsection-title">
+                            <span class="icon icon-target"></span>Multi-Device Harmony (MDH)
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="mdhEndpoints">MDH Target Endpoints</label>
+                            <textarea class="form-textarea" id="mdhEndpoints" name="mdh_endpoints"
+                                placeholder="Enter custom MDH endpoints (one per line)"></textarea>
+                            <div class="help-text">Configure custom MDH targeting endpoints for specialized workflows
+                            </div>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label" for="mdhPriority">Default Priority</label>
+                                <select class="form-select" id="mdhPriority" name="mdh_priority">
+                                    <option value="high">High Priority</option>
+                                    <option value="normal" selected>Normal Priority</option>
+                                    <option value="low">Low Priority</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label" for="mdhTimeout">MDH Timeout (ms)</label>
+                                <input type="number" class="form-input" id="mdhTimeout" name="mdh_timeout" value="10000"
+                                    min="1000" max="60000">
                             </div>
                         </div>
                     </div>
@@ -2040,48 +2067,6 @@
                             <input type="number" class="form-input" id="maxContentLength" name="max_content_length"
                                 value="10000" min="1000" max="50000" step="1000">
                             <div class="help-text">Maximum content to extract from each page</div>
-                        </div>
-                    </div>
-                </section>
-
-                <!-- MDH Targeting Settings -->
-                <section class="config-section" id="mdh-settings">
-                    <div class="section-title">
-                        <span class="icon icon-target"></span>Multi-Device Harmony (MDH) Settings
-                    </div>
-                    <div class="section-description">
-                        Configure Multi-Device Harmony targeting for coordinated control across multiple devices. Set up
-                        custom endpoints and priorities for seamless multi-device workflows and synchronized operations.
-                    </div>
-
-                    <div class="subsection">
-                        <div class="subsection-title">
-                            <span class="icon icon-globe"></span>Custom MDH Endpoints
-                        </div>
-
-                        <div class="form-group">
-                            <label class="form-label" for="mdhEndpoints">MDH Target Endpoints</label>
-                            <textarea class="form-textarea" id="mdhEndpoints" name="mdh_endpoints"
-                                placeholder="Enter custom MDH endpoints (one per line)"></textarea>
-                            <div class="help-text">Configure custom MDH targeting endpoints for specialized workflows
-                            </div>
-                        </div>
-
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label class="form-label" for="mdhPriority">Default Priority</label>
-                                <select class="form-select" id="mdhPriority" name="mdh_priority">
-                                    <option value="high">High Priority</option>
-                                    <option value="normal" selected>Normal Priority</option>
-                                    <option value="low">Low Priority</option>
-                                </select>
-                            </div>
-
-                            <div class="form-group">
-                                <label class="form-label" for="mdhTimeout">MDH Timeout (ms)</label>
-                                <input type="number" class="form-input" id="mdhTimeout" name="mdh_timeout" value="10000"
-                                    min="1000" max="60000">
-                            </div>
                         </div>
                     </div>
                 </section>
