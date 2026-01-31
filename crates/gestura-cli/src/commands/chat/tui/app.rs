@@ -407,6 +407,14 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/session export", "Export current session to file"),
     ("/session export <id>", "Export a session to file"),
     ("/session info", "Show current session details"),
+    // --- Claude Code parity commands ---
+    ("/rewind", "List session checkpoints"),
+    ("/rewind <id>", "Restore session to a checkpoint"),
+    ("/tasks", "Show current task list"),
+    ("/hooks", "Show hooks configuration"),
+    ("/permissions", "List granted tool permissions"),
+    ("/permissions audit", "Show permission audit log"),
+    ("/context", "Show resolved context/guardrails"),
 ];
 
 /// TUI application state

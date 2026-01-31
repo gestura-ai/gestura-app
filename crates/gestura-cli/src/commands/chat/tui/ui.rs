@@ -505,9 +505,11 @@ fn render_compact_header(app: &TuiApp, frame: &mut Frame, area: Rect) {
     let header_text = format!(" {} ", parts.join(" │ "));
 
     // Create block with bottom border (Claude Code-like bounding box)
-    let block = Block::default()
-        .borders(Borders::BOTTOM)
-        .border_style(Style::default().fg(app.theme.border).add_modifier(Modifier::DIM));
+    let block = Block::default().borders(Borders::BOTTOM).border_style(
+        Style::default()
+            .fg(app.theme.border)
+            .add_modifier(Modifier::DIM),
+    );
 
     let paragraph = Paragraph::new(header_text)
         .style(

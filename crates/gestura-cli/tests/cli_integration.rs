@@ -228,3 +228,25 @@ fn test_chat_help() {
         .success()
         .stdout(predicate::str::contains("chat"));
 }
+
+// ==================== Tools Permissions Command Tests ====================
+
+#[test]
+fn test_tools_permissions_grant_help() {
+    // Permissions grant help should work
+    gestura()
+        .args(["tools", "permissions", "grant", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Grant"));
+}
+
+#[test]
+fn test_tools_permissions_check_help() {
+    // Permissions check help should work
+    gestura()
+        .args(["tools", "permissions", "check", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Check"));
+}

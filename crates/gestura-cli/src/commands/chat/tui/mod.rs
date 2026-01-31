@@ -1081,6 +1081,21 @@ fn handle_command(app: &mut TuiApp, command: &str) -> Result<Option<Action>> {
         "/config" => {
             handle_config_command(app, args)?;
         }
+        "/rewind" => {
+            handle_rewind_command(app, args)?;
+        }
+        "/tasks" => {
+            handle_tasks_command(app)?;
+        }
+        "/hooks" => {
+            handle_hooks_command(app)?;
+        }
+        "/permissions" => {
+            handle_permissions_command(app, args)?;
+        }
+        "/context" => {
+            handle_context_command(app)?;
+        }
         _ => {
             app.set_error(format!("Unknown command: {}", cmd));
         }
@@ -1646,4 +1661,384 @@ fn truncate_output_tui(output: &str, max_len: usize) -> String {
     } else {
         format!("     {}", output.replace('\n', "\n     "))
     }
+}
+
+// --- Claude Code parity slash command handlers ---
+
+/// Handle `/rewind` command - list and restore checkpoints.
+///
+/// - `/rewind` or `/rewind list` - List session checkpoints
+/// - `/rewind <id>` - Restore session to checkpoint with that id prefix
+fn handle_rewind_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
+    use gestura_core::chat_sessions::FileChatSessionStore;
+    use gestura_core::checkpoints::{
+        CheckpointManager, CheckpointRetentionPolicy, FileCheckpointStore,
+    };
+    use gestura_core::tasks::TaskManager;
+
+    let manager = CheckpointManager::new(
+        FileCheckpointStore::new_default(),
+        CheckpointRetentionPolicy::default(),
+    );
+
+    let subcommand = args.first().map(|s| s.to_lowercase());
+    match subcommand.as_deref() {
+        None | Some("list") => {
+            let checkpoints = manager
+                .list_session_checkpoints(&app.session.id)
+                .unwrap_or_default();
+            if checkpoints.is_empty() {
+                app.messages.push(app::TuiMessage {
+                    role: "system".to_string(),
+                    content: "No checkpoints found for this session.\n\nCheckpoints are created automatically before write operations.".to_string(),
+                    thinking: None,
+                    is_streaming: false,
+                    is_error: false,
+                });
+            } else {
+                let mut lines = vec!["━━━ Session Checkpoints ━━━".to_string(), String::new()];
+                for cp in &checkpoints {
+                    let id_short = &cp.id.to_string()[..8];
+                    let label = cp.label.as_deref().unwrap_or("-");
+                    let ts = cp.created_at.format("%Y-%m-%d %H:%M:%S UTC");
+                    lines.push(format!("  {} | {} | {}", id_short, ts, label));
+                }
+                lines.push(String::new());
+                lines.push("Use /rewind <id> to restore to a checkpoint.".to_string());
+                app.messages.push(app::TuiMessage {
+                    role: "system".to_string(),
+                    content: lines.join("\n"),
+                    thinking: None,
+                    is_streaming: false,
+                    is_error: false,
+                });
+            }
+        }
+        Some(id_prefix) => {
+            // Find checkpoint by id prefix
+            let checkpoints = manager
+                .list_session_checkpoints(&app.session.id)
+                .unwrap_or_default();
+            let found: Vec<_> = checkpoints
+                .iter()
+                .filter(|cp| cp.id.to_string().starts_with(id_prefix))
+                .collect();
+
+            match found.len() {
+                0 => {
+                    app.set_error(format!("No checkpoint found with id prefix: {}", id_prefix));
+                }
+                1 => {
+                    let cp_id = found[0].id;
+                    let session_store = FileChatSessionStore::default();
+                    let task_manager = TaskManager::new(
+                        dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
+                    );
+                    match manager.apply_session_checkpoint(&cp_id, &session_store, &task_manager) {
+                        Ok(payload) => {
+                            // Update app state with restored session
+                            app.session = payload.session;
+                            app.messages = app
+                                .session
+                                .state
+                                .messages
+                                .iter()
+                                .map(app::TuiMessage::from)
+                                .collect();
+                            app.set_status(format!(
+                                "Restored checkpoint: {}",
+                                &cp_id.to_string()[..8]
+                            ));
+                        }
+                        Err(e) => {
+                            app.set_error(format!("Failed to restore checkpoint: {}", e));
+                        }
+                    }
+                }
+                _ => {
+                    app.set_error(format!(
+                        "Ambiguous id prefix '{}': matches {} checkpoints. Use more characters.",
+                        id_prefix,
+                        found.len()
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Handle `/tasks` command - show current task list.
+fn handle_tasks_command(app: &mut TuiApp) -> Result<()> {
+    use gestura_core::tasks::TaskManager;
+
+    let task_manager =
+        TaskManager::new(dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")));
+    match task_manager.get_hierarchy(&app.session.id) {
+        Ok(hierarchy) => {
+            if hierarchy.is_empty() {
+                app.messages.push(app::TuiMessage {
+                    role: "system".to_string(),
+                    content: "No tasks found for this session.\n\nTasks are created by the AI agent during complex workflows.".to_string(),
+                    thinking: None,
+                    is_streaming: false,
+                    is_error: false,
+                });
+            } else {
+                let mut lines = vec!["━━━ Task List ━━━".to_string(), String::new()];
+                for (root, subtasks) in &hierarchy {
+                    let status_icon = match root.status {
+                        gestura_core::TaskStatus::NotStarted => "[ ]",
+                        gestura_core::TaskStatus::InProgress => "[/]",
+                        gestura_core::TaskStatus::Completed => "[x]",
+                        gestura_core::TaskStatus::Cancelled => "[-]",
+                    };
+                    lines.push(format!("{} {}", status_icon, root.name));
+                    for sub in subtasks {
+                        let sub_icon = match sub.status {
+                            gestura_core::TaskStatus::NotStarted => "[ ]",
+                            gestura_core::TaskStatus::InProgress => "[/]",
+                            gestura_core::TaskStatus::Completed => "[x]",
+                            gestura_core::TaskStatus::Cancelled => "[-]",
+                        };
+                        lines.push(format!("  {} {}", sub_icon, sub.name));
+                    }
+                }
+                app.messages.push(app::TuiMessage {
+                    role: "system".to_string(),
+                    content: lines.join("\n"),
+                    thinking: None,
+                    is_streaming: false,
+                    is_error: false,
+                });
+            }
+        }
+        Err(e) => {
+            app.set_error(format!("Failed to load tasks: {}", e));
+        }
+    }
+    Ok(())
+}
+
+/// Handle `/hooks` command - show hooks configuration.
+fn handle_hooks_command(app: &mut TuiApp) -> Result<()> {
+    let hooks = &app.config.hooks;
+    let mut lines = vec!["━━━ Hooks Configuration ━━━".to_string(), String::new()];
+    lines.push(format!(
+        "Enabled: {}",
+        if hooks.enabled { "yes" } else { "no" }
+    ));
+    lines.push(format!("Timeout: {} ms", hooks.timeout_ms));
+    lines.push(format!("Max output: {} bytes", hooks.max_output_bytes));
+    lines.push(String::new());
+
+    if hooks.allowed_programs.is_empty() {
+        lines.push("Allowed programs: (none)".to_string());
+    } else {
+        lines.push("Allowed programs:".to_string());
+        for prog in &hooks.allowed_programs {
+            lines.push(format!("  - {}", prog));
+        }
+    }
+    lines.push(String::new());
+
+    if hooks.hooks.is_empty() {
+        lines.push("Configured hooks: (none)".to_string());
+    } else {
+        lines.push("Configured hooks:".to_string());
+        for hook in &hooks.hooks {
+            lines.push(format!("  {} ({:?})", hook.name, hook.event));
+            lines.push(format!(
+                "    cmd: {} {}",
+                hook.command.program,
+                hook.command.args.join(" ")
+            ));
+        }
+    }
+
+    app.messages.push(app::TuiMessage {
+        role: "system".to_string(),
+        content: lines.join("\n"),
+        thinking: None,
+        is_streaming: false,
+        is_error: false,
+    });
+    Ok(())
+}
+
+/// Handle `/permissions` command - list granted permissions and audit log.
+///
+/// - `/permissions` or `/permissions list` - List granted permissions
+/// - `/permissions audit` - Show permission audit log
+fn handle_permissions_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
+    use gestura_core::tools::permissions::PermissionManager;
+
+    let manager = PermissionManager::new();
+    let subcommand = args.first().map(|s| s.to_lowercase());
+
+    match subcommand.as_deref() {
+        None | Some("list") => match manager.list() {
+            Ok(perms) => {
+                if perms.is_empty() {
+                    app.messages.push(app::TuiMessage {
+                            role: "system".to_string(),
+                            content: "No tool permissions have been granted.\n\nGrant permissions with 'AllowAlways' when prompted for tool confirmation.".to_string(),
+                            thinking: None,
+                            is_streaming: false,
+                            is_error: false,
+                        });
+                } else {
+                    let mut lines = vec!["━━━ Granted Permissions ━━━".to_string(), String::new()];
+                    for perm in &perms {
+                        let scope_str = match &perm.scope {
+                            gestura_core::PermissionScope::Global => "global".to_string(),
+                            gestura_core::PermissionScope::Path(p) => format!("path:{}", p),
+                            gestura_core::PermissionScope::Command(c) => format!("cmd:{}", c),
+                        };
+                        let expires = perm
+                            .expires_at
+                            .map(|e| e.format("%Y-%m-%d %H:%M").to_string())
+                            .unwrap_or_else(|| "never".to_string());
+                        lines.push(format!(
+                            "  {}:{} [{}] expires: {}",
+                            perm.tool, perm.action, scope_str, expires
+                        ));
+                    }
+                    lines.push(String::new());
+                    lines.push("Use /permissions audit to see check history.".to_string());
+                    app.messages.push(app::TuiMessage {
+                        role: "system".to_string(),
+                        content: lines.join("\n"),
+                        thinking: None,
+                        is_streaming: false,
+                        is_error: false,
+                    });
+                }
+            }
+            Err(e) => {
+                app.set_error(format!("Failed to list permissions: {}", e));
+            }
+        },
+        Some("audit") => {
+            match manager.audit_log() {
+                Ok(log) => {
+                    if log.is_empty() {
+                        app.messages.push(app::TuiMessage {
+                            role: "system".to_string(),
+                            content: "Permission audit log is empty.".to_string(),
+                            thinking: None,
+                            is_streaming: false,
+                            is_error: false,
+                        });
+                    } else {
+                        let mut lines =
+                            vec!["━━━ Permission Audit Log ━━━".to_string(), String::new()];
+                        // Show last 20 entries
+                        for entry in log.iter().rev().take(20) {
+                            let status = if entry.allowed { "✓" } else { "✗" };
+                            let res = entry.resource.as_deref().unwrap_or("-");
+                            lines.push(format!(
+                                "  {} {}:{} [{}] - {}",
+                                status, entry.tool, entry.action, res, entry.reason
+                            ));
+                        }
+                        if log.len() > 20 {
+                            lines.push(format!("  ... and {} more entries", log.len() - 20));
+                        }
+                        app.messages.push(app::TuiMessage {
+                            role: "system".to_string(),
+                            content: lines.join("\n"),
+                            thinking: None,
+                            is_streaming: false,
+                            is_error: false,
+                        });
+                    }
+                }
+                Err(e) => {
+                    app.set_error(format!("Failed to load audit log: {}", e));
+                }
+            }
+        }
+        Some(other) => {
+            app.set_error(format!("Unknown /permissions subcommand: {}", other));
+        }
+    }
+    Ok(())
+}
+
+/// Handle `/context` command - show resolved context and guardrails.
+fn handle_context_command(app: &mut TuiApp) -> Result<()> {
+    let mut lines = vec!["━━━ Session Context ━━━".to_string(), String::new()];
+
+    // Session info
+    lines.push(format!("Session ID: {}", &app.session.id[..8]));
+    lines.push(format!(
+        "Model: {}",
+        app.session.model.as_deref().unwrap_or("(default)")
+    ));
+
+    // Workspace
+    if let Some(workspace) = app.session.workspace_dir() {
+        lines.push(format!("Workspace: {}", workspace.display()));
+
+        // Check for guardrails
+        let agents_md = workspace.join("AGENTS.md");
+        let gestura_guardrails = workspace.join(".gestura").join("guardrails");
+        if gestura_guardrails.exists() {
+            lines.push("Guardrails: .gestura/guardrails ✓".to_string());
+        } else if agents_md.exists() {
+            lines.push("Guardrails: AGENTS.md ✓".to_string());
+        } else {
+            lines.push("Guardrails: (none found)".to_string());
+        }
+    } else {
+        lines.push("Workspace: (not set)".to_string());
+    }
+
+    lines.push(String::new());
+
+    // Message history
+    let user_msgs = app
+        .session
+        .state
+        .messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .count();
+    let asst_msgs = app
+        .session
+        .state
+        .messages
+        .iter()
+        .filter(|m| m.role == "assistant")
+        .count();
+    lines.push(format!(
+        "Messages: {} user, {} assistant",
+        user_msgs, asst_msgs
+    ));
+
+    // Pipeline settings
+    lines.push(String::new());
+    lines.push("Pipeline:".to_string());
+    lines.push(format!(
+        "  Max history: {} messages",
+        app.config.pipeline.max_history_messages
+    ));
+    lines.push(format!(
+        "  Max context: {} tokens",
+        app.config.pipeline.max_context_tokens
+    ));
+    lines.push(format!(
+        "  Auto-compact: {}%",
+        app.config.pipeline.auto_compact_threshold_percent
+    ));
+
+    app.messages.push(app::TuiMessage {
+        role: "system".to_string(),
+        content: lines.join("\n"),
+        thinking: None,
+        is_streaming: false,
+        is_error: false,
+    });
+    Ok(())
 }
