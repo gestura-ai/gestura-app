@@ -7,6 +7,7 @@ use gestura_core::{
     RequestSource, SessionToolSettings, StreamChunk,
     chat_sessions::{ChatSessionStore, FileChatSessionStore, MessageSource},
     get_speech_processor,
+    tool_confirmation::{TOOL_CONFIRMATIONS, ToolConfirmationDecision},
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use rustyline::DefaultEditor;
@@ -65,6 +66,38 @@ fn new_cli_session(model: Option<String>) -> Result<ChatSession> {
         Err(_) => {
             ChatSession::new_sandbox(model).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
         }
+    }
+}
+
+/// Prompt the user for a scoped tool-confirmation decision.
+///
+/// This is the CLI basic (non-TUI) adapter for Claude Code-style permission choices.
+/// The actual policy enforcement (session caches + persisted allow-always) is implemented
+/// in `gestura-core`; the CLI only collects user intent.
+fn prompt_tool_confirmation_decision() -> ToolConfirmationDecision {
+    loop {
+        println!(
+            "  Choose: [1] allow once  [2] allow session  [3] allow always  [4] deny once  [5] deny session"
+        );
+        print!("  Selection (default 4): ");
+        let _ = std::io::stdout().flush();
+
+        let mut input = String::new();
+        if std::io::stdin().read_line(&mut input).is_err() {
+            return ToolConfirmationDecision::DenyOnce;
+        }
+
+        return match input.trim() {
+            "1" => ToolConfirmationDecision::AllowOnce,
+            "2" => ToolConfirmationDecision::AllowSession,
+            "3" => ToolConfirmationDecision::AllowAlways,
+            "4" | "" => ToolConfirmationDecision::DenyOnce,
+            "5" => ToolConfirmationDecision::DenySession,
+            other => {
+                println!("  {} Invalid selection '{other}'.", "✗".red());
+                continue;
+            }
+        };
     }
 }
 
@@ -1271,6 +1304,10 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 print!("  ");
                 let _ = std::io::stdout().flush();
 
+                // Clone the session id into the async streaming scope so we can resolve
+                // tool confirmations against the correct session.
+                let session_id_for_tool_confirm = chat_session.id.clone();
+
                 let config_clone = config.clone();
                 let response: Result<gestura_core::AgentResponse> = rt.block_on(async move {
                     let (tx, mut rx) = mpsc::channel::<StreamChunk>(100);
@@ -1415,17 +1452,36 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 }
                             }
                             StreamChunk::ToolConfirmationRequired {
+                                confirmation_id,
                                 tool_name,
                                 description,
+                                risk_level,
+                                category,
                                 ..
                             } => {
                                 println!();
                                 println!(
-                                    "  {} Tool '{}' requires confirmation: {}",
+                                    "  {} Tool '{}' requires confirmation (risk {}/10, {}): {}",
                                     "⚠️".yellow(),
                                     tool_name,
+                                    risk_level,
+                                    category,
                                     description
                                 );
+
+                                let decision = prompt_tool_confirmation_decision();
+                                if let Err(err) = TOOL_CONFIRMATIONS.resolve_decision(
+                                    &confirmation_id,
+                                    Some(session_id_for_tool_confirm.as_str()),
+                                    decision,
+                                ) {
+                                    println!(
+                                        "  {} Failed to resolve confirmation: {}",
+                                        "✗".red(),
+                                        err
+                                    );
+                                }
+
                                 print!("  ");
                                 let _ = std::io::stdout().flush();
                             }
