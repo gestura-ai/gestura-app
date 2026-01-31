@@ -947,8 +947,8 @@
                     </a>
                 </li>
                 <li class="toc-item">
-                    <a href="#mcp-settings" class="toc-link" data-section="mcp-settings">
-                        <span class="toc-icon icon-plug"></span>MCP Integrations
+                    <a href="#tools-settings" class="toc-link" data-section="tools-settings">
+                        <span class="toc-icon icon-wrench"></span>Tools
                     </a>
                 </li>
                 <li class="toc-item">
@@ -1873,20 +1873,65 @@
                     </div>
                 </section>
 
-                <!-- MCP Integration Settings -->
-                <section class="config-section" id="mcp-settings">
+                <!-- Tools Settings -->
+                <section class="config-section" id="tools-settings">
                     <div class="section-title">
-                        <span class="icon icon-plug"></span>MCP Integration Settings
+                        <span class="icon icon-wrench"></span>Tools
                     </div>
                     <div class="section-description">
-                        Configure Model Context Protocol (MCP) servers to extend Gestura's capabilities. MCP allows
-                        integration with external tools and services to enhance your voice commands with additional
-                        functionality.
+                        Configure built-in tools, MCP integrations, and external services that extend Gestura's
+                        capabilities. Manage web search, file access, and Model Context Protocol servers.
                     </div>
 
+                    <!-- Built-in Tools Configuration -->
                     <div class="subsection">
                         <div class="subsection-title">
-                            <span class="icon icon-package"></span>MCP Servers
+                            <span class="icon icon-tools"></span>Built-in Tools
+                        </div>
+
+                        <div class="checkbox-group">
+                            <input type="checkbox" class="form-checkbox" id="toolFileAccess" name="tool_file_access"
+                                checked>
+                            <div class="checkbox-label">
+                                File Access
+                                <div class="checkbox-description">Allow reading and writing files on the local
+                                    filesystem</div>
+                            </div>
+                        </div>
+
+                        <div class="checkbox-group">
+                            <input type="checkbox" class="form-checkbox" id="toolShellCommands" name="tool_shell_commands"
+                                checked>
+                            <div class="checkbox-label">
+                                Shell Commands
+                                <div class="checkbox-description">Allow executing shell commands and scripts</div>
+                            </div>
+                        </div>
+
+                        <div class="checkbox-group">
+                            <input type="checkbox" class="form-checkbox" id="toolGitOperations" name="tool_git_operations"
+                                checked>
+                            <div class="checkbox-label">
+                                Git Operations
+                                <div class="checkbox-description">Allow git repository operations (commit, push, pull,
+                                    etc.)</div>
+                            </div>
+                        </div>
+
+                        <div class="checkbox-group">
+                            <input type="checkbox" class="form-checkbox" id="toolCodeAnalysis" name="tool_code_analysis"
+                                checked>
+                            <div class="checkbox-label">
+                                Code Analysis
+                                <div class="checkbox-description">Allow code analysis and refactoring tools</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- MCP Integration (moved from standalone section) -->
+                    <div class="subsection">
+                        <div class="subsection-title">
+                            <span class="icon icon-plug"></span>MCP Servers
                         </div>
 
                         <div class="form-group">
@@ -1905,12 +1950,6 @@
                                 <div class="checkbox-description">Automatically detect and configure available MCP
                                     servers</div>
                             </div>
-                        </div>
-                    </div>
-
-                    <div class="subsection">
-                        <div class="subsection-title">
-                            <span class="icon icon-link"></span>MCP Communication
                         </div>
 
                         <div class="form-row">
