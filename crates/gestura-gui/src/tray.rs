@@ -226,13 +226,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let config = MenuItem::with_id(app, "config", "Configuration", true, Option::<&str>::None)?;
 
     // "Open Shell" creates a new session and opens a terminal for it (always enabled)
-    let new_shell = MenuItem::with_id(
-        app,
-        "new_shell",
-        "Open Shell",
-        true,
-        Option::<&str>::None,
-    )?;
+    let new_shell = MenuItem::with_id(app, "new_shell", "Open Shell", true, Option::<&str>::None)?;
 
     // "Resume in Shell" opens the active session in a terminal (disabled when no active session)
     let has_active_session = window_manager::get_active_chat_for_voice().is_some();

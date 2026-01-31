@@ -413,7 +413,8 @@ impl WindowManager {
             WebviewUrl::App("config.html".into()),
         )
         .title("Gestura Configuration")
-        .inner_size(700.0, 500.0)
+        .inner_size(950.0, 700.0)
+        .min_inner_size(800.0, 600.0)
         .center()
         .resizable(true)
         .decorations(true)
