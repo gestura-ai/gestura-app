@@ -224,11 +224,23 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         Option::<&str>::None,
     )?;
     let config = MenuItem::with_id(app, "config", "Configuration", true, Option::<&str>::None)?;
-    let open_shell = MenuItem::with_id(
+
+    // "Open Shell" creates a new session and opens a terminal for it (always enabled)
+    let new_shell = MenuItem::with_id(
         app,
-        "open_shell",
-        "Open In Shell",
+        "new_shell",
+        "Open Shell",
         true,
+        Option::<&str>::None,
+    )?;
+
+    // "Resume in Shell" opens the active session in a terminal (disabled when no active session)
+    let has_active_session = window_manager::get_active_chat_for_voice().is_some();
+    let resume_shell = MenuItem::with_id(
+        app,
+        "resume_shell",
+        "Resume in Shell",
+        has_active_session, // Disabled/grayed out when no active session
         Option::<&str>::None,
     )?;
 
@@ -267,7 +279,8 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     menu.append(&separator1)?;
     menu.append(&new_chat)?;
     menu.append(&sessions_menu)?;
-    menu.append(&open_shell)?;
+    menu.append(&new_shell)?;
+    menu.append(&resume_shell)?;
     menu.append(&separator2)?;
     menu.append(&config)?;
 
@@ -483,10 +496,44 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                 tracing::error!("Failed to open config window: {}", e);
             }
         }
-        "open_shell" => {
-            tracing::info!("Opening shell session from tray menu");
-
-            // Prefer resuming the currently-active chat session, if there is one.
+        "new_shell" => {
+            // Create a new chat session and open it in the shell
+            tracing::info!("Creating new shell session from tray menu");
+            match window_manager::create_new_chat_session() {
+                Ok(session_id) => {
+                    tracing::info!(session_id = %session_id, "New chat session created for shell");
+                    match window_manager::open_shell_session_for_chat_resume(&session_id) {
+                        Ok(()) => {
+                            tracing::info!(session_id = %session_id, "Shell session opened for new chat");
+                            show_system_notification(
+                                app,
+                                "Shell Session",
+                                "Created new session and opened in terminal",
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(session_id = %session_id, error = %e, "Failed to open shell for new session");
+                            show_system_notification(
+                                app,
+                                "Shell Session Error",
+                                &format!("Failed to open shell: {}", e),
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to create chat session for shell: {}", e);
+                    show_system_notification(
+                        app,
+                        "Shell Session Error",
+                        &format!("Failed to create session: {}", e),
+                    );
+                }
+            }
+        }
+        "resume_shell" => {
+            // Resume the active chat session in the shell
+            tracing::info!("Resuming active session in shell from tray menu");
             if let Some(session_id) = window_manager::get_active_chat_for_voice() {
                 match window_manager::open_shell_session_for_chat_resume(&session_id) {
                     Ok(()) => {
@@ -494,7 +541,7 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                         show_system_notification(
                             app,
                             "Shell Session",
-                            "Opened terminal and resumed the active chat session",
+                            "Resumed active session in terminal",
                         );
                     }
                     Err(e) => {
@@ -502,30 +549,19 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                         show_system_notification(
                             app,
                             "Shell Session Error",
-                            &format!("Failed to open shell for session: {}", e),
+                            &format!("Failed to resume session: {}", e),
                         );
                     }
                 }
             } else {
-                // Fallback: open a generic shell session (no active chat to resume).
-                match window_manager::open_shell_session() {
-                    Ok(()) => {
-                        tracing::info!("Shell session opened successfully");
-                        show_system_notification(
-                            app,
-                            "Shell Session",
-                            "Gestura shell session opened in terminal",
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to open shell session: {}", e);
-                        show_system_notification(
-                            app,
-                            "Shell Session Error",
-                            &format!("Failed to open shell: {}", e),
-                        );
-                    }
-                }
+                // This shouldn't happen since the menu item should be disabled,
+                // but handle gracefully anyway
+                tracing::warn!("Resume in Shell clicked but no active session");
+                show_system_notification(
+                    app,
+                    "No Active Session",
+                    "Create a new session first using 'Open Shell'",
+                );
             }
         }
         #[cfg(debug_assertions)]
