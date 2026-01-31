@@ -88,15 +88,14 @@ mod tests {
     /// when no provider is configured.
     #[tokio::test]
     async fn run_single_shot_pipeline_returns_error_without_provider() {
-        use tokio::time::{timeout, Duration};
+        use tokio::time::{Duration, timeout};
 
         let cfg = AppConfig::default();
         // Use a timeout to prevent hanging if the test misconfigures or hits network
-        let result =
-            timeout(Duration::from_secs(5), async {
-                run_single_shot_pipeline(cfg, "hello", RequestSource::GuiText, None).await
-            })
-            .await;
+        let result = timeout(Duration::from_secs(5), async {
+            run_single_shot_pipeline(cfg, "hello", RequestSource::GuiText, None).await
+        })
+        .await;
 
         // If timeout elapsed, that's also acceptable for the test
         // (provider may hang waiting for a response).
@@ -109,10 +108,7 @@ mod tests {
             Ok(Err(err)) => {
                 // Expected path - provider returns an error
                 // The error message may vary (e.g., "not configured" or network error)
-                assert!(
-                    !err.is_empty(),
-                    "Expected non-empty error message"
-                );
+                assert!(!err.is_empty(), "Expected non-empty error message");
             }
             Err(_) => {
                 // Timeout elapsed - acceptable (provider may be slow to fail)
@@ -4855,4 +4851,166 @@ fn is_system_dark_mode() -> bool {
     // Default to light mode on non-macOS platforms.
     // Note: Windows/Linux dark mode detection is not currently implemented.
     false
+}
+
+// ============================================================================
+// Hooks Settings Commands
+// ============================================================================
+
+/// Get current hooks configuration.
+#[tauri::command]
+pub async fn get_hooks_settings() -> gestura_core::hooks::HooksSettings {
+    AppConfig::load_async().await.hooks
+}
+
+/// Update hooks configuration.
+#[tauri::command]
+pub async fn set_hooks_settings(hooks: gestura_core::hooks::HooksSettings) -> Result<(), String> {
+    let mut cfg = AppConfig::load_async().await;
+    cfg.hooks = hooks;
+    cfg.save_async().await.map_err(|e| e.to_string())
+}
+
+/// Enable or disable hooks globally.
+#[tauri::command]
+pub async fn set_hooks_enabled(enabled: bool) -> Result<(), String> {
+    let mut cfg = AppConfig::load_async().await;
+    cfg.hooks.enabled = enabled;
+    cfg.save_async().await.map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// Checkpoint Commands
+// ============================================================================
+
+/// List checkpoints for a session.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub fn list_session_checkpoints(
+    session_id: String,
+) -> Result<Vec<gestura_core::checkpoints::CheckpointMetadata>, String> {
+    use gestura_core::checkpoints::{
+        CheckpointManager, CheckpointRetentionPolicy, FileCheckpointStore,
+    };
+
+    let manager = CheckpointManager::new(
+        FileCheckpointStore::new_default(),
+        CheckpointRetentionPolicy::default(),
+    );
+    manager
+        .list_session_checkpoints(&session_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Restore a session checkpoint by ID.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub fn restore_session_checkpoint(checkpoint_id: String) -> Result<serde_json::Value, String> {
+    use gestura_core::chat_sessions::FileChatSessionStore;
+    use gestura_core::checkpoints::{
+        CheckpointId, CheckpointManager, CheckpointRetentionPolicy, FileCheckpointStore,
+    };
+    use gestura_core::tasks::TaskManager;
+
+    // Parse checkpoint ID
+    let cp_id: CheckpointId = serde_json::from_str(&format!("\"{}\"", checkpoint_id))
+        .map_err(|e| format!("Invalid checkpoint ID: {}", e))?;
+
+    let manager = CheckpointManager::new(
+        FileCheckpointStore::new_default(),
+        CheckpointRetentionPolicy::default(),
+    );
+    let session_store = FileChatSessionStore::default();
+    let task_manager =
+        TaskManager::new(dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")));
+
+    let payload = manager
+        .apply_session_checkpoint(&cp_id, &session_store, &task_manager)
+        .map_err(|e| e.to_string())?;
+
+    // Return restored session info
+    Ok(serde_json::json!({
+        "session_id": payload.session.id,
+        "message_count": payload.session.message_count(),
+        "restored_at": chrono::Utc::now().to_rfc3339(),
+    }))
+}
+
+// ============================================================================
+// Tool Permission Grants Commands (persisted AllowAlways grants)
+// ============================================================================
+
+/// List persisted tool permission grants.
+#[tauri::command]
+pub fn list_tool_permission_grants()
+-> Result<Vec<gestura_core::tools::permissions::Permission>, String> {
+    use gestura_core::tools::permissions::PermissionManager;
+    let manager = PermissionManager::new();
+    manager.list().map_err(|e| e.to_string())
+}
+
+/// Get tool permission audit log.
+#[tauri::command]
+pub fn get_permission_audit_log()
+-> Result<Vec<gestura_core::tools::permissions::PermissionAuditEntry>, String> {
+    use gestura_core::tools::permissions::PermissionManager;
+    let manager = PermissionManager::new();
+    manager.audit_log().map_err(|e| e.to_string())
+}
+
+/// Revoke a persisted tool permission grant.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub fn revoke_tool_permission(tool: String, action: String) -> Result<usize, String> {
+    use gestura_core::tools::permissions::PermissionManager;
+
+    let manager = PermissionManager::new();
+    manager.revoke(&tool, &action).map_err(|e| e.to_string())
+}
+
+// ============================================================================
+// Global Permission Settings Commands
+// ============================================================================
+
+/// Get global permission settings.
+#[tauri::command]
+pub async fn get_global_permission_settings() -> gestura_core::config::GlobalPermissionSettings {
+    AppConfig::load_async().await.permissions
+}
+
+/// Set global permission settings.
+#[tauri::command]
+pub async fn set_global_permission_settings(
+    permissions: gestura_core::config::GlobalPermissionSettings,
+) -> Result<(), String> {
+    let mut cfg = AppConfig::load_async().await;
+    cfg.permissions = permissions;
+    cfg.save_async().await.map_err(|e| e.to_string())
+}
+
+/// Set the default permission level for new sessions.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn set_default_permission_level(level: String) -> Result<(), String> {
+    use gestura_core::config::GlobalPermissionLevel;
+
+    let permission_level = match level.to_lowercase().as_str() {
+        "sandbox" => GlobalPermissionLevel::Sandbox,
+        "restricted" => GlobalPermissionLevel::Restricted,
+        "full" => GlobalPermissionLevel::Full,
+        _ => {
+            return Err(format!(
+                "Invalid permission level: {}. Use 'sandbox', 'restricted', or 'full'",
+                level
+            ));
+        }
+    };
+
+    let mut cfg = AppConfig::load_async().await;
+    cfg.permissions.default_level = permission_level;
+    cfg.save_async().await.map_err(|e| e.to_string())
 }

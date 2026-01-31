@@ -296,7 +296,22 @@ async fn main() {
             gestura_gui::api::store_api_key,
             gestura_gui::api::get_api_key,
             gestura_gui::api::delete_api_key,
-            gestura_gui::api::migrate_api_keys_to_keychain
+            gestura_gui::api::migrate_api_keys_to_keychain,
+            // Hooks settings
+            gestura_gui::api::get_hooks_settings,
+            gestura_gui::api::set_hooks_settings,
+            gestura_gui::api::set_hooks_enabled,
+            // Checkpoints
+            gestura_gui::api::list_session_checkpoints,
+            gestura_gui::api::restore_session_checkpoint,
+            // Tool permission grants
+            gestura_gui::api::list_tool_permission_grants,
+            gestura_gui::api::get_permission_audit_log,
+            gestura_gui::api::revoke_tool_permission,
+            // Global permission settings
+            gestura_gui::api::get_global_permission_settings,
+            gestura_gui::api::set_global_permission_settings,
+            gestura_gui::api::set_default_permission_level
         ])
         .setup(move |app| {
             // Attach the GUI observer for core orchestrator task lifecycle events.
