@@ -710,9 +710,7 @@ impl SpeechProcessor {
             Command::new("powershell")
                 .args([
                     "-Command",
-                    &format!(
-                        "$obj = New-Object -ComObject WScript.Shell; $obj.SendKeys([char]0xAF)"
-                    ),
+                    "$obj = New-Object -ComObject WScript.Shell; $obj.SendKeys([char]0xAF)",
                 ])
                 .spawn()
                 .map_err(|e| format!("Failed to adjust volume: {}", e))?;
