@@ -1227,6 +1227,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_os = "windows", ignore = "dirs::home_dir() bypasses env var overrides on Windows")]
     fn migrates_legacy_json_config_to_yaml_on_load() {
         // This test mutates process-wide env vars; serialize it.
         let _guard = env_lock().lock().unwrap();
