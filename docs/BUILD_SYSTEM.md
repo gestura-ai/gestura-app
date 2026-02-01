@@ -157,10 +157,136 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 # Install system dependencies (Linux)
 sudo apt-get install libwebkit2gtk-4.0-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libudev-dev libdbus-1-dev
 
+# Install system dependencies (macOS)
+# cmake: Required for whisper-rs (whisper.cpp) compilation
+# pkg-config: Required for locating system libraries
+# Note: Accelerate framework is built-in to macOS (used by whisper-rs for BLAS)
+brew install cmake pkg-config
+
 # Install ImageMagick (for icon generation)
 # macOS: brew install imagemagick
 # Ubuntu: sudo apt install imagemagick
 ```
+
+## Feature Flags
+
+Gestura uses Cargo feature flags to enable optional functionality. All features are defined in `crates/gestura-core/Cargo.toml` and re-exported by CLI and GUI crates.
+
+### Cross-Platform Features
+
+| Feature | Description | Dependencies | CI Tested |
+|---------|-------------|--------------|-----------|
+| `voice-local` | Local speech-to-text via whisper.cpp bindings | `whisper-rs`, cmake, LLVM/clang | ✅ All platforms |
+| `voice-openai` | Cloud speech-to-text via OpenAI Whisper HTTP API | None (uses reqwest) | ✅ All platforms |
+| `nats` | NATS messaging integration | `async-nats` | ✅ All platforms |
+| `ble` | BLE integration for Haptic Harmony ring | `btleplug` | ✅ All platforms |
+| `security` | Encryption and keychain access | `ring`, `keyring` | ✅ All platforms |
+| `json-ld` | JSON-LD processing for MDH | `json-ld` | ✅ All platforms |
+| `dev` | Development-only code paths (do NOT enable in production) | None | ✅ All platforms |
+
+### Platform-Specific Features
+
+| Feature | Platform | Description | Dependencies |
+|---------|----------|-------------|--------------|
+| `macos-permissions` | macOS only | Native TCC permission dialogs (microphone, accessibility, bluetooth, screen recording) | `objc`, `cocoa` |
+| `linux-permissions` | Linux only | xdg-desktop-portal integration for Wayland screen recording, D-Bus checks | `ashpd`, `zbus` |
+| `windows-permissions` | Windows only | WinRT APIs for microphone/camera permission status, Settings integration | `windows` crate |
+
+#### Permission Behavior by Platform
+
+**macOS (`macos-permissions`):**
+- Uses Apple's TCC (Transparency, Consent, and Control) framework
+- Direct permission requests via system dialogs (AVCaptureDevice, AXIsProcessTrusted, etc.)
+- Can open System Preferences to specific privacy panes
+- All 4 permissions have explicit check/request APIs
+
+**Linux (`linux-permissions`):**
+- **Microphone/Bluetooth/Accessibility**: No per-app permission dialogs (managed by PulseAudio/PipeWire and user groups)
+- **Screen Recording (Wayland)**: Uses xdg-desktop-portal screencast interface
+- **Screen Recording (X11)**: Generally unrestricted, no permission needed
+- Can open GNOME/KDE settings via `gnome-control-center` or `xdg-open`
+
+**Windows (`windows-permissions`):**
+- Uses WinRT `Windows.Media.Capture` APIs for microphone/camera status
+- No direct "request permission" dialog - system prompts automatically on first access
+- If access is denied, opens Windows Settings to the appropriate privacy page (`ms-settings:` URIs)
+- Bluetooth and screen recording don't have TCC-style permissions on Windows
+
+### Default Features
+
+By default, builds enable `voice-local` only:
+```toml
+[features]
+default = ["voice-local"]
+```
+
+### Building with Feature Flags
+
+```bash
+# Build with specific features
+cargo build --release --features "voice-local,nats,security"
+
+# Build with all cross-platform features
+cargo build --release --features "voice-local,nats,ble,security,json-ld"
+
+# macOS with all features (including platform-specific permissions)
+cargo build --release --features "voice-local,nats,ble,security,json-ld,macos-permissions"
+
+# Linux with all features (including platform-specific permissions)
+cargo build --release --features "voice-local,nats,ble,security,json-ld,linux-permissions"
+
+# Windows with all features (including platform-specific permissions)
+cargo build --release --features "voice-local,nats,ble,security,json-ld,windows-permissions"
+
+# Build without default features
+cargo build --release --no-default-features --features "nats,security"
+```
+
+### macOS-Specific Notes
+
+**MACOSX_DEPLOYMENT_TARGET**: Set to `10.15` (Catalina) for maximum compatibility. This is configured in:
+- `crates/gestura-gui/build.rs` (sets default if not specified)
+- `.github/workflows/release.yml` (explicitly set for CI)
+- `crates/gestura-gui/tauri.conf.json` (minimumSystemVersion)
+
+**Universal Binary**: macOS releases include a universal binary supporting both Intel (x86_64) and Apple Silicon (aarch64). The `lipo` tool combines architecture-specific binaries.
+
+**Feature Flags**:
+- `voice-local`: Requires cmake and uses Apple's Accelerate framework for BLAS operations
+- `macos-permissions`: Uses objc/cocoa bindings for macOS permission dialogs
+
+### Windows-Specific Notes
+
+**Build Dependencies**:
+```powershell
+# Install via Chocolatey (recommended)
+choco install cmake llvm -y
+
+# Set LIBCLANG_PATH for bindgen (required for whisper-rs)
+$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+```
+
+**Visual Studio Build Tools**: The MSVC toolchain requires Visual Studio Build Tools with the "Desktop development with C++" workload. Install from [Visual Studio Downloads](https://visualstudio.microsoft.com/downloads/).
+
+**WebView2 Runtime**: Tauri v2 requires Microsoft Edge WebView2 Runtime for the application UI. It is:
+- Pre-installed on Windows 10 version 1803+ and Windows 11
+- Automatically installed by NSIS/WiX installers if missing
+- Can be downloaded from [Microsoft WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)
+
+**Feature Flags**:
+- `voice-local`: Requires cmake and LLVM (for bindgen). Uses CPU-based inference on Windows.
+- `windows-permissions`: Uses WinRT APIs (`Windows.Media.Capture`) for microphone permission status. Opens Windows Settings (`ms-settings:`) URIs when access is denied.
+- All other features work identically to macOS/Linux
+
+**ARM64 Windows (aarch64-pc-windows-msvc)**:
+- Target support is available but not yet tested in CI
+- Requires ARM64-compatible LLVM and Visual Studio toolchain
+- Consider adding to release matrix when Windows on ARM market share grows
+
+**Code Signing**: Windows builds can be signed using Authenticode certificates:
+- Certificate stored as base64-encoded PFX in `WINDOWS_CERTIFICATE` secret
+- Timestamp server: `http://timestamp.digicert.com` (configured in `tauri.conf.json`)
+- Signatures verified in CI using `Get-AuthenticodeSignature`
 
 ### Add Rust Targets
 ```bash
@@ -244,6 +370,71 @@ cd packaging/homebrew
 - macOS: Apple Developer certificate
 - Windows: Code signing certificate
 - Linux: GPG signing for packages
+
+## Local CI Testing with Act
+
+[Act](https://github.com/nektos/act) allows running GitHub Actions workflows locally. However, there are important limitations for this project.
+
+### Configuration
+
+The `.actrc` file maps platform runners to Ubuntu containers:
+```
+-P macos-latest=catthehacker/ubuntu:act-latest
+-P macos-14=catthehacker/ubuntu:act-latest
+-P windows-latest=catthehacker/ubuntu:act-latest
+-P windows-2022=catthehacker/ubuntu:act-latest
+```
+
+**Note**: Windows and macOS workflows run in Ubuntu containers under Act, meaning platform-specific features (code signing, SDK-dependent code, native toolchains) cannot be tested locally. Use Act for syntax validation and Linux-compatible tests only.
+
+### What CAN Be Tested Locally
+
+| Feature | Testable with Act? |
+|---------|-------------------|
+| Code formatting (`cargo fmt`) | ✅ Yes |
+| Clippy lints | ✅ Yes |
+| Rust compilation (Linux targets) | ✅ Yes |
+| Unit tests (cross-platform) | ✅ Yes |
+| Frontend build (npm) | ✅ Yes |
+
+### What CANNOT Be Tested Locally
+
+| Feature | Reason |
+|---------|--------|
+| macOS code signing | Requires Apple certificates and Keychain |
+| macOS notarization | Requires Apple Developer account |
+| Universal binary (`lipo`) | macOS-only tool |
+| `macos-permissions` feature | Requires objc/cocoa frameworks |
+| Gatekeeper validation (`spctl`) | macOS-only |
+| Windows GUI builds | Requires Windows SDK and MSVC toolchain |
+| Windows code signing | Requires Authenticode certificate |
+| `windows-permissions` feature | Requires WinRT APIs and Windows runtime |
+| WebView2-dependent features | Windows-only runtime |
+| NSIS/WiX installer generation | Windows-only build tools |
+| Windows signature verification | Requires Windows `signtool` or PowerShell |
+| `linux-permissions` feature (full) | Requires xdg-desktop-portal and D-Bus session |
+
+### Running Act
+
+```bash
+# Run CI workflow locally
+act push
+
+# Run specific job
+act push -j test
+
+# Run with verbose output
+act push -v
+```
+
+### Detecting Act Environment
+
+Workflows can detect when running under Act using the `ACT` environment variable:
+```yaml
+- name: Skip on Act
+  if: ${{ !env.ACT }}
+  run: echo "This only runs in real GitHub Actions"
+```
 
 ## Monitoring and Maintenance
 
