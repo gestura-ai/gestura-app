@@ -673,10 +673,7 @@ pub fn open_system_preferences(pane: &str) -> bool {
     }
 
     // Fallback: try xdg-open with settings URI
-    if let Ok(_child) = Command::new("xdg-open")
-        .arg("gnome-control-center")
-        .spawn()
-    {
+    if let Ok(_child) = Command::new("xdg-open").arg("gnome-control-center").spawn() {
         return true;
     }
 
@@ -727,7 +724,9 @@ pub fn check_microphone_permission() -> SystemPermissionStatus {
 /// Windows doesn't have macOS-style accessibility permissions.
 #[cfg(all(target_os = "windows", feature = "windows-permissions"))]
 pub fn check_accessibility_permission() -> SystemPermissionStatus {
-    tracing::debug!("Windows accessibility permission check: returning Granted (no TCC equivalent)");
+    tracing::debug!(
+        "Windows accessibility permission check: returning Granted (no TCC equivalent)"
+    );
     SystemPermissionStatus::Granted
 }
 
