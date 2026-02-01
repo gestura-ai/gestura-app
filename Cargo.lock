@@ -2808,6 +2808,7 @@ dependencies = [
  "uuid",
  "which",
  "whisper-rs",
+ "windows 0.59.0",
  "zbus 5.13.2",
 ]
 
