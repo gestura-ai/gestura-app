@@ -689,34 +689,23 @@ pub fn open_system_preferences(pane: &str) -> bool {
 
 /// Check microphone permission on Windows.
 ///
-/// Windows 10/11 have privacy settings for microphone access.
-/// This uses the Windows.Media.Capture APIs to check if microphone access is allowed.
+/// Windows 10/11 have privacy settings for microphone access, but unlike macOS TCC,
+/// Windows doesn't provide a direct API to check permission status without triggering
+/// the permission prompt. Apps are prompted on first microphone access.
+///
+/// We return Unknown here because:
+/// 1. Windows prompts users on first access (no pre-check needed)
+/// 2. The WinRT MediaCapture APIs have DLL compatibility issues on some Windows versions
+/// 3. The app will handle permission denial gracefully when actually accessing the mic
 #[cfg(all(target_os = "windows", feature = "windows-permissions"))]
 pub fn check_microphone_permission() -> SystemPermissionStatus {
-    use windows::Media::Capture::MediaCapture;
-
-    // Try to check if we can access audio capture devices
-    // Windows doesn't have a direct "check permission" API like macOS TCC,
-    // but we can check if MediaCapture initialization would succeed
-    match MediaCapture::IsVideoProfileSupported(windows::core::HSTRING::new()) {
-        Ok(_) => {
-            // If we can query media capture, permission is likely granted
-            tracing::debug!("Windows microphone permission check: MediaCapture API accessible");
-            SystemPermissionStatus::Granted
-        }
-        Err(e) => {
-            let error_code = e.code().0 as u32;
-            // E_ACCESSDENIED = 0x80070005
-            if error_code == 0x80070005 {
-                tracing::debug!("Windows microphone permission check: access denied");
-                SystemPermissionStatus::Denied
-            } else {
-                // Other errors - might be device issue, not permission
-                tracing::debug!("Windows microphone permission check: API error {:?}", e);
-                SystemPermissionStatus::Unknown
-            }
-        }
-    }
+    tracing::debug!(
+        "Windows microphone permission check: returning Unknown (Windows prompts on first access)"
+    );
+    // Windows handles permissions differently - apps are prompted on first use.
+    // Return Unknown to indicate we can't pre-check, but the app should try to access
+    // the microphone and handle any permission errors at that point.
+    SystemPermissionStatus::Unknown
 }
 
 /// Check accessibility permission on Windows.
