@@ -1,0 +1,26 @@
+# act configuration for gestura-app CI testing
+#
+# IMPORTANT: GitHub Actions uses VMs, not containers. This config maps
+# GitHub runner names to Docker images for local testing approximation.
+#
+# Limitations:
+# - macOS/Windows cannot be accurately simulated in Docker (Linux containers only)
+# - For macOS testing, run cargo commands directly on your Mac
+# - For Windows testing, push to GitHub or use a Windows VM/machine
+
+# Ubuntu - Use catthehacker images designed for act
+# These approximate GitHub's ubuntu-latest runner
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+-P ubuntu-22.04=catthehacker/ubuntu:act-22.04
+-P ubuntu-24.04=catthehacker/ubuntu:act-latest
+
+# macOS - Will run as Linux (workflow logic only, not platform-specific behavior)
+# For true macOS testing, use local cargo commands on your Mac
+-P macos-latest=catthehacker/ubuntu:act-latest
+-P macos-14=catthehacker/ubuntu:act-latest
+-P macos-13=catthehacker/ubuntu:act-latest
+
+# Windows - Will run as Linux (workflow logic only, not platform-specific behavior)
+# For true Windows testing, push to GitHub or use a Windows machine
+-P windows-latest=catthehacker/ubuntu:act-latest
+-P windows-2022=catthehacker/ubuntu:act-latest

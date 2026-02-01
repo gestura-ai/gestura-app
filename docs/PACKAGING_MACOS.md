@@ -41,11 +41,39 @@ just package-macos-signed
 
 ## Prerequisites
 
-### Required Tools
+### Build Dependencies
 
-- **Xcode Command Line Tools**: `xcode-select --install`
-- **create-dmg**: `brew install create-dmg`
-- **Rust targets**: `rustup target add x86_64-apple-darwin aarch64-apple-darwin`
+Install the required build tools:
+
+```bash
+# Required for whisper-rs (whisper.cpp) compilation
+brew install cmake
+
+# Required for locating system libraries
+brew install pkg-config
+
+# Required for DMG creation
+brew install create-dmg
+
+# Xcode Command Line Tools (includes Accelerate framework for whisper-rs BLAS)
+xcode-select --install
+```
+
+### Rust Targets
+
+Add cross-compilation targets for universal binary:
+
+```bash
+rustup target add x86_64-apple-darwin aarch64-apple-darwin
+```
+
+### Build Configuration
+
+| Setting | Value | Location |
+|---------|-------|----------|
+| MACOSX_DEPLOYMENT_TARGET | 10.15 (Catalina) | build.rs, release.yml, tauri.conf.json |
+| Minimum macOS Version | 10.15 | tauri.conf.json |
+| Architectures | x86_64 + aarch64 | Universal binary via lipo |
 
 ### For Signed Builds
 
@@ -299,4 +327,44 @@ The app is signed but not notarized:
 1. Check `scripts/package-mac.sh` for correct `pkgroot` setup
 2. Verify only `Applications/Gestura.app` is in the package root
 3. Run `pkgutil --payload-files` to inspect contents
+
+---
+
+## CI/CD Integration
+
+### GitHub Actions Workflow
+
+The release workflow (`.github/workflows/release.yml`) handles macOS builds automatically:
+
+1. **Runner**: Uses `macos-14` (ARM/Sonoma) for reproducibility
+2. **Dependencies**: Installs `cmake` and `pkg-config` via Homebrew
+3. **Universal Binary**: Builds for both `aarch64-apple-darwin` and `x86_64-apple-darwin`, then combines with `lipo`
+4. **Code Signing**: Imports certificates from GitHub Secrets
+5. **Notarization**: Handled by `tauri-apps/tauri-action@v0`
+6. **Verification**: Validates signature and notarization after build
+
+### Required GitHub Secrets
+
+| Secret | Description |
+|--------|-------------|
+| `APPLE_CERTIFICATE` | Base64-encoded Developer ID Application certificate (.p12) |
+| `APPLE_CERTIFICATE_PASSWORD` | Password for the .p12 file |
+| `APPLE_INSTALLER_CERTIFICATE` | Base64-encoded Developer ID Installer certificate (.p12) |
+| `APPLE_INSTALLER_CERTIFICATE_PASSWORD` | Password for the installer .p12 file |
+| `APPLE_SIGNING_IDENTITY` | Full certificate name (e.g., "Developer ID Application: ...") |
+| `APPLE_INSTALLER_IDENTITY` | Full installer certificate name |
+| `APPLE_TEAM_ID` | 10-character Team ID |
+| `APPLE_ID` | Apple ID email for notarization |
+| `APPLE_PASSWORD` | App-specific password for notarization |
+| `KEYCHAIN_PASSWORD` | Temporary keychain password (can be any secure string) |
+
+### Local Testing Limitations
+
+When using [Act](https://github.com/nektos/act) for local CI testing, macOS-specific steps cannot be tested:
+
+- Code signing and notarization require real macOS
+- Universal binary creation (`lipo`) is macOS-only
+- Gatekeeper validation (`spctl`) is macOS-only
+
+For local macOS testing, use the `just` commands directly on your Mac.
 
