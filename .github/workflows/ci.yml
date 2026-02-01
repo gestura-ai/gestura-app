@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Pin Rust version for reproducible builds
+  RUST_VERSION: stable
 
 jobs:
   test:
@@ -15,18 +17,21 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Pin macOS to macos-14 (ARM/Sonoma) and Windows to windows-2022 for reproducibility
+        os: [ubuntu-latest, windows-2022, macos-14]
         rust: [stable]
 
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: ${{ matrix.rust }}
         components: rustfmt, clippy
-    
+        # Add cross-compilation targets for macOS universal binary validation
+        targets: ${{ matrix.os == 'macos-14' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
     - name: Install system dependencies (Ubuntu)
       if: matrix.os == 'ubuntu-latest'
       run: |
@@ -39,27 +44,39 @@ jobs:
         sudo apt-get install -y libwebkit2gtk-4.1-dev 2>/dev/null || sudo apt-get install -y libwebkit2gtk-4.0-dev
 
     - name: Install system dependencies (macOS)
-      if: matrix.os == 'macos-latest'
+      if: matrix.os == 'macos-14'
       run: |
-        brew install cmake
-    
-    - name: Cache cargo registry
-      uses: actions/cache@v3
+        # cmake: Required for whisper-rs (whisper.cpp) compilation
+        # pkg-config: Required for locating system libraries
+        # Note: Accelerate framework is built-in to macOS (used by whisper-rs for BLAS)
+        brew install cmake pkg-config
+
+    - name: Install system dependencies (Windows)
+      if: matrix.os == 'windows-2022'
+      shell: pwsh
+      run: |
+        # Install cmake and LLVM via Chocolatey (pre-installed on GitHub Windows runners)
+        # cmake: Required for whisper-rs (whisper.cpp) compilation
+        # llvm: Required for bindgen to generate FFI bindings for whisper-rs
+        choco install cmake llvm -y
+        # Add to PATH for subsequent steps
+        $cmakePath = "C:\Program Files\CMake\bin"
+        $llvmPath = "C:\Program Files\LLVM\bin"
+        echo "$cmakePath" >> $env:GITHUB_PATH
+        echo "$llvmPath" >> $env:GITHUB_PATH
+        # Set LIBCLANG_PATH for bindgen
+        echo "LIBCLANG_PATH=$llvmPath" >> $env:GITHUB_ENV
+
+    # Use Swatinem/rust-cache for better caching with feature flag support
+    - name: Cache Rust dependencies
+      uses: Swatinem/rust-cache@v2
       with:
-        path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-    
-    - name: Cache cargo index
-      uses: actions/cache@v3
-      with:
-        path: ~/.cargo/git
-        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-    
-    - name: Cache cargo build
-      uses: actions/cache@v3
-      with:
-        path: target
-        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+        # Include OS, Rust version, target triple for accurate caching
+        prefix-key: "v1-rust-${{ matrix.os }}-${{ matrix.rust }}-${{ matrix.os == 'macos-14' && 'universal-apple-darwin' || matrix.os == 'windows-2022' && 'x86_64-pc-windows-msvc' || 'x86_64-unknown-linux-gnu' }}"
+        # Cache the target directory
+        cache-targets: true
+        # Also cache ~/.cargo/bin for installed tools
+        cache-all-crates: true
 
     - name: Check formatting
       run: cargo fmt --all -- --check
@@ -76,16 +93,52 @@ jobs:
       run: cargo test --workspace --no-default-features --features nats
 
     # voice-local requires whisper.cpp build which needs cmake and native libs
-    # Skip on Windows (cmake complexity) and macOS CI (Accelerate framework issues)
+    # All platforms now have required dependencies installed (cmake, LLVM/clang)
     - name: Run tests (voice-local feature)
-      if: matrix.os == 'ubuntu-latest'
       run: cargo test --workspace --no-default-features --features voice-local
 
-    # Test with multiple features enabled (excluding platform-specific features like macos-permissions)
-    # We can't use --all-features because macos-permissions pulls in macOS-only dependencies
-    - name: Run tests (combined features)
+    # Test macos-permissions feature on macOS only (uses objc/cocoa bindings)
+    # CRITICAL: This feature was previously untested - now validated on macOS CI
+    - name: Run tests (macos-permissions feature)
+      if: matrix.os == 'macos-14'
+      run: cargo test --workspace --no-default-features --features macos-permissions
+
+    # Test linux-permissions feature on Linux only (xdg-desktop-portal, D-Bus)
+    - name: Run tests (linux-permissions feature)
       if: matrix.os == 'ubuntu-latest'
-      run: cargo test --workspace --no-default-features --features "voice-local,nats,security,json-ld"
+      run: cargo test --workspace --no-default-features --features linux-permissions
+
+    # Test windows-permissions feature on Windows only (WinRT APIs)
+    - name: Run tests (windows-permissions feature)
+      if: matrix.os == 'windows-2022'
+      run: cargo test --workspace --no-default-features --features windows-permissions
+
+    # Test security feature (ring + keyring for encryption and keychain)
+    - name: Run tests (security feature)
+      run: cargo test --workspace --no-default-features --features security
+
+    # Test json-ld feature (JSON-LD processing for MDH)
+    - name: Run tests (json-ld feature)
+      run: cargo test --workspace --no-default-features --features json-ld
+
+    # Test ble feature (btleplug for BLE integration with Haptic Harmony ring)
+    - name: Run tests (ble feature)
+      run: cargo test --workspace --no-default-features --features ble
+
+    # Test with multiple features enabled (including ble and platform permissions)
+    # Each platform includes its native permission feature for complete coverage
+    - name: Run tests (combined features - Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: cargo test --workspace --no-default-features --features "voice-local,nats,security,json-ld,ble,linux-permissions"
+
+    - name: Run tests (combined features - macOS)
+      if: matrix.os == 'macos-14'
+      run: cargo test --workspace --no-default-features --features "voice-local,nats,security,json-ld,macos-permissions,ble"
+
+    # Windows combined features test (includes windows-permissions)
+    - name: Run tests (combined features - Windows)
+      if: matrix.os == 'windows-2022'
+      run: cargo test --workspace --no-default-features --features "voice-local,nats,security,json-ld,ble,windows-permissions"
 
   frontend:
     name: Frontend Tests
@@ -133,13 +186,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Pin macOS to macos-14 (ARM/Sonoma) and Windows to windows-2022 for reproducibility
+        os: [ubuntu-latest, windows-2022, macos-14]
 
     steps:
     - uses: actions/checkout@v4
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
+      with:
+        # Add cross-compilation targets for macOS universal binary validation
+        targets: ${{ matrix.os == 'macos-14' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
     - name: Install system dependencies (Ubuntu)
       if: matrix.os == 'ubuntu-latest'
@@ -153,9 +210,30 @@ jobs:
         sudo apt-get install -y libwebkit2gtk-4.1-dev 2>/dev/null || sudo apt-get install -y libwebkit2gtk-4.0-dev
 
     - name: Install system dependencies (macOS)
-      if: matrix.os == 'macos-latest'
+      if: matrix.os == 'macos-14'
       run: |
-        brew install cmake
+        # cmake: Required for whisper-rs (whisper.cpp) compilation
+        # pkg-config: Required for locating system libraries
+        brew install cmake pkg-config
+
+    - name: Install system dependencies (Windows)
+      if: matrix.os == 'windows-2022'
+      shell: pwsh
+      run: |
+        # Install cmake and LLVM via Chocolatey (pre-installed on GitHub Windows runners)
+        choco install cmake llvm -y
+        $cmakePath = "C:\Program Files\CMake\bin"
+        $llvmPath = "C:\Program Files\LLVM\bin"
+        echo "$cmakePath" >> $env:GITHUB_PATH
+        echo "$llvmPath" >> $env:GITHUB_PATH
+        echo "LIBCLANG_PATH=$llvmPath" >> $env:GITHUB_ENV
+
+    # Use Swatinem/rust-cache for better caching
+    - name: Cache Rust dependencies
+      uses: Swatinem/rust-cache@v2
+      with:
+        prefix-key: "v1-rust-build-${{ matrix.os }}-${{ matrix.os == 'windows-2022' && 'x86_64-pc-windows-msvc' || '' }}"
+        cache-targets: true
 
     - name: Setup Node.js
       uses: actions/setup-node@v4
@@ -172,23 +250,47 @@ jobs:
       working-directory: crates/gestura-gui/frontend
       run: npm run build
 
-    # Use --no-default-features on macOS/Windows to avoid whisper-rs build issues
-    # Ubuntu has the required native dependencies installed
-    - name: Build CLI (Ubuntu with voice-local)
-      if: matrix.os == 'ubuntu-latest'
+    # Build CLI with voice-local on all platforms (all have required dependencies installed)
+    - name: Build CLI (with voice-local)
       run: cargo build --release -p gestura-cli
 
-    - name: Build CLI (macOS/Windows without voice-local)
-      if: matrix.os != 'ubuntu-latest'
-      run: cargo build --release -p gestura-cli --no-default-features
+    # Stage dummy sidecar binaries for CI to enable full GUI build validation
+    # This catches linking errors that cargo check would miss
+    - name: Stage dummy sidecar for CI (macOS)
+      if: matrix.os == 'macos-14'
+      run: |
+        mkdir -p crates/gestura-gui/binaries
+        # Create minimal executable stubs for Tauri sidecar validation
+        echo '#!/bin/sh' > crates/gestura-gui/binaries/gestura-aarch64-apple-darwin
+        echo '#!/bin/sh' > crates/gestura-gui/binaries/gestura-x86_64-apple-darwin
+        chmod +x crates/gestura-gui/binaries/gestura-aarch64-apple-darwin
+        chmod +x crates/gestura-gui/binaries/gestura-x86_64-apple-darwin
 
-    # Use cargo check for gestura-gui to avoid Tauri's sidecar binary validation
-    # The sidecar binaries (externalBin) only exist for macOS release builds
-    # cargo check validates the code compiles without running the Tauri build script
-    - name: Check GUI (Ubuntu with voice-local)
+    - name: Stage dummy sidecar for CI (Ubuntu)
       if: matrix.os == 'ubuntu-latest'
-      run: cargo check --release -p gestura-gui
+      run: |
+        mkdir -p crates/gestura-gui/binaries
+        echo '#!/bin/sh' > crates/gestura-gui/binaries/gestura-x86_64-unknown-linux-gnu
+        chmod +x crates/gestura-gui/binaries/gestura-x86_64-unknown-linux-gnu
 
-    - name: Check GUI (macOS/Windows without voice-local)
-      if: matrix.os != 'ubuntu-latest'
-      run: cargo check --release -p gestura-gui --no-default-features
+    - name: Stage dummy sidecar for CI (Windows)
+      if: matrix.os == 'windows-2022'
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path crates/gestura-gui/binaries | Out-Null
+        # Create minimal executable for Windows
+        Set-Content -Path crates/gestura-gui/binaries/gestura-x86_64-pc-windows-msvc.exe -Value ""
+
+    # Build GUI (not just check) to catch linking errors
+    # All platforms have voice-local dependencies installed
+    - name: Build GUI (Ubuntu with voice-local)
+      if: matrix.os == 'ubuntu-latest'
+      run: cargo build --release -p gestura-gui
+
+    - name: Build GUI (macOS with voice-local)
+      if: matrix.os == 'macos-14'
+      run: cargo build --release -p gestura-gui
+
+    - name: Build GUI (Windows with voice-local)
+      if: matrix.os == 'windows-2022'
+      run: cargo build --release -p gestura-gui

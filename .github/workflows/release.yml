@@ -55,12 +55,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: 'macos-latest'
+          # Pin macOS to macos-14 (ARM/Sonoma) and Windows to windows-2022 for reproducibility
+          # Each platform includes voice-local plus its native permission feature
+          - platform: 'macos-14'
             tauri_args: '--target universal-apple-darwin'
+            features: 'voice-local,macos-permissions'
           - platform: 'ubuntu-latest'
             tauri_args: ''
-          - platform: 'windows-latest'
+            features: 'voice-local,linux-permissions'
+          - platform: 'windows-2022'
             tauri_args: ''
+            features: 'voice-local,windows-permissions'
 
     runs-on: ${{ matrix.platform }}
     env:
@@ -71,7 +76,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.platform == 'macos-14' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Install system dependencies (Ubuntu)
         if: matrix.platform == 'ubuntu-latest'
@@ -79,13 +84,32 @@ jobs:
           sudo apt-get update
           # Ubuntu 24.04+ uses webkit2gtk-4.1, older versions use 4.0
           # Try 4.1 first (Ubuntu 24.04+), fall back to 4.0 (Ubuntu 22.04)
-          sudo apt-get install -y build-essential cmake pkg-config libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+          # CRITICAL: libasound2-dev (ALSA audio) and libclang-dev (bindgen for whisper-rs) are required
+          sudo apt-get install -y build-essential cmake pkg-config libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libclang-dev
           sudo apt-get install -y libwebkit2gtk-4.1-dev 2>/dev/null || sudo apt-get install -y libwebkit2gtk-4.0-dev
 
       - name: Install system dependencies (macOS)
-        if: matrix.platform == 'macos-latest'
+        if: matrix.platform == 'macos-14'
         run: |
-          brew install cmake
+          # cmake: Required for whisper-rs (whisper.cpp) compilation
+          # pkg-config: Required for locating system libraries
+          brew install cmake pkg-config
+
+      - name: Install system dependencies (Windows)
+        if: matrix.platform == 'windows-2022'
+        shell: pwsh
+        run: |
+          # Install cmake and LLVM via Chocolatey (pre-installed on GitHub Windows runners)
+          # cmake: Required for whisper-rs (whisper.cpp) compilation
+          # llvm: Required for bindgen to generate FFI bindings for whisper-rs
+          choco install cmake llvm -y
+          # Add to PATH for subsequent steps
+          $cmakePath = "C:\Program Files\CMake\bin"
+          $llvmPath = "C:\Program Files\LLVM\bin"
+          echo "$cmakePath" >> $env:GITHUB_PATH
+          echo "$llvmPath" >> $env:GITHUB_PATH
+          # Set LIBCLANG_PATH for bindgen
+          echo "LIBCLANG_PATH=$llvmPath" >> $env:GITHUB_ENV
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -103,7 +127,7 @@ jobs:
         run: npm run build
 
       - name: Build CLI binary (macOS universal)
-        if: matrix.platform == 'macos-latest'
+        if: matrix.platform == 'macos-14'
         run: |
           cargo build --release -p gestura-cli --features voice-local --target aarch64-apple-darwin
           cargo build --release -p gestura-cli --features voice-local --target x86_64-apple-darwin
@@ -114,7 +138,7 @@ jobs:
             -output target/universal-apple-darwin/release/gestura
 
       - name: Stage CLI for Tauri bundling (macOS)
-        if: matrix.platform == 'macos-latest'
+        if: matrix.platform == 'macos-14'
         run: |
           mkdir -p crates/gestura-gui/binaries
           cp target/aarch64-apple-darwin/release/gestura crates/gestura-gui/binaries/gestura-aarch64-apple-darwin
@@ -126,7 +150,7 @@ jobs:
             crates/gestura-gui/binaries/gestura-universal-apple-darwin
 
       - name: Build CLI binary (Linux/Windows)
-        if: matrix.platform != 'macos-latest'
+        if: matrix.platform != 'macos-14'
         run: cargo build --release -p gestura-cli --features voice-local
 
       - name: Stage CLI for Tauri bundling (Linux)
@@ -137,14 +161,14 @@ jobs:
           chmod +x crates/gestura-gui/binaries/gestura-x86_64-unknown-linux-gnu
 
       - name: Stage CLI for Tauri bundling (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform == 'windows-2022'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path crates/gestura-gui/binaries | Out-Null
           Copy-Item -Force target/release/gestura.exe crates/gestura-gui/binaries/gestura-x86_64-pc-windows-msvc.exe
 
       - name: Import Apple certificates (macOS)
-        if: matrix.platform == 'macos-latest'
+        if: matrix.platform == 'macos-14'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -186,10 +210,11 @@ jobs:
           APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
         with:
           projectPath: crates/gestura-gui
-          args: '--features voice-local ${{ matrix.tauri_args }}'
+          # Each platform uses voice-local plus its native permission feature from the matrix
+          args: '--features ${{ matrix.features }} ${{ matrix.tauri_args }}'
 
       - name: Sign CLI binary (macOS)
-        if: matrix.platform == 'macos-latest' && env.APPLE_SIGNING_IDENTITY != ''
+        if: matrix.platform == 'macos-14' && env.APPLE_SIGNING_IDENTITY != ''
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
@@ -198,8 +223,43 @@ jobs:
             target/universal-apple-darwin/release/gestura
           codesign --verify --deep --strict target/universal-apple-darwin/release/gestura
 
+      # Verify notarization and code signing of the built app bundle
+      - name: Verify notarization (macOS)
+        if: matrix.platform == 'macos-14'
+        run: |
+          # Find the app bundle
+          APP_PATH="crates/gestura-gui/target/universal-apple-darwin/release/bundle/macos/Gestura.app"
+          if [ ! -d "$APP_PATH" ]; then
+            APP_PATH="crates/gestura-gui/target/release/bundle/macos/Gestura.app"
+          fi
+
+          if [ -d "$APP_PATH" ]; then
+            echo "Verifying app bundle: $APP_PATH"
+
+            # Verify code signature
+            echo "Checking code signature..."
+            codesign --verify --deep --strict --verbose=2 "$APP_PATH" || echo "⚠️ Warning: Code signature verification failed"
+
+            # Check Gatekeeper approval (notarization)
+            echo "Checking Gatekeeper approval..."
+            spctl --assess --type exec --verbose=2 "$APP_PATH" 2>&1 || echo "⚠️ Warning: Gatekeeper check failed (app may not be notarized)"
+
+            # Check for stapled notarization ticket
+            echo "Checking stapled ticket..."
+            xcrun stapler validate "$APP_PATH" 2>&1 || echo "⚠️ Warning: No stapled ticket found"
+          else
+            echo "⚠️ App bundle not found at expected paths"
+          fi
+
+          # Also check DMG if it exists
+          DMG_PATH=$(find crates/gestura-gui/target -name "*.dmg" 2>/dev/null | head -1)
+          if [ -n "$DMG_PATH" ] && [ -f "$DMG_PATH" ]; then
+            echo "Verifying DMG: $DMG_PATH"
+            xcrun stapler validate "$DMG_PATH" 2>&1 || echo "⚠️ Warning: DMG not stapled"
+          fi
+
       - name: Create Full installer (PKG) (macOS)
-        if: matrix.platform == 'macos-latest'
+        if: matrix.platform == 'macos-14'
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
@@ -241,7 +301,7 @@ jobs:
           fi
 
       - name: Package CLI-only archive (macOS)
-        if: matrix.platform == 'macos-latest'
+        if: matrix.platform == 'macos-14'
         run: |
           mkdir -p dist/release
           tar -C target/universal-apple-darwin/release -czf "dist/release/gestura-cli-${TAG}-macos-universal.tar.gz" gestura
@@ -253,7 +313,7 @@ jobs:
           tar -C target/release -czf "dist/release/gestura-cli-${TAG}-linux-x86_64.tar.gz" gestura
 
       - name: Package CLI-only archive (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform == 'windows-2022'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist/release | Out-Null
@@ -277,14 +337,68 @@ jobs:
           cp "$deb_src" "dist/release/gestura-${TAG}-linux-x86_64.deb"
           cp "$rpm_src" "dist/release/gestura-${TAG}-linux-x86_64.rpm"
 
+      # Import Windows code signing certificate
+      - name: Import Windows code signing certificate
+        if: matrix.platform == 'windows-2022' && env.WINDOWS_CERTIFICATE != ''
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        shell: pwsh
+        run: |
+          # Decode and import the certificate
+          $certBytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
+          $certPath = "$env:RUNNER_TEMP\certificate.pfx"
+          [IO.File]::WriteAllBytes($certPath, $certBytes)
+
+          # Import to certificate store
+          $securePassword = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText
+          Import-PfxCertificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword
+
+          # Get certificate thumbprint for Tauri signing
+          $cert = Get-PfxCertificate -FilePath $certPath
+          echo "WINDOWS_CERT_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+
+          # Clean up
+          Remove-Item $certPath -Force
+
       - name: Collect Full installer artifacts (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform == 'windows-2022'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist/release | Out-Null
           $msi = Get-ChildItem -Path crates/gestura-gui/target -Recurse -Filter *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $msi) { throw "MSI not found" }
           Copy-Item -Force $msi.FullName ("dist/release/Gestura-{0}-windows-x86_64.msi" -f $env:TAG)
+
+      # Verify Windows code signature
+      - name: Verify Windows code signature
+        if: matrix.platform == 'windows-2022'
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem -Path dist/release -Filter *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($msi) {
+            Write-Host "Verifying MSI signature: $($msi.FullName)"
+            $sig = Get-AuthenticodeSignature $msi.FullName
+            Write-Host "Signature Status: $($sig.Status)"
+            Write-Host "Signer: $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -eq "Valid") {
+              Write-Host "✅ MSI is properly signed"
+            } elseif ($sig.Status -eq "NotSigned") {
+              Write-Host "⚠️ MSI is not signed (WINDOWS_CERTIFICATE secret may not be configured)"
+            } else {
+              Write-Host "⚠️ MSI signature status: $($sig.StatusMessage)"
+            }
+          } else {
+            Write-Host "⚠️ No MSI found to verify"
+          }
+
+          # Also check the CLI executable
+          $exe = Get-ChildItem -Path target/release -Filter gestura.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($exe) {
+            Write-Host "Verifying CLI signature: $($exe.FullName)"
+            $sig = Get-AuthenticodeSignature $exe.FullName
+            Write-Host "CLI Signature Status: $($sig.Status)"
+          }
 
       - name: Upload release artifacts (workflow artifact)
         uses: actions/upload-artifact@v4
