@@ -24,8 +24,8 @@ security = ["dep:ring", "dep:keyring"]
 macos-permissions = ["dep:objc", "dep:cocoa"]
 # Linux permissions (xdg-desktop-portal for Wayland, D-Bus for system checks)
 linux-permissions = ["dep:ashpd", "dep:zbus"]
-# Windows permissions (WinRT APIs for microphone/camera permission status)
-windows-permissions = ["dep:windows"]
+# Windows permissions (stub - Windows prompts on first access, no WinRT APIs needed)
+windows-permissions = []
 # Development/testing features - enables dev-only code paths
 # WARNING: Do NOT enable in production releases
 dev = []
@@ -89,15 +89,6 @@ scraper = "0.25.0"
 url = "2.5.8"
 notify = { version = "8.2.0", features = ["macos_fsevent"] }
 serde_yaml = "0.9.34"
-
-# Windows specific (optional) - WinRT APIs
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.59", features = [
-    "Media_Capture",
-    "Devices_Enumeration",
-    "Foundation",
-    "System",
-], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
