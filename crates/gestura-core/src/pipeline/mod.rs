@@ -3540,6 +3540,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(target_os = "windows", ignore = "pwd command is Unix-only")]
     async fn streaming_followup_approval_executes_shell_from_history_and_finishes() {
         use std::time::Duration;
 
