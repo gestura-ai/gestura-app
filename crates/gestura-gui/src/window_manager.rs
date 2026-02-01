@@ -1248,7 +1248,7 @@ fn get_project_directory() -> Option<std::path::PathBuf> {
 
     // If the current directory is the filesystem root, treat it as unusable.
     #[cfg(unix)]
-    if cwd == std::path::PathBuf::from("/") {
+    if cwd == std::path::Path::new("/") {
         return None;
     }
 

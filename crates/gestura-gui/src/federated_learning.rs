@@ -446,7 +446,7 @@ impl FederatedLearningCoordinator {
                     param_values
                         .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-                    *aggregated_param = if param_values.len() % 2 == 0 {
+                    *aggregated_param = if param_values.len().is_multiple_of(2) {
                         (param_values[param_values.len() / 2 - 1]
                             + param_values[param_values.len() / 2])
                             / 2.0
