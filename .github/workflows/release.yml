@@ -450,26 +450,37 @@ jobs:
   deploy-docs:
     needs: publish-release
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && hashFiles('package-lock.json') != ''
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
-      
+
+      - name: Check for package-lock.json
+        id: check-npm
+        run: |
+          if [ -f "package-lock.json" ]; then
+            echo "has_npm=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_npm=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Setup Node.js
+        if: steps.check-npm.outputs.has_npm == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '18'
           cache: 'npm'
-      
+
       - name: Install dependencies
+        if: steps.check-npm.outputs.has_npm == 'true'
         run: npm ci
-      
+
       - name: Build documentation
         run: |
           mkdir -p docs
           cp README.md docs/
           cp CHANGELOG.md docs/
           cp TODO.md docs/
-          
+
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
