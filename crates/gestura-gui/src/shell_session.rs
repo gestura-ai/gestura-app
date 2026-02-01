@@ -446,14 +446,14 @@ fn build_env_script_windows(env_vars: &HashMap<String, String>, session_id: &str
 fn open_linux_terminal(working_dir: &Path, config: &ShellSessionConfig) -> ShellResult<()> {
     let init_cmd = build_unix_init_cmd(working_dir, config, false);
 
+    // Pre-format xfce4-terminal command to avoid temporary value lifetime issues
+    let xfce_cmd = format!("bash -c '{}'", init_cmd);
+
     // Try common terminal emulators in order of preference
     let terminals = [
         ("gnome-terminal", vec!["--", "bash", "-c", &init_cmd]),
         ("konsole", vec!["-e", "bash", "-c", &init_cmd]),
-        (
-            "xfce4-terminal",
-            vec!["-e", &format!("bash -c '{}'", init_cmd)],
-        ),
+        ("xfce4-terminal", vec!["-e", &xfce_cmd]),
         ("xterm", vec!["-e", "bash", "-c", &init_cmd]),
     ];
 

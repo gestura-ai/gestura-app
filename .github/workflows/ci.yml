@@ -33,7 +33,8 @@ jobs:
         sudo apt-get update
         # Tauri requires GTK, GLib, and WebKit libraries for compilation
         # ALSA is required for audio functionality (alsa-sys crate)
-        sudo apt-get install -y build-essential cmake pkg-config libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev
+        # libclang-dev is required for bindgen to generate FFI bindings for whisper-rs
+        sudo apt-get install -y build-essential cmake pkg-config libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libclang-dev
         # Ubuntu 24.04+ uses webkit2gtk-4.1, older versions use 4.0
         sudo apt-get install -y libwebkit2gtk-4.1-dev 2>/dev/null || sudo apt-get install -y libwebkit2gtk-4.0-dev
 
@@ -80,9 +81,11 @@ jobs:
       if: matrix.os == 'ubuntu-latest'
       run: cargo test --workspace --no-default-features --features voice-local
 
-    - name: Run tests (all features)
+    # Test with multiple features enabled (excluding platform-specific features like macos-permissions)
+    # We can't use --all-features because macos-permissions pulls in macOS-only dependencies
+    - name: Run tests (combined features)
       if: matrix.os == 'ubuntu-latest'
-      run: cargo test --workspace --all-features
+      run: cargo test --workspace --no-default-features --features "voice-local,nats,security,json-ld"
 
   frontend:
     name: Frontend Tests
@@ -144,7 +147,8 @@ jobs:
         sudo apt-get update
         # Tauri requires GTK, GLib, and WebKit libraries for compilation
         # ALSA is required for audio functionality (alsa-sys crate)
-        sudo apt-get install -y build-essential cmake pkg-config libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev
+        # libclang-dev is required for bindgen to generate FFI bindings for whisper-rs
+        sudo apt-get install -y build-essential cmake pkg-config libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libclang-dev
         # Ubuntu 24.04+ uses webkit2gtk-4.1, older versions use 4.0
         sudo apt-get install -y libwebkit2gtk-4.1-dev 2>/dev/null || sudo apt-get install -y libwebkit2gtk-4.0-dev
 
