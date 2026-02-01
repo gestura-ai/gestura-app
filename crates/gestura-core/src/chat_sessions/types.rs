@@ -7,21 +7,16 @@ use std::path::PathBuf;
 use crate::pipeline::Message;
 
 /// Source of an end-user message.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageSource {
     /// Text input.
+    #[default]
     Text,
     /// Voice input (transcribed).
     Voice,
     /// System-generated (internal).
     System,
-}
-
-impl Default for MessageSource {
-    fn default() -> Self {
-        Self::Text
-    }
 }
 
 /// A message in a persisted conversation history.

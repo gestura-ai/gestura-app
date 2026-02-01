@@ -12,9 +12,10 @@ use super::types::ChatSession;
 pub type ChatSessionResult<T> = Result<T, AppError>;
 
 /// Filter for listing sessions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum SessionFilter {
     /// Return all sessions.
+    #[default]
     All,
     /// Sessions created today (local time).
     Today,
@@ -29,12 +30,6 @@ pub enum SessionFilter {
         /// Inclusive end date.
         to: Option<NaiveDate>,
     },
-}
-
-impl Default for SessionFilter {
-    fn default() -> Self {
-        Self::All
-    }
 }
 
 /// Minimal session info used for list UIs.
