@@ -33,8 +33,12 @@ voice-openai = ["gestura-core/voice-openai"]
 ble = ["dep:btleplug", "gestura-core/ble"]
 # JSON-LD processing for MDH
 json-ld = ["dep:json-ld", "gestura-core/json-ld"]
-# macOS permissions
+# macOS permissions (objc/cocoa bindings for TCC permission dialogs)
 macos-permissions = ["dep:objc", "dep:cocoa", "gestura-core/macos-permissions"]
+# Linux permissions (xdg-desktop-portal for Wayland, D-Bus for system checks)
+linux-permissions = ["dep:ashpd", "dep:zbus", "gestura-core/linux-permissions"]
+# Windows permissions (WinRT APIs for microphone/camera permission status)
+windows-permissions = ["gestura-core/windows-permissions"]
 # Security features (encryption, keychain)
 security = ["dep:ring", "dep:keyring", "gestura-core/security"]
 # Development features - enables dev-only code paths
@@ -82,6 +86,10 @@ axum = { version = "0.8.8", features = ["tokio"] }
 tokio-stream = { version = "0.1.18", features = ["sync"] }
 which = "8.0.0"
 tower-http = { version = "0.6.8", features = ["cors"] }
+
+# Linux specific (optional) - xdg-desktop-portal integration
+ashpd = { version = "0.10", optional = true }
+zbus = { version = "5", optional = true }
 
 
 
