@@ -6,8 +6,14 @@ description = "Gestura desktop app (Tauri v2)"
 license.workspace = true
 authors.workspace = true
 
+
 # Tauri binary name
 default-run = "gestura-gui"
+
+[lib]
+name = "gestura_gui"
+path = "src/lib.rs"
+crate-type = ["lib", "cdylib"]
 
 [[bin]]
 name = "gestura-gui"
