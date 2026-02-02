@@ -174,7 +174,9 @@ jobs:
 
     - name: Lint
       working-directory: crates/gestura-gui/frontend
-      run: npx eslint src --ext .ts,.tsx || true  # Allow to pass for now
+    - name: Lint
+      working-directory: crates/gestura-gui/frontend
+      run: npm run lint || true
 
   security:
     name: Security Audit

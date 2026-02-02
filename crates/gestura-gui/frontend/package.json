@@ -12,7 +12,8 @@
     "tauri:build": "cd .. && cargo tauri build --features voice-local",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "test:e2e:install": "playwright install"
+    "test:e2e:install": "playwright install",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.1",
@@ -22,12 +23,19 @@
     "react-markdown": "^10.1.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.2",
     "@playwright/test": "^1.40.0",
     "@tauri-apps/cli": "^2.9.6",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.2.0",
+    "eslint": "^9.39.2",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.0-canary-da641178-20260129",
+    "eslint-plugin-react-refresh": "^0.5.0",
+    "globals": "^17.3.0",
     "typescript": "^5.3.0",
+    "typescript-eslint": "^8.54.0",
     "vite": "^5.0.0"
   }
 }

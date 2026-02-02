@@ -3,6 +3,7 @@
 
 use gestura_core::McpIntegrator;
 use gestura_gui::*;
+use gestura_gui::ble::RingManager;
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -93,7 +94,9 @@ async fn test_mcp_server_functionality() {
 #[tokio::test]
 async fn test_ble_ring_integration() {
     // Test BLE ring manager functionality
-    let ring_manager = gestura_gui::ble::create_ring_manager();
+    // Test BLE ring manager functionality
+    // Use MockRingManager directly to avoid hardware dependency in CI
+    let ring_manager = gestura_gui::ble::MockRingManager;
 
     // Test scanning (should work with mock)
     let rings = ring_manager.scan_for_rings().await;
