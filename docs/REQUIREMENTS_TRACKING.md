@@ -54,6 +54,9 @@ The bm-agents `docs/SRS_GESTURA_APP.md` describes a **mobile-focused app** with 
 | FR-CLI-012 | First-Time Setup (`gestura init`) | ❌ Missing | ✅ **COMPLETE** | Interactive wizard |
 | FR-CLI-013 | Privacy Commands | ❌ Missing | ✅ **COMPLETE** | GDPR compliance |
 | FR-CLI-014 | Health Commands | ❌ Missing | ✅ **COMPLETE** | System health metrics |
+| FR-CLI-015 | A2A Protocol (`gestura a2a`) | ❌ Missing | ✅ **COMPLETE** | Inter-agent comms |
+| FR-CLI-016 | Knowledge System (`gestura knowledge`) | ❌ Missing | ✅ **COMPLETE** | Agent expertise |
+| FR-CLI-017 | Context Management (`gestura context`) | ❌ Missing | ✅ **COMPLETE** | Smart context |
 
 ### System Tools Requirements (NOT in bm-agents SRS)
 

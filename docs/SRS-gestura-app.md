@@ -689,7 +689,68 @@ Global Options:
 - **Business Impact**: Troubleshooting and monitoring
 - **GUI Equivalent**: Telemetry section in settings
 
-### 4.11 System Tools Requirements
+### 4.11 Advanced Agent Features
+
+#### FR-CLI-015: Agent-to-Agent (A2A) Protocol (`gestura a2a`)
+**Requirement**: Manage inter-agent communication and task delegation.
+- **Input**: Agent discovery requests, task messages, token generation.
+- **Output**: Agent profiles, task status, authentication tokens.
+- **Behavior**:
+  ```
+  gestura a2a <SUBCOMMAND>
+
+  Subcommands:
+    status                  Show A2A protocol status
+    profiles                List registered agent profiles
+    discover <URL>          Discover a remote agent
+    register <ID> <NAME>    Register a new agent profile
+    token <ID> <HOURS>      Generate an auth token
+    validate <TOKEN>        Validate an auth token
+    agents                  List known remote agents
+    send <URL> <MSG>        Send a task to a remote agent
+  ```
+- **Priority**: High
+- **Business Impact**: Enables multi-agent collaboration and distributed workflows.
+- **GUI Equivalent**: N/A (Backend feature)
+
+#### FR-CLI-016: Knowledge System (`gestura knowledge`)
+**Requirement**: Access and manage the agent's knowledge base.
+- **Input**: Knowledge queries, category filters.
+- **Output**: Knowledge items, search results.
+- **Behavior**:
+  ```
+  gestura knowledge <SUBCOMMAND>
+
+  Subcommands:
+    list                    List all knowledge items
+    show <ID>               Show details of a knowledge item
+    search <QUERY>          Search for knowledge items
+    categories              List all categories
+    status                  Show knowledge system status
+  ```
+- **Priority**: Medium
+- **Business Impact**: Improves agent expertise and domain-specific assistance.
+- **GUI Equivalent**: N/A (Backend feature)
+
+#### FR-CLI-017: Context Management (`gestura context`)
+**Requirement**: Smart context analysis and management for optimal LLM performance.
+- **Input**: Requests for analysis, cache management commands.
+- **Output**: Context analysis results, cache status.
+- **Behavior**:
+  ```
+  gestura context <SUBCOMMAND>
+
+  Subcommands:
+    analyze <REQUEST>       Analyze a request to determine needed context
+    status                  Show context system status
+    categories              List available context categories
+    clear                   Clear all context caches
+  ```
+- **Priority**: Medium
+- **Business Impact**: Optimizes token usage and improves response relevance.
+- **GUI Equivalent**: N/A (Backend feature)
+
+### 4.12 System Tools Requirements
 
 The following requirements define built-in system tools that enable Gestura to perform tasks on the local system. These tools are inspired by industry-leading AI coding assistants (Aider, Claude Code, OpenAI Codex) and provide the foundation for agentic workflows.
 
