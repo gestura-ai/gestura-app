@@ -2,8 +2,8 @@
 //! Tests the interaction between major components
 
 use gestura_core::McpIntegrator;
-use gestura_gui::*;
 use gestura_gui::ble::RingManager;
+use gestura_gui::*;
 use std::time::Duration;
 use tokio::time::timeout;
 

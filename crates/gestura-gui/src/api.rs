@@ -122,22 +122,48 @@ mod tests {
 /// This is used by other modules (e.g., speech.rs) to retrieve API keys from the
 /// system keychain with a fallback to empty string if not found.
 ///
-/// Provider names are case-insensitive and match the keychain key format:
-/// - `"openai"` → `gestura_api_key_openai`
-/// - `"voice_openai"` → `gestura_api_key_voice_openai`
-/// - `"anthropic"` → `gestura_api_key_anthropic`
+/// Provider names are case-insensitive and map to the canonical secure-storage
+/// key names used by `gestura-core`:
+/// - `"openai"` → `gestura_llm_openai_api_key`
+/// - `"anthropic"` → `gestura_llm_anthropic_api_key`
+/// - `"grok"` → `gestura_llm_grok_api_key`
+/// - `"voice_openai"` → `gestura_voice_openai_api_key`
+/// - `"serpapi"` → `gestura_web_search_serpapi_key`
+/// - `"brave"` → `gestura_web_search_brave_key`
 pub fn try_get_api_key_from_keychain_sync(provider: &str) -> String {
-    let key = format!("gestura_api_key_{}", provider.to_lowercase());
+    let canonical_key = match api_key_storage_key_for_provider(provider) {
+        Some(k) => k,
+        None => return String::new(),
+    };
+    let legacy_key = legacy_api_key_storage_key_for_provider(provider);
+
     let storage = crate::security::create_secure_storage();
 
     // Use a blocking runtime to call the async method
-    // This is safe because we're in a sync context and the keychain operation is fast
     match std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .ok()?;
-        rt.block_on(async { storage.get_secret(&key).await.ok().flatten() })
+        rt.block_on(async {
+            // 1) Canonical read
+            if let Ok(Some(v)) = storage.get_secret(canonical_key).await
+                && !v.is_empty()
+            {
+                return Some(v);
+            }
+
+            // 2) Legacy fallback + self-heal
+            if let Some(legacy_key) = legacy_key
+                && let Ok(Some(v)) = storage.get_secret(legacy_key).await
+                && !v.is_empty()
+            {
+                let _ = storage.store_secret(canonical_key, &v).await;
+                return Some(v);
+            }
+
+            None
+        })
     })
     .join()
     {
@@ -152,7 +178,10 @@ pub fn try_get_api_key_from_keychain_sync(provider: &str) -> String {
 /// JS↔Rust interop: This command is exposed to the frontend via Tauri.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn get_config() -> Result<AppConfig, String> {
-    Ok(AppConfig::load_async().await)
+    let mut cfg = AppConfig::load_async().await;
+    // Defense-in-depth: never return plaintext secrets over IPC.
+    strip_secrets_in_place(&mut cfg);
+    Ok(cfg)
 }
 
 /// Persist a new application configuration.
@@ -160,7 +189,30 @@ pub async fn get_config() -> Result<AppConfig, String> {
 /// JS↔Rust interop: The frontend invokes this command with `{ cfg: AppConfig }`.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn save_config(cfg: AppConfig) -> Result<(), String> {
+    // Defense-in-depth: ignore/scrub any secrets the frontend might send.
+    let mut cfg = cfg;
+    strip_secrets_in_place(&mut cfg);
     cfg.save_async().await.map_err(|e| e.to_string())
+}
+
+/// Clear all known plaintext secret fields from an `AppConfig`.
+///
+/// We do this at the GUI IPC boundary to ensure secrets never cross between
+/// backend/frontend via `get_config` / `save_config` payloads.
+fn strip_secrets_in_place(cfg: &mut AppConfig) {
+    if let Some(c) = cfg.llm.openai.as_mut() {
+        c.api_key.clear();
+    }
+    if let Some(c) = cfg.llm.anthropic.as_mut() {
+        c.api_key.clear();
+    }
+    if let Some(c) = cfg.llm.grok.as_mut() {
+        c.api_key.clear();
+    }
+
+    cfg.voice.openai_api_key = None;
+    cfg.web_search.serpapi_key = None;
+    cfg.web_search.brave_key = None;
 }
 
 /// Check if this is the first run of the application (no config file exists yet).
@@ -681,6 +733,15 @@ pub async fn list_ollama_models(endpoint: String) -> Result<Vec<serde_json::Valu
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn list_openai_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
+    let mut api_key = api_key.trim().to_string();
+    if api_key.is_empty() {
+        api_key = try_get_api_key_from_keychain("openai");
+    }
+    if api_key.is_empty() {
+        // No key in UI and no key in secure storage; return a sensible static list.
+        return Ok(get_static_openai_chat_models());
+    }
+
     let client = reqwest::Client::new();
     let url = "https://api.openai.com/v1/models";
 
@@ -737,12 +798,32 @@ pub async fn list_openai_models(api_key: String) -> Result<Vec<serde_json::Value
     Ok(models)
 }
 
+fn get_static_openai_chat_models() -> Vec<serde_json::Value> {
+    gestura_core::OPENAI_CHAT_MODELS
+        .iter()
+        .map(|id| {
+            serde_json::json!({
+                "id": id,
+                "name": format_openai_model_name(id),
+                "created": 0
+            })
+        })
+        .collect()
+}
+
 /// List available OpenAI STT (Speech-to-Text) models
 /// Fetches from /v1/models and filters for transcription-capable models
 #[tauri::command(rename_all = "snake_case")]
 pub async fn list_openai_stt_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
+    let mut api_key = api_key.trim().to_string();
     if api_key.is_empty() {
-        // Return static list with sensible defaults when no API key
+        // Prefer voice-specific key, then fall back to the general OpenAI key.
+        api_key = try_get_api_key_from_keychain("voice_openai");
+        if api_key.is_empty() {
+            api_key = try_get_api_key_from_keychain("openai");
+        }
+    }
+    if api_key.is_empty() {
         return Ok(get_static_openai_stt_models());
     }
 
@@ -813,23 +894,16 @@ pub async fn list_openai_stt_models(api_key: String) -> Result<Vec<serde_json::V
 
 /// Static list of OpenAI STT models (fallback when API unavailable)
 fn get_static_openai_stt_models() -> Vec<serde_json::Value> {
-    vec![
-        serde_json::json!({
-            "id": "gpt-4o-transcribe",
-            "name": "GPT-4o Transcribe (Best Quality)",
-            "description": "Highest accuracy, lower WER than Whisper"
-        }),
-        serde_json::json!({
-            "id": "gpt-4o-mini-transcribe",
-            "name": "GPT-4o Mini Transcribe (Balanced)",
-            "description": "Good balance of cost and quality"
-        }),
-        serde_json::json!({
-            "id": "whisper-1",
-            "name": "Whisper V2 (Classic)",
-            "description": "Original Whisper model, cost-effective"
-        }),
-    ]
+    gestura_core::OPENAI_STT_MODELS
+        .iter()
+        .map(|id| {
+            serde_json::json!({
+                "id": id,
+                "name": format_openai_stt_model_name(id),
+                "description": ""
+            })
+        })
+        .collect()
 }
 
 /// Format OpenAI STT model ID to a human-readable name
@@ -886,6 +960,14 @@ fn format_openai_model_name(id: &str) -> String {
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn list_anthropic_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
+    let mut api_key = api_key.trim().to_string();
+    if api_key.is_empty() {
+        api_key = try_get_api_key_from_keychain("anthropic");
+    }
+    if api_key.is_empty() {
+        return Ok(get_static_anthropic_models());
+    }
+
     let client = reqwest::Client::new();
     let url = "https://api.anthropic.com/v1/models";
 
@@ -922,7 +1004,7 @@ pub async fn list_anthropic_models(api_key: String) -> Result<Vec<serde_json::Va
                     if id.starts_with("claude-") {
                         Some(serde_json::json!({
                             "id": id,
-                            "name": format_anthropic_model_name(id),
+                            "name": gestura_core::format_anthropic_model_name(id),
                             "created": m.get("created_at").and_then(|c| c.as_str()).unwrap_or("")
                         }))
                     } else {
@@ -943,35 +1025,17 @@ pub async fn list_anthropic_models(api_key: String) -> Result<Vec<serde_json::Va
     Ok(models)
 }
 
-/// Format Anthropic model ID to a human-readable name
-fn format_anthropic_model_name(id: &str) -> String {
-    match id {
-        "claude-sonnet-4-20250514" => "Claude Sonnet 4".to_string(),
-        "claude-3-5-sonnet-20241022" => "Claude 3.5 Sonnet".to_string(),
-        "claude-3-opus-20240229" => "Claude 3 Opus".to_string(),
-        "claude-3-sonnet-20240229" => "Claude 3 Sonnet".to_string(),
-        "claude-3-haiku-20240307" => "Claude 3 Haiku".to_string(),
-        _ => {
-            // Try to parse the model name from the ID
-            // Format: claude-{version}-{variant}-{date}
-            let parts: Vec<&str> = id.split('-').collect();
-            if parts.len() >= 3 {
-                let version = parts[1];
-                let variant = parts[2];
-                format!(
-                    "Claude {} {}",
-                    version,
-                    variant
-                        .chars()
-                        .next()
-                        .map(|c| c.to_uppercase().to_string() + &variant[1..])
-                        .unwrap_or_else(|| variant.to_string())
-                )
-            } else {
-                id.to_string()
-            }
-        }
-    }
+fn get_static_anthropic_models() -> Vec<serde_json::Value> {
+    gestura_core::ANTHROPIC_MODELS
+        .iter()
+        .map(|id| {
+            serde_json::json!({
+                "id": id,
+                "name": gestura_core::format_anthropic_model_name(id),
+                "created": ""
+            })
+        })
+        .collect()
 }
 
 /// Fetch available Grok models from xAI API
@@ -980,6 +1044,10 @@ fn format_anthropic_model_name(id: &str) -> String {
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn list_grok_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
+    let mut api_key = api_key.trim().to_string();
+    if api_key.is_empty() {
+        api_key = try_get_api_key_from_keychain("grok");
+    }
     if api_key.is_empty() {
         return Ok(get_static_grok_models());
     }
@@ -1063,11 +1131,15 @@ fn format_grok_model_name(id: &str) -> String {
 
 /// Fallback static list of Grok models
 fn get_static_grok_models() -> Vec<serde_json::Value> {
-    vec![
-        serde_json::json!({ "id": "grok-3", "name": "Grok 3" }),
-        serde_json::json!({ "id": "grok-3-mini", "name": "Grok 3 Mini" }),
-        serde_json::json!({ "id": "grok-2-vision-1212", "name": "Grok 2 Vision" }),
-    ]
+    gestura_core::GROK_MODELS
+        .iter()
+        .map(|id| {
+            serde_json::json!({
+                "id": id,
+                "name": format_grok_model_name(id)
+            })
+        })
+        .collect()
 }
 
 /// Test local Whisper model with detailed validation
@@ -3227,6 +3299,29 @@ pub fn toggle_listening(_app: tauri::AppHandle) -> Result<String, String> {
 /// Update speech processing configuration
 #[tauri::command]
 pub fn update_speech_config(config: crate::speech::SpeechConfig) -> Result<(), String> {
+    let mut config = config;
+
+    // Do not require the UI to pass secrets across IPC. If keys are empty, try
+    // to hydrate them from secure storage.
+    if config.openai_api_key.trim().is_empty() {
+        let voice_key = try_get_api_key_from_keychain_sync("voice_openai");
+        if !voice_key.is_empty() {
+            config.openai_api_key = voice_key;
+        } else {
+            let general_key = try_get_api_key_from_keychain_sync("openai");
+            if !general_key.is_empty() {
+                config.openai_api_key = general_key;
+            }
+        }
+    }
+
+    if config.anthropic_api_key.trim().is_empty() {
+        let key = try_get_api_key_from_keychain_sync("anthropic");
+        if !key.is_empty() {
+            config.anthropic_api_key = key;
+        }
+    }
+
     crate::speech::update_speech_config(config);
     Ok(())
 }
@@ -4700,6 +4795,46 @@ pub fn is_keychain_available() -> bool {
     }
 }
 
+fn api_key_storage_key_for_provider(provider: &str) -> Option<&'static str> {
+    let p = provider.trim();
+
+    if p.eq_ignore_ascii_case("openai") {
+        Some("gestura_llm_openai_api_key")
+    } else if p.eq_ignore_ascii_case("anthropic") {
+        Some("gestura_llm_anthropic_api_key")
+    } else if p.eq_ignore_ascii_case("grok") {
+        Some("gestura_llm_grok_api_key")
+    } else if p.eq_ignore_ascii_case("voice_openai") {
+        Some("gestura_voice_openai_api_key")
+    } else if p.eq_ignore_ascii_case("serpapi") {
+        Some("gestura_web_search_serpapi_key")
+    } else if p.eq_ignore_ascii_case("brave") {
+        Some("gestura_web_search_brave_key")
+    } else {
+        None
+    }
+}
+
+fn legacy_api_key_storage_key_for_provider(provider: &str) -> Option<&'static str> {
+    let p = provider.trim();
+
+    if p.eq_ignore_ascii_case("openai") {
+        Some("gestura_api_key_openai")
+    } else if p.eq_ignore_ascii_case("anthropic") {
+        Some("gestura_api_key_anthropic")
+    } else if p.eq_ignore_ascii_case("grok") {
+        Some("gestura_api_key_grok")
+    } else if p.eq_ignore_ascii_case("voice_openai") {
+        Some("gestura_api_key_voice_openai")
+    } else if p.eq_ignore_ascii_case("serpapi") {
+        Some("gestura_api_key_serpapi")
+    } else if p.eq_ignore_ascii_case("brave") {
+        Some("gestura_api_key_brave")
+    } else {
+        None
+    }
+}
+
 /// Store an API key securely.
 ///
 /// Convenience wrapper that uses provider-specific key names.
@@ -4708,8 +4843,9 @@ pub fn is_keychain_available() -> bool {
 /// JS↔Rust interop: This command is exposed to the frontend via Tauri.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn store_api_key(provider: String, api_key: String) -> Result<(), String> {
-    let key = format!("gestura_api_key_{}", provider.to_lowercase());
-    store_secret(key, api_key).await
+    let key = api_key_storage_key_for_provider(&provider)
+        .ok_or_else(|| format!("Unknown provider: {provider}"))?;
+    store_secret(key.to_string(), api_key).await
 }
 
 /// Retrieve an API key from secure storage.
@@ -4717,8 +4853,34 @@ pub async fn store_api_key(provider: String, api_key: String) -> Result<(), Stri
 /// JS↔Rust interop: This command is exposed to the frontend via Tauri.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn get_api_key(provider: String) -> Result<Option<String>, String> {
-    let key = format!("gestura_api_key_{}", provider.to_lowercase());
-    get_secret(key).await
+    let canonical_key = api_key_storage_key_for_provider(&provider)
+        .ok_or_else(|| format!("Unknown provider: {provider}"))?;
+    let legacy_key = legacy_api_key_storage_key_for_provider(&provider);
+
+    let storage = crate::security::create_secure_storage();
+
+    if let Some(v) = storage
+        .get_secret(canonical_key)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(Some(v));
+    }
+
+    if let Some(legacy_key) = legacy_key
+        && let Some(v) = storage
+            .get_secret(legacy_key)
+            .await
+            .map_err(|e| e.to_string())?
+            .filter(|s| !s.is_empty())
+    {
+        // Best-effort self-heal to canonical name.
+        let _ = storage.store_secret(canonical_key, &v).await;
+        return Ok(Some(v));
+    }
+
+    Ok(None)
 }
 
 /// Delete an API key from secure storage.
@@ -4726,8 +4888,104 @@ pub async fn get_api_key(provider: String) -> Result<Option<String>, String> {
 /// JS↔Rust interop: This command is exposed to the frontend via Tauri.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn delete_api_key(provider: String) -> Result<(), String> {
-    let key = format!("gestura_api_key_{}", provider.to_lowercase());
-    delete_secret(key).await
+    let canonical_key = api_key_storage_key_for_provider(&provider)
+        .ok_or_else(|| format!("Unknown provider: {provider}"))?;
+    let legacy_key = legacy_api_key_storage_key_for_provider(&provider);
+
+    let storage = crate::security::create_secure_storage();
+    storage
+        .delete_secret(canonical_key)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(legacy_key) = legacy_key {
+        // Best-effort cleanup of legacy keys.
+        let _ = storage.delete_secret(legacy_key).await;
+    }
+    Ok(())
+}
+
+/// Check if an API key exists for a provider without exposing the key value.
+///
+/// Returns true if a non-empty API key is found in secure storage or config file.
+/// This is used by the frontend to determine which providers are available.
+///
+/// JS↔Rust interop: This command is exposed to the frontend via Tauri.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn has_api_key(provider: String) -> Result<bool, String> {
+    // Check secure storage first
+    if let Ok(Some(key)) = get_api_key(provider.clone()).await
+        && !key.is_empty()
+    {
+        return Ok(true);
+    }
+
+    // Fallback: check config file
+    let config = AppConfig::load_async().await;
+    let has_key = match provider.to_lowercase().as_str() {
+        "openai" => config
+            .llm
+            .openai
+            .as_ref()
+            .map(|c| !c.api_key.trim().is_empty())
+            .unwrap_or(false),
+        "anthropic" => config
+            .llm
+            .anthropic
+            .as_ref()
+            .map(|c| !c.api_key.trim().is_empty())
+            .unwrap_or(false),
+        "grok" => config
+            .llm
+            .grok
+            .as_ref()
+            .map(|c| !c.api_key.trim().is_empty())
+            .unwrap_or(false),
+        "voice_openai" => config
+            .voice
+            .openai_api_key
+            .as_ref()
+            .map(|k| !k.trim().is_empty())
+            .unwrap_or(false),
+        "serpapi" => config
+            .web_search
+            .serpapi_key
+            .as_ref()
+            .map(|k| !k.trim().is_empty())
+            .unwrap_or(false),
+        "brave" => config
+            .web_search
+            .brave_key
+            .as_ref()
+            .map(|k| !k.trim().is_empty())
+            .unwrap_or(false),
+        _ => false,
+    };
+
+    Ok(has_key)
+}
+
+/// Check which LLM providers have API keys configured.
+///
+/// Returns a JSON object with provider names as keys and boolean values indicating
+/// whether an API key is available. Ollama is always included as true since it's local.
+///
+/// Example response: {"openai": true, "anthropic": false, "grok": false, "ollama": true}
+///
+/// JS↔Rust interop: This command is exposed to the frontend via Tauri.
+#[tauri::command]
+pub async fn get_available_llm_providers() -> Result<serde_json::Value, String> {
+    let providers = vec!["openai", "anthropic", "grok"];
+    let mut result = serde_json::Map::new();
+
+    for provider in providers {
+        let has_key = has_api_key(provider.to_string()).await.unwrap_or(false);
+        result.insert(provider.to_string(), serde_json::Value::Bool(has_key));
+    }
+
+    // Ollama is always available (local, no API key required)
+    result.insert("ollama".to_string(), serde_json::Value::Bool(true));
+
+    Ok(serde_json::Value::Object(result))
 }
 
 /// Migrate API keys from config file to secure storage.
@@ -4743,7 +5001,7 @@ pub async fn migrate_api_keys_to_keychain() -> Result<serde_json::Value, String>
         && !openai.api_key.is_empty()
     {
         storage
-            .store_secret("gestura_api_key_openai", &openai.api_key)
+            .store_secret("gestura_llm_openai_api_key", &openai.api_key)
             .await
             .map_err(|e| e.to_string())?;
         migrated.push("openai".to_string());
@@ -4754,7 +5012,7 @@ pub async fn migrate_api_keys_to_keychain() -> Result<serde_json::Value, String>
         && !anthropic.api_key.is_empty()
     {
         storage
-            .store_secret("gestura_api_key_anthropic", &anthropic.api_key)
+            .store_secret("gestura_llm_anthropic_api_key", &anthropic.api_key)
             .await
             .map_err(|e| e.to_string())?;
         migrated.push("anthropic".to_string());
@@ -4765,7 +5023,7 @@ pub async fn migrate_api_keys_to_keychain() -> Result<serde_json::Value, String>
         && !grok.api_key.is_empty()
     {
         storage
-            .store_secret("gestura_api_key_grok", &grok.api_key)
+            .store_secret("gestura_llm_grok_api_key", &grok.api_key)
             .await
             .map_err(|e| e.to_string())?;
         migrated.push("grok".to_string());
@@ -4776,7 +5034,7 @@ pub async fn migrate_api_keys_to_keychain() -> Result<serde_json::Value, String>
         && !key.is_empty()
     {
         storage
-            .store_secret("gestura_api_key_serpapi", key)
+            .store_secret("gestura_web_search_serpapi_key", key)
             .await
             .map_err(|e| e.to_string())?;
         migrated.push("serpapi".to_string());
@@ -4787,7 +5045,7 @@ pub async fn migrate_api_keys_to_keychain() -> Result<serde_json::Value, String>
         && !key.is_empty()
     {
         storage
-            .store_secret("gestura_api_key_brave", key)
+            .store_secret("gestura_web_search_brave_key", key)
             .await
             .map_err(|e| e.to_string())?;
         migrated.push("brave".to_string());
@@ -4798,7 +5056,7 @@ pub async fn migrate_api_keys_to_keychain() -> Result<serde_json::Value, String>
         && !key.is_empty()
     {
         storage
-            .store_secret("gestura_api_key_voice_openai", key)
+            .store_secret("gestura_voice_openai_api_key", key)
             .await
             .map_err(|e| e.to_string())?;
         migrated.push("voice_openai".to_string());

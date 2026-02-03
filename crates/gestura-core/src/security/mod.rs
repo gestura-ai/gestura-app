@@ -86,11 +86,11 @@ impl McpToken {
 /// When the `security` feature is enabled, returns a keychain-backed storage.
 /// Otherwise, returns an in-memory mock storage suitable for testing.
 pub fn create_secure_storage() -> Box<dyn SecureStorage> {
-    #[cfg(feature = "security")]
+    #[cfg(all(feature = "security", not(test)))]
     {
         Box::new(KeychainStorage)
     }
-    #[cfg(not(feature = "security"))]
+    #[cfg(any(not(feature = "security"), test))]
     {
         Box::new(MockSecureStorage::default())
     }

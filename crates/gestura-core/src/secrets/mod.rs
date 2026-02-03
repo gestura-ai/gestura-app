@@ -33,14 +33,27 @@ pub enum SecretKey {
 impl SecretKey {
     /// Returns the secure-storage key name used to store this secret.
     ///
-    /// This intentionally matches the GUI keychain naming convention:
-    /// `gestura_api_key_{provider}`.
+    /// This matches the canonical secure-storage key names used across the
+    /// application (and the `AppConfig` secret-migration logic).
     pub const fn storage_key(self) -> &'static str {
         match self {
-            Self::OpenAi => "gestura_api_key_openai",
-            Self::VoiceOpenAi => "gestura_api_key_voice_openai",
-            Self::Anthropic => "gestura_api_key_anthropic",
-            Self::Grok => "gestura_api_key_grok",
+            Self::OpenAi => "gestura_llm_openai_api_key",
+            Self::VoiceOpenAi => "gestura_voice_openai_api_key",
+            Self::Anthropic => "gestura_llm_anthropic_api_key",
+            Self::Grok => "gestura_llm_grok_api_key",
+        }
+    }
+
+    /// Legacy secure-storage key name used by older releases.
+    ///
+    /// New writes should always use [`SecretKey::storage_key`]. This exists only
+    /// for backwards-compatible reads + optional self-heal migration.
+    pub const fn legacy_storage_key(self) -> Option<&'static str> {
+        match self {
+            Self::OpenAi => Some("gestura_api_key_openai"),
+            Self::VoiceOpenAi => Some("gestura_api_key_voice_openai"),
+            Self::Anthropic => Some("gestura_api_key_anthropic"),
+            Self::Grok => Some("gestura_api_key_grok"),
         }
     }
 }
@@ -88,17 +101,111 @@ impl SecureStorageSecretProvider {
 #[async_trait::async_trait]
 impl SecretProvider for SecureStorageSecretProvider {
     async fn get_secret(&self, key: SecretKey) -> Option<String> {
-        match self.storage.get_secret(key.storage_key()).await {
-            Ok(v) => v.filter(|s| !s.is_empty()),
+        let canonical_key = key.storage_key();
+
+        // 1) Canonical key
+        match self.storage.get_secret(canonical_key).await {
+            Ok(Some(v)) if !v.is_empty() => return Some(v),
+            Ok(_) => {}
             Err(e) => {
                 tracing::warn!(
-                    storage_key = key.storage_key(),
+                    storage_key = canonical_key,
                     error = %e,
                     "Failed to read secret from secure storage"
+                );
+            }
+        }
+
+        // 2) Legacy key fallback + self-heal
+        let legacy_key = key.legacy_storage_key()?;
+        match self.storage.get_secret(legacy_key).await {
+            Ok(Some(v)) if !v.is_empty() => {
+                if let Err(e) = self.storage.store_secret(canonical_key, &v).await {
+                    tracing::warn!(
+                        canonical_key,
+                        legacy_key,
+                        error = %e,
+                        "Failed to self-heal secret from legacy key to canonical key"
+                    );
+                }
+                Some(v)
+            }
+            Ok(_) => None,
+            Err(e) => {
+                tracing::warn!(
+                    storage_key = legacy_key,
+                    error = %e,
+                    "Failed to read secret from secure storage (legacy key)"
                 );
                 None
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::security::{MockSecureStorage, SecureStorage, SecureStorageError};
+    use std::sync::Arc;
+
+    /// Wrapper so we can both:
+    /// - give `SecureStorageSecretProvider` an owned `Box<dyn SecureStorage>`
+    /// - keep a handle to the underlying mock storage for assertions
+    #[derive(Clone)]
+    struct SharedMockStorage(Arc<MockSecureStorage>);
+
+    #[async_trait::async_trait]
+    impl SecureStorage for SharedMockStorage {
+        async fn store_secret(&self, key: &str, value: &str) -> Result<(), SecureStorageError> {
+            self.0.store_secret(key, value).await
+        }
+
+        async fn get_secret(&self, key: &str) -> Result<Option<String>, SecureStorageError> {
+            self.0.get_secret(key).await
+        }
+
+        async fn delete_secret(&self, key: &str) -> Result<(), SecureStorageError> {
+            self.0.delete_secret(key).await
+        }
+    }
+
+    #[tokio::test]
+    async fn reads_legacy_key_and_self_heals_to_canonical() {
+        let inner = Arc::new(MockSecureStorage::new());
+        inner
+            .store_secret("gestura_api_key_openai", "sk-legacy")
+            .await
+            .unwrap();
+
+        let provider = SecureStorageSecretProvider::new(Box::new(SharedMockStorage(inner.clone())));
+
+        let got = provider.get_secret(SecretKey::OpenAi).await;
+        assert_eq!(got.as_deref(), Some("sk-legacy"));
+
+        let canonical = inner
+            .get_secret("gestura_llm_openai_api_key")
+            .await
+            .unwrap();
+        assert_eq!(canonical.as_deref(), Some("sk-legacy"));
+    }
+
+    #[tokio::test]
+    async fn canonical_key_wins_over_legacy_key() {
+        let inner = Arc::new(MockSecureStorage::new());
+        inner
+            .store_secret("gestura_llm_openai_api_key", "sk-canonical")
+            .await
+            .unwrap();
+        inner
+            .store_secret("gestura_api_key_openai", "sk-legacy")
+            .await
+            .unwrap();
+
+        let provider = SecureStorageSecretProvider::new(Box::new(SharedMockStorage(inner.clone())));
+
+        let got = provider.get_secret(SecretKey::OpenAi).await;
+        assert_eq!(got.as_deref(), Some("sk-canonical"));
     }
 }
 

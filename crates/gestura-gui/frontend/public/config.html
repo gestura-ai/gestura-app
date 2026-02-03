@@ -525,6 +525,7 @@
             font-size: 0.9em;
             margin-left: 4px;
         }
+
         .info-hint:hover {
             opacity: 1;
         }
@@ -539,10 +540,12 @@
             vertical-align: middle;
             margin-left: 6px;
         }
+
         .badge-warning {
             background: #fff3cd;
             color: #856404;
         }
+
         .badge-info {
             background: #d1ecf1;
             color: #0c5460;
@@ -554,6 +557,7 @@
             flex-direction: column;
             align-items: flex-start;
         }
+
         .tool-config-toggle {
             margin-top: 6px;
             padding: 4px 10px;
@@ -567,12 +571,15 @@
             align-items: center;
             gap: 4px;
         }
+
         .tool-config-toggle:hover {
             background: rgba(102, 126, 234, 0.1);
         }
+
         .tool-config-toggle .icon {
             font-size: 0.9em;
         }
+
         .tool-inline-config {
             margin-left: 32px;
             margin-top: 8px;
@@ -583,6 +590,7 @@
             border-radius: 8px;
             border-left: 3px solid #667eea;
         }
+
         .inline-config-content {
             display: flex;
             flex-direction: column;
@@ -1138,12 +1146,14 @@
                     </div>
                     <ul class="toc-group-items">
                         <li class="toc-item">
-                            <a href="#device-discovery-settings" class="toc-link" data-section="device-discovery-settings">
+                            <a href="#device-discovery-settings" class="toc-link"
+                                data-section="device-discovery-settings">
                                 <span class="toc-icon icon-search"></span>Discovery & Connection
                             </a>
                         </li>
                         <li class="toc-item">
-                            <a href="#device-security-settings" class="toc-link" data-section="device-security-settings">
+                            <a href="#device-security-settings" class="toc-link"
+                                data-section="device-security-settings">
                                 <span class="toc-icon icon-lock"></span>Device Security
                             </a>
                         </li>
@@ -1240,14 +1250,16 @@
                         </div>
 
                         <div class="form-group">
-                            <label class="form-label" for="defaultPermissionLevel">Permission Level for New Sessions</label>
+                            <label class="form-label" for="defaultPermissionLevel">Permission Level for New
+                                Sessions</label>
                             <select class="form-select" id="defaultPermissionLevel" name="default_permission_level">
                                 <option value="Sandbox">Sandbox (Read-only)</option>
                                 <option value="Restricted" selected>Restricted (Ask before write)</option>
                                 <option value="Full">Full Access (Careful!)</option>
                             </select>
                             <div class="help-text">
-                                New chat sessions will inherit this permission level by default. You can override per-session in the chat settings panel.
+                                New chat sessions will inherit this permission level by default. You can override
+                                per-session in the chat settings panel.
                             </div>
                         </div>
                     </div>
@@ -1397,12 +1409,12 @@
                             <div class="provider-config-box">
                                 <div class="form-group">
                                     <label class="form-label" for="googleApiKey">API Key</label>
-                                    <input type="password" class="form-input" id="googleApiKey"
-                                        name="google_api_key" placeholder="AIza...">
+                                    <input type="password" class="form-input" id="googleApiKey" name="google_api_key"
+                                        placeholder="AIza...">
                                 </div>
                                 <div class="help-text">Get your API key from <a
-                                        href="https://console.cloud.google.com/apis/credentials"
-                                        target="_blank">Google Cloud Console</a></div>
+                                        href="https://console.cloud.google.com/apis/credentials" target="_blank">Google
+                                        Cloud Console</a></div>
                             </div>
                         </div>
 
@@ -2109,7 +2121,9 @@
                         <span class="icon icon-tools"></span>Built-in Tools
                     </div>
                     <div class="section-description">
-                        Built-in tools extend Gestura's capabilities beyond conversation. Each tool grants the AI specific permissions to interact with your system, files, or external services. Enable only the tools you need for your workflow.
+                        Built-in tools extend Gestura's capabilities beyond conversation. Each tool grants the AI
+                        specific permissions to interact with your system, files, or external services. Enable only the
+                        tools you need for your workflow.
                     </div>
 
                     <!-- Built-in Tools Configuration -->
@@ -2118,7 +2132,8 @@
                             <span class="icon icon-tools"></span>Tool Permissions
                         </div>
                         <div class="help-text" style="margin-bottom: 16px;">
-                            Control which tools the AI assistant can use. Disabling a tool prevents Gestura from performing those actions, even if requested.
+                            Control which tools the AI assistant can use. Disabling a tool prevents Gestura from
+                            performing those actions, even if requested.
                         </div>
 
                         <div class="checkbox-group">
@@ -2126,25 +2141,37 @@
                                 checked>
                             <div class="checkbox-label">
                                 File Access
-                                <div class="checkbox-description">Read, write, and list files within the session workspace. Respects sandbox boundaries—cannot access files outside the workspace without explicit permission. <span class="info-hint" title="File operations are scoped to the session workspace by default. The AI will ask for confirmation before writing or modifying files.">ℹ️</span></div>
+                                <div class="checkbox-description">Read, write, and list files within the session
+                                    workspace. Respects sandbox boundaries—cannot access files outside the workspace
+                                    without explicit permission. <span class="info-hint"
+                                        title="File operations are scoped to the session workspace by default. The AI will ask for confirmation before writing or modifying files.">ℹ️</span>
+                                </div>
                             </div>
                         </div>
 
                         <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="toolShellCommands" name="tool_shell_commands"
-                                checked>
+                            <input type="checkbox" class="form-checkbox" id="toolShellCommands"
+                                name="tool_shell_commands" checked>
                             <div class="checkbox-label">
                                 Shell Commands
-                                <div class="checkbox-description">Execute shell commands in a controlled environment. Commands run in the session workspace with configurable timeout limits. <span class="info-hint" title="Shell access is powerful—commands can modify system state. Commands are logged and can be reviewed. Consider disabling for untrusted tasks.">ℹ️</span></div>
+                                <div class="checkbox-description">Execute shell commands in a controlled environment.
+                                    Commands run in the session workspace with configurable timeout limits. <span
+                                        class="info-hint"
+                                        title="Shell access is powerful—commands can modify system state. Commands are logged and can be reviewed. Consider disabling for untrusted tasks.">ℹ️</span>
+                                </div>
                             </div>
                         </div>
 
                         <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="toolGitOperations" name="tool_git_operations"
-                                checked>
+                            <input type="checkbox" class="form-checkbox" id="toolGitOperations"
+                                name="tool_git_operations" checked>
                             <div class="checkbox-label">
                                 Git Operations
-                                <div class="checkbox-description">View git status, diffs, logs, and commit history. Supports code review workflows and understanding project history. <span class="info-hint" title="Git read operations are safe. Write operations (commit, push) require explicit confirmation.">ℹ️</span></div>
+                                <div class="checkbox-description">View git status, diffs, logs, and commit history.
+                                    Supports code review workflows and understanding project history. <span
+                                        class="info-hint"
+                                        title="Git read operations are safe. Write operations (commit, push) require explicit confirmation.">ℹ️</span>
+                                </div>
                             </div>
                         </div>
 
@@ -2153,16 +2180,20 @@
                                 checked>
                             <div class="checkbox-label">
                                 Code Analysis
-                                <div class="checkbox-description">Search, summarize, and inspect code across your project. Useful for understanding codebases, finding patterns, and exploring dependencies.</div>
+                                <div class="checkbox-description">Search, summarize, and inspect code across your
+                                    project. Useful for understanding codebases, finding patterns, and exploring
+                                    dependencies.</div>
                             </div>
                         </div>
 
                         <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="toolWeb" name="tool_web"
-                                checked>
+                            <input type="checkbox" class="form-checkbox" id="toolWeb" name="tool_web" checked>
                             <div class="checkbox-label">
                                 Web Fetch
-                                <div class="checkbox-description">Fetch and extract content from web pages. Enables reading documentation, articles, and online resources. <span class="info-hint" title="Performs HTTP requests to fetch page content. No data is sent to third-party APIs.">ℹ️</span></div>
+                                <div class="checkbox-description">Fetch and extract content from web pages. Enables
+                                    reading documentation, articles, and online resources. <span class="info-hint"
+                                        title="Performs HTTP requests to fetch page content. No data is sent to third-party APIs.">ℹ️</span>
+                                </div>
                             </div>
                         </div>
 
@@ -2171,8 +2202,13 @@
                                 checked>
                             <div class="checkbox-label">
                                 Web Search
-                                <div class="checkbox-description">Search the web using configurable providers (DuckDuckGo, Brave, SerpAPI). Find current information and research topics online. <span class="info-hint" title="Uses selected search provider. 'Local' mode uses DuckDuckGo HTML scraping (free, no API key). Other providers may require API keys and use quotas.">ℹ️</span></div>
-                                <button type="button" class="btn btn-sm btn-link tool-config-toggle" data-target="webSearchConfig">
+                                <div class="checkbox-description">Search the web using configurable providers
+                                    (DuckDuckGo, Brave, SerpAPI). Find current information and research topics online.
+                                    <span class="info-hint"
+                                        title="Uses selected search provider. 'Local' mode uses DuckDuckGo HTML scraping (free, no API key). Other providers may require API keys and use quotas.">ℹ️</span>
+                                </div>
+                                <button type="button" class="btn btn-sm btn-link tool-config-toggle"
+                                    data-target="webSearchConfig">
                                     <span class="icon icon-settings"></span> Configure
                                 </button>
                             </div>
@@ -2190,7 +2226,8 @@
                                         <option value="serpapi">SerpAPI (Requires API Key)</option>
                                     </select>
                                     <div class="help-text">
-                                        <strong>Local</strong> is the default and requires no setup - uses DuckDuckGo HTML scraping (completely free, no registration).
+                                        <strong>Local</strong> is the default and requires no setup - uses DuckDuckGo
+                                        HTML scraping (completely free, no registration).
                                         For more reliable results, consider Brave Search API (free tier available).
                                     </div>
                                 </div>
@@ -2199,10 +2236,11 @@
                                     <label class="form-label" for="braveSearchKey">
                                         Brave Search API Key <span class="label-hint">(optional)</span>
                                     </label>
-                                    <input type="password" class="form-input" id="braveSearchKey" name="brave_search_key"
-                                        placeholder="Enter your Brave Search API key">
+                                    <input type="password" class="form-input" id="braveSearchKey"
+                                        name="brave_search_key" placeholder="Enter your Brave Search API key">
                                     <div class="help-text">
-                                        Get a free API key at <a href="https://brave.com/search/api/" target="_blank">brave.com/search/api</a>.
+                                        Get a free API key at <a href="https://brave.com/search/api/"
+                                            target="_blank">brave.com/search/api</a>.
                                         Free tier: 2,000 queries/month.
                                     </div>
                                 </div>
@@ -2214,7 +2252,8 @@
                                     <input type="password" class="form-input" id="serpapiKey" name="serpapi_key"
                                         placeholder="Enter your SerpAPI key">
                                     <div class="help-text">
-                                        Get an API key at <a href="https://serpapi.com/" target="_blank">serpapi.com</a>.
+                                        Get an API key at <a href="https://serpapi.com/"
+                                            target="_blank">serpapi.com</a>.
                                         Free tier: 100 searches/month.
                                     </div>
                                 </div>
@@ -2222,8 +2261,8 @@
                                 <div class="form-row">
                                     <div class="form-group">
                                         <label class="form-label" for="maxSearchResults">Max Search Results</label>
-                                        <input type="number" class="form-input" id="maxSearchResults" name="max_search_results"
-                                            value="5" min="1" max="20">
+                                        <input type="number" class="form-input" id="maxSearchResults"
+                                            name="max_search_results" value="5" min="1" max="20">
                                         <div class="help-text">Number of search results to return (1-20)</div>
                                     </div>
 
@@ -2236,28 +2275,31 @@
                                 </div>
 
                                 <div class="checkbox-group">
-                                    <input type="checkbox" class="form-checkbox" id="extractContent" name="extract_content" checked>
+                                    <input type="checkbox" class="form-checkbox" id="extractContent"
+                                        name="extract_content" checked>
                                     <div class="checkbox-label">
                                         Extract content from search results
-                                        <div class="checkbox-description">Fetch and extract main content from search result pages (slower but more informative)</div>
+                                        <div class="checkbox-description">Fetch and extract main content from search
+                                            result pages (slower but more informative)</div>
                                     </div>
                                 </div>
 
                                 <div class="form-group">
-                                    <label class="form-label" for="maxContentLength">Max Content Length (characters)</label>
-                                    <input type="number" class="form-input" id="maxContentLength" name="max_content_length"
-                                        value="10000" min="1000" max="50000" step="1000">
+                                    <label class="form-label" for="maxContentLength">Max Content Length
+                                        (characters)</label>
+                                    <input type="number" class="form-input" id="maxContentLength"
+                                        name="max_content_length" value="10000" min="1000" max="50000" step="1000">
                                     <div class="help-text">Maximum content to extract from each page</div>
                                 </div>
                             </div>
                         </div>
 
                         <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="toolTask" name="tool_task"
-                                checked>
+                            <input type="checkbox" class="form-checkbox" id="toolTask" name="tool_task" checked>
                             <div class="checkbox-label">
                                 Task Management
-                                <div class="checkbox-description">Create, update, and organize tasks for the current session. Tasks are persisted locally and help track complex multi-step work.</div>
+                                <div class="checkbox-description">Create, update, and organize tasks for the current
+                                    session. Tasks are persisted locally and help track complex multi-step work.</div>
                             </div>
                         </div>
 
@@ -2265,7 +2307,10 @@
                             <input type="checkbox" class="form-checkbox" id="toolA2a" name="tool_a2a">
                             <div class="checkbox-label">
                                 Agent-to-Agent (A2A) <span class="badge badge-warning">Experimental</span>
-                                <div class="checkbox-description">Delegate tasks to remote AI agents using the A2A protocol. Enables collaboration between multiple AI systems. <span class="info-hint" title="Sends requests to external agent endpoints. Only enable if you understand the security implications of remote agent communication.">ℹ️</span></div>
+                                <div class="checkbox-description">Delegate tasks to remote AI agents using the A2A
+                                    protocol. Enables collaboration between multiple AI systems. <span class="info-hint"
+                                        title="Sends requests to external agent endpoints. Only enable if you understand the security implications of remote agent communication.">ℹ️</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -2276,7 +2321,8 @@
                             <span class="icon icon-sparkles"></span>Prompt Enhancement
                         </div>
                         <div class="help-text" style="margin-bottom: 16px;">
-                            AI-powered prompt enhancement helps improve your voice commands and conversations for better results. Use Cmd+K (or Ctrl+K) to enhance selected text.
+                            AI-powered prompt enhancement helps improve your voice commands and conversations for better
+                            results. Use Cmd+K (or Ctrl+K) to enhance selected text.
                         </div>
 
                         <div class="form-group">
@@ -2285,7 +2331,8 @@
                                 <span class="toggle-slider"></span>
                                 <span class="toggle-text">Auto-enhance prompts while typing</span>
                             </label>
-                            <div class="help-text">Automatically enhance prompts as you type (debounced, opt-in feature)</div>
+                            <div class="help-text">Automatically enhance prompts as you type (debounced, opt-in feature)
+                            </div>
                         </div>
 
                         <div class="form-group">
@@ -2299,7 +2346,8 @@
                         </div>
 
                         <div class="form-group">
-                            <label class="form-label" for="maxLengthMultiplier">Max Length Multiplier: <span id="maxLengthValue">3.0x</span></label>
+                            <label class="form-label" for="maxLengthMultiplier">Max Length Multiplier: <span
+                                    id="maxLengthValue">3.0x</span></label>
                             <input type="range" class="form-range" id="maxLengthMultiplier" name="max_length_multiplier"
                                 min="10" max="50" step="5" value="30">
                             <div class="help-text">Maximum expansion ratio for enhanced prompts (1.0x - 5.0x)</div>
@@ -2503,7 +2551,8 @@
                                 <option value="light">Light</option>
                                 <option value="dark">Dark</option>
                             </select>
-                            <div class="help-text">Choose how the application appearance adapts to your system theme</div>
+                            <div class="help-text">Choose how the application appearance adapts to your system theme
+                            </div>
                         </div>
                     </div>
 
@@ -2524,7 +2573,8 @@
                             <input type="checkbox" class="form-checkbox" id="devTools" name="dev_tools">
                             <div class="checkbox-label">
                                 Enable developer tools
-                                <div class="checkbox-description">Allow access to browser developer tools in windows</div>
+                                <div class="checkbox-description">Allow access to browser developer tools in windows
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -2641,6 +2691,84 @@
         const configForm = document.getElementById('configForm');
         const tocLinks = document.querySelectorAll('.toc-link');
         const configSections = document.querySelectorAll('.config-section');
+
+        // =====================================================================
+        // LLM model selection caching
+        // =====================================================================
+        // The config window dynamically refreshes model dropdowns when switching providers.
+        // Without a stable cache + stale-request protection, async refreshes can clobber
+        // the user’s selection (especially when switching providers quickly).
+        const llmModelSelectionCache = {
+            openai: null,
+            anthropic: null,
+            grok: null,
+            ollama: null,
+        };
+
+        function getModelSelectForLlmProvider(provider) {
+            const idByProvider = {
+                openai: 'openaiLlmModel',
+                anthropic: 'anthropicLlmModel',
+                grok: 'grokLlmModel',
+                ollama: 'ollamaModel',
+            };
+            const id = idByProvider[provider];
+            return id ? document.getElementById(id) : null;
+        }
+
+        function cacheLlmModelSelection(provider, model) {
+            if (!provider) return;
+            const m = (model || '').trim();
+            if (!m) return;
+            if (Object.prototype.hasOwnProperty.call(llmModelSelectionCache, provider)) {
+                llmModelSelectionCache[provider] = m;
+            }
+        }
+
+        function cacheLlmModelSelectionFromDom(provider) {
+            const select = getModelSelectForLlmProvider(provider);
+            if (select && select.value) {
+                cacheLlmModelSelection(provider, select.value);
+            }
+        }
+
+        function attachLlmModelSelectionListeners() {
+            ['openai', 'anthropic', 'grok', 'ollama'].forEach(provider => {
+                const select = getModelSelectForLlmProvider(provider);
+                if (!select) return;
+                if (select.dataset.modelCacheListenerAttached === 'true') return;
+                select.addEventListener('change', () => cacheLlmModelSelection(provider, select.value));
+                select.dataset.modelCacheListenerAttached = 'true';
+            });
+        }
+
+        function ensureSavedModelOption(selectEl, modelValue) {
+            const value = (modelValue || '').trim();
+            if (!selectEl || !value) return false;
+
+            const has = [...selectEl.options].some(o => o.value === value);
+            if (!has) {
+                const opt = document.createElement('option');
+                opt.value = value;
+                opt.textContent = `${value} (saved)`;
+                // Insert at the top so it stays selectable even if the API listing changes.
+                selectEl.insertBefore(opt, selectEl.firstChild);
+            }
+            selectEl.value = value;
+            return true;
+        }
+
+        function nextRefreshToken(key) {
+            window.__gesturaRefreshTokens = window.__gesturaRefreshTokens || {};
+            const tokens = window.__gesturaRefreshTokens;
+            tokens[key] = (tokens[key] || 0) + 1;
+            return tokens[key];
+        }
+
+        function isLatestRefreshToken(key, token) {
+            const tokens = window.__gesturaRefreshTokens || {};
+            return tokens[key] === token;
+        }
 
         // Custom modal confirm function (replaces browser's confirm() for better WebView compatibility)
         function showConfirmDialog(title, message) {
@@ -2889,8 +3017,11 @@
                 }
             }
 
-            // Listen for changes
-            sttProviderSelect.addEventListener('change', updateSttProviderVisibility);
+            // Listen for changes (idempotent: loadConfig() may call setup multiple times)
+            if (sttProviderSelect.dataset.visibilityListenerAttached !== 'true') {
+                sttProviderSelect.addEventListener('change', updateSttProviderVisibility);
+                sttProviderSelect.dataset.visibilityListenerAttached = 'true';
+            }
 
             // Set initial visibility
             updateSttProviderVisibility();
@@ -2900,9 +3031,21 @@
         function setupLlmProviderVisibility() {
             const llmProviderSelect = document.getElementById('llmProvider');
             if (!llmProviderSelect) return;
+            // Persist last-provider across repeated setup calls. loadConfig() may call setup again,
+            // but the change listener closure is attached only once.
+            if (!llmProviderSelect.dataset.lastProvider) {
+                llmProviderSelect.dataset.lastProvider = llmProviderSelect.value || '';
+            }
 
             function updateLlmProviderVisibility() {
                 const provider = llmProviderSelect.value;
+                const lastProvider = llmProviderSelect.dataset.lastProvider || '';
+
+                // Cache the model selection for the provider we’re leaving.
+                if (lastProvider && lastProvider !== provider) {
+                    cacheLlmModelSelectionFromDom(lastProvider);
+                }
+                llmProviderSelect.dataset.lastProvider = provider;
 
                 // Hide all provider config sections
                 document.querySelectorAll('#openaiLlmConfig, #anthropicLlmConfig, #grokLlmConfig, #ollamaLlmConfig')
@@ -2938,8 +3081,11 @@
                 }
             }
 
-            // Listen for changes
-            llmProviderSelect.addEventListener('change', updateLlmProviderVisibility);
+            // Listen for changes (idempotent: loadConfig() may call setup multiple times)
+            if (llmProviderSelect.dataset.visibilityListenerAttached !== 'true') {
+                llmProviderSelect.addEventListener('change', updateLlmProviderVisibility);
+                llmProviderSelect.dataset.visibilityListenerAttached = 'true';
+            }
 
             // Set initial visibility
             updateLlmProviderVisibility();
@@ -2968,8 +3114,11 @@
                 }
             }
 
-            // Listen for changes
-            webSearchProviderSelect.addEventListener('change', updateWebSearchProviderVisibility);
+            // Listen for changes (idempotent: loadConfig() may call setup multiple times)
+            if (webSearchProviderSelect.dataset.visibilityListenerAttached !== 'true') {
+                webSearchProviderSelect.addEventListener('change', updateWebSearchProviderVisibility);
+                webSearchProviderSelect.dataset.visibilityListenerAttached = 'true';
+            }
 
             // Set initial visibility
             updateWebSearchProviderVisibility();
@@ -2997,7 +3146,7 @@
                 if (isTauriAvailable()) {
                     try {
                         backendConfig = await window.__TAURI__.core.invoke('get_config');
-                        console.log('Loaded config from backend:', backendConfig);
+                        // NOTE: do not log config objects (they may contain sensitive data in older builds).
                     } catch (e) {
                         console.warn('Failed to load config from backend, using defaults:', e);
                     }
@@ -3019,32 +3168,37 @@
 
                 // OpenAI LLM settings
                 const openaiLlmApiKey = document.getElementById('openaiLlmApiKey');
-                if (openaiLlmApiKey) openaiLlmApiKey.value = llmConfig?.openai?.api_key || '';
+                // Never populate API keys from config. Keys live in OS secure storage.
+                if (openaiLlmApiKey) openaiLlmApiKey.value = '';
                 const openaiLlmModel = document.getElementById('openaiLlmModel');
                 if (openaiLlmModel) openaiLlmModel.value = llmConfig?.openai?.model || 'gpt-4o';
                 // Store for later selection after dynamic models are loaded
                 if (llmConfig?.openai?.model) {
                     window._savedOpenAIModel = llmConfig.openai.model;
+                    cacheLlmModelSelection('openai', llmConfig.openai.model);
                 }
 
                 // Anthropic settings
                 const anthropicApiKey = document.getElementById('anthropicApiKey');
-                if (anthropicApiKey) anthropicApiKey.value = llmConfig?.anthropic?.api_key || '';
+                if (anthropicApiKey) anthropicApiKey.value = '';
                 const anthropicLlmModel = document.getElementById('anthropicLlmModel');
+                // Note: Default matches gestura_core::DEFAULT_ANTHROPIC_MODEL
                 if (anthropicLlmModel) anthropicLlmModel.value = llmConfig?.anthropic?.model || 'claude-sonnet-4-20250514';
                 // Store for later selection after dynamic models are loaded
                 if (llmConfig?.anthropic?.model) {
                     window._savedAnthropicModel = llmConfig.anthropic.model;
+                    cacheLlmModelSelection('anthropic', llmConfig.anthropic.model);
                 }
 
                 // Grok settings
                 const grokApiKey = document.getElementById('grokApiKey');
-                if (grokApiKey) grokApiKey.value = llmConfig?.grok?.api_key || '';
+                if (grokApiKey) grokApiKey.value = '';
                 const grokLlmModel = document.getElementById('grokLlmModel');
                 if (grokLlmModel) grokLlmModel.value = llmConfig?.grok?.model || 'grok-3';
                 // Store saved model for restoration after dynamic loading
                 if (llmConfig?.grok?.model) {
                     window._savedGrokModel = llmConfig.grok.model;
+                    cacheLlmModelSelection('grok', llmConfig.grok.model);
                 }
 
                 // Ollama settings
@@ -3054,6 +3208,7 @@
                 if (savedOllamaModel) {
                     // Store for later selection after models are loaded
                     window._savedOllamaModel = savedOllamaModel;
+                    cacheLlmModelSelection('ollama', savedOllamaModel);
                 }
 
                 // Load voice/STT settings
@@ -3070,9 +3225,10 @@
 
                 // OpenAI STT API key (separate from LLM)
                 const openaiApiKey = document.getElementById('openaiApiKey');
-                if (openaiApiKey) openaiApiKey.value = voiceConfig?.openai_api_key || '';
+                if (openaiApiKey) openaiApiKey.value = '';
 
                 // OpenAI STT model selection
+                // Note: Default matches gestura_core::DEFAULT_OPENAI_STT_MODEL
                 const savedSttModel = voiceConfig?.openai_model || 'gpt-4o-transcribe';
                 const sttModelSelect = document.getElementById('openaiSttModel');
                 if (sttModelSelect) {
@@ -3181,8 +3337,9 @@
                 // Web Search defaults (load from backend config if available)
                 const webSearchConfig = backendConfig?.web_search;
                 document.getElementById('webSearchProvider').value = webSearchConfig?.provider || 'local';
-                document.getElementById('braveSearchKey').value = webSearchConfig?.brave_key || '';
-                document.getElementById('serpapiKey').value = webSearchConfig?.serpapi_key || '';
+                // Never populate API keys from config. Keys live in OS secure storage.
+                document.getElementById('braveSearchKey').value = '';
+                document.getElementById('serpapiKey').value = '';
                 document.getElementById('maxSearchResults').value = webSearchConfig?.max_results || 5;
                 document.getElementById('searchTimeout').value = webSearchConfig?.timeout_secs || 30;
                 document.getElementById('extractContent').checked = webSearchConfig?.extract_content !== false;
@@ -3265,66 +3422,115 @@
                     }
                 });
 
-                // Build LLM settings based on selected provider
+                // Provider/model persistence:
+                // - API keys may be stored in OS secure storage and *not* present in the form.
+                // - We should never drop provider configs just because the API key input is empty.
+                // - We should also avoid overwriting a saved model with hard-coded defaults when the
+                //   dropdown is temporarily empty (e.g. still loading).
                 const llmProvider = config.llm_provider || 'anthropic';
-                const llmSettings = {
-                    primary: llmProvider,
-                    openai: null,
-                    anthropic: null,
-                    grok: null,
-                    ollama: null
-                };
+                let secretStoreFailed = false;
 
-                // Save ALL provider configs, not just the selected one
-                // This ensures API keys are preserved when switching providers
+                // =============================================================
+                // Secret handling (keychain-only)
+                // =============================================================
+                // Store any newly-entered API keys into OS secure storage and
+                // NEVER include them in the AppConfig payload persisted to YAML.
+                if (isTauriAvailable()) {
+                    const secretStores = [];
 
-                // OpenAI config
-                const openaiApiKey = document.getElementById('openaiLlmApiKey')?.value || '';
-                const openaiModel = document.getElementById('openaiLlmModel')?.value || 'gpt-4o';
-                if (openaiApiKey) {
-                    llmSettings.openai = {
-                        api_key: openaiApiKey,
-                        base_url: null,
-                        model: openaiModel
-                    };
+                    const openaiLlmKey = (document.getElementById('openaiLlmApiKey')?.value || '').trim();
+                    const anthropicKey = (document.getElementById('anthropicApiKey')?.value || '').trim();
+                    const grokKey = (document.getElementById('grokApiKey')?.value || '').trim();
+                    const openaiSttKey = (document.getElementById('openaiApiKey')?.value || '').trim();
+                    const braveKey = (document.getElementById('braveSearchKey')?.value || '').trim();
+                    const serpapiKey = (document.getElementById('serpapiKey')?.value || '').trim();
+
+                    if (openaiLlmKey) secretStores.push({ provider: 'openai', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'openai', api_key: openaiLlmKey }) });
+                    if (anthropicKey) secretStores.push({ provider: 'anthropic', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'anthropic', api_key: anthropicKey }) });
+                    if (grokKey) secretStores.push({ provider: 'grok', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'grok', api_key: grokKey }) });
+                    if (openaiSttKey) secretStores.push({ provider: 'voice_openai', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'voice_openai', api_key: openaiSttKey }) });
+                    if (braveKey) secretStores.push({ provider: 'brave', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'brave', api_key: braveKey }) });
+                    if (serpapiKey) secretStores.push({ provider: 'serpapi', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'serpapi', api_key: serpapiKey }) });
+
+                    // Best-effort: store in parallel.
+                    if (secretStores.length > 0) {
+                        const results = await Promise.allSettled(secretStores.map(s => s.promise));
+                        const failedProviders = [];
+                        results.forEach((r, idx) => {
+                            if (r.status === 'rejected') failedProviders.push(secretStores[idx].provider);
+                        });
+
+                        if (failedProviders.length > 0) {
+                            secretStoreFailed = true;
+                            // Do not log secrets; provider names are fine.
+                            console.error('Failed to store one or more API keys in secure storage for providers:', failedProviders);
+                            showStatus('One or more API keys failed to store in secure storage. Please retry.', 'error');
+                        } else {
+                            // Clear password inputs after successful secure-storage write.
+                            if (document.getElementById('openaiLlmApiKey')) document.getElementById('openaiLlmApiKey').value = '';
+                            if (document.getElementById('anthropicApiKey')) document.getElementById('anthropicApiKey').value = '';
+                            if (document.getElementById('grokApiKey')) document.getElementById('grokApiKey').value = '';
+                            if (document.getElementById('openaiApiKey')) document.getElementById('openaiApiKey').value = '';
+                            if (document.getElementById('braveSearchKey')) document.getElementById('braveSearchKey').value = '';
+                            if (document.getElementById('serpapiKey')) document.getElementById('serpapiKey').value = '';
+                        }
+                    }
                 }
+
+                // Get the current config first so we can preserve provider configs and only patch fields.
+                const currentConfig = await window.__TAURI__.core.invoke('get_config');
+                currentConfig.llm = currentConfig.llm || {};
+                const llmSettings = currentConfig.llm;
+                llmSettings.primary = llmProvider;
+
+                // OpenAI config: always keep object so model persists even if API key is stored securely.
+                const openaiApiKey = (document.getElementById('openaiLlmApiKey')?.value || '').trim();
+                const openaiModelSelected = ((document.getElementById('openaiLlmModel')?.value || '').trim()) || (llmModelSelectionCache.openai || '').trim();
+                const openaiModel = openaiModelSelected || llmSettings.openai?.model || 'gpt-4o';
+                llmSettings.openai = llmSettings.openai || { api_key: '', base_url: null, model: openaiModel };
+                llmSettings.openai.model = openaiModel;
+                cacheLlmModelSelection('openai', openaiModel);
+                // Never persist/send secrets via config objects.
+                llmSettings.openai.api_key = '';
+                if (typeof llmSettings.openai.base_url === 'undefined') llmSettings.openai.base_url = null;
 
                 // Anthropic config
-                const anthropicApiKey = document.getElementById('anthropicApiKey')?.value || '';
-                const anthropicModel = document.getElementById('anthropicLlmModel')?.value || 'claude-sonnet-4-20250514';
-                if (anthropicApiKey) {
-                    llmSettings.anthropic = {
-                        api_key: anthropicApiKey,
-                        base_url: null,
-                        model: anthropicModel
-                    };
-                }
+                const anthropicApiKey = (document.getElementById('anthropicApiKey')?.value || '').trim();
+                const anthropicModelSelected = ((document.getElementById('anthropicLlmModel')?.value || '').trim()) || (llmModelSelectionCache.anthropic || '').trim();
+                // Note: Default matches gestura_core::DEFAULT_ANTHROPIC_MODEL
+                const anthropicModel = anthropicModelSelected || llmSettings.anthropic?.model || 'claude-sonnet-4-20250514';
+                llmSettings.anthropic = llmSettings.anthropic || { api_key: '', base_url: null, model: anthropicModel };
+                llmSettings.anthropic.model = anthropicModel;
+                cacheLlmModelSelection('anthropic', anthropicModel);
+                llmSettings.anthropic.api_key = '';
+                if (typeof llmSettings.anthropic.base_url === 'undefined') llmSettings.anthropic.base_url = null;
 
-                // Grok config
-                const grokApiKey = document.getElementById('grokApiKey')?.value || '';
-                const grokModel = document.getElementById('grokLlmModel')?.value || 'grok-2';
-                if (grokApiKey) {
-                    llmSettings.grok = {
-                        api_key: grokApiKey,
-                        base_url: null,
-                        model: grokModel
-                    };
-                }
+                // Grok config (default matches gestura-core)
+                const grokApiKey = (document.getElementById('grokApiKey')?.value || '').trim();
+                const grokModelSelected = ((document.getElementById('grokLlmModel')?.value || '').trim()) || (llmModelSelectionCache.grok || '').trim();
+                const grokModel = grokModelSelected || llmSettings.grok?.model || 'grok-3';
+                llmSettings.grok = llmSettings.grok || { api_key: '', base_url: null, model: grokModel };
+                llmSettings.grok.model = grokModel;
+                cacheLlmModelSelection('grok', grokModel);
+                llmSettings.grok.api_key = '';
+                if (typeof llmSettings.grok.base_url === 'undefined') llmSettings.grok.base_url = null;
 
-                // Ollama config (always save since it doesn't require API key)
-                const ollamaBaseUrl = document.getElementById('localLlmEndpoint')?.value || 'http://localhost:11434';
-                const ollamaModel = document.getElementById('ollamaModel')?.value || 'llama3.2';
-                llmSettings.ollama = {
-                    base_url: ollamaBaseUrl,
-                    model: ollamaModel
-                };
+                // Ollama config (doesn't require API key)
+                const ollamaBaseUrl = (document.getElementById('localLlmEndpoint')?.value || '').trim() || llmSettings.ollama?.base_url || 'http://localhost:11434';
+                const ollamaModelSelected = ((document.getElementById('ollamaModel')?.value || '').trim()) || (llmModelSelectionCache.ollama || '').trim();
+                const ollamaModel = ollamaModelSelected || llmSettings.ollama?.model || 'llama3.2';
+                llmSettings.ollama = llmSettings.ollama || { base_url: ollamaBaseUrl, model: ollamaModel };
+                llmSettings.ollama.base_url = ollamaBaseUrl;
+                llmSettings.ollama.model = ollamaModel;
+                cacheLlmModelSelection('ollama', ollamaModel);
 
                 // Handle speech configuration separately
                 const speechConfig = {
                     stt_provider: config.stt_provider || 'openai-whisper',
                     llm_provider: llmProvider,
-                    openai_api_key: config.openai_api_key || '',
-                    anthropic_api_key: config.anthropic_api_key || '',
+                    // Do not pass secrets over IPC. Backend will hydrate from keychain.
+                    openai_api_key: '',
+                    anthropic_api_key: '',
                     google_api_key: config.google_api_key || '',
                     azure_api_key: config.azure_api_key || '',
                     local_llm_endpoint: config.local_llm_endpoint || 'http://localhost:11434',
@@ -3337,21 +3543,20 @@
                 // Update speech configuration
                 try {
                     await window.__TAURI__.core.invoke('update_speech_config', { config: speechConfig });
-                    console.log('Speech configuration updated:', speechConfig);
+                    // Intentionally avoid logging speechConfig (may include sensitive fields).
                 } catch (error) {
                     console.error('Failed to update speech config:', error);
                 }
 
                 // Save the full app configuration including LLM settings
                 try {
-                    // First get the current config to preserve other settings
-                    const currentConfig = await window.__TAURI__.core.invoke('get_config');
-
-                    // Update with new LLM settings
+                    // currentConfig was loaded above; llmSettings is a patched view of currentConfig.llm.
                     currentConfig.llm = llmSettings;
 
                     // Ensure voice config exists
                     currentConfig.voice = currentConfig.voice || {};
+                    // Never persist plaintext voice key.
+                    currentConfig.voice.openai_api_key = null;
 
                     // Keep voice.provider in sync with the selected STT provider
                     const selectedSttProvider = config.stt_provider || 'openai-whisper';
@@ -3373,8 +3578,9 @@
                     // Update web search configuration
                     currentConfig.web_search = {
                         provider: document.getElementById('webSearchProvider')?.value || 'local',
-                        brave_key: document.getElementById('braveSearchKey')?.value || null,
-                        serpapi_key: document.getElementById('serpapiKey')?.value || null,
+                        // Never persist plaintext keys.
+                        brave_key: null,
+                        serpapi_key: null,
                         max_results: parseInt(document.getElementById('maxSearchResults')?.value) || 5,
                         timeout_secs: parseInt(document.getElementById('searchTimeout')?.value) || 30,
                         extract_content: document.getElementById('extractContent')?.checked !== false,
@@ -3385,12 +3591,17 @@
 
                     // Save the updated config
                     await window.__TAURI__.core.invoke('save_config', { cfg: currentConfig });
-                    console.log('App configuration saved:', currentConfig);
+                    // Do not log config objects.
                 } catch (error) {
                     console.error('Failed to save app config:', error);
+                    throw error;
                 }
 
-                showStatus('Configuration saved successfully');
+                if (secretStoreFailed) {
+                    showStatus('Configuration saved, but one or more API keys failed to store. Please retry.', 'error');
+                } else {
+                    showStatus('Configuration saved successfully');
+                }
             } catch (error) {
                 console.error('Failed to save config:', error);
                 showStatus(`Failed to save configuration: ${error.message}`, 'error');
@@ -3691,11 +3902,13 @@
 
             const endpoint = document.getElementById('localLlmEndpoint').value;
             const modelSelect = document.getElementById('ollamaModel');
-            const currentValue = modelSelect.value;
+            const token = nextRefreshToken('ollamaModels');
+            const preferredValue = (llmModelSelectionCache.ollama || modelSelect.value || window._savedOllamaModel || '').trim();
 
             try {
                 setDropdownLoading('ollamaModel', true);
                 const models = await window.__TAURI__.core.invoke('list_ollama_models', { endpoint });
+                if (!isLatestRefreshToken('ollamaModels', token)) return;
                 modelSelect.innerHTML = '<option value="">Select a model...</option>';
                 models.forEach(model => {
                     const sizeMB = (model.size / 1000000).toFixed(0);
@@ -3705,19 +3918,25 @@
                     modelSelect.appendChild(option);
                 });
 
-                // Restore previous selection if still available
-                if (currentValue && [...modelSelect.options].some(o => o.value === currentValue)) {
-                    modelSelect.value = currentValue;
-                } else if (window._savedOllamaModel && [...modelSelect.options].some(o => o.value === window._savedOllamaModel)) {
-                    // Restore saved model from config
-                    modelSelect.value = window._savedOllamaModel;
-                    delete window._savedOllamaModel;
+                // Restore cached/saved selection (even if it's not in the fetched list).
+                if (preferredValue) {
+                    ensureSavedModelOption(modelSelect, preferredValue);
+                    cacheLlmModelSelection('ollama', preferredValue);
+                    if (window._savedOllamaModel === preferredValue) delete window._savedOllamaModel;
                 }
             } catch (error) {
+                if (!isLatestRefreshToken('ollamaModels', token)) return;
                 console.error('Failed to list Ollama models:', error);
-                modelSelect.innerHTML = '<option value="">Failed to load models</option>';
+                modelSelect.innerHTML = '';
+                if (preferredValue) {
+                    ensureSavedModelOption(modelSelect, preferredValue);
+                } else {
+                    modelSelect.innerHTML = '<option value="">Failed to load models</option>';
+                }
             } finally {
-                setDropdownLoading('ollamaModel', false);
+                if (isLatestRefreshToken('ollamaModels', token)) {
+                    setDropdownLoading('ollamaModel', false);
+                }
             }
         }
 
@@ -3725,151 +3944,213 @@
 
         // Refresh OpenAI models dynamically
         async function refreshOpenAIModels() {
-	            clearDropdownError('openaiLlmModel');
+            clearDropdownError('openaiLlmModel');
             if (!isTauriAvailable()) {
                 console.warn('Tauri API not available - cannot refresh OpenAI models');
                 setDropdownLoading('openaiLlmModel', false);
                 return;
             }
 
-            const apiKey = document.getElementById('openaiLlmApiKey')?.value;
-            if (!apiKey || apiKey.trim() === '') {
-                console.log('No OpenAI API key provided - using static model list');
-                setDropdownLoading('openaiLlmModel', false);
-                return;
-            }
-
             const modelSelect = document.getElementById('openaiLlmModel');
-            const currentValue = modelSelect.value;
+            const token = nextRefreshToken('openaiModels');
+            const preferredValue = (llmModelSelectionCache.openai || modelSelect.value || window._savedOpenAIModel || '').trim();
+
+            // Get API key from input field or keychain
+            const apiKeyInput = document.getElementById('openaiLlmApiKey');
+            const apiKey = (apiKeyInput?.value || '').trim();
 
             try {
                 setDropdownLoading('openaiLlmModel', true);
 
-	                const models = await window.__TAURI__.core.invoke('list_openai_models', { api_key: apiKey });
+                // Check if API key exists (either in input or keychain)
+                const hasKey = apiKey.length > 0 || await window.__TAURI__.core.invoke('has_api_key', { provider: 'openai' });
+
+                if (!hasKey) {
+                    // No API key available - show placeholder message
+                    modelSelect.innerHTML = '<option value="">Enter API key to load models</option>';
+                    modelSelect.disabled = true;
+                    setDropdownError('openaiLlmModel', 'Enter your OpenAI API key above to load available models.');
+                    return;
+                }
+
+                // API key exists - fetch models
+                const models = await window.__TAURI__.core.invoke('list_openai_models', { api_key: apiKey });
+                if (!isLatestRefreshToken('openaiModels', token)) return;
+
+                modelSelect.disabled = false;
                 modelSelect.innerHTML = '';
 
-	                if (!Array.isArray(models) || models.length === 0) {
-	                    setDropdownError('openaiLlmModel', 'OpenAI returned no models. Verify the API key and account permissions.');
-	                    return;
-	                } else {
+                if (!Array.isArray(models) || models.length === 0) {
+                    setDropdownError('openaiLlmModel', 'OpenAI returned no models. Verify the API key and account permissions.');
+                    return;
+                } else {
                     models.forEach(model => {
                         const option = document.createElement('option');
                         option.value = model.id;
-	                        option.textContent = model.name || model.id;
+                        option.textContent = model.name || model.id;
                         modelSelect.appendChild(option);
                     });
                 }
 
-                // Restore previous selection if still available
-                if (currentValue && [...modelSelect.options].some(o => o.value === currentValue)) {
-                    modelSelect.value = currentValue;
-                } else if (window._savedOpenAIModel && [...modelSelect.options].some(o => o.value === window._savedOpenAIModel)) {
-                    modelSelect.value = window._savedOpenAIModel;
-                    delete window._savedOpenAIModel;
+                // Restore cached/saved selection (even if it's not in the fetched list).
+                if (preferredValue) {
+                    ensureSavedModelOption(modelSelect, preferredValue);
+                    cacheLlmModelSelection('openai', preferredValue);
+                    if (window._savedOpenAIModel === preferredValue) delete window._savedOpenAIModel;
                 }
             } catch (error) {
+                if (!isLatestRefreshToken('openaiModels', token)) return;
                 console.error('Failed to list OpenAI models:', error);
-	                setDropdownError('openaiLlmModel', `Failed to load OpenAI models: ${error}`);
+                setDropdownError('openaiLlmModel', `Failed to load OpenAI models: ${error}`);
+                if (preferredValue) {
+                    modelSelect.innerHTML = '';
+                    ensureSavedModelOption(modelSelect, preferredValue);
+                }
             } finally {
-                setDropdownLoading('openaiLlmModel', false);
+                if (isLatestRefreshToken('openaiModels', token)) {
+                    setDropdownLoading('openaiLlmModel', false);
+                }
             }
         }
 
         // Refresh Anthropic models dynamically
         async function refreshAnthropicModels() {
-	            clearDropdownError('anthropicLlmModel');
+            clearDropdownError('anthropicLlmModel');
             if (!isTauriAvailable()) {
                 console.warn('Tauri API not available - cannot refresh Anthropic models');
                 setDropdownLoading('anthropicLlmModel', false);
                 return;
             }
 
-            const apiKey = document.getElementById('anthropicApiKey')?.value;
-            if (!apiKey || apiKey.trim() === '') {
-                console.log('No Anthropic API key provided - using static model list');
-                setDropdownLoading('anthropicLlmModel', false);
-                return;
-            }
-
             const modelSelect = document.getElementById('anthropicLlmModel');
-            const currentValue = modelSelect.value;
+            const token = nextRefreshToken('anthropicModels');
+            const preferredValue = (llmModelSelectionCache.anthropic || modelSelect.value || window._savedAnthropicModel || '').trim();
+
+            // Get API key from input field or keychain
+            const apiKeyInput = document.getElementById('anthropicApiKey');
+            const apiKey = (apiKeyInput?.value || '').trim();
 
             try {
                 setDropdownLoading('anthropicLlmModel', true);
 
-	                const models = await window.__TAURI__.core.invoke('list_anthropic_models', { api_key: apiKey });
+                // Check if API key exists (either in input or keychain)
+                const hasKey = apiKey.length > 0 || await window.__TAURI__.core.invoke('has_api_key', { provider: 'anthropic' });
+
+                if (!hasKey) {
+                    // No API key available - show placeholder message
+                    modelSelect.innerHTML = '<option value="">Enter API key to load models</option>';
+                    modelSelect.disabled = true;
+                    setDropdownError('anthropicLlmModel', 'Enter your Anthropic API key above to load available models.');
+                    return;
+                }
+
+                // API key exists - fetch models
+                const models = await window.__TAURI__.core.invoke('list_anthropic_models', { api_key: apiKey });
+                if (!isLatestRefreshToken('anthropicModels', token)) return;
+
+                modelSelect.disabled = false;
                 modelSelect.innerHTML = '';
 
-	                if (!Array.isArray(models) || models.length === 0) {
-	                    setDropdownError('anthropicLlmModel', 'Anthropic returned no models. Verify the API key and account permissions.');
-	                    return;
-	                } else {
+                if (!Array.isArray(models) || models.length === 0) {
+                    setDropdownError('anthropicLlmModel', 'Anthropic returned no models. Verify the API key and account permissions.');
+                    return;
+                } else {
                     models.forEach(model => {
                         const option = document.createElement('option');
                         option.value = model.id;
-	                        option.textContent = model.name || model.id;
+                        option.textContent = model.name || model.id;
                         modelSelect.appendChild(option);
                     });
                 }
 
-                // Restore previous selection if still available
-                if (currentValue && [...modelSelect.options].some(o => o.value === currentValue)) {
-                    modelSelect.value = currentValue;
-                } else if (window._savedAnthropicModel && [...modelSelect.options].some(o => o.value === window._savedAnthropicModel)) {
-                    modelSelect.value = window._savedAnthropicModel;
-                    delete window._savedAnthropicModel;
+                // Restore cached/saved selection (even if it's not in the fetched list).
+                if (preferredValue) {
+                    ensureSavedModelOption(modelSelect, preferredValue);
+                    cacheLlmModelSelection('anthropic', preferredValue);
+                    if (window._savedAnthropicModel === preferredValue) delete window._savedAnthropicModel;
                 }
             } catch (error) {
+                if (!isLatestRefreshToken('anthropicModels', token)) return;
                 console.error('Failed to list Anthropic models:', error);
-	                setDropdownError('anthropicLlmModel', `Failed to load Anthropic models: ${error}`);
+                setDropdownError('anthropicLlmModel', `Failed to load Anthropic models: ${error}`);
+                if (preferredValue) {
+                    modelSelect.innerHTML = '';
+                    ensureSavedModelOption(modelSelect, preferredValue);
+                }
             } finally {
-                setDropdownLoading('anthropicLlmModel', false);
+                if (isLatestRefreshToken('anthropicModels', token)) {
+                    setDropdownLoading('anthropicLlmModel', false);
+                }
             }
         }
 
         // Load Grok models dynamically from xAI API
         async function loadGrokModels() {
-	            clearDropdownError('grokLlmModel');
+            clearDropdownError('grokLlmModel');
             if (!isTauriAvailable()) {
                 setDropdownLoading('grokLlmModel', false);
                 return;
             }
 
             const modelSelect = document.getElementById('grokLlmModel');
+            const token = nextRefreshToken('grokModels');
+            const preferredValue = (llmModelSelectionCache.grok || modelSelect.value || window._savedGrokModel || '').trim();
+
+            // Get API key from input field or keychain
             const apiKeyInput = document.getElementById('grokApiKey');
-            const currentValue = modelSelect.value;
-            const apiKey = apiKeyInput?.value || '';
+            const apiKey = (apiKeyInput?.value || '').trim();
 
             try {
                 setDropdownLoading('grokLlmModel', true);
-	            	const models = await window.__TAURI__.core.invoke('list_grok_models', { api_key: apiKey });
+
+                // Check if API key exists (either in input or keychain)
+                const hasKey = apiKey.length > 0 || await window.__TAURI__.core.invoke('has_api_key', { provider: 'grok' });
+
+                if (!hasKey) {
+                    // No API key available - show placeholder message
+                    modelSelect.innerHTML = '<option value="">Enter API key to load models</option>';
+                    modelSelect.disabled = true;
+                    setDropdownError('grokLlmModel', 'Enter your Grok API key above to load available models.');
+                    return;
+                }
+
+                // API key exists - fetch models
+                const models = await window.__TAURI__.core.invoke('list_grok_models', { api_key: apiKey });
+                if (!isLatestRefreshToken('grokModels', token)) return;
+
+                modelSelect.disabled = false;
                 modelSelect.innerHTML = '';
-	
-	                if (!Array.isArray(models) || models.length === 0) {
-	                    setDropdownError('grokLlmModel', 'Grok returned no models. Verify the API key (if required) and connectivity.');
-	                    return;
-	                }
+
+                if (!Array.isArray(models) || models.length === 0) {
+                    setDropdownError('grokLlmModel', 'Grok returned no models. Verify the API key and connectivity.');
+                    return;
+                }
 
                 models.forEach(model => {
                     const option = document.createElement('option');
                     option.value = model.id;
-	                    option.textContent = model.name || model.id;
+                    option.textContent = model.name || model.id;
                     modelSelect.appendChild(option);
                 });
 
-                // Restore previous selection or saved model
-                const savedModel = window._savedGrokModel;
-                if (savedModel && [...modelSelect.options].some(o => o.value === savedModel)) {
-                    modelSelect.value = savedModel;
-                    window._savedGrokModel = null;
-                } else if (currentValue && [...modelSelect.options].some(o => o.value === currentValue)) {
-                    modelSelect.value = currentValue;
+                // Restore cached/saved selection (even if it's not in the fetched list).
+                if (preferredValue) {
+                    ensureSavedModelOption(modelSelect, preferredValue);
+                    cacheLlmModelSelection('grok', preferredValue);
+                    if (window._savedGrokModel === preferredValue) window._savedGrokModel = null;
                 }
             } catch (error) {
+                if (!isLatestRefreshToken('grokModels', token)) return;
                 console.error('Failed to load Grok models:', error);
-	                setDropdownError('grokLlmModel', `Failed to load Grok models: ${error}`);
+                setDropdownError('grokLlmModel', `Failed to load Grok models: ${error}`);
+                if (preferredValue) {
+                    modelSelect.innerHTML = '';
+                    ensureSavedModelOption(modelSelect, preferredValue);
+                }
             } finally {
-                setDropdownLoading('grokLlmModel', false);
+                if (isLatestRefreshToken('grokModels', token)) {
+                    setDropdownLoading('grokLlmModel', false);
+                }
             }
         }
 
@@ -3985,14 +4266,29 @@
             const statusSpan = document.getElementById('sttModelStatus');
             const apiKeyInput = document.getElementById('openaiApiKey') || document.getElementById('openaiLlmApiKey');
             const currentValue = modelSelect?.value;
-            const apiKey = apiKeyInput?.value || '';
+            const apiKey = (apiKeyInput?.value || '').trim();
 
             if (!modelSelect) return;
 
             try {
                 setDropdownLoading('openaiSttModel', true);
                 if (statusSpan) statusSpan.textContent = 'Loading models...';
-	                const models = await window.__TAURI__.core.invoke('list_openai_stt_models', { api_key: apiKey });
+
+                // Check if API key exists (either in input or keychain)
+                const hasKey = apiKey.length > 0 || await window.__TAURI__.core.invoke('has_api_key', { provider: 'openai' });
+
+                if (!hasKey) {
+                    // No API key available - show placeholder message
+                    modelSelect.innerHTML = '<option value="">Enter API key to load models</option>';
+                    modelSelect.disabled = true;
+                    if (statusSpan) statusSpan.textContent = '(API key required)';
+                    return;
+                }
+
+                // API key exists - fetch models
+                const models = await window.__TAURI__.core.invoke('list_openai_stt_models', { api_key: apiKey });
+
+                modelSelect.disabled = false;
                 modelSelect.innerHTML = '';
 
                 models.forEach(model => {
@@ -4017,13 +4313,13 @@
                 if (statusSpan) statusSpan.textContent = '';
             } catch (error) {
                 console.error('Failed to load OpenAI STT models:', error);
-                if (statusSpan) statusSpan.textContent = '(Using default models)';
-                // Fallback to static list
-                modelSelect.innerHTML = `
-                    <option value="gpt-4o-transcribe">GPT-4o Transcribe (Best)</option>
-                    <option value="gpt-4o-mini-transcribe">GPT-4o Mini Transcribe</option>
-                    <option value="whisper-1">Whisper V2</option>
-                `;
+                if (statusSpan) statusSpan.textContent = '(Error loading models)';
+                // Show error message
+                if (currentValue) {
+                    modelSelect.innerHTML = `<option value="${currentValue}">${currentValue}</option>`;
+                } else {
+                    modelSelect.innerHTML = '<option value="">Error loading models</option>';
+                }
             } finally {
                 setDropdownLoading('openaiSttModel', false);
             }
@@ -4582,86 +4878,88 @@
             }
         }
 
-	        /**
-	         * Toggle loading UI for a model <select>.
-	         *
-	         * When loading begins, we cache the current HTML options so we can restore it if the
-	         * load exits early (e.g., missing API key) and the select is still showing "Loading...".
-	         *
-	         * If `select.dataset.keepDisabled === 'true'` (set by `setDropdownError`), the select
-	         * remains disabled when loading ends.
-	         *
-	         * @param {string} selectId
-	         * @param {boolean} loading
-	         */
-	        function setDropdownLoading(selectId, loading) {
-	            const select = document.getElementById(selectId);
-	            if (!select) return;
+        /**
+         * Toggle loading UI for a model <select>.
+         *
+         * When loading begins, we cache the current HTML options so we can restore it if the
+         * load exits early (e.g., missing API key) and the select is still showing "Loading...".
+         *
+         * If `select.dataset.keepDisabled === 'true'` (set by `setDropdownError`), the select
+         * remains disabled when loading ends.
+         *
+         * @param {string} selectId
+         * @param {boolean} loading
+         */
+        function setDropdownLoading(selectId, loading) {
+            const select = document.getElementById(selectId);
+            if (!select) return;
 
-	            if (loading) {
-	                if (!select.dataset.originalHtml) {
-	                    select.dataset.originalHtml = select.innerHTML;
-	                }
-	                select.innerHTML = '<option value="">Loading...</option>';
-	                select.disabled = true;
-	                select.classList.add('loading');
-	                return;
-	            }
+            if (loading) {
+                if (!select.dataset.originalHtml) {
+                    select.dataset.originalHtml = select.innerHTML;
+                }
+                select.innerHTML = '<option value="">Loading...</option>';
+                select.disabled = true;
+                select.classList.add('loading');
+                return;
+            }
 
-	            // Stop loading
-	            const keepDisabled = select.dataset.keepDisabled === 'true';
-	
-	            // If we never replaced the loading placeholder, restore the original options.
-	            if (select.dataset.originalHtml && select.innerHTML.includes('Loading...')) {
-	                select.innerHTML = select.dataset.originalHtml;
-	            }
-	
-	            select.classList.remove('loading');
-	            select.disabled = keepDisabled;
-	
-	            // Clear cached HTML so future loads capture the current option set.
-	            delete select.dataset.originalHtml;
-	        }
+            // Stop loading
+            const keepDisabled = select.dataset.keepDisabled === 'true';
 
-	        /**
-	         * Put a model dropdown into an explicit error state.
-	         *
-	         * @param {string} selectId
-	         * @param {string} message
-	         */
-	        function setDropdownError(selectId, message) {
-	            const select = document.getElementById(selectId);
-	            if (!select) return;
-	
-	            select.dataset.keepDisabled = 'true';
-	            select.dataset.errorMessage = message || 'Error loading models';
-	            select.classList.remove('loading');
-	            select.disabled = true;
-	            select.title = select.dataset.errorMessage;
-	            select.innerHTML = '<option value="">Error loading models</option>';
-	
-	            // Clear cached HTML (we've decided to show an error instead).
-	            delete select.dataset.originalHtml;
-	        }
+            // If we never replaced the loading placeholder, restore the original options.
+            if (select.dataset.originalHtml && select.innerHTML.includes('Loading...')) {
+                select.innerHTML = select.dataset.originalHtml;
+            }
 
-	        /**
-	         * Clear any dropdown error state previously set by `setDropdownError`.
-	         *
-	         * @param {string} selectId
-	         */
-	        function clearDropdownError(selectId) {
-	            const select = document.getElementById(selectId);
-	            if (!select) return;
-	
-	            if (select.dataset.errorMessage) {
-	                select.removeAttribute('title');
-	            }
-	            delete select.dataset.keepDisabled;
-	            delete select.dataset.errorMessage;
-	        }
+            select.classList.remove('loading');
+            select.disabled = keepDisabled;
+
+            // Clear cached HTML so future loads capture the current option set.
+            delete select.dataset.originalHtml;
+        }
+
+        /**
+         * Put a model dropdown into an explicit error state.
+         *
+         * @param {string} selectId
+         * @param {string} message
+         */
+        function setDropdownError(selectId, message) {
+            const select = document.getElementById(selectId);
+            if (!select) return;
+
+            select.dataset.keepDisabled = 'true';
+            select.dataset.errorMessage = message || 'Error loading models';
+            select.classList.remove('loading');
+            select.disabled = true;
+            select.title = select.dataset.errorMessage;
+            select.innerHTML = '<option value="">Error loading models</option>';
+
+            // Clear cached HTML (we've decided to show an error instead).
+            delete select.dataset.originalHtml;
+        }
+
+        /**
+         * Clear any dropdown error state previously set by `setDropdownError`.
+         *
+         * @param {string} selectId
+         */
+        function clearDropdownError(selectId) {
+            const select = document.getElementById(selectId);
+            if (!select) return;
+
+            if (select.dataset.errorMessage) {
+                select.removeAttribute('title');
+            }
+            delete select.dataset.keepDisabled;
+            delete select.dataset.errorMessage;
+        }
 
         // Initialize everything with Tauri API check
         async function initializeApp() {
+            // Attach listeners once so we always cache explicit user selections.
+            attachLlmModelSelectionListeners();
             setupProviderSelection();
             setupWebSearchProviderVisibility();
 
