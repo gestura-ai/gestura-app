@@ -30,6 +30,7 @@
 
 mod app;
 mod events;
+mod markdown;
 mod ui;
 mod widgets;
 
@@ -994,6 +995,8 @@ fn handle_command(app: &mut TuiApp, command: &str) -> Result<Option<Action>> {
                 }
             } else {
                 app.active_tab = 2; // Switch to tools tab
+                app.mode = TuiMode::Tools;
+                app.set_status("Tools: ↑/↓ to scroll, Esc to return to chat");
             }
         }
         "/clear" => {
@@ -1035,6 +1038,8 @@ fn handle_command(app: &mut TuiApp, command: &str) -> Result<Option<Action>> {
         }
         "/settings" => {
             app.active_tab = 3; // Switch to settings tab
+            app.mode = TuiMode::Settings;
+            app.set_status("Settings: ↑/↓ to navigate, Enter to edit, Esc to return to chat");
         }
         "/capabilities" => {
             let caps = gestura_core::tools::render_capabilities(&app.config);
@@ -1076,7 +1081,7 @@ fn handle_command(app: &mut TuiApp, command: &str) -> Result<Option<Action>> {
             handle_session_command(app, args)?;
         }
         "/workflow" | "/workflows" => {
-            handle_workflow_command(app, args, &get_workflows_dir())?;
+            handle_workflow_command(app, args)?;
         }
         "/config" => {
             handle_config_command(app, args)?;
@@ -1364,17 +1369,9 @@ fn find_session_by_prefix(prefix: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
-fn get_workflows_dir() -> std::path::PathBuf {
-    // Check .agent/workflows in current directory
-    let current = std::path::PathBuf::from(".agent/workflows");
-    if current.exists() {
-        return current;
-    }
-    // Fallback to gestura config dir
-    dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("gestura")
-        .join("workflows")
+/// Get the global workflow manager instance
+fn get_workflow_manager() -> gestura_core::WorkflowManager {
+    gestura_core::WorkflowManager::new()
 }
 
 fn model_for_provider(cfg: &gestura_core::AppConfig, provider: &str) -> Option<String> {
@@ -1387,78 +1384,53 @@ fn model_for_provider(cfg: &gestura_core::AppConfig, provider: &str) -> Option<S
     }
 }
 
+/// Load workflows from core WorkflowManager into TUI app state
 fn load_workflows(app: &mut TuiApp) {
-    let dir = get_workflows_dir();
+    let manager = get_workflow_manager();
     app.workflows.clear();
 
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "md")
-                && let Some(name) = path.file_stem().and_then(|s| s.to_str())
-            {
-                // Try to read description from frontmatter
-                let desc = if let Ok(content) = std::fs::read_to_string(&path) {
-                    content
-                        .lines()
-                        .find(|l| l.starts_with("description:"))
-                        .map(|l| l.trim_start_matches("description:").trim().to_string())
-                        .unwrap_or_else(|| "No description".to_string())
-                } else {
-                    "No description".to_string()
-                };
-                app.workflows.push((name.to_string(), desc));
+    match manager.list_workflows() {
+        Ok(workflows) => {
+            for workflow in workflows {
+                app.workflows.push((workflow.name, workflow.description));
             }
         }
+        Err(e) => {
+            tracing::warn!("Failed to load workflows: {}", e);
+        }
     }
-    app.workflows.sort_by(|a, b| a.0.cmp(&b.0));
 }
 
-fn handle_workflow_command(app: &mut TuiApp, args: &[&str], dir: &std::path::Path) -> Result<()> {
+/// Handle /workflow slash command - delegates to core WorkflowManager
+fn handle_workflow_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
+    let manager = get_workflow_manager();
+
     match args.first().map(|s| s.to_lowercase()).as_deref() {
         None | Some("list") => {
             load_workflows(app);
             app.active_tab = 1; // Switch to workflows tab
-            app.set_status(format!("Found {} workflows", app.workflows.len()));
+            app.mode = TuiMode::Workflows;
+            app.set_status("Workflows: ↑/↓ to navigate, Enter to run, Esc to return to chat");
         }
         Some("run") => {
             if let Some(name) = args.get(1) {
-                let filename = if name.ends_with(".md") {
-                    name.to_string()
-                } else {
-                    format!("{}.md", name)
-                };
-                let path = dir.join(&filename);
-                if path.exists() {
-                    match std::fs::read_to_string(path) {
-                        Ok(content) => {
-                            // Strip frontmatter if present
-                            let prompt = if let Some(stripped) = content.strip_prefix("---") {
-                                if let Some(end_idx) = stripped.find("---") {
-                                    stripped[end_idx + 3..].trim().to_string()
-                                } else {
-                                    content
-                                }
-                            } else {
-                                content
-                            };
+                // Delegate to core WorkflowManager for loading
+                match manager.load_workflow(name) {
+                    Ok(workflow) => {
+                        app.set_status(format!("Running workflow: {}", workflow.name));
+                        app.active_tab = 0; // Switch to chat
 
-                            app.set_status(format!("Running workflow: {}", name));
-                            app.active_tab = 0; // Switch to chat
-
-                            // Inject as user message
-                            // Note: Real workflow engine might do more, but for now we treat it as a prompt template
-                            app.input = prompt;
-                            // Trigger send automatically (simulated)
-                            // We can't easily trigger Action::SendMessage here as we are inside handle_command
-                            // So we just leave it in input for user to press Enter?
-                            // Or better: Let's populate input and user can verify before running.
-                            app.cursor_pos = app.input.len();
-                        }
-                        Err(e) => app.set_error(format!("Failed to read workflow: {}", e)),
+                        // Inject workflow content as user input
+                        // User can review and press Enter to send
+                        app.input = workflow.content;
+                        app.cursor_pos = app.input.len();
                     }
-                } else {
-                    app.set_error(format!("Workflow not found: {}", name));
+                    Err(gestura_core::WorkflowError::NotFound(_)) => {
+                        app.set_error(format!("Workflow not found: {}", name));
+                    }
+                    Err(e) => {
+                        app.set_error(format!("Failed to load workflow: {}", e));
+                    }
                 }
             } else {
                 app.set_error("Usage: /workflow run <name>");
@@ -1544,7 +1516,8 @@ fn handle_config_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
         }
         Some("get") => {
             if let Some(key) = args.get(1) {
-                if let Some(value) = get_tui_config_value(&app.config, key) {
+                // Delegate to core AppConfig::get() for single source of truth
+                if let Some(value) = app.config.get(key) {
                     app.set_status(format!("{} = {}", key, value));
                 } else {
                     app.set_error(format!("Unknown config key: {}", key));
@@ -1554,17 +1527,8 @@ fn handle_config_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
             }
         }
         Some("keys") => {
-            let keys = [
-                "llm.primary",
-                "voice.provider",
-                "voice.local_model_path",
-                "ui.theme_mode",
-                "pipeline.max_history_messages",
-                "pipeline.auto_compact_threshold_percent",
-                "pipeline.compaction_strategy",
-                "pipeline.max_context_tokens",
-                "pipeline.log_token_usage",
-            ];
+            // Delegate to core AppConfig::list_keys() for single source of truth
+            let keys = gestura_core::AppConfig::list_keys();
             let content = format!(
                 "━━━ Available Config Keys ━━━\n\n{}\n\nUse /config get <key> to view a value",
                 keys.join("\n")
@@ -1585,32 +1549,6 @@ fn handle_config_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Get a config value by key for TUI display.
-fn get_tui_config_value(config: &gestura_core::AppConfig, key: &str) -> Option<String> {
-    match key {
-        "llm.primary" => Some(config.llm.primary.clone()),
-        "voice.provider" => Some(config.voice.provider.clone()),
-        "voice.local_model_path" => Some(
-            config
-                .voice
-                .local_model_path
-                .clone()
-                .unwrap_or_else(|| "(not set)".to_string()),
-        ),
-        "ui.theme_mode" => Some(config.ui.theme_mode.clone()),
-        "pipeline.max_history_messages" => Some(config.pipeline.max_history_messages.to_string()),
-        "pipeline.auto_compact_threshold_percent" => {
-            Some(config.pipeline.auto_compact_threshold_percent.to_string())
-        }
-        "pipeline.compaction_strategy" => {
-            Some(format!("{:?}", config.pipeline.compaction_strategy))
-        }
-        "pipeline.max_context_tokens" => Some(config.pipeline.max_context_tokens.to_string()),
-        "pipeline.log_token_usage" => Some(config.pipeline.log_token_usage.to_string()),
-        _ => None,
-    }
 }
 
 /// Format tool output for TUI with pretty printing for JSON

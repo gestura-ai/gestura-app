@@ -26,6 +26,9 @@ pub(crate) fn render_input(app: &TuiApp, frame: &mut Frame, area: Rect) {
         TuiMode::Search => ("SEARCH", app.theme.streaming),
         TuiMode::ModelPicker => ("MODEL", app.theme.mode_normal),
         TuiMode::Activity => ("ACTIVITY", app.theme.mode_normal),
+        TuiMode::Settings => ("SETTINGS", app.theme.mode_normal),
+        TuiMode::Workflows => ("WORKFLOWS", app.theme.mode_normal),
+        TuiMode::Tools => ("TOOLS", app.theme.mode_normal),
     };
 
     let title = if app.is_loading {

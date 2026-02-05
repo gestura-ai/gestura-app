@@ -85,10 +85,28 @@ impl McpToken {
 ///
 /// When the `security` feature is enabled, returns a keychain-backed storage.
 /// Otherwise, returns an in-memory mock storage suitable for testing.
+///
+/// ## Non-interactive / CI behavior
+///
+/// Some OS keychain providers may block in headless or non-interactive contexts
+/// (e.g. CI, integration tests). To avoid hangs, you can disable keychain usage
+/// at runtime by setting `GESTURA_DISABLE_KEYCHAIN=1` (or `GESTURA_NO_KEYCHAIN=1`).
+///
+/// When disabled, Gestura will behave as if secure storage is unavailable.
+pub fn keychain_access_disabled() -> bool {
+    std::env::var_os("GESTURA_DISABLE_KEYCHAIN").is_some()
+        || std::env::var_os("GESTURA_NO_KEYCHAIN").is_some()
+        || std::env::var_os("CI").is_some()
+}
+
 pub fn create_secure_storage() -> Box<dyn SecureStorage> {
     #[cfg(all(feature = "security", not(test)))]
     {
-        Box::new(KeychainStorage)
+        if keychain_access_disabled() {
+            Box::new(MockSecureStorage::default())
+        } else {
+            Box::new(KeychainStorage)
+        }
     }
     #[cfg(any(not(feature = "security"), test))]
     {

@@ -43,11 +43,6 @@ fn handle_key_event(app: &mut TuiApp, key: KeyEvent) -> Action {
         _ => {}
     }
 
-    // If we are in the Settings tab (index 3), override some keys for navigation
-    if app.mode == TuiMode::Normal && app.active_tab == 3 {
-        return handle_settings_tab(app, key);
-    }
-
     // Mode-specific handling
     match app.mode {
         TuiMode::Normal => handle_normal_mode(app, key),
@@ -59,6 +54,9 @@ fn handle_key_event(app: &mut TuiApp, key: KeyEvent) -> Action {
         TuiMode::Search => handle_search_mode(app, key),
         TuiMode::ModelPicker => handle_model_picker_mode(app, key),
         TuiMode::Activity => handle_activity_mode(app, key),
+        TuiMode::Settings => handle_settings_mode(app, key),
+        TuiMode::Workflows => handle_workflows_mode(app, key),
+        TuiMode::Tools => handle_tools_mode(app, key),
     }
 }
 
@@ -727,9 +725,17 @@ fn handle_search_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         _ => Action::Continue,
     }
 }
-/// Handle keys when in the Settings tab
-fn handle_settings_tab(app: &mut TuiApp, key: KeyEvent) -> Action {
+/// Handle keys when in Settings mode
+fn handle_settings_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
     use super::app::SettingsField;
+
+    // Escape returns to chat
+    if key.code == KeyCode::Esc && !app.settings_state.is_editing {
+        app.active_tab = 0; // Return to chat tab
+        app.mode = TuiMode::Insert;
+        app.set_status("Returned to chat");
+        return Action::Continue;
+    }
 
     // If currently editing a field
     if app.settings_state.is_editing {
@@ -806,7 +812,42 @@ fn handle_settings_tab(app: &mut TuiApp, key: KeyEvent) -> Action {
                 };
             Action::Continue
         }
-        // Passthrough for tab switching etc.
+        _ => Action::Continue,
+    }
+}
+
+/// Handle keys when in Workflows mode
+fn handle_workflows_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Esc => {
+            app.active_tab = 0; // Return to chat tab
+            app.mode = TuiMode::Insert;
+            app.set_status("Returned to chat");
+            Action::Continue
+        }
+        KeyCode::Down | KeyCode::Char('j') => Action::ScrollDown,
+        KeyCode::Up | KeyCode::Char('k') => Action::ScrollUp,
+        KeyCode::Enter => {
+            // TODO: Implement workflow selection and execution
+            // For now, just show a message
+            app.set_status("Workflow execution not yet implemented in modal mode");
+            Action::Continue
+        }
+        _ => Action::Continue,
+    }
+}
+
+/// Handle keys when in Tools mode
+fn handle_tools_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Esc => {
+            app.active_tab = 0; // Return to chat tab
+            app.mode = TuiMode::Insert;
+            app.set_status("Returned to chat");
+            Action::Continue
+        }
+        KeyCode::Down | KeyCode::Char('j') => Action::ScrollDown,
+        KeyCode::Up | KeyCode::Char('k') => Action::ScrollUp,
         _ => Action::Continue,
     }
 }

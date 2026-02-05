@@ -194,6 +194,10 @@ async fn main() {
             gestura_gui::api::validate_window_content,
             gestura_gui::api::get_window_list,
             gestura_gui::api::close_test_windows,
+            // Screen capture commands
+            gestura_gui::api::capture_screenshot,
+            gestura_gui::api::start_screen_recording,
+            gestura_gui::api::stop_screen_recording,
             // Automated testing commands
             gestura_gui::automated_testing::run_automated_tests,
             gestura_gui::automated_testing::test_specific_window,
@@ -296,6 +300,8 @@ async fn main() {
             gestura_gui::api::store_api_key,
             gestura_gui::api::get_api_key,
             gestura_gui::api::delete_api_key,
+            gestura_gui::api::has_api_key,
+            gestura_gui::api::get_available_llm_providers,
             gestura_gui::api::migrate_api_keys_to_keychain,
             // Hooks settings
             gestura_gui::api::get_hooks_settings,

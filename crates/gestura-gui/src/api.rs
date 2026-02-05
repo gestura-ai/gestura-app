@@ -3220,6 +3220,76 @@ pub async fn capture_window_screenshot(
     }
 }
 
+/// Capture a system-wide screenshot
+#[tauri::command]
+pub async fn capture_screenshot(
+    output_path: String,
+    region: Option<(u32, u32, u32, u32)>,
+    display: Option<u32>,
+) -> Result<gestura_core::tools::screen::ScreenshotResult, String> {
+    use gestura_core::tools::screen::{CaptureRegion, ScreenTools};
+
+    tracing::info!("📸 Capturing screenshot to: {}", output_path);
+
+    let tools = ScreenTools::new();
+    let region_opt = region.map(|(x, y, w, h)| CaptureRegion {
+        x,
+        y,
+        width: w,
+        height: h,
+    });
+
+    tools
+        .screenshot(std::path::Path::new(&output_path), region_opt, display)
+        .map_err(|e| {
+            tracing::error!("Screenshot failed: {}", e);
+            e.to_string()
+        })
+}
+
+/// Start screen recording
+#[tauri::command]
+pub async fn start_screen_recording(
+    output_path: String,
+    region: Option<(u32, u32, u32, u32)>,
+    display: Option<u32>,
+) -> Result<gestura_core::tools::screen::RecordingStartResult, String> {
+    use gestura_core::tools::screen::{CaptureRegion, ScreenTools};
+
+    tracing::info!("🎥 Starting screen recording to: {}", output_path);
+
+    let tools = ScreenTools::new();
+    let region_opt = region.map(|(x, y, w, h)| CaptureRegion {
+        x,
+        y,
+        width: w,
+        height: h,
+    });
+
+    tools
+        .start_recording(std::path::Path::new(&output_path), region_opt, display)
+        .map_err(|e| {
+            tracing::error!("Failed to start recording: {}", e);
+            e.to_string()
+        })
+}
+
+/// Stop screen recording
+#[tauri::command]
+pub async fn stop_screen_recording(
+    recording_id: String,
+) -> Result<gestura_core::tools::screen::RecordingStopResult, String> {
+    use gestura_core::tools::screen::ScreenTools;
+
+    tracing::info!("⏹️ Stopping screen recording: {}", recording_id);
+
+    let tools = ScreenTools::new();
+    tools.stop_recording(&recording_id).map_err(|e| {
+        tracing::error!("Failed to stop recording: {}", e);
+        e.to_string()
+    })
+}
+
 #[tauri::command]
 pub async fn validate_window_content(
     window_label: String,

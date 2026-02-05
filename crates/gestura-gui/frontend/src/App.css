@@ -835,10 +835,21 @@ kbd {
   font-weight: 600;
 }
 
-.message-content h1 { font-size: 1.4rem; }
-.message-content h2 { font-size: 1.2rem; }
-.message-content h3 { font-size: 1.1rem; }
-.message-content h4 { font-size: 1rem; }
+.message-content h1 {
+  font-size: 1.4rem;
+}
+
+.message-content h2 {
+  font-size: 1.2rem;
+}
+
+.message-content h3 {
+  font-size: 1.1rem;
+}
+
+.message-content h4 {
+  font-size: 1rem;
+}
 
 /* Markdown blockquote */
 .message-content blockquote {
@@ -1080,6 +1091,37 @@ kbd {
   color: white;
   border-radius: 4px;
   font-size: 0.75rem;
+}
+
+/* Screenshot result display */
+.screenshot-result {
+  margin: 0.5rem 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.screenshot-image {
+  width: 100%;
+  max-width: 600px;
+  height: auto;
+  display: block;
+  border-bottom: 1px solid var(--border);
+}
+
+.screenshot-info {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-family: monospace;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.screenshot-info span {
+  white-space: nowrap;
 }
 
 /* Fix chat input container z-index */

@@ -440,6 +440,11 @@ enum ToolsAction {
         #[command(subcommand)]
         action: PermissionsToolAction,
     },
+    /// Screen capture and recording
+    Screen {
+        #[command(subcommand)]
+        action: ScreenToolAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -728,8 +733,45 @@ enum PermissionsToolAction {
     },
 }
 
+#[derive(Subcommand)]
+enum ScreenToolAction {
+    /// Capture a screenshot
+    Capture {
+        /// Output path for screenshot
+        path: std::path::PathBuf,
+        /// Region to capture (format: x,y,width,height)
+        #[arg(short, long)]
+        region: Option<String>,
+        /// Display number (0 = primary)
+        #[arg(short, long)]
+        display: Option<u32>,
+    },
+    /// Start screen recording
+    RecordStart {
+        /// Output path for recording
+        path: std::path::PathBuf,
+        /// Region to record (format: x,y,width,height)
+        #[arg(short, long)]
+        region: Option<String>,
+        /// Display number (0 = primary)
+        #[arg(short, long)]
+        display: Option<u32>,
+    },
+    /// Stop screen recording
+    RecordStop {
+        /// Recording ID to stop
+        recording_id: String,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
+
+    // Respect `--no-color` / `NO_COLOR` across output helpers (`colored`, `console`).
+    if cli.no_color {
+        colored::control::set_override(false);
+        console::set_colors_enabled(false);
+    }
 
     // The TUI uses an alternate screen; any writes to stdout/stderr from tracing can corrupt the
     // layout. When running `chat` in TUI mode, we default tracing output to a sink.
@@ -1028,6 +1070,36 @@ fn main() {
                         }
                     };
                     ToolsCategory::Permissions(cmd)
+                }
+                ToolsAction::Screen {
+                    action: screen_action,
+                } => {
+                    let cmd = match screen_action {
+                        ScreenToolAction::Capture {
+                            path,
+                            region,
+                            display,
+                        } => screen::ScreenSubcommand::Capture {
+                            path: path.clone(),
+                            region: region.clone(),
+                            display: *display,
+                        },
+                        ScreenToolAction::RecordStart {
+                            path,
+                            region,
+                            display,
+                        } => screen::ScreenSubcommand::RecordStart {
+                            path: path.clone(),
+                            region: region.clone(),
+                            display: *display,
+                        },
+                        ScreenToolAction::RecordStop { recording_id } => {
+                            screen::ScreenSubcommand::RecordStop {
+                                recording_id: recording_id.clone(),
+                            }
+                        }
+                    };
+                    ToolsCategory::Screen(cmd)
                 }
             };
             run(category)

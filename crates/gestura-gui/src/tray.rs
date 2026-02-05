@@ -726,8 +726,11 @@ pub fn start_listening_with_validation(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Toggle listening mode (start/stop)
-fn toggle_listening_mode(app: &AppHandle) {
+/// Toggle listening mode (start/stop).
+///
+/// This is the canonical entrypoint for starting/stopping voice listening in the GUI.
+/// It is used by the tray menu and the global hotkey handler.
+pub(crate) fn toggle_listening_mode(app: &AppHandle) {
     // Check current state and update if stopping
     let was_listening = {
         let mut state = LISTENING_STATE.lock().unwrap();

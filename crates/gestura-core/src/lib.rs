@@ -45,6 +45,7 @@ pub mod config_env;
 pub mod config_validation;
 pub mod config_watcher;
 pub mod context;
+pub mod default_models;
 pub mod error;
 pub mod events;
 pub mod execution_mode;
@@ -88,6 +89,7 @@ pub mod token_tracker;
 pub mod tool_confirmation;
 pub mod tool_inspection;
 pub mod tools;
+pub mod workflows;
 
 // Re-export common types for convenience
 pub use a2a::{
@@ -125,6 +127,11 @@ pub use config::AppConfig;
 pub use context::{
     CacheStats, ContextCache, ContextCategory, ContextManager, ContextManagerStats, EntityType,
     ExtractedEntity, FileContext, RequestAnalysis, RequestAnalyzer, ResolvedContext, ToolContext,
+};
+pub use default_models::{
+    ANTHROPIC_MODELS, DEFAULT_ANTHROPIC_MODEL, DEFAULT_GROK_MODEL, DEFAULT_OLLAMA_BASE_URL,
+    DEFAULT_OLLAMA_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_OPENAI_STT_MODEL, GROK_MODELS,
+    OPENAI_CHAT_MODELS, OPENAI_STT_MODELS,
 };
 pub use error::{AppError, Result};
 pub use events::{
@@ -207,6 +214,7 @@ pub use tools::{
     ToolDefinition, all_tools, find_tool, looks_like_capabilities_question,
     looks_like_tools_question, render_capabilities, render_tool_detail, render_tools_overview,
 };
+pub use workflows::{Workflow, WorkflowError, WorkflowInfo, WorkflowManager};
 
 // NATS MQ module exports (messaging/JetStream)
 #[cfg(feature = "nats")]

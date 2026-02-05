@@ -2477,6 +2477,9 @@ impl AgentPipeline {
             "web" | "web_search" => self.execute_web_tool(arguments).await,
             "code" => self.execute_code_tool(arguments, workspace).await,
             "task" | "tasks" => self.execute_task_tool(arguments, workspace).await,
+            "screenshot" | "screen_record" | "screen" => {
+                self.execute_screen_tool(name, arguments, workspace).await
+            }
             _ => ToolResult::Skipped(format!("Unknown tool: {}", name)),
         };
 
@@ -3174,6 +3177,345 @@ impl AgentPipeline {
     }
 
     /// Truncate tool result to prevent token explosion
+    /// Execute screen tool (screenshot and screen recording)
+    async fn execute_screen_tool(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        workspace: Option<&SessionWorkspace>,
+    ) -> ToolResult {
+        use crate::tools::screen_async;
+        use crate::tools::screen_async::{
+            ScreenshotInlineOptions, ScreenshotReturnMode, ScreenshotReturnOptions,
+        };
+
+        match serde_json::from_str::<serde_json::Value>(arguments) {
+            Ok(args) => {
+                // Determine operation type based on tool name + optional operation field.
+                // This prevents, e.g., the `screenshot` tool from being used to start/stop
+                // recordings via a spoofed `operation` argument.
+                let operation_from_args = args.get("operation").and_then(|v| v.as_str());
+
+                let operation = match tool_name {
+                    "screenshot" => operation_from_args.unwrap_or("screenshot"),
+                    "screen_record" => match operation_from_args {
+                        Some(op) => op,
+                        None => {
+                            return ToolResult::Error(
+                                "Missing required field 'operation' for screen_record".to_string(),
+                            );
+                        }
+                    },
+                    "screen" => operation_from_args.unwrap_or("screenshot"),
+                    other => {
+                        return ToolResult::Error(format!("Unknown screen tool: {other}"));
+                    }
+                };
+
+                // Enforce tool-specific allowed operations.
+                match tool_name {
+                    "screenshot" => {
+                        if !matches!(operation, "screenshot" | "capture") {
+                            return ToolResult::Error(format!(
+                                "Tool 'screenshot' does not support operation '{operation}'. Supported operations: screenshot, capture"
+                            ));
+                        }
+                    }
+                    "screen_record" => {
+                        if !matches!(operation, "start" | "stop") {
+                            return ToolResult::Error(format!(
+                                "Tool 'screen_record' does not support operation '{operation}'. Supported operations: start, stop"
+                            ));
+                        }
+                    }
+                    "screen" => {
+                        // Unified tool supports all branches below.
+                    }
+                    _ => {}
+                }
+
+                // Helper: choose an output path when the caller didn't specify one.
+                fn default_artifact_path(kind: &str, ext: &str) -> std::path::PathBuf {
+                    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+                    let id = uuid::Uuid::new_v4().to_string();
+                    std::path::PathBuf::from(".gestura")
+                        .join("artifacts")
+                        .join("screen")
+                        .join(format!("{kind}-{ts}-{id}.{ext}"))
+                }
+
+                fn normalize_ext(s: &str) -> String {
+                    s.trim().trim_start_matches('.').to_ascii_lowercase()
+                }
+
+                fn apply_or_validate_extension(
+                    mut path: std::path::PathBuf,
+                    desired_ext: Option<&str>,
+                ) -> std::result::Result<std::path::PathBuf, String> {
+                    let Some(desired_ext) = desired_ext else {
+                        return Ok(path);
+                    };
+                    let desired_ext = normalize_ext(desired_ext);
+                    if desired_ext.is_empty() {
+                        return Ok(path);
+                    }
+
+                    match path.extension().and_then(|e| e.to_str()) {
+                        Some(existing) if !existing.is_empty() => {
+                            let existing = normalize_ext(existing);
+                            if existing != desired_ext {
+                                return Err(format!(
+                                    "output_path extension '.{existing}' does not match requested output_format '.{desired_ext}'. Either omit output_format or make them match."
+                                ));
+                            }
+                        }
+                        _ => {
+                            path.set_extension(&desired_ext);
+                        }
+                    }
+                    Ok(path)
+                }
+
+                fn parse_screenshot_return_options(
+                    args: &serde_json::Value,
+                ) -> std::result::Result<ScreenshotReturnOptions, String> {
+                    let mut opts = ScreenshotReturnOptions::default();
+
+                    let return_obj = args.get("return").and_then(|v| v.as_object());
+                    if return_obj.is_none() {
+                        return Ok(opts);
+                    }
+                    let return_obj = return_obj.unwrap();
+
+                    if let Some(mode) = return_obj.get("mode").and_then(|v| v.as_str()) {
+                        match mode.trim() {
+                            "path" => opts.mode = ScreenshotReturnMode::Path,
+                            "inline_base64" => opts.mode = ScreenshotReturnMode::InlineBase64,
+                            other => {
+                                return Err(format!(
+                                    "Invalid return.mode '{other}'. Supported: path, inline_base64"
+                                ));
+                            }
+                        }
+                    }
+
+                    if let Some(inline_obj) = return_obj.get("inline").and_then(|v| v.as_object()) {
+                        let mut inline = ScreenshotInlineOptions::default();
+                        if let Some(w) = inline_obj.get("max_width").and_then(|v| v.as_u64()) {
+                            inline.max_width = Some(w as u32);
+                        }
+                        if let Some(h) = inline_obj.get("max_height").and_then(|v| v.as_u64()) {
+                            inline.max_height = Some(h as u32);
+                        }
+                        if let Some(m) = inline_obj.get("max_base64_chars").and_then(|v| v.as_u64())
+                        {
+                            inline.max_base64_chars = m as usize;
+                        }
+                        if let Some(m) = inline_obj.get("max_result_chars").and_then(|v| v.as_u64())
+                        {
+                            inline.max_result_chars = m as usize;
+                        }
+                        opts.inline = inline;
+                    }
+
+                    Ok(opts)
+                }
+
+                match operation {
+                    "screenshot" | "capture" => {
+                        let output_format = args
+                            .get("output_format")
+                            .and_then(|v| v.as_str())
+                            .map(|s| {
+                                let ext = normalize_ext(s);
+                                // Treat jpeg as a synonym for jpg to avoid needless caller friction.
+                                if ext == "jpeg" {
+                                    "jpg".to_string()
+                                } else {
+                                    ext
+                                }
+                            })
+                            .filter(|s| !s.is_empty());
+
+                        if let Some(fmt) = output_format.as_deref()
+                            && !matches!(fmt, "png" | "jpg")
+                        {
+                            return ToolResult::Error(format!(
+                                "Invalid output_format '{fmt}'. Supported: png, jpg (jpeg is accepted as an alias for jpg)"
+                            ));
+                        }
+
+                        let screenshot_return = match parse_screenshot_return_options(&args) {
+                            Ok(o) => o,
+                            Err(e) => return ToolResult::Error(e),
+                        };
+
+                        let output_path = args
+                            .get("output_path")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_else(|| {
+                                let ext = output_format.as_deref().unwrap_or("png");
+                                default_artifact_path("screenshot", ext)
+                            });
+
+                        let output_path = match apply_or_validate_extension(
+                            output_path,
+                            output_format.as_deref(),
+                        ) {
+                            Ok(p) => p,
+                            Err(e) => return ToolResult::Error(e),
+                        };
+
+                        // Resolve path within workspace if set
+                        let resolved_path = if let Some(ws) = workspace {
+                            match ws.resolve_path_for_create(&output_path) {
+                                Ok(p) => p.to_string_lossy().to_string(),
+                                Err(e) => {
+                                    return ToolResult::Error(format!(
+                                        "Path '{}' is outside workspace: {}",
+                                        output_path.display(),
+                                        e
+                                    ));
+                                }
+                            }
+                        } else {
+                            output_path.to_string_lossy().to_string()
+                        };
+
+                        // Parse optional region
+                        let region = args.get("region").and_then(|r| {
+                            if let Some(obj) = r.as_object() {
+                                let x = obj.get("x")?.as_u64()? as u32;
+                                let y = obj.get("y")?.as_u64()? as u32;
+                                let width = obj.get("width")?.as_u64()? as u32;
+                                let height = obj.get("height")?.as_u64()? as u32;
+                                Some((x, y, width, height))
+                            } else {
+                                None
+                            }
+                        });
+
+                        // Parse optional display
+                        let display = args
+                            .get("display")
+                            .and_then(|v| v.as_u64())
+                            .map(|d| d as u32);
+
+                        match screen_async::screenshot_with_options(
+                            &resolved_path,
+                            region,
+                            display,
+                            screenshot_return,
+                        )
+                        .await
+                        {
+                            Ok(result) => ToolResult::Success(result),
+                            Err(e) => ToolResult::Error(e.to_string()),
+                        }
+                    }
+                    "start" | "start_recording" => {
+                        let output_format = args
+                            .get("output_format")
+                            .and_then(|v| v.as_str())
+                            .map(normalize_ext)
+                            .filter(|s| !s.is_empty());
+
+                        if let Some(fmt) = output_format.as_deref()
+                            && !matches!(fmt, "mp4" | "mov")
+                        {
+                            return ToolResult::Error(format!(
+                                "Invalid output_format '{fmt}'. Supported: mp4, mov"
+                            ));
+                        }
+
+                        let output_path = args
+                            .get("output_path")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_else(|| {
+                                let ext = output_format.as_deref().unwrap_or("mp4");
+                                default_artifact_path("screen-recording", ext)
+                            });
+
+                        let output_path = match apply_or_validate_extension(
+                            output_path,
+                            output_format.as_deref(),
+                        ) {
+                            Ok(p) => p,
+                            Err(e) => return ToolResult::Error(e),
+                        };
+
+                        // Resolve path within workspace if set
+                        let resolved_path = if let Some(ws) = workspace {
+                            match ws.resolve_path_for_create(&output_path) {
+                                Ok(p) => p.to_string_lossy().to_string(),
+                                Err(e) => {
+                                    return ToolResult::Error(format!(
+                                        "Path '{}' is outside workspace: {}",
+                                        output_path.display(),
+                                        e
+                                    ));
+                                }
+                            }
+                        } else {
+                            output_path.to_string_lossy().to_string()
+                        };
+
+                        // Parse optional region
+                        let region = args.get("region").and_then(|r| {
+                            if let Some(obj) = r.as_object() {
+                                let x = obj.get("x")?.as_u64()? as u32;
+                                let y = obj.get("y")?.as_u64()? as u32;
+                                let width = obj.get("width")?.as_u64()? as u32;
+                                let height = obj.get("height")?.as_u64()? as u32;
+                                Some((x, y, width, height))
+                            } else {
+                                None
+                            }
+                        });
+
+                        // Parse optional display
+                        let display = args
+                            .get("display")
+                            .and_then(|v| v.as_u64())
+                            .map(|d| d as u32);
+
+                        match screen_async::start_recording(&resolved_path, region, display).await {
+                            Ok(result) => ToolResult::Success(result),
+                            Err(e) => ToolResult::Error(e.to_string()),
+                        }
+                    }
+                    "stop" | "stop_recording" => {
+                        let recording_id = match args.get("recording_id").and_then(|v| v.as_str()) {
+                            Some(id) if !id.trim().is_empty() => id,
+                            _ => {
+                                return ToolResult::Error(
+                                    "Missing required field 'recording_id' for stop_recording operation"
+                                        .to_string(),
+                                );
+                            }
+                        };
+
+                        match screen_async::stop_recording(recording_id).await {
+                            Ok(result) => ToolResult::Success(result),
+                            Err(e) => ToolResult::Error(e.to_string()),
+                        }
+                    }
+                    other => ToolResult::Error(format!(
+                        "Unknown screen operation: {}. Supported operations: screenshot, start, stop",
+                        other
+                    )),
+                }
+            }
+            Err(e) => ToolResult::Error(format!("Invalid arguments: {}", e)),
+        }
+    }
+
     /// Limits results to 2000 characters max with truncation indicator
     fn truncate_tool_result(&self, result: &str) -> String {
         const MAX_TOOL_RESULT_CHARS: usize = 2000;
@@ -4033,6 +4375,81 @@ mod tests {
                 assert!(s.contains("BAR"));
             }
             other => panic!("expected success, got: {other:?}"),
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Screen tool argument validation (must fail fast without OS capture)
+    // ---------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn screenshot_tool_rejects_non_screenshot_operations() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let temp = tempdir().unwrap();
+        let ws = SessionWorkspace::from_directory("test-session", temp.path().to_path_buf())
+            .expect("workspace should be created");
+
+        let args = serde_json::json!({"operation": "start"}).to_string();
+        let result = pipeline.execute_tool("screenshot", &args, Some(&ws)).await;
+        match result {
+            ToolResult::Error(e) => assert!(e.contains("does not support operation")),
+            other => panic!("expected error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn screenshot_rejects_invalid_return_mode() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let temp = tempdir().unwrap();
+        let ws = SessionWorkspace::from_directory("test-session", temp.path().to_path_buf())
+            .expect("workspace should be created");
+
+        let args = serde_json::json!({
+            "return": {"mode": "bogus"}
+        })
+        .to_string();
+
+        let result = pipeline.execute_tool("screenshot", &args, Some(&ws)).await;
+        match result {
+            ToolResult::Error(e) => assert!(e.contains("Invalid return.mode")),
+            other => panic!("expected error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn screenshot_rejects_extension_mismatch_vs_output_format() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let temp = tempdir().unwrap();
+        let ws = SessionWorkspace::from_directory("test-session", temp.path().to_path_buf())
+            .expect("workspace should be created");
+
+        let args = serde_json::json!({
+            "output_path": "foo.png",
+            "output_format": "jpg"
+        })
+        .to_string();
+
+        let result = pipeline.execute_tool("screenshot", &args, Some(&ws)).await;
+        match result {
+            ToolResult::Error(e) => assert!(e.contains("does not match requested output_format")),
+            other => panic!("expected error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn screen_record_requires_operation() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let temp = tempdir().unwrap();
+        let ws = SessionWorkspace::from_directory("test-session", temp.path().to_path_buf())
+            .expect("workspace should be created");
+
+        let args = serde_json::json!({}).to_string();
+        let result = pipeline
+            .execute_tool("screen_record", &args, Some(&ws))
+            .await;
+        match result {
+            ToolResult::Error(e) => assert!(e.contains("Missing required field 'operation'")),
+            other => panic!("expected error, got: {other:?}"),
         }
     }
 

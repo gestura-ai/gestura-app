@@ -246,6 +246,21 @@ impl SessionWorkspace {
         Ok(resolved)
     }
 
+    /// Resolve a path for creation (file/dir may not exist yet).
+    ///
+    /// This is similar to [`Self::resolve_path_for_write`], but it does **not** require the
+    /// parent directory to exist. It is intended for tools that legitimately create output
+    /// directories as part of their operation (e.g. screen capture artifacts).
+    ///
+    /// Security note: even when the target doesn't exist yet, we still validate any *existing*
+    /// path components for symlink escapes.
+    pub fn resolve_path_for_create(&self, path: &Path) -> WorkspaceResult<PathBuf> {
+        let resolved = self.resolve_path(path)?;
+        // Validate symlinks on the existing prefix even if the final path doesn't exist yet.
+        self.validate_symlinks_in_path(&resolved)?;
+        Ok(resolved)
+    }
+
     /// Validate all symlinks in a path point to targets within the workspace
     fn validate_symlinks_in_path(&self, path: &Path) -> WorkspaceResult<()> {
         let mut current = PathBuf::new();
@@ -845,6 +860,23 @@ mod tests {
         // Writing to non-existent parent should fail
         let result = workspace.resolve_path_for_write(Path::new("nonexistent/file.txt"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_path_for_create_allows_new_parent_dirs() {
+        let temp = tempdir().unwrap();
+        let session_id = "test-create-session";
+
+        let workspace =
+            SessionWorkspace::from_directory(session_id, temp.path().to_path_buf()).unwrap();
+
+        // Parent doesn't exist yet, but creation-oriented resolution should succeed.
+        let result = workspace.resolve_path_for_create(Path::new("newdir/nested/file.txt"));
+        assert!(result.is_ok());
+
+        // Should still block attempts to escape.
+        let outside = workspace.resolve_path_for_create(Path::new("../../../etc/passwd"));
+        assert!(outside.is_err());
     }
 
     #[test]

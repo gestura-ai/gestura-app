@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import ReactMarkdown from 'react-markdown';
 
 /**
@@ -125,11 +126,11 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
   const [sessionTokens, setSessionTokens] = useState<TokenUsage>({ input_tokens: 0, output_tokens: 0 });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-	const currentToolCallRef = useRef<{ id: string; name: string; args: string } | null>(null);
-	// If the window was opened as `...?session_id=...`, treat it as session-scoped and never
-	// allow cross-session event rendering.
-	const urlSessionIdRef = useRef<string | null>(getSessionIdFromUrl());
-	const sessionIdRef = useRef<string | null>(urlSessionIdRef.current);
+  const currentToolCallRef = useRef<{ id: string; name: string; args: string } | null>(null);
+  // If the window was opened as `...?session_id=...`, treat it as session-scoped and never
+  // allow cross-session event rendering.
+  const urlSessionIdRef = useRef<string | null>(getSessionIdFromUrl());
+  const sessionIdRef = useRef<string | null>(urlSessionIdRef.current);
 
   // Fetch workspace directory on mount
   useEffect(() => {
@@ -276,81 +277,81 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
     let unlistenListeningState: UnlistenFn;
     let unlistenVoiceSession: UnlistenFn;
 
-		const setupListeners = async () => {
-				/**
-				 * No-op unlisten function.
-				 *
-				 * Used when we intentionally refuse to attach an event listener (fail-closed)
-				 * to avoid cross-window leakage in multi-window Tauri setups.
-				 */
-				const noopUnlisten: UnlistenFn = () => {};
+    const setupListeners = async () => {
+      /**
+       * No-op unlisten function.
+       *
+       * Used when we intentionally refuse to attach an event listener (fail-closed)
+       * to avoid cross-window leakage in multi-window Tauri setups.
+       */
+      const noopUnlisten: UnlistenFn = () => { };
 
-			/**
-			 * Listen for events scoped to this webview window.
-			 *
-			 * In Tauri v2, the global `@tauri-apps/api/event.listen` behaves like `listen_any`
-			 * unless an explicit target is set. That can cause cross-window event leakage when
-			 * multiple chat windows exist.
-			 *
-			 * We therefore prefer `getCurrentWebviewWindow().listen(...)`.
-			 */
-			const listenScoped = async <T,>(eventName: string, handler: (event: { payload: T }) => void) => {
-				try {
-					const webview = getCurrentWebviewWindow();
-					if (webview && typeof (webview as unknown as { listen?: unknown }).listen === 'function') {
-						return await (webview as unknown as { listen: (name: string, cb: (event: { payload: T }) => void) => Promise<UnlistenFn> }).listen(eventName, handler);
-					}
-				} catch {
-					// Fall back below.
-				}
+      /**
+       * Listen for events scoped to this webview window.
+       *
+       * In Tauri v2, the global `@tauri-apps/api/event.listen` behaves like `listen_any`
+       * unless an explicit target is set. That can cause cross-window event leakage when
+       * multiple chat windows exist.
+       *
+       * We therefore prefer `getCurrentWebviewWindow().listen(...)`.
+       */
+      const listenScoped = async <T,>(eventName: string, handler: (event: { payload: T }) => void) => {
+        try {
+          const webview = getCurrentWebviewWindow();
+          if (webview && typeof (webview as unknown as { listen?: unknown }).listen === 'function') {
+            return await (webview as unknown as { listen: (name: string, cb: (event: { payload: T }) => void) => Promise<UnlistenFn> }).listen(eventName, handler);
+          }
+        } catch {
+          // Fall back below.
+        }
 
-				// Fallback: if this window is session-scoped, derive the expected label and
-				// attach an explicit target to avoid cross-window delivery.
-				const urlSessionId = urlSessionIdRef.current;
-				const expectedLabel = urlSessionId ? `chat-${urlSessionId}` : null;
-				if (expectedLabel) {
-					return await listen<T>(eventName, handler, {
-						// eslint-disable-next-line @typescript-eslint/no-explicit-any
-						target: { kind: 'WebviewWindow', label: expectedLabel } as any,
-					});
-				}
+        // Fallback: if this window is session-scoped, derive the expected label and
+        // attach an explicit target to avoid cross-window delivery.
+        const urlSessionId = urlSessionIdRef.current;
+        const expectedLabel = urlSessionId ? `chat-${urlSessionId}` : null;
+        if (expectedLabel) {
+          return await listen<T>(eventName, handler, {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            target: { kind: 'WebviewWindow', label: expectedLabel } as any,
+          });
+        }
 
-					// Fail-closed: do not attach an unscoped listener.
-					// In Tauri v2, an unscoped listener can behave like listen_any and cause
-					// cross-window event leakage.
-					console.error('[ChatPanel] Refusing to attach unscoped event listener (no webview.listen and no window label target)', {
-						eventName,
-					});
-					return noopUnlisten;
-			};
+        // Fail-closed: do not attach an unscoped listener.
+        // In Tauri v2, an unscoped listener can behave like listen_any and cause
+        // cross-window event leakage.
+        console.error('[ChatPanel] Refusing to attach unscoped event listener (no webview.listen and no window label target)', {
+          eventName,
+        });
+        return noopUnlisten;
+      };
 
-	      const getActiveSessionId = () => urlSessionIdRef.current ?? sessionIdRef.current;
-	      const maybeAdoptSessionId = (incoming: string | null) => {
-	        // Only adopt in non-session-scoped windows.
-	        if (urlSessionIdRef.current) return;
-	        if (!sessionIdRef.current && incoming) {
-	          sessionIdRef.current = incoming;
-	        }
-	      };
+      const getActiveSessionId = () => urlSessionIdRef.current ?? sessionIdRef.current;
+      const maybeAdoptSessionId = (incoming: string | null) => {
+        // Only adopt in non-session-scoped windows.
+        if (urlSessionIdRef.current) return;
+        if (!sessionIdRef.current && incoming) {
+          sessionIdRef.current = incoming;
+        }
+      };
 
-			unlistenChunk = await listenScoped<unknown>('chat-stream-chunk', (event) => {
-	        const { incomingSessionId, value } = unpackSessionTaggedPayload(event.payload);
-	        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
-	        maybeAdoptSessionId(incomingSessionId);
-	        if (typeof value !== 'string') return;
+      unlistenChunk = await listenScoped<unknown>('chat-stream-chunk', (event) => {
+        const { incomingSessionId, value } = unpackSessionTaggedPayload(event.payload);
+        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
+        maybeAdoptSessionId(incomingSessionId);
+        if (typeof value !== 'string') return;
         setMessages((prev) => {
           const updated = [...prev];
           const lastIdx = updated.length - 1;
           if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
             updated[lastIdx] = {
               ...updated[lastIdx],
-	              content: updated[lastIdx].content + value,
+              content: updated[lastIdx].content + value,
             };
           } else {
             updated.push({
               id: Date.now().toString(),
               role: 'assistant',
-	              content: value,
+              content: value,
               isStreaming: true,
               timestamp: new Date(),
             });
@@ -359,25 +360,25 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
         });
       });
 
-			unlistenThinking = await listenScoped<unknown>('chat-stream-thinking', (event) => {
-	        const { incomingSessionId, value } = unpackSessionTaggedPayload(event.payload);
-	        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
-	        maybeAdoptSessionId(incomingSessionId);
-	        if (typeof value !== 'string') return;
+      unlistenThinking = await listenScoped<unknown>('chat-stream-thinking', (event) => {
+        const { incomingSessionId, value } = unpackSessionTaggedPayload(event.payload);
+        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
+        maybeAdoptSessionId(incomingSessionId);
+        if (typeof value !== 'string') return;
         setMessages((prev) => {
           const updated = [...prev];
           const lastIdx = updated.length - 1;
           if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
             updated[lastIdx] = {
               ...updated[lastIdx],
-	              thinking: (updated[lastIdx].thinking || '') + value,
+              thinking: (updated[lastIdx].thinking || '') + value,
             };
           } else {
             updated.push({
               id: Date.now().toString(),
               role: 'assistant',
               content: '',
-	              thinking: value,
+              thinking: value,
               isStreaming: true,
               timestamp: new Date(),
             });
@@ -387,24 +388,24 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
       });
 
       // Token usage is emitted separately from `chat-stream-done`
-			unlistenTokenUsage = await listenScoped<unknown>('chat-token-usage', (event) => {
-	        const { incomingSessionId, value } = unpackSessionTaggedPayload(event.payload);
-	        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
-	        maybeAdoptSessionId(incomingSessionId);
-	        const usage = parseTokenUsage(value);
-	        if (!usage) return;
-	        setSessionTokens(prev => ({
-	          input_tokens: prev.input_tokens + usage.input_tokens,
-	          output_tokens: prev.output_tokens + usage.output_tokens,
-	          estimated_cost_usd: (prev.estimated_cost_usd || 0) + (usage.estimated_cost_usd || 0),
-	        }));
-	        onTokenUsage?.(usage);
+      unlistenTokenUsage = await listenScoped<unknown>('chat-token-usage', (event) => {
+        const { incomingSessionId, value } = unpackSessionTaggedPayload(event.payload);
+        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
+        maybeAdoptSessionId(incomingSessionId);
+        const usage = parseTokenUsage(value);
+        if (!usage) return;
+        setSessionTokens(prev => ({
+          input_tokens: prev.input_tokens + usage.input_tokens,
+          output_tokens: prev.output_tokens + usage.output_tokens,
+          estimated_cost_usd: (prev.estimated_cost_usd || 0) + (usage.estimated_cost_usd || 0),
+        }));
+        onTokenUsage?.(usage);
       });
 
-			unlistenDone = await listenScoped<unknown>('chat-stream-done', (event) => {
-	        const { incomingSessionId } = unpackSessionTaggedPayload(event.payload);
-	        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
-	        maybeAdoptSessionId(incomingSessionId);
+      unlistenDone = await listenScoped<unknown>('chat-stream-done', (event) => {
+        const { incomingSessionId } = unpackSessionTaggedPayload(event.payload);
+        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
+        maybeAdoptSessionId(incomingSessionId);
         setMessages((prev) => {
           const updated = [...prev];
           const lastIdx = updated.length - 1;
@@ -416,14 +417,14 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
         setIsLoading(false);
       });
 
-			unlistenToolStart = await listenScoped<unknown>('chat-stream-tool-start', (event) => {
-	        const { incomingSessionId, value } = unpackSessionTaggedPayload(event.payload);
-	        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
-	        maybeAdoptSessionId(incomingSessionId);
-	        if (!isRecord(value)) return;
-	        const id = typeof value.id === 'string' ? value.id : '';
-	        const name = typeof value.name === 'string' ? value.name : 'tool';
-	        currentToolCallRef.current = { id, name, args: '' };
+      unlistenToolStart = await listenScoped<unknown>('chat-stream-tool-start', (event) => {
+        const { incomingSessionId, value } = unpackSessionTaggedPayload(event.payload);
+        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
+        maybeAdoptSessionId(incomingSessionId);
+        if (!isRecord(value)) return;
+        const id = typeof value.id === 'string' ? value.id : '';
+        const name = typeof value.name === 'string' ? value.name : 'tool';
+        currentToolCallRef.current = { id, name, args: '' };
         setMessages((prev) => {
           const updated = [...prev];
           const lastIdx = updated.length - 1;
@@ -431,7 +432,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
             const toolCalls = updated[idx].toolCalls || [];
             updated[idx] = {
               ...updated[idx],
-	              toolCalls: [...toolCalls, name],
+              toolCalls: [...toolCalls, name],
             };
           };
 
@@ -444,50 +445,50 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
               content: '',
               isStreaming: true,
               timestamp: new Date(),
-	              toolCalls: [name],
+              toolCalls: [name],
             });
           }
           return updated;
         });
       });
 
-			unlistenToolArgs = await listenScoped<unknown>('chat-stream-tool-args', (event) => {
-	        const { incomingSessionId, value } = unpackSessionTaggedPayload(event.payload);
-	        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
-	        maybeAdoptSessionId(incomingSessionId);
-	        if (typeof value !== 'string') return;
+      unlistenToolArgs = await listenScoped<unknown>('chat-stream-tool-args', (event) => {
+        const { incomingSessionId, value } = unpackSessionTaggedPayload(event.payload);
+        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
+        maybeAdoptSessionId(incomingSessionId);
+        if (typeof value !== 'string') return;
         // Args can be large; keep for debugging/future UI but don't render in badges.
         if (currentToolCallRef.current) {
-	          currentToolCallRef.current.args += value;
+          currentToolCallRef.current.args += value;
         }
       });
 
-			unlistenToolEnd = await listenScoped<unknown>('chat-stream-tool-end', (event) => {
-	        const { incomingSessionId } = unpackSessionTaggedPayload(event.payload);
-	        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
-	        maybeAdoptSessionId(incomingSessionId);
+      unlistenToolEnd = await listenScoped<unknown>('chat-stream-tool-end', (event) => {
+        const { incomingSessionId } = unpackSessionTaggedPayload(event.payload);
+        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
+        maybeAdoptSessionId(incomingSessionId);
         currentToolCallRef.current = null;
       });
 
-			unlistenError = await listenScoped<unknown>('chat-stream-error', (event) => {
-	        const { incomingSessionId, value } = unpackSessionTaggedPayload(event.payload);
-	        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
-	        maybeAdoptSessionId(incomingSessionId);
-	        const message = typeof value === 'string' ? value : JSON.stringify(value);
+      unlistenError = await listenScoped<unknown>('chat-stream-error', (event) => {
+        const { incomingSessionId, value } = unpackSessionTaggedPayload(event.payload);
+        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
+        maybeAdoptSessionId(incomingSessionId);
+        const message = typeof value === 'string' ? value : JSON.stringify(value);
         setMessages((prev) => {
           const updated = [...prev];
           const lastIdx = updated.length - 1;
           if (lastIdx >= 0 && updated[lastIdx].role === 'assistant') {
             updated[lastIdx] = {
               ...updated[lastIdx],
-	              content: `${updated[lastIdx].content}\n\nError: ${message}`.trim(),
+              content: `${updated[lastIdx].content}\n\nError: ${message}`.trim(),
               isStreaming: false,
             };
           } else {
             updated.push({
               id: Date.now().toString(),
               role: 'assistant',
-	              content: `Error: ${message}`,
+              content: `Error: ${message}`,
               isStreaming: false,
               timestamp: new Date(),
             });
@@ -497,10 +498,10 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
         setIsLoading(false);
       });
 
-			unlistenCancelled = await listenScoped<unknown>('chat-stream-cancelled', (event) => {
-	        const { incomingSessionId } = unpackSessionTaggedPayload(event.payload);
-	        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
-	        maybeAdoptSessionId(incomingSessionId);
+      unlistenCancelled = await listenScoped<unknown>('chat-stream-cancelled', (event) => {
+        const { incomingSessionId } = unpackSessionTaggedPayload(event.payload);
+        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
+        maybeAdoptSessionId(incomingSessionId);
         setMessages((prev) => {
           const updated = [...prev];
           const lastIdx = updated.length - 1;
@@ -513,21 +514,21 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
       });
 
       // Listen for voice transcription messages (both user and assistant)
-			unlistenVoiceMessage = await listenScoped<unknown>('chat-message', (event) => {
-	        const { incomingSessionId, value } = unpackSessionTaggedPayload(event.payload);
-	        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
-	        maybeAdoptSessionId(incomingSessionId);
-	        if (!isRecord(value)) return;
-	        const message = typeof value.message === 'string' ? value.message : '';
-	        const type = typeof value.type === 'string' ? value.type : undefined;
-	        const session_id = typeof value.session_id === 'string' ? value.session_id : incomingSessionId;
+      unlistenVoiceMessage = await listenScoped<unknown>('chat-message', (event) => {
+        const { incomingSessionId, value } = unpackSessionTaggedPayload(event.payload);
+        if (!shouldAcceptSessionEvent(getActiveSessionId(), incomingSessionId)) return;
+        maybeAdoptSessionId(incomingSessionId);
+        if (!isRecord(value)) return;
+        const message = typeof value.message === 'string' ? value.message : '';
+        const type = typeof value.type === 'string' ? value.type : undefined;
+        const session_id = typeof value.session_id === 'string' ? value.session_id : incomingSessionId;
         if (!message) return;
 
         // Track the most recent session_id so typed messages and cancellations can
         // be scoped correctly even if this panel didn't start the session.
-	        if (session_id && !urlSessionIdRef.current) {
-	          sessionIdRef.current = session_id;
-	        }
+        if (session_id && !urlSessionIdRef.current) {
+          sessionIdRef.current = session_id;
+        }
 
         if (type === 'assistant') {
           // AI response from voice processing - add directly without calling LLM again
@@ -564,7 +565,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
           setIsLoading(true);
 
           // Process the voice message through LLM
-		          invoke('process_chat_message_streaming', { message, sessionId: session_id, source: 'voice' }).catch((error) => {
+          invoke('process_chat_message_streaming', { message, sessionId: session_id, source: 'voice' }).catch((error) => {
             console.error('Voice chat error:', error);
             setMessages((prev) => {
               const updated = [...prev];
@@ -584,14 +585,14 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
       });
 
       // Listen for listening state changes
-			unlistenListeningState = await listenScoped<{ is_listening: boolean }>('listening-state-changed', (event) => {
+      unlistenListeningState = await listenScoped<{ is_listening: boolean }>('listening-state-changed', (event) => {
         setIsListening(event.payload.is_listening);
       });
 
       // Listen for voice session start
-			unlistenVoiceSession = await listenScoped<{ session_id: string }>('voice-session-started', (event) => {
+      unlistenVoiceSession = await listenScoped<{ session_id: string }>('voice-session-started', (event) => {
         // Voice session started - UI can show indicator
-	        if (event?.payload?.session_id && !urlSessionIdRef.current) {
+        if (event?.payload?.session_id && !urlSessionIdRef.current) {
           sessionIdRef.current = event.payload.session_id;
         }
         setIsListening(true);
@@ -641,10 +642,10 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
 
     try {
       const session_id = sessionIdRef.current;
-	      await invoke(
-	        'process_chat_message_streaming',
-	        session_id ? { message: messageContent, sessionId: session_id } : { message: messageContent }
-	      );
+      await invoke(
+        'process_chat_message_streaming',
+        session_id ? { message: messageContent, sessionId: session_id } : { message: messageContent }
+      );
     } catch (error) {
       console.error('Chat error:', error);
       setMessages((prev) => {
@@ -721,7 +722,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
   const cancelStream = async () => {
     try {
       const session_id = sessionIdRef.current;
-	      await invoke('cancel_chat_streaming', session_id ? { sessionId: session_id } : {});
+      await invoke('cancel_chat_streaming', session_id ? { sessionId: session_id } : {});
     } catch (error) {
       console.error('Failed to cancel stream:', error);
     }
@@ -802,6 +803,32 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
   };
 
   /**
+   * Try to parse content as JSON and check if it's a screenshot result.
+   */
+  const tryParseScreenshotResult = (content: string): { path: string; width?: number; height?: number; file_size_bytes?: number } | null => {
+    try {
+      const json = JSON.parse(content);
+      if (json && typeof json.path === 'string' && json.path.match(/\.(png|jpg|jpeg|gif|bmp|webp)$/i)) {
+        return json;
+      }
+    } catch {
+      // Not JSON or not a screenshot result
+    }
+    return null;
+  };
+
+  /**
+   * Format file size in human-readable format.
+   */
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+  };
+
+  /**
    * Render markdown content with proper formatting.
    *
    * Uses ReactMarkdown for full markdown support including:
@@ -811,10 +838,31 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
    * - Links
    * - Code blocks with syntax highlighting
    * - Inline code
+   * - Screenshot images (auto-detected from JSON results)
    *
    * The raw markdown is preserved for copy operations.
    */
   const renderFormattedContent = (content: string) => {
+    // Check if content is a screenshot result
+    const screenshotResult = tryParseScreenshotResult(content);
+    if (screenshotResult) {
+      const imageSrc = convertFileSrc(screenshotResult.path);
+      return (
+        <div className="screenshot-result">
+          <img src={imageSrc} alt="Screenshot" className="screenshot-image" />
+          <div className="screenshot-info">
+            {screenshotResult.width && screenshotResult.height && (
+              <span>{screenshotResult.width}×{screenshotResult.height}</span>
+            )}
+            {screenshotResult.file_size_bytes && (
+              <span> • {formatBytes(screenshotResult.file_size_bytes)}</span>
+            )}
+            <span> • {screenshotResult.path}</span>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <ReactMarkdown
         components={{
@@ -892,10 +940,10 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ onTokenUsage }) => {
               📊 {sessionTokens.input_tokens + sessionTokens.output_tokens} tokens
               {/* Hide cost for local providers (Ollama) and when cost is zero/unavailable */}
               {sessionTokens.estimated_cost_usd !== undefined &&
-               sessionTokens.estimated_cost_usd > 0 &&
-               !['ollama', 'local'].includes(selectedModel) && (
-                <span className="cost-display"> (${sessionTokens.estimated_cost_usd.toFixed(4)})</span>
-              )}
+                sessionTokens.estimated_cost_usd > 0 &&
+                !['ollama', 'local'].includes(selectedModel) && (
+                  <span className="cost-display"> (${sessionTokens.estimated_cost_usd.toFixed(4)})</span>
+                )}
             </span>
           )}
           <button

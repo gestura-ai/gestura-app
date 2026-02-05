@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+mod markdown_ansi;
 mod tui;
 
 /// Options for the chat command
@@ -631,7 +632,9 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                             println!();
                             if let Some(name) = args.first() {
                                 match gestura_core::tools::render_tool_detail(name) {
-                                    Some(text) => println!("{}", text),
+                                    Some(text) => {
+                                        println!("{}", markdown_ansi::markdown_to_ansi(&text))
+                                    }
                                     None => println!(
                                         "{}: Unknown tool '{}'. Try /tools to list tools.",
                                         "error".red(),
@@ -639,7 +642,8 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                     ),
                                 }
                             } else {
-                                println!("{}", gestura_core::tools::render_tools_overview());
+                                let text = gestura_core::tools::render_tools_overview();
+                                println!("{}", markdown_ansi::markdown_to_ansi(&text));
                             }
                             println!();
                             continue;
@@ -1010,7 +1014,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                         "Here are the available tools:".blue()
                     );
                     println!();
-                    println!("{}", text);
+                    println!("{}", markdown_ansi::markdown_to_ansi(&text));
                     chat_session.add_assistant_message(&text, None);
                     continue;
                 }

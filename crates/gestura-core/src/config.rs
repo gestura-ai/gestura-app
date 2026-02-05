@@ -25,7 +25,7 @@ use crate::config_env::{get_env, get_env_bool, get_env_u32};
 use crate::error::{AppError, Result};
 use crate::hooks::HooksSettings;
 #[cfg(feature = "security")]
-use crate::security::create_secure_storage;
+use crate::security::{create_secure_storage, keychain_access_disabled};
 
 #[cfg(all(feature = "security", not(test)))]
 const KEYCHAIN_SERVICE: &str = "gestura";
@@ -739,6 +739,7 @@ impl AppConfig {
     }
 
     /// Returns the legacy config backup path: `~/.gestura/config.json.backup`
+    #[allow(dead_code)] // Used in async migration path
     fn legacy_json_backup_path() -> PathBuf {
         Self::data_dir().join("config.json.backup")
     }
@@ -797,6 +798,7 @@ impl AppConfig {
     /// This method also handles migration of secrets to the secure keystore.
     pub fn load() -> Self {
         let yaml_path = Self::default_path();
+        #[allow(unused_mut)] // config is mutated by hydrate_secrets/migrate_secrets
         let mut config = if yaml_path.exists() {
             Self::load_from_path(&yaml_path)
         } else {
@@ -819,27 +821,37 @@ impl AppConfig {
         // Hydrate secrets from keychain (if empty in file)
         #[cfg(feature = "security")]
         {
-            // Detect plaintext secrets in the loaded config *before* hydration.
-            // If they exist, we must sanitize persisted YAML even when keychain already has keys.
-            let had_plaintext_secrets = config.has_plaintext_secrets();
+            if keychain_access_disabled() {
+                // In non-interactive contexts (CI/integration tests), keychain access can block.
+                // When explicitly disabled, skip hydration/migration to avoid hangs and avoid
+                // accidentally sanitizing secrets without a secure keystore destination.
+                tracing::info!(
+                    "Keychain access disabled; skipping secret hydration/migration on config load"
+                );
+            } else {
+                // Detect plaintext secrets in the loaded config *before* hydration.
+                // If they exist, we must sanitize persisted YAML even when keychain already has keys.
+                let had_plaintext_secrets = config.has_plaintext_secrets();
 
-            // Keychain-first: if secure storage has secrets, they override YAML values.
-            let _ = config.hydrate_secrets_sync();
+                // Keychain-first: if secure storage has secrets, they override YAML values.
+                let _ = config.hydrate_secrets_sync();
 
-            // Migrate YAML secrets into secure storage only when secure storage is empty.
-            let migrated = config.migrate_secrets_sync().unwrap_or(false);
+                // Migrate YAML secrets into secure storage only when secure storage is empty.
+                let migrated = config.migrate_secrets_sync().unwrap_or(false);
 
-            // If we either migrated secrets OR we detected plaintext secrets in the file,
-            // persist a sanitized config back to disk.
-            if had_plaintext_secrets || migrated {
-                let _ = config.save();
-            }
+                // If we either migrated secrets OR we detected plaintext secrets in the file,
+                // persist a sanitized config back to disk.
+                if had_plaintext_secrets || migrated {
+                    let _ = config.save();
+                }
 
-            // If we loaded from JSON and have no YAML, force a save to complete format migration
-            if !yaml_path.exists() && Self::legacy_json_path().exists() {
-                let _ = config.save();
-                if !Self::legacy_json_backup_path().exists() {
-                    let _ = fs::rename(Self::legacy_json_path(), Self::legacy_json_backup_path());
+                // If we loaded from JSON and have no YAML, force a save to complete format migration
+                if !yaml_path.exists() && Self::legacy_json_path().exists() {
+                    let _ = config.save();
+                    if !Self::legacy_json_backup_path().exists() {
+                        let _ =
+                            fs::rename(Self::legacy_json_path(), Self::legacy_json_backup_path());
+                    }
                 }
             }
         }
@@ -875,6 +887,7 @@ impl AppConfig {
     /// This is the preferred method for GUI/Tauri commands to avoid blocking the UI thread.
     pub async fn load_async() -> Self {
         let yaml_path = Self::default_path();
+        #[allow(unused_mut)] // config is mutated by hydrate_secrets/migrate_secrets
         let mut config = if tokio::fs::try_exists(&yaml_path).await.unwrap_or(false) {
             Self::load_from_path_async(&yaml_path).await
         } else {
@@ -893,28 +906,34 @@ impl AppConfig {
         // Async hydration/migration
         #[cfg(feature = "security")]
         {
-            let had_plaintext_secrets = config.has_plaintext_secrets();
+            if keychain_access_disabled() {
+                tracing::info!(
+                    "Keychain access disabled; skipping secret hydration/migration on async config load"
+                );
+            } else {
+                let had_plaintext_secrets = config.has_plaintext_secrets();
 
-            // Keychain-first precedence.
-            let _ = config.hydrate_secrets().await;
+                // Keychain-first precedence.
+                let _ = config.hydrate_secrets().await;
 
-            // Migrate YAML secrets into secure storage only if secure storage is empty.
-            let migrated = config.migrate_secrets().await.unwrap_or(false);
+                // Migrate YAML secrets into secure storage only if secure storage is empty.
+                let migrated = config.migrate_secrets().await.unwrap_or(false);
 
-            if had_plaintext_secrets || migrated {
-                let _ = config.save_async().await;
-            }
+                if had_plaintext_secrets || migrated {
+                    let _ = config.save_async().await;
+                }
 
-            // JSON -> YAML migration
-            if !tokio::fs::try_exists(&yaml_path).await.unwrap_or(false)
-                && tokio::fs::try_exists(Self::legacy_json_path())
-                    .await
-                    .unwrap_or(false)
-            {
-                let _ = config.save_async().await;
-                let backup_path = Self::legacy_json_backup_path();
-                if !tokio::fs::try_exists(&backup_path).await.unwrap_or(false) {
-                    let _ = tokio::fs::rename(Self::legacy_json_path(), backup_path).await;
+                // JSON -> YAML migration
+                if !tokio::fs::try_exists(&yaml_path).await.unwrap_or(false)
+                    && tokio::fs::try_exists(Self::legacy_json_path())
+                        .await
+                        .unwrap_or(false)
+                {
+                    let _ = config.save_async().await;
+                    let backup_path = Self::legacy_json_backup_path();
+                    if !tokio::fs::try_exists(&backup_path).await.unwrap_or(false) {
+                        let _ = tokio::fs::rename(Self::legacy_json_path(), backup_path).await;
+                    }
                 }
             }
         }
@@ -933,6 +952,14 @@ impl AppConfig {
 
         #[cfg(feature = "security")]
         {
+            if keychain_access_disabled() && self.has_plaintext_secrets() {
+                return Err(AppError::Config(
+                    "Cannot persist plaintext secrets while keychain access is disabled. \
+Set secrets via environment variables or re-enable keychain access (unset GESTURA_DISABLE_KEYCHAIN)."
+                        .to_string(),
+                ));
+            }
+
             // First, ensure all current secrets are saved to keystore
             let _ = self.migrate_secrets_sync();
 
@@ -974,6 +1001,14 @@ impl AppConfig {
 
         #[cfg(feature = "security")]
         {
+            if keychain_access_disabled() && self.has_plaintext_secrets() {
+                return Err(AppError::Config(
+                    "Cannot persist plaintext secrets while keychain access is disabled. \
+Set secrets via environment variables or re-enable keychain access (unset GESTURA_DISABLE_KEYCHAIN)."
+                        .to_string(),
+                ));
+            }
+
             // First, ensure all current secrets are saved to keystore
             // We ignore the "changed" boolean here as we just want to ensure consistency
             let _ = self.migrate_secrets().await;
@@ -1055,6 +1090,10 @@ impl AppConfig {
     /// Load secrets from keystore into the struct (sync)
     #[cfg(feature = "security")]
     pub fn hydrate_secrets_sync(&mut self) -> Result<()> {
+        if keychain_access_disabled() {
+            return Ok(());
+        }
+
         // OpenAI
         if let Some(c) = &mut self.llm.openai
             && let Some(secret) = get_keychain_secret_with_legacy_fallback(
@@ -1116,6 +1155,10 @@ impl AppConfig {
     /// Async version of hydrate secrets
     #[cfg(feature = "security")]
     pub async fn hydrate_secrets(&mut self) -> Result<()> {
+        if keychain_access_disabled() {
+            return Ok(());
+        }
+
         let storage = create_secure_storage();
 
         // Helper macro to reduce boilerplate.
@@ -1211,6 +1254,10 @@ impl AppConfig {
     /// Returns true if any secrets were migrated.
     #[cfg(feature = "security")]
     pub fn migrate_secrets_sync(&self) -> Result<bool> {
+        if keychain_access_disabled() {
+            return Ok(false);
+        }
+
         let mut changed = false;
 
         // OpenAI
@@ -1280,6 +1327,10 @@ impl AppConfig {
     /// Async version of migrate secrets
     #[cfg(feature = "security")]
     pub async fn migrate_secrets(&self) -> Result<bool> {
+        if keychain_access_disabled() {
+            return Ok(false);
+        }
+
         let storage = create_secure_storage();
         let mut changed = false;
 
@@ -1370,16 +1421,133 @@ impl AppConfig {
     }
 
     /// Get a config value by dot-notation key (e.g., "llm.primary")
+    ///
+    /// This method provides a single source of truth for config field access,
+    /// preventing drift between CLI presentation layer and core config structure.
+    ///
+    /// # Supported Keys
+    ///
+    /// - Core: `hotkey_listen`, `grace_period_secs`, `nats_url`
+    /// - LLM: `llm.primary`, `llm.fallback`, `llm.openai.model`, `llm.anthropic.model`, etc.
+    /// - Voice: `voice.provider`, `voice.local_model_path`
+    /// - UI: `ui.theme_mode`
+    /// - Pipeline: `pipeline.max_history_messages`, `pipeline.auto_compact_threshold_percent`, etc.
+    ///
+    /// Returns `None` for unknown keys.
     pub fn get(&self, key: &str) -> Option<String> {
         match key {
+            // Core settings
             "hotkey_listen" => Some(self.hotkey_listen.clone()),
             "grace_period_secs" => Some(self.grace_period_secs.to_string()),
-            "llm.primary" => Some(self.llm.primary.clone()),
-            "voice.provider" => Some(self.voice.provider.clone()),
-            "ui.theme_mode" => Some(self.ui.theme_mode.clone()),
             "nats_url" => Some(self.nats_url.clone()),
+
+            // LLM settings
+            "llm.primary" => Some(self.llm.primary.clone()),
+            "llm.fallback" => self.llm.fallback.clone(),
+            "llm.openai.model" => self
+                .llm
+                .openai
+                .as_ref()
+                .map(|c| c.model.clone())
+                .filter(|s| !s.is_empty()),
+            "llm.openai.base_url" => self.llm.openai.as_ref().and_then(|c| c.base_url.clone()),
+            "llm.anthropic.model" => self
+                .llm
+                .anthropic
+                .as_ref()
+                .map(|c| c.model.clone())
+                .filter(|s| !s.is_empty()),
+            "llm.anthropic.base_url" => {
+                self.llm.anthropic.as_ref().and_then(|c| c.base_url.clone())
+            }
+            "llm.grok.model" => self
+                .llm
+                .grok
+                .as_ref()
+                .map(|c| c.model.clone())
+                .filter(|s| !s.is_empty()),
+            "llm.grok.base_url" => self.llm.grok.as_ref().and_then(|c| c.base_url.clone()),
+            "llm.ollama.model" => self
+                .llm
+                .ollama
+                .as_ref()
+                .map(|c| c.model.clone())
+                .filter(|s| !s.is_empty()),
+            "llm.ollama.base_url" => self.llm.ollama.as_ref().map(|c| c.base_url.clone()),
+
+            // Voice settings
+            "voice.provider" => Some(self.voice.provider.clone()),
+            "voice.local_model_path" => self
+                .voice
+                .local_model_path
+                .clone()
+                .or_else(|| Some("(not set)".to_string())),
+            "voice.input_path" => self.voice.input_path.clone(),
+            "voice.audio_device" => self.voice.audio_device.clone(),
+
+            // UI settings
+            "ui.theme_mode" => Some(self.ui.theme_mode.clone()),
+            "ui.accent" => self.ui.accent.clone(),
+
+            // Pipeline settings
+            "pipeline.max_history_messages" => Some(self.pipeline.max_history_messages.to_string()),
+            "pipeline.auto_compact_threshold_percent" => {
+                Some(self.pipeline.auto_compact_threshold_percent.to_string())
+            }
+            "pipeline.compaction_strategy" => {
+                Some(format!("{:?}", self.pipeline.compaction_strategy))
+            }
+            "pipeline.max_context_tokens" => Some(self.pipeline.max_context_tokens.to_string()),
+            "pipeline.log_token_usage" => Some(self.pipeline.log_token_usage.to_string()),
+
+            // Developer settings
+            "developer.enable_simulators" => Some(self.developer.enable_simulators.to_string()),
+            "developer.verbose_ble_logging" => Some(self.developer.verbose_ble_logging.to_string()),
+
             _ => None,
         }
+    }
+
+    /// List all available config keys
+    ///
+    /// Returns a sorted list of all dot-notation keys that can be used with `get()`.
+    pub fn list_keys() -> Vec<&'static str> {
+        let mut keys = vec![
+            // Core
+            "hotkey_listen",
+            "grace_period_secs",
+            "nats_url",
+            // LLM
+            "llm.primary",
+            "llm.fallback",
+            "llm.openai.model",
+            "llm.openai.base_url",
+            "llm.anthropic.model",
+            "llm.anthropic.base_url",
+            "llm.grok.model",
+            "llm.grok.base_url",
+            "llm.ollama.model",
+            "llm.ollama.base_url",
+            // Voice
+            "voice.provider",
+            "voice.local_model_path",
+            "voice.input_path",
+            "voice.audio_device",
+            // UI
+            "ui.theme_mode",
+            "ui.accent",
+            // Pipeline
+            "pipeline.max_history_messages",
+            "pipeline.auto_compact_threshold_percent",
+            "pipeline.compaction_strategy",
+            "pipeline.max_context_tokens",
+            "pipeline.log_token_usage",
+            // Developer
+            "developer.enable_simulators",
+            "developer.verbose_ble_logging",
+        ];
+        keys.sort();
+        keys
     }
 
     /// Apply environment variable overrides to the configuration

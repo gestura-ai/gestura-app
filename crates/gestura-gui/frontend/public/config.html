@@ -3168,8 +3168,17 @@
 
                 // OpenAI LLM settings
                 const openaiLlmApiKey = document.getElementById('openaiLlmApiKey');
-                // Never populate API keys from config. Keys live in OS secure storage.
-                if (openaiLlmApiKey) openaiLlmApiKey.value = '';
+                // Never populate actual API keys from config. Keys live in OS secure storage.
+                // Show placeholder if key exists in keychain
+                if (openaiLlmApiKey) {
+                    if (isTauriAvailable()) {
+                        const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'openai' });
+                        openaiLlmApiKey.value = '';
+                        openaiLlmApiKey.placeholder = hasKey ? '••••••••••••••••' : 'sk-...';
+                    } else {
+                        openaiLlmApiKey.value = '';
+                    }
+                }
                 const openaiLlmModel = document.getElementById('openaiLlmModel');
                 if (openaiLlmModel) openaiLlmModel.value = llmConfig?.openai?.model || 'gpt-4o';
                 // Store for later selection after dynamic models are loaded
@@ -3180,7 +3189,15 @@
 
                 // Anthropic settings
                 const anthropicApiKey = document.getElementById('anthropicApiKey');
-                if (anthropicApiKey) anthropicApiKey.value = '';
+                if (anthropicApiKey) {
+                    if (isTauriAvailable()) {
+                        const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'anthropic' });
+                        anthropicApiKey.value = '';
+                        anthropicApiKey.placeholder = hasKey ? '••••••••••••••••' : 'sk-ant-...';
+                    } else {
+                        anthropicApiKey.value = '';
+                    }
+                }
                 const anthropicLlmModel = document.getElementById('anthropicLlmModel');
                 // Note: Default matches gestura_core::DEFAULT_ANTHROPIC_MODEL
                 if (anthropicLlmModel) anthropicLlmModel.value = llmConfig?.anthropic?.model || 'claude-sonnet-4-20250514';
@@ -3192,7 +3209,15 @@
 
                 // Grok settings
                 const grokApiKey = document.getElementById('grokApiKey');
-                if (grokApiKey) grokApiKey.value = '';
+                if (grokApiKey) {
+                    if (isTauriAvailable()) {
+                        const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'grok' });
+                        grokApiKey.value = '';
+                        grokApiKey.placeholder = hasKey ? '••••••••••••••••' : 'xai-...';
+                    } else {
+                        grokApiKey.value = '';
+                    }
+                }
                 const grokLlmModel = document.getElementById('grokLlmModel');
                 if (grokLlmModel) grokLlmModel.value = llmConfig?.grok?.model || 'grok-3';
                 // Store saved model for restoration after dynamic loading
@@ -3225,7 +3250,15 @@
 
                 // OpenAI STT API key (separate from LLM)
                 const openaiApiKey = document.getElementById('openaiApiKey');
-                if (openaiApiKey) openaiApiKey.value = '';
+                if (openaiApiKey) {
+                    if (isTauriAvailable()) {
+                        const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'openai' });
+                        openaiApiKey.value = '';
+                        openaiApiKey.placeholder = hasKey ? '••••••••••••••••' : 'sk-...';
+                    } else {
+                        openaiApiKey.value = '';
+                    }
+                }
 
                 // OpenAI STT model selection
                 // Note: Default matches gestura_core::DEFAULT_OPENAI_STT_MODEL
@@ -3337,9 +3370,28 @@
                 // Web Search defaults (load from backend config if available)
                 const webSearchConfig = backendConfig?.web_search;
                 document.getElementById('webSearchProvider').value = webSearchConfig?.provider || 'local';
-                // Never populate API keys from config. Keys live in OS secure storage.
-                document.getElementById('braveSearchKey').value = '';
-                document.getElementById('serpapiKey').value = '';
+                // Never populate actual API keys from config. Keys live in OS secure storage.
+                // Show placeholder if key exists in keychain
+                const braveSearchKeyInput = document.getElementById('braveSearchKey');
+                if (braveSearchKeyInput) {
+                    if (isTauriAvailable()) {
+                        const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'brave' });
+                        braveSearchKeyInput.value = '';
+                        braveSearchKeyInput.placeholder = hasKey ? '••••••••••••••••' : 'BSA...';
+                    } else {
+                        braveSearchKeyInput.value = '';
+                    }
+                }
+                const serpapiKeyInput = document.getElementById('serpapiKey');
+                if (serpapiKeyInput) {
+                    if (isTauriAvailable()) {
+                        const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'serpapi' });
+                        serpapiKeyInput.value = '';
+                        serpapiKeyInput.placeholder = hasKey ? '••••••••••••••••' : '';
+                    } else {
+                        serpapiKeyInput.value = '';
+                    }
+                }
                 document.getElementById('maxSearchResults').value = webSearchConfig?.max_results || 5;
                 document.getElementById('searchTimeout').value = webSearchConfig?.timeout_secs || 30;
                 document.getElementById('extractContent').checked = webSearchConfig?.extract_content !== false;
@@ -3955,26 +4007,36 @@
             const token = nextRefreshToken('openaiModels');
             const preferredValue = (llmModelSelectionCache.openai || modelSelect.value || window._savedOpenAIModel || '').trim();
 
-            // Get API key from input field or keychain
+            // Get API key from input field
             const apiKeyInput = document.getElementById('openaiLlmApiKey');
-            const apiKey = (apiKeyInput?.value || '').trim();
+            const apiKeyFromInput = (apiKeyInput?.value || '').trim();
 
             try {
                 setDropdownLoading('openaiLlmModel', true);
 
-                // Check if API key exists (either in input or keychain)
-                const hasKey = apiKey.length > 0 || await window.__TAURI__.core.invoke('has_api_key', { provider: 'openai' });
+                // Check if API key exists in input field
+                const hasKeyInInput = apiKeyFromInput.length > 0;
 
-                if (!hasKey) {
-                    // No API key available - show placeholder message
+                // Check if API key exists in keychain
+                const hasKeyInKeychain = !hasKeyInInput && await window.__TAURI__.core.invoke('has_api_key', { provider: 'openai' });
+
+                if (!hasKeyInInput && !hasKeyInKeychain) {
+                    // No API key available anywhere - show placeholder message
                     modelSelect.innerHTML = '<option value="">Enter API key to load models</option>';
                     modelSelect.disabled = true;
                     setDropdownError('openaiLlmModel', 'Enter your OpenAI API key above to load available models.');
                     return;
                 }
 
-                // API key exists - fetch models
-                const models = await window.__TAURI__.core.invoke('list_openai_models', { api_key: apiKey });
+                // Show indicator if using keychain
+                if (hasKeyInKeychain && !hasKeyInInput) {
+                    console.log('[OpenAI] Using API key from secure storage (keychain)');
+                    // Optional: Add visual indicator that key is from keychain
+                    // This helps users understand why models are loading without visible key
+                }
+
+                // API key exists - fetch models (backend will check keychain if apiKey is empty)
+                const models = await window.__TAURI__.core.invoke('list_openai_models', { api_key: apiKeyFromInput });
                 if (!isLatestRefreshToken('openaiModels', token)) return;
 
                 modelSelect.disabled = false;
@@ -4026,26 +4088,34 @@
             const token = nextRefreshToken('anthropicModels');
             const preferredValue = (llmModelSelectionCache.anthropic || modelSelect.value || window._savedAnthropicModel || '').trim();
 
-            // Get API key from input field or keychain
+            // Get API key from input field
             const apiKeyInput = document.getElementById('anthropicApiKey');
-            const apiKey = (apiKeyInput?.value || '').trim();
+            const apiKeyFromInput = (apiKeyInput?.value || '').trim();
 
             try {
                 setDropdownLoading('anthropicLlmModel', true);
 
-                // Check if API key exists (either in input or keychain)
-                const hasKey = apiKey.length > 0 || await window.__TAURI__.core.invoke('has_api_key', { provider: 'anthropic' });
+                // Check if API key exists in input field
+                const hasKeyInInput = apiKeyFromInput.length > 0;
 
-                if (!hasKey) {
-                    // No API key available - show placeholder message
+                // Check if API key exists in keychain
+                const hasKeyInKeychain = !hasKeyInInput && await window.__TAURI__.core.invoke('has_api_key', { provider: 'anthropic' });
+
+                if (!hasKeyInInput && !hasKeyInKeychain) {
+                    // No API key available anywhere - show placeholder message
                     modelSelect.innerHTML = '<option value="">Enter API key to load models</option>';
                     modelSelect.disabled = true;
                     setDropdownError('anthropicLlmModel', 'Enter your Anthropic API key above to load available models.');
                     return;
                 }
 
-                // API key exists - fetch models
-                const models = await window.__TAURI__.core.invoke('list_anthropic_models', { api_key: apiKey });
+                // Show indicator if using keychain
+                if (hasKeyInKeychain && !hasKeyInInput) {
+                    console.log('[Anthropic] Using API key from secure storage (keychain)');
+                }
+
+                // API key exists - fetch models (backend will check keychain if apiKey is empty)
+                const models = await window.__TAURI__.core.invoke('list_anthropic_models', { api_key: apiKeyFromInput });
                 if (!isLatestRefreshToken('anthropicModels', token)) return;
 
                 modelSelect.disabled = false;
@@ -4096,26 +4166,34 @@
             const token = nextRefreshToken('grokModels');
             const preferredValue = (llmModelSelectionCache.grok || modelSelect.value || window._savedGrokModel || '').trim();
 
-            // Get API key from input field or keychain
+            // Get API key from input field
             const apiKeyInput = document.getElementById('grokApiKey');
-            const apiKey = (apiKeyInput?.value || '').trim();
+            const apiKeyFromInput = (apiKeyInput?.value || '').trim();
 
             try {
                 setDropdownLoading('grokLlmModel', true);
 
-                // Check if API key exists (either in input or keychain)
-                const hasKey = apiKey.length > 0 || await window.__TAURI__.core.invoke('has_api_key', { provider: 'grok' });
+                // Check if API key exists in input field
+                const hasKeyInInput = apiKeyFromInput.length > 0;
 
-                if (!hasKey) {
-                    // No API key available - show placeholder message
+                // Check if API key exists in keychain
+                const hasKeyInKeychain = !hasKeyInInput && await window.__TAURI__.core.invoke('has_api_key', { provider: 'grok' });
+
+                if (!hasKeyInInput && !hasKeyInKeychain) {
+                    // No API key available anywhere - show placeholder message
                     modelSelect.innerHTML = '<option value="">Enter API key to load models</option>';
                     modelSelect.disabled = true;
                     setDropdownError('grokLlmModel', 'Enter your Grok API key above to load available models.');
                     return;
                 }
 
-                // API key exists - fetch models
-                const models = await window.__TAURI__.core.invoke('list_grok_models', { api_key: apiKey });
+                // Show indicator if using keychain
+                if (hasKeyInKeychain && !hasKeyInInput) {
+                    console.log('[Grok] Using API key from secure storage (keychain)');
+                }
+
+                // API key exists - fetch models (backend will check keychain if apiKey is empty)
+                const models = await window.__TAURI__.core.invoke('list_grok_models', { api_key: apiKeyFromInput });
                 if (!isLatestRefreshToken('grokModels', token)) return;
 
                 modelSelect.disabled = false;
@@ -4266,7 +4344,7 @@
             const statusSpan = document.getElementById('sttModelStatus');
             const apiKeyInput = document.getElementById('openaiApiKey') || document.getElementById('openaiLlmApiKey');
             const currentValue = modelSelect?.value;
-            const apiKey = (apiKeyInput?.value || '').trim();
+            const apiKeyFromInput = (apiKeyInput?.value || '').trim();
 
             if (!modelSelect) return;
 
@@ -4274,19 +4352,27 @@
                 setDropdownLoading('openaiSttModel', true);
                 if (statusSpan) statusSpan.textContent = 'Loading models...';
 
-                // Check if API key exists (either in input or keychain)
-                const hasKey = apiKey.length > 0 || await window.__TAURI__.core.invoke('has_api_key', { provider: 'openai' });
+                // Check if API key exists in input field
+                const hasKeyInInput = apiKeyFromInput.length > 0;
 
-                if (!hasKey) {
-                    // No API key available - show placeholder message
+                // Check if API key exists in keychain
+                const hasKeyInKeychain = !hasKeyInInput && await window.__TAURI__.core.invoke('has_api_key', { provider: 'openai' });
+
+                if (!hasKeyInInput && !hasKeyInKeychain) {
+                    // No API key available anywhere - show placeholder message
                     modelSelect.innerHTML = '<option value="">Enter API key to load models</option>';
                     modelSelect.disabled = true;
                     if (statusSpan) statusSpan.textContent = '(API key required)';
                     return;
                 }
 
-                // API key exists - fetch models
-                const models = await window.__TAURI__.core.invoke('list_openai_stt_models', { api_key: apiKey });
+                // Show indicator if using keychain
+                if (hasKeyInKeychain && !hasKeyInInput) {
+                    console.log('[OpenAI STT] Using API key from secure storage (keychain)');
+                }
+
+                // API key exists - fetch models (backend will check keychain if apiKey is empty)
+                const models = await window.__TAURI__.core.invoke('list_openai_stt_models', { api_key: apiKeyFromInput });
 
                 modelSelect.disabled = false;
                 modelSelect.innerHTML = '';

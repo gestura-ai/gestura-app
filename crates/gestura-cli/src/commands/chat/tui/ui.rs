@@ -12,6 +12,7 @@ use ratatui::{
 };
 
 use super::app::{ConfirmAction, Theme, TuiApp, TuiMode};
+use super::markdown;
 use super::widgets::composer;
 
 /// Parsed segment of a message (text or code block)
@@ -354,6 +355,182 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     result
 }
 
+/// Word-wrap already-styled spans to fit within `max_width`.
+///
+/// This uses the same simple whitespace-collapsing approach as [`wrap_text`]
+/// (i.e., it wraps on `split_whitespace()` boundaries).
+fn wrap_spans(spans: &[Span<'static>], max_width: usize) -> Vec<Vec<Span<'static>>> {
+    if max_width == 0 {
+        return vec![spans.to_vec()];
+    }
+
+    #[derive(Clone, Debug)]
+    struct Token {
+        text: String,
+        style: Style,
+    }
+
+    let mut tokens: Vec<Token> = Vec::new();
+    for span in spans {
+        let style = span.style;
+        for w in span.content.as_ref().split_whitespace() {
+            tokens.push(Token {
+                text: w.to_string(),
+                style,
+            });
+        }
+    }
+
+    // Preserve blank lines.
+    if tokens.is_empty() {
+        return vec![Vec::new()];
+    }
+
+    let mut result: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut current: Vec<Span<'static>> = Vec::new();
+    let mut current_len = 0usize;
+    let mut last_style = Style::default();
+
+    for token in tokens {
+        // If token itself is longer than max_width, break it (best effort).
+        if token.text.len() > max_width {
+            if !current.is_empty() {
+                result.push(current);
+                current = Vec::new();
+                current_len = 0;
+            }
+
+            // If the available width is too small to safely hyphenate, just
+            // emit the long token as-is to avoid infinite loops.
+            if max_width <= 1 {
+                result.push(vec![Span::styled(token.text, token.style)]);
+                continue;
+            }
+
+            let mut remaining = token.text.as_str();
+            while remaining.len() > max_width {
+                let take = max_width.saturating_sub(1).max(1);
+                let (chunk, rest) = remaining.split_at(take);
+                result.push(vec![Span::styled(format!("{}-", chunk), token.style)]);
+                remaining = rest;
+            }
+            if !remaining.is_empty() {
+                current = vec![Span::styled(remaining.to_string(), token.style)];
+                current_len = remaining.len();
+                last_style = token.style;
+            }
+            continue;
+        }
+
+        let new_len = if current.is_empty() {
+            token.text.len()
+        } else {
+            current_len + 1 + token.text.len()
+        };
+
+        if new_len <= max_width {
+            if !current.is_empty() {
+                current.push(Span::styled(" ".to_string(), last_style));
+                current_len += 1;
+            }
+            let token_len = token.text.len();
+            current.push(Span::styled(token.text, token.style));
+            current_len += token_len;
+            last_style = token.style;
+        } else {
+            if !current.is_empty() {
+                result.push(current);
+            }
+            let token_len = token.text.len();
+            current = vec![Span::styled(token.text, token.style)];
+            current_len = token_len;
+            last_style = token.style;
+        }
+    }
+
+    if !current.is_empty() {
+        result.push(current);
+    }
+
+    result
+}
+
+fn find_query_ranges(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+
+    let text_lower = text.to_lowercase();
+    let query_lower = query.to_lowercase();
+
+    let mut ranges = Vec::new();
+    let mut pos = 0usize;
+    while let Some(found) = text_lower[pos..].find(&query_lower) {
+        let start = pos + found;
+        ranges.push(start..start + query_lower.len());
+        pos = start + query_lower.len();
+    }
+
+    ranges
+}
+
+fn apply_highlight_ranges_to_spans(
+    spans: &[Span<'static>],
+    ranges: &[std::ops::Range<usize>],
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    if ranges.is_empty() {
+        return spans.to_vec();
+    }
+
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut offset = 0usize;
+
+    for span in spans {
+        let content = span.content.as_ref();
+        let span_len = content.len();
+        let span_start = offset;
+        let span_end = offset + span_len;
+
+        let mut last = 0usize;
+        for range in ranges {
+            if range.end <= span_start || range.start >= span_end {
+                continue;
+            }
+
+            let overlap_start = range.start.saturating_sub(span_start).min(span_len);
+            let overlap_end = range.end.saturating_sub(span_start).min(span_len);
+
+            if overlap_start > last {
+                out.push(Span::styled(
+                    content[last..overlap_start].to_string(),
+                    span.style,
+                ));
+            }
+
+            if overlap_end > overlap_start {
+                out.push(Span::styled(
+                    content[overlap_start..overlap_end].to_string(),
+                    span.style
+                        .fg(theme.header_fg)
+                        .bg(theme.streaming)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+
+            last = overlap_end;
+        }
+
+        if last < span_len {
+            out.push(Span::styled(content[last..].to_string(), span.style));
+        }
+
+        offset += span_len;
+    }
+
+    out
+}
+
 // Note: composer sizing + cursor mapping helpers live in `widgets::composer`.
 
 /// Render the entire TUI
@@ -461,10 +638,10 @@ fn render_too_small_message(app: &TuiApp, frame: &mut Frame, area: Rect) {
 fn render_compact_header(app: &TuiApp, frame: &mut Frame, area: Rect) {
     use ratatui::widgets::{Block, Borders};
 
-    // Get provider and model info
-    let provider = app.config.llm.primary.as_str();
+    // Get provider and model info (respects session overrides)
+    let provider = app.provider_name();
     let model_id = app.model_name();
-    let formatted_model = gestura_core::format_model_name(provider, model_id);
+    let formatted_model = gestura_core::format_model_name(&provider, &model_id);
 
     // Build header content parts
     let mut parts: Vec<String> = vec![formatted_model];
@@ -499,6 +676,9 @@ fn render_compact_header(app: &TuiApp, frame: &mut Frame, area: Rect) {
         TuiMode::Search => "SEARCH",
         TuiMode::ModelPicker => "MODEL",
         TuiMode::Activity => "ACTIVITY",
+        TuiMode::Settings => "SETTINGS",
+        TuiMode::Workflows => "WORKFLOWS",
+        TuiMode::Tools => "TOOLS",
     };
     parts.push(mode_str.to_string());
 
@@ -574,6 +754,7 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
             } else {
                 None
             };
+            let should_highlight = match_ranges.is_some() && has_search;
 
             let (prefix, base_style) = match msg.role.as_str() {
                 "user" => ("> ", Style::default().fg(theme.user_msg)),
@@ -645,43 +826,44 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
                 items.push(ListItem::new(Line::from("")));
             }
             let mut is_first = true;
-            let mut char_offset = 0usize; // Track position in original content
 
             for segment in segments {
                 match segment {
                     MessageSegment::Text(text) => {
-                        // Apply word wrapping to the text
-                        let wrapped_lines = wrap_text(&text, wrap_width);
+                        // Render markdown styling first, then wrap styled spans.
+                        let rendered =
+                            markdown::markdown_to_text_with_base(&text, theme, base_style);
 
-                        for wrapped_line in wrapped_lines {
-                            let display_prefix = if is_first {
-                                is_first = false;
-                                prefix
-                            } else if prefix.is_empty() {
-                                ""
-                            } else {
-                                "  "
-                            };
+                        for rendered_line in rendered.lines {
+                            let wrapped = wrap_spans(&rendered_line.spans, wrap_width);
+                            for wrapped_spans in wrapped {
+                                let display_prefix = if is_first {
+                                    is_first = false;
+                                    prefix
+                                } else if prefix.is_empty() {
+                                    ""
+                                } else {
+                                    "  "
+                                };
 
-                            // Build spans with search highlighting
-                            let spans = if let Some(ranges) = match_ranges {
-                                highlight_search_matches(
-                                    display_prefix,
-                                    &wrapped_line,
-                                    char_offset,
-                                    ranges,
-                                    base_style,
-                                    theme,
-                                )
-                            } else {
-                                vec![Span::styled(
-                                    format!("{}{}", display_prefix, wrapped_line),
-                                    base_style,
-                                )]
-                            };
+                                let mut spans: Vec<Span<'static>> = Vec::new();
+                                spans.push(Span::styled(display_prefix.to_string(), base_style));
 
-                            items.push(ListItem::new(Line::from(spans)));
-                            char_offset += wrapped_line.len() + 1; // +1 for newline
+                                if should_highlight {
+                                    let visible: String =
+                                        wrapped_spans.iter().map(|s| s.content.as_ref()).collect();
+                                    let ranges = find_query_ranges(&visible, search_query);
+                                    spans.extend(apply_highlight_ranges_to_spans(
+                                        &wrapped_spans,
+                                        &ranges,
+                                        theme,
+                                    ));
+                                } else {
+                                    spans.extend(wrapped_spans);
+                                }
+
+                                items.push(ListItem::new(Line::from(spans)));
+                            }
                         }
                     }
                     MessageSegment::CodeBlock { language, code } => {
@@ -723,8 +905,6 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
                         ))));
                         items.push(ListItem::new(Line::from("")));
                         is_first = false;
-                        // Update char_offset for code block (including markers)
-                        char_offset += code.len() + 10; // Approximate for code block markers
                     }
                 }
             }
@@ -965,71 +1145,10 @@ fn render_activity_overlay(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     frame.render_stateful_widget(list, popup_area, &mut app.activity_state.list_state);
 }
 
-/// Highlight search matches in a line of text
-fn highlight_search_matches(
-    prefix: &str,
-    text: &str,
-    char_offset: usize,
-    ranges: &[std::ops::Range<usize>],
-    base_style: Style,
-    theme: &super::app::Theme,
-) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    spans.push(Span::styled(prefix.to_string(), base_style));
-
-    let text_start = char_offset;
-    let text_end = char_offset + text.len();
-
-    // Find ranges that overlap with this line
-    let mut last_end = 0usize;
-    for range in ranges {
-        // Check if range overlaps with this line
-        if range.end <= text_start || range.start >= text_end {
-            continue;
-        }
-
-        // Calculate overlap within this line
-        let overlap_start = range.start.saturating_sub(text_start).min(text.len());
-        let overlap_end = (range.end - text_start).min(text.len());
-
-        // Add text before the match
-        if overlap_start > last_end {
-            spans.push(Span::styled(
-                text[last_end..overlap_start].to_string(),
-                base_style,
-            ));
-        }
-
-        // Add highlighted match
-        if overlap_end > overlap_start {
-            spans.push(Span::styled(
-                text[overlap_start..overlap_end].to_string(),
-                Style::default()
-                    .fg(theme.header_fg)
-                    .bg(theme.streaming)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-
-        last_end = overlap_end;
-    }
-
-    // Add remaining text after last match
-    if last_end < text.len() {
-        spans.push(Span::styled(text[last_end..].to_string(), base_style));
-    }
-
-    // If no matches were found in this line, just return the whole text
-    if spans.len() == 1 {
-        spans.push(Span::styled(text.to_string(), base_style));
-    }
-
-    spans
-}
-
 /// Render the tools tab
 fn render_tools_tab(app: &TuiApp, frame: &mut Frame, area: Rect) {
-    let tools_text = gestura_core::tools::render_tools_overview();
+    let tools_markdown = gestura_core::tools::render_tools_overview();
+    let tools_text = markdown::markdown_to_text(&tools_markdown, &app.theme);
     let paragraph = Paragraph::new(tools_text)
         .block(
             Block::default()
@@ -1126,10 +1245,11 @@ fn render_status_bar(app: &TuiApp, frame: &mut Frame, area: Rect) {
         .fg(app.theme.status_fg)
         .add_modifier(Modifier::DIM);
 
-    let provider = app.config.llm.primary.as_str();
+    // Use effective provider/model (respects session overrides via /model)
+    let provider = app.provider_name();
     let model = app.model_name();
-    let formatted_model = gestura_core::format_model_name(provider, model);
-    let is_local = gestura_core::is_local_provider(provider);
+    let formatted_model = gestura_core::format_model_name(&provider, &model);
+    let is_local = gestura_core::is_local_provider(&provider);
 
     let mut stats_text = if is_compact {
         // Compact format for narrow terminals
@@ -1268,12 +1388,13 @@ fn render_settings_tab(app: &TuiApp, frame: &mut Frame, area: Rect) {
         ]))
     };
 
-    // 1. Provider
-    items.push(render_field(0, "Provider", &app.config.llm.primary));
+    // 1. Provider (show effective provider, respects session overrides)
+    let provider = app.provider_name();
+    items.push(render_field(0, "Provider", &provider));
 
-    // 2. Model
+    // 2. Model (show effective model, respects session overrides)
     let model = app.model_name();
-    items.push(render_field(1, "Model", model));
+    items.push(render_field(1, "Model", &model));
 
     // 3. System Prompt
     let sys_prompt = app.system_prompt.as_deref().unwrap_or("Default");

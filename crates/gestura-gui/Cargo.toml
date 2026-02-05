@@ -26,7 +26,7 @@ image.workspace = true
 
 [features]
 # Default features for production builds - voice-local is always enabled
-default = ["voice-local"]
+default = ["voice-local", "security"]
 # Enable NATS MQ integration
 nats = ["dep:async-nats", "gestura-core/nats"]
 # Local voice via whisper.cpp bindings

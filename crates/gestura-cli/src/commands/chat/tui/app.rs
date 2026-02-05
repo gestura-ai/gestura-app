@@ -291,6 +291,12 @@ pub enum TuiMode {
     ModelPicker,
     /// Agent activity overlay is displayed
     Activity,
+    /// Settings submenu mode - navigating settings tab
+    Settings,
+    /// Workflows submenu mode - navigating workflows tab
+    Workflows,
+    /// Tools submenu mode - viewing tools tab
+    Tools,
 }
 
 /// Types of confirmation dialogs
@@ -1022,25 +1028,32 @@ impl TuiApp {
         }
     }
 
-    /// Get the current model name from config
-    pub fn model_name(&self) -> &str {
-        if self.config.llm.primary == "openai" {
-            self.config
-                .llm
-                .openai
-                .as_ref()
-                .map(|o| o.model.as_str())
-                .unwrap_or("default")
-        } else if self.config.llm.primary == "anthropic" {
-            self.config
-                .llm
-                .anthropic
-                .as_ref()
-                .map(|a| a.model.as_str())
-                .unwrap_or("default")
-        } else {
-            "default"
-        }
+    /// Get the effective model name for display (respects session overrides).
+    ///
+    /// This delegates to the same precedence logic used by the pipeline to ensure
+    /// the UI always shows the model that will actually be used for inference.
+    ///
+    /// Precedence:
+    /// 1) `session.state.llm_config` (session-scoped overrides via `/model`)
+    /// 2) legacy `session.model` hint (supports `provider:model`)
+    /// 3) `config.llm.primary` + provider default model
+    pub fn model_name(&self) -> String {
+        let (_provider, model) = super::effective_provider_model_for_ui(self);
+        model
+    }
+
+    /// Get the effective provider name for display (respects session overrides).
+    ///
+    /// This delegates to the same precedence logic used by the pipeline to ensure
+    /// the UI always shows the provider that will actually be used for inference.
+    ///
+    /// Precedence:
+    /// 1) `session.state.llm_config.provider` (session-scoped overrides via `/model`)
+    /// 2) legacy `session.model` hint (supports `provider:model`)
+    /// 3) `config.llm.primary`
+    pub fn provider_name(&self) -> String {
+        let (provider, _model) = super::effective_provider_model_for_ui(self);
+        provider
     }
 
     /// Add a message to the chat

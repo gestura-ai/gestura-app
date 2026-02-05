@@ -114,6 +114,11 @@ pub fn requires_confirmation(permission_level: PermissionLevel, is_write_operati
 /// This classifier is intentionally conservative.
 pub fn is_write_operation(tool_name: &str, arguments: &str) -> bool {
     match tool_name {
+        // Screen capture / recording is privacy-sensitive and produces artifacts on disk.
+        // Treat as write/side-effecting so it is blocked in Sandbox and requires confirmation
+        // in Restricted.
+        "screenshot" | "screen_record" | "screen" => true,
+
         // Shell commands can be read-only (e.g. `pwd`, `ls`). Use a conservative classifier.
         "shell" | "bash" | "execute" => is_shell_command_write_operation(arguments),
 
@@ -264,6 +269,37 @@ mod tests {
         let eval = evaluate_tool_call(PermissionLevel::Sandbox, "file", &read);
         assert!(!eval.is_write_operation);
         assert_eq!(eval.decision, ToolCallDecision::Allowed);
+    }
+
+    #[test]
+    fn evaluate_blocks_screen_capture_in_sandbox() {
+        let args = serde_json::json!({"output_path": "./artifacts/screen.png"}).to_string();
+
+        let eval = evaluate_tool_call(PermissionLevel::Sandbox, "screenshot", &args);
+        assert!(eval.is_write_operation);
+        assert!(matches!(eval.decision, ToolCallDecision::Blocked { .. }));
+    }
+
+    #[test]
+    fn evaluate_requires_confirmation_for_screen_capture_in_restricted() {
+        let args = serde_json::json!({"output_path": "./artifacts/screen.png"}).to_string();
+
+        let eval = evaluate_tool_call(PermissionLevel::Restricted, "screenshot", &args);
+        assert!(eval.is_write_operation);
+        assert!(matches!(
+            eval.decision,
+            ToolCallDecision::RequiresConfirmation(_)
+        ));
+    }
+
+    #[test]
+    fn evaluate_blocks_screen_record_in_sandbox() {
+        let args = serde_json::json!({"operation": "start", "output_path": "./artifacts/rec.mp4"})
+            .to_string();
+
+        let eval = evaluate_tool_call(PermissionLevel::Sandbox, "screen_record", &args);
+        assert!(eval.is_write_operation);
+        assert!(matches!(eval.decision, ToolCallDecision::Blocked { .. }));
     }
 
     #[test]

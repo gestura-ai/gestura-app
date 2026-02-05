@@ -20,6 +20,7 @@ pub mod permissions;
 pub mod policy;
 pub mod registry;
 pub mod schemas;
+pub mod screen;
 pub mod shell;
 pub mod web;
 
@@ -31,6 +32,7 @@ pub use registry::{
     ToolDefinition, all_tools, find_tool, looks_like_capabilities_question,
     looks_like_tools_question, render_capabilities, render_tool_detail, render_tools_overview,
 };
+pub use screen::ScreenTools;
 pub use shell::ShellTools;
 pub use web::WebTools;
 
@@ -76,6 +78,380 @@ pub mod shell_async {
         .map_err(|e| {
             crate::error::AppError::Io(std::io::Error::other(format!("Task join error: {}", e)))
         })?
+    }
+}
+
+/// Async screen capture operations for pipeline
+pub mod screen_async {
+    use super::*;
+    use base64::Engine;
+    use serde::Serialize;
+    use std::path::Path;
+
+    #[derive(Debug, Serialize)]
+    struct ScreenshotOutput {
+        path: String,
+        width: Option<u32>,
+        height: Option<u32>,
+        format: String,
+        mime_type: String,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        file_size_bytes: u64,
+
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inline_base64: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inline_mime_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inline_kind: Option<String>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct RecordingStartOutput {
+        recording_id: String,
+        output_path: String,
+        started_at: chrono::DateTime<chrono::Utc>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct RecordingStopOutput {
+        recording_id: String,
+        path: String,
+        duration_secs: f64,
+        file_size_bytes: u64,
+        format: String,
+    }
+
+    /// How the screenshot tool should return its result.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum ScreenshotReturnMode {
+        /// Return metadata + file path only.
+        Path,
+        /// Return metadata + file path + a bounded inline base64 payload.
+        InlineBase64,
+    }
+
+    /// Options for bounded inline screenshot payloads.
+    #[derive(Debug, Clone)]
+    pub(crate) struct ScreenshotInlineOptions {
+        /// Max width for an inline thumbnail (pixels). If `None`, no resize is attempted.
+        pub max_width: Option<u32>,
+        /// Max height for an inline thumbnail (pixels). If `None`, no resize is attempted.
+        pub max_height: Option<u32>,
+        /// Maximum base64 character length for the inline payload.
+        pub max_base64_chars: usize,
+        /// Maximum serialized JSON length for the tool output (to avoid pipeline truncation).
+        pub max_result_chars: usize,
+    }
+
+    impl Default for ScreenshotInlineOptions {
+        fn default() -> Self {
+            Self {
+                max_width: Some(256),
+                max_height: Some(256),
+                // Keep comfortably below pipeline's 2000 char truncation.
+                max_base64_chars: 1400,
+                max_result_chars: 1800,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    pub(crate) struct ScreenshotReturnOptions {
+        pub mode: ScreenshotReturnMode,
+        pub inline: ScreenshotInlineOptions,
+    }
+
+    impl Default for ScreenshotReturnOptions {
+        fn default() -> Self {
+            Self {
+                mode: ScreenshotReturnMode::Path,
+                inline: ScreenshotInlineOptions::default(),
+            }
+        }
+    }
+
+    fn mime_type_for_ext(ext: &str) -> String {
+        match ext.to_ascii_lowercase().as_str() {
+            "png" => "image/png".to_string(),
+            "jpg" | "jpeg" => "image/jpeg".to_string(),
+            "gif" => "image/gif".to_string(),
+            _ => "application/octet-stream".to_string(),
+        }
+    }
+
+    fn screenshot_output_json(
+        result: super::screen::ScreenshotResult,
+        options: ScreenshotReturnOptions,
+    ) -> Result<String> {
+        let path = result.path.clone();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("png")
+            .to_string();
+        let mime_type = mime_type_for_ext(&ext);
+
+        let mut out = ScreenshotOutput {
+            path: result.path.display().to_string(),
+            width: result.width,
+            height: result.height,
+            format: result.format,
+            mime_type,
+            timestamp: result.timestamp,
+            file_size_bytes: result.file_size_bytes,
+            inline_base64: None,
+            inline_mime_type: None,
+            inline_kind: None,
+        };
+
+        if options.mode == ScreenshotReturnMode::InlineBase64 {
+            let (b64, inline_mime, kind) = encode_inline_screenshot(&path, &options.inline)?;
+            out.inline_base64 = Some(b64);
+            out.inline_mime_type = Some(inline_mime);
+            out.inline_kind = Some(kind);
+
+            // Always enforce an upper bound compatible with the pipeline's tool-result truncation.
+            let max_result_chars = options.inline.max_result_chars.min(2000);
+            let json = serde_json::to_string(&out)?;
+            if json.len() > max_result_chars {
+                return Err(crate::error::AppError::Io(std::io::Error::other(format!(
+                    "Inline screenshot tool output is too large ({} chars; max {}). Reduce inline max_width/max_height/max_base64_chars.",
+                    json.len(),
+                    max_result_chars
+                ))));
+            }
+            return Ok(json);
+        }
+
+        Ok(serde_json::to_string_pretty(&out)?)
+    }
+
+    fn encode_inline_screenshot(
+        path: &Path,
+        inline: &ScreenshotInlineOptions,
+    ) -> Result<(String, String, String)> {
+        const HARD_MAX_BASE64_CHARS: usize = 1700;
+        const HARD_MAX_RESULT_CHARS: usize = 2000;
+
+        let max_base64_chars = inline.max_base64_chars.min(HARD_MAX_BASE64_CHARS);
+        let max_result_chars = inline.max_result_chars.min(HARD_MAX_RESULT_CHARS);
+        if max_base64_chars < 64 {
+            return Err(crate::error::AppError::Io(std::io::Error::other(
+                "inline.max_base64_chars must be >= 64",
+            )));
+        }
+        if max_result_chars < 256 {
+            return Err(crate::error::AppError::Io(std::io::Error::other(
+                "inline.max_result_chars must be >= 256",
+            )));
+        }
+
+        // Fast-path: if it's a PNG, try to decode + resize + re-encode as PNG thumbnail.
+        // (Workspace `image` dep is currently built with only `png` feature.)
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let ext_lc = ext.to_ascii_lowercase();
+
+        if ext_lc == "png"
+            && let Ok(img) = image::open(path)
+        {
+            let img = match (inline.max_width, inline.max_height) {
+                (Some(w), Some(h)) => img.thumbnail(w, h),
+                _ => img,
+            };
+
+            let mut buf = Vec::new();
+            img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+                .map_err(|e| {
+                    crate::error::AppError::Io(std::io::Error::other(format!(
+                        "Failed to encode inline PNG thumbnail: {e}"
+                    )))
+                })?;
+
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
+            if b64.len() > max_base64_chars {
+                return Err(crate::error::AppError::Io(std::io::Error::other(format!(
+                    "Inline base64 thumbnail too large ({} chars; max {}). Reduce inline max_width/max_height or max_base64_chars.",
+                    b64.len(),
+                    max_base64_chars
+                ))));
+            }
+
+            // We don't know final JSON size here, but we at least enforce caller's max_result_chars
+            // indirectly in `screenshot_output_json`.
+            let _ = max_result_chars;
+
+            return Ok((b64, "image/png".to_string(), "thumbnail_png".to_string()));
+        }
+
+        // Fallback: base64 the raw file bytes (no resize).
+        let bytes = std::fs::read(path)?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        if b64.len() > max_base64_chars {
+            return Err(crate::error::AppError::Io(std::io::Error::other(format!(
+                "Inline base64 file payload too large ({} chars; max {}). Use a smaller capture region, save as PNG, or reduce output size.",
+                b64.len(),
+                max_base64_chars
+            ))));
+        }
+
+        let mime = mime_type_for_ext(ext);
+        Ok((b64, mime, "raw_file".to_string()))
+    }
+
+    /// Capture a screenshot asynchronously.
+    pub async fn screenshot(
+        output_path: &str,
+        region: Option<(u32, u32, u32, u32)>,
+        display: Option<u32>,
+    ) -> Result<String> {
+        screenshot_with_options(
+            output_path,
+            region,
+            display,
+            ScreenshotReturnOptions::default(),
+        )
+        .await
+    }
+
+    /// Capture a screenshot asynchronously with configurable return options.
+    pub(crate) async fn screenshot_with_options(
+        output_path: &str,
+        region: Option<(u32, u32, u32, u32)>,
+        display: Option<u32>,
+        options: ScreenshotReturnOptions,
+    ) -> Result<String> {
+        let path = output_path.to_string();
+        let region_opt = region.map(|(x, y, w, h)| super::screen::CaptureRegion {
+            x,
+            y,
+            width: w,
+            height: h,
+        });
+
+        tokio::task::spawn_blocking(move || {
+            let tools = super::screen::ScreenTools::new();
+            let result = tools.screenshot(std::path::Path::new(&path), region_opt, display)?;
+
+            screenshot_output_json(result, options)
+        })
+        .await
+        .map_err(|e| {
+            crate::error::AppError::Io(std::io::Error::other(format!("Task join error: {}", e)))
+        })?
+    }
+
+    /// Start screen recording asynchronously.
+    pub async fn start_recording(
+        output_path: &str,
+        region: Option<(u32, u32, u32, u32)>,
+        display: Option<u32>,
+    ) -> Result<String> {
+        let path = output_path.to_string();
+        let region_opt = region.map(|(x, y, w, h)| super::screen::CaptureRegion {
+            x,
+            y,
+            width: w,
+            height: h,
+        });
+
+        tokio::task::spawn_blocking(move || {
+            let tools = super::screen::ScreenTools::new();
+            let result = tools.start_recording(std::path::Path::new(&path), region_opt, display)?;
+
+            let output = RecordingStartOutput {
+                recording_id: result.recording_id,
+                output_path: result.output_path.display().to_string(),
+                started_at: result.started_at,
+            };
+
+            Ok(serde_json::to_string_pretty(&output)?)
+        })
+        .await
+        .map_err(|e| {
+            crate::error::AppError::Io(std::io::Error::other(format!("Task join error: {}", e)))
+        })?
+    }
+
+    /// Stop screen recording asynchronously.
+    pub async fn stop_recording(recording_id: &str) -> Result<String> {
+        let id = recording_id.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let tools = super::screen::ScreenTools::new();
+            let result = tools.stop_recording(&id)?;
+
+            let output = RecordingStopOutput {
+                recording_id: result.recording_id,
+                path: result.path.display().to_string(),
+                duration_secs: result.duration_secs,
+                file_size_bytes: result.file_size_bytes,
+                format: result.format,
+            };
+
+            Ok(serde_json::to_string_pretty(&output)?)
+        })
+        .await
+        .map_err(|e| {
+            crate::error::AppError::Io(std::io::Error::other(format!("Task join error: {}", e)))
+        })?
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn inline_png_thumbnail_is_bounded_and_decodable() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("tiny.png");
+
+            // Create a tiny PNG.
+            let img = image::RgbaImage::from_fn(32, 32, |x, y| {
+                image::Rgba([(x % 255) as u8, (y % 255) as u8, 0, 255])
+            });
+            img.save_with_format(&path, image::ImageFormat::Png)
+                .unwrap();
+
+            let opts = ScreenshotInlineOptions {
+                max_width: Some(16),
+                max_height: Some(16),
+                max_base64_chars: 1700,
+                max_result_chars: 2000,
+            };
+            let (b64, mime, kind) = encode_inline_screenshot(&path, &opts).unwrap();
+            assert_eq!(mime, "image/png");
+            assert_eq!(kind, "thumbnail_png");
+            assert!(b64.len() <= opts.max_base64_chars);
+
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .unwrap();
+            // PNG signature
+            assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]));
+        }
+
+        #[test]
+        fn inline_payload_too_small_errors() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("tiny.png");
+            let img = image::RgbaImage::from_fn(8, 8, |_x, _y| image::Rgba([0, 0, 0, 255]));
+            img.save_with_format(&path, image::ImageFormat::Png)
+                .unwrap();
+
+            let opts = ScreenshotInlineOptions {
+                max_width: Some(8),
+                max_height: Some(8),
+                max_base64_chars: 64,
+                max_result_chars: 2000,
+            };
+            // This may or may not fit depending on PNG compression; force failure with an absurdly low limit.
+            let opts = ScreenshotInlineOptions {
+                max_base64_chars: 10,
+                ..opts
+            };
+            assert!(encode_inline_screenshot(&path, &opts).is_err());
+        }
     }
 }
 

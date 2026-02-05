@@ -211,6 +211,194 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value)> {
                 "additionalProperties": true
             }),
         ),
+        "screenshot" => (
+            summary,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "operation": {
+                        "type": "string",
+                        "enum": ["screenshot", "capture"],
+                        "description": "Optional operation alias. If omitted, defaults to screenshot"
+                    },
+                        "output_format": {
+                            "type": "string",
+                            "enum": ["png", "jpg", "jpeg"],
+                            "description": "Optional output image format. If provided and output_path has an extension, they must match. (jpeg is accepted as an alias for jpg)"
+                        },
+                    "output_path": {
+                        "type": "string",
+                        "description": "Optional path where the screenshot will be saved. If omitted, Gestura will generate a default artifact path"
+                    },
+                        "return": {
+                            "type": "object",
+                            "description": "Optional controls for how the screenshot result is returned. Default: return.mode=path.",
+                            "properties": {
+                                "mode": {
+                                    "type": "string",
+                                    "enum": ["path", "inline_base64"],
+                                    "description": "Return mode. path = only metadata + file path. inline_base64 = include a bounded base64 payload (best-effort thumbnail for PNGs)."
+                                },
+                                "inline": {
+                                    "type": "object",
+                                    "description": "Bounds for inline_base64 mode. Values above hard safety caps may be clamped.",
+                                    "properties": {
+                                        "max_width": {"type": "integer", "description": "Max thumbnail width in pixels (optional)"},
+                                        "max_height": {"type": "integer", "description": "Max thumbnail height in pixels (optional)"},
+                                        "max_base64_chars": {"type": "integer", "description": "Max characters allowed in inline base64 payload"},
+                                        "max_result_chars": {"type": "integer", "description": "Max characters allowed in the full tool JSON result (must stay <= pipeline truncation)"}
+                                    },
+                                    "additionalProperties": false
+                                }
+                            },
+                            "additionalProperties": false
+                        },
+                    "region": {
+                        "type": "object",
+                        "description": "Optional region to capture (x, y, width, height)",
+                        "properties": {
+                            "x": {"type": "integer", "description": "X coordinate"},
+                            "y": {"type": "integer", "description": "Y coordinate"},
+                            "width": {"type": "integer", "description": "Width in pixels"},
+                            "height": {"type": "integer", "description": "Height in pixels"}
+                        },
+                        "required": ["x", "y", "width", "height"]
+                    },
+                    "display": {
+                        "type": "integer",
+                        "description": "Optional display number (0 = primary)"
+                    }
+                },
+                "additionalProperties": false
+            }),
+        ),
+        "screen_record" => (
+            summary,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "operation": {
+                        "type": "string",
+                        "enum": ["start", "stop"],
+                        "description": "Operation to perform: start or stop recording"
+                    },
+                        "output_format": {
+                            "type": "string",
+                            "enum": ["mp4", "mov"],
+                            "description": "Optional output video container format for start. If provided and output_path has an extension, they must match."
+                        },
+                    "output_path": {
+                        "type": "string",
+                        "description": "Optional path where the recording will be saved. If omitted for start, Gestura will generate a default artifact path"
+                    },
+                    "recording_id": {
+                        "type": "string",
+                        "description": "Recording ID to stop (required for stop)"
+                    },
+                    "region": {
+                        "type": "object",
+                        "description": "Optional region to record (x, y, width, height)",
+                        "properties": {
+                            "x": {"type": "integer", "description": "X coordinate"},
+                            "y": {"type": "integer", "description": "Y coordinate"},
+                            "width": {"type": "integer", "description": "Width in pixels"},
+                            "height": {"type": "integer", "description": "Height in pixels"}
+                        },
+                        "required": ["x", "y", "width", "height"]
+                    },
+                    "display": {
+                        "type": "integer",
+                        "description": "Optional display number (0 = primary)"
+                    }
+                },
+                "required": ["operation"],
+                "oneOf": [
+                    {
+                        "description": "Start recording",
+                        "properties": {"operation": {"const": "start"}}
+                    },
+                    {
+                        "description": "Stop recording",
+                        "properties": {"operation": {"const": "stop"}, "recording_id": {"type": "string"}},
+                        "required": ["operation", "recording_id"]
+                    }
+                ],
+                "additionalProperties": false
+            }),
+        ),
+        "screen" => (
+            "Unified screen capture/recording tool (alias)",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "operation": {
+                        "type": "string",
+                        "enum": ["screenshot", "capture", "start", "stop", "start_recording", "stop_recording"],
+                        "description": "Operation to perform"
+                    },
+                        "output_format": {
+                            "type": "string",
+                            "description": "Optional output format. For screenshot: png|jpg|jpeg. For recording start: mp4|mov.",
+                            "enum": ["png", "jpg", "jpeg", "mp4", "mov"]
+                        },
+                    "output_path": {
+                        "type": "string",
+                        "description": "Optional output path for screenshot/start. If omitted, Gestura will generate a default artifact path"
+                    },
+                        "return": {
+                            "type": "object",
+                            "description": "Optional screenshot return controls (only used when operation is screenshot/capture).",
+                            "properties": {
+                                "mode": {"type": "string", "enum": ["path", "inline_base64"]},
+                                "inline": {
+                                    "type": "object",
+                                    "properties": {
+                                        "max_width": {"type": "integer"},
+                                        "max_height": {"type": "integer"},
+                                        "max_base64_chars": {"type": "integer"},
+                                        "max_result_chars": {"type": "integer"}
+                                    },
+                                    "additionalProperties": false
+                                }
+                            },
+                            "additionalProperties": false
+                        },
+                    "recording_id": {
+                        "type": "string",
+                        "description": "Recording ID to stop (required for stop)"
+                    },
+                    "region": {
+                        "type": "object",
+                        "description": "Optional region (x, y, width, height)",
+                        "properties": {
+                            "x": {"type": "integer"},
+                            "y": {"type": "integer"},
+                            "width": {"type": "integer"},
+                            "height": {"type": "integer"}
+                        },
+                        "required": ["x", "y", "width", "height"]
+                    },
+                    "display": {"type": "integer"}
+                },
+                "required": ["operation"],
+                "oneOf": [
+                    {
+                        "description": "Screenshot",
+                        "properties": {"operation": {"enum": ["screenshot", "capture"]}}
+                    },
+                    {
+                        "description": "Start recording",
+                        "properties": {"operation": {"enum": ["start", "start_recording"]}}
+                    },
+                    {
+                        "description": "Stop recording",
+                        "properties": {"operation": {"enum": ["stop", "stop_recording"]}, "recording_id": {"type": "string"}},
+                        "required": ["operation", "recording_id"]
+                    }
+                ],
+                "additionalProperties": false
+            }),
+        ),
         // Not yet supported in the runtime tool executor.
         "a2a" | "permissions" | "mcp" => return None,
         _ => return None,
