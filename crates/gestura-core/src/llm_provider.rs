@@ -85,6 +85,17 @@ impl TokenUsage {
     }
 }
 
+/// A structured tool call returned by the LLM when using native function calling.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallInfo {
+    /// Provider-assigned call ID (e.g. `call_abc123` for OpenAI, `toolu_xxx` for Anthropic)
+    pub id: String,
+    /// Tool name
+    pub name: String,
+    /// JSON-encoded arguments string
+    pub arguments: String,
+}
+
 /// Response from an LLM call including token usage
 #[derive(Debug, Clone)]
 pub struct LlmCallResponse {
@@ -92,12 +103,18 @@ pub struct LlmCallResponse {
     pub text: String,
     /// Token usage information
     pub usage: TokenUsage,
+    /// Structured tool calls returned by the model (empty when the model responds with text only)
+    pub tool_calls: Vec<ToolCallInfo>,
 }
 
 impl LlmCallResponse {
-    /// Create a new LlmCallResponse
+    /// Create a new LlmCallResponse (text-only, no tool calls)
     pub fn new(text: String, usage: TokenUsage) -> Self {
-        Self { text, usage }
+        Self {
+            text,
+            usage,
+            tool_calls: Vec::new(),
+        }
     }
 
     /// Create a response with unknown token usage
@@ -105,6 +122,20 @@ impl LlmCallResponse {
         Self {
             text,
             usage: TokenUsage::unknown(),
+            tool_calls: Vec::new(),
+        }
+    }
+
+    /// Create a new LlmCallResponse with tool calls
+    pub fn with_tool_calls(
+        text: String,
+        usage: TokenUsage,
+        tool_calls: Vec<ToolCallInfo>,
+    ) -> Self {
+        Self {
+            text,
+            usage,
+            tool_calls,
         }
     }
 }
@@ -118,15 +149,31 @@ pub struct AgentContext {
 /// Unified LLM interface (async)
 #[async_trait::async_trait]
 pub trait LlmProvider: Send + Sync {
-    /// Call the LLM with a prompt and return the generated text
-    /// For backward compatibility, this returns just the text
+    /// Call the LLM with a prompt and return the generated text.
+    /// For backward compatibility, this returns just the text.
     async fn call(&self, prompt: &str) -> Result<String, AppError>;
 
-    /// Call the LLM with a prompt and return the response with token usage
-    /// Default implementation calls `call` and returns unknown usage
+    /// Call the LLM with a prompt and return the response with token usage.
+    /// Default implementation calls `call` and returns unknown usage.
     async fn call_with_usage(&self, prompt: &str) -> Result<LlmCallResponse, AppError> {
         let text = self.call(prompt).await?;
         Ok(LlmCallResponse::with_unknown_usage(text))
+    }
+
+    /// Call the LLM with a prompt **and** optional tool schemas.
+    ///
+    /// When `tools` is `Some`, providers that support native tool/function calling
+    /// will include the schemas in the API request body, enabling the model to
+    /// return structured tool call responses.
+    ///
+    /// The default implementation ignores the tools parameter and delegates to
+    /// [`call_with_usage`]. Providers should override this to pass tools natively.
+    async fn call_with_tools(
+        &self,
+        prompt: &str,
+        _tools: Option<&[serde_json::Value]>,
+    ) -> Result<LlmCallResponse, AppError> {
+        self.call_with_usage(prompt).await
     }
 }
 
@@ -210,14 +257,30 @@ impl LlmProvider for OpenAiProvider {
     }
 
     async fn call_with_usage(&self, prompt: &str) -> Result<LlmCallResponse, AppError> {
+        self.call_with_tools(prompt, None).await
+    }
+
+    async fn call_with_tools(
+        &self,
+        prompt: &str,
+        tools: Option<&[serde_json::Value]>,
+    ) -> Result<LlmCallResponse, AppError> {
         let url = format!("{}/v1/chat/completions", self.base_url);
         // NOTE: We intentionally omit `temperature`.
         // Some OpenAI(-compatible) models only support the default value and will
         // return HTTP 400 if a non-default temperature is provided.
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": self.model,
             "messages": [{"role":"user","content": prompt}]
         });
+
+        if let Some(tools) = tools
+            && !tools.is_empty()
+        {
+            body["tools"] = serde_json::Value::Array(tools.to_vec());
+            body["tool_choice"] = serde_json::json!("auto");
+        }
+
         let client = create_http_client();
         let resp = client
             .post(&url)
@@ -237,15 +300,19 @@ impl LlmProvider for OpenAiProvider {
             .unwrap_or("")
             .to_string();
 
+        // Extract structured tool calls from the response.
+        let tool_calls = extract_openai_tool_calls(&v["choices"][0]["message"]);
+
         let usage = self.parse_usage(&v);
         tracing::debug!(
-            "OpenAI token usage: {} input, {} output, ${:.6} estimated",
+            "OpenAI token usage: {} input, {} output, ${:.6} estimated, {} tool calls",
             usage.input_tokens,
             usage.output_tokens,
-            usage.estimated_cost_usd.unwrap_or(0.0)
+            usage.estimated_cost_usd.unwrap_or(0.0),
+            tool_calls.len()
         );
 
-        Ok(LlmCallResponse::new(text, usage))
+        Ok(LlmCallResponse::with_tool_calls(text, usage, tool_calls))
     }
 }
 
@@ -287,16 +354,56 @@ impl AnthropicProvider {
     }
 }
 
-/// Extracts text and thinking content from an Anthropic `messages` response.
+/// Extract structured tool calls from an OpenAI-compatible `message` object.
+///
+/// Works for OpenAI, Grok, and Ollama — all three use the same
+/// `message.tool_calls[].{id, function.name, function.arguments}` format.
+fn extract_openai_tool_calls(message: &serde_json::Value) -> Vec<ToolCallInfo> {
+    let Some(tool_calls) = message["tool_calls"].as_array() else {
+        return Vec::new();
+    };
+
+    tool_calls
+        .iter()
+        .filter_map(|call| {
+            let name = call["function"]["name"].as_str()?;
+            let id = call["id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            let arguments = call["function"]["arguments"]
+                .as_str()
+                .unwrap_or("{}")
+                .to_string();
+            Some(ToolCallInfo {
+                id,
+                name: name.to_string(),
+                arguments,
+            })
+        })
+        .collect()
+}
+
+/// Parsed content from an Anthropic `messages` response.
+struct AnthropicContent {
+    text: String,
+    thinking: String,
+    tool_calls: Vec<ToolCallInfo>,
+}
+
+/// Extracts text, thinking, and tool_use content from an Anthropic `messages` response.
 ///
 /// Anthropic returns `content` as an array of blocks (e.g. `text`, `tool_use`, and optionally
-/// `thinking`). We conservatively collect known textual fields into two strings.
-fn anthropic_extract_text_and_thinking(response_json: &serde_json::Value) -> (String, String) {
-    let mut text = String::new();
-    let mut thinking = String::new();
+/// `thinking`). We extract all three block types.
+fn anthropic_extract_content(response_json: &serde_json::Value) -> AnthropicContent {
+    let mut result = AnthropicContent {
+        text: String::new(),
+        thinking: String::new(),
+        tool_calls: Vec::new(),
+    };
 
     let Some(blocks) = response_json["content"].as_array() else {
-        return (text, thinking);
+        return result;
     };
 
     for block in blocks {
@@ -304,7 +411,7 @@ fn anthropic_extract_text_and_thinking(response_json: &serde_json::Value) -> (St
         match block_type {
             "text" => {
                 if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
-                    text.push_str(t);
+                    result.text.push_str(t);
                 }
             }
             "thinking" => {
@@ -314,14 +421,40 @@ fn anthropic_extract_text_and_thinking(response_json: &serde_json::Value) -> (St
                     .and_then(|v| v.as_str())
                     .or_else(|| block.get("text").and_then(|v| v.as_str()))
                 {
-                    thinking.push_str(t);
+                    result.thinking.push_str(t);
+                }
+            }
+            "tool_use" => {
+                let id = block["id"].as_str().unwrap_or_default().to_string();
+                let name = block["name"].as_str().unwrap_or_default().to_string();
+                // Anthropic returns `input` as a JSON object; serialize it to a string.
+                let arguments = if let Some(input) = block.get("input") {
+                    serde_json::to_string(input).unwrap_or_default()
+                } else {
+                    "{}".to_string()
+                };
+                if !name.is_empty() {
+                    result.tool_calls.push(ToolCallInfo {
+                        id,
+                        name,
+                        arguments,
+                    });
                 }
             }
             _ => {}
         }
     }
 
-    (text, thinking)
+    result
+}
+
+/// Backwards-compatible wrapper that extracts only text and thinking.
+///
+/// Used by test code to validate extraction without needing the full `AnthropicContent` struct.
+#[cfg(test)]
+fn anthropic_extract_text_and_thinking(response_json: &serde_json::Value) -> (String, String) {
+    let content = anthropic_extract_content(response_json);
+    (content.text, content.thinking)
 }
 
 #[async_trait::async_trait]
@@ -332,6 +465,14 @@ impl LlmProvider for AnthropicProvider {
     }
 
     async fn call_with_usage(&self, prompt: &str) -> Result<LlmCallResponse, AppError> {
+        self.call_with_tools(prompt, None).await
+    }
+
+    async fn call_with_tools(
+        &self,
+        prompt: &str,
+        tools: Option<&[serde_json::Value]>,
+    ) -> Result<LlmCallResponse, AppError> {
         let url = format!("{}/v1/messages", self.base_url);
         let mut body = serde_json::json!({
             "model": self.model,
@@ -344,6 +485,14 @@ impl LlmProvider for AnthropicProvider {
             body["thinking"] =
                 serde_json::json!({ "type": "enabled", "budget_tokens": budget_tokens });
         }
+
+        // Anthropic uses its own tool schema format: {name, description, input_schema}.
+        if let Some(tools) = tools
+            && !tools.is_empty()
+        {
+            body["tools"] = serde_json::Value::Array(tools.to_vec());
+        }
+
         let client = create_http_client();
         let resp = client
             .post(&url)
@@ -362,24 +511,29 @@ impl LlmProvider for AnthropicProvider {
             )));
         }
         let v: serde_json::Value = resp.json().await?;
-        let (text, thinking) = anthropic_extract_text_and_thinking(&v);
-        let text = if thinking.trim().is_empty() {
-            text
+        let content = anthropic_extract_content(&v);
+        let text = if content.thinking.trim().is_empty() {
+            content.text
         } else {
             // Normalize provider-native thinking into our generic <think> format so the rest of the
             // pipeline can split it consistently.
-            format!("<think>{}</think>{}", thinking, text)
+            format!("<think>{}</think>{}", content.thinking, content.text)
         };
 
         let usage = self.parse_usage(&v);
         tracing::debug!(
-            "Anthropic token usage: {} input, {} output, ${:.6} estimated",
+            "Anthropic token usage: {} input, {} output, ${:.6} estimated, {} tool calls",
             usage.input_tokens,
             usage.output_tokens,
-            usage.estimated_cost_usd.unwrap_or(0.0)
+            usage.estimated_cost_usd.unwrap_or(0.0),
+            content.tool_calls.len()
         );
 
-        Ok(LlmCallResponse::new(text, usage))
+        Ok(LlmCallResponse::with_tool_calls(
+            text,
+            usage,
+            content.tool_calls,
+        ))
     }
 }
 
@@ -417,11 +571,28 @@ impl LlmProvider for GrokProvider {
     }
 
     async fn call_with_usage(&self, prompt: &str) -> Result<LlmCallResponse, AppError> {
+        self.call_with_tools(prompt, None).await
+    }
+
+    async fn call_with_tools(
+        &self,
+        prompt: &str,
+        tools: Option<&[serde_json::Value]>,
+    ) -> Result<LlmCallResponse, AppError> {
         let url = format!("{}/v1/chat/completions", self.base_url);
-        let body = serde_json::json!({
+        // Grok is OpenAI-compatible, so uses the same tool schema format.
+        let mut body = serde_json::json!({
             "model": self.model,
             "messages": [{"role":"user","content": prompt}],
         });
+
+        if let Some(tools) = tools
+            && !tools.is_empty()
+        {
+            body["tools"] = serde_json::Value::Array(tools.to_vec());
+            body["tool_choice"] = serde_json::json!("auto");
+        }
+
         let client = create_http_client();
         let resp = client
             .post(&url)
@@ -441,15 +612,19 @@ impl LlmProvider for GrokProvider {
             .unwrap_or("")
             .to_string();
 
+        // Extract structured tool calls (Grok uses OpenAI-compatible format).
+        let tool_calls = extract_openai_tool_calls(&v["choices"][0]["message"]);
+
         let usage = self.parse_usage(&v);
         tracing::debug!(
-            "Grok token usage: {} input, {} output, ${:.6} estimated",
+            "Grok token usage: {} input, {} output, ${:.6} estimated, {} tool calls",
             usage.input_tokens,
             usage.output_tokens,
-            usage.estimated_cost_usd.unwrap_or(0.0)
+            usage.estimated_cost_usd.unwrap_or(0.0),
+            tool_calls.len()
         );
 
-        Ok(LlmCallResponse::new(text, usage))
+        Ok(LlmCallResponse::with_tool_calls(text, usage, tool_calls))
     }
 }
 
@@ -482,12 +657,28 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn call_with_usage(&self, prompt: &str) -> Result<LlmCallResponse, AppError> {
+        self.call_with_tools(prompt, None).await
+    }
+
+    async fn call_with_tools(
+        &self,
+        prompt: &str,
+        tools: Option<&[serde_json::Value]>,
+    ) -> Result<LlmCallResponse, AppError> {
         let url = format!("{}/api/chat", self.base_url);
-        let body = serde_json::json!({
+        // Ollama uses OpenAI-compatible tool schema format.
+        let mut body = serde_json::json!({
             "model": self.model,
             "messages": [{"role":"user","content": prompt}],
             "stream": false
         });
+
+        if let Some(tools) = tools
+            && !tools.is_empty()
+        {
+            body["tools"] = serde_json::Value::Array(tools.to_vec());
+        }
+
         let client = create_http_client();
         let resp = client
             .post(&url)
@@ -503,14 +694,18 @@ impl LlmProvider for OllamaProvider {
         let v: serde_json::Value = resp.json().await?;
         let text = v["message"]["content"].as_str().unwrap_or("").to_string();
 
+        // Extract structured tool calls (Ollama uses OpenAI-compatible format).
+        let tool_calls = extract_openai_tool_calls(&v["message"]);
+
         let usage = self.parse_usage(&v);
         tracing::debug!(
-            "Ollama token usage: {} input, {} output (local, no cost)",
+            "Ollama token usage: {} input, {} output (local, no cost), {} tool calls",
             usage.input_tokens,
-            usage.output_tokens
+            usage.output_tokens,
+            tool_calls.len()
         );
 
-        Ok(LlmCallResponse::new(text, usage))
+        Ok(LlmCallResponse::with_tool_calls(text, usage, tool_calls))
     }
 }
 

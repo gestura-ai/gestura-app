@@ -36,6 +36,20 @@ use crate::tools::registry::{ToolDefinition, all_tools};
 
 pub use types::*;
 
+/// Select the correct tool schema slice for a provider name.
+///
+/// Anthropic uses its own `{name, description, input_schema}` format; all
+/// other providers use the OpenAI-compatible `{type:"function", function:{…}}` format.
+fn tools_slice_for_provider(
+    provider_name: &str,
+    schemas: &crate::tools::schemas::ProviderToolSchemas,
+) -> Vec<serde_json::Value> {
+    match provider_name {
+        "anthropic" => schemas.anthropic.clone(),
+        _ => schemas.openai.clone(),
+    }
+}
+
 /// The main agent pipeline for processing requests
 pub struct AgentPipeline {
     /// Application configuration
@@ -2035,9 +2049,9 @@ impl AgentPipeline {
     async fn execute_agentic_loop_blocking(
         &self,
         initial_prompt: String,
-        _tools: Vec<&'static ToolDefinition>,
+        tools: Vec<&'static ToolDefinition>,
         context: crate::context::ResolvedContext,
-        _workspace: Option<&SessionWorkspace>,
+        workspace: Option<&SessionWorkspace>,
     ) -> Result<AgentResponse, AppError> {
         let mut response = AgentResponse {
             content: String::new(),
@@ -2049,42 +2063,104 @@ impl AgentPipeline {
             iterations: 0,
         };
 
-        let current_prompt = initial_prompt;
-
         if self.pipeline_config.max_iterations == 0 {
             return Ok(response);
         }
 
-        response.iterations = 1;
+        // Build provider-specific tool schemas so the model knows about available tools.
+        let tool_schemas = if tools.is_empty() {
+            None
+        } else {
+            Some(crate::tools::schemas::build_provider_tool_schemas(&tools))
+        };
 
-        // Call LLM with fallback support
-        let llm_response = self.call_llm_with_fallback(&current_prompt).await?;
-        let (content, thinking) = crate::streaming::split_think_blocks(&llm_response.text);
-        response.content = content;
-        response.thinking = thinking;
-        response.usage = Some(llm_response.usage);
+        let max_iterations = self.pipeline_config.max_iterations;
+        let mut current_prompt = initial_prompt;
 
-        // For blocking mode, we don't parse tool calls from content.
-        // This is primarily used for simple text responses.
-        // Full tool execution should use streaming mode.
+        for iteration in 0..max_iterations {
+            response.iterations = iteration + 1;
+
+            // Call LLM with fallback support, passing tool schemas.
+            let llm_response = self
+                .call_llm_with_fallback(&current_prompt, tool_schemas.as_ref())
+                .await?;
+            let (content, thinking) = crate::streaming::split_think_blocks(&llm_response.text);
+
+            // Accumulate token usage across iterations.
+            if let Some(ref mut existing_usage) = response.usage {
+                existing_usage.input_tokens += llm_response.usage.input_tokens;
+                existing_usage.output_tokens += llm_response.usage.output_tokens;
+                existing_usage.total_tokens += llm_response.usage.total_tokens;
+                if let (Some(existing), Some(new)) = (
+                    existing_usage.estimated_cost_usd.as_mut(),
+                    llm_response.usage.estimated_cost_usd,
+                ) {
+                    *existing += new;
+                }
+            } else {
+                response.usage = Some(llm_response.usage);
+            }
+
+            // If the model returned no tool calls, this is the final text response.
+            if llm_response.tool_calls.is_empty() {
+                response.content = content;
+                response.thinking = thinking;
+                break;
+            }
+
+            // Execute each structured tool call and collect records.
+            let mut iteration_tool_calls: Vec<ToolCallRecord> = Vec::new();
+            for tc in &llm_response.tool_calls {
+                tracing::info!(
+                    tool = %tc.name,
+                    id = %tc.id,
+                    "Blocking loop: executing tool call"
+                );
+                let result = self.execute_tool(&tc.name, &tc.arguments, workspace).await;
+                let duration_ms = 0u64; // No per-call timing in blocking path.
+                iteration_tool_calls.push(ToolCallRecord {
+                    id: tc.id.clone(),
+                    name: tc.name.clone(),
+                    arguments: tc.arguments.clone(),
+                    result,
+                    duration_ms,
+                });
+            }
+
+            // Build continuation prompt with tool results for the next iteration.
+            current_prompt =
+                self.build_tool_continuation_prompt(&current_prompt, &content, &iteration_tool_calls);
+            response.tool_calls.extend(iteration_tool_calls);
+            response.content = content;
+            response.thinking = thinking;
+        }
 
         Ok(response)
     }
 
-    /// Call LLM with fallback and retry logic for blocking mode
+    /// Call LLM with fallback and retry logic for blocking mode.
+    ///
+    /// When `tool_schemas` is provided, the appropriate provider-specific schema
+    /// slice is selected and forwarded to [`LlmProvider::call_with_tools`].
     async fn call_llm_with_fallback(
         &self,
         prompt: &str,
+        tool_schemas: Option<&crate::tools::schemas::ProviderToolSchemas>,
     ) -> Result<crate::llm_provider::LlmCallResponse, AppError> {
         let agent_ctx = AgentContext::default();
         let provider = select_provider(&self.config, &agent_ctx);
+        let tools_for_primary =
+            tool_schemas.map(|s| tools_slice_for_provider(&self.config.llm.primary, s));
 
         // Try primary provider with retries
         let retry_delays = [1, 2, 4]; // seconds
         let mut last_error: Option<AppError> = None;
 
         for (attempt, delay) in retry_delays.iter().enumerate() {
-            match provider.call_with_usage(prompt).await {
+            match provider
+                .call_with_tools(prompt, tools_for_primary.as_deref())
+                .await
+            {
                 Ok(response) => return Ok(response),
                 Err(e) => {
                     last_error = Some(e);
@@ -2103,23 +2179,29 @@ impl AgentPipeline {
         }
 
         // Try fallback provider if configured
-        if let Some(fallback_provider) = self
+        if let Some(fallback_provider_name) = self
             .pipeline_config
             .enable_fallback
             .then_some(self.config.llm.fallback.as_ref())
             .flatten()
         {
             tracing::info!(
-                fallback = fallback_provider,
+                fallback = fallback_provider_name,
                 "Primary LLM exhausted retries, trying fallback provider"
             );
 
+            let tools_for_fallback =
+                tool_schemas.map(|s| tools_slice_for_provider(fallback_provider_name, s));
+
             // Create a modified config with fallback as primary
             let mut fallback_config = self.config.clone();
-            fallback_config.llm.primary = fallback_provider.clone();
+            fallback_config.llm.primary = fallback_provider_name.clone();
 
             let fallback_provider_instance = select_provider(&fallback_config, &agent_ctx);
-            match fallback_provider_instance.call_with_usage(prompt).await {
+            match fallback_provider_instance
+                .call_with_tools(prompt, tools_for_fallback.as_deref())
+                .await
+            {
                 Ok(response) => return Ok(response),
                 Err(e) => {
                     tracing::error!("Fallback provider also failed: {}", e);

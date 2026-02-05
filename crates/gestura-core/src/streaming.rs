@@ -553,6 +553,10 @@ pub async fn stream_openai(
     let mut stream = response.bytes_stream();
     let mut parser = ThinkingParser::new();
     let mut line_buffer = String::new();
+    // Track whether we have an active (in-flight) tool call so we can emit
+    // `ToolCallEnd` before the next `ToolCallStart` when the model makes
+    // multiple concurrent tool calls in a single response.
+    let mut in_tool_call = false;
 
     while let Some(chunk_result) = stream.next().await {
         if cancel_token.is_cancelled() {
@@ -568,6 +572,10 @@ pub async fn stream_openai(
                         continue;
                     };
                     if data == "[DONE]" {
+                        // If a tool call was in flight, close it before signalling done.
+                        if in_tool_call {
+                            let _ = tx.send(StreamChunk::ToolCallEnd).await;
+                        }
                         let _ = tx.send(StreamChunk::Done(None)).await;
                         return Ok(());
                     }
@@ -595,12 +603,17 @@ pub async fn stream_openai(
                                 let args = call["function"]["arguments"].as_str();
 
                                 if let (Some(id), Some(name)) = (id, name) {
+                                    // Close previous tool call before starting a new one.
+                                    if in_tool_call {
+                                        let _ = tx.send(StreamChunk::ToolCallEnd).await;
+                                    }
                                     let _ = tx
                                         .send(StreamChunk::ToolCallStart {
                                             id: id.to_string(),
                                             name: name.to_string(),
                                         })
                                         .await;
+                                    in_tool_call = true;
                                 }
 
                                 if let Some(args) = args
@@ -612,11 +625,13 @@ pub async fn stream_openai(
                             }
                         }
 
-                        // Handle finish reason
+                        // Handle finish reason — close the final tool call.
                         if let Some(finish_reason) = json["choices"][0]["finish_reason"].as_str()
                             && finish_reason == "tool_calls"
+                            && in_tool_call
                         {
                             let _ = tx.send(StreamChunk::ToolCallEnd).await;
+                            in_tool_call = false;
                         }
                     }
                 }
@@ -769,10 +784,13 @@ pub async fn stream_anthropic(req: AnthropicStreamRequest<'_>) -> Result<(), App
                             }
                         }
                         Some("content_block_start") => {
-                            if let Some(tool_use) = json["content_block"]["tool_use"].as_object()
-                                && let Some(name) = tool_use["name"].as_str()
+                            // Anthropic SSE format: content_block IS the tool_use object:
+                            //   {"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_xxx","name":"shell","input":{}}}
+                            let block = &json["content_block"];
+                            if block["type"].as_str() == Some("tool_use")
+                                && let Some(name) = block["name"].as_str()
                             {
-                                let id = tool_use["id"].as_str().unwrap_or_default().to_string();
+                                let id = block["id"].as_str().unwrap_or_default().to_string();
                                 let _ = tx
                                     .send(StreamChunk::ToolCallStart {
                                         id,
@@ -810,15 +828,23 @@ pub async fn stream_ollama(
     base_url: &str,
     model: &str,
     prompt: &str,
+    tools: Option<&[serde_json::Value]>,
     tx: mpsc::Sender<StreamChunk>,
     cancel_token: CancellationToken,
 ) -> Result<(), AppError> {
     let url = format!("{}/api/chat", base_url);
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": true
     });
+
+    // Ollama uses OpenAI-compatible tool schema format.
+    if let Some(tools) = tools
+        && !tools.is_empty()
+    {
+        body["tools"] = serde_json::Value::Array(tools.to_vec());
+    }
 
     let client = create_streaming_client();
     let response = client
@@ -849,12 +875,7 @@ pub async fn stream_ollama(
                 let text = String::from_utf8_lossy(&bytes);
                 for line in collect_complete_lines(&mut line_buffer, &text) {
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-                        // Check if done
-                        if json["done"].as_bool() == Some(true) {
-                            let _ = tx.send(StreamChunk::Done(None)).await;
-                            return Ok(());
-                        }
-                        // Extract content from message
+                        // Extract content from message (may arrive before done)
                         if let Some(content) = json["message"]["content"].as_str()
                             && !content.is_empty()
                         {
@@ -862,6 +883,43 @@ pub async fn stream_ollama(
                             for chunk in chunks {
                                 let _ = tx.send(chunk).await;
                             }
+                        }
+
+                        // Handle tool calls (Ollama returns them in the message)
+                        if let Some(tool_calls) = json["message"]["tool_calls"].as_array() {
+                            for call in tool_calls {
+                                let name = call["function"]["name"]
+                                    .as_str()
+                                    .unwrap_or_default();
+                                let args = &call["function"]["arguments"];
+
+                                if !name.is_empty() {
+                                    let id = format!("ollama-tool-{}", uuid::Uuid::new_v4());
+                                    let _ = tx
+                                        .send(StreamChunk::ToolCallStart {
+                                            id,
+                                            name: name.to_string(),
+                                        })
+                                        .await;
+
+                                    let args_str = if args.is_object() || args.is_array() {
+                                        serde_json::to_string(args).unwrap_or_default()
+                                    } else {
+                                        args.as_str().unwrap_or("{}").to_string()
+                                    };
+
+                                    let _ = tx
+                                        .send(StreamChunk::ToolCallArgs(args_str))
+                                        .await;
+                                    let _ = tx.send(StreamChunk::ToolCallEnd).await;
+                                }
+                            }
+                        }
+
+                        // Check if done
+                        if json["done"].as_bool() == Some(true) {
+                            let _ = tx.send(StreamChunk::Done(None)).await;
+                            return Ok(());
                         }
                     }
                 }
@@ -1003,7 +1061,15 @@ pub async fn start_streaming(
         }
         "ollama" => {
             if let Some(c) = &config.llm.ollama {
-                stream_ollama(&c.base_url, &c.model, prompt, tx, cancel_token).await
+                stream_ollama(
+                    &c.base_url,
+                    &c.model,
+                    prompt,
+                    tool_schemas.as_ref().map(|s| s.openai.as_slice()),
+                    tx,
+                    cancel_token,
+                )
+                .await
             } else {
                 stream_unconfigured_error("ollama", tx).await
             }
