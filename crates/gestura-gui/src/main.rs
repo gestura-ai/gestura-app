@@ -338,7 +338,8 @@ async fn main() {
             // Check if this is the first run and show onboarding window
             if gestura_gui::AppConfig::is_first_run() {
                 tracing::info!("First run detected - showing onboarding window");
-                // Create a dedicated onboarding window (not the transparent main window)
+                // Create a dedicated onboarding window (the app is tray-first and does not
+                // create a default "main" window at startup).
                 if let Err(e) = gestura_gui::window_manager::open_onboarding_window() {
                     tracing::error!("Failed to open onboarding window: {}", e);
                 }

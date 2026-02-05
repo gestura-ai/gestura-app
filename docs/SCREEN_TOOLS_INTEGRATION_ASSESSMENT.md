@@ -84,10 +84,10 @@ let result = match name {
 
 ### 4. GUI Image Display (MEDIUM PRIORITY)
 
-**File:** `crates/gestura-gui/frontend/src/components/ChatPanel.tsx`  
-**Function:** `renderFormattedContent()` at line 817
+**File:** `crates/gestura-gui/frontend/public/chat.html`  
+**Area:** Chat message rendering (tool-result formatting)
 
-**Current:** Uses ReactMarkdown for text/code rendering. Tool results shown as JSON text.
+**Current:** The session-based chat UI is implemented in a single-page static HTML file (`chat.html`). Tool results are currently rendered as text/JSON.
 
 **Missing:** Image rendering for screenshot results.
 
@@ -388,10 +388,10 @@ enum ScreenToolAction {
 
 ### Phase 3: GUI Integration (For visual feedback)
 
-#### Task 3.1: Add Image Display in ChatPanel
-**File:** `crates/gestura-gui/frontend/src/components/ChatPanel.tsx`
+#### Task 3.1: Add Image Display in session chat UI
+**File:** `crates/gestura-gui/frontend/public/chat.html`
 
-Modify `renderFormattedContent()` to detect and render images:
+Modify the chat message renderer to detect and render images (e.g., tool results that include screenshot paths/URLs) instead of showing raw JSON:
 
 ```typescript
 const renderFormattedContent = (content: string) => {
@@ -641,8 +641,8 @@ cargo run -p gestura-cli -- tools screen record-stop <recording_id>
 
 ### Step 5: Add GUI Image Display
 ```bash
-# Edit ChatPanel.tsx
-code crates/gestura-gui/frontend/src/components/ChatPanel.tsx
+# Edit chat.html (session chat UI)
+code crates/gestura-gui/frontend/public/chat.html
 
 # Edit App.css
 code crates/gestura-gui/frontend/src/App.css
@@ -725,6 +725,6 @@ cargo tauri dev
 | `crates/gestura-core/src/pipeline/mod.rs` | Tool execution | 2457-2487 | ❌ Missing dispatcher |
 | `crates/gestura-core/src/tools/schemas.rs` | JSON schemas | 39-326 | ❌ Missing schemas |
 | `crates/gestura-cli/src/commands/tools/screen.rs` | CLI commands | N/A | ❌ Not created |
-| `crates/gestura-gui/frontend/src/components/ChatPanel.tsx` | GUI display | 817-859 | ❌ No image support |
+| `crates/gestura-gui/frontend/public/chat.html` | GUI display | N/A | ❌ No image support |
 
 

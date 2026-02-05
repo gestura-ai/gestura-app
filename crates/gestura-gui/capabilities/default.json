@@ -3,7 +3,6 @@
   "identifier": "main-capability",
   "description": "Main capability for the Gestura desktop application",
   "windows": [
-    "main",
     "*"
   ],
   "permissions": [

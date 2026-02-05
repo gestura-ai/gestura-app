@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import './App.css';
 import ThemeController from './components/ThemeController';
-import ChatPanel from './components/ChatPanel';
 import ToolsPanel from './components/ToolsPanel';
 import WorkflowsPanel from './components/WorkflowsPanel';
 import VoicePanel from './components/VoicePanel';
@@ -18,11 +17,12 @@ import { AppConfig, UiSettings } from './types/config';
 
 function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
-  const [activePanel, setActivePanel] = useState('chat'); // Default to chat
+  // The legacy chat UI (React ChatPanel) has been removed.
+  // Default the main window to voice-related functionality.
+  const [activePanel, setActivePanel] = useState('voice');
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [tokenUsage, setTokenUsage] = useState({ total: 0, session: 0 });
 
   useEffect(() => {
     // Check onboarding BEFORE loading config to preserve first-run state
@@ -149,12 +149,6 @@ function App() {
         <div className="sidebar">
           <nav>
             <button
-              className={`btn ${activePanel === 'chat' ? '' : 'btn-secondary'}`}
-              onClick={() => setActivePanel('chat')}
-            >
-              💬 Chat
-            </button>
-            <button
               className={`btn ${activePanel === 'voice' ? '' : 'btn-secondary'}`}
               onClick={() => setActivePanel('voice')}
             >
@@ -191,22 +185,9 @@ function App() {
               ⚙️ Settings
             </button>
           </nav>
-          {tokenUsage.session > 0 && (
-            <div className="token-usage">
-              <small>Tokens: {tokenUsage.session.toLocaleString()}</small>
-            </div>
-          )}
         </div>
 
         <div className="content">
-          {activePanel === 'chat' && (
-            <ChatPanel
-              onTokenUsage={(usage) => setTokenUsage(prev => ({
-                total: prev.total + usage.input_tokens + usage.output_tokens,
-                session: prev.session + usage.input_tokens + usage.output_tokens
-              }))}
-            />
-          )}
           {activePanel === 'tools' && (
             <ToolsPanel />
           )}
