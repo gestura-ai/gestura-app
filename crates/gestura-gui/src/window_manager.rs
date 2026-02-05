@@ -1078,40 +1078,75 @@ pub fn clear_session_voice_config(session_id: &str) {
     }
 }
 
-/// Get the session tool settings for a session
+/// Get the **effective** session tool settings for a session.
+///
+/// Semantics:
+/// - Start from the **current global defaults** (`AppConfig.permissions.default_enabled_tools`).
+/// - Overlay any persisted per-session tool settings as **overrides**.
+///
+/// This fixes a common footgun where older sessions accidentally "snapshotted" the
+/// global defaults at the time of first interaction and never picked up newly-enabled
+/// tools (e.g. enabling `screenshot` later in the global settings panel).
 pub fn get_session_tool_settings(session_id: &str) -> SessionToolSettings {
-    get_session_state(session_id)
-        .and_then(|s| s.tool_settings)
-        .unwrap_or_else(default_session_tool_settings)
+    let mut effective = default_session_tool_settings();
+
+    if let Some(overrides) = get_session_state(session_id).and_then(|s| s.tool_settings) {
+        // Session permission level always overrides the global default.
+        effective.permission_level = overrides.permission_level;
+
+        // Session enabled_tools entries override global defaults for matching keys.
+        for (name, enabled) in overrides.enabled_tools {
+            effective.enabled_tools.insert(name, enabled);
+        }
+    }
+
+    effective
 }
 
-/// Set the session permission level
+/// Set the session permission level.
+///
+/// Stores a **sparse override** — only the permission level is written to the
+/// session state, avoiding a full snapshot of global defaults.  Persists the
+/// change to disk immediately so it survives app restarts.
 pub fn set_session_permission_level(session_id: &str, level: SessionPermissionLevel) {
     if let Some(manager) = get_window_manager() {
-        let mut sessions = manager.sessions.lock().unwrap();
-        if let Some(session) = sessions.get_mut(session_id) {
-            let tool_settings = session
-                .state
-                .tool_settings
-                .get_or_insert_with(default_session_tool_settings);
-            tool_settings.permission_level = level;
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            if let Some(session) = sessions.get_mut(session_id) {
+                let tool_settings = session
+                    .state
+                    .tool_settings
+                    .get_or_insert_with(SessionToolSettings::default);
+                tool_settings.permission_level = level;
+            }
         }
+        // Persist immediately so the change survives app restarts.
+        manager.save_sessions_to_disk();
     }
 }
 
-/// Set whether a tool is enabled for a session
+/// Set whether a tool is enabled for a session.
+///
+/// Stores only the **individual override** for the given tool, not a snapshot
+/// of the entire global defaults map.  This ensures that future changes to
+/// global defaults propagate to sessions that have not explicitly overridden
+/// the corresponding tool.  Persists to disk immediately.
 pub fn set_session_tool_enabled(session_id: &str, tool_name: &str, enabled: bool) {
     if let Some(manager) = get_window_manager() {
-        let mut sessions = manager.sessions.lock().unwrap();
-        if let Some(session) = sessions.get_mut(session_id) {
-            let tool_settings = session
-                .state
-                .tool_settings
-                .get_or_insert_with(default_session_tool_settings);
-            tool_settings
-                .enabled_tools
-                .insert(tool_name.to_string(), enabled);
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            if let Some(session) = sessions.get_mut(session_id) {
+                let tool_settings = session
+                    .state
+                    .tool_settings
+                    .get_or_insert_with(SessionToolSettings::default);
+                tool_settings
+                    .enabled_tools
+                    .insert(tool_name.to_string(), enabled);
+            }
         }
+        // Persist immediately so the change survives app restarts.
+        manager.save_sessions_to_disk();
     }
 }
 
@@ -1121,7 +1156,7 @@ pub fn is_session_tool_enabled(session_id: &str, tool_name: &str) -> bool {
         .enabled_tools
         .get(tool_name)
         .copied()
-        .unwrap_or(true) // Default to enabled if not explicitly set
+        .unwrap_or(false) // Default to disabled unless explicitly enabled
 }
 
 /// Check if an action is allowed based on session permission level

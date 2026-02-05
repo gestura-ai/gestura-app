@@ -48,6 +48,16 @@ lazy_static::lazy_static! {
     static ref TRAY_INSTANCE: Arc<Mutex<Option<tauri::tray::TrayIcon<tauri::Wry>>>> = Arc::new(Mutex::new(None));
 }
 
+/// Returns true when the tray has been initialized and a tray icon instance exists.
+///
+/// This is used by the app run loop to decide whether to prevent exiting when the
+/// last window closes (tray-first behavior).
+pub fn is_tray_running() -> bool {
+    let initialized = *TRAY_INITIALIZED.lock().unwrap();
+    let has_instance = TRAY_INSTANCE.lock().unwrap().is_some();
+    initialized && has_instance
+}
+
 #[derive(Debug, Clone)]
 struct ListeningState {
     is_listening: bool,
@@ -997,7 +1007,7 @@ fn graceful_shutdown(app: &AppHandle) {
     }
 
     // Exit the application
-    app.exit(0);
+    crate::app_lifecycle::request_exit(app, 0);
 }
 
 /// Get diagnostic information about tray status

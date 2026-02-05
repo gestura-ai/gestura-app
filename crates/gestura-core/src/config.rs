@@ -160,6 +160,10 @@ impl Default for GlobalPermissionSettings {
         default_enabled_tools.insert("web".to_string(), true);
         default_enabled_tools.insert("web_search".to_string(), true);
         default_enabled_tools.insert("task".to_string(), true); // Task management for UI task panel
+        // Screen capture tools disabled by default (privacy-sensitive)
+        default_enabled_tools.insert("screenshot".to_string(), false);
+        default_enabled_tools.insert("screen_record".to_string(), false);
+        default_enabled_tools.insert("screen".to_string(), false);
         // Advanced tools disabled by default
         default_enabled_tools.insert("a2a".to_string(), false);
         default_enabled_tools.insert("permissions".to_string(), false);

@@ -44,6 +44,7 @@ pub mod telemetry;
 // ============================================================================
 
 // UI and interface
+pub mod app_lifecycle;
 pub mod commands;
 pub mod hotkeys;
 pub mod tray;

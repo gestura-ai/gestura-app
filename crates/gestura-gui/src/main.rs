@@ -6,7 +6,7 @@
 #[allow(unused_imports)]
 use std::sync::Arc;
 #[allow(unused_imports)]
-use tauri::{Builder, Manager};
+use tauri::{Builder, Manager, RunEvent};
 
 use gestura_gui::agents::AgentManager;
 #[allow(unused_imports)]
@@ -96,8 +96,8 @@ async fn main() {
     tracing_subscriber::fmt::init();
     tracing::info!("Starting Gestura app");
 
-    // Run Tauri
-    Builder::default()
+    // Build Tauri
+    let app = Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
@@ -348,6 +348,25 @@ async fn main() {
             tracing::info!("Gestura app initialized");
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Gestura app");
+        .build(tauri::generate_context!())
+        .expect("error while building Gestura app");
+
+    // Tray-first behavior:
+    // - Closing the last window should NOT terminate the process.
+    // - Explicit Quit/Exit (tray menu) should terminate.
+    app.run(|_app_handle, event| {
+        if let RunEvent::ExitRequested { api, .. } = event {
+            // Only prevent exiting when we successfully created a tray icon.
+            // If the tray failed to initialize, allow exit so the app doesn't become
+            // un-quit-able.
+            let tray_ok = gestura_gui::tray::is_tray_running();
+
+            if tray_ok && !gestura_gui::app_lifecycle::is_exit_requested() {
+                tracing::info!(
+                    "Exit requested while in tray-first mode (likely last window closed); preventing exit"
+                );
+                api.prevent_exit();
+            }
+        }
+    });
 }

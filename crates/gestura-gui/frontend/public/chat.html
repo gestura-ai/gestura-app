@@ -6150,8 +6150,11 @@
                                 const checkbox = document.createElement('input');
                                 checkbox.type = 'checkbox';
                                 checkbox.value = tool.name;
-                                // Check if tool is enabled in session settings
-                                const isEnabled = toolSettings?.enabled_tools?.[tool.name] ?? true;
+                                // Check if tool is enabled in session settings.
+                                // IMPORTANT: default to false when missing so the UI matches
+                                // the backend pipeline behavior (only explicitly-enabled tools
+                                // are sent as `allowed_tools`).
+                                const isEnabled = toolSettings?.enabled_tools?.[tool.name] ?? false;
                                 checkbox.checked = isEnabled;
 
                                 // Add change handler

@@ -2295,6 +2295,25 @@
                         </div>
 
                         <div class="checkbox-group">
+                            <input type="checkbox" class="form-checkbox" id="toolScreenshot" name="tool_screenshot">
+                            <div class="checkbox-label">
+                                Screenshot
+                                <div class="checkbox-description">Capture a screenshot for the AI to analyze. May
+                                    require macOS Screen Recording permission depending on system settings.</div>
+                            </div>
+                        </div>
+
+                        <div class="checkbox-group">
+                            <input type="checkbox" class="form-checkbox" id="toolScreenRecord"
+                                name="tool_screen_record">
+                            <div class="checkbox-label">
+                                Screen Recording
+                                <div class="checkbox-description">Record the screen (start/stop) for the AI to analyze.
+                                    Requires Screen Recording permission on macOS.</div>
+                            </div>
+                        </div>
+
+                        <div class="checkbox-group">
                             <input type="checkbox" class="form-checkbox" id="toolTask" name="tool_task" checked>
                             <div class="checkbox-label">
                                 Task Management
@@ -3134,6 +3153,97 @@
             }, 4000);
         }
 
+        // =============================================================
+        // Tool permissions (permissions.default_enabled_tools)
+        // =============================================================
+        // Canonical built-in tool names are defined in gestura-core.
+        // This UI maps checkboxes to `permissions.default_enabled_tools`.
+        const DEFAULT_ENABLED_TOOL_CHECKBOXES = [
+            { checkboxId: 'toolFileAccess', toolName: 'file' },
+            { checkboxId: 'toolShellCommands', toolName: 'shell' },
+            { checkboxId: 'toolGitOperations', toolName: 'git' },
+            { checkboxId: 'toolCodeAnalysis', toolName: 'code' },
+            { checkboxId: 'toolWeb', toolName: 'web' },
+            { checkboxId: 'toolWebSearch', toolName: 'web_search' },
+            { checkboxId: 'toolTask', toolName: 'task' },
+            { checkboxId: 'toolA2a', toolName: 'a2a' },
+        ];
+
+        function computeDefaultEnabledToolsFromUi() {
+            const map = {};
+
+            // Basic tools
+            DEFAULT_ENABLED_TOOL_CHECKBOXES.forEach(({ checkboxId, toolName }) => {
+                const el = document.getElementById(checkboxId);
+                if (el) map[toolName] = !!el.checked;
+            });
+
+            // Screen tools
+            // Note: gestura-core exposes three relevant tools:
+            // - screenshot
+            // - screen_record
+            // - screen (unified alias with screenshot + recording operations)
+            // We present two UX toggles, and derive `screen` as OR(screenshot, screen_record)
+            // so the model can reliably use either schema.
+            const screenshotEl = document.getElementById('toolScreenshot');
+            const screenRecordEl = document.getElementById('toolScreenRecord');
+
+            if (screenshotEl) map.screenshot = !!screenshotEl.checked;
+            if (screenRecordEl) map.screen_record = !!screenRecordEl.checked;
+            if (screenshotEl || screenRecordEl) {
+                map.screen = (!!(screenshotEl && screenshotEl.checked)) || (!!(screenRecordEl && screenRecordEl.checked));
+            }
+
+            return map;
+        }
+
+        function applyDefaultEnabledToolsToUi(enabledTools) {
+            if (!enabledTools) return;
+
+            // Basic tools: set only when explicitly present
+            DEFAULT_ENABLED_TOOL_CHECKBOXES.forEach(({ checkboxId, toolName }) => {
+                const el = document.getElementById(checkboxId);
+                const v = enabledTools?.[toolName];
+                if (el && typeof v === 'boolean') {
+                    el.checked = v;
+                }
+            });
+
+            // Screen tools: treat unified `screen` tool as implying capability.
+            const screenEnabled = enabledTools?.screen;
+
+            const screenshotEl = document.getElementById('toolScreenshot');
+            const screenshotEnabled = enabledTools?.screenshot;
+            if (screenshotEl && (typeof screenshotEnabled === 'boolean' || typeof screenEnabled === 'boolean')) {
+                screenshotEl.checked = (screenshotEnabled === true) || (screenEnabled === true);
+            }
+
+            const screenRecordEl = document.getElementById('toolScreenRecord');
+            const screenRecordEnabled = enabledTools?.screen_record;
+            if (screenRecordEl && (typeof screenRecordEnabled === 'boolean' || typeof screenEnabled === 'boolean')) {
+                screenRecordEl.checked = (screenRecordEnabled === true) || (screenEnabled === true);
+            }
+        }
+
+        async function persistDefaultEnabledToolsFromUi() {
+            if (!isTauriAvailable()) return;
+
+            try {
+                const cfg = await window.__TAURI__.core.invoke('get_config');
+                if (!cfg.permissions) cfg.permissions = {};
+
+                const prev = cfg.permissions.default_enabled_tools || {};
+                const next = { ...prev, ...computeDefaultEnabledToolsFromUi() };
+                cfg.permissions.default_enabled_tools = next;
+
+                await window.__TAURI__.core.invoke('save_config', { cfg: cfg });
+                showStatus('Tool permissions updated');
+            } catch (e) {
+                console.error('[Permissions] Failed to save default enabled tools:', e);
+                showStatus('Failed to save tool permissions', 'error');
+            }
+        }
+
         async function loadConfig() {
             try {
                 // Reset API key sync flags before loading config
@@ -3344,6 +3454,9 @@
                     // Backend uses GlobalPermissionLevel enum: "Sandbox", "Restricted", "Full"
                     defaultPermissionLevelEl.value = permissionsConfig?.default_level || 'Restricted';
                 }
+
+                // Default enabled tools (load from backend config if available)
+                applyDefaultEnabledToolsToUi(permissionsConfig?.default_enabled_tools);
 
                 // Prompt Enhancement settings (load from backend config if available)
                 const promptEnhancementConfig = backendConfig?.prompt_enhancement;
@@ -3639,6 +3752,18 @@
                         max_content_length: parseInt(document.getElementById('maxContentLength')?.value) || 10000,
                         user_agent: "Gestura/0.2.0 (+https://gestura.ai)",
                         fallback_providers: ["duckduckgo"]
+                    };
+
+                    // Update permissions defaults: permission level + tool allowlist
+                    currentConfig.permissions = currentConfig.permissions || {};
+                    const defaultPermissionLevelEl = document.getElementById('defaultPermissionLevel');
+                    if (defaultPermissionLevelEl && defaultPermissionLevelEl.value) {
+                        currentConfig.permissions.default_level = defaultPermissionLevelEl.value;
+                    }
+                    const prevEnabled = currentConfig.permissions.default_enabled_tools || {};
+                    currentConfig.permissions.default_enabled_tools = {
+                        ...prevEnabled,
+                        ...computeDefaultEnabledToolsFromUi(),
                     };
 
                     // Save the updated config
@@ -5137,6 +5262,22 @@
                     }
                 });
             }
+
+            // Auto-save tool permission toggles (so checking a box actually takes effect immediately).
+            const toolPermissionCheckboxIds = [
+                ...DEFAULT_ENABLED_TOOL_CHECKBOXES.map(x => x.checkboxId),
+                'toolScreenshot',
+                'toolScreenRecord',
+            ];
+            toolPermissionCheckboxIds.forEach((id) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                if (el.dataset.defaultEnabledToolsListenerAttached === 'true') return;
+                el.addEventListener('change', async () => {
+                    await persistDefaultEnabledToolsFromUi();
+                });
+                el.dataset.defaultEnabledToolsListenerAttached = 'true';
+            });
 
             // Setup prompt enhancement settings event listeners
             const maxLengthMultiplierEl = document.getElementById('maxLengthMultiplier');
