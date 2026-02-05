@@ -33,7 +33,7 @@ pub(crate) fn default_system_prompt(meta: &RequestMetadata) -> String {
     // Environment / capability awareness
     s.push_str("Environment awareness:\n");
     s.push_str("- You are running inside Gestura (GUI + CLI) on the user's machine.\n");
-    s.push_str("- You may use ONLY the tools listed under 'Available tools' in the prompt.\n");
+    s.push_str("- You may use ONLY the tools provided via the structured tool definitions.\n");
     s.push_str(
         "- File/shell operations may be sandboxed to a workspace directory; if a request is out of scope, explain and ask for a safer alternative.\n",
     );
@@ -103,7 +103,7 @@ pub(crate) fn default_system_prompt(meta: &RequestMetadata) -> String {
 
     // UX affordances
     s.push_str(
-        "If the user asks what tools you can use, point them to the 'Available tools' list (CLI chat may also support `/tools`).\n",
+        "If the user asks what tools you can use, list the tools provided via the structured tool definitions (CLI chat may also support `/tools`).\n",
     );
 
     s

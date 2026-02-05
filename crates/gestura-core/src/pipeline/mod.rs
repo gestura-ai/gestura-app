@@ -334,7 +334,7 @@ impl AgentPipeline {
 
         // 3.5. Check for auto-compaction before building prompt
         // Build a preview prompt to estimate tokens
-        let preview_prompt = self.build_prompt(&request, &resolved_context, &relevant_tools);
+        let preview_prompt = self.build_prompt(&request, &resolved_context);
         if let Some(compaction_chunk) = self
             .check_and_apply_auto_compaction(&request.history, &preview_prompt, &request.metadata)
             .await
@@ -354,7 +354,7 @@ impl AgentPipeline {
 
         // 4. Build the optimized prompt with token limit checking
         let (prompt, truncated) =
-            self.truncate_prompt_if_needed(&request, &mut resolved_context, &relevant_tools);
+            self.truncate_prompt_if_needed(&request, &mut resolved_context);
 
         if truncated {
             tracing::info!("Prompt was truncated to fit token limit");
@@ -721,7 +721,7 @@ impl AgentPipeline {
 
         // 3.5. Check for auto-compaction before building prompt
         // Build a preview prompt to estimate tokens
-        let preview_prompt = self.build_prompt(&request, &resolved_context, &relevant_tools);
+        let preview_prompt = self.build_prompt(&request, &resolved_context);
         if let Some(compaction_chunk) = self
             .check_and_apply_auto_compaction(&request.history, &preview_prompt, &request.metadata)
             .await
@@ -767,7 +767,7 @@ impl AgentPipeline {
 
         // 4. Build prompt with token limit checking
         let (prompt, truncated) =
-            self.truncate_prompt_if_needed(&request, &mut resolved_context, &relevant_tools);
+            self.truncate_prompt_if_needed(&request, &mut resolved_context);
 
         if truncated {
             tracing::info!("Prompt was truncated to fit token limit");
@@ -1058,7 +1058,6 @@ impl AgentPipeline {
         &self,
         request: &AgentRequest,
         context: &crate::context::ResolvedContext,
-        tools: &[&'static ToolDefinition],
     ) -> String {
         let mut prompt = String::new();
 
@@ -1072,14 +1071,10 @@ impl AgentPipeline {
         // Inject repository-local guardrails (AGENTS.md, .gestura/guardrails) when available.
         self.append_project_guardrails(&mut prompt, request);
 
-        // Add tool descriptions if tools are available
-        if !tools.is_empty() {
-            prompt.push_str("Available tools:\n");
-            for tool in tools {
-                prompt.push_str(&format!("- {}: {}\n", tool.name, tool.summary));
-            }
-            prompt.push('\n');
-        }
+        // Tool definitions are now passed via the structured `tools` API parameter
+        // (ProviderToolSchemas) rather than duplicated in the prompt text. This avoids
+        // wasting tokens on a less-detailed text listing when the model already receives
+        // full JSON schemas out-of-band.
 
         // Add file context if any
         if !context.files.is_empty() {
@@ -1692,9 +1687,8 @@ impl AgentPipeline {
         &self,
         request: &AgentRequest,
         context: &mut crate::context::ResolvedContext,
-        tools: &[&'static ToolDefinition],
     ) -> (String, bool) {
-        let mut prompt = self.build_prompt(request, context, tools);
+        let mut prompt = self.build_prompt(request, context);
         let mut truncated = false;
 
         // Log initial token estimate if enabled
@@ -1743,7 +1737,7 @@ impl AgentPipeline {
             }
 
             // Rebuild prompt with truncated context
-            prompt = self.build_prompt(request, context, tools);
+            prompt = self.build_prompt(request, context);
 
             // Log token usage after optimization
             let final_tokens = Self::estimate_tokens(&prompt);
@@ -3641,9 +3635,7 @@ mod tests {
 
         let request = AgentRequest::new("hi").with_workspace(temp.path());
         let context = crate::context::ResolvedContext::default();
-        let tools: Vec<&'static ToolDefinition> = Vec::new();
-
-        let prompt = pipeline.build_prompt(&request, &context, &tools);
+        let prompt = pipeline.build_prompt(&request, &context);
 
         assert!(prompt.contains("Project guardrails:"));
         assert!(prompt.contains("Always run tests."));
@@ -3661,9 +3653,7 @@ mod tests {
 
         let request = AgentRequest::new("hi").with_workspace(temp.path());
         let context = crate::context::ResolvedContext::default();
-        let tools: Vec<&'static ToolDefinition> = Vec::new();
-
-        let prompt = pipeline.build_prompt(&request, &context, &tools);
+        let prompt = pipeline.build_prompt(&request, &context);
 
         assert!(prompt.contains("guardrails-rule"));
         assert!(!prompt.contains("agents-rule"));
@@ -3681,9 +3671,7 @@ mod tests {
 
         let request = AgentRequest::new("hi").with_workspace(temp.path());
         let context = crate::context::ResolvedContext::default();
-        let tools: Vec<&'static ToolDefinition> = Vec::new();
-
-        let prompt = pipeline.build_prompt(&request, &context, &tools);
+        let prompt = pipeline.build_prompt(&request, &context);
 
         assert!(!prompt.contains("Project guardrails:"));
         assert!(!prompt.contains("agents-rule"));
