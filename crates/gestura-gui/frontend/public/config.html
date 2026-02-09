@@ -1198,6 +1198,188 @@
         .toc-standalone .toc-link {
             font-weight: 500;
         }
+
+        /* ============================================================= */
+        /* MCP Server Management                                         */
+        /* ============================================================= */
+        .mcp-server-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .mcp-empty-state {
+            text-align: center;
+            padding: 2rem 1rem;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            border: 2px dashed var(--border-color);
+            border-radius: 8px;
+        }
+
+        .mcp-server-card {
+            background: var(--input-background);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            transition: border-color 0.2s, opacity 0.2s;
+        }
+
+        .mcp-server-card:hover {
+            border-color: var(--accent);
+        }
+
+        .mcp-server-card.disabled {
+            opacity: 0.55;
+        }
+
+        .mcp-server-card-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .mcp-server-name {
+            font-weight: 600;
+            font-size: 1rem;
+            color: var(--text-color);
+        }
+
+        .mcp-badge {
+            display: inline-block;
+            padding: 0.125rem 0.5rem;
+            border-radius: 999px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        .mcp-badge-stdio {
+            background: rgba(var(--accent-rgb), 0.15);
+            color: var(--accent);
+        }
+
+        .mcp-badge-http {
+            background: rgba(var(--success-rgb), 0.15);
+            color: rgb(var(--success-rgb));
+        }
+
+        .mcp-badge-sse {
+            background: rgba(var(--warning-rgb), 0.15);
+            color: rgb(var(--warning-rgb));
+        }
+
+        .mcp-badge-user {
+            background: var(--section-background);
+            color: var(--text-secondary);
+        }
+
+        .mcp-badge-project {
+            background: rgba(var(--accent-rgb), 0.10);
+            color: var(--accent);
+        }
+
+        .mcp-badge-local {
+            background: rgba(var(--warning-rgb), 0.10);
+            color: rgb(var(--warning-rgb));
+        }
+
+        .mcp-status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-left: auto;
+        }
+
+        .mcp-status-dot.connected {
+            background: rgb(var(--success-rgb));
+        }
+
+        .mcp-status-dot.disconnected {
+            background: var(--text-secondary);
+        }
+
+        .mcp-status-dot.error {
+            background: rgb(var(--danger-rgb));
+        }
+
+        .mcp-server-uri {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            font-family: monospace;
+            margin-bottom: 0.5rem;
+            word-break: break-all;
+        }
+
+        .mcp-server-error {
+            font-size: 0.8rem;
+            color: rgb(var(--danger-rgb));
+            margin-bottom: 0.5rem;
+        }
+
+        .mcp-server-tools {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+        }
+
+        .mcp-server-actions {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .mcp-server-actions .button {
+            padding: 0.3rem 0.7rem;
+            font-size: 0.8rem;
+        }
+
+        .mcp-btn-danger {
+            background: transparent;
+            border: 1px solid rgb(var(--danger-rgb));
+            color: rgb(var(--danger-rgb));
+            padding: 0.3rem 0.7rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: background 0.2s, color 0.2s;
+        }
+
+        .mcp-btn-danger:hover {
+            background: rgb(var(--danger-rgb));
+            color: #fff;
+        }
+
+        /* MCP Add/Edit Form */
+        .mcp-form-container {
+            background: var(--section-background);
+            border: 1px solid var(--accent);
+            border-radius: 10px;
+            padding: 1.25rem;
+            margin-bottom: 1rem;
+        }
+
+        .mcp-form-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-color);
+            margin-bottom: 1rem;
+        }
+
+        .mcp-form-actions {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+
+        .mcp-transport-section {
+            /* Visibility controlled via inline style.display by updateMcpTransportVisibility() */
+        }
     </style>
 </head>
 
@@ -2615,17 +2797,124 @@
                         provide additional tools and capabilities that can be used by the AI assistant.
                     </div>
 
+                    <!-- Configured Servers subsection -->
                     <div class="subsection">
-                        <div class="subsection-title">
-                            <span class="icon icon-plug"></span>Server Configuration
+                        <div class="subsection-title"
+                            style="display:flex;justify-content:space-between;align-items:center;">
+                            <span><span class="icon icon-plug"></span>Configured Servers</span>
+                            <button type="button" class="button primary" onclick="openMcpAddForm()"
+                                style="padding:0.3rem 0.8rem;font-size:0.85rem;">+ Add Server</button>
                         </div>
 
-                        <div class="form-group">
-                            <label class="form-label" for="mcpServers">Configured MCP Servers</label>
-                            <textarea class="form-textarea" id="mcpServers" name="mcp_servers"
-                                placeholder="Enter MCP server configurations (JSON format)"></textarea>
-                            <div class="help-text">Configure MCP servers for extended functionality. See documentation
-                                for format.</div>
+                        <!-- Add / Edit form (hidden by default) -->
+                        <div id="mcpFormContainer" class="mcp-form-container" style="display:none;">
+                            <div class="mcp-form-title" id="mcpFormTitle">Add MCP Server</div>
+
+                            <div class="form-group">
+                                <label class="form-label" for="mcpFormName">Server Name</label>
+                                <input type="text" class="form-input" id="mcpFormName"
+                                    placeholder="e.g. github, postgres, filesystem">
+                                <div class="help-text">Unique identifier for this MCP server.</div>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label" for="mcpFormTransport">Transport Type</label>
+                                <select class="form-select" id="mcpFormTransport">
+                                    <option value="stdio">stdio — Local child process</option>
+                                    <option value="http">http — Streamable HTTP (recommended for remote)</option>
+                                    <option value="sse">sse — Server-Sent Events (legacy)</option>
+                                </select>
+                            </div>
+
+                            <!-- stdio-specific fields -->
+                            <div id="mcpTransportStdio" class="mcp-transport-section" style="display: block;">
+                                <div class="form-group">
+                                    <label class="form-label" for="mcpFormCommand">Command</label>
+                                    <input type="text" class="form-input" id="mcpFormCommand"
+                                        placeholder="e.g. npx, uvx, docker">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label" for="mcpFormArgs">Arguments (one per line)</label>
+                                    <textarea class="form-textarea" id="mcpFormArgs" rows="3"
+                                        placeholder="-y&#10;@modelcontextprotocol/server-github"></textarea>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label" for="mcpFormEnv">Environment Variables (KEY=VALUE per
+                                        line)</label>
+                                    <textarea class="form-textarea" id="mcpFormEnv" rows="3"
+                                        placeholder="GITHUB_TOKEN=ghp_xxx"></textarea>
+                                    <div class="help-text">Environment variables passed to the child process.</div>
+                                </div>
+                            </div>
+
+                            <!-- http/sse-specific fields -->
+                            <div id="mcpTransportHttp" class="mcp-transport-section" style="display: none;">
+                                <div class="form-group">
+                                    <label class="form-label" for="mcpFormUrl">Server URL</label>
+                                    <input type="text" class="form-input" id="mcpFormUrl"
+                                        placeholder="https://api.example.com/mcp/">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label" for="mcpFormHeaders">HTTP Headers (Key: Value per
+                                        line)</label>
+                                    <textarea class="form-textarea" id="mcpFormHeaders" rows="3"
+                                        placeholder="Authorization: Bearer sk-xxx"></textarea>
+                                    <div class="help-text">Custom headers sent with every request.</div>
+                                </div>
+                            </div>
+
+                            <!-- Common fields -->
+                            <div class="form-group">
+                                <label class="form-label" for="mcpFormScope">Scope</label>
+                                <select class="form-select" id="mcpFormScope">
+                                    <option value="user">user — Available across all projects</option>
+                                    <option value="project">project — Shared via .mcp.json</option>
+                                    <option value="local">local — Local override, not committed</option>
+                                </select>
+                            </div>
+
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label class="form-label" for="mcpFormTimeout">Timeout (seconds)</label>
+                                    <input type="number" class="form-input" id="mcpFormTimeout" value="30" min="1"
+                                        max="300">
+                                </div>
+                                <div class="form-group"
+                                    style="display:flex;align-items:flex-end;padding-bottom:0.35rem;">
+                                    <div class="checkbox-group" style="margin-bottom:0;">
+                                        <input type="checkbox" class="form-checkbox" id="mcpFormAutoReconnect" checked>
+                                        <div class="checkbox-label">Auto-reconnect on failure</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="checkbox-group">
+                                <input type="checkbox" class="form-checkbox" id="mcpFormEnabled" checked>
+                                <div class="checkbox-label">
+                                    Enabled
+                                    <div class="checkbox-description">Disabled servers are saved but not connected.
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="mcp-form-actions">
+                                <button type="button" class="button primary" onclick="saveMcpServerForm()">Save
+                                    Server</button>
+                                <button type="button" class="button secondary" onclick="closeMcpForm()">Cancel</button>
+                            </div>
+                        </div>
+
+                        <!-- Dynamic server list -->
+                        <div id="mcpServerList" class="mcp-server-list">
+                            <div class="mcp-empty-state">No MCP servers configured. Click "+ Add Server" to get started.
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Global MCP Settings subsection -->
+                    <div class="subsection">
+                        <div class="subsection-title">
+                            <span class="icon icon-plug"></span>Global Settings
                         </div>
 
                         <div class="checkbox-group">
@@ -2634,17 +2923,16 @@
                             <div class="checkbox-label">
                                 Auto-discover MCP servers
                                 <div class="checkbox-description">Automatically detect and configure available MCP
-                                    servers</div>
+                                    servers from project files.</div>
                             </div>
                         </div>
 
                         <div class="form-row">
                             <div class="form-group">
-                                <label class="form-label" for="mcpTimeout">Connection Timeout (ms)</label>
+                                <label class="form-label" for="mcpTimeout">Default Connection Timeout (ms)</label>
                                 <input type="number" class="form-input" id="mcpTimeout" name="mcp_timeout" value="5000"
                                     min="1000" max="30000">
                             </div>
-
                             <div class="form-group">
                                 <label class="form-label" for="mcpRetries">Max Retries</label>
                                 <input type="number" class="form-input" id="mcpRetries" name="mcp_retries" value="3"
@@ -3221,6 +3509,236 @@
         // Initialize tool config toggles on page load
         setupToolConfigToggles();
 
+        // =============================================================
+        // MCP Server Management
+        // =============================================================
+        // In-memory list of configured MCP servers (McpServerEntry[]).
+        let _mcpServers = [];
+        // In-memory list of server statuses from the runtime client.
+        let _mcpStatuses = [];
+        // Track whether the form is in "edit" mode (server name being edited).
+        let _mcpEditingName = null;
+
+        /** Setup transport-specific field visibility for the MCP add/edit form.
+         *  Follows the same addEventListener pattern as setupSttProviderVisibility(). */
+        function setupMcpTransportVisibility() {
+            const mcpTransportSelect = document.getElementById('mcpFormTransport');
+            if (!mcpTransportSelect) return;
+
+            function updateMcpTransportVisibility() {
+                const transport = mcpTransportSelect.value;
+                const stdioSection = document.getElementById('mcpTransportStdio');
+                const httpSection = document.getElementById('mcpTransportHttp');
+                stdioSection.style.display = (transport === 'stdio') ? 'block' : 'none';
+                httpSection.style.display = (transport === 'http' || transport === 'sse') ? 'block' : 'none';
+            }
+
+            // Attach listener once (idempotent)
+            if (mcpTransportSelect.dataset.visibilityListenerAttached !== 'true') {
+                mcpTransportSelect.addEventListener('change', updateMcpTransportVisibility);
+                mcpTransportSelect.dataset.visibilityListenerAttached = 'true';
+            }
+
+            // Set initial visibility
+            updateMcpTransportVisibility();
+        }
+
+        /** Open the add-server form with defaults. */
+        window.openMcpAddForm = function () {
+            _mcpEditingName = null;
+            document.getElementById('mcpFormTitle').textContent = 'Add MCP Server';
+            document.getElementById('mcpFormName').value = '';
+            document.getElementById('mcpFormName').disabled = false;
+            document.getElementById('mcpFormTransport').value = 'stdio';
+            document.getElementById('mcpFormCommand').value = '';
+            document.getElementById('mcpFormArgs').value = '';
+            document.getElementById('mcpFormEnv').value = '';
+            document.getElementById('mcpFormUrl').value = '';
+            document.getElementById('mcpFormHeaders').value = '';
+            document.getElementById('mcpFormScope').value = 'user';
+            document.getElementById('mcpFormTimeout').value = 30;
+            document.getElementById('mcpFormAutoReconnect').checked = true;
+            document.getElementById('mcpFormEnabled').checked = true;
+            document.getElementById('mcpFormTransport').dispatchEvent(new Event('change'));
+            document.getElementById('mcpFormContainer').style.display = 'block';
+        };
+
+        /** Open the edit form pre-populated with an existing server's data. */
+        window.openMcpEditForm = function (name) {
+            const srv = _mcpServers.find(s => s.name === name);
+            if (!srv) return;
+            _mcpEditingName = name;
+            document.getElementById('mcpFormTitle').textContent = 'Edit: ' + name;
+            document.getElementById('mcpFormName').value = srv.name;
+            document.getElementById('mcpFormName').disabled = true; // name is immutable on edit
+            const transport = srv.transport || srv.type || 'stdio';
+            document.getElementById('mcpFormTransport').value = transport;
+            document.getElementById('mcpFormCommand').value = srv.command || '';
+            document.getElementById('mcpFormArgs').value = (srv.args || []).join('\n');
+            document.getElementById('mcpFormEnv').value = Object.entries(srv.env || {}).map(([k, v]) => k + '=' + v).join('\n');
+            document.getElementById('mcpFormUrl').value = srv.url || '';
+            document.getElementById('mcpFormHeaders').value = Object.entries(srv.headers || {}).map(([k, v]) => k + ': ' + v).join('\n');
+            document.getElementById('mcpFormScope').value = srv.scope || 'user';
+            document.getElementById('mcpFormTimeout').value = srv.timeout_secs || 30;
+            document.getElementById('mcpFormAutoReconnect').checked = srv.auto_reconnect !== false;
+            document.getElementById('mcpFormEnabled').checked = srv.enabled !== false;
+            document.getElementById('mcpFormTransport').dispatchEvent(new Event('change'));
+            document.getElementById('mcpFormContainer').style.display = 'block';
+        };
+
+        /** Close the add/edit form. */
+        window.closeMcpForm = function () {
+            document.getElementById('mcpFormContainer').style.display = 'none';
+            _mcpEditingName = null;
+        };
+
+        /** Parse KEY=VALUE lines into an object. */
+        function parseKeyValueLines(text, separator) {
+            const result = {};
+            text.split('\n').forEach(line => {
+                const idx = line.indexOf(separator);
+                if (idx > 0) {
+                    const key = line.substring(0, idx).trim();
+                    const val = line.substring(idx + separator.length).trim();
+                    if (key) result[key] = val;
+                }
+            });
+            return result;
+        }
+
+        /** Render the server list from _mcpServers + _mcpStatuses. */
+        function renderMcpServerList() {
+            const container = document.getElementById('mcpServerList');
+            if (_mcpServers.length === 0) {
+                container.innerHTML = '<div class="mcp-empty-state">No MCP servers configured. Click "+ Add Server" to get started.</div>';
+                return;
+            }
+            let html = '';
+            _mcpServers.forEach(srv => {
+                const transport = srv.transport || srv.type || 'stdio';
+                const scope = srv.scope || 'user';
+                const st = _mcpStatuses.find(s => s.name === srv.name);
+                const stateClass = st ? st.state.toLowerCase() : 'disconnected';
+                const uri = transport === 'stdio'
+                    ? ((srv.command || '') + ' ' + (srv.args || []).join(' ')).trim() || '(no command)'
+                    : srv.url || '(no url)';
+                const disabledClass = srv.enabled === false ? ' disabled' : '';
+
+                html += '<div class="mcp-server-card' + disabledClass + '">';
+                html += '  <div class="mcp-server-card-header">';
+                html += '    <span class="mcp-server-name">' + escapeHtml(srv.name) + '</span>';
+                html += '    <span class="mcp-badge mcp-badge-' + transport + '">' + transport + '</span>';
+                html += '    <span class="mcp-badge mcp-badge-' + scope + '">' + scope + '</span>';
+                html += '    <span class="mcp-status-dot ' + stateClass + '" title="' + (st ? st.state : 'Not connected') + '"></span>';
+                html += '  </div>';
+                html += '  <div class="mcp-server-uri">' + escapeHtml(uri) + '</div>';
+                if (st && st.last_error) {
+                    html += '  <div class="mcp-server-error">⚠ ' + escapeHtml(st.last_error) + '</div>';
+                }
+                if (st && st.tool_count > 0) {
+                    html += '  <div class="mcp-server-tools">🔧 ' + st.tool_count + ' tool(s) available</div>';
+                }
+                html += '  <div class="mcp-server-actions">';
+                html += '    <button type="button" class="button secondary" onclick="openMcpEditForm(\'' + escapeHtml(srv.name) + '\')">Edit</button>';
+                html += '    <button type="button" class="button secondary" onclick="toggleMcpServer(\'' + escapeHtml(srv.name) + '\')">' + (srv.enabled !== false ? 'Disable' : 'Enable') + '</button>';
+                html += '    <button type="button" class="mcp-btn-danger" onclick="removeMcpServer(\'' + escapeHtml(srv.name) + '\')">Remove</button>';
+                html += '  </div>';
+                html += '</div>';
+            });
+            container.innerHTML = html;
+        }
+
+        /** Minimal HTML escaping for dynamic content. */
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        // =============================================================
+        // MCP CRUD Operations (Tauri invoke)
+        // =============================================================
+
+        /** Load MCP servers from backend and refresh the list + statuses. */
+        async function loadMcpServers() {
+            if (!isTauriAvailable()) return;
+            try {
+                const [servers, statuses] = await Promise.all([
+                    window.__TAURI__.core.invoke('list_mcp_tools'),
+                    window.__TAURI__.core.invoke('get_mcp_server_status').catch(() => []),
+                ]);
+                _mcpServers = servers || [];
+                _mcpStatuses = statuses || [];
+                renderMcpServerList();
+            } catch (e) {
+                console.error('[MCP] Failed to load servers:', e);
+            }
+        }
+
+        /** Collect form fields and save (add or update) an MCP server. */
+        window.saveMcpServerForm = async function () {
+            const name = document.getElementById('mcpFormName').value.trim();
+            if (!name) {
+                showStatus('Server name is required.', 'error');
+                return;
+            }
+            const transport = document.getElementById('mcpFormTransport').value;
+            const entry = {
+                name: name,
+                transport: transport,
+                enabled: document.getElementById('mcpFormEnabled').checked,
+                command: transport === 'stdio' ? (document.getElementById('mcpFormCommand').value.trim() || null) : null,
+                args: transport === 'stdio' ? document.getElementById('mcpFormArgs').value.split('\n').map(l => l.trim()).filter(Boolean) : [],
+                env: transport === 'stdio' ? parseKeyValueLines(document.getElementById('mcpFormEnv').value, '=') : {},
+                url: (transport === 'http' || transport === 'sse') ? (document.getElementById('mcpFormUrl').value.trim() || null) : null,
+                headers: (transport === 'http' || transport === 'sse') ? parseKeyValueLines(document.getElementById('mcpFormHeaders').value, ':') : {},
+                scope: document.getElementById('mcpFormScope').value,
+                timeout_secs: parseInt(document.getElementById('mcpFormTimeout').value) || 30,
+                auto_reconnect: document.getElementById('mcpFormAutoReconnect').checked,
+            };
+            try {
+                await window.__TAURI__.core.invoke('add_mcp_tool', { tool: entry });
+                closeMcpForm();
+                await loadMcpServers();
+                showStatus('MCP server "' + name + '" saved.');
+            } catch (e) {
+                console.error('[MCP] Failed to save server:', e);
+                showStatus('Failed to save MCP server: ' + e, 'error');
+            }
+        };
+
+        /** Remove an MCP server by name. */
+        window.removeMcpServer = async function (name) {
+            if (!confirm('Remove MCP server "' + name + '"?')) return;
+            try {
+                await window.__TAURI__.core.invoke('remove_mcp_tool', { name: name });
+                if (_mcpEditingName === name) closeMcpForm();
+                await loadMcpServers();
+                showStatus('MCP server "' + name + '" removed.');
+            } catch (e) {
+                console.error('[MCP] Failed to remove server:', e);
+                showStatus('Failed to remove MCP server: ' + e, 'error');
+            }
+        };
+
+        /** Toggle enable/disable for an MCP server. */
+        window.toggleMcpServer = async function (name) {
+            const srv = _mcpServers.find(s => s.name === name);
+            if (!srv) return;
+            const updated = Object.assign({}, srv, { enabled: !srv.enabled });
+            // Normalize transport field name for backend (serde expects "transport")
+            if (updated.type && !updated.transport) {
+                updated.transport = updated.type;
+            }
+            try {
+                await window.__TAURI__.core.invoke('add_mcp_tool', { tool: updated });
+                await loadMcpServers();
+                showStatus('MCP server "' + name + '" ' + (updated.enabled ? 'enabled' : 'disabled') + '.');
+            } catch (e) {
+                console.error('[MCP] Failed to toggle server:', e);
+                showStatus('Failed to toggle MCP server: ' + e, 'error');
+            }
+        };
+
         // Provider selection functionality
         function setupProviderSelection() {
             // Setup STT provider visibility
@@ -3228,6 +3746,9 @@
 
             // Setup LLM provider visibility
             setupLlmProviderVisibility();
+
+            // Setup MCP transport field visibility
+            setupMcpTransportVisibility();
         }
 
         // Handle STT provider configuration visibility
@@ -3689,14 +4210,17 @@
                 // Trigger provider visibility updates
                 setupSttProviderVisibility();
                 setupLlmProviderVisibility();
+                setupMcpTransportVisibility();
 
                 // Device Management defaults
                 document.getElementById('requireDeviceAuth').checked = true;
                 document.getElementById('deviceTimeout').value = 60;
                 document.getElementById('encryptDeviceComm').checked = true;
 
-                // MCP defaults
-                document.getElementById('mcpServers').value = '';
+                // MCP defaults (server list is loaded separately via loadMcpServers)
+                _mcpServers = [];
+                _mcpStatuses = [];
+                renderMcpServerList();
                 document.getElementById('autoDiscoverMcp').checked = true;
                 document.getElementById('mcpTimeout').value = 5000;
                 document.getElementById('mcpRetries').value = 3;
@@ -3843,6 +4367,9 @@
                         console.warn('Failed to load notification settings:', e);
                     }
                 }
+
+                // Load MCP servers from backend (individual server management)
+                await loadMcpServers();
 
                 showStatus('Configuration loaded successfully');
             } catch (error) {
