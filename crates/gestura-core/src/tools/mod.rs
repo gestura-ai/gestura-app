@@ -147,8 +147,11 @@ pub mod screen_async {
     impl Default for ScreenshotInlineOptions {
         fn default() -> Self {
             Self {
-                max_width: Some(256),
-                max_height: Some(256),
+                // Start small – a full-screen retina capture at 128×128 JPEG is
+                // typically ~2-4 KB base64 which fits comfortably in 1400 chars.
+                // The encode function will iteratively halve if it still doesn't fit.
+                max_width: Some(128),
+                max_height: Some(128),
                 // Keep comfortably below pipeline's 2000 char truncation.
                 max_base64_chars: 1400,
                 max_result_chars: 1800,
@@ -233,6 +236,8 @@ pub mod screen_async {
     ) -> Result<(String, String, String)> {
         const HARD_MAX_BASE64_CHARS: usize = 1700;
         const HARD_MAX_RESULT_CHARS: usize = 2000;
+        /// Minimum dimension we'll shrink to before giving up.
+        const MIN_THUMB_DIM: u32 = 16;
 
         let max_base64_chars = inline.max_base64_chars.min(HARD_MAX_BASE64_CHARS);
         let max_result_chars = inline.max_result_chars.min(HARD_MAX_RESULT_CHARS);
@@ -247,41 +252,52 @@ pub mod screen_async {
             )));
         }
 
-        // Fast-path: if it's a PNG, try to decode + resize + re-encode as PNG thumbnail.
-        // (Workspace `image` dep is currently built with only `png` feature.)
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let ext_lc = ext.to_ascii_lowercase();
 
-        if ext_lc == "png"
+        // For image formats we can decode, iteratively resize + encode as JPEG
+        // (much smaller than PNG for photographic content like screenshots) until
+        // the base64 payload fits within the budget.
+        if matches!(ext_lc.as_str(), "png" | "jpg" | "jpeg")
             && let Ok(img) = image::open(path)
         {
-            let img = match (inline.max_width, inline.max_height) {
-                (Some(w), Some(h)) => img.thumbnail(w, h),
-                _ => img,
-            };
+            let mut w = inline.max_width.unwrap_or(img.width());
+            let mut h = inline.max_height.unwrap_or(img.height());
 
-            let mut buf = Vec::new();
-            img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
-                .map_err(|e| {
+            loop {
+                let thumb = img.thumbnail(w, h);
+
+                // Encode as JPEG at quality 60 – much more compact than PNG for
+                // real-world screenshots.
+                let mut buf = Vec::new();
+                let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 60);
+                thumb.write_with_encoder(encoder).map_err(|e| {
                     crate::error::AppError::Io(std::io::Error::other(format!(
-                        "Failed to encode inline PNG thumbnail: {e}"
+                        "Failed to encode inline JPEG thumbnail: {e}"
                     )))
                 })?;
 
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
-            if b64.len() > max_base64_chars {
-                return Err(crate::error::AppError::Io(std::io::Error::other(format!(
-                    "Inline base64 thumbnail too large ({} chars; max {}). Reduce inline max_width/max_height or max_base64_chars.",
-                    b64.len(),
-                    max_base64_chars
-                ))));
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
+                if b64.len() <= max_base64_chars {
+                    return Ok((b64, "image/jpeg".to_string(), "thumbnail_jpeg".to_string()));
+                }
+
+                // Halve dimensions and retry.
+                w = (w / 2).max(MIN_THUMB_DIM);
+                h = (h / 2).max(MIN_THUMB_DIM);
+
+                if w <= MIN_THUMB_DIM && h <= MIN_THUMB_DIM {
+                    // Even at minimum size it doesn't fit – give up.
+                    return Err(crate::error::AppError::Io(std::io::Error::other(format!(
+                        "Inline base64 thumbnail too large even at {}×{} ({} chars; max {}). \
+                         Increase max_base64_chars or use return.mode='path'.",
+                        w,
+                        h,
+                        b64.len(),
+                        max_base64_chars
+                    ))));
+                }
             }
-
-            // We don't know final JSON size here, but we at least enforce caller's max_result_chars
-            // indirectly in `screenshot_output_json`.
-            let _ = max_result_chars;
-
-            return Ok((b64, "image/png".to_string(), "thumbnail_png".to_string()));
         }
 
         // Fallback: base64 the raw file bytes (no resize).
@@ -289,7 +305,8 @@ pub mod screen_async {
         let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
         if b64.len() > max_base64_chars {
             return Err(crate::error::AppError::Io(std::io::Error::other(format!(
-                "Inline base64 file payload too large ({} chars; max {}). Use a smaller capture region, save as PNG, or reduce output size.",
+                "Inline base64 file payload too large ({} chars; max {}). \
+                 Use a smaller capture region, save as PNG/JPG, or use return.mode='path'.",
                 b64.len(),
                 max_base64_chars
             ))));
@@ -402,11 +419,11 @@ pub mod screen_async {
         use super::*;
 
         #[test]
-        fn inline_png_thumbnail_is_bounded_and_decodable() {
+        fn inline_jpeg_thumbnail_is_bounded_and_decodable() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("tiny.png");
 
-            // Create a tiny PNG.
+            // Create a tiny PNG source image.
             let img = image::RgbaImage::from_fn(32, 32, |x, y| {
                 image::Rgba([(x % 255) as u8, (y % 255) as u8, 0, 255])
             });
@@ -420,15 +437,16 @@ pub mod screen_async {
                 max_result_chars: 2000,
             };
             let (b64, mime, kind) = encode_inline_screenshot(&path, &opts).unwrap();
-            assert_eq!(mime, "image/png");
-            assert_eq!(kind, "thumbnail_png");
+            // Now encodes as JPEG for compact inline thumbnails.
+            assert_eq!(mime, "image/jpeg");
+            assert_eq!(kind, "thumbnail_jpeg");
             assert!(b64.len() <= opts.max_base64_chars);
 
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(b64)
                 .unwrap();
-            // PNG signature
-            assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]));
+            // JPEG SOI marker
+            assert!(bytes.starts_with(&[0xFF, 0xD8]));
         }
 
         #[test]

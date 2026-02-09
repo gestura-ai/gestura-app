@@ -117,7 +117,7 @@ pub fn is_write_operation(tool_name: &str, arguments: &str) -> bool {
         // Screen capture / recording is privacy-sensitive and produces artifacts on disk.
         // Treat as write/side-effecting so it is blocked in Sandbox and requires confirmation
         // in Restricted.
-        "screenshot" | "screen_record" | "screen" => true,
+        "screenshot" | "screen_record" => true,
 
         // Shell commands can be read-only (e.g. `pwd`, `ls`). Use a conservative classifier.
         "shell" | "bash" | "execute" => is_shell_command_write_operation(arguments),

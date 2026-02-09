@@ -91,7 +91,7 @@ tempfile = "3.8"
 hex = "0.4"
 base64 = "0.22"
 rand = "0.8"
-image = { version = "0.25", features = ["png"] }
+image = { version = "0.25", features = ["png", "jpeg"] }
 regex = "1"
 urlencoding = "2"
 

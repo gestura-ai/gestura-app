@@ -27,7 +27,7 @@ pub struct ToolDefinition {
 
 /// Return the set of built-in tools.
 pub fn all_tools() -> &'static [ToolDefinition] {
-    static TOOLS: [ToolDefinition; 13] = [
+    static TOOLS: [ToolDefinition; 12] = [
         ToolDefinition {
             name: "file",
             summary: "Read/write/list files and directories (workspace & sandbox-aware)",
@@ -150,34 +150,6 @@ pub fn all_tools() -> &'static [ToolDefinition] {
                 "task update_status --task_id abc123 --status inprogress",
                 "task list",
                 "task create --name 'Write tests' --parent_id abc123",
-            ],
-        },
-        ToolDefinition {
-            name: "screen",
-            summary: "Unified screen capture & recording (screenshot + start/stop recording)",
-            inputs: &[
-                "operation (screenshot/capture/start/stop)",
-                "output_format (optional; screenshot: png/jpg, recording start: mp4/mov)",
-                "output_path (optional for screenshot/start)",
-                "return (optional; screenshot only: mode=path|inline_base64 + inline bounds)",
-                "recording_id (required for stop)",
-                "region (optional: x,y,width,height)",
-                "display (optional: display number)",
-            ],
-            side_effects: &[
-                "Captures screen content (privacy-sensitive)",
-                "Creates image/video files on disk",
-                "May prompt for OS screen recording permission",
-                "May spawn a background recording process",
-            ],
-            examples: &[
-                // Examples are expressed as tool-call argument JSON (not CLI flags).
-                // This is what an LLM/system would provide when calling these tools.
-                "{\"operation\":\"capture\",\"output_path\":\"./screen.png\"}",
-                "{\"operation\":\"capture\",\"output_format\":\"jpg\"}",
-                "{\"operation\":\"capture\",\"return\":{\"mode\":\"inline_base64\"}}",
-                "{\"operation\":\"start\",\"output_path\":\"./recording.mp4\"}",
-                "{\"operation\":\"stop\",\"recording_id\":\"<recording_id>\"}",
             ],
         },
         ToolDefinition {

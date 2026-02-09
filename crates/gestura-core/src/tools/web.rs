@@ -426,15 +426,45 @@ impl Default for LocalSearchProvider {
 }
 
 impl LocalSearchProvider {
+    /// Realistic Chrome user agent to avoid bot detection by DuckDuckGo.
+    /// A truncated UA string is immediately flagged as automated traffic.
+    const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+        AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
     pub fn new(timeout: Duration, max_content_length: usize) -> Self {
+        use reqwest::header::{self, HeaderMap, HeaderValue};
+
+        let mut default_headers = HeaderMap::new();
+        default_headers.insert(
+            header::ACCEPT,
+            HeaderValue::from_static(
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            ),
+        );
+        default_headers.insert(
+            header::ACCEPT_LANGUAGE,
+            HeaderValue::from_static("en-US,en;q=0.9"),
+        );
+        default_headers.insert(
+            header::REFERER,
+            HeaderValue::from_static("https://html.duckduckgo.com/"),
+        );
+
         Self {
             client: reqwest::Client::builder()
                 .timeout(timeout)
-                .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .user_agent(Self::USER_AGENT)
+                .default_headers(default_headers)
                 .build()
                 .unwrap_or_default(),
             extractor: ContentExtractor::new(max_content_length),
         }
+    }
+
+    /// Returns `true` when DuckDuckGo has responded with a CAPTCHA /
+    /// bot-challenge page instead of real search results.
+    fn is_captcha_page(html: &str) -> bool {
+        html.contains("anomaly-modal") || html.contains("cc=botnet")
     }
 
     /// Parse DuckDuckGo HTML search results
@@ -519,7 +549,10 @@ impl LocalSearchProvider {
 
         if results.is_empty() {
             tracing::error!(
-                "DDG HTML parsing failed - no results found. HTML length: {} bytes. This likely means DuckDuckGo changed their HTML structure.",
+                "DDG HTML parsing found no results. HTML length: {} bytes. \
+                 DuckDuckGo may have changed their HTML structure, or the \
+                 response is an unrecognised challenge page. \
+                 Consider configuring a Brave or SerpAPI key for reliable search.",
                 html.len()
             );
         } else {
@@ -605,20 +638,45 @@ impl LocalSearchProvider {
         Ok(results)
     }
 
-    /// Basic search without content extraction (faster)
+    /// Basic search without content extraction (faster).
+    ///
+    /// Uses HTTP **POST** with form-encoded data, matching DuckDuckGo's own
+    /// HTML search form. GET requests to this endpoint are aggressively
+    /// blocked with CAPTCHA challenges.
     async fn search_basic(&self, query: &str, max_results: usize) -> Result<Vec<SearchItem>> {
-        let encoded_query = urlencoding::encode(query);
-        let search_url = format!("https://html.duckduckgo.com/html/?q={}", encoded_query);
+        let search_url = "https://html.duckduckgo.com/html/";
 
-        let response = self.client.get(&search_url).send().await.map_err(|e| {
-            AppError::Io(std::io::Error::other(format!("Search request failed: {e}")))
-        })?;
+        let response = self
+            .client
+            .post(search_url)
+            .form(&[("q", query)])
+            .send()
+            .await
+            .map_err(|e| {
+                AppError::Io(std::io::Error::other(format!("Search request failed: {e}")))
+            })?;
 
         let html = response.text().await.map_err(|e| {
             AppError::Io(std::io::Error::other(format!(
                 "Failed to read response: {e}"
             )))
         })?;
+
+        // Detect CAPTCHA / bot-challenge page before attempting to parse.
+        // Returning an error (instead of an empty Vec) ensures the fallback
+        // provider chain in WebSearchService::search() is triggered.
+        if Self::is_captcha_page(&html) {
+            tracing::warn!(
+                "DuckDuckGo returned a CAPTCHA bot-challenge page ({} bytes). \
+                 Automated requests are being rate-limited. \
+                 Consider configuring a Brave or SerpAPI key for reliable search.",
+                html.len()
+            );
+            return Err(AppError::Io(std::io::Error::other(
+                "DuckDuckGo returned a CAPTCHA challenge — automated requests are being blocked. \
+                 Configure a Brave Search or SerpAPI key in Settings → Web Search for reliable results.",
+            )));
+        }
 
         let mut results = self.parse_ddg_html(&html, query);
         results.truncate(max_results);

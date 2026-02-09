@@ -2553,7 +2553,7 @@ impl AgentPipeline {
             "web" | "web_search" => self.execute_web_tool(arguments).await,
             "code" => self.execute_code_tool(arguments, workspace).await,
             "task" | "tasks" => self.execute_task_tool(arguments, workspace).await,
-            "screenshot" | "screen_record" | "screen" => {
+            "screenshot" | "screen_record" => {
                 self.execute_screen_tool(name, arguments, workspace).await
             }
             _ => ToolResult::Skipped(format!("Unknown tool: {}", name)),
@@ -3282,7 +3282,6 @@ impl AgentPipeline {
                             );
                         }
                     },
-                    "screen" => operation_from_args.unwrap_or("screenshot"),
                     other => {
                         return ToolResult::Error(format!("Unknown screen tool: {other}"));
                     }
@@ -3303,9 +3302,6 @@ impl AgentPipeline {
                                 "Tool 'screen_record' does not support operation '{operation}'. Supported operations: start, stop"
                             ));
                         }
-                    }
-                    "screen" => {
-                        // Unified tool supports all branches below.
                     }
                     _ => {}
                 }
