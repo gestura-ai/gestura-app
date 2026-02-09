@@ -188,6 +188,17 @@ pub enum StreamChunk {
         /// Number of messages saved
         messages_saved: usize,
     },
+    /// Agentic loop iteration boundary marker.
+    ///
+    /// Emitted at the start of each agentic loop iteration. When `iteration > 0`,
+    /// it signals that the text following this marker is the LLM's **intermediate
+    /// reasoning** about previous tool results (not the final response). UIs should
+    /// render this text differently (e.g., with a `◆` prefix or distinct styling)
+    /// and clearly delineate iteration boundaries.
+    AgentLoopIteration {
+        /// Zero-based iteration index (0 = first LLM call, 1+ = continuation after tools)
+        iteration: u32,
+    },
     /// Stream completed successfully with optional token usage
     Done(Option<TokenUsage>),
     /// Stream was cancelled
@@ -266,6 +277,10 @@ async fn forward_attempt_stream(
             }
             StreamChunk::MemoryBankSaved { .. } => {
                 // Forward memory bank notifications without marking as output
+                let _ = tx.send(chunk).await;
+            }
+            StreamChunk::AgentLoopIteration { .. } => {
+                // Forward agent loop iteration markers without marking as output
                 let _ = tx.send(chunk).await;
             }
             StreamChunk::Done(_) => {
@@ -888,9 +903,7 @@ pub async fn stream_ollama(
                         // Handle tool calls (Ollama returns them in the message)
                         if let Some(tool_calls) = json["message"]["tool_calls"].as_array() {
                             for call in tool_calls {
-                                let name = call["function"]["name"]
-                                    .as_str()
-                                    .unwrap_or_default();
+                                let name = call["function"]["name"].as_str().unwrap_or_default();
                                 let args = &call["function"]["arguments"];
 
                                 if !name.is_empty() {
@@ -908,9 +921,7 @@ pub async fn stream_ollama(
                                         args.as_str().unwrap_or("{}").to_string()
                                     };
 
-                                    let _ = tx
-                                        .send(StreamChunk::ToolCallArgs(args_str))
-                                        .await;
+                                    let _ = tx.send(StreamChunk::ToolCallArgs(args_str)).await;
                                     let _ = tx.send(StreamChunk::ToolCallEnd).await;
                                 }
                             }

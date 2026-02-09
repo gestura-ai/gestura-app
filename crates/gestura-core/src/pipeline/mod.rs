@@ -308,6 +308,7 @@ impl AgentPipeline {
                     &relevant_tools,
                     workspace.as_ref(),
                     &tx,
+                    &cancel_token,
                 )
                 .await?
         {
@@ -367,8 +368,7 @@ impl AgentPipeline {
         }
 
         // 4. Build the optimized prompt with token limit checking
-        let (prompt, truncated) =
-            self.truncate_prompt_if_needed(&request, &mut resolved_context);
+        let (prompt, truncated) = self.truncate_prompt_if_needed(&request, &mut resolved_context);
 
         if truncated {
             tracing::info!("Prompt was truncated to fit token limit");
@@ -464,6 +464,7 @@ impl AgentPipeline {
         relevant_tools: &[&'static ToolDefinition],
         workspace: Option<&SessionWorkspace>,
         tx: &mpsc::Sender<StreamChunk>,
+        cancel_token: &CancellationToken,
     ) -> Result<Option<AgentResponse>, AppError> {
         let has_tool = |name: &str| relevant_tools.iter().any(|t| t.name == name);
 
@@ -472,7 +473,7 @@ impl AgentPipeline {
             return Ok(None);
         };
 
-        let Some((tool_name, args, answer_prefix)) =
+        let Some((tool_name, args, _answer_prefix)) =
             Self::extract_planned_tool_call_from_text(&prev_assistant.content)
         else {
             return Ok(None);
@@ -520,22 +521,6 @@ impl AgentPipeline {
             })
             .await;
 
-        let user_text = match &result {
-            ToolResult::Success(out) => {
-                let out = out.trim_end();
-                if out.is_empty() {
-                    format!("{}(empty output)\n", answer_prefix)
-                } else {
-                    format!("{}{}\n", answer_prefix, out)
-                }
-            }
-            ToolResult::Error(e) => format!("{}error: {}\n", tool_name, e),
-            ToolResult::Skipped(msg) => format!("{}skipped: {}\n", tool_name, msg),
-        };
-
-        let _ = tx.send(StreamChunk::Text(user_text.clone())).await;
-        let _ = tx.send(StreamChunk::Done(None)).await;
-
         let record = ToolCallRecord {
             id: tool_call_id,
             name: tool_name,
@@ -544,11 +529,74 @@ impl AgentPipeline {
             duration_ms,
         };
 
+        // Build a continuation prompt so the LLM can synthesize the tool output
+        // into a helpful response for the user, instead of leaving raw tool output
+        // as the final answer.
+        let base_prompt = self.build_prompt(request, &crate::context::ResolvedContext::default());
+        let continuation_prompt = self.build_tool_continuation_prompt(
+            &base_prompt,
+            "Executing the approved tool call.",
+            std::slice::from_ref(&record),
+        );
+
+        // Stream one more LLM call for synthesis (no tool schemas — text only).
+        let (inner_tx, mut inner_rx) = mpsc::channel::<StreamChunk>(100);
+        let config = self.config.clone();
+        let enable_fallback = self.pipeline_config.enable_fallback;
+        let inner_cancel = cancel_token.clone();
+
+        let stream_handle = tokio::spawn(async move {
+            if enable_fallback {
+                let _ = start_streaming_with_fallback(
+                    &config,
+                    &continuation_prompt,
+                    None,
+                    inner_tx,
+                    inner_cancel,
+                )
+                .await;
+            } else {
+                let _ =
+                    start_streaming(&config, &continuation_prompt, None, inner_tx, inner_cancel)
+                        .await;
+            }
+        });
+
+        let mut synthesis_text = String::new();
+        let mut synthesis_usage = None;
+
+        while let Some(chunk) = inner_rx.recv().await {
+            match &chunk {
+                StreamChunk::Text(text) => {
+                    synthesis_text.push_str(text);
+                    let _ = tx.send(chunk).await;
+                }
+                StreamChunk::Thinking(_) => {
+                    let _ = tx.send(chunk).await;
+                }
+                StreamChunk::Done(usage) => {
+                    synthesis_usage = usage.clone();
+                    break;
+                }
+                StreamChunk::Error(_) | StreamChunk::Cancelled => {
+                    let _ = tx.send(chunk).await;
+                    break;
+                }
+                _ => {
+                    // Forward status or other informational chunks
+                    let _ = tx.send(chunk).await;
+                }
+            }
+        }
+
+        let _ = stream_handle.await;
+        let _ = tx.send(StreamChunk::Done(synthesis_usage.clone())).await;
+
         Ok(Some(AgentResponse {
-            content: user_text,
+            content: synthesis_text,
             thinking: None,
             tool_calls: vec![record],
-            usage: None,
+            usage: synthesis_usage,
             context_used: crate::context::ResolvedContext::default(),
             truncated: false,
             iterations: 1,
@@ -780,8 +828,7 @@ impl AgentPipeline {
         }
 
         // 4. Build prompt with token limit checking
-        let (prompt, truncated) =
-            self.truncate_prompt_if_needed(&request, &mut resolved_context);
+        let (prompt, truncated) = self.truncate_prompt_if_needed(&request, &mut resolved_context);
 
         if truncated {
             tracing::info!("Prompt was truncated to fit token limit");
@@ -1824,6 +1871,14 @@ impl AgentPipeline {
 
             response.iterations = iteration + 1;
 
+            // Emit iteration boundary marker so UIs can delineate the agentic loop.
+            // iteration 0 = initial LLM call; iteration 1+ = continuation after tool results.
+            let _ = tx
+                .send(StreamChunk::AgentLoopIteration {
+                    iteration: iteration as u32,
+                })
+                .await;
+
             // Start streaming for this iteration
             let (inner_tx, mut inner_rx) = mpsc::channel::<StreamChunk>(100);
             let inner_cancel = cancel_token.clone();
@@ -1961,6 +2016,11 @@ impl AgentPipeline {
                     }
                     StreamChunk::MemoryBankSaved { .. } => {
                         // Forward memory bank notification to user
+                        let _ = tx.send(chunk).await;
+                    }
+                    StreamChunk::AgentLoopIteration { .. } => {
+                        // Iteration markers are emitted by the outer loop, not providers.
+                        // Forward in case an inner stream echoes one.
                         let _ = tx.send(chunk).await;
                     }
                     StreamChunk::Done(usage) => {
@@ -2128,8 +2188,11 @@ impl AgentPipeline {
             }
 
             // Build continuation prompt with tool results for the next iteration.
-            current_prompt =
-                self.build_tool_continuation_prompt(&current_prompt, &content, &iteration_tool_calls);
+            current_prompt = self.build_tool_continuation_prompt(
+                &current_prompt,
+                &content,
+                &iteration_tool_calls,
+            );
             response.tool_calls.extend(iteration_tool_calls);
             response.content = content;
             response.thinking = thinking;
@@ -3646,7 +3709,12 @@ impl AgentPipeline {
             ));
         }
 
-        prompt.push_str("\nContinue based on the tool results above.\n");
+        prompt.push_str(
+            "\nUser: Based on the tool results above, provide a complete and helpful response \
+             to my original request. Synthesize the information, highlight the key findings, \
+             and present a clear answer. If you created any tasks to track this work, mark \
+             them as completed now.\n",
+        );
 
         prompt
     }
