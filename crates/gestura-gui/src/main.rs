@@ -116,6 +116,12 @@ async fn main() {
             gestura_gui::api::get_mcp_server_status,
             gestura_gui::api::register_mcp_server,
             gestura_gui::api::unregister_mcp_server,
+            // MCP Client Runtime commands
+            gestura_gui::api::connect_mcp_server,
+            gestura_gui::api::disconnect_mcp_server,
+            gestura_gui::api::list_connected_mcp_servers,
+            gestura_gui::api::list_mcp_client_tools,
+            gestura_gui::api::call_mcp_tool,
             gestura_gui::api::get_mdh_pointers,
             gestura_gui::api::set_mdh_pointer,
             gestura_gui::api::remove_mdh_pointer,

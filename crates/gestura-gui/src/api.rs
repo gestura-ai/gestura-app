@@ -437,6 +437,102 @@ pub async fn unregister_mcp_server(name: String) -> Result<(), String> {
     Ok(())
 }
 
+// ============================================================================
+// MCP Client Runtime — live connections via McpClientRegistry
+// ============================================================================
+
+use gestura_core::mcp::client::get_mcp_client_registry;
+
+/// Connect to an MCP server by name (must already be in config).
+///
+/// Performs the MCP initialize handshake and discovers tools. Returns the list
+/// of tool names discovered from the server.
+#[tauri::command]
+pub async fn connect_mcp_server(name: String) -> Result<Vec<String>, String> {
+    let config = AppConfig::load_async().await;
+    let entry = config
+        .mcp_servers
+        .iter()
+        .find(|s| s.name == name)
+        .ok_or_else(|| format!("MCP server '{}' not found in config", name))?
+        .clone();
+
+    let registry = get_mcp_client_registry();
+    let tools = registry.connect(&entry).await.map_err(|e| e.to_string())?;
+    let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+
+    tracing::info!(
+        "Connected to MCP server '{}': {} tools discovered",
+        name,
+        names.len()
+    );
+    Ok(names)
+}
+
+/// Disconnect from a running MCP server.
+#[tauri::command]
+pub async fn disconnect_mcp_server(name: String) -> Result<(), String> {
+    get_mcp_client_registry().disconnect(&name).await;
+    tracing::info!("Disconnected from MCP server '{}'", name);
+    Ok(())
+}
+
+/// List all currently connected MCP server names.
+#[tauri::command]
+pub async fn list_connected_mcp_servers() -> Vec<String> {
+    get_mcp_client_registry().connected_servers().await
+}
+
+/// Information about a discovered tool from a live MCP connection.
+#[derive(serde::Serialize)]
+pub struct McpClientToolInfo {
+    /// Server the tool belongs to
+    pub server: String,
+    /// Tool name
+    pub name: String,
+    /// Namespaced name used in the agent pipeline (mcp__server__tool)
+    pub qualified_name: String,
+    /// Tool description
+    pub description: Option<String>,
+    /// JSON Schema for input parameters
+    pub input_schema: serde_json::Value,
+}
+
+/// List all tools discovered from live MCP connections.
+#[tauri::command]
+pub async fn list_mcp_client_tools() -> Vec<McpClientToolInfo> {
+    let registry = get_mcp_client_registry();
+    let all = registry.all_tools().await;
+    let mut out = Vec::new();
+    for (server, tools) in all {
+        for t in tools {
+            out.push(McpClientToolInfo {
+                server: server.clone(),
+                qualified_name: format!("mcp__{}__{}", server, t.name),
+                description: t.description.clone(),
+                input_schema: t.input_schema.clone(),
+                name: t.name,
+            });
+        }
+    }
+    out
+}
+
+/// Call a tool on a connected MCP server. Returns the result content as a JSON value.
+#[tauri::command]
+pub async fn call_mcp_tool(
+    server: String,
+    tool: String,
+    arguments: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let registry = get_mcp_client_registry();
+    let result = registry
+        .call_tool(&server, &tool, arguments)
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(result).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn get_mdh_pointers() -> Result<std::collections::HashMap<String, String>, String> {
     Ok(AppConfig::load_async().await.mdh_pointers)

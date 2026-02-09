@@ -26,6 +26,14 @@ interface ServerStatus {
   last_error: string | null;
 }
 
+interface McpClientTool {
+  server: string;
+  name: string;
+  qualified_name: string;
+  description: string | null;
+  input_schema: unknown;
+}
+
 const DEFAULT_SERVER: McpServer = {
   name: '',
   type: 'stdio',
@@ -43,20 +51,31 @@ const DEFAULT_SERVER: McpServer = {
 const McpPanel: React.FC = () => {
   const [servers, setServers] = useState<McpServer[]>([]);
   const [statuses, setStatuses] = useState<ServerStatus[]>([]);
+  const [connectedServers, setConnectedServers] = useState<string[]>([]);
+  const [clientTools, setClientTools] = useState<McpClientTool[]>([]);
+  const [connecting, setConnecting] = useState<Record<string, boolean>>({});
   const [editing, setEditing] = useState<McpServer | null>(null);
   const [isNew, setIsNew] = useState(false);
   const [loading, setLoading] = useState(true);
   const [envText, setEnvText] = useState('');
   const [headerText, setHeaderText] = useState('');
+  const [toolCallServer, setToolCallServer] = useState('');
+  const [toolCallName, setToolCallName] = useState('');
+  const [toolCallArgs, setToolCallArgs] = useState('{}');
+  const [toolCallResult, setToolCallResult] = useState<string | null>(null);
 
   const loadServers = useCallback(async () => {
     try {
-      const [srvList, statusList] = await Promise.all([
+      const [srvList, statusList, connected, tools] = await Promise.all([
         invoke<McpServer[]>('list_mcp_tools'),
         invoke<ServerStatus[]>('get_mcp_server_status').catch(() => []),
+        invoke<string[]>('list_connected_mcp_servers').catch(() => []),
+        invoke<McpClientTool[]>('list_mcp_client_tools').catch(() => []),
       ]);
       setServers(srvList);
       setStatuses(statusList);
+      setConnectedServers(connected);
+      setClientTools(tools);
     } catch (e) {
       console.error('Failed to load MCP servers:', e);
     } finally {
@@ -125,7 +144,46 @@ const McpPanel: React.FC = () => {
     }
   };
 
+  const connectServer = async (name: string) => {
+    setConnecting(prev => ({ ...prev, [name]: true }));
+    try {
+      await invoke<string[]>('connect_mcp_server', { name });
+      await loadServers();
+    } catch (e) {
+      console.error(`Failed to connect to ${name}:`, e);
+    } finally {
+      setConnecting(prev => ({ ...prev, [name]: false }));
+    }
+  };
+
+  const disconnectServer = async (name: string) => {
+    try {
+      await invoke('disconnect_mcp_server', { name });
+      await loadServers();
+    } catch (e) {
+      console.error(`Failed to disconnect from ${name}:`, e);
+    }
+  };
+
+  const callTool = async () => {
+    if (!toolCallServer || !toolCallName) return;
+    setToolCallResult(null);
+    try {
+      const args = JSON.parse(toolCallArgs);
+      const result = await invoke<unknown>('call_mcp_tool', {
+        server: toolCallServer,
+        tool: toolCallName,
+        arguments: args,
+      });
+      setToolCallResult(JSON.stringify(result, null, 2));
+    } catch (e) {
+      setToolCallResult(`Error: ${e}`);
+    }
+  };
+
+  const isConnected = (name: string) => connectedServers.includes(name);
   const getStatusFor = (name: string) => statuses.find(s => s.name === name);
+  const toolsForServer = (name: string) => clientTools.filter(t => t.server === name);
 
   if (loading) return <div className="mcp-panel"><h2>MCP Servers</h2><p>Loading…</p></div>;
 
@@ -144,13 +202,19 @@ const McpPanel: React.FC = () => {
           )}
           {servers.map(srv => {
             const st = getStatusFor(srv.name);
+            const connected = isConnected(srv.name);
+            const srvTools = toolsForServer(srv.name);
+            const isConnecting = connecting[srv.name] || false;
             return (
               <div key={srv.name} className={`mcp-server-card ${srv.enabled ? '' : 'disabled'}`}>
                 <div className="mcp-server-card-header">
                   <span className="mcp-server-name">{srv.name}</span>
                   <span className={`mcp-badge mcp-badge-${srv.type}`}>{srv.type}</span>
                   <span className={`mcp-badge mcp-badge-${srv.scope}`}>{srv.scope}</span>
-                  {st && <span className={`mcp-status mcp-status-${st.state.toLowerCase()}`}>{st.state}</span>}
+                  <span className={`mcp-status mcp-status-${connected ? 'connected' : 'disconnected'}`}>
+                    {isConnecting ? '⏳ Connecting…' : connected ? '● Connected' : '○ Disconnected'}
+                  </span>
+                  {st && !connected && <span className={`mcp-status mcp-status-${st.state.toLowerCase()}`}>{st.state}</span>}
                 </div>
                 <div className="mcp-server-card-uri">
                   {srv.type === 'stdio'
@@ -160,7 +224,30 @@ const McpPanel: React.FC = () => {
                 {st?.last_error && (
                   <div className="mcp-server-card-error">⚠ {st.last_error}</div>
                 )}
+                {connected && srvTools.length > 0 && (
+                  <div className="mcp-server-tools">
+                    <strong>Discovered Tools ({srvTools.length}):</strong>
+                    <ul>
+                      {srvTools.map(t => (
+                        <li key={t.qualified_name}>
+                          <code>{t.name}</code>
+                          {t.description && <span className="tool-desc"> — {t.description}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 <div className="mcp-server-card-actions">
+                  {srv.enabled && !connected && (
+                    <button className="btn btn-sm btn-primary" disabled={isConnecting} onClick={() => connectServer(srv.name)}>
+                      {isConnecting ? 'Connecting…' : 'Connect'}
+                    </button>
+                  )}
+                  {connected && (
+                    <button className="btn btn-sm btn-warning" onClick={() => disconnectServer(srv.name)}>
+                      Disconnect
+                    </button>
+                  )}
                   <button className="btn btn-sm" onClick={() => openEditForm(srv)}>Edit</button>
                   <button className="btn btn-sm btn-secondary" onClick={() => toggleEnabled(srv)}>
                     {srv.enabled ? 'Disable' : 'Enable'}
@@ -296,6 +383,46 @@ const McpPanel: React.FC = () => {
               </button>
               <button className="btn btn-secondary" onClick={() => setEditing(null)}>Cancel</button>
             </div>
+          </div>
+        )}
+
+        {/* Tool Invocation Panel — only shown when at least one server is connected */}
+        {connectedServers.length > 0 && (
+          <div className="mcp-tool-invoke">
+            <h3>Invoke MCP Tool</h3>
+            <div className="form-group">
+              <label>Server</label>
+              <select value={toolCallServer} onChange={e => { setToolCallServer(e.target.value); setToolCallName(''); }}>
+                <option value="">Select a server…</option>
+                {connectedServers.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            {toolCallServer && (
+              <div className="form-group">
+                <label>Tool</label>
+                <select value={toolCallName} onChange={e => setToolCallName(e.target.value)}>
+                  <option value="">Select a tool…</option>
+                  {toolsForServer(toolCallServer).map(t => (
+                    <option key={t.qualified_name} value={t.name}>{t.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div className="form-group">
+              <label>Arguments (JSON)</label>
+              <textarea
+                value={toolCallArgs}
+                onChange={e => setToolCallArgs(e.target.value)}
+                rows={4}
+                placeholder='{"key": "value"}'
+              />
+            </div>
+            <button className="btn" onClick={callTool} disabled={!toolCallServer || !toolCallName}>
+              Call Tool
+            </button>
+            {toolCallResult !== null && (
+              <pre className="mcp-tool-result">{toolCallResult}</pre>
+            )}
           </div>
         )}
       </div>

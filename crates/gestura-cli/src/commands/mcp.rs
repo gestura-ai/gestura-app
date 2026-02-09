@@ -2,12 +2,16 @@
 //!
 //! Provides CLI commands for inspecting and managing MCP servers. The surface
 //! mirrors `claude mcp …` so users can replace `claude` → `gestura` in scripts.
+//!
+//! Runtime client commands (`connect`, `disconnect`, `tools`, `call`) use the
+//! global [`McpClientRegistry`] to manage live connections.
 
 use super::Result;
 use crate::McpAction;
 use colored::Colorize;
 use gestura_core::AppConfig;
 use gestura_core::config::{McpScope, McpServerEntry, McpTransportType};
+use gestura_core::mcp::client::get_mcp_client_registry;
 use gestura_core::mcp::{PROTOCOL_VERSION, PromptRegistry, SessionManager};
 use std::collections::HashMap;
 
@@ -296,6 +300,169 @@ pub fn run(action: &McpAction) -> Result<()> {
         McpAction::Capabilities => {
             show_mcp_capabilities();
         }
+
+        // ── connect ──────────────────────────────────────────────────────
+        McpAction::Connect { name } => {
+            let config = AppConfig::load();
+            let entry = config
+                .mcp_servers
+                .iter()
+                .find(|t| t.name == *name)
+                .unwrap_or_else(|| {
+                    eprintln!(
+                        "{}: MCP server '{}' not found in config",
+                        "error".red(),
+                        name
+                    );
+                    std::process::exit(2);
+                });
+
+            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+            match rt.block_on(get_mcp_client_registry().connect(entry)) {
+                Ok(tools) => {
+                    println!(
+                        "{} Connected to MCP server: {} ({} tools discovered)",
+                        "✓".green(),
+                        name.cyan(),
+                        tools.len()
+                    );
+                    for t in &tools {
+                        println!("  {} {}", "•".cyan(), t.name);
+                        if let Some(desc) = &t.description {
+                            println!("    {}", desc.dimmed());
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{}: Failed to connect to '{}': {}", "error".red(), name, e);
+                    std::process::exit(2);
+                }
+            }
+        }
+
+        // ── disconnect ───────────────────────────────────────────────────
+        McpAction::Disconnect { name } => {
+            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+            rt.block_on(get_mcp_client_registry().disconnect(name));
+            println!(
+                "{} Disconnected from MCP server: {}",
+                "✓".green(),
+                name.cyan()
+            );
+        }
+
+        // ── tools (live) ─────────────────────────────────────────────────
+        McpAction::Tools { name } => {
+            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let registry = get_mcp_client_registry();
+
+            if let Some(server_name) = name {
+                // Show tools for a specific connected server
+                match rt.block_on(registry.get(server_name)) {
+                    Some(client) => {
+                        let tools = rt.block_on(client.get_tools());
+                        println!("{}", format!("Tools from '{}'", server_name).bold());
+                        println!();
+                        if tools.is_empty() {
+                            println!("  {}", "(no tools)".dimmed());
+                        } else {
+                            for t in &tools {
+                                println!("  {} {}", "•".cyan(), t.name.bold());
+                                if let Some(desc) = &t.description {
+                                    println!("    {}", desc.dimmed());
+                                }
+                            }
+                        }
+                        println!();
+                        println!("Total: {} tool(s)", tools.len());
+                    }
+                    None => {
+                        eprintln!(
+                            "{}: MCP server '{}' is not connected. Run {} first.",
+                            "error".red(),
+                            server_name,
+                            format!("gestura mcp connect {}", server_name).cyan()
+                        );
+                        std::process::exit(2);
+                    }
+                }
+            } else {
+                // Show tools from all connected servers
+                let all = rt.block_on(registry.all_tools());
+                if all.is_empty() {
+                    println!("  {}", "(no connected MCP servers)".dimmed());
+                    println!();
+                    println!(
+                        "Connect a server first: {}",
+                        "gestura mcp connect <name>".cyan()
+                    );
+                } else {
+                    println!("{}", "MCP Tools (all connected servers)".bold());
+                    println!();
+                    let mut total = 0;
+                    for (srv, tools) in &all {
+                        println!(
+                            "  {} ({})",
+                            srv.cyan(),
+                            format!("{} tools", tools.len()).dimmed()
+                        );
+                        for t in tools {
+                            println!("    {} {}", "•".cyan(), t.name);
+                            if let Some(desc) = &t.description {
+                                println!("      {}", desc.dimmed());
+                            }
+                        }
+                        total += tools.len();
+                    }
+                    println!();
+                    println!("Total: {} tool(s) across {} server(s)", total, all.len());
+                }
+            }
+        }
+
+        // ── call ─────────────────────────────────────────────────────────
+        McpAction::Call {
+            server,
+            tool,
+            arguments,
+        } => {
+            let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_else(|e| {
+                eprintln!("{}: Invalid JSON arguments: {}", "error".red(), e);
+                std::process::exit(2);
+            });
+
+            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+            match rt.block_on(get_mcp_client_registry().call_tool(server, tool, args)) {
+                Ok(result) => {
+                    use gestura_core::mcp::types::ToolResultContent;
+                    let is_error = result.is_error.unwrap_or(false);
+                    if is_error {
+                        eprintln!("{}", "Tool returned an error:".red());
+                    }
+                    for content in &result.content {
+                        match content {
+                            ToolResultContent::Text { text } => println!("{text}"),
+                            ToolResultContent::Image { data, mime_type } => {
+                                println!("[image: {mime_type}, {} bytes]", data.len());
+                            }
+                            ToolResultContent::Resource { resource } => {
+                                println!("[resource: {}]", resource.uri);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{}: Failed to call tool '{}' on '{}': {}",
+                        "error".red(),
+                        tool,
+                        server,
+                        e
+                    );
+                    std::process::exit(2);
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -327,7 +494,8 @@ fn show_mcp_status() {
     // Transport info
     println!("{}", "Transports".bold());
     println!("  {} {}", "STDIO:".dimmed(), "✓ Available".green());
-    println!("  {} {}", "HTTP/SSE:".dimmed(), "○ Planned".yellow());
+    println!("  {} {}", "HTTP:".dimmed(), "✓ Available".green());
+    println!("  {} {}", "SSE:".dimmed(), "✓ Available (legacy)".green());
     println!();
 
     // Features
@@ -345,6 +513,25 @@ fn show_mcp_status() {
         "Notifications:".dimmed(),
         "✓ progress, logging, cancelled".green()
     );
+    println!();
+
+    // Live connection status from McpClientRegistry
+    println!("{}", "Connected MCP Clients".bold());
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let registry = get_mcp_client_registry();
+    let connected = rt.block_on(registry.connected_servers());
+    if connected.is_empty() {
+        println!("  {}", "(none)".dimmed());
+    } else {
+        let all_tools = rt.block_on(registry.all_tools());
+        for name in &connected {
+            let tool_count = all_tools
+                .iter()
+                .find(|(n, _)| n == name)
+                .map_or(0, |(_, t)| t.len());
+            println!("  {} {} ({} tools)", "✓".green(), name.cyan(), tool_count);
+        }
+    }
 }
 
 /// Display available prompts

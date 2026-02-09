@@ -276,6 +276,31 @@ enum McpAction {
     Prompts,
     /// Show server capabilities
     Capabilities,
+    /// Connect to an MCP server (starts the client and performs handshake)
+    Connect {
+        /// Server name (must be configured)
+        name: String,
+    },
+    /// Disconnect from a running MCP server
+    Disconnect {
+        /// Server name
+        name: String,
+    },
+    /// List tools discovered from connected MCP servers
+    Tools {
+        /// If provided, list tools for this server only; otherwise list all
+        name: Option<String>,
+    },
+    /// Call a tool on a connected MCP server
+    Call {
+        /// Server name
+        server: String,
+        /// Tool name
+        tool: String,
+        /// JSON arguments (e.g. '{"path": "/tmp/test.txt"}')
+        #[arg(default_value = "{}")]
+        arguments: String,
+    },
 }
 
 #[derive(Subcommand)]
