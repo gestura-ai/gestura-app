@@ -250,6 +250,16 @@ struct StreamingState {
     content: String,
     /// Accumulated thinking content
     thinking_content: String,
+    /// Original user input for pause-state capture.
+    original_input: String,
+    /// Conversation history snapshot for pause-state capture.
+    history: Vec<gestura_core::Message>,
+    /// System prompt in effect for pause-state capture.
+    system_prompt: Option<String>,
+    /// Completed tool calls tracked for pause-state capture.
+    completed_tool_calls: Vec<gestura_core::ToolCallRecord>,
+    /// In-progress tool call being built (id, name, accumulated args).
+    current_tool_call: Option<(String, String, String)>,
 }
 
 /// In-flight prompt enhancement state.
@@ -451,11 +461,18 @@ fn run_main_loop(
                             stream_state.content.push_str(&text);
                             app.update_last_message(&stream_state.content);
                         }
-                        StreamChunk::ToolCallStart { id: _, name } => {
+                        StreamChunk::ToolCallStart { id, name } => {
+                            // Track in-progress tool call for pause-state capture.
+                            stream_state.current_tool_call =
+                                Some((id, name.clone(), String::new()));
                             push_activity_info(app, format!("🔧 Using tool: {}", name));
                             app.set_status(format!("Using tool: {}", name));
                         }
                         StreamChunk::ToolCallArgs(args) => {
+                            // Accumulate args for pause-state capture.
+                            if let Some((_, _, ref mut acc)) = stream_state.current_tool_call {
+                                acc.push_str(&args);
+                            }
                             let preview = truncate_for_preview(&args, 160);
                             push_activity_info(app, format!("  ⏳ Args: {}", preview));
                         }
@@ -468,6 +485,24 @@ fn run_main_loop(
                             output,
                             duration_ms,
                         } => {
+                            // Record completed tool call for pause-state capture.
+                            let (tc_id, tc_name, tc_args) =
+                                stream_state.current_tool_call.take().unwrap_or_default();
+                            let result = if success {
+                                gestura_core::ToolResult::Success(output.clone())
+                            } else {
+                                gestura_core::ToolResult::Error(output.clone())
+                            };
+                            stream_state
+                                .completed_tool_calls
+                                .push(gestura_core::ToolCallRecord {
+                                    id: tc_id,
+                                    name: tc_name,
+                                    arguments: tc_args,
+                                    result,
+                                    duration_ms,
+                                });
+
                             let formatted = format_tool_output_tui(&output);
                             let (prefix, is_error) = if success {
                                 ("✅", false)
@@ -613,21 +648,66 @@ fn run_main_loop(
                                 app.set_status("Reviewing tool results…".to_string());
                             }
                         }
-                        StreamChunk::Cancelled => {
-                            push_activity_info(app, "⏹ Cancelled");
-                            // Keep partial content but mark as cancelled
+                        StreamChunk::ShellOutput { data, .. } => {
+                            // Show streaming shell output in the activity pane.
+                            let preview = truncate_for_preview(&data, 200);
+                            push_activity_info(app, format!("  📟 {}", preview));
+                        }
+                        StreamChunk::ShellLifecycle {
+                            state,
+                            command,
+                            exit_code,
+                            ..
+                        } => {
+                            let msg = if let Some(code) = exit_code {
+                                format!("⚙ shell {:?}: {} (exit {})", state, command, code)
+                            } else {
+                                format!("⚙ shell {:?}: {}", state, command)
+                            };
+                            push_activity_info(app, msg);
+                        }
+                        StreamChunk::Cancelled | StreamChunk::Paused => {
+                            let is_paused = matches!(chunk, StreamChunk::Paused);
+
+                            // Capture pause state so the session can be resumed later.
+                            let paused_state = gestura_core::PausedExecutionState {
+                                original_input: stream_state.original_input.clone(),
+                                system_prompt: stream_state.system_prompt.clone(),
+                                history: stream_state.history.clone(),
+                                partial_content: stream_state.content.clone(),
+                                partial_thinking: if stream_state.thinking_content.is_empty() {
+                                    None
+                                } else {
+                                    Some(stream_state.thinking_content.clone())
+                                },
+                                completed_tool_calls: stream_state.completed_tool_calls.clone(),
+                                iteration: 0,
+                                source: gestura_core::RequestSource::CliTui,
+                                session_id: Some(app.session.id.clone()),
+                                workspace_dir: app.session.workspace_dir().cloned(),
+                                model_snapshot: None,
+                                paused_at: chrono::Utc::now(),
+                            };
+                            app.session.state.paused_execution = Some(paused_state);
+                            // Persist so the pause state survives restarts.
+                            let _ = super::save_cli_session(&app.session);
+
+                            let label = if is_paused { "Paused" } else { "Cancelled" };
+                            push_activity_info(
+                                app,
+                                format!("⏸ {} — use @continue to resume", label),
+                            );
                             if !stream_state.content.is_empty() {
                                 app.update_last_message(&format!(
-                                    "{}\n\n[Cancelled]",
-                                    stream_state.content
+                                    "{}\n\n[{} — use @continue to resume]",
+                                    stream_state.content, label
                                 ));
                                 app.finalize_streaming_message();
                             } else {
-                                // Remove empty streaming message
                                 app.messages.pop();
                             }
                             app.is_loading = false;
-                            app.set_status("Cancelled");
+                            app.set_status(format!("{} — type @continue to resume", label));
                             streaming = None;
                             break;
                         }
@@ -736,8 +816,21 @@ fn run_main_loop(
                     break;
                 }
                 Action::SendMessage(msg) => {
-                    // Don't allow sending while streaming
-                    if streaming.is_none() {
+                    // Intercept @continue to resume a paused session.
+                    if msg.trim().eq_ignore_ascii_case("@continue") {
+                        if streaming.is_none() {
+                            streaming = start_resume_streaming(app, rt)?;
+                        } else {
+                            app.set_status(
+                                "Response streaming; wait for completion (Esc to cancel) first",
+                            );
+                        }
+                    } else if streaming.is_none() {
+                        // Clear any stale pause state when the user sends a new message.
+                        if app.session.state.paused_execution.is_some() {
+                            app.session.state.paused_execution = None;
+                            let _ = super::save_cli_session(&app.session);
+                        }
                         streaming = start_streaming_message(app, rt, &msg)?;
                     } else {
                         // Preserve the user's input so it isn't lost while a stream is active.
@@ -748,14 +841,31 @@ fn run_main_loop(
 						);
                     }
                 }
+                Action::ResumeSession => {
+                    if streaming.is_none() {
+                        streaming = start_resume_streaming(app, rt)?;
+                    } else {
+                        app.set_status(
+                            "Response streaming; wait for completion (Esc to cancel) first",
+                        );
+                    }
+                }
                 Action::ExecuteCommand(cmd) => {
                     if streaming.is_some() && !command_allowed_while_streaming(&cmd) {
                         app.set_status(
                             "Still streaming — press Esc to cancel before running commands"
                                 .to_string(),
                         );
-                    } else if let Some(Action::Quit) = handle_command(app, &cmd)? {
-                        break;
+                    } else if let Some(action) = handle_command(app, &cmd)? {
+                        match action {
+                            Action::Quit => break,
+                            Action::ResumeSession => {
+                                if streaming.is_none() {
+                                    streaming = start_resume_streaming(app, rt)?;
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 Action::SwitchTab(idx) => {
@@ -996,6 +1106,11 @@ fn start_streaming_message(
         request = request.with_allowed_tools(allowed_tools);
     }
 
+    // Snapshot history and input for pause-state capture before ownership moves.
+    let history_snapshot = history.clone();
+    let input_snapshot = message.to_string();
+    let system_prompt_snapshot = app.system_prompt.clone();
+
     // Add conversation history
     request = request.with_history(history);
 
@@ -1019,6 +1134,100 @@ fn start_streaming_message(
         cancel_token,
         content: String::new(),
         thinking_content: String::new(),
+        original_input: input_snapshot,
+        history: history_snapshot,
+        system_prompt: system_prompt_snapshot,
+        completed_tool_calls: Vec::new(),
+        current_tool_call: None,
+    }))
+}
+
+/// Resume a previously paused streaming session.
+///
+/// Returns `None` if there is no paused execution state to resume.
+fn start_resume_streaming(
+    app: &mut TuiApp,
+    rt: &tokio::runtime::Runtime,
+) -> Result<Option<StreamingState>> {
+    let paused = match app.session.state.paused_execution.take() {
+        Some(p) => p,
+        None => {
+            app.set_error("No paused session to resume");
+            return Ok(None);
+        }
+    };
+
+    // Show resume indicator in chat
+    app.add_message("system", "⏵ Resuming paused session…");
+    app.is_loading = true;
+    app.set_status("Resuming paused session…");
+    app.add_streaming_message();
+
+    // Snapshot for the new StreamingState (used if the resumed stream is paused again).
+    let input_snapshot = paused.original_input.clone();
+    let history_snapshot = paused.history.clone();
+    let system_prompt_snapshot = paused.system_prompt.clone();
+
+    // Build the resume request through the core pipeline.
+    let mut request = AgentRequest::new(&paused.original_input)
+        .with_streaming(true)
+        .with_source(gestura_core::RequestSource::CliTui)
+        .with_resume_state(paused);
+
+    if let Some(ref sys) = app.system_prompt {
+        request = request.with_system_prompt(sys.clone());
+    }
+    request = request.with_session(app.session.id.clone());
+    if let Some(ws) = app.session.workspace_dir() {
+        request = request.with_workspace(ws.clone());
+    }
+
+    let session_llm = resolve_session_llm_override(app);
+    let mut config = app.config.clone();
+    let effective = gestura_core::llm_overrides::apply_cli_session_llm_overrides(
+        &mut config,
+        session_llm.as_ref(),
+    );
+    let provider_name = effective.provider;
+    let model_name = if !effective.model.trim().is_empty() {
+        effective.model
+    } else {
+        model_for_provider(&config, &provider_name).unwrap_or_default()
+    };
+    let (permission_level, allowed_tools) = super::derive_request_policy(&app.session);
+    request = request
+        .with_session_llm_config(provider_name, model_name)
+        .with_permission_level(permission_level);
+    if !allowed_tools.is_empty() {
+        request = request.with_allowed_tools(allowed_tools);
+    }
+
+    let (tx, rx) = mpsc::channel::<StreamChunk>(100);
+    let cancel_token = CancellationToken::new();
+    let cancel_token_clone = cancel_token.clone();
+    rt.spawn(async move {
+        let pipeline = AgentPipeline::with_provider_optimized_config(config);
+        if let Err(e) = pipeline
+            .process_streaming(request, tx.clone(), cancel_token_clone)
+            .await
+        {
+            let _ = tx.send(StreamChunk::Error(e.to_string())).await;
+        }
+    });
+
+    // Clear the persisted pause state now that we've resumed.
+    let _ = super::save_cli_session(&app.session);
+
+    Ok(Some(StreamingState {
+        receiver: rx,
+        cancel_token,
+        content: String::new(),
+        thinking_content: String::new(),
+        original_input: input_snapshot,
+        history: history_snapshot,
+        system_prompt: system_prompt_snapshot,
+        completed_tool_calls: Vec::new(),
+        current_tool_call: None,
     }))
 }
 
@@ -1180,6 +1389,13 @@ fn handle_command(app: &mut TuiApp, command: &str) -> Result<Option<Action>> {
         }
         "/context" => {
             handle_context_command(app)?;
+        }
+        "/continue" | "/resume" => {
+            if app.session.state.paused_execution.is_some() {
+                return Ok(Some(Action::ResumeSession));
+            } else {
+                app.set_error("No paused session to resume");
+            }
         }
         _ => {
             app.set_error(format!("Unknown command: {}", cmd));

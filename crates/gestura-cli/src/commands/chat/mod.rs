@@ -1529,6 +1529,42 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                     let _ = std::io::stdout().flush();
                                 }
                             }
+                            StreamChunk::ShellOutput { data, .. } => {
+                                print!("{data}");
+                                let _ = std::io::stdout().flush();
+                            }
+                            StreamChunk::ShellLifecycle {
+                                state,
+                                exit_code,
+                                command,
+                                ..
+                            } => {
+                                println!();
+                                let label = format!("{state:?}");
+                                if let Some(code) = exit_code {
+                                    println!(
+                                        "  {} shell {}: {} (exit {})",
+                                        "⚙".dimmed(),
+                                        label.dimmed(),
+                                        command.dimmed(),
+                                        code
+                                    );
+                                } else {
+                                    println!(
+                                        "  {} shell {}: {}",
+                                        "⚙".dimmed(),
+                                        label.dimmed(),
+                                        command.dimmed()
+                                    );
+                                }
+                                print!("  ");
+                                let _ = std::io::stdout().flush();
+                            }
+                            StreamChunk::Paused => {
+                                println!();
+                                println!("  {} {}", "⏸".yellow(), "Session paused".dimmed());
+                                break;
+                            }
                             StreamChunk::Cancelled => break,
                             StreamChunk::Error(e) => {
                                 return Err(std::io::Error::other(e).into());

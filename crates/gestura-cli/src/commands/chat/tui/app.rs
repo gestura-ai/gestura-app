@@ -401,6 +401,8 @@ pub enum Action {
     EnhancePrompt,
     /// Copy the currently selected message(s) to the system clipboard
     CopySelection,
+    /// Resume a previously paused streaming session
+    ResumeSession,
 }
 
 /// Message for TUI display with additional metadata
