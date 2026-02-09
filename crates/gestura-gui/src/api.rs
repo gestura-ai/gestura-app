@@ -764,7 +764,7 @@ pub async fn list_openai_models(api_key: String) -> Result<Vec<serde_json::Value
         .await
         .map_err(|e| format!("Invalid response: {}", e))?;
 
-    // Filter to only chat models (gpt-*) and sort by name
+    // Filter to chat-capable models and sort by creation date
     let models: Vec<serde_json::Value> = data
         .get("data")
         .and_then(|d| d.as_array())
@@ -773,11 +773,17 @@ pub async fn list_openai_models(api_key: String) -> Result<Vec<serde_json::Value
                 .iter()
                 .filter_map(|m| {
                     let id = m.get("id")?.as_str()?;
-                    // Only include GPT chat models, exclude embeddings, whisper, tts, dall-e, etc.
-                    if id.starts_with("gpt-") && !id.contains("instruct") {
+                    // Include GPT chat models and o-series reasoning models.
+                    // Exclude embeddings, whisper, tts, dall-e, instruct, etc.
+                    let is_chat_model = (id.starts_with("gpt-") && !id.contains("instruct"))
+                        || id.starts_with("o1-")
+                        || id.starts_with("o3-")
+                        || id.starts_with("o4-")
+                        || id.starts_with("o5-");
+                    if is_chat_model {
                         Some(serde_json::json!({
                             "id": id,
-                            "name": format_openai_model_name(id),
+                            "name": gestura_core::format_openai_model_name(id),
                             "created": m.get("created").and_then(|c| c.as_i64()).unwrap_or(0)
                         }))
                     } else {
@@ -804,7 +810,7 @@ fn get_static_openai_chat_models() -> Vec<serde_json::Value> {
         .map(|id| {
             serde_json::json!({
                 "id": id,
-                "name": format_openai_model_name(id),
+                "name": gestura_core::format_openai_model_name(id),
                 "created": 0
             })
         })
@@ -914,31 +920,6 @@ fn format_openai_stt_model_name(id: &str) -> String {
         "gpt-4o-transcribe-latest" => "GPT-4o Transcribe (Latest)".to_string(),
         "gpt-4o-mini-transcribe" => "GPT-4o Mini Transcribe (Balanced)".to_string(),
         "gpt-4o-transcribe-diarize" => "GPT-4o Transcribe + Diarization".to_string(),
-        _ => {
-            // Convert kebab-case to Title Case
-            id.split('-')
-                .map(|part| {
-                    let mut chars = part.chars();
-                    match chars.next() {
-                        None => String::new(),
-                        Some(first) => first.to_uppercase().chain(chars).collect(),
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-        }
-    }
-}
-
-/// Format OpenAI model ID to a human-readable name
-fn format_openai_model_name(id: &str) -> String {
-    match id {
-        "gpt-4o" => "GPT-4o".to_string(),
-        "gpt-4o-mini" => "GPT-4o Mini".to_string(),
-        "gpt-4-turbo" => "GPT-4 Turbo".to_string(),
-        "gpt-4-turbo-preview" => "GPT-4 Turbo Preview".to_string(),
-        "gpt-4" => "GPT-4".to_string(),
-        "gpt-3.5-turbo" => "GPT-3.5 Turbo".to_string(),
         _ => {
             // Convert kebab-case to Title Case
             id.split('-')
@@ -1086,7 +1067,7 @@ pub async fn list_grok_models(api_key: String) -> Result<Vec<serde_json::Value>,
             }
             Some(serde_json::json!({
                 "id": id,
-                "name": format_grok_model_name(id)
+                "name": gestura_core::format_grok_model_name(id)
             }))
         })
         .collect();
@@ -1098,37 +1079,6 @@ pub async fn list_grok_models(api_key: String) -> Result<Vec<serde_json::Value>,
     }
 }
 
-/// Format Grok model ID to human-readable name
-fn format_grok_model_name(id: &str) -> String {
-    // grok-4-0709 -> Grok 4 (0709)
-    // grok-3-mini -> Grok 3 Mini
-    let parts: Vec<&str> = id.split('-').collect();
-    let mut name = String::new();
-
-    for (i, part) in parts.iter().enumerate() {
-        if i == 0 {
-            name.push_str(&part.to_uppercase().replace("GROK", "Grok"));
-        } else if part.chars().all(|c| c.is_numeric()) {
-            if i == 1 {
-                name.push_str(&format!(" {}", part));
-            } else {
-                name.push_str(&format!(" ({})", part));
-            }
-        } else {
-            let formatted = match *part {
-                "mini" => "Mini",
-                "fast" => "Fast",
-                "vision" => "Vision",
-                "code" => "Code",
-                _ => part,
-            };
-            name.push_str(&format!(" {}", formatted));
-        }
-    }
-
-    name.trim().to_string()
-}
-
 /// Fallback static list of Grok models
 fn get_static_grok_models() -> Vec<serde_json::Value> {
     gestura_core::GROK_MODELS
@@ -1136,7 +1086,7 @@ fn get_static_grok_models() -> Vec<serde_json::Value> {
         .map(|id| {
             serde_json::json!({
                 "id": id,
-                "name": format_grok_model_name(id)
+                "name": gestura_core::format_grok_model_name(id)
             })
         })
         .collect()

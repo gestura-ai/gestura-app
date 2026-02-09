@@ -40,7 +40,15 @@ pub const DEFAULT_OPENAI_STT_MODEL: &str = "gpt-4o-transcribe";
 ///
 /// Used as fallback when API model discovery fails or API key is unavailable.
 /// Ordered by recommendation (best first).
-pub const OPENAI_CHAT_MODELS: &[&str] = &["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"];
+pub const OPENAI_CHAT_MODELS: &[&str] = &[
+    "gpt-4o",
+    "gpt-4o-mini",
+    "o3-mini",
+    "o1-preview",
+    "o1-mini",
+    "gpt-4-turbo",
+    "gpt-3.5-turbo",
+];
 
 /// Static list of known OpenAI STT models.
 ///
@@ -63,8 +71,11 @@ pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
 /// Used as fallback when API model discovery fails or API key is unavailable.
 /// Ordered by recommendation (best first).
 pub const ANTHROPIC_MODELS: &[&str] = &[
+    "claude-opus-4-20250514",
     "claude-sonnet-4-20250514",
+    "claude-3-7-sonnet-20250219",
     "claude-3-5-sonnet-20241022",
+    "claude-3-5-haiku-20241022",
     "claude-3-opus-20240229",
     "claude-3-sonnet-20240229",
     "claude-3-haiku-20240307",
@@ -76,14 +87,21 @@ pub const ANTHROPIC_MODELS: &[&str] = &[
 
 /// Default Grok model for chat/completion tasks.
 ///
-/// Grok-3 is the latest model from xAI.
+/// Grok-3 is the latest stable model from xAI.
 pub const DEFAULT_GROK_MODEL: &str = "grok-3";
 
 /// Static list of known Grok models.
 ///
 /// Used as fallback when API model discovery fails or API key is unavailable.
 /// Ordered by recommendation (best first).
-pub const GROK_MODELS: &[&str] = &["grok-3", "grok-2-1212", "grok-2-vision-1212", "grok-beta"];
+pub const GROK_MODELS: &[&str] = &[
+    "grok-3",
+    "grok-3-fast",
+    "grok-3-mini",
+    "grok-3-mini-fast",
+    "grok-2-1212",
+    "grok-2-vision-1212",
+];
 
 // ============================================================================
 // Ollama Models

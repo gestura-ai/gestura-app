@@ -127,11 +127,7 @@ impl LlmCallResponse {
     }
 
     /// Create a new LlmCallResponse with tool calls
-    pub fn with_tool_calls(
-        text: String,
-        usage: TokenUsage,
-        tool_calls: Vec<ToolCallInfo>,
-    ) -> Self {
+    pub fn with_tool_calls(text: String, usage: TokenUsage, tool_calls: Vec<ToolCallInfo>) -> Self {
         Self {
             text,
             usage,
@@ -367,10 +363,7 @@ fn extract_openai_tool_calls(message: &serde_json::Value) -> Vec<ToolCallInfo> {
         .iter()
         .filter_map(|call| {
             let name = call["function"]["name"].as_str()?;
-            let id = call["id"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
+            let id = call["id"].as_str().unwrap_or_default().to_string();
             let arguments = call["function"]["arguments"]
                 .as_str()
                 .unwrap_or("{}")
