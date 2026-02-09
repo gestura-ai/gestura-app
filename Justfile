@@ -152,13 +152,13 @@ dev:
 # Build CLI binary (release)
 build-cli:
 	@echo "🔧 Building CLI binary..."
-	cargo build --release -p gestura-cli --features voice-local
+	cargo build --release -p gestura-cli --features voice-local,security
 
 # Build CLI binary for universal macOS (Intel + Apple Silicon)
 build-cli-universal:
 	@echo "🔧 Building universal CLI binary..."
-	cargo build --release -p gestura-cli --features voice-local --target aarch64-apple-darwin
-	cargo build --release -p gestura-cli --features voice-local --target x86_64-apple-darwin
+	cargo build --release -p gestura-cli --features voice-local,security --target aarch64-apple-darwin
+	cargo build --release -p gestura-cli --features voice-local,security --target x86_64-apple-darwin
 	@mkdir -p target/universal-apple-darwin/release
 	lipo -create \
 		target/aarch64-apple-darwin/release/gestura \
@@ -212,8 +212,8 @@ build-macos-signed:
 	cd {{frontend_dir}} && npm run build
 	# 2. Build the CLI binary (universal)
 	@echo "🔧 Building universal CLI binary..."
-	cargo build --release -p gestura-cli --features voice-local --target aarch64-apple-darwin
-	cargo build --release -p gestura-cli --features voice-local --target x86_64-apple-darwin
+	cargo build --release -p gestura-cli --features voice-local,security --target aarch64-apple-darwin
+	cargo build --release -p gestura-cli --features voice-local,security --target x86_64-apple-darwin
 	mkdir -p target/universal-apple-darwin/release
 	lipo -create \
 	  target/aarch64-apple-darwin/release/gestura \

@@ -11,7 +11,7 @@ name = "gestura"
 path = "src/main.rs"
 
 [features]
-default = ["voice-local"]
+default = ["voice-local", "security"]
 # Pass-through features to gestura-core
 voice-local = ["gestura-core/voice-local"]
 voice-openai = ["gestura-core/voice-openai"]
