@@ -1,10 +1,37 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gestura UI Testing Dashboard</title>
     <style>
+        :root {
+            /* Gestura brand tokens (unified with gestura.app) */
+            --accent-primary-rgb: 37, 99, 235;
+            --accent-secondary-rgb: 147, 51, 234;
+            --gradient-primary: linear-gradient(to right, rgb(37, 99, 235), rgb(147, 51, 234));
+            --gradient-secondary: linear-gradient(to right, rgb(96, 165, 250), rgb(192, 132, 252));
+            --brand-gradient: var(--gradient-primary);
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.35);
+        }
+
+        .text-gradient {
+            background: var(--brand-gradient);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            -webkit-text-fill-color: transparent;
+        }
+
+        @media (forced-colors: active) {
+            .text-gradient {
+                background: none;
+                color: ButtonText;
+                -webkit-text-fill-color: ButtonText;
+            }
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -13,7 +40,9 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg,
+                    rgba(var(--accent-primary-rgb), 0.10) 0%,
+                    rgba(var(--accent-secondary-rgb), 0.10) 100%);
             min-height: 100vh;
             padding: 2rem;
         }
@@ -102,12 +131,18 @@
         }
 
         .test-button.primary {
-            background: #007AFF;
+            background: var(--brand-gradient);
             color: white;
         }
 
         .test-button.primary:hover {
-            background: #0056CC;
+            filter: brightness(0.97);
+            transform: translateY(-1px);
+        }
+
+        .test-button.primary:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 4px var(--focus-ring);
         }
 
         .test-button.secondary {
@@ -143,12 +178,18 @@
         }
 
         .control-button.primary {
-            background: #007AFF;
+            background: var(--brand-gradient);
             color: white;
         }
 
         .control-button.primary:hover {
-            background: #0056CC;
+            filter: brightness(0.97);
+            transform: translateY(-1px);
+        }
+
+        .control-button.primary:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 4px var(--focus-ring);
         }
 
         .control-button.danger {
@@ -194,10 +235,11 @@
         }
     </style>
 </head>
+
 <body>
     <div class="container">
         <div class="header">
-            <h1>🧪 Gestura UI Testing Dashboard</h1>
+            <h1>🧪 <span class="text-gradient">Gestura</span> UI Testing Dashboard</h1>
             <p>Automated testing and validation for Tauri UI components</p>
         </div>
 
@@ -284,7 +326,7 @@
             const card = document.createElement('div');
             card.className = 'test-card';
             card.setAttribute('data-test-id', testCase.id);
-            
+
             card.innerHTML = `
                 <div class="test-title">${testCase.title}</div>
                 <div class="test-status">Ready</div>
@@ -301,14 +343,14 @@
                     </button>
                 </div>
             `;
-            
+
             return card;
         }
 
         async function testWindow(windowType, testId) {
             updateTestStatus(testId, 'testing', 'Opening window...');
             addLog(`Testing ${windowType} window`, 'info');
-            
+
             try {
                 const result = await invoke('test_open_window', { windowType });
                 updateTestStatus(testId, 'passed', 'Window opened successfully');
@@ -322,7 +364,7 @@
         async function validateWindow(windowType, testId) {
             updateTestStatus(testId, 'testing', 'Validating content...');
             addLog(`Validating ${windowType} window content`, 'info');
-            
+
             try {
                 const result = await invoke('validate_window_content', { windowLabel: windowType });
                 updateTestStatus(testId, 'passed', 'Content validated');
@@ -336,7 +378,7 @@
         async function captureScreenshot(windowType, testId) {
             updateTestStatus(testId, 'testing', 'Capturing screenshot...');
             addLog(`Capturing screenshot of ${windowType} window`, 'info');
-            
+
             try {
                 const result = await invoke('capture_window_screenshot', { windowLabel: windowType });
                 updateTestStatus(testId, 'passed', 'Screenshot captured');
@@ -351,35 +393,35 @@
         window.validateWindow = validateWindow;
         window.captureScreenshot = captureScreenshot;
 
-        window.runAllTests = async function() {
+        window.runAllTests = async function () {
             addLog('🚀 Running all UI tests...', 'info');
-            
+
             for (const testCase of testCases) {
                 await testWindow(testCase.windowType, testCase.id);
                 await new Promise(resolve => setTimeout(resolve, 1000)); // Wait between tests
             }
-            
+
             addLog('✅ All tests completed', 'info');
         };
 
-        window.validateAllWindows = async function() {
+        window.validateAllWindows = async function () {
             addLog('🔍 Validating all windows...', 'info');
-            
+
             for (const testCase of testCases) {
                 await validateWindow(testCase.windowType, testCase.id);
                 await new Promise(resolve => setTimeout(resolve, 500));
             }
-            
+
             addLog('✅ All validations completed', 'info');
         };
 
-        window.closeAllTestWindows = async function() {
+        window.closeAllTestWindows = async function () {
             addLog('🗑️ Closing all test windows...', 'info');
-            
+
             try {
                 const result = await invoke('close_test_windows');
                 addLog(`✅ ${result}`, 'info');
-                
+
                 // Reset all test statuses
                 testCases.forEach(testCase => {
                     updateTestStatus(testCase.id, '', 'Ready');
@@ -389,7 +431,7 @@
             }
         };
 
-        window.clearLogs = function() {
+        window.clearLogs = function () {
             logContainer.innerHTML = '<div class="log-entry info"><span class="timestamp">[Cleared]</span> Logs cleared</div>';
         };
 
@@ -402,4 +444,5 @@
         addLog('🎯 UI Testing Dashboard ready', 'info');
     </script>
 </body>
+
 </html>

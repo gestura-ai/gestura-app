@@ -11,9 +11,22 @@
             /* Premium Light Palette */
             --background-color: #ffffff;
             --text-color: #000000;
+            --text-secondary: #666666;
             --border-color: #e0e0e0;
             --section-background: #f8f9fa;
             --input-background: #ffffff;
+
+            /* Gestura brand tokens (unified with gestura.app) */
+            --accent: rgb(37, 99, 235);
+            --accent-rgb: 37, 99, 235;
+            --gradient-primary: linear-gradient(to right, rgb(37, 99, 235), rgb(147, 51, 234));
+            --gradient-secondary: linear-gradient(to right, rgb(96, 165, 250), rgb(192, 132, 252));
+            --brand-gradient: var(--gradient-primary);
+
+            /* Semantic RGB triples for rgba(..., alpha) */
+            --success-rgb: 52, 199, 89;
+            --warning-rgb: 255, 149, 0;
+            --danger-rgb: 255, 59, 48;
         }
 
         /* Auto mode: respect system preference */
@@ -22,9 +35,14 @@
                 /* Premium Dark Palette */
                 --background-color: #1e1e1e;
                 --text-color: #ffffff;
+                --text-secondary: #b0b0b0;
                 --border-color: #404040;
                 --section-background: #2d2d2d;
                 --input-background: #3d3d3d;
+
+                --accent: rgb(96, 165, 250);
+                --accent-rgb: 96, 165, 250;
+                --brand-gradient: var(--gradient-secondary);
             }
         }
 
@@ -32,18 +50,28 @@
         html[data-theme="light"] {
             --background-color: #ffffff;
             --text-color: #000000;
+            --text-secondary: #666666;
             --border-color: #e0e0e0;
             --section-background: #f8f9fa;
             --input-background: #ffffff;
+
+            --accent: rgb(37, 99, 235);
+            --accent-rgb: 37, 99, 235;
+            --brand-gradient: var(--gradient-primary);
         }
 
         /* Force dark mode (overrides system preference) */
         html[data-theme="dark"] {
             --background-color: #1e1e1e;
             --text-color: #ffffff;
+            --text-secondary: #b0b0b0;
             --border-color: #404040;
             --section-background: #2d2d2d;
             --input-background: #3d3d3d;
+
+            --accent: rgb(96, 165, 250);
+            --accent-rgb: 96, 165, 250;
+            --brand-gradient: var(--gradient-secondary);
         }
 
         * {
@@ -107,15 +135,15 @@
         }
 
         .toc-link:hover {
-            background: rgba(0, 123, 255, 0.1);
+            background: rgba(var(--accent-rgb), 0.10);
             opacity: 1;
-            border-left-color: #007bff;
+            border-left-color: var(--accent);
         }
 
         .toc-link.active {
-            background: rgba(0, 123, 255, 0.15);
+            background: rgba(var(--accent-rgb), 0.15);
             opacity: 1;
-            border-left-color: #007bff;
+            border-left-color: var(--accent);
             font-weight: 500;
         }
 
@@ -133,17 +161,17 @@
         .content-header {
             margin-bottom: 2rem;
             padding-bottom: 1rem;
-            border-bottom: 1px solid #e9ecef;
+            border-bottom: 1px solid var(--border-color, #e0e0e0);
         }
 
         .content-header h1 {
-            color: #1D1D1F;
+            color: var(--text-color);
             font-size: 1.8rem;
             margin-bottom: 0.5rem;
         }
 
         .content-header p {
-            color: #6c757d;
+            color: var(--text-secondary);
             font-size: 1rem;
         }
 
@@ -172,7 +200,7 @@
         .section-title {
             font-size: 1.4rem;
             font-weight: 600;
-            color: #1D1D1F;
+            color: var(--text-color);
             margin-bottom: 1.5rem;
             display: flex;
             align-items: center;
@@ -184,27 +212,27 @@
         }
 
         .section-description {
-            color: var(--text-muted, #6c757d);
+            color: var(--text-secondary);
             font-size: 0.875rem;
             line-height: 1.5;
             margin-bottom: 1.25rem;
             padding: 0;
-            border-left: 3px solid var(--border-color, #dee2e6);
+            border-left: 3px solid var(--border-color);
             padding-left: 0.75rem;
         }
 
         .subsection {
-            background: #f8f9fa;
+            background: var(--section-background);
             border-radius: 12px;
             padding: 1.5rem;
             margin-bottom: 1.5rem;
-            border: 1px solid #e9ecef;
+            border: 1px solid var(--border-color);
         }
 
         .subsection-title {
             font-size: 1.1rem;
             font-weight: 500;
-            color: #495057;
+            color: var(--text-color);
             margin-bottom: 1rem;
             display: flex;
             align-items: center;
@@ -221,7 +249,8 @@
         .form-label {
             display: block;
             font-weight: 500;
-            color: #495057;
+            color: var(--text-color);
+            opacity: 0.85;
             margin-bottom: 0.5rem;
             font-size: 0.95rem;
         }
@@ -243,7 +272,8 @@
         .form-select:focus,
         .form-textarea:focus {
             outline: none;
-            border-color: #007bff;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 4px rgba(var(--accent-rgb), 0.18);
         }
 
         .form-textarea {
@@ -318,12 +348,12 @@
         }
 
         .device-button.danger {
-            color: #dc3545;
-            border-color: #dc3545;
+            color: rgb(var(--danger-rgb));
+            border-color: rgb(var(--danger-rgb));
         }
 
         .device-button.danger:hover {
-            background: #f8d7da;
+            background: rgba(var(--danger-rgb), 0.14);
         }
 
         /* Provider Selector Styles */
@@ -345,12 +375,12 @@
         }
 
         .provider-option:hover {
-            border-color: #007bff;
+            border-color: var(--accent);
         }
 
         .provider-option.selected {
-            border-color: #007bff;
-            background: rgba(0, 123, 255, 0.05);
+            border-color: var(--accent);
+            background: rgba(var(--accent-rgb), 0.05);
         }
 
         .provider-header {
@@ -396,7 +426,7 @@
         }
 
         .provider-config .help-text a {
-            color: #007bff;
+            color: var(--accent);
             text-decoration: none;
         }
 
@@ -458,18 +488,21 @@
         }
 
         .status-badge.granted {
-            background: #d4edda;
-            color: #155724;
+            background: rgba(var(--success-rgb), 0.14);
+            border: 1px solid rgba(var(--success-rgb), 0.28);
+            color: rgb(var(--success-rgb));
         }
 
         .status-badge.denied {
-            background: #f8d7da;
-            color: #721c24;
+            background: rgba(var(--danger-rgb), 0.14);
+            border: 1px solid rgba(var(--danger-rgb), 0.28);
+            color: rgb(var(--danger-rgb));
         }
 
         .status-badge.not-determined {
-            background: #fff3cd;
-            color: #856404;
+            background: rgba(var(--warning-rgb), 0.14);
+            border: 1px solid rgba(var(--warning-rgb), 0.28);
+            color: rgb(var(--warning-rgb));
         }
 
         .permission-summary {
@@ -507,14 +540,14 @@
 
         .checkbox-label {
             flex: 1;
-            color: #495057;
+            color: var(--text-color);
             font-size: 0.95rem;
             line-height: 1.4;
         }
 
         .checkbox-description {
             font-size: 0.85rem;
-            color: #6c757d;
+            color: var(--text-secondary);
             margin-top: 0.25rem;
         }
 
@@ -542,13 +575,15 @@
         }
 
         .badge-warning {
-            background: #fff3cd;
-            color: #856404;
+            background: rgba(var(--warning-rgb), 0.14);
+            border: 1px solid rgba(var(--warning-rgb), 0.28);
+            color: rgb(var(--warning-rgb));
         }
 
         .badge-info {
-            background: #d1ecf1;
-            color: #0c5460;
+            background: rgba(var(--accent-rgb), 0.14);
+            border: 1px solid rgba(var(--accent-rgb), 0.28);
+            color: var(--accent);
         }
 
         /* Tool inline configuration */
@@ -559,42 +594,134 @@
         }
 
         .tool-config-toggle {
-            margin-top: 6px;
-            padding: 4px 10px;
-            font-size: 0.8rem;
-            color: #667eea;
-            border: 1px solid #667eea;
-            background: transparent;
-            border-radius: 4px;
+            margin-top: 8px;
+            padding: 5px 12px;
+            font-size: 0.78rem;
+            color: var(--accent);
+            border: 1px solid rgba(var(--accent-rgb), 0.4);
+            background: rgba(var(--accent-rgb), 0.04);
+            border-radius: 6px;
             cursor: pointer;
             display: inline-flex;
             align-items: center;
-            gap: 4px;
+            gap: 5px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            letter-spacing: 0.01em;
         }
 
         .tool-config-toggle:hover {
-            background: rgba(102, 126, 234, 0.1);
+            background: rgba(var(--accent-rgb), 0.12);
+            border-color: var(--accent);
+            transform: translateY(-1px);
         }
 
         .tool-config-toggle .icon {
-            font-size: 0.9em;
+            font-size: 0.85em;
         }
 
         .tool-inline-config {
-            margin-left: 32px;
-            margin-top: 8px;
-            margin-bottom: 16px;
-            padding: 16px;
+            margin-left: 0;
+            margin-top: 12px;
+            margin-bottom: 20px;
+            padding: 20px;
             background: var(--section-background, #f8f9fa);
             border: 1px solid var(--border-color, #e0e0e0);
-            border-radius: 8px;
-            border-left: 3px solid #667eea;
+            border-radius: 10px;
+            border-left: 3px solid var(--accent);
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+        }
+
+        .tool-inline-config .inline-config-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-color);
+            margin-bottom: 16px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--border-color, #e0e0e0);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .tool-inline-config .inline-config-title .icon {
+            color: var(--accent);
+            font-size: 0.95em;
         }
 
         .inline-config-content {
             display: flex;
             flex-direction: column;
-            gap: 12px;
+            gap: 16px;
+        }
+
+        /* Provider sub-mode radio group */
+        .provider-sub-modes {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+            border: 1px solid var(--border-color, #e0e0e0);
+            border-radius: 8px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+
+        .provider-sub-mode {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 12px 14px;
+            cursor: pointer;
+            transition: background 0.15s ease;
+            border-bottom: 1px solid var(--border-color, #e0e0e0);
+        }
+
+        .provider-sub-mode:last-child {
+            border-bottom: none;
+        }
+
+        .provider-sub-mode:hover {
+            background: rgba(var(--accent-rgb), 0.04);
+        }
+
+        .provider-sub-mode input[type="radio"] {
+            margin-top: 2px;
+            accent-color: var(--accent);
+        }
+
+        .provider-sub-mode-label {
+            flex: 1;
+        }
+
+        .provider-sub-mode-name {
+            font-weight: 500;
+            font-size: 0.88rem;
+            color: var(--text-color);
+        }
+
+        .provider-sub-mode-desc {
+            font-size: 0.8rem;
+            color: var(--text-color);
+            opacity: 0.6;
+            margin-top: 2px;
+            line-height: 1.35;
+        }
+
+        /* Tool group category labels */
+        .tool-category-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-color);
+            opacity: 0.5;
+            margin-top: 20px;
+            margin-bottom: 8px;
+            padding-left: 2px;
+        }
+
+        .tool-category-label:first-child {
+            margin-top: 0;
         }
 
         .actions {
@@ -618,13 +745,13 @@
         }
 
         .button.primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--brand-gradient);
             color: white;
         }
 
         .button.primary:hover {
-            background: linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%);
             transform: translateY(-1px);
+            box-shadow: 0 10px 22px rgba(0, 0, 0, 0.18);
         }
 
         .button.secondary {
@@ -645,20 +772,20 @@
         }
 
         .status.success {
-            background: #d4edda;
-            border: 1px solid #c3e6cb;
-            color: #155724;
+            background: rgba(var(--success-rgb), 0.14);
+            border: 1px solid rgba(var(--success-rgb), 0.28);
+            color: rgb(var(--success-rgb));
         }
 
         .status.error {
-            background: #f8d7da;
-            border: 1px solid #f5c6cb;
-            color: #721c24;
+            background: rgba(var(--danger-rgb), 0.14);
+            border: 1px solid rgba(var(--danger-rgb), 0.28);
+            color: rgb(var(--danger-rgb));
         }
 
         .help-text {
             font-size: 0.85rem;
-            color: #6c757d;
+            color: var(--text-secondary);
             margin-top: 0.25rem;
             line-height: 1.4;
         }
@@ -696,21 +823,45 @@
             font-size: 0.875rem;
         }
 
+        .btn-delete-key {
+            background: transparent;
+            border: 1px solid rgb(var(--danger-rgb));
+            color: rgb(var(--danger-rgb));
+            border-radius: 6px;
+            padding: 0.375rem 0.625rem;
+            cursor: pointer;
+            font-size: 0.875rem;
+            white-space: nowrap;
+            transition: background 0.15s, color 0.15s;
+            display: none;
+        }
+
+        .btn-delete-key:hover {
+            background: rgb(var(--danger-rgb));
+            color: #fff;
+        }
+
+        .btn-delete-key.visible {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+
         .test-result {
             margin-left: 1rem;
             font-size: 0.875rem;
         }
 
         .test-result.success {
-            color: #28a745;
+            color: rgb(var(--success-rgb));
         }
 
         .test-result.error {
-            color: #dc3545;
+            color: rgb(var(--danger-rgb));
         }
 
         .test-result.testing {
-            color: #6c757d;
+            color: var(--text-secondary);
         }
 
         .provider-config-box {
@@ -750,13 +901,15 @@
             align-items: flex-start;
             gap: 0.75rem;
             padding: 1rem;
-            background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%);
+            background: rgba(var(--warning-rgb), 0.14);
+            border: 1px solid rgba(var(--warning-rgb), 0.28);
             border-radius: 8px;
             margin-bottom: 1rem;
         }
 
         .model-status-banner.ready {
-            background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+            background: rgba(var(--success-rgb), 0.14);
+            border-color: rgba(var(--success-rgb), 0.28);
         }
 
         .model-status-banner .status-icon {
@@ -766,7 +919,7 @@
         .model-status-banner .status-message p {
             margin: 0.25rem 0 0 0;
             font-size: 0.875rem;
-            color: #666;
+            color: var(--text-secondary);
         }
 
         .model-select-container {
@@ -802,7 +955,7 @@
             color: var(--accent);
             margin-top: 0.35rem;
             padding: 0.25rem 0.5rem;
-            background: rgba(99, 102, 241, 0.1);
+            background: rgba(var(--accent-rgb), 0.1);
             border-radius: 4px;
             width: fit-content;
         }
@@ -871,7 +1024,7 @@
 
         .progress-bar {
             height: 100%;
-            background: linear-gradient(90deg, var(--accent), #27ae60);
+            background: var(--brand-gradient);
             border-radius: 4px;
             transition: width 0.3s ease;
         }
@@ -968,12 +1121,18 @@
         }
 
         .modal-btn-confirm {
-            background: #007bff;
+            background: var(--brand-gradient);
             color: white;
         }
 
         .modal-btn-confirm:hover {
-            background: #0056b3;
+            filter: brightness(0.97);
+            transform: translateY(-1px);
+        }
+
+        .modal-btn-confirm:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 4px rgba(var(--accent-rgb), 0.20);
         }
 
         /* Collapsible Sidebar Groups */
@@ -998,7 +1157,7 @@
 
         .toc-group-header:hover {
             opacity: 1;
-            background: rgba(0, 123, 255, 0.05);
+            background: rgba(var(--accent-rgb), 0.05);
         }
 
         .toc-group-header .toc-chevron {
@@ -1008,7 +1167,7 @@
         }
 
         .toc-group.collapsed .toc-chevron {
-            transform: rotate(-90deg);
+            /* Chevron character is swapped by JS (▼ → ▶); no CSS rotation needed */
         }
 
         .toc-group-items {
@@ -1379,8 +1538,13 @@
                                 <div class="form-row">
                                     <div class="form-group">
                                         <label class="form-label" for="openaiApiKey">API Key</label>
-                                        <input type="password" class="form-input" id="openaiApiKey"
-                                            name="openai_api_key" placeholder="sk-proj-...">
+                                        <div class="input-with-button">
+                                            <input type="password" class="form-input" id="openaiApiKey"
+                                                name="openai_api_key" placeholder="sk-proj-...">
+                                            <button type="button" class="btn-delete-key" id="deleteVoiceOpenaiKey"
+                                                onclick="deleteApiKey('voice_openai', 'openaiApiKey', 'sk-proj-...')"
+                                                title="Delete key from keychain">✕ Delete</button>
+                                        </div>
                                     </div>
                                     <div class="form-group">
                                         <label class="form-label" for="openaiSttModel">Transcription Model</label>
@@ -1603,8 +1767,13 @@
                                 <div class="form-row">
                                     <div class="form-group">
                                         <label class="form-label" for="openaiLlmApiKey">API Key</label>
-                                        <input type="password" class="form-input" id="openaiLlmApiKey"
-                                            name="openai_llm_api_key" placeholder="sk-proj-...">
+                                        <div class="input-with-button">
+                                            <input type="password" class="form-input" id="openaiLlmApiKey"
+                                                name="openai_llm_api_key" placeholder="sk-proj-...">
+                                            <button type="button" class="btn-delete-key" id="deleteOpenaiKey"
+                                                onclick="deleteApiKey('openai', 'openaiLlmApiKey', 'sk-proj-...')"
+                                                title="Delete key from keychain">✕ Delete</button>
+                                        </div>
                                     </div>
                                     <div class="form-group">
                                         <label class="form-label" for="openaiLlmModel">Model</label>
@@ -1629,8 +1798,13 @@
                                 <div class="form-row">
                                     <div class="form-group">
                                         <label class="form-label" for="anthropicApiKey">API Key</label>
-                                        <input type="password" class="form-input" id="anthropicApiKey"
-                                            name="anthropic_api_key" placeholder="sk-ant-...">
+                                        <div class="input-with-button">
+                                            <input type="password" class="form-input" id="anthropicApiKey"
+                                                name="anthropic_api_key" placeholder="sk-ant-...">
+                                            <button type="button" class="btn-delete-key" id="deleteAnthropicKey"
+                                                onclick="deleteApiKey('anthropic', 'anthropicApiKey', 'sk-ant-...')"
+                                                title="Delete key from keychain">✕ Delete</button>
+                                        </div>
                                     </div>
                                     <div class="form-group">
                                         <label class="form-label" for="anthropicLlmModel">Model</label>
@@ -1654,8 +1828,13 @@
                                 <div class="form-row">
                                     <div class="form-group">
                                         <label class="form-label" for="grokApiKey">API Key</label>
-                                        <input type="password" class="form-input" id="grokApiKey" name="grok_api_key"
-                                            placeholder="xai-...">
+                                        <div class="input-with-button">
+                                            <input type="password" class="form-input" id="grokApiKey"
+                                                name="grok_api_key" placeholder="xai-...">
+                                            <button type="button" class="btn-delete-key" id="deleteGrokKey"
+                                                onclick="deleteApiKey('grok', 'grokApiKey', 'xai-...')"
+                                                title="Delete key from keychain">✕ Delete</button>
+                                        </div>
                                     </div>
                                     <div class="form-group">
                                         <label class="form-label" for="grokLlmModel">Model</label>
@@ -2131,10 +2310,12 @@
                         <div class="subsection-title">
                             <span class="icon icon-tools"></span>Tool Permissions
                         </div>
-                        <div class="help-text" style="margin-bottom: 16px;">
+                        <div class="help-text" style="margin-bottom: 20px;">
                             Control which tools the AI assistant can use. Disabling a tool prevents Gestura from
                             performing those actions, even if requested.
                         </div>
+
+                        <div class="tool-category-label">File &amp; Code</div>
 
                         <div class="checkbox-group">
                             <input type="checkbox" class="form-checkbox" id="toolFileAccess" name="tool_file_access"
@@ -2148,6 +2329,8 @@
                                 </div>
                             </div>
                         </div>
+
+                        <div class="tool-category-label">System &amp; Execution</div>
 
                         <div class="checkbox-group">
                             <input type="checkbox" class="form-checkbox" id="toolShellCommands"
@@ -2186,6 +2369,8 @@
                             </div>
                         </div>
 
+                        <div class="tool-category-label">Web &amp; Network</div>
+
                         <div class="checkbox-group">
                             <input type="checkbox" class="form-checkbox" id="toolWeb" name="tool_web" checked>
                             <div class="checkbox-label">
@@ -2216,28 +2401,62 @@
 
                         <!-- Web Search Inline Configuration (hidden by default) -->
                         <div class="tool-inline-config" id="webSearchConfig" style="display: none;">
+                            <div class="inline-config-title">
+                                <span class="icon icon-search"></span> Web Search Configuration
+                            </div>
                             <div class="inline-config-content">
                                 <div class="form-group">
                                     <label class="form-label" for="webSearchProvider">Search Provider</label>
                                     <select class="form-select" id="webSearchProvider" name="web_search_provider">
-                                        <option value="local">Local (Free, No Registration) - DuckDuckGo HTML</option>
-                                        <option value="duckduckgo">DuckDuckGo API (Free, Limited Results)</option>
-                                        <option value="brave">Brave Search API (Requires API Key)</option>
-                                        <option value="serpapi">SerpAPI (Requires API Key)</option>
+                                        <option value="duckduckgo_group">DuckDuckGo (Free, No Registration)</option>
+                                        <option value="brave">Brave Search (API Key Required)</option>
+                                        <option value="serpapi">SerpAPI (API Key Required)</option>
                                     </select>
                                     <div class="help-text">
-                                        <strong>Local</strong> is the default and requires no setup - uses DuckDuckGo
-                                        HTML scraping (completely free, no registration).
-                                        For more reliable results, consider Brave Search API (free tier available).
+                                        DuckDuckGo is free and requires no setup.
+                                        For more reliable results, consider Brave Search (free tier: 2,000
+                                        queries/month).
+                                    </div>
+                                </div>
+
+                                <!-- DuckDuckGo sub-mode selection -->
+                                <div class="form-group" id="duckduckgoModeGroup">
+                                    <label class="form-label">DuckDuckGo Mode</label>
+                                    <div class="provider-sub-modes">
+                                        <label class="provider-sub-mode">
+                                            <input type="radio" name="duckduckgo_mode" value="local" checked>
+                                            <div class="provider-sub-mode-label">
+                                                <div class="provider-sub-mode-name">HTML Scraping (Local, No API Key)
+                                                </div>
+                                                <div class="provider-sub-mode-desc">Scrapes DuckDuckGo search results
+                                                    directly. Full results with content extraction. Completely free with
+                                                    no rate limits.</div>
+                                            </div>
+                                        </label>
+                                        <label class="provider-sub-mode">
+                                            <input type="radio" name="duckduckgo_mode" value="duckduckgo">
+                                            <div class="provider-sub-mode-label">
+                                                <div class="provider-sub-mode-name">Instant Answer API (Limited Results)
+                                                </div>
+                                                <div class="provider-sub-mode-desc">Uses DuckDuckGo's official Instant
+                                                    Answer API. Faster but returns fewer results—best for quick factual
+                                                    lookups.</div>
+                                            </div>
+                                        </label>
                                     </div>
                                 </div>
 
                                 <div class="form-group" id="braveKeyGroup" style="display: none;">
                                     <label class="form-label" for="braveSearchKey">
-                                        Brave Search API Key <span class="label-hint">(optional)</span>
+                                        Brave Search API Key <span class="label-hint">(required)</span>
                                     </label>
-                                    <input type="password" class="form-input" id="braveSearchKey"
-                                        name="brave_search_key" placeholder="Enter your Brave Search API key">
+                                    <div class="input-with-button">
+                                        <input type="password" class="form-input" id="braveSearchKey"
+                                            name="brave_search_key" placeholder="Enter your Brave Search API key">
+                                        <button type="button" class="btn-delete-key" id="deleteBraveKey"
+                                            onclick="deleteApiKey('brave', 'braveSearchKey', 'Enter your Brave Search API key')"
+                                            title="Delete key from keychain">✕ Delete</button>
+                                    </div>
                                     <div class="help-text">
                                         Get a free API key at <a href="https://brave.com/search/api/"
                                             target="_blank">brave.com/search/api</a>.
@@ -2247,16 +2466,23 @@
 
                                 <div class="form-group" id="serpapiKeyGroup" style="display: none;">
                                     <label class="form-label" for="serpapiKey">
-                                        SerpAPI Key <span class="label-hint">(optional)</span>
+                                        SerpAPI Key <span class="label-hint">(required)</span>
                                     </label>
-                                    <input type="password" class="form-input" id="serpapiKey" name="serpapi_key"
-                                        placeholder="Enter your SerpAPI key">
+                                    <div class="input-with-button">
+                                        <input type="password" class="form-input" id="serpapiKey" name="serpapi_key"
+                                            placeholder="Enter your SerpAPI key">
+                                        <button type="button" class="btn-delete-key" id="deleteSerpapiKey"
+                                            onclick="deleteApiKey('serpapi', 'serpapiKey', 'Enter your SerpAPI key')"
+                                            title="Delete key from keychain">✕ Delete</button>
+                                    </div>
                                     <div class="help-text">
                                         Get an API key at <a href="https://serpapi.com/"
                                             target="_blank">serpapi.com</a>.
                                         Free tier: 100 searches/month.
                                     </div>
                                 </div>
+
+                                <hr class="divider">
 
                                 <div class="form-row">
                                     <div class="form-group">
@@ -2294,6 +2520,8 @@
                             </div>
                         </div>
 
+                        <div class="tool-category-label">Capture &amp; Media</div>
+
                         <div class="checkbox-group">
                             <input type="checkbox" class="form-checkbox" id="toolScreenshot" name="tool_screenshot">
                             <div class="checkbox-label">
@@ -2312,6 +2540,8 @@
                                     Requires Screen Recording permission on macOS.</div>
                             </div>
                         </div>
+
+                        <div class="tool-category-label">Tasks &amp; Collaboration</div>
 
                         <div class="checkbox-group">
                             <input type="checkbox" class="form-checkbox" id="toolTask" name="tool_task" checked>
@@ -3118,15 +3348,19 @@
             function updateWebSearchProviderVisibility() {
                 const provider = webSearchProviderSelect.value;
 
-                // Hide all API key fields
+                // Hide all provider-specific groups
                 const braveKeyGroup = document.getElementById('braveKeyGroup');
                 const serpapiKeyGroup = document.getElementById('serpapiKeyGroup');
+                const duckduckgoModeGroup = document.getElementById('duckduckgoModeGroup');
 
                 if (braveKeyGroup) braveKeyGroup.style.display = 'none';
                 if (serpapiKeyGroup) serpapiKeyGroup.style.display = 'none';
+                if (duckduckgoModeGroup) duckduckgoModeGroup.style.display = 'none';
 
-                // Show relevant API key field
-                if (provider === 'brave' && braveKeyGroup) {
+                // Show relevant group based on selected provider
+                if (provider === 'duckduckgo_group' && duckduckgoModeGroup) {
+                    duckduckgoModeGroup.style.display = 'block';
+                } else if (provider === 'brave' && braveKeyGroup) {
                     braveKeyGroup.style.display = 'block';
                 } else if (provider === 'serpapi' && serpapiKeyGroup) {
                     serpapiKeyGroup.style.display = 'block';
@@ -3151,6 +3385,51 @@
             setTimeout(() => {
                 statusMessage.style.display = 'none';
             }, 4000);
+        }
+
+        /**
+         * Delete an API key from the OS keychain and reset the input field.
+         *
+         * @param {string} provider     - Provider name matching the Tauri command (e.g. 'openai', 'voice_openai')
+         * @param {string} inputId      - DOM id of the corresponding <input> element
+         * @param {string} placeholder  - Default placeholder text to restore after deletion
+         */
+        async function deleteApiKey(provider, inputId, placeholder) {
+            if (!isTauriAvailable()) {
+                showStatus('Tauri API not available', 'error');
+                return;
+            }
+
+            try {
+                await window.__TAURI__.core.invoke('delete_api_key', { provider });
+
+                // Reset the input field
+                const input = document.getElementById(inputId);
+                if (input) {
+                    input.value = '';
+                    input.placeholder = placeholder;
+                }
+
+                // Hide the delete button
+                const deleteButtonMap = {
+                    'openai': 'deleteOpenaiKey',
+                    'anthropic': 'deleteAnthropicKey',
+                    'grok': 'deleteGrokKey',
+                    'voice_openai': 'deleteVoiceOpenaiKey',
+                    'brave': 'deleteBraveKey',
+                    'serpapi': 'deleteSerpapiKey',
+                };
+                const btnId = deleteButtonMap[provider];
+                if (btnId) {
+                    const btn = document.getElementById(btnId);
+                    if (btn) btn.classList.remove('visible');
+                }
+
+                showStatus(`${provider} API key deleted`, 'success');
+            } catch (err) {
+                console.error('Failed to delete API key:', err);
+                showStatus(`Failed to delete ${provider} key: ${err}`, 'error');
+            }
         }
 
         // =============================================================
@@ -3285,6 +3564,8 @@
                         const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'openai' });
                         openaiLlmApiKey.value = '';
                         openaiLlmApiKey.placeholder = hasKey ? '••••••••••••••••' : 'sk-...';
+                        const btn = document.getElementById('deleteOpenaiKey');
+                        if (btn) btn.classList.toggle('visible', hasKey);
                     } else {
                         openaiLlmApiKey.value = '';
                     }
@@ -3304,6 +3585,8 @@
                         const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'anthropic' });
                         anthropicApiKey.value = '';
                         anthropicApiKey.placeholder = hasKey ? '••••••••••••••••' : 'sk-ant-...';
+                        const btn = document.getElementById('deleteAnthropicKey');
+                        if (btn) btn.classList.toggle('visible', hasKey);
                     } else {
                         anthropicApiKey.value = '';
                     }
@@ -3324,6 +3607,8 @@
                         const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'grok' });
                         grokApiKey.value = '';
                         grokApiKey.placeholder = hasKey ? '••••••••••••••••' : 'xai-...';
+                        const btn = document.getElementById('deleteGrokKey');
+                        if (btn) btn.classList.toggle('visible', hasKey);
                     } else {
                         grokApiKey.value = '';
                     }
@@ -3362,9 +3647,11 @@
                 const openaiApiKey = document.getElementById('openaiApiKey');
                 if (openaiApiKey) {
                     if (isTauriAvailable()) {
-                        const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'openai' });
+                        const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'voice_openai' });
                         openaiApiKey.value = '';
                         openaiApiKey.placeholder = hasKey ? '••••••••••••••••' : 'sk-...';
+                        const btn = document.getElementById('deleteVoiceOpenaiKey');
+                        if (btn) btn.classList.toggle('visible', hasKey);
                     } else {
                         openaiApiKey.value = '';
                     }
@@ -3482,7 +3769,19 @@
 
                 // Web Search defaults (load from backend config if available)
                 const webSearchConfig = backendConfig?.web_search;
-                document.getElementById('webSearchProvider').value = webSearchConfig?.provider || 'local';
+                // Map backend provider values to the consolidated UI dropdown
+                const backendProvider = webSearchConfig?.provider || 'local';
+                const webSearchProviderSelect = document.getElementById('webSearchProvider');
+                if (backendProvider === 'local' || backendProvider === 'duckduckgo') {
+                    // Both DuckDuckGo modes map to the consolidated dropdown entry
+                    webSearchProviderSelect.value = 'duckduckgo_group';
+                    // Set the correct radio button for the DuckDuckGo sub-mode
+                    const radioBtn = document.querySelector(`input[name="duckduckgo_mode"][value="${backendProvider}"]`);
+                    if (radioBtn) radioBtn.checked = true;
+                } else {
+                    // brave / serpapi map directly
+                    webSearchProviderSelect.value = backendProvider;
+                }
                 // Never populate actual API keys from config. Keys live in OS secure storage.
                 // Show placeholder if key exists in keychain
                 const braveSearchKeyInput = document.getElementById('braveSearchKey');
@@ -3491,6 +3790,8 @@
                         const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'brave' });
                         braveSearchKeyInput.value = '';
                         braveSearchKeyInput.placeholder = hasKey ? '••••••••••••••••' : 'BSA...';
+                        const btn = document.getElementById('deleteBraveKey');
+                        if (btn) btn.classList.toggle('visible', hasKey);
                     } else {
                         braveSearchKeyInput.value = '';
                     }
@@ -3501,6 +3802,8 @@
                         const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'serpapi' });
                         serpapiKeyInput.value = '';
                         serpapiKeyInput.placeholder = hasKey ? '••••••••••••••••' : '';
+                        const btn = document.getElementById('deleteSerpapiKey');
+                        if (btn) btn.classList.toggle('visible', hasKey);
                     } else {
                         serpapiKeyInput.value = '';
                     }
@@ -3742,7 +4045,15 @@
 
                     // Update web search configuration
                     currentConfig.web_search = {
-                        provider: document.getElementById('webSearchProvider')?.value || 'local',
+                        provider: (() => {
+                            const selected = document.getElementById('webSearchProvider')?.value || 'duckduckgo_group';
+                            if (selected === 'duckduckgo_group') {
+                                // Resolve the actual backend value from the DuckDuckGo sub-mode radio
+                                const checkedRadio = document.querySelector('input[name="duckduckgo_mode"]:checked');
+                                return checkedRadio ? checkedRadio.value : 'local';
+                            }
+                            return selected;
+                        })(),
                         // Never persist plaintext keys.
                         brave_key: null,
                         serpapi_key: null,
@@ -3820,8 +4131,8 @@
                         <div class="permission-name">${permission.name}</div>
                         <div class="permission-description">${permission.description}</div>
                         ${needsManualGrant ? `
-                            <div class="accessibility-instructions" style="margin-top: 8px; padding: 10px; background: rgba(255, 193, 7, 0.1); border-left: 3px solid #ffc107; border-radius: 4px; font-size: 0.85rem;">
-                                <strong style="color: #ffc107;"><span class="icon-warning"></span> Manual Setup Required</strong>
+	                            <div class="accessibility-instructions" style="margin-top: 8px; padding: 10px; background: rgba(var(--warning-rgb), 0.14); border-left: 3px solid rgb(var(--warning-rgb)); border-radius: 4px; font-size: 0.85rem;">
+	                                <strong style="color: rgb(var(--warning-rgb));"><span class="icon-warning"></span> Manual Setup Required</strong>
                                 <p style="margin: 6px 0 0 0; color: var(--text-secondary);">
                                     macOS requires you to manually enable Accessibility permission:
                                 </p>
@@ -3843,7 +4154,7 @@
                                     style="margin-left: 8px; padding: 4px 8px; font-size: 0.75rem;">
                                 ${isAccessibility ? '<span class="icon-settings"></span> Open Settings' : (permission.status === 'denied' ? '<span class="icon-settings"></span> Open Settings' : '<span class="icon-lock-open"></span> Request')}
                             </button>
-                        ` : '<span style="color: #28a745; margin-left: 8px;" class="icon-check"></span>'}
+	                        ` : '<span style="color: rgb(var(--success-rgb)); margin-left: 8px;" class="icon-check"></span>'}
                     </div>
                 </div>
             `}).join('');
@@ -5401,7 +5712,7 @@
                 if (!micAvailable) {
                     const warning = document.createElement('div');
                     warning.className = 'help-text';
-                    warning.style.color = '#dc3545';
+                    warning.style.color = 'rgb(var(--danger-rgb))';
                     warning.innerHTML = '<span class="icon-warning"></span> No microphone detected. Please connect a microphone.';
                     select.parentNode.appendChild(warning);
                 }

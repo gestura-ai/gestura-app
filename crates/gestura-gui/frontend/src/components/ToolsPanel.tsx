@@ -9,15 +9,23 @@ interface ToolInfo {
   examples: string[];
 }
 
-interface McpTool {
+interface McpServer {
   name: string;
-  endpoint: string;
-  description?: string;
+  type: 'stdio' | 'http' | 'sse';
+  enabled: boolean;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  scope: 'user' | 'project' | 'local';
+  timeout_secs: number;
+  auto_reconnect: boolean;
 }
 
 const ToolsPanel: React.FC = () => {
   const [builtinTools, setBuiltinTools] = useState<ToolInfo[]>([]);
-  const [mcpTools, setMcpTools] = useState<McpTool[]>([]);
+  const [mcpTools, setMcpTools] = useState<McpServer[]>([]);
   const [selectedTool, setSelectedTool] = useState<ToolInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
@@ -30,7 +38,7 @@ const ToolsPanel: React.FC = () => {
     try {
       const [builtin, mcp] = await Promise.all([
         invoke<ToolInfo[]>('list_builtin_tools'),
-        invoke<McpTool[]>('list_mcp_tools'),
+        invoke<McpServer[]>('list_mcp_tools'),
       ]);
       setBuiltinTools(builtin);
       setMcpTools(mcp);
@@ -50,7 +58,8 @@ const ToolsPanel: React.FC = () => {
   const filteredMcpTools = mcpTools.filter(
     (t) =>
       t.name.toLowerCase().includes(filter.toLowerCase()) ||
-      (t.description?.toLowerCase().includes(filter.toLowerCase()) ?? false)
+      (t.url?.toLowerCase().includes(filter.toLowerCase()) ?? false) ||
+      (t.command?.toLowerCase().includes(filter.toLowerCase()) ?? false)
   );
 
   if (loading) {
@@ -91,11 +100,18 @@ const ToolsPanel: React.FC = () => {
 
           {mcpTools.length > 0 && (
             <>
-              <h3>MCP Tools ({filteredMcpTools.length})</h3>
-              {filteredMcpTools.map((tool) => (
-                <div key={tool.name} className="tool-item mcp">
-                  <div className="tool-name">🔌 {tool.name}</div>
-                  <div className="tool-summary">{tool.description || tool.endpoint}</div>
+              <h3>MCP Servers ({filteredMcpTools.length})</h3>
+              {filteredMcpTools.map((srv) => (
+                <div key={srv.name} className={`tool-item mcp ${srv.enabled ? '' : 'disabled'}`}>
+                  <div className="tool-name">
+                    {srv.enabled ? '🔌' : '⏸️'} {srv.name}
+                    <span className="tool-badge">{srv.type}</span>
+                  </div>
+                  <div className="tool-summary">
+                    {srv.type === 'stdio'
+                      ? `${srv.command ?? ''} ${(srv.args ?? []).join(' ')}`.trim()
+                      : srv.url ?? '(no URL)'}
+                  </div>
                 </div>
               ))}
             </>

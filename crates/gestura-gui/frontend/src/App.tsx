@@ -11,6 +11,7 @@ import StatusBar from './components/StatusBar';
 import OnboardingWizard from './components/OnboardingWizard';
 import HelpSystem from './components/HelpSystem';
 import SimulatorPanel from './components/SimulatorPanel';
+import McpPanel from './components/McpPanel';
 import { AppConfig, UiSettings } from './types/config';
 
 
@@ -89,7 +90,7 @@ function App() {
     return (
       <div className="app">
         <div className="header">
-          <h1>Gestura</h1>
+          <h1 className="text-gradient">Gestura</h1>
         </div>
         <div className="main">
           <div className="content">
@@ -104,7 +105,7 @@ function App() {
     return (
       <div className="app">
         <div className="header">
-          <h1>Gestura</h1>
+          <h1 className="text-gradient">Gestura</h1>
         </div>
         <div className="main">
           <div className="content">
@@ -124,7 +125,7 @@ function App() {
 
       <div className="header">
         <div className="header-left">
-          <h1>Gestura</h1>
+          <h1 className="text-gradient">Gestura</h1>
         </div>
         <div className="header-right">
           <button
@@ -173,6 +174,12 @@ function App() {
               📋 Workflows
             </button>
             <button
+              className={`btn ${activePanel === 'mcp' ? '' : 'btn-secondary'}`}
+              onClick={() => setActivePanel('mcp')}
+            >
+              🔌 MCP
+            </button>
+            <button
               className={`btn ${activePanel === 'simulator' ? '' : 'btn-secondary'}`}
               onClick={() => setActivePanel('simulator')}
             >
@@ -199,6 +206,9 @@ function App() {
           )}
           {activePanel === 'ring' && (
             <RingPanel />
+          )}
+          {activePanel === 'mcp' && (
+            <McpPanel />
           )}
           {activePanel === 'simulator' && (
             <SimulatorPanel onClose={() => setActivePanel('ring')} />

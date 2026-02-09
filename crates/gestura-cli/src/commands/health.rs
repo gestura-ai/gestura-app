@@ -154,13 +154,19 @@ pub fn run() -> Result<()> {
 
     // MCP
     println!("{}", "MCP Integration".underline());
-    if !config.mcp_tools.is_empty() {
-        println!("  Tools:        {} configured", config.mcp_tools.len());
-        for tool in config.mcp_tools.iter().take(3) {
-            println!("    • {}", tool.name);
+    if !config.mcp_servers.is_empty() {
+        let enabled = config.mcp_servers.iter().filter(|s| s.enabled).count();
+        println!(
+            "  Servers:      {} configured ({} enabled)",
+            config.mcp_servers.len(),
+            enabled
+        );
+        for srv in config.mcp_servers.iter().take(3) {
+            let icon = if srv.enabled { "●" } else { "○" };
+            println!("    {} {} ({})", icon, srv.name, srv.transport);
         }
     } else {
-        println!("  Tools:        {}", "none configured".dimmed());
+        println!("  Servers:      {}", "none configured".dimmed());
     }
     println!();
 

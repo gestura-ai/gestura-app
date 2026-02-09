@@ -19,6 +19,16 @@
   /* These are also dynamically overridden by ThemeController */
   --accent: #2563eb;
   --accent-contrast: #ffffff;
+  --accent-rgb: 37, 99, 235;
+
+  /* Gestura brand gradients (https://gestura.app/) */
+  --gradient-primary: linear-gradient(to right, rgb(37, 99, 235), rgb(147, 51, 234));
+  --gradient-secondary: linear-gradient(to right, rgb(96, 165, 250), rgb(192, 132, 252));
+  /* One token for “the” brand gradient so we can adapt per theme */
+  --brand-gradient: var(--gradient-primary);
+
+  /* Accessible focus ring used by :focus-visible */
+  --focus-ring: rgba(var(--accent-rgb), 0.35);
 
   --success: #22c55e;
   --warning: #f59e0b;
@@ -34,6 +44,11 @@
 
   --accent: #60a5fa;
   --accent-contrast: #1e293b;
+  --accent-rgb: 96, 165, 250;
+
+  /* Dark mode: slightly lighter gradient reads cleaner on dark surfaces */
+  --brand-gradient: var(--gradient-secondary);
+  --focus-ring: rgba(var(--accent-rgb), 0.45);
 }
 
 * {
@@ -66,13 +81,63 @@ body {
 
 .header {
   padding: 1rem;
-  border-bottom: 1px solid var(--border);
   background: var(--surface);
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 0.75rem;
   flex-shrink: 0;
+  position: relative;
+}
+
+/* Subtle brand accent line (strategic gradient usage: minimal chrome) */
+.header::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--brand-gradient);
+  opacity: 0.8;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+/* Gradient text utility (use sparingly: titles/brand only) */
+.text-gradient {
+  display: inline-block;
+  background: var(--brand-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+@supports not (-webkit-background-clip: text) {
+  .text-gradient {
+    background: none;
+    color: var(--accent);
+  }
+}
+
+@media (forced-colors: active) {
+  .text-gradient {
+    background: none;
+    -webkit-text-fill-color: CanvasText;
+    color: CanvasText;
+  }
+
+  .btn:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+    box-shadow: none;
+  }
 }
 
 .main {
@@ -124,6 +189,11 @@ body {
   transition: opacity 0.2s, background 0.2s, border-color 0.2s;
 }
 
+.btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
 .btn:hover {
   opacity: 0.92;
 }
@@ -142,6 +212,25 @@ body {
 .btn-secondary:hover {
   opacity: 1;
   border-color: var(--accent);
+}
+
+/* Brand primary button (strategic gradient usage: key CTAs only) */
+.btn-primary,
+.btn-gradient {
+  background: var(--brand-gradient);
+  color: #ffffff;
+  border: 1px solid transparent;
+}
+
+.btn-primary:hover,
+.btn-gradient:hover {
+  opacity: 1;
+  filter: brightness(1.02);
+}
+
+.btn-primary:active,
+.btn-gradient:active {
+  filter: brightness(0.98);
 }
 
 .form-group {

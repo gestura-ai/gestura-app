@@ -144,6 +144,35 @@ impl AgentPipeline {
         }
     }
 
+    /// Ensure all enabled MCP servers from the application config are connected
+    /// in the global client registry. Already-connected servers are skipped.
+    async fn ensure_mcp_servers_connected(&self) {
+        let registry = crate::mcp::get_mcp_client_registry();
+        let connected = registry.connected_servers().await;
+
+        for entry in &self.config.mcp_servers {
+            if !entry.enabled || connected.contains(&entry.name) {
+                continue;
+            }
+            match registry.connect(entry).await {
+                Ok(tools) => {
+                    tracing::info!(
+                        server = %entry.name,
+                        tool_count = tools.len(),
+                        "MCP server connected"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        server = %entry.name,
+                        error = %e,
+                        "Failed to connect MCP server (skipping)"
+                    );
+                }
+            }
+        }
+    }
+
     /// Create a checkpoint before a write tool execution.
     ///
     /// This is a best-effort operation: failures are logged but do not block tool execution.
@@ -252,6 +281,9 @@ impl AgentPipeline {
         tx: mpsc::Sender<StreamChunk>,
         cancel_token: CancellationToken,
     ) -> Result<AgentResponse, AppError> {
+        // 0. Ensure configured MCP servers are connected (lazy, idempotent).
+        self.ensure_mcp_servers_connected().await;
+
         // 1. Analyze the request
         let mut analysis = self.analyzer.analyze(&request.input);
 
@@ -1857,9 +1889,21 @@ impl AgentPipeline {
 
         // Build provider-specific tool schemas once for this request.
         let tool_schemas = if tools.is_empty() {
-            None
+            // Even with no built-in tools, MCP tools may be available.
+            let mcp_tools = crate::mcp::get_mcp_client_registry().all_tools().await;
+            if mcp_tools.is_empty() {
+                None
+            } else {
+                Some(crate::tools::schemas::build_mcp_tool_schemas(&mcp_tools))
+            }
         } else {
-            Some(crate::tools::schemas::build_provider_tool_schemas(&tools))
+            let mut schemas = crate::tools::schemas::build_provider_tool_schemas(&tools);
+            // Merge in any MCP tool schemas.
+            let mcp_tools = crate::mcp::get_mcp_client_registry().all_tools().await;
+            if !mcp_tools.is_empty() {
+                schemas.merge(crate::tools::schemas::build_mcp_tool_schemas(&mcp_tools));
+            }
+            Some(schemas)
         };
 
         // Agentic loop - continue until no more tool calls or max iterations
@@ -2129,9 +2173,19 @@ impl AgentPipeline {
 
         // Build provider-specific tool schemas so the model knows about available tools.
         let tool_schemas = if tools.is_empty() {
-            None
+            let mcp_tools = crate::mcp::get_mcp_client_registry().all_tools().await;
+            if mcp_tools.is_empty() {
+                None
+            } else {
+                Some(crate::tools::schemas::build_mcp_tool_schemas(&mcp_tools))
+            }
         } else {
-            Some(crate::tools::schemas::build_provider_tool_schemas(&tools))
+            let mut schemas = crate::tools::schemas::build_provider_tool_schemas(&tools);
+            let mcp_tools = crate::mcp::get_mcp_client_registry().all_tools().await;
+            if !mcp_tools.is_empty() {
+                schemas.merge(crate::tools::schemas::build_mcp_tool_schemas(&mcp_tools));
+            }
+            Some(schemas)
         };
 
         let max_iterations = self.pipeline_config.max_iterations;
@@ -2619,6 +2673,7 @@ impl AgentPipeline {
             "screenshot" | "screen_record" => {
                 self.execute_screen_tool(name, arguments, workspace).await
             }
+            _ if name.starts_with("mcp__") => self.execute_mcp_tool(name, arguments).await,
             _ => ToolResult::Skipped(format!("Unknown tool: {}", name)),
         };
 
@@ -2626,6 +2681,58 @@ impl AgentPipeline {
         tracing::info!("Tool {} completed in {:?}: {:?}", name, duration, result);
 
         result
+    }
+
+    /// Execute an MCP tool via the global `McpClientRegistry`.
+    ///
+    /// The tool `name` is expected to follow the `mcp__<server>__<tool>` naming
+    /// convention established in `build_mcp_tool_schemas`.
+    async fn execute_mcp_tool(&self, name: &str, arguments: &str) -> ToolResult {
+        // Parse "mcp__<server>__<tool>" into server and tool names.
+        let rest = match name.strip_prefix("mcp__") {
+            Some(r) => r,
+            None => return ToolResult::Error(format!("Invalid MCP tool name: {name}")),
+        };
+        let (server_name, tool_name) = match rest.split_once("__") {
+            Some((s, t)) => (s, t),
+            None => return ToolResult::Error(format!("Invalid MCP tool name format: {name}")),
+        };
+
+        let args: serde_json::Value = match serde_json::from_str(arguments) {
+            Ok(v) => v,
+            Err(e) => {
+                return ToolResult::Error(format!("Invalid MCP tool arguments: {e}"));
+            }
+        };
+
+        let registry = crate::mcp::get_mcp_client_registry();
+        match registry.call_tool(server_name, tool_name, args).await {
+            Ok(result) => {
+                use crate::mcp::types::ToolResultContent;
+                let is_error = result.is_error.unwrap_or(false);
+                let text: String = result
+                    .content
+                    .into_iter()
+                    .filter_map(|c| match c {
+                        ToolResultContent::Text { text } => Some(text),
+                        ToolResultContent::Image { data, mime_type } => {
+                            Some(format!("[image: {mime_type}, {} bytes]", data.len()))
+                        }
+                        ToolResultContent::Resource { resource } => {
+                            Some(format!("[resource: {}]", resource.uri))
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                if is_error {
+                    ToolResult::Error(text)
+                } else {
+                    ToolResult::Success(text)
+                }
+            }
+            Err(e) => ToolResult::Error(format!("MCP tool call failed: {e}")),
+        }
     }
 
     /// Execute web tool
@@ -4020,7 +4127,16 @@ mod tests {
     async fn streaming_followup_approval_executes_shell_from_history_and_finishes() {
         use std::time::Duration;
 
-        let pipeline = AgentPipeline::new(AppConfig::default());
+        // Use the "echo" LLM provider so the synthesis step completes instantly
+        // without requiring a real LLM. Disable fallback to avoid retry/backoff.
+        let mut app_config = AppConfig::default();
+        app_config.llm.primary = "echo".into();
+        app_config.llm.fallback = None;
+        let pipeline_config = PipelineConfig {
+            enable_fallback: false,
+            ..Default::default()
+        };
+        let pipeline = AgentPipeline::with_config(app_config, pipeline_config);
 
         let history = vec![Message::assistant(
             "We will use the shell tool to run 'pwd'. Then respond.",
@@ -4043,10 +4159,11 @@ mod tests {
 
         assert_eq!(resp.tool_calls.len(), 1);
         assert_eq!(resp.tool_calls[0].name, "shell");
-        assert!(resp.content.contains("Workspace directory root:"));
+        // The echo provider echoes the continuation prompt which contains the tool result.
+        assert!(resp.content.contains("Tool shell result:"));
 
         // Ensure the stream terminates (no silent hang)
-        let saw_done = tokio::time::timeout(Duration::from_secs(2), async move {
+        let saw_done = tokio::time::timeout(Duration::from_secs(5), async move {
             while let Some(chunk) = rx.recv().await {
                 if matches!(chunk, StreamChunk::Done(_)) {
                     return true;
@@ -4059,7 +4176,7 @@ mod tests {
 
         assert!(saw_done);
 
-        // Optional: sanity check the output includes the workspace path.
+        // Sanity check the output includes the workspace path.
         // `pwd` prints the current working directory; in sandbox mode we run in workspace root.
         let expected = cwd.to_string_lossy();
         assert!(resp.content.contains(expected.as_ref()));
@@ -4070,7 +4187,17 @@ mod tests {
         use std::time::Duration;
         use tempfile::tempdir;
 
-        let pipeline = AgentPipeline::new(AppConfig::default());
+        // Use the "echo" LLM provider so the synthesis step completes instantly
+        // without requiring a real LLM. Disable fallback to avoid retry/backoff.
+        let mut app_config = AppConfig::default();
+        app_config.llm.primary = "echo".into();
+        app_config.llm.fallback = None;
+        let pipeline_config = PipelineConfig {
+            enable_fallback: false,
+            ..Default::default()
+        };
+        let pipeline = AgentPipeline::with_config(app_config, pipeline_config);
+
         let temp = tempdir().unwrap();
         let file_path = temp.path().join("foo.txt");
         std::fs::write(&file_path, "hello from file\n").unwrap();
@@ -4094,10 +4221,11 @@ mod tests {
 
         assert_eq!(resp.tool_calls.len(), 1);
         assert_eq!(resp.tool_calls[0].name, "file");
+        // The echo provider echoes the continuation prompt which contains the tool result.
         assert!(resp.content.contains("hello from file"));
 
         // Ensure the stream terminates (no silent hang)
-        let saw_done = tokio::time::timeout(Duration::from_secs(2), async move {
+        let saw_done = tokio::time::timeout(Duration::from_secs(5), async move {
             while let Some(chunk) = rx.recv().await {
                 if matches!(chunk, StreamChunk::Done(_)) {
                     return true;

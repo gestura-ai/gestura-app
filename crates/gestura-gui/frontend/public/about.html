@@ -9,13 +9,20 @@
     <style>
         :root {
             /* Light theme variables */
-            --bg-gradient-start: #667eea;
-            --bg-gradient-end: #764ba2;
+            --accent: rgb(37, 99, 235);
+            --accent-rgb: 37, 99, 235;
+            --gradient-primary: linear-gradient(to right, rgb(37, 99, 235), rgb(147, 51, 234));
+            --gradient-secondary: linear-gradient(to right, rgb(96, 165, 250), rgb(192, 132, 252));
+            --brand-gradient: var(--gradient-primary);
+
+            /* Subtle background tint (avoid a full-strength hero gradient) */
+            --bg-gradient-start: rgba(37, 99, 235, 0.22);
+            --bg-gradient-end: rgba(147, 51, 234, 0.22);
             --container-bg: rgba(255, 255, 255, 0.95);
             --text-primary: #1D1D1F;
             --text-secondary: #8E8E93;
             --surface-bg: #F2F2F7;
-            --button-bg: #007AFF;
+            --button-bg: var(--brand-gradient);
             --button-text: white;
         }
 
@@ -23,38 +30,50 @@
         @media (prefers-color-scheme: dark) {
             :root {
                 /* Dark theme variables */
-                --bg-gradient-start: #1a1a2e;
-                --bg-gradient-end: #16213e;
+                --accent: rgb(96, 165, 250);
+                --accent-rgb: 96, 165, 250;
+                --brand-gradient: var(--gradient-secondary);
+
+                --bg-gradient-start: rgba(96, 165, 250, 0.14);
+                --bg-gradient-end: rgba(192, 132, 252, 0.14);
                 --container-bg: rgba(30, 30, 30, 0.95);
                 --text-primary: #f5f5f7;
                 --text-secondary: #b0b0b0;
                 --surface-bg: #2d2d2d;
-                --button-bg: #0a84ff;
+                --button-bg: var(--brand-gradient);
                 --button-text: white;
             }
         }
 
         /* Force light mode (overrides system preference) */
         html[data-theme="light"] {
-            --bg-gradient-start: #667eea;
-            --bg-gradient-end: #764ba2;
+            --accent: rgb(37, 99, 235);
+            --accent-rgb: 37, 99, 235;
+            --brand-gradient: var(--gradient-primary);
+
+            --bg-gradient-start: rgba(37, 99, 235, 0.22);
+            --bg-gradient-end: rgba(147, 51, 234, 0.22);
             --container-bg: rgba(255, 255, 255, 0.95);
             --text-primary: #1D1D1F;
             --text-secondary: #8E8E93;
             --surface-bg: #F2F2F7;
-            --button-bg: #007AFF;
+            --button-bg: var(--brand-gradient);
             --button-text: white;
         }
 
         /* Force dark mode (overrides system preference) */
         html[data-theme="dark"] {
-            --bg-gradient-start: #1a1a2e;
-            --bg-gradient-end: #16213e;
+            --accent: rgb(96, 165, 250);
+            --accent-rgb: 96, 165, 250;
+            --brand-gradient: var(--gradient-secondary);
+
+            --bg-gradient-start: rgba(96, 165, 250, 0.14);
+            --bg-gradient-end: rgba(192, 132, 252, 0.14);
             --container-bg: rgba(30, 30, 30, 0.95);
             --text-primary: #f5f5f7;
             --text-secondary: #b0b0b0;
             --surface-bg: #2d2d2d;
-            --button-bg: #0a84ff;
+            --button-bg: var(--brand-gradient);
             --button-text: white;
         }
 
@@ -91,8 +110,20 @@
         .app-name {
             font-size: 2rem;
             font-weight: bold;
-            color: var(--text-primary);
+            background: var(--brand-gradient);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            -webkit-text-fill-color: transparent;
             margin-bottom: 0.5rem;
+        }
+
+        @media (forced-colors: active) {
+            .app-name {
+                background: none;
+                color: CanvasText;
+                -webkit-text-fill-color: CanvasText;
+            }
         }
 
         .version {
@@ -145,20 +176,26 @@
             text-decoration: none;
             border-radius: 8px;
             font-size: 0.9rem;
-            transition: background-color 0.2s;
+            transition: filter 0.2s ease, transform 0.2s ease;
         }
 
         .link-button:hover {
-            background: #0056CC;
+            filter: brightness(0.96);
+            transform: translateY(-1px);
+        }
+
+        .link-button:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.35);
         }
 
         .link-button.secondary {
-            background: #F2F2F7;
-            color: #1D1D1F;
+            background: var(--surface-bg);
+            color: var(--text-primary);
         }
 
         .link-button.secondary:hover {
-            background: #E5E5EA;
+            filter: brightness(0.96);
         }
     </style>
 </head>

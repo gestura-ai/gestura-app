@@ -235,11 +235,18 @@ pub fn render_capabilities(config: &AppConfig) -> String {
 
     // MCP Servers & Tools
     out.push_str("\n## MCP Servers & Tools\n\n");
-    if config.mcp_tools.is_empty() {
+    if config.mcp_servers.is_empty() {
         out.push_str("_No MCP servers configured._\n");
     } else {
-        for mcp in &config.mcp_tools {
-            out.push_str(&format!("• **{}** → `{}`\n", mcp.name, mcp.endpoint));
+        for srv in &config.mcp_servers {
+            let status = if srv.enabled { "✓" } else { "○" };
+            out.push_str(&format!(
+                "• {} **{}** ({}) → `{}`\n",
+                status,
+                srv.name,
+                srv.transport,
+                srv.effective_uri()
+            ));
         }
     }
 

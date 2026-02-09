@@ -243,12 +243,49 @@ impl Theme {
         }
     }
 
+    /// Gestura brand theme (blue → purple).
+    ///
+    /// This theme approximates the gestura.app look while keeping the TUI readable on
+    /// dark terminals. Gradients are represented in the UI renderer via per-span RGB
+    /// coloring where appropriate.
+    pub fn gestura() -> Self {
+        Self {
+            name: "Gestura",
+            header_bg: Color::Rgb(2, 6, 23),
+            header_fg: Color::Rgb(226, 232, 240),
+            user_msg: Color::Rgb(248, 250, 252),
+            assistant_msg: Color::Rgb(192, 132, 252),
+            system_msg: Color::Rgb(148, 163, 184),
+            error_msg: Color::Rgb(248, 113, 113),
+            streaming: Color::Rgb(96, 165, 250),
+            border: Color::Rgb(51, 65, 85),
+            border_focused: Color::Rgb(37, 99, 235),
+            status_bg: Color::Rgb(2, 6, 23),
+            status_fg: Color::Rgb(148, 163, 184),
+            mode_normal: Color::Rgb(96, 165, 250),
+            mode_insert: Color::Rgb(192, 132, 252),
+            mode_command: Color::Rgb(248, 250, 252),
+            tab_active: Color::Rgb(37, 99, 235),
+            tab_inactive: Color::Rgb(71, 85, 105),
+            selection_bg: Color::Rgb(30, 41, 59),
+            code_bg: Color::Rgb(15, 23, 42),
+            code_fg: Color::Rgb(226, 232, 240),
+            code_keyword: Color::Rgb(96, 165, 250),
+            code_string: Color::Rgb(192, 132, 252),
+            code_comment: Color::Rgb(100, 116, 139),
+            code_number: Color::Rgb(147, 197, 253),
+            code_function: Color::Rgb(167, 139, 250),
+            code_lang_label: Color::Rgb(148, 163, 184),
+        }
+    }
+
     /// Get theme by name
     pub fn by_name(name: &str) -> Self {
         match name.to_lowercase().as_str() {
             "light" => Self::light(),
             "high-contrast" | "highcontrast" | "high_contrast" => Self::high_contrast(),
             "dracula" => Self::dracula(),
+            "gestura" | "brand" => Self::gestura(),
             "pro" | "claude" => Self::pro(),
             _ => Self::catppuccin_mocha(),
         }
@@ -261,6 +298,7 @@ impl Theme {
             "light",
             "high-contrast",
             "dracula",
+            "gestura",
             "pro",
         ]
     }
@@ -408,7 +446,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/theme", "List available themes"),
     (
         "/theme <name>",
-        "Change theme (catppuccin-mocha, light, high-contrast, dracula)",
+        "Change theme (catppuccin-mocha, light, high-contrast, dracula, gestura, pro)",
     ),
     ("/search", "Enter interactive search mode"),
     ("/search <query>", "Search messages for query"),
@@ -1939,6 +1977,9 @@ mod tests {
         app.set_theme("dracula");
         assert_eq!(app.theme.name, "Dracula");
 
+        app.set_theme("gestura");
+        assert_eq!(app.theme.name, "Gestura");
+
         // Invalid theme falls back to catppuccin-mocha (the fallback in by_name)
         app.set_theme("nonexistent");
         assert_eq!(app.theme.name, "Catppuccin Mocha");
@@ -1951,9 +1992,9 @@ mod tests {
         // Get initial theme name and verify it's the default (Pro)
         assert_eq!(app.theme.name, "Pro");
 
-        // Cycle to next theme - Pro is at index 4, so cycling wraps to index 0
+        // Cycle to next theme - Pro is last, so cycling wraps to the first theme.
         app.cycle_theme();
-        // After cycling from pro (index 4), should wrap to catppuccin-mocha (index 0)
+        // After cycling from pro, should wrap to catppuccin-mocha.
         assert_eq!(app.theme.name, "Catppuccin Mocha");
 
         // Cycle again
@@ -1967,6 +2008,10 @@ mod tests {
         // Cycle again
         app.cycle_theme();
         assert_eq!(app.theme.name, "Dracula");
+
+        // Cycle again
+        app.cycle_theme();
+        assert_eq!(app.theme.name, "Gestura");
 
         // Cycle wraps back to Pro
         app.cycle_theme();

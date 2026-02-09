@@ -20,17 +20,30 @@
         }
 
         :root {
+            /* Gestura brand tokens (unified with gestura.app) */
+            --accent-primary: rgb(37, 99, 235);
+            --accent-primary-rgb: 37, 99, 235;
+            --accent-secondary: rgb(147, 51, 234);
+            --accent-secondary-rgb: 147, 51, 234;
+            --gradient-primary: linear-gradient(to right, rgb(37, 99, 235), rgb(147, 51, 234));
+            --gradient-secondary: linear-gradient(to right, rgb(96, 165, 250), rgb(192, 132, 252));
+            --brand-gradient: var(--gradient-primary);
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.35);
+
+            /* Semantic RGB triples for rgba(..., alpha) */
+            --success-rgb: 52, 199, 89;
+            --warning-rgb: 255, 149, 0;
+            --danger-rgb: 255, 59, 48;
+
             /* Light theme variables */
             --background-color: #ffffff;
             --text-color: #1a1a1a;
             --text-secondary: #666666;
             --border-color: #e0e0e0;
             --surface-color: #f8f9fa;
-            --accent-color: #007bff;
-            --accent-hover: #0056b3;
-            --success-color: #28a745;
-            --warning-color: #ffc107;
-            --error-color: #dc3545;
+            --success-color: rgb(var(--success-rgb));
+            --warning-color: rgb(var(--warning-rgb));
+            --error-color: rgb(var(--danger-rgb));
         }
 
         /* Auto mode: respect system preference */
@@ -42,40 +55,61 @@
                 --text-secondary: #b0b0b0;
                 --border-color: #404040;
                 --surface-color: #2d2d2d;
-                --accent-color: #4da3ff;
-                --accent-hover: #2d8cf0;
-                --success-color: #48c774;
-                --warning-color: #ffdd57;
-                --error-color: #ff6b6b;
+                --accent-primary: rgb(96, 165, 250);
+                --accent-primary-rgb: 96, 165, 250;
+                --accent-secondary: rgb(192, 132, 252);
+                --accent-secondary-rgb: 192, 132, 252;
+                --brand-gradient: var(--gradient-secondary);
+                --focus-ring: rgba(var(--accent-primary-rgb), 0.55);
             }
         }
 
         /* Force light mode (overrides system preference) */
         html[data-theme="light"] {
+            --accent-primary: rgb(37, 99, 235);
+            --accent-primary-rgb: 37, 99, 235;
+            --accent-secondary: rgb(147, 51, 234);
+            --accent-secondary-rgb: 147, 51, 234;
+            --brand-gradient: var(--gradient-primary);
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.35);
+
             --background-color: #ffffff;
             --text-color: #1a1a1a;
             --text-secondary: #666666;
             --border-color: #e0e0e0;
             --surface-color: #f8f9fa;
-            --accent-color: #007bff;
-            --accent-hover: #0056b3;
-            --success-color: #28a745;
-            --warning-color: #ffc107;
-            --error-color: #dc3545;
         }
 
         /* Force dark mode (overrides system preference) */
         html[data-theme="dark"] {
+            --accent-primary: rgb(96, 165, 250);
+            --accent-primary-rgb: 96, 165, 250;
+            --accent-secondary: rgb(192, 132, 252);
+            --accent-secondary-rgb: 192, 132, 252;
+            --brand-gradient: var(--gradient-secondary);
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.55);
+
             --background-color: #1e1e1e;
             --text-color: #ffffff;
             --text-secondary: #b0b0b0;
             --border-color: #404040;
             --surface-color: #2d2d2d;
-            --accent-color: #4da3ff;
-            --accent-hover: #2d8cf0;
-            --success-color: #48c774;
-            --warning-color: #ffdd57;
-            --error-color: #ff6b6b;
+        }
+
+        .text-gradient {
+            background: var(--brand-gradient);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            -webkit-text-fill-color: transparent;
+        }
+
+        @media (forced-colors: active) {
+            .text-gradient {
+                background: none;
+                color: ButtonText;
+                -webkit-text-fill-color: ButtonText;
+            }
         }
 
         body {
@@ -127,7 +161,7 @@
 
         .progress-fill {
             height: 100%;
-            background: var(--accent-color);
+            background: var(--brand-gradient);
             transition: width 0.3s ease;
         }
 
@@ -194,12 +228,18 @@
         }
 
         .btn-primary {
-            background: var(--accent-color);
+            background: var(--brand-gradient);
             color: white;
         }
 
         .btn-primary:hover {
-            background: var(--accent-hover);
+            filter: brightness(0.97);
+            transform: translateY(-1px);
+        }
+
+        .btn:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 4px var(--focus-ring);
         }
 
         .btn-secondary {
@@ -262,18 +302,21 @@
         }
 
         .status-granted {
-            background: var(--success-color);
-            color: white;
+            background: rgba(var(--success-rgb), 0.14);
+            border: 1px solid rgba(var(--success-rgb), 0.28);
+            color: rgb(var(--success-rgb));
         }
 
         .status-denied {
-            background: var(--error-color);
-            color: white;
+            background: rgba(var(--danger-rgb), 0.14);
+            border: 1px solid rgba(var(--danger-rgb), 0.28);
+            color: rgb(var(--danger-rgb));
         }
 
         .status-unknown {
-            background: var(--warning-color);
-            color: #333;
+            background: rgba(var(--warning-rgb), 0.14);
+            border: 1px solid rgba(var(--warning-rgb), 0.28);
+            color: rgb(var(--warning-rgb));
         }
 
         select {
@@ -289,7 +332,8 @@
 
         select:focus {
             outline: none;
-            border-color: var(--accent-color);
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 0 4px var(--focus-ring);
         }
 
         .config-section {
@@ -309,7 +353,8 @@
     <div class="onboarding-container">
         <div class="header">
             <h1><img src="assets/gestura-app.svg" alt="Gestura"
-                    style="width: 140px; height: 140px; vertical-align: middle; margin-right: 8px;">Welcome to Gestura
+                    style="width: 140px; height: 140px; vertical-align: middle; margin-right: 8px;">Welcome to <span
+                    class="text-gradient">Gestura</span>
             </h1>
             <p>Let's get you set up with voice commands and haptic feedback</p>
         </div>
@@ -390,7 +435,7 @@
                 id: 'welcome',
                 title: 'Welcome',
                 content: `
-                    <h2>Welcome to Gestura</h2>
+	                    <h2>Welcome to <span class="text-gradient">Gestura</span></h2>
                     <p>Gestura is your intelligent voice and gesture assistant. Control your computer with natural speech commands and get tactile feedback through connected hardware.</p>
                     <div class="features-grid">
                         <div class="feature-card">
@@ -428,7 +473,7 @@
                     <h2>Voice Processing Setup</h2>
                     <p>Choose how you want to process voice commands:</p>
                     <div style="margin: 1rem 0;">
-                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 2px solid var(--accent-color);">
+	                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 2px solid var(--accent-primary);">
                             <label style="display: flex; align-items: center; cursor: pointer;">
                                 <input type="radio" name="voiceMode" value="local" checked style="margin-right: 0.75rem;" onchange="updateVoiceMode(this.value)">
                                 <div>
@@ -554,11 +599,11 @@
                                 </div>
                             </label>
                         </div>
-                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 2px solid var(--accent-color);">
+	                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 2px solid var(--accent-primary);">
                             <label style="display: flex; align-items: center; cursor: pointer;">
                                 <input type="radio" name="agentPermLevel" value="restricted" checked style="margin-right: 0.75rem;" onchange="updateAgentPermissionLevel(this.value)">
                                 <div>
-                                    <strong><span class="icon-check-circle" style="color: var(--accent-color);"></span> Restricted (Recommended)</strong>
+	                                    <strong><span class="icon-check-circle" style="color: var(--accent-primary);"></span> Restricted (Recommended)</strong>
                                     <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Agents ask for confirmation before write operations or shell commands.</p>
                                 </div>
                             </label>
@@ -806,7 +851,7 @@
                 <p>Downloading the Whisper speech recognition model${sizeText}...</p>
                 <div style="margin: 2rem 0;">
                     <div class="progress-bar" style="height: 12px; background: var(--surface-color); border-radius: 6px; overflow: hidden;">
-                        <div id="downloadProgressFill" class="progress-fill" style="width: 0%; height: 100%; background: var(--accent-color); transition: width 0.3s;"></div>
+	                        <div id="downloadProgressFill" class="progress-fill" style="width: 0%; height: 100%; background: var(--brand-gradient); transition: width 0.3s;"></div>
                     </div>
                     <p id="downloadStatus" style="text-align: center; margin-top: 1rem; color: var(--text-secondary);">Starting download...</p>
                 </div>
@@ -830,7 +875,7 @@
                     } else if (data.status === 'complete') {
                         statusText.innerHTML = '<span class="icon-check"></span> Download complete!';
                     } else if (data.status === 'error') {
-                        statusText.innerHTML = `<span class="icon-x-circle" style="color: var(--error-color);"></span> Error: ${data.error || 'Download failed'}`;
+                        statusText.innerHTML = `<span class="icon-x-circle" style="color: rgb(var(--danger-rgb));"></span> Error: ${data.error || 'Download failed'}`;
                     }
                 }
 
@@ -1013,7 +1058,7 @@
                     const card = radio.closest('.option-card');
                     if (card) {
                         card.style.border = radio.value === level
-                            ? '2px solid var(--accent-color)'
+                            ? '2px solid var(--accent-primary)'
                             : '1px solid var(--border-color)';
                     }
                 });
@@ -1034,7 +1079,7 @@
                         const card = r.closest('.option-card');
                         if (card) {
                             card.style.border = r.value === level
-                                ? '2px solid var(--accent-color)'
+                                ? '2px solid var(--accent-primary)'
                                 : '1px solid var(--border-color)';
                         }
                     });

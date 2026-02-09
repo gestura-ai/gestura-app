@@ -8,50 +8,98 @@
     <link rel="stylesheet" href="icons.css">
     <style>
         :root {
+            /* Gestura brand tokens (unified with gestura.app) */
+            --accent-primary: rgb(37, 99, 235);
+            --accent-primary-rgb: 37, 99, 235;
+            --accent-secondary: rgb(147, 51, 234);
+            --accent-secondary-rgb: 147, 51, 234;
+            --gradient-primary: linear-gradient(to right, rgb(37, 99, 235), rgb(147, 51, 234));
+            --gradient-secondary: linear-gradient(to right, rgb(96, 165, 250), rgb(192, 132, 252));
+            --brand-gradient: var(--gradient-primary);
+
             /* Light theme variables */
-            --bg-gradient-start: #667eea;
-            --bg-gradient-end: #764ba2;
+            --bg-gradient-start: rgba(var(--accent-primary-rgb), 0.10);
+            --bg-gradient-end: rgba(var(--accent-secondary-rgb), 0.10);
             --container-bg: rgba(255, 255, 255, 0.95);
             --text-primary: #1D1D1F;
             --text-secondary: #8E8E93;
             --surface-bg: #F2F2F7;
             --surface-border: #E5E5EA;
+            --surface-muted-bg: rgba(0, 0, 0, 0.05);
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.35);
         }
 
         /* Auto mode: respect system preference */
         @media (prefers-color-scheme: dark) {
             :root {
                 /* Dark theme variables */
-                --bg-gradient-start: #1a1a2e;
-                --bg-gradient-end: #16213e;
-                --container-bg: rgba(30, 30, 30, 0.95);
+                --accent-primary: rgb(96, 165, 250);
+                --accent-primary-rgb: 96, 165, 250;
+                --accent-secondary: rgb(192, 132, 252);
+                --accent-secondary-rgb: 192, 132, 252;
+                --brand-gradient: var(--gradient-secondary);
+                --bg-gradient-start: rgba(var(--accent-primary-rgb), 0.14);
+                --bg-gradient-end: rgba(var(--accent-secondary-rgb), 0.14);
+                --container-bg: rgba(15, 23, 42, 0.92);
                 --text-primary: #f5f5f7;
-                --text-secondary: #b0b0b0;
-                --surface-bg: #2d2d2d;
-                --surface-border: #404040;
+                --text-secondary: #94a3b8;
+                --surface-bg: rgba(255, 255, 255, 0.06);
+                --surface-border: rgba(255, 255, 255, 0.12);
+                --surface-muted-bg: rgba(255, 255, 255, 0.06);
+                --focus-ring: rgba(var(--accent-primary-rgb), 0.55);
             }
         }
 
         /* Force light mode (overrides system preference) */
         html[data-theme="light"] {
-            --bg-gradient-start: #667eea;
-            --bg-gradient-end: #764ba2;
+            --accent-primary: rgb(37, 99, 235);
+            --accent-primary-rgb: 37, 99, 235;
+            --accent-secondary: rgb(147, 51, 234);
+            --accent-secondary-rgb: 147, 51, 234;
+            --brand-gradient: var(--gradient-primary);
+            --bg-gradient-start: rgba(var(--accent-primary-rgb), 0.10);
+            --bg-gradient-end: rgba(var(--accent-secondary-rgb), 0.10);
             --container-bg: rgba(255, 255, 255, 0.95);
             --text-primary: #1D1D1F;
             --text-secondary: #8E8E93;
             --surface-bg: #F2F2F7;
             --surface-border: #E5E5EA;
+            --surface-muted-bg: rgba(0, 0, 0, 0.05);
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.35);
         }
 
         /* Force dark mode (overrides system preference) */
         html[data-theme="dark"] {
-            --bg-gradient-start: #1a1a2e;
-            --bg-gradient-end: #16213e;
-            --container-bg: rgba(30, 30, 30, 0.95);
+            --accent-primary: rgb(96, 165, 250);
+            --accent-primary-rgb: 96, 165, 250;
+            --accent-secondary: rgb(192, 132, 252);
+            --accent-secondary-rgb: 192, 132, 252;
+            --brand-gradient: var(--gradient-secondary);
+            --bg-gradient-start: rgba(var(--accent-primary-rgb), 0.14);
+            --bg-gradient-end: rgba(var(--accent-secondary-rgb), 0.14);
+            --container-bg: rgba(15, 23, 42, 0.92);
             --text-primary: #f5f5f7;
-            --text-secondary: #b0b0b0;
-            --surface-bg: #2d2d2d;
-            --surface-border: #404040;
+            --text-secondary: #94a3b8;
+            --surface-bg: rgba(255, 255, 255, 0.06);
+            --surface-border: rgba(255, 255, 255, 0.12);
+            --surface-muted-bg: rgba(255, 255, 255, 0.06);
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.55);
+        }
+
+        .text-gradient {
+            background: var(--brand-gradient);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            -webkit-text-fill-color: transparent;
+        }
+
+        @media (forced-colors: active) {
+            .text-gradient {
+                background: none;
+                color: ButtonText;
+                -webkit-text-fill-color: ButtonText;
+            }
         }
 
         * {
@@ -137,7 +185,7 @@
         }
 
         .status-description {
-            color: #8E8E93;
+            color: var(--text-secondary);
             font-size: 0.9rem;
         }
 
@@ -145,56 +193,78 @@
             display: block;
             margin: 0 auto;
             padding: 0.75rem 1.5rem;
-            background: #007AFF;
+            background: var(--brand-gradient);
             color: white;
             border: none;
             border-radius: 10px;
             font-size: 1rem;
             cursor: pointer;
-            transition: background-color 0.2s;
+            box-shadow: 0 10px 26px rgba(var(--accent-primary-rgb), 0.25);
+            transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
         }
 
         .refresh-button:hover {
-            background: #0056CC;
+            filter: brightness(0.97);
+            transform: translateY(-1px);
+            box-shadow: 0 14px 34px rgba(var(--accent-primary-rgb), 0.30);
         }
 
-	        /* Diagnostics panel */
-	        .diag-controls {
-	            display: flex;
-	            gap: 0.5rem;
-	            flex-wrap: wrap;
-	            margin-top: 0.75rem;
-	        }
+        .refresh-button:focus-visible {
+            outline: none;
+            box-shadow:
+                0 0 0 4px var(--focus-ring),
+                0 14px 34px rgba(var(--accent-primary-rgb), 0.30);
+        }
 
-	        .diag-button {
-	            padding: 0.5rem 0.75rem;
-	            border-radius: 10px;
-	            border: 1px solid var(--surface-border);
-	            background: transparent;
-	            color: var(--text-primary);
-	            cursor: pointer;
-	        }
+        /* Diagnostics panel */
+        .diag-controls {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-top: 0.75rem;
+        }
 
-	        .diag-pre {
-	            margin-top: 0.75rem;
-	            background: rgba(0, 0, 0, 0.05);
-	            border: 1px solid var(--surface-border);
-	            border-radius: 12px;
-	            padding: 0.75rem;
-	            white-space: pre-wrap;
-	            word-break: break-word;
-	            max-height: 260px;
-	            overflow: auto;
-	            color: var(--text-primary);
-	            font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-	        }
+        .diag-button {
+            padding: 0.5rem 0.75rem;
+            border-radius: 10px;
+            border: 1px solid var(--surface-border);
+            background: transparent;
+            color: var(--text-primary);
+            cursor: pointer;
+            transition: background-color 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+        }
+
+        .diag-button:hover {
+            background: rgba(var(--accent-primary-rgb), 0.08);
+            border-color: rgba(var(--accent-primary-rgb), 0.30);
+            transform: translateY(-1px);
+        }
+
+        .diag-button:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 4px var(--focus-ring);
+        }
+
+        .diag-pre {
+            margin-top: 0.75rem;
+            background: var(--surface-muted-bg);
+            border: 1px solid var(--surface-border);
+            border-radius: 12px;
+            padding: 0.75rem;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 260px;
+            overflow: auto;
+            color: var(--text-primary);
+            font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
     </style>
 </head>
 
 <body>
     <div class="container">
         <div class="header">
-            <h1><span class="icon-chart"></span> System Status</h1>
+            <h1><span class="icon-chart"></span> <span class="text-gradient">Gestura</span> System Status</h1>
             <p>Real-time monitoring of Gestura components</p>
         </div>
 
@@ -204,18 +274,19 @@
 
         <button class="refresh-button" onclick="loadStatus()">Refresh Status</button>
 
-	        <div class="status-card" style="margin-top: 1.25rem;">
-	            <div class="status-title">Chat Diagnostics</div>
-	            <div class="status-description">
-	                Debug cross-window chat leakage by inspecting: window list, backend emit trace, and backend receipt trace.
-	            </div>
-	            <div class="diag-controls">
-	                <button class="diag-button" id="chatDiagFetch">Fetch</button>
-		                <button class="diag-button" id="chatDiagProbe">Run probe</button>
-	                <button class="diag-button" id="chatDiagClear">Clear traces</button>
-	            </div>
-	            <pre class="diag-pre" id="chatDiagOut">(click Fetch)</pre>
-	        </div>
+        <div class="status-card" style="margin-top: 1.25rem;">
+            <div class="status-title">Chat Diagnostics</div>
+            <div class="status-description">
+                Debug cross-window chat leakage by inspecting: window list, backend emit trace, and backend receipt
+                trace.
+            </div>
+            <div class="diag-controls">
+                <button class="diag-button" id="chatDiagFetch">Fetch</button>
+                <button class="diag-button" id="chatDiagProbe">Run probe</button>
+                <button class="diag-button" id="chatDiagClear">Clear traces</button>
+            </div>
+            <pre class="diag-pre" id="chatDiagOut">(click Fetch)</pre>
+        </div>
     </div>
 
     <script type="module">
@@ -355,84 +426,84 @@
         // Load status on page load
         loadStatus();
 
-	        /**
-	         * Fetch chat-related diagnostics (window list + backend traces).
-	         *
-	         * This is best-effort and intended for debugging multi-window session isolation.
-	         */
-	        async function fetchChatDiagnostics() {
-	            const out = document.getElementById('chatDiagOut');
-	            if (!out) return;
-	            try {
-	                const [windows, emitTrace, receiptTrace] = await Promise.all([
-	                    invoke('get_window_list').catch(() => null),
-	                    invoke('get_chat_event_trace', { max: 250 }).catch(() => null),
-	                    invoke('get_chat_receipt_trace', { max: 250 }).catch(() => null),
-	                ]);
-	
-	                out.textContent = JSON.stringify(
-	                    {
-	                        ts: new Date().toISOString(),
-	                        windows,
-	                        emitTrace,
-	                        receiptTrace,
-	                    },
-	                    null,
-	                    2
-	                );
-	            } catch (e) {
-	                out.textContent = `fetchChatDiagnostics failed: ${e}`;
-	            }
-	        }
+        /**
+         * Fetch chat-related diagnostics (window list + backend traces).
+         *
+         * This is best-effort and intended for debugging multi-window session isolation.
+         */
+        async function fetchChatDiagnostics() {
+            const out = document.getElementById('chatDiagOut');
+            if (!out) return;
+            try {
+                const [windows, emitTrace, receiptTrace] = await Promise.all([
+                    invoke('get_window_list').catch(() => null),
+                    invoke('get_chat_event_trace', { max: 250 }).catch(() => null),
+                    invoke('get_chat_receipt_trace', { max: 250 }).catch(() => null),
+                ]);
 
-	        /**
-	         * Clear backend chat traces (emit trace + receipt trace).
-	         */
-	        async function clearChatDiagnostics() {
-	            const out = document.getElementById('chatDiagOut');
-	            if (!out) return;
-	            try {
-	                await Promise.all([
-	                    invoke('clear_chat_event_trace').catch(() => null),
-	                    invoke('clear_chat_receipt_trace').catch(() => null),
-	                ]);
-	                out.textContent = '[cleared]';
-	            } catch (e) {
-	                out.textContent = `clearChatDiagnostics failed: ${e}`;
-	            }
-	        }
+                out.textContent = JSON.stringify(
+                    {
+                        ts: new Date().toISOString(),
+                        windows,
+                        emitTrace,
+                        receiptTrace,
+                    },
+                    null,
+                    2
+                );
+            } catch (e) {
+                out.textContent = `fetchChatDiagnostics failed: ${e}`;
+            }
+        }
 
-		        /**
-		         * Run the backend multi-window chat isolation probe.
-		         *
-		         * This emits a `chat-probe` event to two open chat windows and returns
-		         * a correlated trace + analysis (no external LLM calls).
-		         */
-		        async function runChatIsolationProbe() {
-		            const out = document.getElementById('chatDiagOut');
-		            if (!out) return;
-		            out.textContent = '[running probe...]';
-		            try {
-		                const report = await invoke('run_chat_isolation_probe', {}).catch((e) => {
-		                    throw new Error(String(e));
-		                });
-		                out.textContent = JSON.stringify(
-		                    {
-		                        ts: new Date().toISOString(),
-		                        probe: report,
-		                    },
-		                    null,
-		                    2
-		                );
-		            } catch (e) {
-		                out.textContent = `runChatIsolationProbe failed: ${e}`;
-		            }
-		        }
+        /**
+         * Clear backend chat traces (emit trace + receipt trace).
+         */
+        async function clearChatDiagnostics() {
+            const out = document.getElementById('chatDiagOut');
+            if (!out) return;
+            try {
+                await Promise.all([
+                    invoke('clear_chat_event_trace').catch(() => null),
+                    invoke('clear_chat_receipt_trace').catch(() => null),
+                ]);
+                out.textContent = '[cleared]';
+            } catch (e) {
+                out.textContent = `clearChatDiagnostics failed: ${e}`;
+            }
+        }
 
-	        // Wire diagnostics buttons
-		        document.getElementById('chatDiagFetch')?.addEventListener('click', fetchChatDiagnostics);
-		        document.getElementById('chatDiagProbe')?.addEventListener('click', runChatIsolationProbe);
-		        document.getElementById('chatDiagClear')?.addEventListener('click', clearChatDiagnostics);
+        /**
+         * Run the backend multi-window chat isolation probe.
+         *
+         * This emits a `chat-probe` event to two open chat windows and returns
+         * a correlated trace + analysis (no external LLM calls).
+         */
+        async function runChatIsolationProbe() {
+            const out = document.getElementById('chatDiagOut');
+            if (!out) return;
+            out.textContent = '[running probe...]';
+            try {
+                const report = await invoke('run_chat_isolation_probe', {}).catch((e) => {
+                    throw new Error(String(e));
+                });
+                out.textContent = JSON.stringify(
+                    {
+                        ts: new Date().toISOString(),
+                        probe: report,
+                    },
+                    null,
+                    2
+                );
+            } catch (e) {
+                out.textContent = `runChatIsolationProbe failed: ${e}`;
+            }
+        }
+
+        // Wire diagnostics buttons
+        document.getElementById('chatDiagFetch')?.addEventListener('click', fetchChatDiagnostics);
+        document.getElementById('chatDiagProbe')?.addEventListener('click', runChatIsolationProbe);
+        document.getElementById('chatDiagClear')?.addEventListener('click', clearChatDiagnostics);
 
         // Auto-refresh every 30 seconds
         setInterval(loadStatus, 30000);

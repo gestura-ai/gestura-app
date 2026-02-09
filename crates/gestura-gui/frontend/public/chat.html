@@ -21,9 +21,17 @@
             --glass-border: rgba(0, 0, 0, 0.05);
             --text-primary: #1d1d1f;
             --text-secondary: #86868b;
-            --accent-primary: #0071e3;
-            --accent-glow: rgba(0, 113, 227, 0.3);
-            --user-bubble: #0071e3;
+            /* Gestura brand tokens (unified with gestura.app) */
+            --accent-primary: rgb(37, 99, 235);
+            --accent-primary-rgb: 37, 99, 235;
+            --accent-secondary: rgb(147, 51, 234);
+            --accent-secondary-rgb: 147, 51, 234;
+            --gradient-primary: linear-gradient(to right, rgb(37, 99, 235), rgb(147, 51, 234));
+            --gradient-secondary: linear-gradient(to right, rgb(96, 165, 250), rgb(192, 132, 252));
+            --brand-gradient: var(--gradient-primary);
+            --brand-gradient-diagonal: linear-gradient(135deg, rgb(37, 99, 235), rgb(147, 51, 234));
+            --accent-glow: rgba(var(--accent-primary-rgb), 0.3);
+            --user-bubble: rgb(37, 99, 235);
             --user-text: #ffffff;
             --agent-bubble: rgba(0, 0, 0, 0.04);
             --agent-text: #1d1d1f;
@@ -46,9 +54,14 @@
                 --glass-border: rgba(255, 255, 255, 0.1);
                 --text-primary: #f5f5f7;
                 --text-secondary: #86868b;
-                --accent-primary: #2997ff;
-                --accent-glow: rgba(41, 151, 255, 0.3);
-                --user-bubble: #2997ff;
+                --accent-primary: rgb(96, 165, 250);
+                --accent-primary-rgb: 96, 165, 250;
+                --accent-secondary: rgb(192, 132, 252);
+                --accent-secondary-rgb: 192, 132, 252;
+                --brand-gradient: var(--gradient-secondary);
+                --brand-gradient-diagonal: linear-gradient(135deg, rgb(96, 165, 250), rgb(192, 132, 252));
+                --accent-glow: rgba(var(--accent-primary-rgb), 0.3);
+                --user-bubble: rgb(96, 165, 250);
                 --user-text: #ffffff;
                 --agent-bubble: rgba(255, 255, 255, 0.08);
                 --agent-text: #f5f5f7;
@@ -69,9 +82,14 @@
             --glass-border: rgba(0, 0, 0, 0.05);
             --text-primary: #1d1d1f;
             --text-secondary: #86868b;
-            --accent-primary: #0071e3;
-            --accent-glow: rgba(0, 113, 227, 0.3);
-            --user-bubble: #0071e3;
+            --accent-primary: rgb(37, 99, 235);
+            --accent-primary-rgb: 37, 99, 235;
+            --accent-secondary: rgb(147, 51, 234);
+            --accent-secondary-rgb: 147, 51, 234;
+            --brand-gradient: var(--gradient-primary);
+            --brand-gradient-diagonal: linear-gradient(135deg, rgb(37, 99, 235), rgb(147, 51, 234));
+            --accent-glow: rgba(var(--accent-primary-rgb), 0.3);
+            --user-bubble: rgb(37, 99, 235);
             --user-text: #ffffff;
             --agent-bubble: rgba(0, 0, 0, 0.04);
             --agent-text: #1d1d1f;
@@ -91,9 +109,14 @@
             --glass-border: rgba(255, 255, 255, 0.1);
             --text-primary: #f5f5f7;
             --text-secondary: #86868b;
-            --accent-primary: #2997ff;
-            --accent-glow: rgba(41, 151, 255, 0.3);
-            --user-bubble: #2997ff;
+            --accent-primary: rgb(96, 165, 250);
+            --accent-primary-rgb: 96, 165, 250;
+            --accent-secondary: rgb(192, 132, 252);
+            --accent-secondary-rgb: 192, 132, 252;
+            --brand-gradient: var(--gradient-secondary);
+            --brand-gradient-diagonal: linear-gradient(135deg, rgb(96, 165, 250), rgb(192, 132, 252));
+            --accent-glow: rgba(var(--accent-primary-rgb), 0.3);
+            --user-bubble: rgb(96, 165, 250);
             --user-text: #ffffff;
             --agent-bubble: rgba(255, 255, 255, 0.08);
             --agent-text: #f5f5f7;
@@ -318,8 +341,8 @@
 
         .status-badge.busy {
             color: var(--accent-primary);
-            border-color: rgba(10, 132, 255, 0.35);
-            box-shadow: 0 0 10px rgba(10, 132, 255, 0.18);
+            border-color: rgba(var(--accent-primary-rgb), 0.35);
+            box-shadow: 0 0 10px rgba(var(--accent-primary-rgb), 0.18);
         }
 
         .status-badge.error {
@@ -972,8 +995,8 @@
         }
 
         .tool-badge.mcp {
-            background: rgba(139, 92, 246, 0.2);
-            color: #a78bfa;
+            background: rgba(var(--accent-secondary-rgb), 0.2);
+            color: var(--accent-secondary);
         }
 
         .tool-badge.side-effects {
@@ -1000,7 +1023,7 @@
         }
 
         .mcp-tool {
-            border-left: 2px solid rgba(139, 92, 246, 0.5);
+            border-left: 2px solid rgba(var(--accent-secondary-rgb), 0.5);
             padding-left: 10px;
         }
 
@@ -1188,11 +1211,11 @@
         }
 
         .task-status-icon.in-progress {
-            background: rgba(10, 132, 255, 0.2);
+            background: rgba(var(--accent-primary-rgb), 0.2);
         }
 
         .task-status-icon.in-progress span[class^="icon-"] {
-            color: #0a84ff;
+            color: var(--accent-primary);
         }
 
         .task-status-icon.completed {
@@ -1258,7 +1281,7 @@
 
         .task-icon-btn.edit:hover {
             color: var(--accent-primary);
-            background: rgba(0, 113, 227, 0.15);
+            background: rgba(var(--accent-primary-rgb), 0.15);
         }
 
         .task-icon-btn.delete:hover {
@@ -1504,7 +1527,7 @@
             background: var(--user-bubble);
             color: var(--user-text);
             border-bottom-right-radius: 4px;
-            background-image: linear-gradient(135deg, var(--user-bubble), var(--accent-primary));
+            background-image: var(--brand-gradient-diagonal);
         }
 
         /* Agent Message */
@@ -1848,8 +1871,8 @@
             padding: 8px 12px;
             margin: 8px 0;
             border-radius: 8px;
-            background: rgba(10, 132, 255, 0.1);
-            border: 1px solid rgba(10, 132, 255, 0.3);
+            background: rgba(var(--accent-primary-rgb), 0.1);
+            border: 1px solid rgba(var(--accent-primary-rgb), 0.3);
             font-size: 12px;
             color: var(--text-primary);
             animation: pulse-reconnect 1.5s ease-in-out infinite;
@@ -1924,8 +1947,8 @@
             padding: 8px 12px;
             margin: 8px 0;
             border-radius: 8px;
-            background: rgba(10, 132, 255, 0.1);
-            border: 1px solid rgba(10, 132, 255, 0.3);
+            background: rgba(var(--accent-primary-rgb), 0.1);
+            border: 1px solid rgba(var(--accent-primary-rgb), 0.3);
             font-size: 12px;
             color: var(--text-primary);
         }
@@ -1936,7 +1959,7 @@
 
         .compaction-text {
             font-weight: 500;
-            color: #0a84ff;
+            color: var(--accent-primary);
         }
 
         .compaction-summary {
@@ -2007,10 +2030,10 @@
         }
 
         .config-change-details code {
-            background: rgba(10, 132, 255, 0.2);
+            background: rgba(var(--accent-primary-rgb), 0.2);
             padding: 2px 6px;
             border-radius: 4px;
-            color: #0a84ff;
+            color: var(--accent-primary);
         }
 
         .config-confirm-buttons {
@@ -2040,13 +2063,13 @@
         }
 
         .config-confirm-buttons .btn-confirm {
-            background: #0a84ff;
+            background: var(--brand-gradient);
             border: none;
             color: white;
         }
 
         .config-confirm-buttons .btn-confirm:hover {
-            background: #0077ed;
+            filter: brightness(0.97);
         }
 
         /* Tool Confirmation Dialog (Restricted mode pause/resume) */
@@ -2291,15 +2314,47 @@
             /* Keep input in flow so it can't cover other UI */
             position: relative;
             width: 100%;
-            padding: 12px 16px 16px 16px;
+            padding: 12px 16px 10px 16px;
             background: var(--bg-glass);
             backdrop-filter: var(--blur);
             -webkit-backdrop-filter: var(--blur);
             border-top: 1px solid var(--glass-border);
             display: flex;
-            justify-content: center;
+            flex-direction: column;
+            align-items: center;
             flex: 0 0 auto;
             z-index: 10;
+        }
+
+        /* Quick-access shortcut buttons below input */
+        .quick-access-bar {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding-top: 6px;
+        }
+
+        .quick-access-bar .btn-icon {
+            width: 30px;
+            height: 30px;
+            border-radius: 8px;
+            font-size: 0.85em;
+            color: var(--text-secondary);
+            opacity: 0.7;
+            transition: all 0.2s ease;
+        }
+
+        .quick-access-bar .btn-icon:hover {
+            opacity: 1;
+            background: rgba(0, 0, 0, 0.06);
+            color: var(--text-primary);
+            transform: scale(1.08);
+        }
+
+        .quick-access-bar .btn-icon span[class^="icon-"] {
+            width: 16px;
+            height: 16px;
         }
 
         .input-container {
@@ -2372,13 +2427,13 @@
         }
 
         .btn-primary {
-            background: var(--accent-primary);
+            background: var(--brand-gradient);
             color: white;
             box-shadow: 0 4px 12px var(--accent-glow);
         }
 
         .btn-primary:hover {
-            background: var(--accent-primary);
+            background: var(--brand-gradient);
             transform: scale(1.05);
             box-shadow: 0 6px 16px var(--accent-glow);
             color: white;
@@ -2389,15 +2444,15 @@
         }
 
         .btn-enhance {
-            background: linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%);
+            background: var(--gradient-secondary);
             color: white;
-            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+            box-shadow: 0 4px 12px rgba(var(--accent-primary-rgb), 0.22);
         }
 
         .btn-enhance:hover {
-            background: linear-gradient(135deg, #7C3AED 0%, #6D28D9 100%);
+            background: var(--gradient-secondary);
             transform: scale(1.05);
-            box-shadow: 0 6px 16px rgba(139, 92, 246, 0.4);
+            box-shadow: 0 6px 16px rgba(var(--accent-primary-rgb), 0.3);
             color: white;
         }
 
@@ -2460,25 +2515,25 @@
 
         /* Enhance Button Glow (purple) */
         .enhance-active {
-            color: #8B5CF6;
-            box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.7);
+            color: var(--accent-secondary);
+            box-shadow: 0 0 0 0 rgba(var(--accent-secondary-rgb), 0.7);
             animation: pulse-purple 1.5s infinite;
         }
 
         @keyframes pulse-purple {
             0% {
                 transform: scale(0.95);
-                box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.7);
+                box-shadow: 0 0 0 0 rgba(var(--accent-secondary-rgb), 0.7);
             }
 
             70% {
                 transform: scale(1);
-                box-shadow: 0 0 0 10px rgba(139, 92, 246, 0);
+                box-shadow: 0 0 0 10px rgba(var(--accent-secondary-rgb), 0);
             }
 
             100% {
                 transform: scale(0.95);
-                box-shadow: 0 0 0 0 rgba(139, 92, 246, 0);
+                box-shadow: 0 0 0 0 rgba(var(--accent-secondary-rgb), 0);
             }
         }
 
@@ -2610,9 +2665,9 @@
         .markdown-body blockquote {
             margin: 0.8em 0;
             padding: 0.2em 0 0.2em 1em;
-            border-left: 3px solid rgba(10, 132, 255, 0.6);
+            border-left: 3px solid rgba(var(--accent-primary-rgb), 0.6);
             color: var(--text-secondary);
-            background: rgba(10, 132, 255, 0.05);
+            background: rgba(var(--accent-primary-rgb), 0.05);
             border-radius: 8px;
         }
 
@@ -2907,10 +2962,6 @@
                 <span class="icon-checklist"></span>
                 <span class="menu-item-label">Tasks</span>
             </div>
-            <div class="menu-item" id="menuItemOpenShell">
-                <span class="icon-terminal"></span>
-                <span class="menu-item-label">Open In Shell</span>
-            </div>
         </div>
     </div>
 
@@ -3166,6 +3217,14 @@
             </button>
             <button class="btn-icon" id="sendButton" title="Send message">
                 <span class="icon-send"></span>
+            </button>
+        </div>
+        <div class="quick-access-bar">
+            <button class="btn-icon" id="quickTasksBtn" title="Tasks">
+                <span class="icon-checklist"></span>
+            </button>
+            <button class="btn-icon" id="quickTerminalBtn" title="Open in Terminal">
+                <span class="icon-terminal"></span>
             </button>
         </div>
     </div>
@@ -6300,8 +6359,16 @@
             if (typeof loadTasks === 'function') loadTasks();
         });
 
-        document.getElementById('menuItemOpenShell')?.addEventListener('click', async () => {
-            closeMenuPanel();
+        // Quick-access bar buttons (below input area)
+        document.getElementById('quickTasksBtn')?.addEventListener('click', () => {
+            const taskPanel = document.getElementById('taskPanel');
+            const taskPanelOverlay = document.getElementById('taskPanelOverlay');
+            taskPanel?.classList.add('open');
+            taskPanelOverlay?.classList.add('visible');
+            if (typeof loadTasks === 'function') loadTasks();
+        });
+
+        document.getElementById('quickTerminalBtn')?.addEventListener('click', async () => {
             if (!sessionId) {
                 showToast('No active session', 'error');
                 return;
@@ -6388,17 +6455,19 @@
                             console.warn('[Settings] MCP discovery not available, falling back to config:', mcpErr);
                         }
 
-                        // Fall back to config-based MCP tools if discovery returned nothing
+                        // Fall back to config-based MCP servers if discovery returned nothing
                         // This shows configured servers even if they haven't been connected yet
                         let mcpTools = discoveredMcpTools;
                         if (mcpTools.length === 0) {
                             const config = await window.__TAURI__.core.invoke('get_config');
-                            const configMcpTools = config?.mcp_tools || [];
+                            const mcpServers = config?.mcp_servers || [];
                             // Convert config format to match discovered format
-                            mcpTools = configMcpTools.map(t => ({
-                                name: `${t.name}:*`,  // Indicate all tools from this server
-                                summary: `MCP server at ${t.endpoint}`,
-                                server_name: t.name,
+                            mcpTools = mcpServers.filter(s => s.enabled !== false).map(s => ({
+                                name: `${s.name}:*`,  // Indicate all tools from this server
+                                summary: s.type === 'stdio'
+                                    ? `stdio: ${s.command || ''} ${(s.args || []).join(' ')}`.trim()
+                                    : `${s.type}: ${s.url || '(no url)'}`,
+                                server_name: s.name,
                                 category: 'unknown',
                                 has_side_effects: true,
                                 risk_level: 'medium'

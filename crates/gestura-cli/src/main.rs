@@ -229,12 +229,40 @@ enum DeviceAction {
 enum McpAction {
     /// List configured MCP servers
     List,
-    /// Add an MCP server
+    /// Add an MCP server (Claude Code compatible)
     Add {
+        /// Server name (unique identifier)
+        name: String,
+        /// For stdio: the command to run; for http/sse: the URL
+        command_or_url: String,
+        /// Transport type (stdio, http, sse). Default: auto-detected.
+        #[arg(short, long, default_value = "stdio")]
+        transport: String,
+        /// Configuration scope (user, project, local). Default: user.
+        #[arg(short, long, default_value = "user")]
+        scope: String,
+        /// Environment variables (KEY=VALUE). Stdio only.
+        #[arg(short, long, value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// HTTP headers (Header: Value). Http/SSE only.
+        #[arg(long, value_name = "HEADER")]
+        header: Vec<String>,
+        /// Additional args passed to the command. Stdio only.
+        /// Everything after `--` is treated as command args.
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+    /// Add an MCP server from a raw JSON string (Claude Code compatible)
+    AddJson {
         /// Server name
         name: String,
-        /// Server command
-        command: String,
+        /// Raw JSON config string
+        json: String,
+    },
+    /// Get detailed info for a specific MCP server
+    Get {
+        /// Server name
+        name: String,
     },
     /// Remove an MCP server
     Remove { name: String },

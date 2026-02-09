@@ -19,6 +19,14 @@ pub struct ProviderToolSchemas {
     pub anthropic: Vec<Value>,
 }
 
+impl ProviderToolSchemas {
+    /// Merge another set of schemas into this one.
+    pub fn merge(&mut self, other: ProviderToolSchemas) {
+        self.openai.extend(other.openai);
+        self.anthropic.extend(other.anthropic);
+    }
+}
+
 /// Build provider tool schemas for a set of tool definitions.
 ///
 /// Note: We intentionally only include schemas for tools that have a well-
@@ -28,6 +36,47 @@ pub fn build_provider_tool_schemas(tools: &[&'static ToolDefinition]) -> Provide
 
     for tool in tools {
         if let Some((openai, anthropic)) = schema_for_tool(tool.name, tool.summary) {
+            out.openai.push(openai);
+            out.anthropic.push(anthropic);
+        }
+    }
+
+    out
+}
+
+/// Build provider tool schemas from dynamically-discovered MCP tools.
+///
+/// Each MCP `Tool` already carries a JSON Schema `input_schema`, so we wrap it
+/// in the provider-specific envelope. The tool name is namespaced as
+/// `mcp__<server>__<tool>` so the pipeline can route calls back to the correct
+/// MCP server.
+pub fn build_mcp_tool_schemas(
+    server_tools: &[(String, Vec<crate::mcp::types::Tool>)],
+) -> ProviderToolSchemas {
+    let mut out = ProviderToolSchemas::default();
+
+    for (server_name, tools) in server_tools {
+        for tool in tools {
+            let namespaced = format!("mcp__{}__{}", server_name, tool.name);
+            let description = tool
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("MCP tool {}/{}", server_name, tool.name));
+
+            let openai = serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": namespaced,
+                    "description": description,
+                    "parameters": tool.input_schema
+                }
+            });
+            let anthropic = serde_json::json!({
+                "name": namespaced,
+                "description": description,
+                "input_schema": tool.input_schema
+            });
+
             out.openai.push(openai);
             out.anthropic.push(anthropic);
         }

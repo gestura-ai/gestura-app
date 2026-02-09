@@ -26,6 +26,7 @@
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 
+pub mod client;
 pub mod discovery;
 pub mod integrator;
 pub mod lifecycle;
@@ -35,6 +36,7 @@ pub mod server;
 pub mod types;
 
 // Re-export commonly used types
+pub use client::{McpClient, McpClientRegistry, get_mcp_client_registry};
 pub use discovery::{
     CacheStats as McpCacheStats, CachedTool, McpDiscoveryManager, McpServerConfig,
     ServerInfo as McpServerInfo, ServerState,

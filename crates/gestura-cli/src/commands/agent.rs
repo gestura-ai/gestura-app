@@ -107,14 +107,18 @@ fn run_status() -> Result<()> {
         voice_text
     );
 
-    // Show MCP tools
-    let mcp_count = config.mcp_tools.len();
+    // Show MCP servers
+    let mcp_count = config.mcp_servers.len();
+    let mcp_enabled = config.mcp_servers.iter().filter(|s| s.enabled).count();
     let mcp_icon = if mcp_count > 0 {
         "●".green()
     } else {
         "○".dimmed()
     };
-    println!("  {} MCP Tools: {} configured", mcp_icon, mcp_count);
+    println!(
+        "  {} MCP Servers: {} configured ({} enabled)",
+        mcp_icon, mcp_count, mcp_enabled
+    );
 
     println!();
     println!("{}", "Capabilities:".dimmed());

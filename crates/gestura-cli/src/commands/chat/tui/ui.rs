@@ -6,7 +6,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
@@ -629,6 +629,39 @@ fn render_too_small_message(app: &TuiApp, frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
+/// Gestura brand gradient stops (blue → purple) used for pseudo-gradient spans.
+const GESTURA_GRADIENT_START: (u8, u8, u8) = (37, 99, 235);
+const GESTURA_GRADIENT_END: (u8, u8, u8) = (147, 51, 234);
+
+fn gradient_text_spans(
+    text: &str,
+    start: (u8, u8, u8),
+    end: (u8, u8, u8),
+    base: Style,
+) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    if n == 0 {
+        return Vec::new();
+    }
+
+    let denom = (n - 1).max(1) as i32;
+    let (sr, sg, sb) = (start.0 as i32, start.1 as i32, start.2 as i32);
+    let (er, eg, eb) = (end.0 as i32, end.1 as i32, end.2 as i32);
+
+    chars
+        .into_iter()
+        .enumerate()
+        .map(|(i, ch)| {
+            let t = i as i32;
+            let r = (sr + (er - sr) * t / denom).clamp(0, 255) as u8;
+            let g = (sg + (eg - sg) * t / denom).clamp(0, 255) as u8;
+            let b = (sb + (eb - sb) * t / denom).clamp(0, 255) as u8;
+            Span::styled(ch.to_string(), base.fg(Color::Rgb(r, g, b)))
+        })
+        .collect()
+}
+
 /// Render compact header for small terminals (single line, no tabs)
 ///
 /// Displays a Claude Code-like header with:
@@ -682,14 +715,42 @@ fn render_compact_header(app: &TuiApp, frame: &mut Frame, area: Rect) {
     };
     parts.push(mode_str.to_string());
 
-    let header_text = format!(" {} ", parts.join(" │ "));
-
     // Create block with bottom border (Claude Code-like bounding box)
     let block = Block::default().borders(Borders::BOTTOM).border_style(
         Style::default()
             .fg(app.theme.border)
             .add_modifier(Modifier::DIM),
     );
+
+    // For the Gestura brand theme, add a subtle pseudo-gradient label on the left.
+    if app.theme.name == "Gestura" {
+        let base = Style::default()
+            .fg(app.theme.header_fg)
+            .add_modifier(Modifier::BOLD);
+
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        spans.push(Span::styled(" ".to_string(), base));
+        spans.extend(gradient_text_spans(
+            "Gestura",
+            GESTURA_GRADIENT_START,
+            GESTURA_GRADIENT_END,
+            base,
+        ));
+        spans.push(Span::styled(
+            " │ ".to_string(),
+            Style::default()
+                .fg(app.theme.border)
+                .add_modifier(Modifier::DIM),
+        ));
+        spans.push(Span::styled(parts.join(" │ "), base));
+        spans.push(Span::styled(" ".to_string(), base));
+
+        let paragraph = Paragraph::new(Line::from(spans)).block(block);
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    let header_text = format!(" {} ", parts.join(" │ "));
 
     let paragraph = Paragraph::new(header_text)
         .style(
@@ -950,13 +1011,28 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 /// while still guiding first-time users toward the key commands.
 fn render_empty_chat_view(app: &TuiApp, frame: &mut Frame, area: Rect) {
     let model_label = effective_model_label(app);
-    let lines = vec![
+
+    let title_line = if app.theme.name == "Gestura" {
+        let base = Style::default()
+            .fg(app.theme.header_fg)
+            .add_modifier(Modifier::BOLD);
+        Line::from(gradient_text_spans(
+            "Gestura",
+            GESTURA_GRADIENT_START,
+            GESTURA_GRADIENT_END,
+            base,
+        ))
+    } else {
         Line::from(Span::styled(
             "Gestura",
             Style::default()
                 .fg(app.theme.header_fg)
                 .add_modifier(Modifier::BOLD),
-        )),
+        ))
+    };
+
+    let lines = vec![
+        title_line,
         Line::from(Span::styled(
             format!("model: {}", model_label),
             Style::default()

@@ -252,24 +252,30 @@ pub fn list_builtin_tools() -> Vec<ToolInfo> {
         .collect()
 }
 
+/// List all configured MCP servers (full spec entries).
 #[tauri::command]
-pub async fn list_mcp_tools() -> Result<Vec<crate::config::McpTool>, String> {
-    Ok(AppConfig::load_async().await.mcp_tools)
+pub async fn list_mcp_tools() -> Result<Vec<crate::config::McpServerEntry>, String> {
+    Ok(AppConfig::load_async().await.mcp_servers)
 }
 
+/// Add or update an MCP server entry in the user config.
 #[tauri::command]
-pub async fn add_mcp_tool(tool: crate::config::McpTool) -> Result<(), String> {
+pub async fn add_mcp_tool(tool: crate::config::McpServerEntry) -> Result<(), String> {
     let mut cfg = AppConfig::load_async().await;
-    if !cfg.mcp_tools.iter().any(|t| t.name == tool.name) {
-        cfg.mcp_tools.push(tool);
+    // Replace existing entry with the same name, or append.
+    if let Some(existing) = cfg.mcp_servers.iter_mut().find(|t| t.name == tool.name) {
+        *existing = tool;
+    } else {
+        cfg.mcp_servers.push(tool);
     }
     cfg.save_async().await.map_err(|e| e.to_string())
 }
 
+/// Remove an MCP server by name.
 #[tauri::command]
 pub async fn remove_mcp_tool(name: String) -> Result<(), String> {
     let mut cfg = AppConfig::load_async().await;
-    cfg.mcp_tools.retain(|t| t.name != name);
+    cfg.mcp_servers.retain(|t| t.name != name);
     cfg.save_async().await.map_err(|e| e.to_string())
 }
 
@@ -277,7 +283,7 @@ pub async fn remove_mcp_tool(name: String) -> Result<(), String> {
 // MCP Discovery Manager - Dynamic Tool Provisioning
 // ============================================================================
 
-use gestura_core::{McpDiscoveryManager, McpServerConfig};
+use gestura_core::McpDiscoveryManager;
 
 /// Global MCP discovery manager instance
 static MCP_DISCOVERY_MANAGER: std::sync::OnceLock<McpDiscoveryManager> = std::sync::OnceLock::new();
@@ -304,25 +310,29 @@ pub struct McpToolInfo {
     pub risk_level: String,
 }
 
-/// Initialize MCP servers from config
-/// This registers all configured MCP servers with the discovery manager
+/// Initialize MCP servers from config.
+///
+/// Registers all enabled MCP servers with the discovery manager using the
+/// full `McpServerEntry` configuration (transport, env, headers, etc.).
 #[tauri::command]
 pub async fn init_mcp_servers() -> Result<usize, String> {
     let config = AppConfig::load_async().await;
     let manager = get_mcp_discovery_manager();
 
     let mut registered = 0;
-    for mcp_tool in &config.mcp_tools {
-        let server_config = McpServerConfig {
-            name: mcp_tool.name.clone(),
-            uri: mcp_tool.endpoint.clone(),
-            enabled: true,
-            timeout_secs: 30,
-            auto_reconnect: true,
-        };
-        manager.register_server(server_config);
+    for srv in &config.mcp_servers {
+        if !srv.enabled {
+            tracing::debug!("Skipping disabled MCP server: {}", srv.name);
+            continue;
+        }
+        manager.register_server(srv.to_discovery_config());
         registered += 1;
-        tracing::info!("Registered MCP server: {}", mcp_tool.name);
+        tracing::info!(
+            "Registered MCP server: {} (transport={}, uri={})",
+            srv.name,
+            srv.transport,
+            srv.effective_uri()
+        );
     }
 
     Ok(registered)
@@ -395,32 +405,25 @@ pub struct McpServerStatus {
     pub last_error: Option<String>,
 }
 
-/// Register a new MCP server and initialize discovery
+/// Register a new MCP server entry and initialize discovery.
+///
+/// Accepts a full `McpServerEntry` from the frontend, persists it to the
+/// user config, and registers with the discovery manager.
 #[tauri::command]
-pub async fn register_mcp_server(name: String, endpoint: String) -> Result<(), String> {
-    // Add to config
-    let tool = crate::config::McpTool {
-        name: name.clone(),
-        endpoint: endpoint.clone(),
-    };
-    add_mcp_tool(tool).await?;
+pub async fn register_mcp_server(server: crate::config::McpServerEntry) -> Result<(), String> {
+    // Persist to config (add_mcp_tool handles upsert)
+    let discovery_cfg = server.to_discovery_config();
+    add_mcp_tool(server.clone()).await?;
 
     // Register with discovery manager
     let manager = get_mcp_discovery_manager();
-    let server_config = McpServerConfig {
-        name: name.clone(),
-        uri: endpoint,
-        enabled: true,
-        timeout_secs: 30,
-        auto_reconnect: true,
-    };
-    manager.register_server(server_config);
+    manager.register_server(discovery_cfg);
 
-    tracing::info!("Registered new MCP server: {}", name);
+    tracing::info!("Registered new MCP server: {}", server.name);
     Ok(())
 }
 
-/// Unregister an MCP server
+/// Unregister an MCP server by name.
 #[tauri::command]
 pub async fn unregister_mcp_server(name: String) -> Result<(), String> {
     // Remove from config

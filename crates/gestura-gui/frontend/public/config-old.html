@@ -13,9 +13,23 @@
             box-sizing: border-box;
         }
 
+        :root {
+            /* Gestura brand tokens (unified with gestura.app) */
+            --accent-primary: rgb(37, 99, 235);
+            --accent-primary-rgb: 37, 99, 235;
+            --accent-secondary: rgb(147, 51, 234);
+            --accent-secondary-rgb: 147, 51, 234;
+            --gradient-primary: linear-gradient(to right, rgb(37, 99, 235), rgb(147, 51, 234));
+            --gradient-secondary: linear-gradient(to right, rgb(96, 165, 250), rgb(192, 132, 252));
+            --brand-gradient: var(--gradient-primary);
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.35);
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg,
+                    rgba(var(--accent-primary-rgb), 0.10) 0%,
+                    rgba(var(--accent-secondary-rgb), 0.10) 100%);
             min-height: 100vh;
             display: flex;
         }
@@ -69,15 +83,15 @@
         }
 
         .toc-link:hover {
-            background: rgba(0, 123, 255, 0.1);
-            color: #007bff;
-            border-left-color: #007bff;
+            background: rgba(var(--accent-primary-rgb), 0.10);
+            color: var(--accent-primary);
+            border-left-color: var(--accent-primary);
         }
 
         .toc-link.active {
-            background: rgba(0, 123, 255, 0.15);
-            color: #007bff;
-            border-left-color: #007bff;
+            background: rgba(var(--accent-primary-rgb), 0.15);
+            color: var(--accent-primary);
+            border-left-color: var(--accent-primary);
             font-weight: 500;
         }
 
@@ -189,7 +203,8 @@
 
         .form-input:focus {
             outline: none;
-            border-color: #007AFF;
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 0 4px rgba(var(--accent-primary-rgb), 0.18);
         }
 
         .form-select {
@@ -229,12 +244,18 @@
         }
 
         .button.primary {
-            background: #007AFF;
+            background: var(--brand-gradient);
             color: white;
         }
 
         .button.primary:hover {
-            background: #0056CC;
+            filter: brightness(0.97);
+            transform: translateY(-1px);
+        }
+
+        .button.primary:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 4px var(--focus-ring);
         }
 
         .button.secondary {

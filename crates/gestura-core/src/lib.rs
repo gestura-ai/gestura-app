@@ -123,7 +123,10 @@ pub use compaction::{
     CompactionConfig, CompactionEvent, CompactionEventType, CompactionResult, CompactionStrategy,
     ContextCompactor,
 };
-pub use config::AppConfig;
+pub use config::{
+    AppConfig, McpJsonFile, McpScope, McpServerEntry, McpTransportType,
+    import_claude_desktop_servers,
+};
 pub use context::{
     CacheStats, ContextCache, ContextCategory, ContextManager, ContextManagerStats, EntityType,
     ExtractedEntity, FileContext, RequestAnalysis, RequestAnalyzer, ResolvedContext, ToolContext,
@@ -159,10 +162,10 @@ pub use llm_provider::{
     AgentContext, LlmCallResponse, LlmProvider, TokenUsage, UnconfiguredProvider, select_provider,
 };
 pub use mcp::{
-    CachedTool, JsonRpcError, JsonRpcRequest, JsonRpcResponse, LocalMcp, McpCacheStats,
-    McpDiscoveryManager, McpIntegrator, McpRequestContext, McpResourceHandler, McpServer,
-    McpServerConfig, McpServerInfo, McpToolHandler, MdhResource, ServerState, TokenInfo, get_mcp,
-    mdh_translate,
+    CachedTool, JsonRpcError, JsonRpcRequest, JsonRpcResponse, LocalMcp, McpCacheStats, McpClient,
+    McpClientRegistry, McpDiscoveryManager, McpIntegrator, McpRequestContext, McpResourceHandler,
+    McpServer, McpServerConfig, McpServerInfo, McpToolHandler, MdhResource, ServerState, TokenInfo,
+    get_mcp, get_mcp_client_registry, mdh_translate,
 };
 pub use memory_bank::{
     MemoryBankEntry, MemoryBankError, clear_memory_bank, ensure_memory_bank_dir,

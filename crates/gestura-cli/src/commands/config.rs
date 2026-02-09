@@ -69,8 +69,8 @@ pub fn run(action: &ConfigAction) -> Result<()> {
                 ],
             );
             print_config_section(
-                "MCP Tools",
-                &[("count", &config.mcp_tools.len().to_string())],
+                "MCP Servers",
+                &[("count", &config.mcp_servers.len().to_string())],
             );
             print_config_section("UI", &[("theme", &config.ui.theme_mode)]);
             print_config_section(
@@ -102,7 +102,24 @@ pub fn run(action: &ConfigAction) -> Result<()> {
                     ),
                 ],
             );
-            println!();
+
+            // API key status from OS keychain
+            let key_status = AppConfig::api_key_keychain_status();
+            let key_items: Vec<(&str, String)> = key_status
+                .iter()
+                .map(|(provider, present)| {
+                    let status = if *present {
+                        "✓ stored".green().to_string()
+                    } else {
+                        "✗ not found".red().to_string()
+                    };
+                    (*provider, status)
+                })
+                .collect();
+            let key_refs: Vec<(&str, &str)> =
+                key_items.iter().map(|(p, s)| (*p, s.as_str())).collect();
+            print_config_section("API Keys (Keychain)", &key_refs);
+
             println!(
                 "Config file: {}",
                 get_config_path().display().to_string().dimmed()
