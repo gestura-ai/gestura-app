@@ -845,6 +845,32 @@ pub fn set_session_workspace(session_id: &str, workspace_dir: PathBuf) {
     }
 }
 
+/// Set the paused execution state for a session.
+///
+/// This is called when the user pauses (cancels) a streaming response so that
+/// it can be resumed later. Pass `None` to clear the paused state.
+pub fn set_session_paused_execution(
+    session_id: &str,
+    paused: Option<gestura_core::PausedExecutionState>,
+) {
+    if let Some(manager) = get_window_manager() {
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.state.paused_execution = paused;
+            }
+        }
+        manager.save_sessions_to_disk();
+    }
+}
+
+/// Get the paused execution state for a session (if any).
+pub fn get_session_paused_execution(
+    session_id: &str,
+) -> Option<gestura_core::PausedExecutionState> {
+    get_session_state(session_id).and_then(|s| s.paused_execution)
+}
+
 /// Get the session LLM config for a session
 pub fn get_session_llm_config(session_id: &str) -> Option<SessionLlmConfig> {
     let result = get_session_state(session_id).and_then(|s| s.llm_config);

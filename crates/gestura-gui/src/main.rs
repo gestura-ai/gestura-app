@@ -167,6 +167,7 @@ async fn main() {
             gestura_gui::api::process_chat_message,
             gestura_gui::api::process_chat_message_streaming,
             gestura_gui::api::cancel_chat_streaming,
+            gestura_gui::api::resume_chat_streaming,
             // Tool confirmation (Restricted mode pause/resume)
             gestura_gui::api::approve_tool_confirmation,
             gestura_gui::api::resolve_tool_confirmation_decision,
@@ -233,6 +234,11 @@ async fn main() {
             gestura_gui::api::pick_workspace_directory,
             // Session convenience actions
             gestura_gui::api::open_shell_for_session,
+            // Shell process control (inline shell console)
+            gestura_gui::api::shell_process_stop,
+            gestura_gui::api::shell_process_pause,
+            gestura_gui::api::shell_process_resume,
+            gestura_gui::api::shell_process_rerun_info,
             // Session LLM config (session-scoped, doesn't modify global config)
             gestura_gui::api::get_session_llm_config,
             gestura_gui::api::set_session_llm_provider,
