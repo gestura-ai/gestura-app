@@ -23,13 +23,101 @@
             --gradient-secondary: linear-gradient(to right, rgb(96, 165, 250), rgb(192, 132, 252));
             --brand-gradient: var(--gradient-primary);
             --focus-ring: rgba(var(--accent-primary-rgb), 0.35);
+
+            /* Theme tokens (light) */
+            --background-color: #ffffff;
+            --text-color: #000000;
+            --text-secondary: #666666;
+            --border-color: #e0e0e0;
+            --surface-color: #f8f9fa;
+            --surface-2: #F2F2F7;
+            --surface-3: #E5E5EA;
+            --input-background: #ffffff;
+            --container-background: rgba(255, 255, 255, 0.95);
+            --shadow-color: rgba(0, 0, 0, 0.10);
+
+            /* Semantic RGB triples for rgba(..., alpha) */
+            --success-rgb: 52, 199, 89;
+            --warning-rgb: 255, 149, 0;
+            --danger-rgb: 255, 59, 48;
+        }
+
+        html {
+            color-scheme: light dark;
+        }
+
+        /* Auto mode: respect system preference */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --accent-primary: rgb(96, 165, 250);
+                --accent-primary-rgb: 96, 165, 250;
+                --accent-secondary: rgb(192, 132, 252);
+                --accent-secondary-rgb: 192, 132, 252;
+                --brand-gradient: var(--gradient-secondary);
+                --focus-ring: rgba(var(--accent-primary-rgb), 0.55);
+
+                --background-color: #1e1e1e;
+                --text-color: #ffffff;
+                --text-secondary: #b0b0b0;
+                --border-color: #404040;
+                --surface-color: #2d2d2d;
+                --surface-2: #3a3a3a;
+                --surface-3: #4a4a4a;
+                --input-background: #3d3d3d;
+                --container-background: rgba(30, 30, 30, 0.92);
+                --shadow-color: rgba(0, 0, 0, 0.35);
+            }
+        }
+
+        /* Force light mode (overrides system preference) */
+        html[data-theme="light"] {
+            --accent-primary: rgb(37, 99, 235);
+            --accent-primary-rgb: 37, 99, 235;
+            --accent-secondary: rgb(147, 51, 234);
+            --accent-secondary-rgb: 147, 51, 234;
+            --brand-gradient: var(--gradient-primary);
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.35);
+
+            --background-color: #ffffff;
+            --text-color: #000000;
+            --text-secondary: #666666;
+            --border-color: #e0e0e0;
+            --surface-color: #f8f9fa;
+            --surface-2: #F2F2F7;
+            --surface-3: #E5E5EA;
+            --input-background: #ffffff;
+            --container-background: rgba(255, 255, 255, 0.95);
+            --shadow-color: rgba(0, 0, 0, 0.10);
+        }
+
+        /* Force dark mode (overrides system preference) */
+        html[data-theme="dark"] {
+            --accent-primary: rgb(96, 165, 250);
+            --accent-primary-rgb: 96, 165, 250;
+            --accent-secondary: rgb(192, 132, 252);
+            --accent-secondary-rgb: 192, 132, 252;
+            --brand-gradient: var(--gradient-secondary);
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.55);
+
+            --background-color: #1e1e1e;
+            --text-color: #ffffff;
+            --text-secondary: #b0b0b0;
+            --border-color: #404040;
+            --surface-color: #2d2d2d;
+            --surface-2: #3a3a3a;
+            --surface-3: #4a4a4a;
+            --input-background: #3d3d3d;
+            --container-background: rgba(30, 30, 30, 0.92);
+            --shadow-color: rgba(0, 0, 0, 0.35);
         }
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg,
+            background: var(--background-color);
+            background-image: linear-gradient(135deg,
                     rgba(var(--accent-primary-rgb), 0.10) 0%,
                     rgba(var(--accent-secondary-rgb), 0.10) 100%);
+            color: var(--text-color);
             min-height: 100vh;
             display: flex;
         }
@@ -39,28 +127,28 @@
             width: 100%;
             max-width: 1400px;
             margin: 2rem auto;
-            background: rgba(255, 255, 255, 0.95);
+            background: var(--container-background);
             border-radius: 16px;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 20px 40px var(--shadow-color);
             overflow: hidden;
         }
 
         /* Table of Contents Navigation */
         .toc-nav {
             width: 280px;
-            background: #f8f9fa;
-            border-right: 1px solid #e9ecef;
+            background: var(--surface-color);
+            border-right: 1px solid var(--border-color);
             padding: 2rem 0;
         }
 
         .toc-header {
             padding: 0 2rem 1rem;
-            border-bottom: 1px solid #e9ecef;
+            border-bottom: 1px solid var(--border-color);
             margin-bottom: 1rem;
         }
 
         .toc-header h2 {
-            color: #1D1D1F;
+            color: var(--text-color);
             font-size: 1.2rem;
             font-weight: 600;
         }
@@ -76,7 +164,7 @@
         .toc-link {
             display: block;
             padding: 0.75rem 2rem;
-            color: #6c757d;
+            color: var(--text-secondary);
             text-decoration: none;
             transition: all 0.2s;
             border-left: 3px solid transparent;
@@ -110,17 +198,17 @@
         .content-header {
             margin-bottom: 2rem;
             padding-bottom: 1rem;
-            border-bottom: 1px solid #e9ecef;
+            border-bottom: 1px solid var(--border-color);
         }
 
         .content-header h1 {
-            color: #1D1D1F;
+            color: var(--text-color);
             font-size: 1.8rem;
             margin-bottom: 0.5rem;
         }
 
         .content-header p {
-            color: #6c757d;
+            color: var(--text-secondary);
             font-size: 1rem;
         }
 
@@ -149,7 +237,7 @@
         .section-title {
             font-size: 1.4rem;
             font-weight: 600;
-            color: #1D1D1F;
+            color: var(--text-color);
             margin-bottom: 1.5rem;
             display: flex;
             align-items: center;
@@ -161,17 +249,17 @@
         }
 
         .subsection {
-            background: #f8f9fa;
+            background: var(--surface-color);
             border-radius: 12px;
             padding: 1.5rem;
             margin-bottom: 1.5rem;
-            border: 1px solid #e9ecef;
+            border: 1px solid var(--border-color);
         }
 
         .subsection-title {
             font-size: 1.1rem;
             font-weight: 500;
-            color: #495057;
+            color: var(--text-color);
             margin-bottom: 1rem;
             display: flex;
             align-items: center;
@@ -188,16 +276,18 @@
         .form-label {
             display: block;
             font-weight: 500;
-            color: #1D1D1F;
+            color: var(--text-color);
             margin-bottom: 0.5rem;
         }
 
         .form-input {
             width: 100%;
             padding: 0.75rem;
-            border: 2px solid #E5E5EA;
+            border: 2px solid var(--border-color);
             border-radius: 8px;
             font-size: 1rem;
+            background: var(--input-background);
+            color: var(--text-color);
             transition: border-color 0.2s;
         }
 
@@ -210,10 +300,11 @@
         .form-select {
             width: 100%;
             padding: 0.75rem;
-            border: 2px solid #E5E5EA;
+            border: 2px solid var(--border-color);
             border-radius: 8px;
             font-size: 1rem;
-            background: white;
+            background: var(--input-background);
+            color: var(--text-color);
             cursor: pointer;
         }
 
@@ -259,12 +350,13 @@
         }
 
         .button.secondary {
-            background: #F2F2F7;
-            color: #1D1D1F;
+            background: var(--surface-2);
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
         }
 
         .button.secondary:hover {
-            background: #E5E5EA;
+            background: var(--surface-3);
         }
 
         .status {
@@ -275,15 +367,15 @@
         }
 
         .status.success {
-            background: #F0FDF4;
-            border: 1px solid #BBF7D0;
-            color: #166534;
+            background: rgba(var(--success-rgb), 0.14);
+            border: 1px solid rgba(var(--success-rgb), 0.28);
+            color: rgb(var(--success-rgb));
         }
 
         .status.error {
-            background: #FEF2F2;
-            border: 1px solid #FECACA;
-            color: #DC2626;
+            background: rgba(var(--danger-rgb), 0.14);
+            border: 1px solid rgba(var(--danger-rgb), 0.28);
+            color: rgb(var(--danger-rgb));
         }
     </style>
 </head>

@@ -8,12 +8,108 @@
     <style>
         :root {
             /* Gestura brand tokens (unified with gestura.app) */
+            --accent-primary: rgb(37, 99, 235);
             --accent-primary-rgb: 37, 99, 235;
+            --accent-secondary: rgb(147, 51, 234);
             --accent-secondary-rgb: 147, 51, 234;
             --gradient-primary: linear-gradient(to right, rgb(37, 99, 235), rgb(147, 51, 234));
             --gradient-secondary: linear-gradient(to right, rgb(96, 165, 250), rgb(192, 132, 252));
             --brand-gradient: var(--gradient-primary);
             --focus-ring: rgba(var(--accent-primary-rgb), 0.35);
+            --page-tint-alpha: 0.10;
+
+            /* Theme tokens (light) */
+            --background-color: #ffffff;
+            --text-color: #000000;
+            --text-secondary: #666666;
+            --text-tertiary: rgba(0, 0, 0, 0.55);
+            --border-color: #e0e0e0;
+            --surface-2: #F2F2F7;
+            --surface-3: #E5E5EA;
+            --container-background: rgba(255, 255, 255, 0.95);
+            --shadow-color: rgba(0, 0, 0, 0.10);
+            --log-background: #111827;
+            --log-text: #e5e7eb;
+
+            /* Semantic RGB triples */
+            --success-rgb: 52, 199, 89;
+            --warning-rgb: 255, 149, 0;
+            --danger-rgb: 255, 59, 48;
+        }
+
+        html {
+            color-scheme: light dark;
+        }
+
+        /* Auto mode: respect system preference */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --accent-primary: rgb(96, 165, 250);
+                --accent-primary-rgb: 96, 165, 250;
+                --accent-secondary: rgb(192, 132, 252);
+                --accent-secondary-rgb: 192, 132, 252;
+                --brand-gradient: var(--gradient-secondary);
+                --focus-ring: rgba(var(--accent-primary-rgb), 0.55);
+                --page-tint-alpha: 0.08;
+
+                --background-color: #1e1e1e;
+                --text-color: #ffffff;
+                --text-secondary: #b0b0b0;
+                --text-tertiary: rgba(255, 255, 255, 0.65);
+                --border-color: #404040;
+                --surface-2: #3a3a3a;
+                --surface-3: #4a4a4a;
+                --container-background: rgba(30, 30, 30, 0.92);
+                --shadow-color: rgba(0, 0, 0, 0.35);
+                --log-background: #0b1220;
+                --log-text: #e5e7eb;
+            }
+        }
+
+        /* Force light mode (overrides system preference) */
+        html[data-theme="light"] {
+            --accent-primary: rgb(37, 99, 235);
+            --accent-primary-rgb: 37, 99, 235;
+            --accent-secondary: rgb(147, 51, 234);
+            --accent-secondary-rgb: 147, 51, 234;
+            --brand-gradient: var(--gradient-primary);
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.35);
+            --page-tint-alpha: 0.10;
+
+            --background-color: #ffffff;
+            --text-color: #000000;
+            --text-secondary: #666666;
+            --text-tertiary: rgba(0, 0, 0, 0.55);
+            --border-color: #e0e0e0;
+            --surface-2: #F2F2F7;
+            --surface-3: #E5E5EA;
+            --container-background: rgba(255, 255, 255, 0.95);
+            --shadow-color: rgba(0, 0, 0, 0.10);
+            --log-background: #111827;
+            --log-text: #e5e7eb;
+        }
+
+        /* Force dark mode (overrides system preference) */
+        html[data-theme="dark"] {
+            --accent-primary: rgb(96, 165, 250);
+            --accent-primary-rgb: 96, 165, 250;
+            --accent-secondary: rgb(192, 132, 252);
+            --accent-secondary-rgb: 192, 132, 252;
+            --brand-gradient: var(--gradient-secondary);
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.55);
+            --page-tint-alpha: 0.08;
+
+            --background-color: #1e1e1e;
+            --text-color: #ffffff;
+            --text-secondary: #b0b0b0;
+            --text-tertiary: rgba(255, 255, 255, 0.65);
+            --border-color: #404040;
+            --surface-2: #3a3a3a;
+            --surface-3: #4a4a4a;
+            --container-background: rgba(30, 30, 30, 0.92);
+            --shadow-color: rgba(0, 0, 0, 0.35);
+            --log-background: #0b1220;
+            --log-text: #e5e7eb;
         }
 
         .text-gradient {
@@ -40,9 +136,11 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg,
-                    rgba(var(--accent-primary-rgb), 0.10) 0%,
-                    rgba(var(--accent-secondary-rgb), 0.10) 100%);
+            background: var(--background-color);
+            background-image: linear-gradient(135deg,
+                    rgba(var(--accent-primary-rgb), var(--page-tint-alpha)) 0%,
+                    rgba(var(--accent-secondary-rgb), var(--page-tint-alpha)) 100%);
+            color: var(--text-color);
             min-height: 100vh;
             padding: 2rem;
         }
@@ -50,10 +148,11 @@
         .container {
             max-width: 1200px;
             margin: 0 auto;
-            background: rgba(255, 255, 255, 0.95);
+            background: var(--container-background);
             border-radius: 16px;
             padding: 2rem;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 20px 40px var(--shadow-color);
+            border: 1px solid var(--border-color);
         }
 
         .header {
@@ -62,7 +161,7 @@
         }
 
         .header h1 {
-            color: #1D1D1F;
+            color: var(--text-color);
             margin-bottom: 0.5rem;
         }
 
@@ -74,27 +173,27 @@
         }
 
         .test-card {
-            background: #F2F2F7;
+            background: var(--surface-2);
             border-radius: 12px;
             padding: 1.5rem;
-            border-left: 4px solid #E5E5EA;
+            border-left: 4px solid var(--border-color);
         }
 
         .test-card.testing {
-            border-left-color: #FF9500;
+            border-left-color: rgb(var(--warning-rgb));
         }
 
         .test-card.passed {
-            border-left-color: #34C759;
+            border-left-color: rgb(var(--success-rgb));
         }
 
         .test-card.failed {
-            border-left-color: #FF3B30;
+            border-left-color: rgb(var(--danger-rgb));
         }
 
         .test-title {
             font-weight: 600;
-            color: #1D1D1F;
+            color: var(--text-color);
             margin-bottom: 0.5rem;
         }
 
@@ -104,15 +203,15 @@
         }
 
         .test-status.testing {
-            color: #FF9500;
+            color: rgb(var(--warning-rgb));
         }
 
         .test-status.passed {
-            color: #34C759;
+            color: rgb(var(--success-rgb));
         }
 
         .test-status.failed {
-            color: #FF3B30;
+            color: rgb(var(--danger-rgb));
         }
 
         .test-actions {
@@ -146,13 +245,18 @@
         }
 
         .test-button.secondary {
-            background: #F2F2F7;
-            color: #1D1D1F;
-            border: 1px solid #E5E5EA;
+            background: var(--surface-2);
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
         }
 
         .test-button.secondary:hover {
-            background: #E5E5EA;
+            background: var(--surface-3);
+        }
+
+        .test-button:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 4px var(--focus-ring);
         }
 
         .test-button:disabled {
@@ -192,24 +296,30 @@
             box-shadow: 0 0 0 4px var(--focus-ring);
         }
 
+        .control-button:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 4px var(--focus-ring);
+        }
+
         .control-button.danger {
-            background: #FF3B30;
+            background: rgb(var(--danger-rgb));
             color: white;
         }
 
         .control-button.danger:hover {
-            background: #D70015;
+            filter: brightness(0.92);
         }
 
         .log-section {
-            background: #1D1D1F;
-            color: #F2F2F7;
+            background: var(--log-background);
+            color: var(--log-text);
             border-radius: 8px;
             padding: 1rem;
             font-family: 'Monaco', 'Menlo', monospace;
             font-size: 0.9rem;
             max-height: 300px;
             overflow-y: auto;
+            border: 1px solid rgba(255, 255, 255, 0.08);
         }
 
         .log-entry {
@@ -218,19 +328,19 @@
         }
 
         .log-entry.info {
-            color: #34C759;
+            color: rgb(var(--success-rgb));
         }
 
         .log-entry.warning {
-            color: #FF9500;
+            color: rgb(var(--warning-rgb));
         }
 
         .log-entry.error {
-            color: #FF3B30;
+            color: rgb(var(--danger-rgb));
         }
 
         .timestamp {
-            color: #8E8E93;
+            color: var(--text-tertiary);
             font-size: 0.8rem;
         }
     </style>
@@ -330,7 +440,7 @@
             card.innerHTML = `
                 <div class="test-title">${testCase.title}</div>
                 <div class="test-status">Ready</div>
-                <div style="color: #8E8E93; font-size: 0.9rem; margin-bottom: 1rem;">${testCase.description}</div>
+	                <div style="color: var(--text-tertiary); font-size: 0.9rem; margin-bottom: 1rem;">${testCase.description}</div>
                 <div class="test-actions">
                     <button class="test-button primary" onclick="testWindow('${testCase.windowType}', '${testCase.id}')">
                         Open Window
