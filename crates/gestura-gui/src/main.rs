@@ -320,6 +320,23 @@ async fn main() {
             gestura_gui::api::set_default_permission_level
         ])
         .setup(move |app| {
+            // Extend the asset-protocol scope so the webview can load screenshots
+            // and other artifacts stored under ~/.gestura/ (session workspaces).
+            if let Some(home) = dirs::home_dir() {
+                let gestura_dir = home.join(".gestura");
+                if let Err(e) = app
+                    .asset_protocol_scope()
+                    .allow_directory(&gestura_dir, true)
+                {
+                    tracing::warn!(
+                        "Failed to add {} to asset protocol scope: {}",
+                        gestura_dir.display(),
+                        e
+                    );
+                }
+                tracing::info!("Asset protocol scope extended to {}", gestura_dir.display());
+            }
+
             // Attach the GUI observer for core orchestrator task lifecycle events.
             //
             // This keeps the orchestrator core-owned (tauri-free) while still enabling

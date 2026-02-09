@@ -1413,6 +1413,9 @@
             padding: 20px 20px;
             overflow-y: auto;
             scroll-behavior: smooth;
+            /* Enable text selection across the entire chat area (WKWebView) */
+            -webkit-user-select: text;
+            user-select: text;
         }
 
         .chat-container::-webkit-scrollbar {
@@ -1423,6 +1426,41 @@
             background-color: var(--text-secondary);
             border-radius: 3px;
             opacity: 0.3;
+        }
+
+        /* Scroll-to-bottom floating button */
+        .scroll-to-bottom-btn {
+            position: sticky;
+            bottom: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 50;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border: 1px solid var(--glass-border);
+            background: var(--bg-glass-strong);
+            backdrop-filter: var(--blur);
+            -webkit-backdrop-filter: var(--blur);
+            color: var(--text-secondary);
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            box-shadow: var(--shadow-md);
+            transition: opacity 0.2s, background 0.2s;
+            font-size: 18px;
+            line-height: 1;
+            padding: 0;
+        }
+
+        .scroll-to-bottom-btn:hover {
+            background: var(--bg-glass);
+            color: var(--text-primary);
+        }
+
+        .scroll-to-bottom-btn.visible {
+            display: flex;
         }
 
         /* Message Bubbles */
@@ -1450,6 +1488,10 @@
             line-height: 1.6;
             position: relative;
             box-shadow: var(--shadow-sm);
+            /* Enable text selection in Tauri WebView (WKWebView) */
+            -webkit-user-select: text;
+            user-select: text;
+            cursor: text;
         }
 
         /* User Message */
@@ -1492,6 +1534,65 @@
         .tool-call.done {
             animation: none;
             opacity: 0.9;
+        }
+
+        /* Collapsible tool cards — collapsed state shows single-line summary */
+        .tool-call.collapsed {
+            animation: none;
+            cursor: pointer;
+            padding: 6px 16px;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .tool-call.collapsed .tool-call-body .tool-args,
+        .tool-call.collapsed .tool-call-body .tool-result,
+        .tool-call.collapsed .tool-call-body .tool-duration,
+        .tool-call.collapsed .tool-call-body .retry-tool-btn {
+            display: none;
+        }
+
+        .tool-call .collapse-toggle {
+            margin-left: auto;
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 11px;
+            cursor: pointer;
+            padding: 2px 6px;
+            border-radius: 4px;
+            opacity: 0.7;
+            transition: opacity 0.15s;
+            flex-shrink: 0;
+        }
+
+        .tool-call .collapse-toggle:hover {
+            opacity: 1;
+            background: rgba(128, 128, 128, 0.1);
+        }
+
+        /* Agent iteration separator */
+        .agent-iteration-marker {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 14px 0 6px 0;
+            font-size: 12px;
+            color: var(--text-secondary);
+            opacity: 0.8;
+        }
+
+        .agent-iteration-marker::before,
+        .agent-iteration-marker::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: var(--glass-border);
+        }
+
+        .agent-iteration-marker .iteration-label {
+            white-space: nowrap;
+            font-weight: 500;
         }
 
         .tool-call.success {
@@ -1539,6 +1640,15 @@
             overflow-x: auto;
             max-width: 100%;
             white-space: pre;
+            -webkit-user-select: text;
+            user-select: text;
+        }
+
+        /* Ensure buttons/interactive elements within selectable message content keep pointer cursor */
+        .message-content button,
+        .message-content .copy-response-btn,
+        .message-content .tool-call .tool-icon {
+            cursor: pointer;
         }
 
         .tool-result {
@@ -1552,6 +1662,8 @@
             white-space: pre-wrap;
             word-break: break-word;
             cursor: pointer;
+            -webkit-user-select: text;
+            user-select: text;
             transition: all 0.3s ease;
             position: relative;
         }
@@ -3030,6 +3142,8 @@
                 Hello! I'm Gestura. How can I assist you naturally today?
             </div>
         </div>
+        <!-- Scroll-to-bottom button (shown when user scrolls up) -->
+        <button class="scroll-to-bottom-btn" id="scrollToBottomBtn" title="Scroll to bottom">↓</button>
     </div>
 
     <!-- Typing Indicator -->
@@ -3121,6 +3235,7 @@
         const statusElement = document.getElementById('status');
         const providerSelect = document.getElementById('providerSelect');
         const modelSelect = document.getElementById('modelSelect');
+        const scrollToBottomBtn = document.getElementById('scrollToBottomBtn');
 
         // Cached config (used for model dropdown)
         let cachedConfig = null;
@@ -3134,12 +3249,18 @@
         let streamWatchdogMaxIdleMs = 90_000;
         let streamingMessageElement = null;
         let streamingContent = '';
+        let currentTextContainer = null;       // The .text-content div currently receiving text
+        let currentTextSegmentContent = '';     // Text accumulated for the current segment only
         let currentThinkingDiv = null;
         let currentToolCard = null;
         let currentToolArgsEl = null;
+        let currentAgentIteration = 0;  // Tracks the current agentic loop iteration (0 = initial)
         /** @type {{confirmation_id: string, tool_name: string, tool_args: string, description?: string, risk_level?: string, category?: string, session_id?: (string|null)}[]} */
         let toolConfirmationQueue = [];
         let toolConfirmationActive = false;
+        /** Whether the user has intentionally scrolled up away from the bottom */
+        let userScrolledUp = false;
+        const SCROLL_BOTTOM_THRESHOLD = 100; // px from bottom to consider "at bottom"
         /**
          * Queue of messages received/sent while a stream is in-flight.
          *
@@ -4085,13 +4206,45 @@
                 enhanceCodeBlocks(contentDiv);
             }
 
-            scrollToBottom();
+            scrollToBottom(type === 'user');
             return msgDiv;
         }
 
-        function scrollToBottom() {
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        /**
+         * Scroll the chat container to the bottom.
+         * @param {boolean} [force=false] - If true, always scroll (e.g. user sent a message).
+         *   Otherwise, only scroll if the user hasn't manually scrolled up.
+         */
+        function scrollToBottom(force = false) {
+            if (force || !userScrolledUp) {
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                userScrolledUp = false;
+                updateScrollToBottomButton();
+            }
         }
+
+        /** Show/hide the floating "scroll to bottom" button */
+        function updateScrollToBottomButton() {
+            if (!scrollToBottomBtn) return;
+            if (userScrolledUp) {
+                scrollToBottomBtn.classList.add('visible');
+            } else {
+                scrollToBottomBtn.classList.remove('visible');
+            }
+        }
+
+        // Detect when user scrolls up manually
+        messagesContainer.addEventListener('scroll', () => {
+            const { scrollTop, scrollHeight, clientHeight } = messagesContainer;
+            const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+            userScrolledUp = distanceFromBottom > SCROLL_BOTTOM_THRESHOLD;
+            updateScrollToBottomButton();
+        });
+
+        // Click handler for the scroll-to-bottom button
+        scrollToBottomBtn?.addEventListener('click', () => {
+            scrollToBottom(true);
+        });
 
         function showTyping() {
             typingIndicator.classList.add('show');
@@ -4237,12 +4390,22 @@
                     return;
                 }
 
-                // Fallback: copy rendered text (best-effort). Prefer the text-content section
-                // so we don't copy the "Thinking Process" panel.
-                const target = contentDiv.querySelector('.text-content') || contentDiv;
-                const clone = target.cloneNode(true);
-                clone.querySelectorAll('.copy-response-btn, .copy-code-btn, .retry-tool-btn').forEach(btn => btn.remove());
-                copyToClipboard(clone.textContent.trim(), copyBtn);
+                // Fallback: copy rendered text (best-effort). Collect all text-content
+                // segments so we don't copy the "Thinking Process" panel.
+                const textSegments = contentDiv.querySelectorAll('.text-content');
+                if (textSegments.length > 0) {
+                    const parts = [];
+                    textSegments.forEach(seg => {
+                        const clone = seg.cloneNode(true);
+                        clone.querySelectorAll('.copy-response-btn, .copy-code-btn, .retry-tool-btn').forEach(btn => btn.remove());
+                        parts.push(clone.textContent.trim());
+                    });
+                    copyToClipboard(parts.join('\n\n'), copyBtn);
+                } else {
+                    const clone = contentDiv.cloneNode(true);
+                    clone.querySelectorAll('.copy-response-btn, .copy-code-btn, .retry-tool-btn').forEach(btn => btn.remove());
+                    copyToClipboard(clone.textContent.trim(), copyBtn);
+                }
             };
 
             copyBtn.addEventListener('click', (e) => {
@@ -4526,9 +4689,12 @@
             // Reset Stream State
             streamingMessageElement = null;
             streamingContent = '';
+            currentTextContainer = null;
+            currentTextSegmentContent = '';
             currentThinkingDiv = null;
             currentToolCard = null;
             currentToolArgsEl = null;
+            currentAgentIteration = 0;
 
             try {
                 // Invoke Backend
@@ -4791,22 +4957,20 @@
                     streamingMessageElement.dataset.rawMarkdown = (streamingContent ?? '').toString();
                 }
 
-                // Update content (preserving thinking block if it exists)
                 const contentDiv = streamingMessageElement.querySelector('.message-content');
 
-                // We need to keep the thinking block element, updates only text content AFTER it
-                // Simple approach: re-render full markdown.
-                // BUT we must not destroy the thinking block.
-
-                // Let's create a text container if not exists
-                let textContainer = contentDiv.querySelector('.text-content');
-                if (!textContainer) {
-                    textContainer = document.createElement('div');
-                    textContainer.className = 'text-content';
-                    contentDiv.appendChild(textContainer);
+                // Create a new text segment container if needed (e.g. after a tool card was inserted).
+                // This ensures text produced AFTER a tool call appears below the tool card,
+                // preserving chronological order of reasoning → tool → reasoning → tool → …
+                if (!currentTextContainer) {
+                    currentTextContainer = document.createElement('div');
+                    currentTextContainer.className = 'text-content';
+                    contentDiv.appendChild(currentTextContainer);
+                    currentTextSegmentContent = '';
                 }
 
-                textContainer.innerHTML = parseMarkdown(streamingContent);
+                currentTextSegmentContent += chunk;
+                currentTextContainer.innerHTML = parseMarkdown(currentTextSegmentContent);
                 scrollToBottom();
             });
 
@@ -4828,6 +4992,41 @@
                 const reason = payload?.reason || 'blocked';
                 addMessage(`Tool blocked: ${toolName} (${reason})`, 'agent');
                 showToast(`Tool blocked: ${toolName}`, 'warning');
+            });
+
+            // 3a-ii. Agent Loop Iteration — marks the start of a new agentic loop pass
+            await listen('chat-stream-agent-iteration', (e) => {
+                const res = acceptSessionEvent('chat-stream-agent-iteration', e?.payload);
+                if (!res.accept) return;
+                touchStreamActivity({ mode: 'normal' });
+                const payload = res.value || {};
+                const iteration = payload.iteration ?? 0;
+                currentAgentIteration = iteration;
+
+                if (iteration > 0) {
+                    ensureStreamingMessage();
+                    const contentDiv = streamingMessageElement.querySelector('.message-content');
+                    if (contentDiv) {
+                        // Collapse all completed (success/error) tool cards above this point
+                        contentDiv.querySelectorAll('.tool-call.success:not(.collapsed), .tool-call.error:not(.collapsed)').forEach(card => {
+                            card.classList.add('collapsed');
+                            // Update toggle button text if present
+                            const toggle = card.querySelector('.collapse-toggle');
+                            if (toggle) toggle.textContent = 'Expand';
+                        });
+
+                        // Insert an iteration separator
+                        const marker = document.createElement('div');
+                        marker.className = 'agent-iteration-marker';
+                        marker.innerHTML = `<span class="iteration-label">◆ Reviewing results…</span>`;
+                        contentDiv.appendChild(marker);
+
+                        // Force a new text container for the intermediate reasoning
+                        currentTextContainer = null;
+                        currentTextSegmentContent = '';
+                        scrollToBottom();
+                    }
+                }
             });
 
             await listen('chat-stream-tool-start', (e) => {
@@ -4859,6 +5058,10 @@
                 currentToolArgsEl = currentToolCard.querySelector('.tool-args');
 
                 contentDiv.appendChild(currentToolCard);
+                // Nullify the text container so that any text arriving after this tool card
+                // will create a new .text-content div below it (chronological interleaving).
+                currentTextContainer = null;
+                currentTextSegmentContent = '';
                 scrollToBottom();
             });
 
@@ -4928,16 +5131,26 @@
                             // Not JSON or not a screenshot result
                         }
 
-                        if (screenshotData && window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.convertFileSrc) {
+                        // Determine image source for screenshot display:
+                        // 1. Prefer full-resolution file via Tauri asset protocol
+                        // 2. Fall back to inline_base64 data URI (small thumbnail)
+                        let screenshotSrc = null;
+                        let isInlineFallback = false;
+                        if (screenshotData) {
+                            if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.convertFileSrc) {
+                                screenshotSrc = window.__TAURI__.core.convertFileSrc(screenshotData.path);
+                            } else if (screenshotData.inline_base64 && screenshotData.inline_mime_type) {
+                                screenshotSrc = `data:${screenshotData.inline_mime_type};base64,${screenshotData.inline_base64}`;
+                                isInlineFallback = true;
+                            }
+                        }
+
+                        if (screenshotData && screenshotSrc) {
                             // Render screenshot as image
                             resultDiv.classList.add('screenshot-result');
 
-                            // Convert file path to asset URL
-                            const imageSrc = window.__TAURI__.core.convertFileSrc(screenshotData.path);
-
                             // Create image element
                             const img = document.createElement('img');
-                            img.src = imageSrc;
                             img.alt = 'Screenshot';
                             img.className = 'screenshot-image';
                             img.style.maxWidth = '100%';
@@ -4946,6 +5159,42 @@
                             img.style.borderRadius = '4px';
                             img.style.marginBottom = '8px';
 
+                            // For file-path sources, add retry logic in case the file
+                            // is still being written to disk (race condition with screencapture).
+                            if (!isInlineFallback) {
+                                let retryCount = 0;
+                                const maxRetries = 5;
+                                const baseAssetUrl = screenshotSrc;
+                                // If inline_base64 is available, use it as a placeholder
+                                // while the full image loads/retries.
+                                const inlineFallbackSrc = (screenshotData.inline_base64 && screenshotData.inline_mime_type)
+                                    ? `data:${screenshotData.inline_mime_type};base64,${screenshotData.inline_base64}`
+                                    : null;
+                                img.onerror = function () {
+                                    if (retryCount < maxRetries) {
+                                        retryCount++;
+                                        // Show inline thumbnail while waiting for the full image
+                                        if (retryCount === 1 && inlineFallbackSrc) {
+                                            img.src = inlineFallbackSrc;
+                                        }
+                                        setTimeout(() => {
+                                            // Append cache-buster to force re-fetch
+                                            const sep = baseAssetUrl.includes('?') ? '&' : '?';
+                                            img.src = `${baseAssetUrl}${sep}_t=${Date.now()}`;
+                                        }, 400 * retryCount);
+                                    }
+                                };
+                            }
+
+                            // Scroll chat to bottom after image loads
+                            img.onload = function () {
+                                const chatContainer = document.getElementById('chatMessages');
+                                if (chatContainer) {
+                                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                                }
+                            };
+
+                            img.src = screenshotSrc;
                             resultDiv.appendChild(img);
 
                             // Add metadata info
@@ -4968,6 +5217,9 @@
                                     return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
                                 };
                                 infoParts.push(formatBytes(screenshotData.file_size_bytes));
+                            }
+                            if (isInlineFallback) {
+                                infoParts.push('(thumbnail)');
                             }
                             infoParts.push(screenshotData.path);
 
@@ -5038,6 +5290,27 @@
                             body.appendChild(retryBtn);
                         }
                     }
+                }
+
+                // Add collapse/expand toggle to completed tool cards
+                if (targetCard && !targetCard.querySelector('.collapse-toggle')) {
+                    const toggle = document.createElement('button');
+                    toggle.className = 'collapse-toggle';
+                    toggle.textContent = 'Collapse';
+                    toggle.addEventListener('click', (ev) => {
+                        ev.stopPropagation();
+                        const isCollapsed = targetCard.classList.toggle('collapsed');
+                        toggle.textContent = isCollapsed ? 'Expand' : 'Collapse';
+                    });
+                    targetCard.appendChild(toggle);
+
+                    // Also allow clicking the card itself to expand when collapsed
+                    targetCard.addEventListener('click', (ev) => {
+                        if (targetCard.classList.contains('collapsed') && ev.target === targetCard) {
+                            targetCard.classList.remove('collapsed');
+                            toggle.textContent = 'Collapse';
+                        }
+                    });
                 }
 
                 // Clear the current tool card reference
@@ -6363,7 +6636,7 @@
                             console.warn('Failed to render a history message; continuing', err, msg);
                         }
                     }
-                    scrollToBottom();
+                    scrollToBottom(true); // Force scroll to latest history on session load
                 }
             } catch (e) {
                 console.warn('Failed to load session history:', e);

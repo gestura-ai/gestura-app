@@ -64,7 +64,7 @@ colored = "2"
 toml = "0.8"
 
 # Tauri (GUI-specific)
-tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "protocol-asset"] }
 tauri-build = { version = "2", features = [] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-dialog = "2"

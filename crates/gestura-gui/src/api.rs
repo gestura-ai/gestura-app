@@ -2448,6 +2448,13 @@ pub async fn process_chat_message_streaming(
                 });
                 emit("chat-stream-tool-blocked", payload);
             }
+            StreamChunk::AgentLoopIteration { iteration } => {
+                let payload = serde_json::json!({
+                    "iteration": iteration,
+                    "session_id": resolved_session_id
+                });
+                emit("chat-stream-agent-iteration", payload);
+            }
             StreamChunk::Done(usage) => {
                 saw_terminal = true;
                 // Emit token usage if available
