@@ -79,6 +79,8 @@ pub enum AgentEvent {
     },
     /// Pipeline was cancelled
     PipelineCancelled { request_id: String },
+    /// Pipeline was paused (cancelled with resume intent).
+    PipelinePaused { request_id: String },
 }
 
 /// Stages of pipeline progress

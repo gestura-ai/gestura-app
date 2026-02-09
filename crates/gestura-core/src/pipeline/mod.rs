@@ -281,7 +281,66 @@ impl AgentPipeline {
         tx: mpsc::Sender<StreamChunk>,
         cancel_token: CancellationToken,
     ) -> Result<AgentResponse, AppError> {
-        // 0. Ensure configured MCP servers are connected (lazy, idempotent).
+        // 0. If resuming from a paused state, reconstruct the request with the
+        //    full conversational context so the model continues from where it
+        //    left off.
+        let request = if let Some(paused) = request.resume_from.clone() {
+            tracing::info!(
+                iteration = paused.iteration,
+                partial_len = paused.partial_content.len(),
+                tool_calls = paused.completed_tool_calls.len(),
+                "Resuming from paused execution state"
+            );
+
+            let _ = tx
+                .send(StreamChunk::Status {
+                    message: "Resuming paused session…".to_string(),
+                })
+                .await;
+
+            // Build resumed history:
+            // 1. Start with the history that existed before the paused request.
+            let mut resumed_history = paused.history.clone();
+            // 2. Re-add the original user message.
+            resumed_history.push(Message::user(&paused.original_input));
+            // 3. Append partial assistant content (if any) so the model sees it.
+            if !paused.partial_content.is_empty() {
+                resumed_history.push(Message::assistant(&paused.partial_content));
+            }
+            // 4. Append tool call results so the model has full tool context.
+            for tc in &paused.completed_tool_calls {
+                let output = match &tc.result {
+                    ToolResult::Success(s) => s.clone(),
+                    ToolResult::Error(e) => format!("Error: {e}"),
+                    ToolResult::Skipped(msg) => format!("Skipped: {msg}"),
+                };
+                resumed_history.push(Message::tool_result(&tc.id, &output));
+            }
+
+            let resume_input = if paused.has_content() {
+                "Please continue from where you left off. \
+                 Your previous response was interrupted."
+                    .to_string()
+            } else {
+                paused.original_input.clone()
+            };
+
+            let mut resumed = AgentRequest::new(resume_input)
+                .with_streaming(request.streaming)
+                .with_history(resumed_history);
+            resumed.max_iterations = request.max_iterations;
+            resumed.metadata = request.metadata.clone();
+            if let Some(sp) = paused.system_prompt {
+                resumed = resumed.with_system_prompt(sp);
+            } else if let Some(sp) = request.system_prompt.clone() {
+                resumed = resumed.with_system_prompt(sp);
+            }
+            resumed
+        } else {
+            request
+        };
+
+        // 0b. Ensure configured MCP servers are connected (lazy, idempotent).
         self.ensure_mcp_servers_connected().await;
 
         // 1. Analyze the request

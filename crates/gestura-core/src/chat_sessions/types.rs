@@ -198,6 +198,13 @@ pub struct SessionState {
     /// Session-scoped tool settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_settings: Option<SessionToolSettings>,
+    /// Paused execution state for resumable sessions.
+    ///
+    /// When the user pauses (cancels) a streaming response, the execution state
+    /// is captured here so it can be resumed later via `@continue` (CLI) or the
+    /// resume button (GUI).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_execution: Option<crate::pipeline::types::PausedExecutionState>,
 }
 
 impl SessionState {

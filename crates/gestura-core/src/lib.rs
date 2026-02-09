@@ -177,8 +177,8 @@ pub use model_display::{
     format_openai_model_name, is_local_provider,
 };
 pub use pipeline::{
-    AgentPipeline, AgentRequest, AgentResponse, Message, PermissionLevel, PipelineConfig,
-    RequestMetadata, RequestSource, ToolCallRecord, ToolResult,
+    AgentPipeline, AgentRequest, AgentResponse, Message, PausedExecutionState, PermissionLevel,
+    PipelineConfig, RequestMetadata, RequestSource, ToolCallRecord, ToolResult,
 };
 pub use recommendations::{
     PersonalizedRecommendationEngine, Recommendation, RecommendationConfig, RecommendationFeedback,

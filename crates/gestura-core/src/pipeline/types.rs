@@ -3,6 +3,7 @@
 //! This module defines the core types used by the AgentPipeline for processing
 //! requests through a unified path regardless of input source (text, voice).
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -127,6 +128,11 @@ pub struct AgentRequest {
     pub max_iterations: usize,
     /// Request metadata
     pub metadata: RequestMetadata,
+    /// Optional paused execution state to resume from.
+    ///
+    /// When set, the pipeline will reconstruct the conversational context from the
+    /// paused state and continue the agentic loop from where it left off.
+    pub resume_from: Option<PausedExecutionState>,
 }
 
 /// A message in conversation history
@@ -182,7 +188,7 @@ pub struct RequestMetadata {
 }
 
 /// Session-scoped LLM configuration info (for agent awareness)
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionLlmInfo {
     /// Current LLM provider (e.g., "anthropic", "openai", "ollama")
     pub provider: String,
@@ -191,7 +197,7 @@ pub struct SessionLlmInfo {
 }
 
 /// Source of the request
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RequestSource {
     /// Text input from GUI
     GuiText,
@@ -251,6 +257,56 @@ pub enum ToolResult {
     Error(String),
     /// Tool was skipped (permission denied, etc.)
     Skipped(String),
+}
+
+/// Captured execution state when an agent session is paused.
+///
+/// This is saved when the user pauses (cancels) a streaming response and enables
+/// the session to be resumed from the same point later. It captures the full
+/// conversational context, partial output, and pipeline configuration so the
+/// resume path can reconstruct the agent request faithfully.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PausedExecutionState {
+    /// The original user input that initiated the paused request.
+    pub original_input: String,
+    /// System prompt in effect at pause time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Conversation history *before* the paused request (for context reconstruction).
+    pub history: Vec<Message>,
+    /// Partial assistant text accumulated before the pause.
+    pub partial_content: String,
+    /// Partial thinking content accumulated before the pause.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partial_thinking: Option<String>,
+    /// Tool calls that were executed in the paused request before the pause.
+    #[serde(default)]
+    pub completed_tool_calls: Vec<ToolCallRecord>,
+    /// Zero-based agentic loop iteration the pipeline was on when paused.
+    pub iteration: u32,
+    /// Source of the original request.
+    pub source: RequestSource,
+    /// Session ID associated with this paused state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Workspace directory at pause time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_dir: Option<PathBuf>,
+    /// Snapshot of the model/provider that was active at pause time.
+    ///
+    /// If the model or provider changes between pause and resume, the UI can
+    /// warn the user about potential inconsistencies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_snapshot: Option<SessionLlmInfo>,
+    /// Timestamp when the execution was paused.
+    pub paused_at: DateTime<Utc>,
+}
+
+impl PausedExecutionState {
+    /// Returns `true` if this paused state has any meaningful content to resume.
+    pub fn has_content(&self) -> bool {
+        !self.partial_content.is_empty() || !self.completed_tool_calls.is_empty()
+    }
 }
 
 /// Status of token limit check
@@ -415,6 +471,7 @@ impl AgentRequest {
             streaming: true,
             max_iterations: 10,
             metadata: RequestMetadata::default(),
+            resume_from: None,
         }
     }
 
@@ -491,6 +548,12 @@ impl AgentRequest {
     /// Set session permission level from string (for backwards compatibility)
     pub fn with_permission_level_str(mut self, level: &str) -> Self {
         self.metadata.permission_level = PermissionLevel::parse(level);
+        self
+    }
+
+    /// Attach a paused execution state so the pipeline resumes from that point.
+    pub fn with_resume_state(mut self, state: PausedExecutionState) -> Self {
+        self.resume_from = Some(state);
         self
     }
 }
