@@ -308,7 +308,9 @@
 <body>
     <div class="onboarding-container">
         <div class="header">
-            <h1><img src="../assets/gestura-app.svg" alt="Gestura" style="width: 28px; height: 28px; vertical-align: middle; margin-right: 8px;">Welcome to Gestura</h1>
+            <h1><img src="assets/gestura-app.svg" alt="Gestura"
+                    style="width: 140px; height: 140px; vertical-align: middle; margin-right: 8px;">Welcome to Gestura
+            </h1>
             <p>Let's get you set up with voice commands and haptic feedback</p>
         </div>
 
@@ -317,7 +319,7 @@
                 <div class="progress-fill" id="progressFill"></div>
             </div>
             <div class="step-indicator">
-                <span id="stepNumber">Step 1 of 6</span>
+                <span id="stepNumber">Step 1 of 9</span>
                 <span id="stepName">Welcome</span>
             </div>
         </div>
@@ -327,9 +329,8 @@
         </div>
 
         <div class="button-row" style="display: flex; justify-content: space-between; margin-top: 1.5rem;">
-            <button class="btn btn-secondary" id="prevBtn" onclick="previousStep()"
-                style="visibility: hidden;">Previous</button>
-            <button class="btn btn-primary" id="nextBtn" onclick="nextStep()">Get Started</button>
+            <button class="btn btn-secondary" id="prevBtn" style="visibility: hidden;">Previous</button>
+            <button class="btn btn-primary" id="nextBtn">Get Started</button>
         </div>
     </div>
 
@@ -373,7 +374,13 @@
         // =====================================================================
         // Onboarding Logic
         // =====================================================================
-        const { invoke } = window.__TAURI__.core;
+        let invoke;
+        if (window.__TAURI__ && window.__TAURI__.core) {
+            invoke = window.__TAURI__.core.invoke;
+        } else {
+            console.error('[Onboarding] Tauri API not available — buttons will be non-functional');
+            invoke = () => Promise.reject(new Error('Tauri API not available'));
+        }
 
         let currentStep = 0;
         let lastSystemPermissionsResult = null;
@@ -532,6 +539,44 @@
                 `
             },
             {
+                id: 'agent-permissions',
+                title: 'Agent Permissions',
+                content: `
+                    <h2>Default Agent Permission Level</h2>
+                    <p>Choose the default permission level for AI agents. You can change this per-session later.</p>
+                    <div style="margin: 1rem 0;">
+                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 1px solid var(--border-color);">
+                            <label style="display: flex; align-items: center; cursor: pointer;">
+                                <input type="radio" name="agentPermLevel" value="sandbox" style="margin-right: 0.75rem;" onchange="updateAgentPermissionLevel(this.value)">
+                                <div>
+                                    <strong><span class="icon-lock"></span> Sandbox (Most Restrictive)</strong>
+                                    <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Read-only access. Agents cannot write files or execute commands.</p>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 2px solid var(--accent-color);">
+                            <label style="display: flex; align-items: center; cursor: pointer;">
+                                <input type="radio" name="agentPermLevel" value="restricted" checked style="margin-right: 0.75rem;" onchange="updateAgentPermissionLevel(this.value)">
+                                <div>
+                                    <strong><span class="icon-check-circle" style="color: var(--accent-color);"></span> Restricted (Recommended)</strong>
+                                    <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Agents ask for confirmation before write operations or shell commands.</p>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; border: 1px solid var(--border-color);">
+                            <label style="display: flex; align-items: center; cursor: pointer;">
+                                <input type="radio" name="agentPermLevel" value="full" style="margin-right: 0.75rem;" onchange="updateAgentPermissionLevel(this.value)">
+                                <div>
+                                    <strong>⚡ Full Access</strong>
+                                    <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">No confirmation required. Use only if you fully trust the agent environment.</p>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+                    <p style="font-size: 0.8rem; color: var(--text-secondary);"><span class="icon-lock"></span> You can override this per-session in Settings → Permissions.</p>
+                `
+            },
+            {
                 id: 'complete',
                 title: 'Complete',
                 content: `
@@ -642,6 +687,7 @@
             if (step.id === 'voice') await loadMicrophoneDevices();
             if (step.id === 'voice-model') await loadVoiceModelConfig();
             if (step.id === 'llm') await loadLLMConfig();
+            if (step.id === 'agent-permissions') await loadAgentPermissionLevel();
 
             const prevBtn = document.getElementById('prevBtn');
             const nextBtn = document.getElementById('nextBtn');
@@ -650,24 +696,41 @@
         }
 
         async function nextStep() {
-            // Save LLM config when leaving the LLM step
-            await saveLLMConfigIfNeeded();
+            try {
+                // Save LLM config when leaving the LLM step
+                await saveLLMConfigIfNeeded();
 
-            if (currentStep === steps.length - 1) {
-                completeOnboarding();
-            } else {
-                currentStep++;
-                updateUI();
+                if (currentStep === steps.length - 1) {
+                    await completeOnboarding();
+                } else {
+                    currentStep++;
+                    await updateUI();
+                }
+            } catch (error) {
+                console.error('[Onboarding] Error in nextStep:', error);
+                // Still try to advance so user isn't stuck
+                if (currentStep < steps.length - 1) {
+                    currentStep++;
+                    try { await updateUI(); } catch (e) { console.error('[Onboarding] Error updating UI:', e); }
+                }
             }
         }
 
         async function previousStep() {
-            // Save LLM config when leaving the LLM step
-            await saveLLMConfigIfNeeded();
+            try {
+                // Save LLM config when leaving the LLM step
+                await saveLLMConfigIfNeeded();
 
-            if (currentStep > 0) {
-                currentStep--;
-                updateUI();
+                if (currentStep > 0) {
+                    currentStep--;
+                    await updateUI();
+                }
+            } catch (error) {
+                console.error('[Onboarding] Error in previousStep:', error);
+                if (currentStep > 0) {
+                    currentStep--;
+                    try { await updateUI(); } catch (e) { console.error('[Onboarding] Error updating UI:', e); }
+                }
             }
         }
 
@@ -941,6 +1004,46 @@
             }
         }
 
+        async function updateAgentPermissionLevel(level) {
+            try {
+                await invoke('set_default_permission_level', { level });
+                console.log('[Onboarding] Set default agent permission level:', level);
+                // Update visual selection state
+                document.querySelectorAll('input[name="agentPermLevel"]').forEach(radio => {
+                    const card = radio.closest('.option-card');
+                    if (card) {
+                        card.style.border = radio.value === level
+                            ? '2px solid var(--accent-color)'
+                            : '1px solid var(--border-color)';
+                    }
+                });
+            } catch (error) {
+                console.error('[Onboarding] Error setting agent permission level:', error);
+            }
+        }
+
+        async function loadAgentPermissionLevel() {
+            try {
+                const settings = await invoke('get_global_permission_settings');
+                const level = (settings?.default_level || 'restricted').toLowerCase();
+                const radio = document.querySelector(`input[name="agentPermLevel"][value="${level}"]`);
+                if (radio) {
+                    radio.checked = true;
+                    // Update visual borders
+                    document.querySelectorAll('input[name="agentPermLevel"]').forEach(r => {
+                        const card = r.closest('.option-card');
+                        if (card) {
+                            card.style.border = r.value === level
+                                ? '2px solid var(--accent-color)'
+                                : '1px solid var(--border-color)';
+                        }
+                    });
+                }
+            } catch (error) {
+                console.error('[Onboarding] Error loading agent permission level:', error);
+            }
+        }
+
         async function scanForRings() {
             const btn = document.getElementById('scanBtn');
             const status = document.getElementById('ringStatus');
@@ -958,7 +1061,44 @@
         }
 
         // Initialize
+        console.log('[Onboarding] Initializing onboarding wizard...');
         updateUI();
+
+        // Set up button event listeners
+        document.addEventListener('DOMContentLoaded', function () {
+            console.log('[Onboarding] DOM loaded, setting up button listeners...');
+
+            const nextBtn = document.getElementById('nextBtn');
+            const prevBtn = document.getElementById('prevBtn');
+
+            if (nextBtn) {
+                nextBtn.addEventListener('click', async function (e) {
+                    e.preventDefault();
+                    console.log('[Onboarding] Next button clicked, currentStep:', currentStep);
+                    try {
+                        await nextStep();
+                    } catch (error) {
+                        console.error('[Onboarding] Error in next button handler:', error);
+                    }
+                });
+                console.log('[Onboarding] Next button listener attached');
+            } else {
+                console.error('[Onboarding] ERROR: nextBtn not found!');
+            }
+
+            if (prevBtn) {
+                prevBtn.addEventListener('click', async function (e) {
+                    e.preventDefault();
+                    console.log('[Onboarding] Previous button clicked, currentStep:', currentStep);
+                    try {
+                        await previousStep();
+                    } catch (error) {
+                        console.error('[Onboarding] Error in previous button handler:', error);
+                    }
+                });
+                console.log('[Onboarding] Previous button listener attached');
+            }
+        });
     </script>
 </body>
 
