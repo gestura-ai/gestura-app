@@ -63,6 +63,34 @@ pub enum TokenUsageStatus {
     Red,
 }
 
+/// Which output stream a shell chunk originated from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShellOutputStream {
+    /// Standard output
+    Stdout,
+    /// Standard error
+    Stderr,
+}
+
+/// Lifecycle state of a shell process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellProcessState {
+    /// Process has been spawned and is running
+    Started,
+    /// Process completed normally
+    Completed,
+    /// Process failed (non-zero exit or spawn error)
+    Failed,
+    /// Process was stopped by user request (SIGTERM/SIGKILL)
+    Stopped,
+    /// Process was paused by user request (SIGSTOP)
+    Paused,
+    /// Process was resumed after pause (SIGCONT)
+    Resumed,
+}
+
 /// A chunk of streaming response
 #[derive(Debug, Clone)]
 pub enum StreamChunk {
@@ -199,10 +227,49 @@ pub enum StreamChunk {
         /// Zero-based iteration index (0 = first LLM call, 1+ = continuation after tools)
         iteration: u32,
     },
+    /// Real-time shell output chunk (stdout or stderr).
+    ///
+    /// Emitted while a shell command is executing so the UI can stream output
+    /// into an embedded terminal component. Each chunk is a small fragment of
+    /// text (typically one or a few lines).
+    ShellOutput {
+        /// Unique identifier for the shell process (matches `ShellLifecycle`).
+        process_id: String,
+        /// Whether this chunk comes from stdout or stderr.
+        stream: ShellOutputStream,
+        /// The raw text data (may contain ANSI escape sequences).
+        data: String,
+    },
+    /// Shell process lifecycle event.
+    ///
+    /// Emitted when a shell process transitions between states (started,
+    /// completed, failed, stopped, paused, resumed). The UI uses this to
+    /// update the console header, show exit codes, and enable/disable
+    /// control buttons.
+    ShellLifecycle {
+        /// Unique identifier for the shell process (matches `ShellOutput`).
+        process_id: String,
+        /// New state of the process.
+        state: ShellProcessState,
+        /// Exit code (only meaningful when `state` is `Completed` or `Failed`).
+        exit_code: Option<i32>,
+        /// Wall-clock duration in milliseconds (set on terminal states).
+        duration_ms: Option<u64>,
+        /// The command string that was executed.
+        command: String,
+        /// Working directory for the command.
+        cwd: Option<String>,
+    },
     /// Stream completed successfully with optional token usage
     Done(Option<TokenUsage>),
     /// Stream was cancelled
     Cancelled,
+    /// Stream was paused (cancelled with the intent to resume later).
+    ///
+    /// The caller is responsible for capturing the `PausedExecutionState` from the
+    /// accumulated streaming context. This variant is a signal to the UI to render
+    /// a resumable pause marker rather than a hard cancellation.
+    Paused,
     /// An error occurred
     Error(String),
 }
@@ -213,6 +280,7 @@ enum AttemptOutcome {
     RetryableError,
     FatalError,
     Cancelled,
+    Paused,
     UnexpectedEnd,
 }
 
@@ -283,6 +351,16 @@ async fn forward_attempt_stream(
                 // Forward agent loop iteration markers without marking as output
                 let _ = tx.send(chunk).await;
             }
+            StreamChunk::ShellOutput { .. } => {
+                // Forward shell output chunks without marking as output –
+                // they are part of tool execution, already tracked via
+                // ToolCallResult.
+                let _ = tx.send(chunk).await;
+            }
+            StreamChunk::ShellLifecycle { .. } => {
+                // Forward shell lifecycle events without marking as output
+                let _ = tx.send(chunk).await;
+            }
             StreamChunk::Done(_) => {
                 let _ = tx.send(chunk).await;
                 return AttemptForwardResult {
@@ -295,6 +373,14 @@ async fn forward_attempt_stream(
                 let _ = tx.send(StreamChunk::Cancelled).await;
                 return AttemptForwardResult {
                     outcome: AttemptOutcome::Cancelled,
+                    forwarded_output,
+                    error: None,
+                };
+            }
+            StreamChunk::Paused => {
+                let _ = tx.send(StreamChunk::Paused).await;
+                return AttemptForwardResult {
+                    outcome: AttemptOutcome::Paused,
                     forwarded_output,
                     error: None,
                 };
@@ -1145,7 +1231,7 @@ pub async fn start_streaming_with_fallback(
 
         match forward.outcome {
             AttemptOutcome::Success => return Ok(()),
-            AttemptOutcome::Cancelled => return Ok(()),
+            AttemptOutcome::Cancelled | AttemptOutcome::Paused => return Ok(()),
             AttemptOutcome::FatalError => {
                 let err = AppError::Llm(
                     forward

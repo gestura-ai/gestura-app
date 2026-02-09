@@ -2761,6 +2761,7 @@ dependencies = [
  "json-ld",
  "keyring",
  "lazy_static",
+ "libc",
  "nix 0.29.0",
  "notify",
  "objc",

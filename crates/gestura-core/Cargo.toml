@@ -90,6 +90,7 @@ scraper = "0.25.0"
 url = "2.5.8"
 notify = { version = "8.2.0", features = ["macos_fsevent"] }
 serde_yaml = "0.9.34"
+libc = "0.2.180"
 
 [target.'cfg(unix)'.dependencies]
 # Unix signal handling (for screen recording on Unix platforms)
