@@ -125,14 +125,16 @@ fn set_keychain_secret(key: &str, value: &str) -> Result<()> {
 /// This determines the default permission level that new chat sessions inherit.
 /// Users can override this per-session in the session settings panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
 pub enum GlobalPermissionLevel {
     /// Read-only access - no file writes, no shell commands
+    #[serde(alias = "sandbox")]
     Sandbox,
     /// Ask before write operations (default)
     #[default]
+    #[serde(alias = "restricted")]
     Restricted,
     /// Full access - no confirmation required
+    #[serde(alias = "full")]
     Full,
 }
 
