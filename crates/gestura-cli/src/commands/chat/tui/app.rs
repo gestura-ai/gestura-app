@@ -349,6 +349,10 @@ pub enum Action {
     ScrollUp,
     /// Scroll messages down
     ScrollDown,
+    /// Scroll messages up by a page
+    PageUp,
+    /// Scroll messages down by a page
+    PageDown,
     /// Clear the input field
     ClearInput,
     /// Cancel current operation (streaming, etc.)
@@ -357,6 +361,8 @@ pub enum Action {
     ToggleRecording,
     /// Enhance the current prompt using LLM
     EnhancePrompt,
+    /// Copy the currently selected message(s) to the system clipboard
+    CopySelection,
 }
 
 /// Message for TUI display with additional metadata
@@ -502,6 +508,19 @@ pub struct TuiApp {
     pub activity_state: ActivityState,
     /// Model picker overlay state.
     pub model_picker_state: ModelPickerState,
+
+    // ========== Scrolling & Selection ==========
+    /// Total number of rendered lines in the last frame (set by `render_messages`).
+    ///
+    /// This count reflects the flattened line count (one `ListItem` per line) rather
+    /// than the message count, so scroll bounds match the visual list.
+    pub rendered_line_count: usize,
+    /// Mapping from rendered-line index → source message index (set by `render_messages`).
+    pub line_to_message_map: Vec<usize>,
+    /// Start of the current mouse-drag text selection (rendered-line index).
+    pub selection_anchor: Option<usize>,
+    /// End of the current mouse-drag text selection (rendered-line index).
+    pub selection_end: Option<usize>,
 }
 
 /// A single line in the agent activity transcript.
@@ -763,6 +782,11 @@ impl TuiApp {
 
             activity_state: ActivityState::default(),
             model_picker_state: ModelPickerState::default(),
+
+            rendered_line_count: 0,
+            line_to_message_map: Vec::new(),
+            selection_anchor: None,
+            selection_end: None,
         }
     }
 
@@ -1182,16 +1206,23 @@ impl TuiApp {
         }
     }
 
-    /// Scroll to the bottom of messages
+    /// Scroll to the bottom of messages.
+    ///
+    /// Uses the rendered line count (from the last frame) when available so the
+    /// selection lands on the actual last visible line, not just the last message.
     pub fn scroll_to_bottom(&mut self) {
-        if !self.messages.is_empty() {
-            self.message_list_state
-                .select(Some(self.messages.len().saturating_sub(1)));
+        let max = if self.rendered_line_count > 0 {
+            self.rendered_line_count
+        } else {
+            self.messages.len()
+        };
+        if max > 0 {
+            self.message_list_state.select(Some(max.saturating_sub(1)));
         }
         self.user_scrolled = false;
     }
 
-    /// Scroll up in the message list
+    /// Scroll up by one line in the rendered message list.
     pub fn scroll_up(&mut self) {
         self.user_scrolled = true;
         let current = self.message_list_state.selected().unwrap_or(0);
@@ -1200,16 +1231,44 @@ impl TuiApp {
         }
     }
 
-    /// Scroll down in the message list
+    /// Scroll down by one line in the rendered message list.
     pub fn scroll_down(&mut self) {
         let current = self.message_list_state.selected().unwrap_or(0);
-        let max = self.messages.len().saturating_sub(1);
+        let max = self.max_scroll_index();
         if current < max {
             self.message_list_state.select(Some(current + 1));
         }
         // If we're at the bottom, re-enable auto-scroll
         if self.is_at_bottom() {
             self.user_scrolled = false;
+        }
+    }
+
+    /// Scroll up by a page (roughly one screenful of lines).
+    pub fn page_up(&mut self, page_size: usize) {
+        self.user_scrolled = true;
+        let current = self.message_list_state.selected().unwrap_or(0);
+        let target = current.saturating_sub(page_size);
+        self.message_list_state.select(Some(target));
+    }
+
+    /// Scroll down by a page (roughly one screenful of lines).
+    pub fn page_down(&mut self, page_size: usize) {
+        let current = self.message_list_state.selected().unwrap_or(0);
+        let max = self.max_scroll_index();
+        let target = (current + page_size).min(max);
+        self.message_list_state.select(Some(target));
+        if self.is_at_bottom() {
+            self.user_scrolled = false;
+        }
+    }
+
+    /// Maximum valid scroll index (last rendered line, or last message as fallback).
+    fn max_scroll_index(&self) -> usize {
+        if self.rendered_line_count > 0 {
+            self.rendered_line_count.saturating_sub(1)
+        } else {
+            self.messages.len().saturating_sub(1)
         }
     }
 
@@ -1372,10 +1431,17 @@ impl TuiApp {
         false
     }
 
-    /// Get the scroll position indicator (e.g., "5/23")
+    /// Get the scroll position indicator (e.g., "5/23").
+    ///
+    /// Uses the rendered line count when available so the denominator reflects
+    /// the actual number of visual lines, not just the message count.
     pub fn scroll_indicator(&self) -> String {
         let current = self.message_list_state.selected().unwrap_or(0) + 1;
-        let total = self.messages.len();
+        let total = if self.rendered_line_count > 0 {
+            self.rendered_line_count
+        } else {
+            self.messages.len()
+        };
         if total == 0 {
             "0/0".to_string()
         } else {
@@ -1383,10 +1449,18 @@ impl TuiApp {
         }
     }
 
-    /// Check if we're at the bottom of the message list
+    /// Check if we're at the bottom of the message list.
+    ///
+    /// Compares against the rendered line count so this remains correct even
+    /// when messages expand to many visual lines.
     pub fn is_at_bottom(&self) -> bool {
         let current = self.message_list_state.selected().unwrap_or(0);
-        current + 1 >= self.messages.len()
+        let total = if self.rendered_line_count > 0 {
+            self.rendered_line_count
+        } else {
+            self.messages.len()
+        };
+        current + 1 >= total
     }
 
     // ========== Search Methods ==========

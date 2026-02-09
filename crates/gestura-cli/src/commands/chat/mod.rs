@@ -1521,6 +1521,14 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 print!("  ");
                                 let _ = std::io::stdout().flush();
                             }
+                            StreamChunk::AgentLoopIteration { iteration } => {
+                                if iteration > 0 {
+                                    println!();
+                                    println!("  {} {}", "◆".cyan(), "Reviewing results…".dimmed());
+                                    print!("  ");
+                                    let _ = std::io::stdout().flush();
+                                }
+                            }
                             StreamChunk::Cancelled => break,
                             StreamChunk::Error(e) => {
                                 return Err(std::io::Error::other(e).into());

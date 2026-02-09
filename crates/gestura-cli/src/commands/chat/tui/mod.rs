@@ -601,6 +601,18 @@ fn run_main_loop(
                             });
                             app.set_status(format!("Tool blocked: {}", tool_name));
                         }
+                        StreamChunk::AgentLoopIteration { iteration } => {
+                            if iteration > 0 {
+                                push_activity_info(
+                                    app,
+                                    format!(
+                                        "◆ Iteration {} — reviewing tool results…",
+                                        iteration + 1
+                                    ),
+                                );
+                                app.set_status("Reviewing tool results…".to_string());
+                            }
+                        }
                         StreamChunk::Cancelled => {
                             push_activity_info(app, "⏹ Cancelled");
                             // Keep partial content but mark as cancelled
@@ -763,6 +775,74 @@ fn run_main_loop(
                 }
                 Action::ScrollDown => {
                     app.scroll_down();
+                }
+                Action::PageUp => {
+                    let page_size = app
+                        .layout_areas
+                        .messages
+                        .map(|r| r.height as usize)
+                        .unwrap_or(20);
+                    app.page_up(page_size);
+                }
+                Action::PageDown => {
+                    let page_size = app
+                        .layout_areas
+                        .messages
+                        .map(|r| r.height as usize)
+                        .unwrap_or(20);
+                    app.page_down(page_size);
+                }
+                Action::CopySelection => {
+                    // Determine which message(s) to copy.
+                    // If there's a mouse selection range, use that; otherwise
+                    // fall back to the currently selected line's message.
+                    let (start, end) =
+                        if let (Some(a), Some(e)) = (app.selection_anchor, app.selection_end) {
+                            (a.min(e), a.max(e))
+                        } else {
+                            let sel = app.message_list_state.selected().unwrap_or(0);
+                            (sel, sel)
+                        };
+
+                    // Collect unique message indices in order.
+                    let mut msg_indices: Vec<usize> = Vec::new();
+                    for line_idx in start..=end {
+                        if let Some(&mi) = app.line_to_message_map.get(line_idx)
+                            && msg_indices.last() != Some(&mi)
+                        {
+                            msg_indices.push(mi);
+                        }
+                    }
+
+                    let text: String = msg_indices
+                        .iter()
+                        .filter_map(|&mi| app.messages.get(mi))
+                        .map(|m| m.content.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+
+                    if !text.is_empty() {
+                        match arboard::Clipboard::new() {
+                            Ok(mut clipboard) => match clipboard.set_text(&text) {
+                                Ok(()) => {
+                                    app.set_status(format!(
+                                        "Copied {} message(s) to clipboard",
+                                        msg_indices.len()
+                                    ));
+                                }
+                                Err(e) => {
+                                    app.set_status(format!("Clipboard error: {e}"));
+                                }
+                            },
+                            Err(e) => {
+                                app.set_status(format!("Clipboard unavailable: {e}"));
+                            }
+                        }
+                    }
+
+                    // Clear selection after copy
+                    app.selection_anchor = None;
+                    app.selection_end = None;
                 }
                 Action::ClearInput => {
                     app.clear_input();

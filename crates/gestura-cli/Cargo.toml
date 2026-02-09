@@ -59,6 +59,7 @@ textwrap = "0.16.2"
 regex = "1.12.2"
 reqwest = { workspace = true, features = ["json"] }
 termsize = "0.1.9"
+arboard = "3.6.1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

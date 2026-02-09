@@ -745,190 +745,203 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         (0..app.messages.len()).collect()
     };
 
-    let messages: Vec<ListItem> = message_indices
-        .iter()
-        .flat_map(|&msg_idx| {
-            let msg = &app.messages[msg_idx];
-            let match_ranges = if has_search {
-                app.get_match_ranges(msg_idx)
-            } else {
-                None
-            };
-            let should_highlight = match_ranges.is_some() && has_search;
+    // Build the flat list of rendered lines and a parallel mapping from each
+    // rendered line back to its source message index.
+    let mut all_items: Vec<ListItem> = Vec::new();
+    let mut line_to_message: Vec<usize> = Vec::new();
 
-            let (prefix, base_style) = match msg.role.as_str() {
-                "user" => ("> ", Style::default().fg(theme.user_msg)),
-                "assistant" => {
-                    if msg.is_streaming {
-                        (
-                            "",
-                            Style::default()
-                                .fg(theme.streaming)
-                                .add_modifier(Modifier::ITALIC),
-                        )
-                    } else {
-                        ("", Style::default().fg(theme.assistant_msg))
-                    }
+    for &msg_idx in &message_indices {
+        let msg = &app.messages[msg_idx];
+        let match_ranges = if has_search {
+            app.get_match_ranges(msg_idx)
+        } else {
+            None
+        };
+        let should_highlight = match_ranges.is_some() && has_search;
+
+        let (prefix, base_style) = match msg.role.as_str() {
+            "user" => ("> ", Style::default().fg(theme.user_msg)),
+            "assistant" => {
+                if msg.is_streaming {
+                    (
+                        "",
+                        Style::default()
+                            .fg(theme.streaming)
+                            .add_modifier(Modifier::ITALIC),
+                    )
+                } else {
+                    ("", Style::default().fg(theme.assistant_msg))
                 }
-                "system" => ("# ", Style::default().fg(theme.system_msg)),
-                _ => ("", Style::default()),
-            };
+            }
+            "system" => ("# ", Style::default().fg(theme.system_msg)),
+            _ => ("", Style::default()),
+        };
 
-            let base_style = if msg.is_error {
-                base_style.fg(theme.error_msg).add_modifier(Modifier::BOLD)
-            } else {
-                base_style
-            };
+        let base_style = if msg.is_error {
+            base_style.fg(theme.error_msg).add_modifier(Modifier::BOLD)
+        } else {
+            base_style
+        };
 
-            let content = if msg.is_streaming {
-                // Determine streaming state
-                if msg.thinking.is_some() {
-                    // We are thinking
-                    if msg.content.is_empty() {
-                        String::new() // Don't show text if only thinking
-                    } else {
-                        format!("{}▌", msg.content)
-                    }
+        let content = if msg.is_streaming {
+            // Determine streaming state
+            if msg.thinking.is_some() {
+                // We are thinking
+                if msg.content.is_empty() {
+                    String::new() // Don't show text if only thinking
                 } else {
                     format!("{}▌", msg.content)
                 }
             } else {
-                msg.content.clone()
-            };
+                format!("{}▌", msg.content)
+            }
+        } else {
+            msg.content.clone()
+        };
 
-            // Parse message for code blocks
-            let segments = parse_message_segments(&content);
-            let mut items = Vec::new();
+        // Parse message for code blocks
+        let segments = parse_message_segments(&content);
+        let mut items = Vec::new();
 
-            // Render Thinking if present (with word wrapping) using transcript style.
-            if let Some(thinking) = &msg.thinking
-                && !thinking.is_empty()
-            {
+        // Render Thinking if present (with word wrapping) using transcript style.
+        if let Some(thinking) = &msg.thinking
+            && !thinking.is_empty()
+        {
+            items.push(ListItem::new(Line::from(Span::styled(
+                "... thinking",
+                Style::default()
+                    .fg(theme.code_comment)
+                    .add_modifier(Modifier::ITALIC | Modifier::DIM),
+            ))));
+
+            // Wrap thinking text (indent 2 spaces)
+            let thinking_wrap_width = wrap_width.saturating_sub(2);
+            let wrapped_thinking = wrap_text(thinking, thinking_wrap_width);
+            for line in wrapped_thinking {
                 items.push(ListItem::new(Line::from(Span::styled(
-                    "... thinking",
+                    format!("  {}", line),
                     Style::default()
                         .fg(theme.code_comment)
                         .add_modifier(Modifier::ITALIC | Modifier::DIM),
                 ))));
-
-                // Wrap thinking text (indent 2 spaces)
-                let thinking_wrap_width = wrap_width.saturating_sub(2);
-                let wrapped_thinking = wrap_text(thinking, thinking_wrap_width);
-                for line in wrapped_thinking {
-                    items.push(ListItem::new(Line::from(Span::styled(
-                        format!("  {}", line),
-                        Style::default()
-                            .fg(theme.code_comment)
-                            .add_modifier(Modifier::ITALIC | Modifier::DIM),
-                    ))));
-                }
-
-                items.push(ListItem::new(Line::from("")));
             }
-            let mut is_first = true;
 
-            for segment in segments {
-                match segment {
-                    MessageSegment::Text(text) => {
-                        // Render markdown styling first, then wrap styled spans.
-                        let rendered =
-                            markdown::markdown_to_text_with_base(&text, theme, base_style);
+            items.push(ListItem::new(Line::from("")));
+        }
+        let mut is_first = true;
 
-                        for rendered_line in rendered.lines {
-                            let wrapped = wrap_spans(&rendered_line.spans, wrap_width);
-                            for wrapped_spans in wrapped {
-                                let display_prefix = if is_first {
-                                    is_first = false;
-                                    prefix
-                                } else if prefix.is_empty() {
-                                    ""
-                                } else {
-                                    "  "
-                                };
+        for segment in segments {
+            match segment {
+                MessageSegment::Text(text) => {
+                    // Render markdown styling first, then wrap styled spans.
+                    let rendered = markdown::markdown_to_text_with_base(&text, theme, base_style);
 
-                                let mut spans: Vec<Span<'static>> = Vec::new();
-                                spans.push(Span::styled(display_prefix.to_string(), base_style));
+                    for rendered_line in rendered.lines {
+                        let wrapped = wrap_spans(&rendered_line.spans, wrap_width);
+                        for wrapped_spans in wrapped {
+                            let display_prefix = if is_first {
+                                is_first = false;
+                                prefix
+                            } else if prefix.is_empty() {
+                                ""
+                            } else {
+                                "  "
+                            };
 
-                                if should_highlight {
-                                    let visible: String =
-                                        wrapped_spans.iter().map(|s| s.content.as_ref()).collect();
-                                    let ranges = find_query_ranges(&visible, search_query);
-                                    spans.extend(apply_highlight_ranges_to_spans(
-                                        &wrapped_spans,
-                                        &ranges,
-                                        theme,
-                                    ));
-                                } else {
-                                    spans.extend(wrapped_spans);
-                                }
+                            let mut spans: Vec<Span<'static>> = Vec::new();
+                            spans.push(Span::styled(display_prefix.to_string(), base_style));
 
-                                items.push(ListItem::new(Line::from(spans)));
+                            if should_highlight {
+                                let visible: String =
+                                    wrapped_spans.iter().map(|s| s.content.as_ref()).collect();
+                                let ranges = find_query_ranges(&visible, search_query);
+                                spans.extend(apply_highlight_ranges_to_spans(
+                                    &wrapped_spans,
+                                    &ranges,
+                                    theme,
+                                ));
+                            } else {
+                                spans.extend(wrapped_spans);
                             }
-                        }
-                    }
-                    MessageSegment::CodeBlock { language, code } => {
-                        // Transcript-style fenced code blocks (avoid box-drawing chrome).
-                        let lang_label = language.as_deref().unwrap_or("");
-                        let fence_open = if lang_label.is_empty() {
-                            "```".to_string()
-                        } else {
-                            format!("```{}", lang_label)
-                        };
-                        items.push(ListItem::new(Line::from(Span::styled(
-                            fence_open,
-                            Style::default()
-                                .fg(theme.code_lang_label)
-                                .add_modifier(Modifier::DIM),
-                        ))));
 
-                        // Add highlighted code lines (indented)
-                        for code_line in code.lines() {
-                            let mut spans = vec![Span::styled(
-                                "    ".to_string(),
-                                Style::default()
-                                    .fg(theme.code_lang_label)
-                                    .add_modifier(Modifier::DIM),
-                            )];
-                            spans.extend(highlight_code_line_themed(
-                                code_line,
-                                language.as_deref(),
-                                theme,
-                            ));
                             items.push(ListItem::new(Line::from(spans)));
                         }
+                    }
+                }
+                MessageSegment::CodeBlock { language, code } => {
+                    // Transcript-style fenced code blocks (avoid box-drawing chrome).
+                    let lang_label = language.as_deref().unwrap_or("");
+                    let fence_open = if lang_label.is_empty() {
+                        "```".to_string()
+                    } else {
+                        format!("```{}", lang_label)
+                    };
+                    items.push(ListItem::new(Line::from(Span::styled(
+                        fence_open,
+                        Style::default()
+                            .fg(theme.code_lang_label)
+                            .add_modifier(Modifier::DIM),
+                    ))));
 
-                        items.push(ListItem::new(Line::from(Span::styled(
-                            "```",
+                    // Add highlighted code lines (indented)
+                    for code_line in code.lines() {
+                        let mut spans = vec![Span::styled(
+                            "    ".to_string(),
                             Style::default()
                                 .fg(theme.code_lang_label)
                                 .add_modifier(Modifier::DIM),
-                        ))));
-                        items.push(ListItem::new(Line::from("")));
-                        is_first = false;
+                        )];
+                        spans.extend(highlight_code_line_themed(
+                            code_line,
+                            language.as_deref(),
+                            theme,
+                        ));
+                        items.push(ListItem::new(Line::from(spans)));
                     }
+
+                    items.push(ListItem::new(Line::from(Span::styled(
+                        "```",
+                        Style::default()
+                            .fg(theme.code_lang_label)
+                            .add_modifier(Modifier::DIM),
+                    ))));
+                    items.push(ListItem::new(Line::from("")));
+                    is_first = false;
                 }
             }
+        }
 
-            if items.is_empty() {
-                vec![ListItem::new(Line::from(Span::styled(
-                    prefix.to_string(),
-                    base_style,
-                )))]
-            } else {
-                items
-            }
-        })
-        .collect();
+        let final_items = if items.is_empty() {
+            vec![ListItem::new(Line::from(Span::styled(
+                prefix.to_string(),
+                base_style,
+            )))]
+        } else {
+            items
+        };
+
+        // Record the mapping: each rendered line maps back to this message.
+        for _ in &final_items {
+            line_to_message.push(msg_idx);
+        }
+        all_items.extend(final_items);
+    }
+
+    // Persist the line count and mapping so scroll logic uses the correct bounds.
+    app.rendered_line_count = all_items.len();
+    app.line_to_message_map = line_to_message;
 
     let messages_block = Block::default().borders(Borders::NONE);
 
-    let list = List::new(messages).block(messages_block).highlight_style(
+    let list = List::new(all_items).block(messages_block).highlight_style(
         Style::default()
             .bg(theme.selection_bg)
             .add_modifier(Modifier::BOLD),
     );
 
-    frame.render_stateful_widget(list, area, &mut app.message_list_state.clone());
+    // IMPORTANT: pass the real `message_list_state` — NOT a clone — so ratatui's
+    // viewport offset updates are persisted between frames.
+    frame.render_stateful_widget(list, area, &mut app.message_list_state);
 }
 
 /// Render a Claude Code-like home/default view when there are no messages.

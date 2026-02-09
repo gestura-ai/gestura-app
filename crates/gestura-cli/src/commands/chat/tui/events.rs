@@ -23,8 +23,11 @@ pub fn handle_event(app: &mut TuiApp, event: Event) -> Action {
 fn handle_key_event(app: &mut TuiApp, key: KeyEvent) -> Action {
     // Global keybindings (work in any mode)
     match key.code {
-        // Ctrl+C always quits
+        // Ctrl+C: copy selection if one exists, otherwise quit
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if app.selection_anchor.is_some() {
+                return Action::CopySelection;
+            }
             return Action::Quit;
         }
         // Ctrl+Q always quits
@@ -226,6 +229,10 @@ fn handle_normal_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         // Navigation
         KeyCode::Char('j') | KeyCode::Down => Action::ScrollDown,
         KeyCode::Char('k') | KeyCode::Up => Action::ScrollUp,
+        KeyCode::PageUp => Action::PageUp,
+        KeyCode::PageDown => Action::PageDown,
+        // Copy selected message(s) to clipboard (vim 'y' = yank)
+        KeyCode::Char('y') => Action::CopySelection,
         // Vim motions for cursor in input (when in normal mode)
         KeyCode::Char('h') | KeyCode::Left => {
             app.cursor_left();
@@ -482,9 +489,9 @@ fn handle_insert_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
             app.cursor_end();
             Action::Continue
         }
-        // Scroll while in insert mode
-        KeyCode::PageUp => Action::ScrollUp,
-        KeyCode::PageDown => Action::ScrollDown,
+        // Page-level scrolling while in insert mode
+        KeyCode::PageUp => Action::PageUp,
+        KeyCode::PageDown => Action::PageDown,
         _ => Action::Continue,
     }
 }
@@ -657,17 +664,20 @@ fn handle_mouse_event(app: &mut TuiApp, mouse: MouseEvent) -> Action {
                 }
             }
 
-            // Check if click is in messages area
+            // Check if click is in messages area — start selection anchor
             if let Some(msg_area) = app.layout_areas.messages
                 && y >= msg_area.y
                 && y < msg_area.y + msg_area.height
             {
-                // This is approximate - each message takes ~2 lines
                 let relative_y = (y - msg_area.y) as usize;
-                let msg_index = relative_y / 2; // Rough estimate
-                if msg_index < app.messages.len() {
-                    app.message_list_state.select(Some(msg_index));
+                let offset = app.message_list_state.offset();
+                let line_index = offset + relative_y;
+                if line_index < app.rendered_line_count {
+                    app.message_list_state.select(Some(line_index));
                     app.user_scrolled = true;
+                    // Begin selection drag
+                    app.selection_anchor = Some(line_index);
+                    app.selection_end = Some(line_index);
                 }
             }
 
@@ -677,8 +687,26 @@ fn handle_mouse_event(app: &mut TuiApp, mouse: MouseEvent) -> Action {
                 && y < input_area.y + input_area.height
             {
                 app.mode = TuiMode::Insert;
+                // Clear any message selection on input click
+                app.selection_anchor = None;
+                app.selection_end = None;
             }
 
+            Action::Continue
+        }
+        MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+            // Extend selection as the mouse drags
+            if let Some(msg_area) = app.layout_areas.messages
+                && y >= msg_area.y
+                && y < msg_area.y + msg_area.height
+                && app.selection_anchor.is_some()
+            {
+                let relative_y = (y - msg_area.y) as usize;
+                let offset = app.message_list_state.offset();
+                let line_index =
+                    (offset + relative_y).min(app.rendered_line_count.saturating_sub(1));
+                app.selection_end = Some(line_index);
+            }
             Action::Continue
         }
         _ => Action::Continue,
