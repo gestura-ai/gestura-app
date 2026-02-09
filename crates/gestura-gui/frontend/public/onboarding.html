@@ -901,7 +901,7 @@
                 console.error('Download failed:', error);
                 const statusText = document.getElementById('downloadStatus');
                 if (statusText) {
-                    statusText.innerHTML = `<span class="icon-x-circle" style="color: var(--error-color);"></span> Download failed: ${error}`;
+                    statusText.innerHTML = `<span class="icon-x-circle" style="color: rgb(var(--danger-rgb));"></span> Download failed: ${error}`;
                 }
                 // Show retry button
                 nextBtn.textContent = 'Retry Download';
