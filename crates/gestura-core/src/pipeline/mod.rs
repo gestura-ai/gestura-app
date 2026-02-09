@@ -2713,13 +2713,13 @@ impl AgentPipeline {
                 let text: String = result
                     .content
                     .into_iter()
-                    .filter_map(|c| match c {
-                        ToolResultContent::Text { text } => Some(text),
+                    .map(|c| match c {
+                        ToolResultContent::Text { text } => text,
                         ToolResultContent::Image { data, mime_type } => {
-                            Some(format!("[image: {mime_type}, {} bytes]", data.len()))
+                            format!("[image: {mime_type}, {} bytes]", data.len())
                         }
                         ToolResultContent::Resource { resource } => {
-                            Some(format!("[resource: {}]", resource.uri))
+                            format!("[resource: {}]", resource.uri)
                         }
                     })
                     .collect::<Vec<_>>()
