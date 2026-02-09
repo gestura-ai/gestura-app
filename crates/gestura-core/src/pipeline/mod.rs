@@ -533,7 +533,9 @@ impl AgentPipeline {
         let _ = tx.send(StreamChunk::ToolCallArgs(args.clone())).await;
 
         let start_time = Instant::now();
-        let result = self.execute_tool(&tool_name, &args, workspace).await;
+        let result = self
+            .execute_tool(&tool_name, &args, workspace, Some(tx))
+            .await;
         let duration_ms = start_time.elapsed().as_millis() as u64;
 
         let _ = tx.send(StreamChunk::ToolCallEnd).await;
@@ -610,7 +612,7 @@ impl AgentPipeline {
                     synthesis_usage = usage.clone();
                     break;
                 }
-                StreamChunk::Error(_) | StreamChunk::Cancelled => {
+                StreamChunk::Error(_) | StreamChunk::Cancelled | StreamChunk::Paused => {
                     let _ = tx.send(chunk).await;
                     break;
                 }
@@ -2067,6 +2069,14 @@ impl AgentPipeline {
                         // Forward in case an inner stream echoes one.
                         let _ = tx.send(chunk).await;
                     }
+                    StreamChunk::ShellOutput { .. } => {
+                        // Forward real-time shell output to frontend
+                        let _ = tx.send(chunk).await;
+                    }
+                    StreamChunk::ShellLifecycle { .. } => {
+                        // Forward shell lifecycle events to frontend
+                        let _ = tx.send(chunk).await;
+                    }
                     StreamChunk::Done(usage) => {
                         // Some providers (or buggy intermediaries) may terminate the stream
                         // without emitting a ToolCallEnd. If we have a pending tool call, treat
@@ -2100,6 +2110,10 @@ impl AgentPipeline {
                         return Err(AppError::Llm(e.clone()));
                     }
                     StreamChunk::Cancelled => {
+                        let _ = tx.send(chunk).await;
+                        return Ok(response);
+                    }
+                    StreamChunk::Paused => {
                         let _ = tx.send(chunk).await;
                         return Ok(response);
                     }
@@ -2230,7 +2244,9 @@ impl AgentPipeline {
                     id = %tc.id,
                     "Blocking loop: executing tool call"
                 );
-                let result = self.execute_tool(&tc.name, &tc.arguments, workspace).await;
+                let result = self
+                    .execute_tool(&tc.name, &tc.arguments, workspace, None)
+                    .await;
                 let duration_ms = 0u64; // No per-call timing in blocking path.
                 iteration_tool_calls.push(ToolCallRecord {
                     id: tc.id.clone(),
@@ -2601,7 +2617,7 @@ impl AgentPipeline {
 
         // Execute the tool with workspace sandboxing
         let result = self
-            .execute_tool(&pending.name, &pending.arguments, workspace)
+            .execute_tool(&pending.name, &pending.arguments, workspace, Some(tx))
             .await;
         let duration_ms = pending.start_time.elapsed().as_millis() as u64;
 
@@ -2652,6 +2668,7 @@ impl AgentPipeline {
         name: &str,
         arguments: &str,
         workspace: Option<&SessionWorkspace>,
+        stream_tx: Option<&mpsc::Sender<StreamChunk>>,
     ) -> ToolResult {
         let start = Instant::now();
         tracing::info!(
@@ -2662,7 +2679,10 @@ impl AgentPipeline {
         );
 
         let result = match name {
-            "shell" | "bash" | "execute" => self.execute_shell_tool(arguments, workspace).await,
+            "shell" | "bash" | "execute" => {
+                self.execute_shell_tool(arguments, workspace, stream_tx)
+                    .await
+            }
             "file" | "read_file" | "write_file" => {
                 self.execute_file_tool(arguments, workspace).await
             }
@@ -2860,11 +2880,17 @@ impl AgentPipeline {
         }
     }
 
-    /// Execute shell tool with workspace sandboxing
+    /// Execute shell tool with workspace sandboxing.
+    ///
+    /// When `stream_tx` is `Some`, the command is executed via the streaming
+    /// path (`shell_streaming`) so that stdout/stderr lines are emitted in
+    /// real-time as `ShellOutput` / `ShellLifecycle` chunks.  When `None`,
+    /// the legacy blocking path (`shell_async`) is used.
     async fn execute_shell_tool(
         &self,
         arguments: &str,
         workspace: Option<&SessionWorkspace>,
+        stream_tx: Option<&mpsc::Sender<StreamChunk>>,
     ) -> ToolResult {
         use crate::session_workspace::is_shell_command_allowed;
         use crate::tools::shell_async;
@@ -2889,8 +2915,6 @@ impl AgentPipeline {
 
                 // Determine working directory
                 let cwd = if let Some(ws) = workspace {
-                    // If workspace is set, use it as the working directory
-                    // If cwd is specified in args, resolve it relative to workspace
                     if let Some(requested_cwd) = args.get("cwd").and_then(|v| v.as_str()) {
                         match ws.resolve_path_for_read(Path::new(requested_cwd)) {
                             Ok(resolved) => {
@@ -2913,7 +2937,6 @@ impl AgentPipeline {
                         Some(ws.root().to_string_lossy().to_string())
                     }
                 } else {
-                    // No workspace - use requested cwd or None
                     args.get("cwd")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
@@ -2933,16 +2956,45 @@ impl AgentPipeline {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(60);
 
-                match shell_async::execute_command_with_options(
-                    command,
-                    cwd.as_deref(),
-                    env.as_ref(),
-                    Some(timeout_secs),
-                )
-                .await
-                {
-                    Ok(output) => ToolResult::Success(output),
-                    Err(e) => ToolResult::Error(e.to_string()),
+                // Streaming path: send real-time output chunks to the frontend.
+                if let Some(tx) = stream_tx {
+                    use crate::tools::shell_streaming;
+
+                    match shell_streaming::execute_streaming(
+                        command,
+                        cwd.as_deref(),
+                        env.as_ref(),
+                        Some(timeout_secs),
+                        tx.clone(),
+                    )
+                    .await
+                    {
+                        Ok(r) => {
+                            if r.success {
+                                ToolResult::Success(r.stdout)
+                            } else {
+                                ToolResult::Error(format!(
+                                    "Exit {}: {}",
+                                    r.exit_code,
+                                    r.stderr.trim_end()
+                                ))
+                            }
+                        }
+                        Err(e) => ToolResult::Error(e.to_string()),
+                    }
+                } else {
+                    // Legacy non-streaming path.
+                    match shell_async::execute_command_with_options(
+                        command,
+                        cwd.as_deref(),
+                        env.as_ref(),
+                        Some(timeout_secs),
+                    )
+                    .await
+                    {
+                        Ok(output) => ToolResult::Success(output),
+                        Err(e) => ToolResult::Error(e.to_string()),
+                    }
                 }
             }
             Err(_) => {
@@ -2957,9 +3009,38 @@ impl AgentPipeline {
                 }
 
                 let cwd = workspace.map(|ws| ws.root().to_string_lossy().to_string());
-                match shell_async::execute_command(arguments, cwd.as_deref()).await {
-                    Ok(output) => ToolResult::Success(output),
-                    Err(e) => ToolResult::Error(e.to_string()),
+
+                // Streaming path for raw-argument commands.
+                if let Some(tx) = stream_tx {
+                    use crate::tools::shell_streaming;
+
+                    match shell_streaming::execute_streaming(
+                        arguments,
+                        cwd.as_deref(),
+                        None,
+                        Some(60),
+                        tx.clone(),
+                    )
+                    .await
+                    {
+                        Ok(r) => {
+                            if r.success {
+                                ToolResult::Success(r.stdout)
+                            } else {
+                                ToolResult::Error(format!(
+                                    "Exit {}: {}",
+                                    r.exit_code,
+                                    r.stderr.trim_end()
+                                ))
+                            }
+                        }
+                        Err(e) => ToolResult::Error(e.to_string()),
+                    }
+                } else {
+                    match shell_async::execute_command(arguments, cwd.as_deref()).await {
+                        Ok(output) => ToolResult::Success(output),
+                        Err(e) => ToolResult::Error(e.to_string()),
+                    }
                 }
             }
         }
@@ -4489,7 +4570,7 @@ mod tests {
             .expect("workspace should be created");
 
         let args = serde_json::json!({"operation":"stats","path":"."}).to_string();
-        let result = pipeline.execute_tool("code", &args, Some(&ws)).await;
+        let result = pipeline.execute_tool("code", &args, Some(&ws), None).await;
 
         match result {
             ToolResult::Success(s) => {
@@ -4520,7 +4601,7 @@ mod tests {
         })
         .to_string();
 
-        let result = pipeline.execute_tool("file", &args, Some(&ws)).await;
+        let result = pipeline.execute_tool("file", &args, Some(&ws), None).await;
         match result {
             ToolResult::Success(s) => {
                 assert!(s.contains("l2"));
@@ -4552,7 +4633,7 @@ mod tests {
         .to_string();
 
         let r1 = pipeline
-            .execute_tool("file", &args_hidden_off, Some(&ws))
+            .execute_tool("file", &args_hidden_off, Some(&ws), None)
             .await;
         match r1 {
             ToolResult::Success(s) => {
@@ -4571,7 +4652,7 @@ mod tests {
         .to_string();
 
         let r2 = pipeline
-            .execute_tool("file", &args_hidden_on, Some(&ws))
+            .execute_tool("file", &args_hidden_on, Some(&ws), None)
             .await;
         match r2 {
             ToolResult::Success(s) => {
@@ -4602,7 +4683,7 @@ mod tests {
         })
         .to_string();
 
-        let result = pipeline.execute_tool("file", &args, Some(&ws)).await;
+        let result = pipeline.execute_tool("file", &args, Some(&ws), None).await;
         match result {
             ToolResult::Success(s) => {
                 let v: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -4630,7 +4711,7 @@ mod tests {
         })
         .to_string();
 
-        let result = pipeline.execute_tool("shell", &args, Some(&ws)).await;
+        let result = pipeline.execute_tool("shell", &args, Some(&ws), None).await;
         match result {
             ToolResult::Success(s) => {
                 // The shell async wrapper returns stdout on success.
@@ -4652,7 +4733,9 @@ mod tests {
             .expect("workspace should be created");
 
         let args = serde_json::json!({"operation": "start"}).to_string();
-        let result = pipeline.execute_tool("screenshot", &args, Some(&ws)).await;
+        let result = pipeline
+            .execute_tool("screenshot", &args, Some(&ws), None)
+            .await;
         match result {
             ToolResult::Error(e) => assert!(e.contains("does not support operation")),
             other => panic!("expected error, got: {other:?}"),
@@ -4671,7 +4754,9 @@ mod tests {
         })
         .to_string();
 
-        let result = pipeline.execute_tool("screenshot", &args, Some(&ws)).await;
+        let result = pipeline
+            .execute_tool("screenshot", &args, Some(&ws), None)
+            .await;
         match result {
             ToolResult::Error(e) => assert!(e.contains("Invalid return.mode")),
             other => panic!("expected error, got: {other:?}"),
@@ -4691,7 +4776,9 @@ mod tests {
         })
         .to_string();
 
-        let result = pipeline.execute_tool("screenshot", &args, Some(&ws)).await;
+        let result = pipeline
+            .execute_tool("screenshot", &args, Some(&ws), None)
+            .await;
         match result {
             ToolResult::Error(e) => assert!(e.contains("does not match requested output_format")),
             other => panic!("expected error, got: {other:?}"),
@@ -4707,7 +4794,7 @@ mod tests {
 
         let args = serde_json::json!({}).to_string();
         let result = pipeline
-            .execute_tool("screen_record", &args, Some(&ws))
+            .execute_tool("screen_record", &args, Some(&ws), None)
             .await;
         match result {
             ToolResult::Error(e) => assert!(e.contains("Missing required field 'operation'")),
