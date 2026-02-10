@@ -403,20 +403,43 @@
     </div>
 
     <script>
+        function getTauriInvoke() {
+            const w = window;
+            // Tauri (public global) support
+            if (w.__TAURI__ && w.__TAURI__.core && typeof w.__TAURI__.core.invoke === 'function') {
+                return w.__TAURI__.core.invoke;
+            }
+            // Tauri (internal) support (useful for tests / alternate runtimes)
+            if (w.__TAURI_INTERNALS__ && typeof w.__TAURI_INTERNALS__.invoke === 'function') {
+                return w.__TAURI_INTERNALS__.invoke;
+            }
+            return null;
+        }
+
         // =====================================================================
         // Theme Management
         // =====================================================================
         async function initTheme() {
             try {
-                const config = await window.__TAURI__.core.invoke('get_config');
+                const tauriInvoke = getTauriInvoke();
+                if (!tauriInvoke) {
+                    applyTheme('system');
+                    return;
+                }
+                const config = await tauriInvoke('get_config');
                 const themeMode = config?.ui?.theme_mode || 'system';
                 applyTheme(themeMode);
 
                 if (themeMode === 'system') {
                     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-                    mediaQuery.addEventListener('change', (e) => {
-                        applyTheme('system');
-                    });
+                    const handler = () => applyTheme('system');
+                    // Safari 13 compatibility: MediaQueryList used addListener/removeListener.
+                    if (typeof mediaQuery.addEventListener === 'function') {
+                        mediaQuery.addEventListener('change', handler);
+                    } else if (typeof mediaQuery.addListener === 'function') {
+                        // eslint-disable-next-line deprecation/deprecation
+                        mediaQuery.addListener(handler);
+                    }
                 }
             } catch (e) {
                 console.error('[Theme] Failed to initialize theme:', e);
@@ -435,18 +458,14 @@
             }
         }
 
-        if (window.__TAURI__) {
-            initTheme();
-        }
+        void initTheme();
 
         // =====================================================================
         // Onboarding Logic
         // =====================================================================
-        let invoke;
-        if (window.__TAURI__ && window.__TAURI__.core) {
-            invoke = window.__TAURI__.core.invoke;
-        } else {
-            console.error('[Onboarding] Tauri API not available — buttons will be non-functional');
+        let invoke = getTauriInvoke();
+        if (!invoke) {
+            console.warn('[Onboarding] Tauri API not available — some actions may be unavailable (completion, downloads, permissions)');
             invoke = () => Promise.reject(new Error('Tauri API not available'));
         }
 
@@ -815,26 +834,89 @@
 
         async function updateUI() {
             const step = steps[currentStep];
-            document.getElementById('progressFill').style.width = `${((currentStep + 1) / steps.length) * 100}%`;
-            document.getElementById('stepNumber').textContent = `Step ${currentStep + 1} of ${steps.length}`;
-            document.getElementById('stepName').textContent = step.title;
+            const progressFill = document.getElementById('progressFill');
+            const stepNumber = document.getElementById('stepNumber');
+            const stepName = document.getElementById('stepName');
+            if (progressFill) progressFill.style.width = `${((currentStep + 1) / steps.length) * 100}%`;
+            if (stepNumber) stepNumber.textContent = `Step ${currentStep + 1} of ${steps.length}`;
+            if (stepName) stepName.textContent = step.title;
             await setStepContentHtml(step.content);
 
             // Step-specific initialization (async where needed)
-            if (step.id === 'permissions') await renderPermissions();
-            if (step.id === 'voice') await loadMicrophoneDevices();
-            if (step.id === 'voice-model') await loadVoiceModelConfig();
-            if (step.id === 'llm') await loadLLMConfig();
-            if (step.id === 'agent-permissions') await loadAgentPermissionLevel();
+            // Do not allow a failed Tauri call to break navigation/rendering.
+            if (step.id === 'permissions') {
+                try { await renderPermissions(); } catch (e) { console.error('[Onboarding] renderPermissions failed:', e); }
+            }
+            if (step.id === 'voice') {
+                try { await loadMicrophoneDevices(); } catch (e) { console.error('[Onboarding] loadMicrophoneDevices failed:', e); }
+            }
+            if (step.id === 'voice-model') {
+                try { await loadVoiceModelConfig(); } catch (e) { console.error('[Onboarding] loadVoiceModelConfig failed:', e); }
+            }
+            if (step.id === 'llm') {
+                try { await loadLLMConfig(); } catch (e) { console.error('[Onboarding] loadLLMConfig failed:', e); }
+            }
+            if (step.id === 'agent-permissions') {
+                try { await loadAgentPermissionLevel(); } catch (e) { console.error('[Onboarding] loadAgentPermissionLevel failed:', e); }
+            }
 
             const prevBtn = document.getElementById('prevBtn');
             const nextBtn = document.getElementById('nextBtn');
             if (nextBtn) {
                 nextBtn.dataset.overrideHandler = 'false';
+                // Some steps may temporarily override behavior via onclick.
+                // Clear it so the default handler works consistently.
                 nextBtn.onclick = null;
+                nextBtn.textContent = currentStep === steps.length - 1
+                    ? 'Start Using Gestura'
+                    : (currentStep === 0 ? 'Get Started' : 'Continue');
             }
-            prevBtn.style.visibility = currentStep === 0 ? 'hidden' : 'visible';
-            nextBtn.textContent = currentStep === steps.length - 1 ? 'Start Using Gestura' : (currentStep === 0 ? 'Get Started' : 'Continue');
+            if (prevBtn) prevBtn.style.visibility = currentStep === 0 ? 'hidden' : 'visible';
+        }
+
+        function setupButtonListeners() {
+            const nextBtn = document.getElementById('nextBtn');
+            const prevBtn = document.getElementById('prevBtn');
+
+            // Attach once (safe if init runs multiple times).
+            if (nextBtn && nextBtn.dataset.listenersAttached !== 'true') {
+                nextBtn.addEventListener('click', async function (e) {
+                    e.preventDefault();
+                    if (nextBtn.dataset.overrideHandler === 'true') return;
+                    console.log('[Onboarding] Next button clicked, currentStep:', currentStep);
+                    try {
+                        await nextStep();
+                    } catch (error) {
+                        console.error('[Onboarding] Error in next button handler:', error);
+                    }
+                });
+                nextBtn.dataset.listenersAttached = 'true';
+                console.log('[Onboarding] Next button listener attached');
+            }
+
+            if (prevBtn && prevBtn.dataset.listenersAttached !== 'true') {
+                prevBtn.addEventListener('click', async function (e) {
+                    e.preventDefault();
+                    console.log('[Onboarding] Previous button clicked, currentStep:', currentStep);
+                    try {
+                        await previousStep();
+                    } catch (error) {
+                        console.error('[Onboarding] Error in previous button handler:', error);
+                    }
+                });
+                prevBtn.dataset.listenersAttached = 'true';
+                console.log('[Onboarding] Previous button listener attached');
+            }
+        }
+
+        async function initOnboarding() {
+            console.log('[Onboarding] Initializing onboarding wizard...');
+            setupButtonListeners();
+            try {
+                await updateUI();
+            } catch (e) {
+                console.error('[Onboarding] Error during initial updateUI:', e);
+            }
         }
 
         async function nextStep() {
@@ -940,8 +1022,8 @@
             const prevBtn = document.getElementById('prevBtn');
 
             // Hide navigation buttons during download
-            nextBtn.style.display = 'none';
-            prevBtn.style.display = 'none';
+            if (nextBtn) nextBtn.style.display = 'none';
+            if (prevBtn) prevBtn.style.display = 'none';
 
             // Get model info for size display
             let modelInfo = null;
@@ -964,9 +1046,13 @@
                     <p id="downloadStatus" style="text-align: center; margin-top: 1rem; color: var(--text-secondary);">Starting download...</p>
                 </div>
                 <p style="font-size: 0.85rem; color: var(--text-secondary);">This may take a few minutes depending on your connection speed. The model will be cached locally for future use.</p>
-            `;
+	            `);
 
             // Listen for download progress events
+            if (!window.__TAURI__ || !window.__TAURI__.event || typeof window.__TAURI__.event.listen !== 'function') {
+                console.error('[Onboarding] Cannot listen for download progress events (Tauri event API unavailable).');
+                return;
+            }
             const { listen } = window.__TAURI__.event;
             const unlisten = await listen('whisper-download-progress', (event) => {
                 const data = event.payload;
@@ -1214,46 +1300,14 @@
             }
         }
 
-        // Initialize
-        console.log('[Onboarding] Initializing onboarding wizard...');
-        updateUI().catch((e) => console.error('[Onboarding] Error during initial updateUI:', e));
-
-        // Set up button event listeners
-        document.addEventListener('DOMContentLoaded', function () {
-            console.log('[Onboarding] DOM loaded, setting up button listeners...');
-
-            const nextBtn = document.getElementById('nextBtn');
-            const prevBtn = document.getElementById('prevBtn');
-
-            if (nextBtn) {
-                nextBtn.addEventListener('click', async function (e) {
-                    e.preventDefault();
-                    if (nextBtn.dataset.overrideHandler === 'true') return;
-                    console.log('[Onboarding] Next button clicked, currentStep:', currentStep);
-                    try {
-                        await nextStep();
-                    } catch (error) {
-                        console.error('[Onboarding] Error in next button handler:', error);
-                    }
-                });
-                console.log('[Onboarding] Next button listener attached');
-            } else {
-                console.error('[Onboarding] ERROR: nextBtn not found!');
-            }
-
-            if (prevBtn) {
-                prevBtn.addEventListener('click', async function (e) {
-                    e.preventDefault();
-                    console.log('[Onboarding] Previous button clicked, currentStep:', currentStep);
-                    try {
-                        await previousStep();
-                    } catch (error) {
-                        console.error('[Onboarding] Error in previous button handler:', error);
-                    }
-                });
-                console.log('[Onboarding] Previous button listener attached');
-            }
-        });
+        // Initialize when DOM is ready (handles cases where the script executes after DOMContentLoaded).
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => {
+                void initOnboarding();
+            });
+        } else {
+            void initOnboarding();
+        }
     </script>
 </body>
 
