@@ -8,6 +8,21 @@ import {
 
 test.describe('@smoke Gestura App', () => {
   test.beforeEach(async ({ page }) => {
+    // Surface browser runtime errors in the test runner output.
+    // This keeps failures actionable when the React app fails to mount.
+    page.on('pageerror', (err) => {
+      // eslint-disable-next-line no-console
+      console.error('[e2e][pageerror]', err);
+    });
+
+    page.on('console', (msg) => {
+      const type = msg.type();
+      if (type === 'error' || type === 'warning') {
+        // eslint-disable-next-line no-console
+        console.error(`[e2e][console:${type}] ${msg.text()}`);
+      }
+    });
+
     await installTauriIpcMock(page);
     // Default: skip onboarding so the sidebar remains interactable.
     await setOnboardingComplete(page);
@@ -68,6 +83,18 @@ test.describe('@smoke Gestura App', () => {
 
     await expect(page.locator('.onboarding-wizard')).toBeVisible();
     await expect(page.locator('h2:has-text("Welcome to Gestura")')).toBeVisible();
+  });
+
+  test('@smoke onboarding window html renders and advances', async ({ page }) => {
+    await page.goto('/onboarding.html');
+
+    await expect(page.locator('#stepName')).toHaveText('Welcome');
+    await expect(page.locator('#stepContent')).toContainText('Welcome to');
+
+    await page.click('#nextBtn');
+
+    await expect(page.locator('#stepName')).toHaveText('Permissions');
+    await expect(page.locator('#stepContent')).toContainText('System Permissions');
   });
 });
 
