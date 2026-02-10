@@ -178,15 +178,27 @@
         }
 
         .step-content {
-            flex: 1;
+            /*
+	             * Default: content-driven height (no internal scrolling).
+	             * If the window height is clamped (max height), JS will toggle
+	             * `.is-scrollable` to keep header/footer fixed and scroll only the
+	             * content area.
+	             */
+            flex: 0 0 auto;
             background: var(--surface-color);
             border-radius: 10px;
             padding: 1.25rem;
             border: 1px solid var(--border-color);
-            overflow-y: auto;
+            overflow-y: hidden;
             opacity: 1;
-            transition: opacity var(--motion-fast) var(--motion-ease);
+            transition: opacity var(--motion-fast) var(--motion-ease), max-height var(--motion-fast) var(--motion-ease);
             will-change: opacity;
+        }
+
+        .step-content.is-scrollable {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow-y: auto;
         }
 
         .step-content.is-hidden {
@@ -495,6 +507,220 @@
             return prefersReducedMotion ? 0 : 120;
         }
 
+        // =====================================================================
+        // Dynamic window height (step-aware)
+        // =====================================================================
+        const ONBOARDING_MIN_HEIGHT_PX = 580;
+        const ONBOARDING_MAX_HEIGHT_PX_CAP = 900;
+        const ONBOARDING_MAX_HEIGHT_SCREEN_RATIO = 0.9;
+        const ONBOARDING_RESIZE_EASING = { x1: 0.2, y1: 0.8, x2: 0.2, y2: 1 };
+        const ONBOARDING_HEIGHT_EPSILON_PX = 2;
+        const ONBOARDING_SCROLL_MIN_CONTENT_PX = 160;
+
+        let lastRequestedWindowHeightPx = null;
+        let resizeAnimationToken = 0;
+        let resizeDebounceTimer = null;
+
+        function clamp(n, min, max) {
+            return Math.max(min, Math.min(max, n));
+        }
+
+        function getMaxWindowHeightPx() {
+            const screenAvail = (window.screen && Number.isFinite(window.screen.availHeight))
+                ? window.screen.availHeight
+                : 1000;
+            const byScreen = Math.floor(screenAvail * ONBOARDING_MAX_HEIGHT_SCREEN_RATIO);
+            return Math.max(ONBOARDING_MIN_HEIGHT_PX, Math.min(ONBOARDING_MAX_HEIGHT_PX_CAP, byScreen));
+        }
+
+        function makeCubicBezier(x1, y1, x2, y2) {
+            // Maps x in [0,1] -> y in [0,1] for the CSS cubic-bezier curve.
+            // Uses Newton iterations with a binary-search fallback.
+            const cx = 3 * x1;
+            const bx = 3 * (x2 - x1) - cx;
+            const ax = 1 - cx - bx;
+            const cy = 3 * y1;
+            const by = 3 * (y2 - y1) - cy;
+            const ay = 1 - cy - by;
+
+            const sampleX = (t) => ((ax * t + bx) * t + cx) * t;
+            const sampleY = (t) => ((ay * t + by) * t + cy) * t;
+            const sampleDerivX = (t) => (3 * ax * t + 2 * bx) * t + cx;
+
+            const solveTForX = (x) => {
+                let t = x;
+                for (let i = 0; i < 8; i++) {
+                    const xEst = sampleX(t) - x;
+                    const d = sampleDerivX(t);
+                    if (Math.abs(xEst) < 1e-4) return t;
+                    if (Math.abs(d) < 1e-6) break;
+                    t = t - xEst / d;
+                }
+                // Fallback binary search
+                let lo = 0;
+                let hi = 1;
+                t = x;
+                for (let i = 0; i < 12; i++) {
+                    const xMid = sampleX(t);
+                    if (Math.abs(xMid - x) < 1e-4) return t;
+                    if (xMid < x) lo = t;
+                    else hi = t;
+                    t = (lo + hi) / 2;
+                }
+                return t;
+            };
+
+            return (x) => {
+                if (x <= 0) return 0;
+                if (x >= 1) return 1;
+                return sampleY(solveTForX(x));
+            };
+        }
+
+        const easeWindowHeight = makeCubicBezier(
+            ONBOARDING_RESIZE_EASING.x1,
+            ONBOARDING_RESIZE_EASING.y1,
+            ONBOARDING_RESIZE_EASING.x2,
+            ONBOARDING_RESIZE_EASING.y2,
+        );
+
+        function measureDesiredWindowHeightPx() {
+            const container = document.querySelector('.onboarding-container');
+            if (!container) return null;
+
+            const containerWidth = Math.max(1, Math.floor(container.getBoundingClientRect().width || window.innerWidth || 720));
+
+            // Clone the container off-screen and let it size to content.
+            const clone = container.cloneNode(true);
+            clone.style.position = 'absolute';
+            clone.style.left = '-10000px';
+            clone.style.top = '0';
+            clone.style.width = `${containerWidth}px`;
+            clone.style.maxWidth = `${containerWidth}px`;
+            clone.style.height = 'auto';
+            clone.style.maxHeight = 'none';
+            clone.style.visibility = 'hidden';
+            clone.style.pointerEvents = 'none';
+
+            const cloneStepContent = clone.querySelector('#stepContent');
+            if (cloneStepContent) {
+                cloneStepContent.classList.remove('is-scrollable');
+                cloneStepContent.style.maxHeight = 'none';
+                cloneStepContent.style.overflowY = 'visible';
+                cloneStepContent.style.flex = '0 0 auto';
+            }
+
+            document.body.appendChild(clone);
+            const totalHeight = Math.ceil(clone.getBoundingClientRect().height);
+            const stepContentHeight = cloneStepContent ? Math.ceil(cloneStepContent.getBoundingClientRect().height) : 0;
+            document.body.removeChild(clone);
+
+            return { totalHeight, stepContentHeight };
+        }
+
+        function applyStepContentScrollConstraint(enabled, maxHeightPx) {
+            const stepContent = document.getElementById('stepContent');
+            if (!stepContent) return;
+
+            stepContent.classList.toggle('is-scrollable', enabled);
+            if (!enabled) {
+                stepContent.style.maxHeight = '';
+                return;
+            }
+
+            const maxPx = Math.max(ONBOARDING_SCROLL_MIN_CONTENT_PX, Math.floor(maxHeightPx));
+            stepContent.style.maxHeight = `${maxPx}px`;
+        }
+
+        async function safeSetWindowSize(widthPx, heightPx) {
+            try {
+                await invoke('set_window_size', { width: widthPx, height: heightPx });
+                return true;
+            } catch (e) {
+                // Non-fatal: onboarding can still function without dynamic resizing.
+                console.warn('[Onboarding] set_window_size failed:', e);
+                return false;
+            }
+        }
+
+        async function animateWindowHeightTo(targetHeightPx) {
+            const motionMs = getMotionMs();
+            const widthPx = Math.max(1, Math.round(window.innerWidth || 720));
+            const fromHeightPx = Math.max(1, Math.round(lastRequestedWindowHeightPx ?? window.innerHeight ?? ONBOARDING_MIN_HEIGHT_PX));
+
+            if (Math.abs(targetHeightPx - fromHeightPx) < ONBOARDING_HEIGHT_EPSILON_PX) {
+                lastRequestedWindowHeightPx = targetHeightPx;
+                void safeSetWindowSize(widthPx, targetHeightPx);
+                return;
+            }
+
+            if (motionMs === 0) {
+                lastRequestedWindowHeightPx = targetHeightPx;
+                await safeSetWindowSize(widthPx, targetHeightPx);
+                return;
+            }
+
+            const token = ++resizeAnimationToken;
+            const start = performance.now();
+
+            return new Promise((resolve) => {
+                const tick = (now) => {
+                    if (token !== resizeAnimationToken) return resolve();
+                    const t = clamp((now - start) / motionMs, 0, 1);
+                    const eased = easeWindowHeight(t);
+                    const h = Math.round(fromHeightPx + (targetHeightPx - fromHeightPx) * eased);
+                    void safeSetWindowSize(widthPx, h);
+                    if (t >= 1) {
+                        lastRequestedWindowHeightPx = targetHeightPx;
+                        return resolve();
+                    }
+                    window.requestAnimationFrame(tick);
+                };
+                window.requestAnimationFrame(tick);
+            });
+        }
+
+        async function resizeOnboardingWindowToFitContent() {
+            const measured = measureDesiredWindowHeightPx();
+            if (!measured) return;
+
+            const maxHeight = getMaxWindowHeightPx();
+            const desiredUnclamped = measured.totalHeight;
+            const targetHeight = clamp(desiredUnclamped, ONBOARDING_MIN_HEIGHT_PX, maxHeight);
+
+            const fixedParts = Math.max(0, measured.totalHeight - (measured.stepContentHeight || 0));
+            const shouldScroll = desiredUnclamped > maxHeight;
+            const contentMax = shouldScroll ? (maxHeight - fixedParts) : null;
+
+            if (shouldScroll && contentMax != null) {
+                applyStepContentScrollConstraint(true, contentMax);
+            } else {
+                applyStepContentScrollConstraint(false, 0);
+            }
+
+            await animateWindowHeightTo(targetHeight);
+        }
+
+        function scheduleResizeToFit() {
+            if (resizeDebounceTimer) window.clearTimeout(resizeDebounceTimer);
+            resizeDebounceTimer = window.setTimeout(() => {
+                resizeDebounceTimer = null;
+                void resizeOnboardingWindowToFitContent();
+            }, 0);
+        }
+
+        function initResizeObserver() {
+            if (typeof ResizeObserver !== 'function') return;
+            const stepContent = document.getElementById('stepContent');
+            if (!stepContent) return;
+            try {
+                const ro = new ResizeObserver(() => scheduleResizeToFit());
+                ro.observe(stepContent);
+            } catch {
+                // ignore
+            }
+        }
+
         function sleep(ms) {
             return new Promise((resolve) => window.setTimeout(resolve, ms));
         }
@@ -524,6 +750,7 @@
 
             if (motionMs === 0) {
                 stepContent.innerHTML = html;
+                await resizeOnboardingWindowToFitContent();
                 return;
             }
 
@@ -532,6 +759,9 @@
             await sleep(motionMs);
 
             stepContent.innerHTML = html;
+
+            // Resize while the new content is still hidden to avoid flicker.
+            await resizeOnboardingWindowToFitContent();
 
             // Fade back in on next frame so hidden styles apply before transitioning.
             await nextFrame();
@@ -860,6 +1090,13 @@
                 try { await loadAgentPermissionLevel(); } catch (e) { console.error('[Onboarding] loadAgentPermissionLevel failed:', e); }
             }
 
+            // Step init functions may change layout after async work; re-fit once more.
+            try {
+                await resizeOnboardingWindowToFitContent();
+            } catch (e) {
+                console.warn('[Onboarding] resizeOnboardingWindowToFitContent failed:', e);
+            }
+
             const prevBtn = document.getElementById('prevBtn');
             const nextBtn = document.getElementById('nextBtn');
             if (nextBtn) {
@@ -912,6 +1149,7 @@
         async function initOnboarding() {
             console.log('[Onboarding] Initializing onboarding wizard...');
             setupButtonListeners();
+            initResizeObserver();
             try {
                 await updateUI();
             } catch (e) {

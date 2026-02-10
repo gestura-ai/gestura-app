@@ -115,6 +115,22 @@ export async function installTauriIpcMock(page: Page): Promise<void> {
 
     internals.invoke = async (cmd, args) => {
       switch (cmd) {
+        case 'set_window_size': {
+          const width = Number(args?.width ?? 0);
+          const height = Number(args?.height ?? 0);
+
+          // Record calls for optional assertions/debugging.
+          const w = window as unknown as {
+            __gestura_e2e_window_size_calls__?: Array<{ width: number; height: number }>;
+          };
+          if (!Array.isArray(w.__gestura_e2e_window_size_calls__)) {
+            w.__gestura_e2e_window_size_calls__ = [];
+          }
+          w.__gestura_e2e_window_size_calls__.push({ width, height });
+
+          return null;
+        }
+
         case 'get_config':
           return loadConfig();
 

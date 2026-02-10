@@ -446,6 +446,7 @@ impl WindowManager {
         )
         .title("Welcome to Gestura")
         .inner_size(720.0, 580.0)
+        .min_inner_size(720.0, 580.0)
         .center()
         .resizable(true)
         .decorations(true)
