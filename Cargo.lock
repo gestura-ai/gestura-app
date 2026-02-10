@@ -2755,6 +2755,7 @@ dependencies = [
  "dirs",
  "futures",
  "futures-util",
+ "gestura-core-foundation",
  "hex",
  "hound",
  "image",
@@ -2784,6 +2785,17 @@ dependencies = [
  "uuid",
  "whisper-rs",
  "zbus 5.13.2",
+]
+
+[[package]]
+name = "gestura-core-foundation"
+version = "0.2.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "toml 0.8.2",
 ]
 
 [[package]]

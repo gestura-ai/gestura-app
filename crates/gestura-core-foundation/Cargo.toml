@@ -1,0 +1,16 @@
+[package]
+name = "gestura-core-foundation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Shared foundation primitives for Gestura core domain crates"
+
+[dependencies]
+thiserror.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+reqwest.workspace = true
+toml.workspace = true

@@ -47,6 +47,9 @@ futures.workspace = true
 futures-util.workspace = true
 bytes.workspace = true
 
+# Internal crates
+gestura-core-foundation.workspace = true
+
 # Audio processing
 cpal.workspace = true
 hound.workspace = true

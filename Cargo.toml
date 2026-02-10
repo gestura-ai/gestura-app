@@ -9,6 +9,7 @@
 resolver = "2"
 members = [
     "crates/gestura-core",
+    "crates/gestura-core-foundation",
     "crates/gestura-gui",
     "crates/gestura-cli",
 ]
@@ -110,6 +111,9 @@ zbus = "5"
 # default-features = false so that dependent crates can opt-in to voice-local
 # This prevents whisper-rs from being built on platforms where it's problematic
 gestura-core = { path = "crates/gestura-core", default-features = false }
+
+# Foundation primitives shared across gestura-core domain crates.
+gestura-core-foundation = { path = "crates/gestura-core-foundation" }
 
 [profile.dev]
 opt-level = 0
