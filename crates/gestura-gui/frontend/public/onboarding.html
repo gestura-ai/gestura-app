@@ -30,6 +30,10 @@
             --brand-gradient: var(--gradient-primary);
             --focus-ring: rgba(var(--accent-primary-rgb), 0.35);
 
+            /* Motion tokens (snappy, non-sliding) */
+            --motion-fast: 120ms;
+            --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
             /* Semantic RGB triples for rgba(..., alpha) */
             --success-rgb: 52, 199, 89;
             --warning-rgb: 255, 149, 0;
@@ -162,7 +166,7 @@
         .progress-fill {
             height: 100%;
             background: var(--brand-gradient);
-            transition: width 0.3s ease;
+            transition: width var(--motion-fast) var(--motion-ease);
         }
 
         .step-indicator {
@@ -180,6 +184,25 @@
             padding: 1.25rem;
             border: 1px solid var(--border-color);
             overflow-y: auto;
+            opacity: 1;
+            transition: opacity var(--motion-fast) var(--motion-ease);
+            will-change: opacity;
+        }
+
+        .step-content.is-hidden {
+            opacity: 0;
+        }
+
+        .step-content.is-visible {
+            opacity: 1;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+
+            .progress-fill,
+            .step-content {
+                transition: none !important;
+            }
         }
 
         .step-content h2 {
@@ -429,6 +452,76 @@
 
         let currentStep = 0;
         let lastSystemPermissionsResult = null;
+        let isTransitioning = false;
+        let prefersReducedMotion = false;
+
+        function initReducedMotionListener() {
+            if (!window.matchMedia) return;
+            const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+            const update = () => {
+                prefersReducedMotion = !!media.matches;
+            };
+            update();
+
+            if ('addEventListener' in media) {
+                media.addEventListener('change', update);
+            } else {
+                // Safari 13 compatibility
+                // eslint-disable-next-line deprecation/deprecation
+                media.addListener(update);
+            }
+        }
+
+        function getMotionMs() {
+            return prefersReducedMotion ? 0 : 120;
+        }
+
+        function sleep(ms) {
+            return new Promise((resolve) => window.setTimeout(resolve, ms));
+        }
+
+        function nextFrame() {
+            return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+        }
+
+        function setNavDisabled(disabled) {
+            const prevBtn = document.getElementById('prevBtn');
+            const nextBtn = document.getElementById('nextBtn');
+            if (prevBtn) prevBtn.disabled = disabled;
+            if (nextBtn) {
+                nextBtn.disabled = disabled;
+                if (disabled) nextBtn.setAttribute('aria-busy', 'true');
+                else nextBtn.removeAttribute('aria-busy');
+            }
+        }
+
+        async function setStepContentHtml(html) {
+            const stepContent = document.getElementById('stepContent');
+            if (!stepContent) return;
+            const motionMs = getMotionMs();
+
+            stepContent.classList.add('is-visible');
+            stepContent.classList.remove('is-hidden');
+
+            if (motionMs === 0) {
+                stepContent.innerHTML = html;
+                return;
+            }
+
+            stepContent.classList.add('is-hidden');
+            stepContent.classList.remove('is-visible');
+            await sleep(motionMs);
+
+            stepContent.innerHTML = html;
+
+            // Fade back in on next frame so hidden styles apply before transitioning.
+            await nextFrame();
+            stepContent.classList.add('is-visible');
+            stepContent.classList.remove('is-hidden');
+            await sleep(motionMs);
+        }
+
+        initReducedMotionListener();
 
         const steps = [
             {
@@ -725,7 +818,7 @@
             document.getElementById('progressFill').style.width = `${((currentStep + 1) / steps.length) * 100}%`;
             document.getElementById('stepNumber').textContent = `Step ${currentStep + 1} of ${steps.length}`;
             document.getElementById('stepName').textContent = step.title;
-            document.getElementById('stepContent').innerHTML = step.content;
+            await setStepContentHtml(step.content);
 
             // Step-specific initialization (async where needed)
             if (step.id === 'permissions') await renderPermissions();
@@ -736,11 +829,18 @@
 
             const prevBtn = document.getElementById('prevBtn');
             const nextBtn = document.getElementById('nextBtn');
+            if (nextBtn) {
+                nextBtn.dataset.overrideHandler = 'false';
+                nextBtn.onclick = null;
+            }
             prevBtn.style.visibility = currentStep === 0 ? 'hidden' : 'visible';
             nextBtn.textContent = currentStep === steps.length - 1 ? 'Start Using Gestura' : (currentStep === 0 ? 'Get Started' : 'Continue');
         }
 
         async function nextStep() {
+            if (isTransitioning) return;
+            isTransitioning = true;
+            setNavDisabled(true);
             try {
                 // Save LLM config when leaving the LLM step
                 await saveLLMConfigIfNeeded();
@@ -758,10 +858,16 @@
                     currentStep++;
                     try { await updateUI(); } catch (e) { console.error('[Onboarding] Error updating UI:', e); }
                 }
+            } finally {
+                isTransitioning = false;
+                setNavDisabled(false);
             }
         }
 
         async function previousStep() {
+            if (isTransitioning) return;
+            isTransitioning = true;
+            setNavDisabled(true);
             try {
                 // Save LLM config when leaving the LLM step
                 await saveLLMConfigIfNeeded();
@@ -776,6 +882,9 @@
                     currentStep--;
                     try { await updateUI(); } catch (e) { console.error('[Onboarding] Error updating UI:', e); }
                 }
+            } finally {
+                isTransitioning = false;
+                setNavDisabled(false);
             }
         }
 
@@ -827,7 +936,6 @@
         }
 
         async function showDownloadProgress(modelFilename) {
-            const stepContent = document.getElementById('stepContent');
             const nextBtn = document.getElementById('nextBtn');
             const prevBtn = document.getElementById('prevBtn');
 
@@ -846,12 +954,12 @@
 
             const sizeText = modelInfo ? ` (${modelInfo.size_mb} MB)` : '';
 
-            stepContent.innerHTML = `
+            await setStepContentHtml(`
                 <h2><span class="icon-download"></span> Downloading Voice Model</h2>
                 <p>Downloading the Whisper speech recognition model${sizeText}...</p>
                 <div style="margin: 2rem 0;">
                     <div class="progress-bar" style="height: 12px; background: var(--surface-color); border-radius: 6px; overflow: hidden;">
-	                        <div id="downloadProgressFill" class="progress-fill" style="width: 0%; height: 100%; background: var(--brand-gradient); transition: width 0.3s;"></div>
+	                        <div id="downloadProgressFill" class="progress-fill" style="width: 0%; height: 100%; background: var(--brand-gradient);"></div>
                     </div>
                     <p id="downloadStatus" style="text-align: center; margin-top: 1rem; color: var(--text-secondary);">Starting download...</p>
                 </div>
@@ -906,6 +1014,7 @@
                 // Show retry button
                 nextBtn.textContent = 'Retry Download';
                 nextBtn.style.display = 'block';
+                nextBtn.dataset.overrideHandler = 'true';
                 nextBtn.onclick = () => showDownloadProgress(modelFilename);
                 unlisten();
             }
@@ -1107,7 +1216,7 @@
 
         // Initialize
         console.log('[Onboarding] Initializing onboarding wizard...');
-        updateUI();
+        updateUI().catch((e) => console.error('[Onboarding] Error during initial updateUI:', e));
 
         // Set up button event listeners
         document.addEventListener('DOMContentLoaded', function () {
@@ -1119,6 +1228,7 @@
             if (nextBtn) {
                 nextBtn.addEventListener('click', async function (e) {
                     e.preventDefault();
+                    if (nextBtn.dataset.overrideHandler === 'true') return;
                     console.log('[Onboarding] Next button clicked, currentStep:', currentStep);
                     try {
                         await nextStep();
