@@ -33,12 +33,16 @@ export default defineConfig({
     // `cargo tauri dev` starts the native app, but the served page at :1420
     // does not have the Tauri IPC bridge when opened by Playwright.
     // We therefore run the Vite dev server and mock IPC in the tests.
-    command: 'npm run dev',
+    // Use `--force` so Vite re-optimizes deps on each Playwright run.
+    // This avoids flaky 504 "Outdated Optimize Dep" responses after dependency changes.
+    command: 'npm run dev -- --force',
     // This repo's only Node project lives under crates/gestura-gui/frontend.
     // Without cwd, Playwright would try to run this from tests/e2e/ and fail.
     cwd: path.resolve(__dirname, '../../crates/gestura-gui/frontend'),
     url: 'http://localhost:1420',
-    reuseExistingServer: !process.env.CI,
+    // Always start a fresh dev server for Playwright.
+    // Reusing an existing server can keep a stale optimize-deps cache and cause 504s.
+    reuseExistingServer: false,
     timeout: 120 * 1000,
   },
 });
