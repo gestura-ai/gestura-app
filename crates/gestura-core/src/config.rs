@@ -1193,17 +1193,20 @@ impl AppConfig {
     /// This method also handles migration of secrets to the secure keystore.
     pub fn load() -> Self {
         let yaml_path = Self::default_path();
+        let json_path = Self::legacy_json_path();
+        let backup_path = Self::legacy_json_backup_path();
+        // Capture the initial state so we can decide whether to perform JSON->YAML
+        // migration even if later steps (e.g., secret hydration) create the YAML.
+        let needs_format_migration = !yaml_path.exists() && json_path.exists();
         #[allow(unused_mut)] // config is mutated by hydrate_secrets/migrate_secrets
         let mut config = if yaml_path.exists() {
             Self::load_from_path(&yaml_path)
         } else {
             // Check for legacy JSON
-            let json_path = Self::legacy_json_path();
             if json_path.exists() {
                 if let Ok(s) = fs::read_to_string(&json_path) {
                     // We found JSON but no YAML. We will return this config.
-                    // The migration saving happens below implicitly if secrets are migrated,
-                    // or explicitly if we want to convert format.
+                    // Persisting (format migration) happens below.
                     serde_json::from_str::<Self>(&s).unwrap_or_default()
                 } else {
                     Self::default()
@@ -1239,15 +1242,17 @@ impl AppConfig {
                 if had_plaintext_secrets || migrated {
                     let _ = config.save();
                 }
+            }
+        }
 
-                // If we loaded from JSON and have no YAML, force a save to complete format migration
-                if !yaml_path.exists() && Self::legacy_json_path().exists() {
-                    let _ = config.save();
-                    if !Self::legacy_json_backup_path().exists() {
-                        let _ =
-                            fs::rename(Self::legacy_json_path(), Self::legacy_json_backup_path());
-                    }
-                }
+        // JSON -> YAML format migration should occur regardless of whether the `security` feature
+        // is enabled. In security builds, `save()` already refuses to persist plaintext secrets
+        // when keychain access is disabled, which prevents accidental data loss.
+        if needs_format_migration {
+            let _ = config.save();
+            // Only move the legacy JSON aside if we successfully created YAML.
+            if yaml_path.exists() && json_path.exists() && !backup_path.exists() {
+                let _ = fs::rename(&json_path, &backup_path);
             }
         }
 
@@ -1282,20 +1287,22 @@ impl AppConfig {
     /// This is the preferred method for GUI/Tauri commands to avoid blocking the UI thread.
     pub async fn load_async() -> Self {
         let yaml_path = Self::default_path();
+        let json_path = Self::legacy_json_path();
+        let backup_path = Self::legacy_json_backup_path();
+        let had_yaml = tokio::fs::try_exists(&yaml_path).await.unwrap_or(false);
+        let had_json = tokio::fs::try_exists(&json_path).await.unwrap_or(false);
+        let needs_format_migration = !had_yaml && had_json;
         #[allow(unused_mut)] // config is mutated by hydrate_secrets/migrate_secrets
-        let mut config = if tokio::fs::try_exists(&yaml_path).await.unwrap_or(false) {
+        let mut config = if had_yaml {
             Self::load_from_path_async(&yaml_path).await
-        } else {
-            let json_path = Self::legacy_json_path();
-            if tokio::fs::try_exists(&json_path).await.unwrap_or(false) {
-                if let Ok(s) = tokio::fs::read_to_string(&json_path).await {
-                    serde_json::from_str::<Self>(&s).unwrap_or_default()
-                } else {
-                    Self::default()
-                }
+        } else if had_json {
+            if let Ok(s) = tokio::fs::read_to_string(&json_path).await {
+                serde_json::from_str::<Self>(&s).unwrap_or_default()
             } else {
                 Self::default()
             }
+        } else {
+            Self::default()
         };
 
         // Async hydration/migration
@@ -1317,19 +1324,21 @@ impl AppConfig {
                 if had_plaintext_secrets || migrated {
                     let _ = config.save_async().await;
                 }
+            }
+        }
 
-                // JSON -> YAML migration
-                if !tokio::fs::try_exists(&yaml_path).await.unwrap_or(false)
-                    && tokio::fs::try_exists(Self::legacy_json_path())
-                        .await
-                        .unwrap_or(false)
-                {
-                    let _ = config.save_async().await;
-                    let backup_path = Self::legacy_json_backup_path();
-                    if !tokio::fs::try_exists(&backup_path).await.unwrap_or(false) {
-                        let _ = tokio::fs::rename(Self::legacy_json_path(), backup_path).await;
-                    }
-                }
+        // JSON -> YAML format migration should occur regardless of whether the `security` feature
+        // is enabled. In security builds, `save_async()` already refuses to persist plaintext
+        // secrets when keychain access is disabled.
+        if needs_format_migration {
+            let _ = config.save_async().await;
+
+            let yaml_exists = tokio::fs::try_exists(&yaml_path).await.unwrap_or(false);
+            let json_exists = tokio::fs::try_exists(&json_path).await.unwrap_or(false);
+            let backup_exists = tokio::fs::try_exists(&backup_path).await.unwrap_or(false);
+
+            if yaml_exists && json_exists && !backup_exists {
+                let _ = tokio::fs::rename(&json_path, &backup_path).await;
             }
         }
 
