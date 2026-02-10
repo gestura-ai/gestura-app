@@ -1,18 +1,21 @@
-import { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { useCallback, useEffect, useState } from 'react';
 import './App.css';
-import ThemeController from './components/ThemeController';
-import ToolsPanel from './components/ToolsPanel';
-import WorkflowsPanel from './components/WorkflowsPanel';
-import VoicePanel from './components/VoicePanel';
-import SettingsPanel from './components/SettingsPanel';
-import RingPanel from './components/RingPanel';
-import StatusBar from './components/StatusBar';
-import OnboardingWizard from './components/OnboardingWizard';
-import HelpSystem from './components/HelpSystem';
-import SimulatorPanel from './components/SimulatorPanel';
-import McpPanel from './components/McpPanel';
+import ThemeController from './app/ThemeController';
+import ToolsPanel from './features/tools/ToolsPanel';
+import WorkflowsPanel from './features/workflows/WorkflowsPanel';
+import VoicePanel from './features/voice/VoicePanel';
+import SettingsPanel from './features/settings/SettingsPanel';
+import RingPanel from './features/ring/RingPanel';
+import StatusBar from './app/StatusBar';
+import OnboardingWizard from './app/OnboardingWizard';
+import HelpSystem from './shared/components/HelpSystem';
+import SimulatorPanel from './features/simulator/SimulatorPanel';
+import McpPanel from './features/mcp/McpPanel';
 import { AppConfig, UiSettings } from './types/config';
+import { getConfig, saveConfig, setUiPrefs } from './services/tauri/config';
+import { useKeyboardShortcuts } from './shared/hooks/useKeyboardShortcuts';
+import { useLocalStorageFlag } from './shared/hooks/useLocalStorageFlag';
+import { ONBOARDING_COMPLETED_KEY } from './shared/constants/storageKeys';
 
 
 
@@ -24,10 +27,20 @@ function App() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [onboardingCompleted] = useLocalStorageFlag(ONBOARDING_COMPLETED_KEY);
+
+  const loadConfig = useCallback(async () => {
+    try {
+      const cfg = await getConfig();
+      setConfig(cfg);
+    } catch (error) {
+      console.error('Failed to load config:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    // Check onboarding BEFORE loading config to preserve first-run state
-    const onboardingCompleted = localStorage.getItem('gestura_onboarding_completed');
     console.log('🚀 Gestura App starting...');
     console.log('📋 Onboarding completed flag:', onboardingCompleted);
 
@@ -40,44 +53,33 @@ function App() {
 
     // Load config after checking onboarding
     loadConfig();
+  }, [loadConfig, onboardingCompleted]);
 
-    // Add keyboard shortcuts
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'F1') {
-        event.preventDefault();
-        setShowHelp(!showHelp);
-      } else if (event.key === 'Escape' && showHelp) {
-        setShowHelp(false);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showHelp]);
-
-  const loadConfig = async () => {
-    try {
-      const cfg = await invoke<AppConfig>('get_config');
-      setConfig(cfg);
-    } catch (error) {
-      console.error('Failed to load config:', error);
-    } finally {
-      setLoading(false);
+  useKeyboardShortcuts((event) => {
+    if (event.key === 'F1') {
+      event.preventDefault();
+      setShowHelp((prev) => !prev);
+      return;
     }
-  };
 
-  const saveConfig = async (newConfig: AppConfig) => {
+    if (event.key === 'Escape') {
+      // Preserve legacy semantics: only close if already open.
+      setShowHelp((prev) => (prev ? false : prev));
+    }
+  });
+
+  const handleSaveConfig = async (newConfig: AppConfig) => {
     try {
-      await invoke('save_config', { cfg: newConfig });
+      await saveConfig(newConfig);
       setConfig(newConfig);
     } catch (error) {
       console.error('Failed to save config:', error);
     }
   };
 
-  const updateUiSettings = async (ui: UiSettings) => {
+  const handleUpdateUiSettings = async (ui: UiSettings) => {
     try {
-      await invoke('set_ui_prefs', { ui });
+      await setUiPrefs(ui);
       if (config) {
         setConfig({ ...config, ui });
       }
@@ -120,7 +122,7 @@ function App() {
     <div className="app">
       <ThemeController
         uiSettings={config.ui}
-        onUpdate={updateUiSettings}
+        onUpdate={handleUpdateUiSettings}
       />
 
       <div className="header">
@@ -202,7 +204,7 @@ function App() {
             <WorkflowsPanel />
           )}
           {activePanel === 'voice' && (
-            <VoicePanel config={config} onConfigUpdate={saveConfig} />
+            <VoicePanel config={config} onConfigUpdate={handleSaveConfig} />
           )}
           {activePanel === 'ring' && (
             <RingPanel />
@@ -214,7 +216,7 @@ function App() {
             <SimulatorPanel onClose={() => setActivePanel('ring')} />
           )}
           {activePanel === 'settings' && (
-            <SettingsPanel config={config} onConfigUpdate={saveConfig} />
+            <SettingsPanel config={config} onConfigUpdate={handleSaveConfig} />
           )}
         </div>
       </div>

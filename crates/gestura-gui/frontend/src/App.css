@@ -3,7 +3,7 @@
 
   NOTE:
   The React UI uses class names like `.app`, `.header`, `.main`, `.sidebar`, `.content`, `.btn`.
-  Those base layout/styles previously existed only in `frontend/public/index.html` (static).
+	Those base layout/styles originally lived in legacy static HTML prototypes (since removed).
   Without them, the Tauri webview can render an incomplete layout where the chat input appears
   to overlap header controls.
 */
@@ -15,6 +15,10 @@
   --border: #e2e8f0;
   --text: #0f172a;
   --text-secondary: #64748b;
+
+  /* Motion tokens (snappy, non-sliding) */
+  --motion-fast: 120ms;
+  --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 
   /* These are also dynamically overridden by ThemeController */
   --accent: #2563eb;
@@ -261,6 +265,27 @@ body {
   padding: 1rem;
 }
 
+/* Status dots (used by StatusBar + RingPanel) */
+.status-indicator {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 0.5rem;
+}
+
+.status-connected {
+  background: var(--success);
+}
+
+.status-disconnected {
+  background: var(--error);
+}
+
+.status-unknown {
+  background: var(--text-secondary);
+}
+
 /* Onboarding Wizard Styles */
 .modal-overlay {
   position: fixed;
@@ -273,6 +298,7 @@ body {
   align-items: center;
   justify-content: center;
   z-index: 1000;
+  animation: onboarding-overlay-in var(--motion-fast) var(--motion-ease) both;
 }
 
 .onboarding-wizard {
@@ -283,6 +309,7 @@ body {
   max-height: 90vh;
   overflow: hidden;
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+  animation: onboarding-card-in var(--motion-fast) var(--motion-ease) both;
 }
 
 .onboarding-header {
@@ -302,7 +329,7 @@ body {
 .progress-fill {
   height: 100%;
   background: var(--accent);
-  transition: width 0.3s ease;
+  transition: width var(--motion-fast) var(--motion-ease);
 }
 
 .step-info {
@@ -326,6 +353,54 @@ body {
   padding: 2rem;
   max-height: 60vh;
   overflow-y: auto;
+}
+
+.onboarding-content-inner {
+  opacity: 1;
+  transition: opacity var(--motion-fast) var(--motion-ease);
+  will-change: opacity;
+}
+
+.onboarding-content-inner.is-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.onboarding-content-inner.is-visible {
+  opacity: 1;
+}
+
+@keyframes onboarding-overlay-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes onboarding-card-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+  .modal-overlay,
+  .onboarding-wizard {
+    animation: none !important;
+  }
+
+  .onboarding-content-inner,
+  .progress-fill {
+    transition: none !important;
+  }
 }
 
 .onboarding-step h2 {

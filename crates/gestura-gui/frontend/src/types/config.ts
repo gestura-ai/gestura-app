@@ -17,10 +17,35 @@ export interface VoiceSettings {
 
 export interface LlmSettings {
   primary: string;
-  openai?: any;
-  anthropic?: any;
-  grok?: any;
-  ollama?: any;
+  fallback?: string | null;
+  openai?: OpenAiConfig;
+  anthropic?: AnthropicConfig;
+  grok?: GrokConfig;
+  ollama?: OllamaConfig;
+}
+
+export interface OpenAiConfig {
+  api_key: string;
+  base_url?: string;
+  model: string;
+}
+
+export interface AnthropicConfig {
+  api_key: string;
+  base_url?: string;
+  model: string;
+  thinking_budget_tokens?: number | null;
+}
+
+export interface GrokConfig {
+  api_key: string;
+  base_url?: string;
+  model: string;
+}
+
+export interface OllamaConfig {
+  base_url: string;
+  model: string;
 }
 
 export interface SimulatorSettings {
