@@ -169,15 +169,25 @@ jobs:
       working-directory: crates/gestura-gui/frontend
       run: npm ci
 
-    - name: Type check
+    - name: Lint
+      working-directory: crates/gestura-gui/frontend
+      run: npm run lint
+
+    - name: Build (typecheck + Vite)
       working-directory: crates/gestura-gui/frontend
       run: npm run build
 
-    - name: Lint
+    - name: Unit tests (Vitest)
       working-directory: crates/gestura-gui/frontend
-    - name: Lint
+      run: npm run test:unit
+
+    - name: Install Playwright (Chromium)
       working-directory: crates/gestura-gui/frontend
-      run: npm run lint || true
+      run: npx playwright install --with-deps chromium
+
+    - name: E2E smoke (Playwright)
+      working-directory: crates/gestura-gui/frontend
+      run: npm run test:e2e:smoke
 
   security:
     name: Security Audit
