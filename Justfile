@@ -75,7 +75,7 @@ help:
 # Production validation - run all checks that CI will run
 validate:
 	@echo "🔍 Running production validation..."
-	./scripts/validate-production.sh
+	./scripts/validate-production.sh --ci
 
 # Quick validation - essential checks only
 validate-quick:
