@@ -15,6 +15,7 @@ export async function installTauriIpcMock(page: Page): Promise<void> {
     globalThis.isTauri = true;
 
     const STORAGE_KEY = '__gestura_e2e_config__';
+    const API_KEYS_KEY = '__gestura_e2e_api_keys__';
 
     const defaultConfig = {
       hotkey_listen: 'Ctrl+Space',
@@ -73,6 +74,21 @@ export async function installTauriIpcMock(page: Page): Promise<void> {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
     };
 
+    const loadApiKeys = () => {
+      try {
+        const raw = localStorage.getItem(API_KEYS_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+      } catch {
+        return {};
+      }
+    };
+
+    const saveApiKeys = (keys) => {
+      localStorage.setItem(API_KEYS_KEY, JSON.stringify(keys || {}));
+    };
+
     const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
     const w = window;
@@ -112,6 +128,80 @@ export async function installTauriIpcMock(page: Page): Promise<void> {
           const cfg = loadConfig();
           const ui = args?.ui;
           const next = { ...cfg, ui: { ...cfg.ui, ...(ui || {}) } };
+          saveConfig(next);
+          return null;
+        }
+
+        case 'update_llm_provider': {
+          const cfg = loadConfig();
+          const provider = args?.provider ?? 'ollama';
+          const next = { ...cfg, llm: { ...(cfg.llm || {}), primary: provider } };
+          saveConfig(next);
+          return null;
+        }
+
+        case 'update_ollama_config': {
+          const cfg = loadConfig();
+          const baseUrl = args?.baseUrl ?? args?.base_url ?? 'http://localhost:11434';
+          const model = args?.model ?? 'llama3.2';
+          const next = {
+            ...cfg,
+            llm: {
+              ...(cfg.llm || {}),
+              ollama: { base_url: baseUrl, model },
+            },
+          };
+          saveConfig(next);
+          return null;
+        }
+
+        case 'has_api_key': {
+          const provider = String(args?.provider ?? '').toLowerCase();
+          const keys = loadApiKeys();
+          return Boolean(keys[provider]);
+        }
+
+        case 'store_api_key': {
+          const provider = String(args?.provider ?? '').toLowerCase();
+          const apiKey = String(args?.api_key ?? '');
+          const keys = loadApiKeys();
+          if (provider && apiKey) {
+            keys[provider] = apiKey;
+            saveApiKeys(keys);
+          }
+          return null;
+        }
+
+        case 'list_audio_devices':
+          return [
+            { name: 'E2E Microphone', is_default: true },
+            { name: 'E2E Microphone (Alt)', is_default: false },
+          ];
+
+        case 'update_audio_device': {
+          const cfg = loadConfig();
+          const deviceName = args?.device_name ?? '';
+          const next = { ...cfg, voice: { ...(cfg.voice || {}), audio_device: deviceName } };
+          saveConfig(next);
+          return null;
+        }
+
+        case 'update_voice_provider': {
+          const cfg = loadConfig();
+          const provider = args?.provider ?? 'local';
+          const next = { ...cfg, voice: { ...(cfg.voice || {}), provider } };
+          saveConfig(next);
+          return null;
+        }
+
+        case 'update_whisper_model': {
+          const cfg = loadConfig();
+          const modelFilename = args?.model_filename ?? 'ggml-base.en.bin';
+          // The real backend stores a full path; for tests a filename is sufficient.
+          const next = {
+            ...cfg,
+            voice: { ...(cfg.voice || {}), local_model_path: modelFilename },
+          };
           saveConfig(next);
           return null;
         }
@@ -169,6 +259,8 @@ export async function installTauriIpcMock(page: Page): Promise<void> {
         case 'open_system_preferences':
         case 'request_permission':
         case 'register_consent':
+        case 'complete_onboarding':
+        case 'close_onboarding_window':
           return null;
 
         case 'connect_mcp_server':

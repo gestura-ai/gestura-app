@@ -974,15 +974,38 @@
             const currentStepId = steps[currentStep]?.id;
             if (currentStepId !== 'llm') return;
 
-            const provider = document.getElementById('llmProvider')?.value;
+            const provider = document.getElementById('llmProvider')?.value || 'ollama';
+
+            // Always persist the selected provider when leaving this step.
+            try {
+                await invoke('update_llm_provider', { provider });
+            } catch (e) {
+                console.error('Failed to save LLM provider:', e);
+            }
+
             if (provider === 'ollama') {
                 const url = document.getElementById('ollamaUrl')?.value || 'http://localhost:11434';
                 const model = document.getElementById('ollamaModel')?.value || 'llama3.2';
                 try {
-                    await invoke('update_ollama_config', { baseUrl: url, model: model });
+                    await invoke('update_ollama_config', { base_url: url, model: model });
                     console.log('Saved Ollama config:', url, model);
                 } catch (e) {
                     console.error('Failed to save Ollama config:', e);
+                }
+            } else if (provider === 'openai' || provider === 'anthropic' || provider === 'grok') {
+                // Keys never cross the normal config IPC boundary; store secrets in secure storage.
+                const keyInput = document.getElementById('apiKey');
+                const apiKey = keyInput?.value?.trim?.() || '';
+                if (apiKey.length > 0) {
+                    try {
+                        await invoke('store_api_key', { provider, api_key: apiKey });
+                        // Clear typed secrets from DOM as soon as we can.
+                        keyInput.value = '';
+                        keyInput.placeholder = '••••••••••••••••';
+                        console.log(`Stored ${provider} API key in secure storage.`);
+                    } catch (e) {
+                        console.error('Failed to store API key:', e);
+                    }
                 }
             }
         }
@@ -1131,6 +1154,46 @@
             }
         }
 
+        function llmApiKeyLabel(provider) {
+            if (provider === 'openai') return 'OpenAI API Key';
+            if (provider === 'anthropic') return 'Anthropic API Key';
+            if (provider === 'grok') return 'Grok (xAI) API Key';
+            return 'API Key';
+        }
+
+        function llmApiKeyPlaceholder(provider) {
+            if (provider === 'openai') return 'sk-...';
+            if (provider === 'anthropic') return 'sk-ant-...';
+            if (provider === 'grok') return 'xai-...';
+            return 'Enter your API key';
+        }
+
+        async function hydrateLlmApiKeyPlaceholder(provider) {
+            try {
+                // Only relevant for hosted providers.
+                if (!(provider === 'openai' || provider === 'anthropic' || provider === 'grok')) return;
+
+                // Avoid updating stale DOM if the user switched providers quickly.
+                const currentProvider = document.getElementById('llmProvider')?.value;
+                if (currentProvider !== provider) return;
+
+                const input = document.getElementById('apiKey');
+                if (!input) return;
+
+                // Never populate actual API keys into the DOM.
+                input.value = '';
+                input.placeholder = llmApiKeyPlaceholder(provider);
+
+                const hasKey = await invoke('has_api_key', { provider });
+                if (hasKey === true) {
+                    input.placeholder = '••••••••••••••••';
+                }
+            } catch (e) {
+                // Non-fatal; keep base placeholder.
+                console.warn('[Onboarding] has_api_key placeholder hydration failed:', e);
+            }
+        }
+
         function renderLLMConfig() {
             const container = document.getElementById('llmConfig');
             if (!container) return;
@@ -1149,17 +1212,23 @@
                     </div>
                     <p style="font-size:0.8rem;color:var(--text-secondary);margin-top:0.5rem;">Make sure Ollama is running locally with your model pulled.</p>
                 `;
-            } else if (provider === 'openai' || provider === 'anthropic') {
+            } else if (provider === 'openai' || provider === 'anthropic' || provider === 'grok') {
                 html = `
                     <div class="config-section">
-                        <label for="apiKey">${provider === 'openai' ? 'OpenAI' : 'Anthropic'} API Key</label>
-                        <input type="password" id="apiKey" placeholder="Enter your API key" style="width:100%;padding:0.6rem;border:1px solid var(--border-color);border-radius:6px;background:var(--background-color);color:var(--text-color);font-size:0.9rem;">
+	                        <label for="apiKey">${llmApiKeyLabel(provider)}</label>
+	                        <input type="password" id="apiKey" placeholder="${llmApiKeyPlaceholder(provider)}" style="width:100%;padding:0.6rem;border:1px solid var(--border-color);border-radius:6px;background:var(--background-color);color:var(--text-color);font-size:0.9rem;">
+	                        <p style="font-size:0.75rem;color:var(--text-secondary);margin-top:0.25rem;">Keys are stored securely in your OS keychain. Leave blank to keep your existing key.</p>
                     </div>
                 `;
             } else {
-                html = `<p style="font-size:0.85rem;color:var(--text-secondary);">Echo mode will repeat your input for testing.</p>`;
+                html = `<p style="font-size:0.85rem;color:var(--text-secondary);">No additional configuration UI is available for this provider.</p>`;
             }
             container.innerHTML = html;
+
+            // Async placeholder hydration (key existence) without blocking UI render.
+            if (provider === 'openai' || provider === 'anthropic' || provider === 'grok') {
+                void hydrateLlmApiKeyPlaceholder(provider);
+            }
         }
 
         // Load microphone devices into the dropdown

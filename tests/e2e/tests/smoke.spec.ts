@@ -96,5 +96,30 @@ test.describe('@smoke Gestura App', () => {
     await expect(page.locator('#stepName')).toHaveText('Permissions');
     await expect(page.locator('#stepContent')).toContainText('System Permissions');
   });
+
+  test('@smoke onboarding window grok provider shows API key input', async ({ page }) => {
+    await page.goto('/onboarding.html');
+
+    // Welcome -> Permissions
+    await page.click('#nextBtn');
+    await expect(page.locator('#stepName')).toHaveText('Permissions');
+
+    // Permissions -> Voice
+    await page.click('#nextBtn');
+    await expect(page.locator('#stepName')).toHaveText('Voice Setup');
+
+    // Voice -> Voice Model
+    await page.click('#nextBtn');
+    await expect(page.locator('#stepName')).toHaveText('Voice Model');
+
+    // Voice Model -> AI Provider
+    await page.click('#nextBtn');
+    await expect(page.locator('#stepName')).toHaveText('AI Provider');
+
+    await page.selectOption('#llmProvider', 'grok');
+    await expect(page.locator('#llmConfig')).toContainText('Grok');
+    await expect(page.locator('#apiKey')).toBeVisible();
+    await expect(page.locator('#apiKey')).toHaveAttribute('placeholder', /xai-/);
+  });
 });
 
