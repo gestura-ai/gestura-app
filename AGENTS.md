@@ -11,9 +11,13 @@ This repository standardizes on **`AGENTS.md`** as the canonical, always-read pr
 ```
 gestura-app/
 ├── crates/
-│   ├── gestura-core/     # ALL business logic (source of truth)
-│   ├── gestura-cli/      # CLI binary (thin presentation layer)
-│   └── gestura-gui/      # Tauri desktop app (thin presentation layer)
+│   ├── gestura-core/              # Public facade (stable API surface)
+│   ├── gestura-core-foundation/   # Shared primitives used across domains
+│   ├── gestura-core-tools/        # Built-in tools + tool policy/permissions
+│   ├── gestura-core-mcp/          # MCP protocol domain crate (implementation)
+│   ├── gestura-core-llm/          # LLM provider implementations (feature-gated)
+│   ├── gestura-cli/               # CLI binary (thin presentation layer)
+│   └── gestura-gui/               # Tauri desktop app (thin presentation layer)
 ```
 
 **Design Principles:**
@@ -36,13 +40,27 @@ gestura-app/
 
 | Category | Modules | Description |
 |----------|---------|-------------|
-| AI & Pipeline | `pipeline/`, `llm_provider.rs`, `persona.rs` | Agent execution |
+| AI & Pipeline | `pipeline/`, `llm_provider.rs` (facade), `persona.rs` | Agent execution |
 | Sessions | `chat_sessions/`, `session_manager.rs`, `context/` | State management |
-| Tools | `tools/`, `tool_confirmation.rs` | Tool registry + built-in tools |
-| Protocols | `mcp/`, `a2a/`, `nats_mq/` | MCP 2025-11-25, A2A, NATS |
+| Tools (facade) | `tools/`, `tool_confirmation.rs`, `tool_inspection.rs` | Public re-exports + core-owned adapters/entrypoints |
+| Protocols | `mcp/` (facade), `a2a/`, `nats_mq/` | MCP 2025-11-25 (impl in `gestura-core-mcp`), A2A, NATS |
 | Security | `security/`, `sandbox/`, `gdpr.rs` | Encryption, sandboxing |
 | Analytics | `analytics/`, `recommendations/`, `audio/` | ML features |
 | Extensibility | `scripting/`, `agents/`, `tasks/` | Plugin system |
+
+### gestura-core-tools (Tools domain)
+
+- Built-in tool implementations live in `crates/gestura-core-tools/src/*`.
+- `gestura-core` re-exports stable paths (e.g., `gestura_core::tools::*`).
+
+### gestura-core-foundation (Shared primitives)
+
+- Shared `AppError`/`Result`, permission primitives, and `execution_mode` live here.
+
+### gestura-core-llm (LLM providers domain)
+
+- LLM provider implementations live in `crates/gestura-core-llm/src/*` and are **feature-gated**.
+- `gestura-core` preserves the stable import path via `gestura_core::llm_provider::*` (compatibility facade).
 
 ### gestura-cli (Thin CLI)
 - `src/main.rs` — Entry point
@@ -93,7 +111,15 @@ just validate-quick
 
 ## 4) MCP & Tool System
 
-### Built-in MCP Tools (gestura-core/src/tools/)
+### MCP domain crate
+
+- Implementation: `crates/gestura-core-mcp/src/*`
+- Stable import paths (facade): `crates/gestura-core/src/mcp/mod.rs` → `gestura_core::mcp::*`
+
+### Built-in Tools
+
+Implementation: `crates/gestura-core-tools/src/`  
+Stable import paths: `crates/gestura-core/src/tools/` (facade)
 
 | Tool | Description | Permission |
 |------|-------------|------------|
