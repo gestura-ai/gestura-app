@@ -10,7 +10,7 @@
 
 use super::Result;
 use colored::Colorize;
-use gestura_core::{AgentPipeline, AgentRequest, AppConfig, RequestSource};
+use gestura_core::{AgentPipeline, AgentRequest, AppConfig, AppConfigSecurityExt, RequestSource};
 
 /// Agent subcommand options
 pub enum AgentSubcommand {

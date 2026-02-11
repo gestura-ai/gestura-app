@@ -13,6 +13,7 @@
 
 // Core types and configuration (re-exported from gestura-core)
 pub use gestura_core::AppConfig;
+pub use gestura_core::AppConfigSecurityExt;
 pub use gestura_core::AppError;
 pub use gestura_core::Result;
 pub use gestura_core::config;

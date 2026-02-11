@@ -17,6 +17,7 @@
 /// Known inferences:
 /// - `grok-*` → `"grok"`
 /// - `claude-*` → `"anthropic"`
+/// - `gemini-*` → `"gemini"`
 /// - `gpt-*`, `o1-*`, `o3-*` → `"openai"`
 pub fn infer_provider_from_model_id(model_id: &str) -> Option<&'static str> {
     let m = model_id.trim().to_ascii_lowercase();
@@ -30,6 +31,10 @@ pub fn infer_provider_from_model_id(model_id: &str) -> Option<&'static str> {
 
     if m.starts_with("claude-") {
         return Some("anthropic");
+    }
+
+    if m.starts_with("gemini-") {
+        return Some("gemini");
     }
 
     // OpenAI model ids are not exclusively `gpt-*`, but these prefixes are
@@ -93,6 +98,11 @@ mod tests {
             "openai",
             "claude-sonnet-4-20250514"
         ));
+        assert!(!is_model_compatible_with_provider(
+            "openai",
+            "gemini-2.0-flash"
+        ));
+        assert!(!is_model_compatible_with_provider("gemini", "gpt-4o"));
     }
 
     #[test]
@@ -104,6 +114,14 @@ mod tests {
         ));
         assert!(is_model_compatible_with_provider("openai", "gpt-4o"));
         assert!(is_model_compatible_with_provider("openai", "o1-mini"));
+        assert!(is_model_compatible_with_provider(
+            "gemini",
+            "gemini-2.0-flash"
+        ));
+        assert!(is_model_compatible_with_provider(
+            "gemini",
+            "gemini-1.5-pro"
+        ));
     }
 
     #[test]

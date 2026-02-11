@@ -5,7 +5,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 use crate::audio_capture::record_audio;
-use crate::config::AppConfig;
+use crate::config::{AppConfig, AppConfigSecurityExt};
 
 use gestura_core::secrets::SecureStorageSecretProvider;
 use gestura_core::stt_provider::{SttProvider, select_provider_with_session_voice_config};

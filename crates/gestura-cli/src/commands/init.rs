@@ -3,7 +3,7 @@
 use super::Result;
 use colored::Colorize;
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
-use gestura_core::AppConfig;
+use gestura_core::{AppConfig, AppConfigSecurityExt};
 
 pub fn run() -> Result<()> {
     println!();
@@ -15,8 +15,14 @@ pub fn run() -> Result<()> {
     let mut config = AppConfig::load();
 
     // LLM Provider selection
-    let providers = ["openai", "anthropic", "grok", "ollama"];
-    let provider_labels = ["OpenAI", "Anthropic", "Grok", "Ollama (local)"];
+    let providers = ["openai", "anthropic", "gemini", "grok", "ollama"];
+    let provider_labels = [
+        "OpenAI",
+        "Anthropic",
+        "Gemini (Google)",
+        "Grok",
+        "Ollama (local)",
+    ];
 
     let current_idx = providers
         .iter()
@@ -38,6 +44,7 @@ pub fn run() -> Result<()> {
         let env_var = match provider {
             "openai" => "OPENAI_API_KEY",
             "anthropic" => "ANTHROPIC_API_KEY",
+            "gemini" => "GESTURA_GEMINI_API_KEY",
             "grok" => "GROK_API_KEY",
             _ => "",
         };

@@ -1,5 +1,6 @@
 //! Tauri command handlers for configuration, MCP tools, MDH pointers, and tests.
 use crate::AppConfig;
+use crate::AppConfigSecurityExt;
 
 use gestura_core::pipeline::{AgentPipeline, AgentRequest, RequestSource};
 use tauri::{Emitter, Manager};
@@ -4977,6 +4978,30 @@ fn validate_llm_config_with_config(
                 );
             }
         }
+        "gemini" => {
+            if let Some(c) = &config.llm.gemini {
+                if c.api_key.trim().is_empty() {
+                    return llm_error(
+                        "LLM_CONFIG_INCOMPLETE",
+                        "Gemini LLM provider is selected but API key is missing.",
+                        "Add your Gemini API key in Settings → AI Providers → Gemini.",
+                    );
+                }
+                if c.model.trim().is_empty() {
+                    return llm_error(
+                        "LLM_CONFIG_INCOMPLETE",
+                        "Gemini LLM provider is selected but no model is configured.",
+                        "Choose a Gemini model in Settings → AI Providers → Gemini.",
+                    );
+                }
+            } else {
+                return llm_error(
+                    "LLM_CONFIG_MISSING",
+                    "Gemini LLM provider is selected but not configured.",
+                    "Fill in Gemini LLM settings under Settings → AI Providers → Gemini.",
+                );
+            }
+        }
         "grok" => {
             if let Some(c) = &config.llm.grok {
                 if c.api_key.trim().is_empty() {
@@ -5456,6 +5481,12 @@ pub async fn has_api_key(provider: String) -> Result<bool, String> {
             .as_ref()
             .map(|c| !c.api_key.trim().is_empty())
             .unwrap_or(false),
+        "gemini" => config
+            .llm
+            .gemini
+            .as_ref()
+            .map(|c| !c.api_key.trim().is_empty())
+            .unwrap_or(false),
         "grok" => config
             .llm
             .grok
@@ -5491,12 +5522,12 @@ pub async fn has_api_key(provider: String) -> Result<bool, String> {
 /// Returns a JSON object with provider names as keys and boolean values indicating
 /// whether an API key is available. Ollama is always included as true since it's local.
 ///
-/// Example response: {"openai": true, "anthropic": false, "grok": false, "ollama": true}
+/// Example response: {"openai": true, "anthropic": false, "gemini": false, "grok": false, "ollama": true}
 ///
 /// JS↔Rust interop: This command is exposed to the frontend via Tauri.
 #[tauri::command]
 pub async fn get_available_llm_providers() -> Result<serde_json::Value, String> {
-    let providers = vec!["openai", "anthropic", "grok"];
+    let providers = vec!["openai", "anthropic", "gemini", "grok"];
     let mut result = serde_json::Map::new();
 
     for provider in providers {

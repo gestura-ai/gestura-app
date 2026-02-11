@@ -6,7 +6,7 @@
 
 use crate::ble::create_ring_manager;
 use crate::haptics::{HapticPattern, HapticRequest};
-use gestura_core::config::{AppConfig, NotificationSettings};
+use gestura_core::config::{AppConfig, AppConfigSecurityExt, NotificationSettings};
 use std::sync::OnceLock;
 use tauri::{AppHandle, Emitter};
 

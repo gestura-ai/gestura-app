@@ -3,7 +3,7 @@
 use super::Result;
 use crate::{ModelAction, WhisperAction};
 use colored::Colorize;
-use gestura_core::{AgentPipeline, AgentRequest, AppConfig, RequestSource};
+use gestura_core::{AgentPipeline, AgentRequest, AppConfig, AppConfigSecurityExt, RequestSource};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
 use std::time::Duration;

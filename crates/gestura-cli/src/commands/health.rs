@@ -2,7 +2,9 @@
 
 use super::Result;
 use colored::Colorize;
-use gestura_core::{AppConfig, is_microphone_available, list_audio_input_devices};
+use gestura_core::{
+    AppConfig, AppConfigSecurityExt, is_microphone_available, list_audio_input_devices,
+};
 use std::path::PathBuf;
 
 /// Get the config file path

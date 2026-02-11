@@ -1935,6 +1935,7 @@
                             <select class="form-select" id="llmProvider" name="llm_provider">
                                 <option value="openai">OpenAI GPT</option>
                                 <option value="anthropic">Anthropic Claude</option>
+                                <option value="gemini">Gemini (Google)</option>
                                 <option value="ollama">Ollama (Local)</option>
                                 <option value="grok">Grok (xAI)</option>
                             </select>
@@ -2028,6 +2029,37 @@
                                 </div>
                                 <div class="help-text">Get your API key from <a href="https://console.x.ai/"
                                         target="_blank">xAI Console</a></div>
+                            </div>
+                        </div>
+
+                        <!-- Gemini Configuration -->
+                        <div class="form-group provider-config-section" id="geminiLlmConfig" style="display: none;">
+                            <label class="form-label">Gemini (Google) Configuration</label>
+                            <div class="provider-config-box">
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label class="form-label" for="geminiApiKey">API Key</label>
+                                        <div class="input-with-button">
+                                            <input type="password" class="form-input" id="geminiApiKey"
+                                                name="gemini_api_key" placeholder="AIza...">
+                                            <button type="button" class="btn-delete-key" id="deleteGeminiKey"
+                                                onclick="deleteApiKey('gemini', 'geminiApiKey', 'AIza...')"
+                                                title="Delete key from keychain">✕ Delete</button>
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="geminiLlmModel">Model</label>
+                                        <select class="form-select" id="geminiLlmModel" name="gemini_llm_model">
+                                            <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                                            <option value="gemini-2.0-flash-lite">Gemini 2.0 Flash Lite</option>
+                                            <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
+                                            <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="help-text">Get your API key from <a
+                                        href="https://aistudio.google.dev/apikey" target="_blank">Google AI Studio</a>
+                                </div>
                             </div>
                         </div>
 
@@ -3238,6 +3270,7 @@
         const llmModelSelectionCache = {
             openai: null,
             anthropic: null,
+            gemini: null,
             grok: null,
             ollama: null,
         };
@@ -3246,6 +3279,7 @@
             const idByProvider = {
                 openai: 'openaiLlmModel',
                 anthropic: 'anthropicLlmModel',
+                gemini: 'geminiLlmModel',
                 grok: 'grokLlmModel',
                 ollama: 'ollamaModel',
             };
@@ -3270,7 +3304,7 @@
         }
 
         function attachLlmModelSelectionListeners() {
-            ['openai', 'anthropic', 'grok', 'ollama'].forEach(provider => {
+            ['openai', 'anthropic', 'gemini', 'grok', 'ollama'].forEach(provider => {
                 const select = getModelSelectForLlmProvider(provider);
                 if (!select) return;
                 if (select.dataset.modelCacheListenerAttached === 'true') return;
@@ -3818,7 +3852,7 @@
                 llmProviderSelect.dataset.lastProvider = provider;
 
                 // Hide all provider config sections
-                document.querySelectorAll('#openaiLlmConfig, #anthropicLlmConfig, #grokLlmConfig, #ollamaLlmConfig')
+                document.querySelectorAll('#openaiLlmConfig, #anthropicLlmConfig, #geminiLlmConfig, #grokLlmConfig, #ollamaLlmConfig')
                     .forEach(section => {
                         section.style.display = 'none';
                     });
@@ -3827,6 +3861,7 @@
                 const sectionMap = {
                     'openai': 'openaiLlmConfig',
                     'anthropic': 'anthropicLlmConfig',
+                    'gemini': 'geminiLlmConfig',
                     'grok': 'grokLlmConfig',
                     'ollama': 'ollamaLlmConfig'
                 };
@@ -4142,6 +4177,25 @@
                     cacheLlmModelSelection('grok', llmConfig.grok.model);
                 }
 
+                // Gemini settings
+                const geminiApiKey = document.getElementById('geminiApiKey');
+                if (geminiApiKey) {
+                    if (isTauriAvailable()) {
+                        const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'gemini' });
+                        geminiApiKey.value = '';
+                        geminiApiKey.placeholder = hasKey ? '••••••••••••••••' : 'AIza...';
+                        const btn = document.getElementById('deleteGeminiKey');
+                        if (btn) btn.classList.toggle('visible', hasKey);
+                    } else {
+                        geminiApiKey.value = '';
+                    }
+                }
+                const geminiLlmModel = document.getElementById('geminiLlmModel');
+                if (geminiLlmModel) geminiLlmModel.value = llmConfig?.gemini?.model || 'gemini-2.0-flash';
+                if (llmConfig?.gemini?.model) {
+                    cacheLlmModelSelection('gemini', llmConfig.gemini.model);
+                }
+
                 // Ollama settings
                 document.getElementById('localLlmEndpoint').value = llmConfig?.ollama?.base_url || 'http://localhost:11434';
                 // Note: Ollama model dropdown is populated via refreshOllamaModels()
@@ -4435,6 +4489,7 @@
 
                     const openaiLlmKey = (document.getElementById('openaiLlmApiKey')?.value || '').trim();
                     const anthropicKey = (document.getElementById('anthropicApiKey')?.value || '').trim();
+                    const geminiKey = (document.getElementById('geminiApiKey')?.value || '').trim();
                     const grokKey = (document.getElementById('grokApiKey')?.value || '').trim();
                     const openaiSttKey = (document.getElementById('openaiApiKey')?.value || '').trim();
                     const braveKey = (document.getElementById('braveSearchKey')?.value || '').trim();
@@ -4442,6 +4497,7 @@
 
                     if (openaiLlmKey) secretStores.push({ provider: 'openai', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'openai', api_key: openaiLlmKey }) });
                     if (anthropicKey) secretStores.push({ provider: 'anthropic', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'anthropic', api_key: anthropicKey }) });
+                    if (geminiKey) secretStores.push({ provider: 'gemini', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'gemini', api_key: geminiKey }) });
                     if (grokKey) secretStores.push({ provider: 'grok', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'grok', api_key: grokKey }) });
                     if (openaiSttKey) secretStores.push({ provider: 'voice_openai', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'voice_openai', api_key: openaiSttKey }) });
                     if (braveKey) secretStores.push({ provider: 'brave', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'brave', api_key: braveKey }) });
@@ -4464,6 +4520,7 @@
                             // Clear password inputs after successful secure-storage write.
                             if (document.getElementById('openaiLlmApiKey')) document.getElementById('openaiLlmApiKey').value = '';
                             if (document.getElementById('anthropicApiKey')) document.getElementById('anthropicApiKey').value = '';
+                            if (document.getElementById('geminiApiKey')) document.getElementById('geminiApiKey').value = '';
                             if (document.getElementById('grokApiKey')) document.getElementById('grokApiKey').value = '';
                             if (document.getElementById('openaiApiKey')) document.getElementById('openaiApiKey').value = '';
                             if (document.getElementById('braveSearchKey')) document.getElementById('braveSearchKey').value = '';
@@ -4499,6 +4556,16 @@
                 cacheLlmModelSelection('anthropic', anthropicModel);
                 llmSettings.anthropic.api_key = '';
                 if (typeof llmSettings.anthropic.base_url === 'undefined') llmSettings.anthropic.base_url = null;
+
+                // Gemini config (default matches gestura-core)
+                const geminiApiKeyVal = (document.getElementById('geminiApiKey')?.value || '').trim();
+                const geminiModelSelected = ((document.getElementById('geminiLlmModel')?.value || '').trim()) || (llmModelSelectionCache.gemini || '').trim();
+                const geminiModel = geminiModelSelected || llmSettings.gemini?.model || 'gemini-2.0-flash';
+                llmSettings.gemini = llmSettings.gemini || { api_key: '', base_url: null, model: geminiModel };
+                llmSettings.gemini.model = geminiModel;
+                cacheLlmModelSelection('gemini', geminiModel);
+                llmSettings.gemini.api_key = '';
+                if (typeof llmSettings.gemini.base_url === 'undefined') llmSettings.gemini.base_url = null;
 
                 // Grok config (default matches gestura-core)
                 const grokApiKey = (document.getElementById('grokApiKey')?.value || '').trim();
@@ -6015,7 +6082,7 @@
             // Show loading states immediately for all model dropdowns
             const modelDropdowns = [
                 'ollamaModel', 'openaiLlmModel', 'anthropicLlmModel',
-                'grokLlmModel', 'openaiSttModel', 'whisperModelSelect'
+                'geminiLlmModel', 'grokLlmModel', 'openaiSttModel', 'whisperModelSelect'
             ];
             modelDropdowns.forEach(id => setDropdownLoading(id, true));
 

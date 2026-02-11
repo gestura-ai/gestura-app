@@ -8,7 +8,10 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
-use gestura_core::chat_sessions::{ChatSessionStore, FileChatSessionStore, SessionFilter};
+use gestura_core::chat_sessions::{
+    ChatSessionStore, FileChatSessionStore, SessionFilter, SessionToolSettingsConfigExt,
+};
+use gestura_core::config::AppConfigSecurityExt;
 
 /// Compute the default per-session workspace directory (`~/.gestura/sessions/{session_id}`).
 ///

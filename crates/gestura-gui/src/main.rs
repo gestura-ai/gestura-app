@@ -15,7 +15,7 @@ use gestura_gui::commands;
 use gestura_gui::dispatcher::EventDispatcher;
 use gestura_gui::hotkeys::register_hotkey;
 use gestura_gui::kv::KvStore;
-use gestura_gui::{AppConfig, AppState};
+use gestura_gui::{AppConfig, AppConfigSecurityExt, AppState};
 
 #[tokio::main]
 async fn main() {

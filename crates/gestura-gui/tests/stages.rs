@@ -1,5 +1,6 @@
 // Basic tests verifying Stage 1–4 scaffolding compiles and key units behave.
 // These are pure unit tests with no network/process dependency.
+use gestura_gui::AppConfigSecurityExt;
 
 #[test]
 fn stage1_config_loads_defaults() {

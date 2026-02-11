@@ -1,0 +1,49 @@
+[package]
+name = "gestura-core-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Audio capture, speech processing, and STT provider abstractions for Gestura"
+
+[features]
+default = ["voice-local"]
+# Local voice via whisper.cpp bindings
+voice-local = ["dep:whisper-rs"]
+
+[dependencies]
+# Internal domain crates
+gestura-core-foundation.workspace = true
+gestura-core-config.workspace = true
+gestura-core-sessions.workspace = true
+
+# Audio processing
+cpal.workspace = true
+hound.workspace = true
+
+# Voice processing (optional)
+whisper-rs = { version = "0.14", optional = true }
+
+# Async / concurrency
+tokio.workspace = true
+async-trait.workspace = true
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+# HTTP (for OpenAI STT)
+reqwest.workspace = true
+
+# Utilities
+lazy_static.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"
+

@@ -42,15 +42,14 @@ pub mod checkpoints;
 pub mod compaction;
 pub mod config;
 pub mod config_env;
-pub mod config_validation;
-pub mod config_watcher;
+
 pub mod context;
 pub mod default_models;
 pub mod error;
 pub mod events;
 pub mod execution_mode;
 pub mod gdpr;
-pub mod guardrails;
+pub(crate) mod guardrails;
 pub mod hooks;
 pub mod interaction;
 pub mod knowledge;
@@ -64,7 +63,6 @@ pub mod nats_mq;
 /// OpenAI(-compatible) API compatibility helpers (e.g., parameter support quirks).
 pub mod openai_compat;
 pub mod orchestrator;
-mod persona;
 pub mod pipeline;
 pub mod plugin_system;
 pub mod prompt_enhancement;
@@ -124,7 +122,7 @@ pub use compaction::{
     ContextCompactor,
 };
 pub use config::{
-    AppConfig, McpJsonFile, McpScope, McpServerEntry, McpTransportType,
+    AppConfig, AppConfigSecurityExt, McpJsonFile, McpScope, McpServerEntry, McpTransportType,
     import_claude_desktop_servers,
 };
 pub use context::{
@@ -178,7 +176,7 @@ pub use model_display::{
 };
 pub use pipeline::{
     AgentPipeline, AgentRequest, AgentResponse, Message, PausedExecutionState, PermissionLevel,
-    PipelineConfig, RequestMetadata, RequestSource, ToolCallRecord, ToolResult,
+    PipelineConfig, PipelineConfigExt, RequestMetadata, RequestSource, ToolCallRecord, ToolResult,
 };
 pub use recommendations::{
     PersonalizedRecommendationEngine, Recommendation, RecommendationConfig, RecommendationFeedback,
@@ -190,8 +188,8 @@ pub use session_workspace::{
     SessionWorkspace, WorkspaceError, WorkspaceResult, cleanup_old_sessions, get_sessions_base_dir,
 };
 pub use speech::{
-    LlmResponse, SpeechConfig, SpeechProcessor, TranscriptionResult, get_speech_processor,
-    is_speech_recording, update_speech_config,
+    LlmResponse, SpeechConfig, SpeechProcessor, SpeechProcessorCoreExt, TranscriptionResult,
+    get_speech_processor, is_speech_recording, update_speech_config,
 };
 pub use stream_error::{StreamError, StreamErrorCategory, StreamResult};
 pub use stream_health::{

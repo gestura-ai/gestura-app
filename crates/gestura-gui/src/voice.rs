@@ -1,4 +1,5 @@
 #![allow(unused)]
+use crate::AppConfigSecurityExt;
 /// Voice engine feature scaffolding for faster-whisper (CTranslate2)
 #[cfg(feature = "voice-faster-whisper")]
 pub struct WhisperFasterLocal {

@@ -9,9 +9,19 @@
 resolver = "2"
 members = [
     "crates/gestura-core",
+    "crates/gestura-core-tools",
     "crates/gestura-core-foundation",
     "crates/gestura-gui",
     "crates/gestura-cli",
+    "crates/gestura-core-mcp",
+    "crates/gestura-core-llm",
+    "crates/gestura-core-pipeline",
+    "crates/gestura-core-tasks",
+    "crates/gestura-core-streaming",
+    "crates/gestura-core-sessions",
+    "crates/gestura-core-config",
+    "crates/gestura-core-audio",
+    "crates/gestura-core-security",
 ]
 
 # Default members for `cargo build` without specifying a package
@@ -33,6 +43,7 @@ description = "Voice-first AI assistant with GUI and CLI interfaces"
 # Core dependencies shared across crates
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9.34"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "io-util", "io-std", "sync"] }
 async-trait = "0.1"
@@ -70,9 +81,6 @@ tauri-build = { version = "2", features = [] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-dialog = "2"
 
-# BLE integration
-btleplug = "0.11"
-
 # JSON-LD processing
 json-ld = "0.16"
 
@@ -95,6 +103,7 @@ rand = "0.8"
 image = { version = "0.25", features = ["png", "jpeg"] }
 regex = "1"
 urlencoding = "2"
+notify = { version = "8.2.0", features = ["macos_fsevent"] }
 
 # macOS specific
 objc = "0.2"
@@ -112,8 +121,38 @@ zbus = "5"
 # This prevents whisper-rs from being built on platforms where it's problematic
 gestura-core = { path = "crates/gestura-core", default-features = false }
 
+# Domain crate: built-in tool implementations.
+gestura-core-tools = { path = "crates/gestura-core-tools" }
+
 # Foundation primitives shared across gestura-core domain crates.
 gestura-core-foundation = { path = "crates/gestura-core-foundation" }
+
+# Domain crate: MCP protocol implementation.
+gestura-core-mcp = { path = "crates/gestura-core-mcp" }
+
+# Domain crate: LLM provider implementations.
+gestura-core-llm = { path = "crates/gestura-core-llm" }
+
+# Domain crate: pipeline types and persona.
+gestura-core-pipeline = { path = "crates/gestura-core-pipeline" }
+
+# Domain crate: task management and workflow primitives.
+gestura-core-tasks = { path = "crates/gestura-core-tasks" }
+
+# Domain crate: streaming LLM provider support.
+gestura-core-streaming = { path = "crates/gestura-core-streaming" }
+
+# Domain crate: session management (chat sessions, auth, workspaces).
+gestura-core-sessions = { path = "crates/gestura-core-sessions" }
+
+# Domain crate: configuration types, loading, validation, and file watching.
+gestura-core-config = { path = "crates/gestura-core-config" }
+
+# Domain crate: audio capture, speech processing, and STT providers.
+gestura-core-audio = { path = "crates/gestura-core-audio" }
+
+# Domain crate: encryption, keychain, sandboxing, GDPR compliance.
+gestura-core-security = { path = "crates/gestura-core-security" }
 
 [profile.dev]
 opt-level = 0

@@ -10,6 +10,7 @@ use super::Result;
 use crate::McpAction;
 use colored::Colorize;
 use gestura_core::AppConfig;
+use gestura_core::AppConfigSecurityExt;
 use gestura_core::config::{McpScope, McpServerEntry, McpTransportType};
 use gestura_core::mcp::client::get_mcp_client_registry;
 use gestura_core::mcp::{PROTOCOL_VERSION, PromptRegistry, SessionManager};

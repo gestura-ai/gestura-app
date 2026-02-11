@@ -3,6 +3,7 @@
 //! This module provides a GUI-specific AgentManager that extends the core implementation
 //! with KV store persistence (backed by NATS JetStream) and GUI-specific event handling.
 
+use crate::AppConfigSecurityExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;

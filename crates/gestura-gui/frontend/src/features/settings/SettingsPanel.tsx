@@ -81,6 +81,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ config, onConfigUpdate })
           <select value={config.llm.primary} onChange={(e) => updateLlmSettings({ primary: e.target.value })}>
             <option value="openai">OpenAI</option>
             <option value="anthropic">Anthropic (Claude)</option>
+            <option value="gemini">Gemini (Google)</option>
             <option value="grok">Grok (xAI)</option>
             <option value="ollama">Ollama (Local)</option>
           </select>

@@ -8,7 +8,9 @@
 //! - Ensure provider/model precedence and compatibility checks are consistent.
 
 use crate::chat_sessions::SessionLlmConfig;
-use crate::config::{AnthropicConfig, AppConfig, GrokConfig, OllamaConfig, OpenAiConfig};
+use crate::config::{
+    AnthropicConfig, AppConfig, GeminiConfig, GrokConfig, OllamaConfig, OpenAiConfig,
+};
 use crate::config_env;
 use crate::llm_validation;
 
@@ -170,6 +172,7 @@ pub fn apply_cli_session_llm_overrides(
 ) -> EffectiveLlmConfig {
     let openai_key = cfg.llm.openai.as_ref().map(|c| c.api_key.clone());
     let anthropic_key = cfg.llm.anthropic.as_ref().map(|c| c.api_key.clone());
+    let gemini_key = cfg.llm.gemini.as_ref().map(|c| c.api_key.clone());
     let grok_key = cfg.llm.grok.as_ref().map(|c| c.api_key.clone());
 
     let api_key_lookup = move |provider: &str| match provider {
@@ -181,6 +184,10 @@ pub fn apply_cli_session_llm_overrides(
             .clone()
             .filter(|k| !k.trim().is_empty())
             .or_else(|| config_env::get_env("ANTHROPIC_API_KEY")),
+        "gemini" => gemini_key
+            .clone()
+            .filter(|k| !k.trim().is_empty())
+            .or_else(|| config_env::get_env("GEMINI_API_KEY")),
         "grok" => grok_key
             .clone()
             .filter(|k| !k.trim().is_empty())
@@ -222,6 +229,14 @@ fn apply_model_override(
             });
             grok.model = model.to_string();
         }
+        "gemini" => {
+            let gemini = cfg.llm.gemini.get_or_insert_with(|| GeminiConfig {
+                api_key: api_key_lookup("gemini").unwrap_or_default(),
+                model: model.to_string(),
+                base_url: None,
+            });
+            gemini.model = model.to_string();
+        }
         "ollama" => {
             let ollama = cfg.llm.ollama.get_or_insert_with(|| OllamaConfig {
                 base_url: "http://localhost:11434".into(),
@@ -237,6 +252,7 @@ fn get_model_for_provider(cfg: &AppConfig, provider: &str) -> Option<String> {
     match provider {
         "openai" => cfg.llm.openai.as_ref().map(|c| c.model.clone()),
         "anthropic" => cfg.llm.anthropic.as_ref().map(|c| c.model.clone()),
+        "gemini" => cfg.llm.gemini.as_ref().map(|c| c.model.clone()),
         "grok" => cfg.llm.grok.as_ref().map(|c| c.model.clone()),
         "ollama" => cfg.llm.ollama.as_ref().map(|c| c.model.clone()),
         _ => None,

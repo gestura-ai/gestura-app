@@ -1,0 +1,30 @@
+[package]
+name = "gestura-core-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Configuration types, loading, validation, and file watching for Gestura"
+
+[dependencies]
+# Internal domain crates
+gestura-core-foundation.workspace = true
+gestura-core-pipeline.workspace = true
+gestura-core-llm.workspace = true
+gestura-core-mcp.workspace = true
+gestura-core-tools.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+
+# File system / paths
+dirs.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+tracing.workspace = true
+notify.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+

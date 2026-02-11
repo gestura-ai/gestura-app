@@ -3,9 +3,12 @@
 use super::Result;
 use colored::Colorize;
 use gestura_core::{
-    AgentPipeline, AgentRequest, AppConfig, AudioCaptureConfig, CancellationToken, PermissionLevel,
-    RequestSource, SessionToolSettings, StreamChunk,
-    chat_sessions::{ChatSessionStore, FileChatSessionStore, MessageSource},
+    AgentPipeline, AgentRequest, AppConfig, AppConfigSecurityExt, AudioCaptureConfig,
+    CancellationToken, PermissionLevel, RequestSource, SessionToolSettings, SpeechProcessorCoreExt,
+    StreamChunk,
+    chat_sessions::{
+        ChatSessionStore, FileChatSessionStore, MessageSource, SessionToolSettingsConfigExt,
+    },
     get_speech_processor,
     tool_confirmation::{TOOL_CONFIRMATIONS, ToolConfirmationDecision},
 };

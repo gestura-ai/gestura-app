@@ -4,6 +4,7 @@ use super::Result;
 use crate::ConfigAction;
 use colored::Colorize;
 use gestura_core::AppConfig;
+use gestura_core::AppConfigSecurityExt;
 use gestura_core::config_env::{is_secret_key, redact_secret};
 use std::path::PathBuf;
 

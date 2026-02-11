@@ -14,9 +14,7 @@ path = "src/main.rs"
 default = ["voice-local", "security"]
 # Pass-through features to gestura-core
 voice-local = ["gestura-core/voice-local"]
-voice-openai = ["gestura-core/voice-openai"]
 nats = ["gestura-core/nats"]
-ble = ["gestura-core/ble"]
 security = ["gestura-core/security"]
 # Development features - enables dev-only code paths
 dev = ["gestura-core/dev"]

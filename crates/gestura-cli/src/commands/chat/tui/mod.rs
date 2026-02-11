@@ -48,7 +48,8 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use gestura_core::{
-    AgentPipeline, AgentRequest, AppConfig, CancellationToken, RequestSource, StreamChunk,
+    AgentPipeline, AgentRequest, AppConfig, AppConfigSecurityExt, CancellationToken, RequestSource,
+    StreamChunk,
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;

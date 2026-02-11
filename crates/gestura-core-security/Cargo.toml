@@ -1,0 +1,37 @@
+[package]
+name = "gestura-core-security"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Security domain crate: encryption, keychain, sandboxing, GDPR compliance"
+
+[features]
+# Enables AES-256-GCM encryption and OS keychain integration
+security = ["dep:ring", "dep:keyring"]
+
+[dependencies]
+# Internal crates
+gestura-core-foundation.workspace = true
+gestura-core-config.workspace = true
+
+# Core dependencies
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+thiserror.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["sync", "fs", "process"] }
+uuid.workspace = true
+hex.workspace = true
+
+# Security (optional)
+ring = { version = "0.17", optional = true }
+keyring = { version = "2.3", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+

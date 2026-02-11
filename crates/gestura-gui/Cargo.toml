@@ -33,10 +33,7 @@ nats = ["dep:async-nats", "gestura-core/nats"]
 voice-local = ["dep:whisper-rs", "gestura-core/voice-local"]
 # Local voice via Faster-Whisper (CTranslate2) scaffolding
 voice-faster-whisper = []
-# Cloud voice via OpenAI Whisper HTTP
-voice-openai = ["gestura-core/voice-openai"]
-# BLE integration for Haptic Harmony ring
-ble = ["dep:btleplug", "gestura-core/ble"]
+
 # JSON-LD processing for MDH
 json-ld = ["dep:json-ld", "gestura-core/json-ld"]
 # macOS permissions (objc/cocoa bindings for TCC permission dialogs)
@@ -71,7 +68,6 @@ bytes.workspace = true
 hound.workspace = true
 bytemuck.workspace = true
 whisper-rs = { workspace = true, optional = true }
-btleplug = { workspace = true, optional = true }
 json-ld = { workspace = true, optional = true }
 ring = { workspace = true, optional = true }
 keyring = { workspace = true, optional = true }

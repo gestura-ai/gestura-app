@@ -321,6 +321,7 @@ fn format_context(context: &PromptContext) -> String {
 /// ```no_run
 /// use gestura_core::prompt_enhancement::{enhance_prompt_with_llm, PromptContext};
 /// use gestura_core::config::AppConfig;
+/// use gestura_core::AppConfigSecurityExt;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let config = AppConfig::load_async().await;

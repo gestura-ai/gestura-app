@@ -2,7 +2,9 @@
 
 use super::Result;
 use colored::Colorize;
-use gestura_core::{AudioCaptureConfig, get_speech_processor, is_microphone_available};
+use gestura_core::{
+    AudioCaptureConfig, SpeechProcessorCoreExt, get_speech_processor, is_microphone_available,
+};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 

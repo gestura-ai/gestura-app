@@ -7921,6 +7921,7 @@
         const LLM_PROVIDERS = [
             { id: 'openai', name: 'OpenAI' },
             { id: 'anthropic', name: 'Anthropic' },
+            { id: 'gemini', name: 'Gemini (Google)' },
             { id: 'grok', name: 'Grok (xAI)' },
             { id: 'ollama', name: 'Ollama (Local)' }
         ];
@@ -8104,6 +8105,15 @@
                                     .filter((m) => typeof m.id === 'string' && m.id.length > 0)
                                 : [];
                         }
+                        break;
+                    case 'gemini':
+                        // Gemini uses a static model list (no list_gemini_models API)
+                        models = [
+                            { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
+                            { id: 'gemini-2.0-flash-lite', name: 'Gemini 2.0 Flash Lite' },
+                            { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro' },
+                            { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash' },
+                        ];
                         break;
                     case 'grok':
                         {
