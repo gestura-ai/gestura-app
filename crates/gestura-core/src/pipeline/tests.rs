@@ -1,0 +1,1315 @@
+use super::*;
+
+use tempfile::tempdir;
+
+#[test]
+fn test_agent_request_builder() {
+    let request = AgentRequest::new("Hello world")
+        .with_streaming(true)
+        .with_source(RequestSource::CliTui);
+
+    assert_eq!(request.input, "Hello world");
+    assert!(request.streaming);
+    assert_eq!(request.metadata.source, RequestSource::CliTui);
+}
+
+#[test]
+fn test_message_constructors() {
+    let user_msg = Message::user("Hello");
+    assert_eq!(user_msg.role, "user");
+
+    let assistant_msg = Message::assistant("Hi there");
+    assert_eq!(assistant_msg.role, "assistant");
+
+    let tool_msg = Message::tool_result("call_123", "result data");
+    assert_eq!(tool_msg.role, "tool");
+    assert_eq!(tool_msg.tool_call_id, Some("call_123".to_string()));
+}
+
+#[test]
+fn build_prompt_includes_project_guardrails_when_workspace_present() {
+    let temp = tempdir().unwrap();
+    std::fs::write(temp.path().join("AGENTS.md"), "Always run tests.\n").unwrap();
+
+    let pipeline = AgentPipeline::new(AppConfig::default());
+
+    let request = AgentRequest::new("hi").with_workspace(temp.path());
+    let context = crate::context::ResolvedContext::default();
+    let prompt = pipeline.build_prompt(&request, &context);
+
+    assert!(prompt.contains("Project guardrails:"));
+    assert!(prompt.contains("Always run tests."));
+    assert!(prompt.contains("Source: AGENTS.md"));
+}
+
+#[test]
+fn build_prompt_uses_dot_gestura_guardrails_over_agents_md() {
+    let temp = tempdir().unwrap();
+    std::fs::write(temp.path().join("AGENTS.md"), "agents-rule\n").unwrap();
+    std::fs::create_dir_all(temp.path().join(".gestura")).unwrap();
+    std::fs::write(temp.path().join(".gestura/guardrails"), "guardrails-rule\n").unwrap();
+
+    let pipeline = AgentPipeline::new(AppConfig::default());
+
+    let request = AgentRequest::new("hi").with_workspace(temp.path());
+    let context = crate::context::ResolvedContext::default();
+    let prompt = pipeline.build_prompt(&request, &context);
+
+    assert!(prompt.contains("guardrails-rule"));
+    assert!(!prompt.contains("agents-rule"));
+    assert!(prompt.contains("Source: .gestura/guardrails"));
+}
+
+#[test]
+fn build_prompt_skips_guardrails_when_disabled() {
+    let temp = tempdir().unwrap();
+    std::fs::write(temp.path().join("AGENTS.md"), "agents-rule\n").unwrap();
+
+    let mut config = AppConfig::default();
+    config.pipeline.project_guardrails.enabled = false;
+    let pipeline = AgentPipeline::new(config);
+
+    let request = AgentRequest::new("hi").with_workspace(temp.path());
+    let context = crate::context::ResolvedContext::default();
+    let prompt = pipeline.build_prompt(&request, &context);
+
+    assert!(!prompt.contains("Project guardrails:"));
+    assert!(!prompt.contains("agents-rule"));
+}
+
+#[test]
+fn test_pipeline_config_defaults() {
+    let config = PipelineConfig::default();
+    assert_eq!(config.max_iterations, 10);
+    assert!(config.enable_tools);
+    assert!(config.enable_context_reduction);
+}
+
+#[test]
+fn promote_approval_followup_enables_shell_tool() {
+    use crate::context::ContextCategory;
+
+    let pipeline = AgentPipeline::new(AppConfig::default());
+
+    let history = vec![Message::assistant(
+        "We will use the shell tool to run 'pwd'. Then respond.",
+    )];
+    let request = AgentRequest::new("okay please proceed").with_history(history);
+
+    let mut analysis = crate::context::RequestAnalysis::new("okay please proceed");
+    assert!(!analysis.needs_tools);
+
+    pipeline.promote_approval_to_tool_followup(&request, &mut analysis);
+
+    assert!(analysis.needs_tools);
+    assert!(analysis.is_followup);
+    assert!(analysis.categories.contains(&ContextCategory::Shell));
+    assert!(analysis.categories.contains(&ContextCategory::Tools));
+    assert!(analysis.suggested_tools.contains(&"shell".to_string()));
+    assert!(analysis.confidence >= 0.85);
+}
+
+/// When adapter layers explicitly disable tools for a request, the pipeline must
+/// not execute any tools (including the confirmed-tool follow-up heuristic).
+#[tokio::test]
+#[ignore = "requires Ollama with llama3.2 model installed"]
+async fn tools_enabled_false_skips_confirmed_tool_followup_execution() {
+    use tokio::sync::mpsc;
+    use tokio::time::{Duration, timeout};
+
+    let pipeline = AgentPipeline::new(AppConfig::default());
+
+    // Prior assistant message contains an explicit tool plan.
+    let history = vec![Message::assistant(
+        "We will use the shell tool to run 'pwd'. Then respond.",
+    )];
+
+    // User approval would normally trigger tool follow-up execution.
+    let request = AgentRequest::new("okay please proceed")
+        .with_history(history)
+        .with_tools_enabled(false);
+
+    // IMPORTANT: drain the stream concurrently to avoid backpressure deadlocks
+    // if the provider emits many chunks.
+    let (tx, mut rx) = mpsc::channel(256);
+    let cancel = CancellationToken::new();
+
+    let drain_handle = tokio::spawn(async move {
+        let mut saw_done = false;
+        while let Some(chunk) = rx.recv().await {
+            match chunk {
+                other @ (StreamChunk::ToolCallStart { .. }
+                | StreamChunk::ToolCallArgs(_)
+                | StreamChunk::ToolCallEnd
+                | StreamChunk::ToolCallResult { .. }
+                | StreamChunk::ToolConfirmationRequired { .. }
+                | StreamChunk::ToolBlocked { .. }) => {
+                    return Err(format!(
+                        "unexpected tool chunk emitted when tools are disabled: {other:?}"
+                    ));
+                }
+                StreamChunk::Done(_) => {
+                    saw_done = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        Ok::<bool, String>(saw_done)
+    });
+
+    let response = timeout(
+        Duration::from_secs(5),
+        pipeline.process_streaming(request, tx, cancel),
+    )
+    .await
+    .expect("process_streaming should not hang")
+    .expect("pipeline should complete");
+
+    // Strong assertion: the response should not record any tool calls.
+    assert!(response.tool_calls.is_empty());
+
+    // Avoid hangs if a regression causes the stream to never finalize.
+    let saw_done = timeout(Duration::from_secs(3), drain_handle)
+        .await
+        .expect("drain task should finish")
+        .expect("drain task should not panic")
+        .expect("no tool chunks should be emitted");
+
+    assert!(saw_done);
+}
+
+/// Even when request analysis would normally select tools, `tools_enabled=false`
+/// must ensure the blocking pipeline path does not execute tools.
+#[tokio::test]
+#[ignore = "requires Ollama with llama3.2 model installed"]
+async fn tools_enabled_false_disables_tools_for_blocking_requests() {
+    let pipeline = AgentPipeline::new(AppConfig::default());
+
+    let request = AgentRequest::new("Read the file 'Cargo.toml'.")
+        .with_streaming(false)
+        .with_tools_enabled(false);
+
+    let response = pipeline
+        .process_blocking(request)
+        .await
+        .expect("blocking pipeline should complete");
+
+    assert!(response.tool_calls.is_empty());
+    assert!(!response.content.trim().is_empty());
+}
+
+#[test]
+fn extract_shell_command_from_plan_parses_quoted_command() {
+    let text = "We will use the shell tool to run 'pwd'. Then respond.";
+    let cmd = AgentPipeline::extract_shell_command_from_plan(text).unwrap();
+    assert_eq!(cmd, "pwd");
+
+    let text2 = "We'll use the shell tool to run `git status` then respond.";
+    let cmd2 = AgentPipeline::extract_shell_command_from_plan(text2).unwrap();
+    assert_eq!(cmd2, "git status");
+}
+
+#[test]
+fn extract_planned_tool_call_from_text_parses_file_read() {
+    let text = "We will use the file tool to read 'foo.txt'. Then respond.";
+    let (tool, args, prefix) =
+        AgentPipeline::extract_planned_tool_call_from_text(text).expect("should parse");
+    assert_eq!(tool, "file");
+    assert!(args.contains("\"operation\":\"read\""));
+    assert!(args.contains("\"path\":\"foo.txt\""));
+    assert!(prefix.to_lowercase().contains("file"));
+}
+
+#[test]
+fn is_write_operation_classifies_file_operations() {
+    let read = serde_json::json!({"operation": "read", "path": "foo.txt"}).to_string();
+    assert!(!crate::tools::policy::is_write_operation("file", &read));
+
+    let list = serde_json::json!({"operation": "list", "path": "."}).to_string();
+    assert!(!crate::tools::policy::is_write_operation("file", &list));
+
+    let search =
+        serde_json::json!({"operation": "search", "path": ".", "pattern": "foo"}).to_string();
+    assert!(!crate::tools::policy::is_write_operation("file", &search));
+
+    let write =
+        serde_json::json!({"operation": "write", "path": "foo.txt", "content": "hi"}).to_string();
+    assert!(crate::tools::policy::is_write_operation("file", &write));
+
+    let edit = serde_json::json!({"operation": "edit", "path": "foo.txt", "old": "a", "new": "b"})
+        .to_string();
+    assert!(crate::tools::policy::is_write_operation("file", &edit));
+
+    // Mirror the defaulting behavior: content without operation is treated as write.
+    let implicit_write = serde_json::json!({"path": "foo.txt", "content": "hi"}).to_string();
+    assert!(crate::tools::policy::is_write_operation(
+        "file",
+        &implicit_write
+    ));
+}
+
+#[test]
+fn is_write_operation_classifies_shell_commands_conservatively() {
+    let pwd = serde_json::json!({"command": "pwd"}).to_string();
+    assert!(!crate::tools::policy::is_write_operation("shell", &pwd));
+
+    let ls = serde_json::json!({"command": "ls -la"}).to_string();
+    assert!(!crate::tools::policy::is_write_operation("shell", &ls));
+
+    let echo = serde_json::json!({"command": "echo hi"}).to_string();
+    assert!(!crate::tools::policy::is_write_operation("shell", &echo));
+
+    let redirect = serde_json::json!({"command": "echo hi > out.txt"}).to_string();
+    assert!(crate::tools::policy::is_write_operation("shell", &redirect));
+
+    // Unknown commands are treated as write for safety.
+    let unknown = serde_json::json!({"command": "git status"}).to_string();
+    assert!(crate::tools::policy::is_write_operation("shell", &unknown));
+}
+
+#[tokio::test]
+#[cfg_attr(target_os = "windows", ignore = "pwd command is Unix-only")]
+async fn streaming_followup_approval_executes_shell_from_history_and_finishes() {
+    use std::time::Duration;
+
+    // Use the "echo" LLM provider so the synthesis step completes instantly
+    // without requiring a real LLM. Disable fallback to avoid retry/backoff.
+    let mut app_config = AppConfig::default();
+    app_config.llm.primary = "echo".into();
+    app_config.llm.fallback = None;
+    let pipeline_config = PipelineConfig {
+        enable_fallback: false,
+        ..Default::default()
+    };
+    let pipeline = AgentPipeline::with_config(app_config, pipeline_config);
+
+    let history = vec![Message::assistant(
+        "We will use the shell tool to run 'pwd'. Then respond.",
+    )];
+
+    let cwd = std::env::current_dir().unwrap();
+
+    let request = AgentRequest::new("okay please proceed")
+        .with_history(history)
+        .with_session("test")
+        .with_workspace(cwd.clone());
+
+    let (tx, mut rx) = mpsc::channel(32);
+    let cancel = CancellationToken::new();
+
+    let resp = pipeline
+        .process_streaming(request, tx, cancel)
+        .await
+        .expect("process_streaming should succeed");
+
+    assert_eq!(resp.tool_calls.len(), 1);
+    assert_eq!(resp.tool_calls[0].name, "shell");
+    // The echo provider echoes the continuation prompt which contains the tool result.
+    assert!(resp.content.contains("Tool shell result:"));
+
+    // Ensure the stream terminates (no silent hang)
+    let saw_done = tokio::time::timeout(Duration::from_secs(5), async move {
+        while let Some(chunk) = rx.recv().await {
+            if matches!(chunk, StreamChunk::Done(_)) {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(saw_done);
+
+    // Sanity check the output includes the workspace path.
+    // `pwd` prints the current working directory; in sandbox mode we run in workspace root.
+    let expected = cwd.to_string_lossy();
+    assert!(resp.content.contains(expected.as_ref()));
+}
+
+#[tokio::test]
+async fn streaming_followup_approval_executes_file_read_from_history_and_finishes() {
+    use std::time::Duration;
+    use tempfile::tempdir;
+
+    // Use the "echo" LLM provider so the synthesis step completes instantly
+    // without requiring a real LLM. Disable fallback to avoid retry/backoff.
+    let mut app_config = AppConfig::default();
+    app_config.llm.primary = "echo".into();
+    app_config.llm.fallback = None;
+    let pipeline_config = PipelineConfig {
+        enable_fallback: false,
+        ..Default::default()
+    };
+    let pipeline = AgentPipeline::with_config(app_config, pipeline_config);
+
+    let temp = tempdir().unwrap();
+    let file_path = temp.path().join("foo.txt");
+    std::fs::write(&file_path, "hello from file\n").unwrap();
+
+    let history = vec![Message::assistant(
+        "We will use the file tool to read 'foo.txt'. Then respond.",
+    )];
+
+    let request = AgentRequest::new("okay please proceed")
+        .with_history(history)
+        .with_session("test")
+        .with_workspace(temp.path().to_path_buf());
+
+    let (tx, mut rx) = mpsc::channel(32);
+    let cancel = CancellationToken::new();
+
+    let resp = pipeline
+        .process_streaming(request, tx, cancel)
+        .await
+        .expect("process_streaming should succeed");
+
+    assert_eq!(resp.tool_calls.len(), 1);
+    assert_eq!(resp.tool_calls[0].name, "file");
+    // The echo provider echoes the continuation prompt which contains the tool result.
+    assert!(resp.content.contains("hello from file"));
+
+    // Ensure the stream terminates (no silent hang)
+    let saw_done = tokio::time::timeout(Duration::from_secs(5), async move {
+        while let Some(chunk) = rx.recv().await {
+            if matches!(chunk, StreamChunk::Done(_)) {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(saw_done);
+}
+
+/// In Restricted mode, write operations must request confirmation.
+///
+/// When the user denies, the tool should be skipped, a ToolCallResult should
+/// be emitted (success=false), and the pending confirmation should be cleared.
+#[tokio::test]
+async fn restricted_mode_write_tool_denied_emits_tool_call_result_and_skips() {
+    use std::sync::Arc;
+    use tempfile::tempdir;
+    use tokio::sync::mpsc;
+
+    use crate::session_workspace::SessionWorkspace;
+    use crate::tool_confirmation::{TOOL_CONFIRMATIONS, ToolConfirmationDecision};
+
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let temp = tempdir().unwrap();
+    let workspace = Arc::new(
+        SessionWorkspace::from_directory("s1", temp.path().to_path_buf()).expect("workspace"),
+    );
+
+    let (tx, mut rx) = mpsc::channel(32);
+    let cancel = CancellationToken::new();
+
+    let pending = PendingToolCall {
+        id: "call_test_denied".to_string(),
+        name: "file".to_string(),
+        arguments: serde_json::json!({
+            "operation": "write",
+            "path": "out.txt",
+            "content": "hi"
+        })
+        .to_string(),
+        start_time: Instant::now(),
+    };
+
+    let handle = tokio::spawn({
+        let workspace = workspace.clone();
+        async move {
+            let mut tool_calls_in_iteration: Vec<ToolCallRecord> = Vec::new();
+            let mut response = AgentResponse::empty();
+
+            pipeline
+                .finalize_pending_tool_call(
+                    pending,
+                    FinalizePendingToolCallCtx {
+                        workspace: Some(workspace.as_ref()),
+                        session_id: Some("s1".to_string()),
+                        permission_level: PermissionLevel::Restricted,
+                        cancel_token: &cancel,
+                        tool_calls_in_iteration: &mut tool_calls_in_iteration,
+                        response: &mut response,
+                        tx: &tx,
+                    },
+                )
+                .await;
+
+            (tool_calls_in_iteration, response)
+        }
+    });
+
+    // Wait for the confirmation request and deny it.
+    let mut confirmation_id: Option<String> = None;
+    while let Some(chunk) = rx.recv().await {
+        if let StreamChunk::ToolConfirmationRequired {
+            confirmation_id: id,
+            ..
+        } = chunk
+        {
+            confirmation_id = Some(id);
+            break;
+        }
+    }
+    let confirmation_id = confirmation_id.expect("expected ToolConfirmationRequired");
+
+    TOOL_CONFIRMATIONS
+        .resolve_decision(
+            &confirmation_id,
+            Some("s1"),
+            ToolConfirmationDecision::DenyOnce,
+        )
+        .expect("resolve should succeed");
+
+    // Ensure we emit a tool call result with success=false.
+    let mut saw_result = false;
+    while let Some(chunk) = rx.recv().await {
+        if let StreamChunk::ToolCallResult {
+            success, output, ..
+        } = chunk
+        {
+            assert!(!success);
+            assert!(output.contains("Skipped: tool confirmation"));
+            saw_result = true;
+            break;
+        }
+    }
+    assert!(saw_result);
+
+    let (tool_calls, response) = handle.await.expect("task join");
+    // Ensure this specific confirmation has been cleared, without depending on
+    // global pending count (tests may run concurrently).
+    let err = TOOL_CONFIRMATIONS
+        .resolve_decision(
+            &confirmation_id,
+            Some("s1"),
+            ToolConfirmationDecision::AllowOnce,
+        )
+        .unwrap_err();
+    assert!(err.contains("Unknown confirmation id"));
+    assert!(!temp.path().join("out.txt").exists());
+
+    // Sanity: the pipeline should record a skipped tool call.
+    assert!(
+        tool_calls
+            .iter()
+            .any(|t| matches!(t.result, ToolResult::Skipped(_)))
+    );
+    assert!(
+        response
+            .tool_calls
+            .iter()
+            .any(|t| matches!(t.result, ToolResult::Skipped(_)))
+    );
+}
+
+/// In Restricted mode, if the user never responds, the confirmation should
+/// time out and the tool should be skipped with a ToolCallResult.
+#[tokio::test(start_paused = true)]
+async fn restricted_mode_write_tool_times_out_and_emits_tool_call_result() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tempfile::tempdir;
+    use tokio::sync::mpsc;
+
+    use crate::session_workspace::SessionWorkspace;
+    use crate::tool_confirmation::{TOOL_CONFIRMATIONS, ToolConfirmationDecision};
+
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let temp = tempdir().unwrap();
+    let workspace = Arc::new(
+        SessionWorkspace::from_directory("s1", temp.path().to_path_buf()).expect("workspace"),
+    );
+
+    let (tx, mut rx) = mpsc::channel(32);
+    let cancel = CancellationToken::new();
+
+    let pending = PendingToolCall {
+        id: "call_test_timeout".to_string(),
+        name: "file".to_string(),
+        arguments: serde_json::json!({
+            "operation": "write",
+            "path": "out_timeout.txt",
+            "content": "hi"
+        })
+        .to_string(),
+        start_time: Instant::now(),
+    };
+
+    let handle = tokio::spawn({
+        let workspace = workspace.clone();
+        async move {
+            let mut tool_calls_in_iteration: Vec<ToolCallRecord> = Vec::new();
+            let mut response = AgentResponse::empty();
+
+            pipeline
+                .finalize_pending_tool_call(
+                    pending,
+                    FinalizePendingToolCallCtx {
+                        workspace: Some(workspace.as_ref()),
+                        session_id: Some("s1".to_string()),
+                        permission_level: PermissionLevel::Restricted,
+                        cancel_token: &cancel,
+                        tool_calls_in_iteration: &mut tool_calls_in_iteration,
+                        response: &mut response,
+                        tx: &tx,
+                    },
+                )
+                .await;
+
+            (tool_calls_in_iteration, response)
+        }
+    });
+
+    // Wait for the confirmation request. We intentionally do NOT resolve it.
+    let mut confirmation_id: Option<String> = None;
+    while let Some(chunk) = rx.recv().await {
+        if let StreamChunk::ToolConfirmationRequired {
+            confirmation_id: id,
+            ..
+        } = chunk
+        {
+            confirmation_id = Some(id);
+            break;
+        }
+    }
+    let confirmation_id = confirmation_id.expect("expected ToolConfirmationRequired");
+
+    // Advance time beyond the hard-coded confirmation timeout (300s).
+    tokio::time::advance(Duration::from_secs(301)).await;
+    tokio::task::yield_now().await;
+
+    let mut saw_result = false;
+    while let Some(chunk) = rx.recv().await {
+        if let StreamChunk::ToolCallResult {
+            success, output, ..
+        } = chunk
+        {
+            assert!(!success);
+            assert!(output.contains("timed-out") || output.contains("denied"));
+            saw_result = true;
+            break;
+        }
+    }
+    assert!(saw_result);
+
+    let (tool_calls, response) = handle.await.expect("task join");
+    // Ensure this specific confirmation has been cleared, without depending on
+    // global pending count (tests may run concurrently).
+    let err = TOOL_CONFIRMATIONS
+        .resolve_decision(
+            &confirmation_id,
+            Some("s1"),
+            ToolConfirmationDecision::AllowOnce,
+        )
+        .unwrap_err();
+    assert!(err.contains("Unknown confirmation id"));
+    assert!(!temp.path().join("out_timeout.txt").exists());
+    assert!(
+        tool_calls
+            .iter()
+            .any(|t| matches!(t.result, ToolResult::Skipped(_)))
+    );
+    assert!(
+        response
+            .tool_calls
+            .iter()
+            .any(|t| matches!(t.result, ToolResult::Skipped(_)))
+    );
+}
+
+#[tokio::test]
+async fn execute_tool_dispatches_code_stats_with_workspace_sandbox() {
+    use tempfile::tempdir;
+
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let temp = tempdir().unwrap();
+    std::fs::write(temp.path().join("main.rs"), "fn main() {}\n").unwrap();
+
+    let ws = SessionWorkspace::from_directory("test-session", temp.path().to_path_buf())
+        .expect("workspace should be created");
+
+    let args = serde_json::json!({"operation":"stats","path":"."}).to_string();
+    let result = pipeline.execute_tool("code", &args, Some(&ws), None).await;
+
+    match result {
+        ToolResult::Success(s) => {
+            // Basic sanity: should be valid JSON and include a stats object.
+            let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+            assert!(v.get("stats").is_some());
+        }
+        other => panic!("expected success, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn file_read_honors_start_end_range() {
+    use tempfile::tempdir;
+
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let temp = tempdir().unwrap();
+    std::fs::write(temp.path().join("foo.txt"), "l1\nl2\nl3\n").unwrap();
+
+    let ws = SessionWorkspace::from_directory("test-session", temp.path().to_path_buf())
+        .expect("workspace should be created");
+
+    let args = serde_json::json!({
+        "operation": "read",
+        "path": "foo.txt",
+        "start": 2,
+        "end": 2
+    })
+    .to_string();
+
+    let result = pipeline.execute_tool("file", &args, Some(&ws), None).await;
+    match result {
+        ToolResult::Success(s) => {
+            assert!(s.contains("l2"));
+            assert!(!s.contains("l1"));
+            assert!(!s.contains("l3"));
+        }
+        other => panic!("expected success, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn file_tree_honors_show_hidden() {
+    use tempfile::tempdir;
+
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let temp = tempdir().unwrap();
+    std::fs::write(temp.path().join(".hidden.txt"), "secret").unwrap();
+    std::fs::write(temp.path().join("visible.txt"), "ok").unwrap();
+
+    let ws = SessionWorkspace::from_directory("test-session", temp.path().to_path_buf())
+        .expect("workspace should be created");
+
+    let args_hidden_off = serde_json::json!({
+        "operation": "tree",
+        "path": ".",
+        "max_depth": 1,
+        "show_hidden": false
+    })
+    .to_string();
+
+    let r1 = pipeline
+        .execute_tool("file", &args_hidden_off, Some(&ws), None)
+        .await;
+    match r1 {
+        ToolResult::Success(s) => {
+            assert!(s.contains("visible.txt"));
+            assert!(!s.contains(".hidden.txt"));
+        }
+        other => panic!("expected success, got: {other:?}"),
+    }
+
+    let args_hidden_on = serde_json::json!({
+        "operation": "tree",
+        "path": ".",
+        "max_depth": 1,
+        "show_hidden": true
+    })
+    .to_string();
+
+    let r2 = pipeline
+        .execute_tool("file", &args_hidden_on, Some(&ws), None)
+        .await;
+    match r2 {
+        ToolResult::Success(s) => {
+            assert!(s.contains("visible.txt"));
+            assert!(s.contains(".hidden.txt"));
+        }
+        other => panic!("expected success, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn file_edit_replaces_content() {
+    use tempfile::tempdir;
+
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let temp = tempdir().unwrap();
+    let p = temp.path().join("edit.txt");
+    std::fs::write(&p, "hello world\n").unwrap();
+
+    let ws = SessionWorkspace::from_directory("test-session", temp.path().to_path_buf())
+        .expect("workspace should be created");
+
+    let args = serde_json::json!({
+        "operation": "edit",
+        "path": "edit.txt",
+        "old": "world",
+        "new": "gestura"
+    })
+    .to_string();
+
+    let result = pipeline.execute_tool("file", &args, Some(&ws), None).await;
+    match result {
+        ToolResult::Success(s) => {
+            let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+            assert_eq!(v.get("replacements").and_then(|x| x.as_u64()), Some(1));
+        }
+        other => panic!("expected success, got: {other:?}"),
+    }
+
+    let new_content = std::fs::read_to_string(&p).unwrap();
+    assert!(new_content.contains("hello gestura"));
+}
+
+#[tokio::test]
+async fn shell_env_is_passed_through() {
+    let pipeline = AgentPipeline::new(AppConfig::default());
+
+    let cwd = std::env::current_dir().unwrap();
+    let ws = SessionWorkspace::from_directory("test-session", cwd.clone())
+        .expect("workspace should be created");
+
+    let args = serde_json::json!({
+        "command": "printf %s $FOO",
+        "env": {"FOO": "BAR"},
+        "timeout_secs": 10
+    })
+    .to_string();
+
+    let result = pipeline.execute_tool("shell", &args, Some(&ws), None).await;
+    match result {
+        ToolResult::Success(s) => {
+            // The shell async wrapper returns stdout on success.
+            assert!(s.contains("BAR"));
+        }
+        other => panic!("expected success, got: {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------
+// Screen tool argument validation (must fail fast without OS capture)
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn screenshot_tool_rejects_non_screenshot_operations() {
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let temp = tempdir().unwrap();
+    let ws = SessionWorkspace::from_directory("test-session", temp.path().to_path_buf())
+        .expect("workspace should be created");
+
+    let args = serde_json::json!({"operation": "start"}).to_string();
+    let result = pipeline
+        .execute_tool("screenshot", &args, Some(&ws), None)
+        .await;
+    match result {
+        ToolResult::Error(e) => assert!(e.contains("does not support operation")),
+        other => panic!("expected error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn screenshot_rejects_invalid_return_mode() {
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let temp = tempdir().unwrap();
+    let ws = SessionWorkspace::from_directory("test-session", temp.path().to_path_buf())
+        .expect("workspace should be created");
+
+    let args = serde_json::json!({
+        "return": {"mode": "bogus"}
+    })
+    .to_string();
+
+    let result = pipeline
+        .execute_tool("screenshot", &args, Some(&ws), None)
+        .await;
+    match result {
+        ToolResult::Error(e) => assert!(e.contains("Invalid return.mode")),
+        other => panic!("expected error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn screenshot_rejects_extension_mismatch_vs_output_format() {
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let temp = tempdir().unwrap();
+    let ws = SessionWorkspace::from_directory("test-session", temp.path().to_path_buf())
+        .expect("workspace should be created");
+
+    let args = serde_json::json!({
+        "output_path": "foo.png",
+        "output_format": "jpg"
+    })
+    .to_string();
+
+    let result = pipeline
+        .execute_tool("screenshot", &args, Some(&ws), None)
+        .await;
+    match result {
+        ToolResult::Error(e) => assert!(e.contains("does not match requested output_format")),
+        other => panic!("expected error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn screen_record_requires_operation() {
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let temp = tempdir().unwrap();
+    let ws = SessionWorkspace::from_directory("test-session", temp.path().to_path_buf())
+        .expect("workspace should be created");
+
+    let args = serde_json::json!({}).to_string();
+    let result = pipeline
+        .execute_tool("screen_record", &args, Some(&ws), None)
+        .await;
+    match result {
+        ToolResult::Error(e) => assert!(e.contains("Missing required field 'operation'")),
+        other => panic!("expected error, got: {other:?}"),
+    }
+}
+
+// =========================================================================
+// Integration Tests for Pipeline (VALIDATION task)
+// =========================================================================
+
+use crate::context::{ContextCategory, ContextManager, estimate_tokens};
+
+#[test]
+fn test_context_reduction_reduces_prompt_size() {
+    // Test that context reduction actually reduces prompt size
+    let context_manager = ContextManager::new();
+
+    // Request that doesn't need tools should have smaller context
+    let simple_request = "What is the weather?";
+    let analysis = context_manager.analyze(simple_request);
+
+    // General questions shouldn't need tools
+    assert!(!analysis.needs_tools || analysis.categories.contains(&ContextCategory::General));
+}
+
+#[test]
+fn test_tool_filtering_by_category() {
+    // Test that tool filtering works correctly based on request analysis
+    let context_manager = ContextManager::new();
+
+    // File-related request should include file tools
+    let file_request = "Read the file src/main.rs";
+    let analysis = context_manager.analyze(file_request);
+
+    assert!(analysis.categories.contains(&ContextCategory::FileSystem));
+    assert!(analysis.needs_tools);
+
+    // Git-related request should include git tools
+    let git_request = "Show me the git status";
+    let git_analysis = context_manager.analyze(git_request);
+
+    assert!(git_analysis.categories.contains(&ContextCategory::Git));
+}
+
+#[test]
+fn test_token_estimation() {
+    // Test token estimation function
+    let short_text = "Hello world";
+    let long_text = "a".repeat(1000);
+
+    let short_tokens = estimate_tokens(short_text);
+    let long_tokens = estimate_tokens(&long_text);
+
+    // Short text should have fewer tokens
+    assert!(short_tokens < long_tokens);
+    // Rough estimate: ~4 chars per token
+    assert!((200..=300).contains(&long_tokens));
+}
+
+#[test]
+fn test_token_limit_status() {
+    // Test token limit checking with AppConfig
+    let app_config = AppConfig::default();
+    let pipeline_config = PipelineConfig {
+        max_context_tokens: 10_000, // Must be larger than max_output_tokens
+        max_output_tokens: 1_000,
+        ..Default::default()
+    };
+    let pipeline = AgentPipeline::with_config(app_config, pipeline_config);
+
+    // Small prompt should be OK (max_input = 10000 - 1000 = 9000)
+    let small_prompt = "Hello";
+    let status = pipeline.check_token_limit(small_prompt);
+    assert!(matches!(status, TokenLimitStatus::Ok { .. }));
+
+    // Large prompt should exceed (10000 chars / 4 = 2500 tokens, but we need > 9000)
+    let large_prompt = "a".repeat(50000); // ~12500 tokens
+    let status = pipeline.check_token_limit(&large_prompt);
+    assert!(matches!(status, TokenLimitStatus::Exceeded { .. }));
+}
+
+#[test]
+fn test_voice_and_text_same_analysis() {
+    // Test that voice and text inputs produce same analysis results
+    let context_manager = ContextManager::new();
+
+    let text_input = "List all files in the current directory";
+    let voice_input = "List all files in the current directory"; // Same content
+
+    let text_analysis = context_manager.analyze(text_input);
+    let voice_analysis = context_manager.analyze(voice_input);
+
+    // Same input should produce same analysis
+    assert_eq!(text_analysis.categories, voice_analysis.categories);
+    assert_eq!(text_analysis.needs_tools, voice_analysis.needs_tools);
+}
+
+#[test]
+fn test_history_summarization() {
+    // Test history summarization with threshold
+    let context_manager = ContextManager::new();
+
+    // Short history - should include all
+    let short_history: Vec<String> = (0..5).map(|i| format!("Message {}", i)).collect();
+    let short_summary = context_manager.summarize_history(&short_history);
+    assert!(!short_summary.is_empty());
+    assert!(short_summary.contains("Message 0"));
+
+    // Long history - should summarize
+    let long_history: Vec<String> = (0..30).map(|i| format!("Message {}", i)).collect();
+    let long_summary = context_manager.summarize_history(&long_history);
+    assert!(long_summary.contains("summarized"));
+}
+
+#[test]
+fn test_request_similarity_detection() {
+    // Test request similarity detection
+    let context_manager = ContextManager::new();
+
+    let request1 = "Read the file src/main.rs";
+    let request2 = "Read the file src/main.rs"; // Same request
+    let request3 = "Show git status"; // Different request
+
+    let analysis1 = context_manager.analyze(request1);
+    let analysis2 = context_manager.analyze(request2);
+    let analysis3 = context_manager.analyze(request3);
+
+    let hash1 = context_manager.compute_request_hash(&analysis1);
+    let hash2 = context_manager.compute_request_hash(&analysis2);
+    let hash3 = context_manager.compute_request_hash(&analysis3);
+
+    // Same requests should have same hash
+    assert_eq!(hash1, hash2);
+    // Different requests should have different hash
+    assert_ne!(hash1, hash3);
+}
+
+#[test]
+fn test_agent_request_with_history() {
+    // Test agent request with conversation history
+    let history = vec![Message::user("Hello"), Message::assistant("Hi there!")];
+
+    let request = AgentRequest::new("How are you?").with_history(history.clone());
+
+    assert_eq!(request.history.len(), 2);
+    assert_eq!(request.history[0].role, "user");
+    assert_eq!(request.history[1].role, "assistant");
+}
+
+// =========================================================================
+// Integration Tests for Auto-Compaction Strategies
+// =========================================================================
+
+/// Helper function to estimate tokens from a vector of messages
+fn estimate_tokens_from_messages(messages: &[Message]) -> usize {
+    messages.iter().map(|m| estimate_tokens(&m.content)).sum()
+}
+
+#[tokio::test]
+async fn test_auto_compaction_summarize_strategy() {
+    // Test that Summarize strategy triggers at 80% threshold and reduces context
+    let mut config = AppConfig::default();
+    config.pipeline.compaction_strategy = CompactionStrategy::Summarize;
+    config.pipeline.auto_compact_threshold_percent = 80;
+    config.pipeline.max_context_tokens = 1000; // Small limit for testing
+
+    let pipeline = AgentPipeline::with_provider_optimized_config(config);
+
+    // Create history that exceeds 80% of 1000 tokens (>800 tokens)
+    // Each message needs to be longer to reach the threshold
+    // Rough estimate: 4 chars per token, so we need >3200 chars total
+    let mut history = Vec::new();
+    for i in 0..20 {
+        history.push(Message::user(format!(
+                "This is test message number {} with lots of additional content to increase token count. \
+                 We need to make sure this message is long enough to trigger the auto-compaction threshold. \
+                 Adding more text here to ensure we exceed 800 tokens total across all messages in the history.",
+                i
+            )));
+        history.push(Message::assistant(format!(
+                "This is response number {} with lots of additional content to increase token count. \
+                 We need to make sure this response is long enough to trigger the auto-compaction threshold. \
+                 Adding more text here to ensure we exceed 800 tokens total across all messages in the history.",
+                i
+            )));
+    }
+
+    let estimated_tokens = estimate_tokens_from_messages(&history);
+    assert!(
+        estimated_tokens > 800,
+        "History should exceed 80% threshold (got {} tokens)",
+        estimated_tokens
+    );
+
+    // Build a prompt preview to test auto-compaction
+    let prompt_preview: String = history
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let metadata = RequestMetadata::default();
+
+    // Check if auto-compaction would trigger
+    let compaction_result = pipeline
+        .check_and_apply_auto_compaction(&history, &prompt_preview, &metadata)
+        .await;
+
+    // Should trigger compaction
+    assert!(
+        compaction_result.is_some(),
+        "Auto-compaction should trigger"
+    );
+}
+
+#[tokio::test]
+async fn test_auto_compaction_truncate_strategy() {
+    // Test that Truncate strategy removes oldest messages
+    let mut config = AppConfig::default();
+    config.pipeline.compaction_strategy = CompactionStrategy::Truncate;
+    config.pipeline.auto_compact_threshold_percent = 80;
+    config.pipeline.max_context_tokens = 1000;
+
+    let pipeline = AgentPipeline::with_provider_optimized_config(config);
+
+    let mut history = Vec::new();
+    for i in 0..15 {
+        history.push(Message::user(format!(
+            "Message {} with additional content",
+            i
+        )));
+        history.push(Message::assistant(format!(
+            "Response {} with additional content",
+            i
+        )));
+    }
+
+    let messages_before = history.len();
+    let prompt_preview: String = history
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let metadata = RequestMetadata::default();
+
+    let compaction_result = pipeline
+        .check_and_apply_auto_compaction(&history, &prompt_preview, &metadata)
+        .await;
+
+    // Should trigger compaction
+    assert!(
+        compaction_result.is_some(),
+        "Auto-compaction should trigger"
+    );
+
+    // Verify compaction result indicates truncation occurred
+    if let Some(StreamChunk::ContextCompacted { messages_after, .. }) = compaction_result {
+        assert!(
+            messages_after < messages_before,
+            "Truncate should reduce message count"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_auto_compaction_clear_strategy() {
+    // Test that Clear strategy removes all history
+    let mut config = AppConfig::default();
+    config.pipeline.compaction_strategy = CompactionStrategy::Clear;
+    config.pipeline.auto_compact_threshold_percent = 80;
+    config.pipeline.max_context_tokens = 1000;
+
+    let pipeline = AgentPipeline::with_provider_optimized_config(config);
+
+    let mut history = Vec::new();
+    for i in 0..15 {
+        history.push(Message::user(format!(
+            "Message {} with additional content",
+            i
+        )));
+        history.push(Message::assistant(format!(
+            "Response {} with additional content",
+            i
+        )));
+    }
+
+    let prompt_preview: String = history
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let metadata = RequestMetadata::default();
+
+    let compaction_result = pipeline
+        .check_and_apply_auto_compaction(&history, &prompt_preview, &metadata)
+        .await;
+
+    // Should trigger compaction
+    assert!(
+        compaction_result.is_some(),
+        "Auto-compaction should trigger"
+    );
+
+    // Verify compaction result indicates all messages were cleared
+    if let Some(StreamChunk::ContextCompacted { messages_after, .. }) = compaction_result {
+        assert_eq!(
+            messages_after, 0,
+            "Clear strategy should remove all history"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_auto_compaction_memory_bank_strategy() {
+    // Test that MemoryBank strategy saves context to file
+    use tempfile::TempDir;
+
+    let temp_dir = TempDir::new().unwrap();
+    let workspace_path = temp_dir.path().to_path_buf();
+
+    let mut config = AppConfig::default();
+    config.pipeline.compaction_strategy = CompactionStrategy::MemoryBank;
+    config.pipeline.auto_compact_threshold_percent = 80;
+    config.pipeline.max_context_tokens = 1000;
+
+    let pipeline = AgentPipeline::with_provider_optimized_config(config);
+
+    let mut history = Vec::new();
+    for i in 0..15 {
+        history.push(Message::user(format!(
+            "Message {} with additional content",
+            i
+        )));
+        history.push(Message::assistant(format!(
+            "Response {} with additional content",
+            i
+        )));
+    }
+
+    let messages_before = history.len();
+    let prompt_preview: String = history
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let metadata = RequestMetadata {
+        workspace_dir: Some(workspace_path.clone()),
+        session_id: Some("test-session".to_string()),
+        ..Default::default()
+    };
+
+    let compaction_result = pipeline
+        .check_and_apply_auto_compaction(&history, &prompt_preview, &metadata)
+        .await;
+
+    // Should trigger compaction
+    assert!(
+        compaction_result.is_some(),
+        "Auto-compaction should trigger"
+    );
+
+    // Verify compaction result indicates memory bank save
+    if let Some(StreamChunk::MemoryBankSaved { messages_saved, .. }) = compaction_result {
+        assert_eq!(
+            messages_saved, messages_before,
+            "All messages should be saved to memory bank"
+        );
+    }
+
+    // Verify memory bank file was created
+    let memory_dir = workspace_path.join(".gestura").join("memory");
+    assert!(
+        memory_dir.exists(),
+        "Memory bank directory should be created"
+    );
+
+    // Check that at least one .md file exists
+    let entries = std::fs::read_dir(&memory_dir).unwrap();
+    let md_files: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("md"))
+        .collect();
+
+    assert!(
+        !md_files.is_empty(),
+        "Memory bank should contain at least one markdown file"
+    );
+}
+
+#[tokio::test]
+async fn test_auto_compaction_threshold_not_reached() {
+    // Test that auto-compaction does NOT trigger when below threshold
+    let mut config = AppConfig::default();
+    config.pipeline.auto_compact_threshold_percent = 80;
+    config.pipeline.max_context_tokens = 10000; // Large limit
+
+    let pipeline = AgentPipeline::with_provider_optimized_config(config);
+
+    // Create small history that won't exceed threshold
+    let history = vec![
+        Message::user("Hello".to_string()),
+        Message::assistant("Hi there!".to_string()),
+    ];
+
+    let estimated_tokens = estimate_tokens_from_messages(&history);
+    assert!(
+        estimated_tokens < 8000,
+        "History should be well below 80% threshold"
+    );
+
+    let prompt_preview: String = history
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let metadata = RequestMetadata::default();
+
+    // Check if auto-compaction would trigger
+    let compaction_result = pipeline
+        .check_and_apply_auto_compaction(&history, &prompt_preview, &metadata)
+        .await;
+
+    // Should NOT trigger compaction
+    assert!(
+        compaction_result.is_none(),
+        "Should not trigger compaction when below threshold"
+    );
+}
+
+#[test]
+fn test_pipeline_config_user_max_context_tokens_is_clamped_to_provider_default() {
+    use crate::config::PipelineSettings;
+
+    // Base config is provider-optimized.
+    let base = PipelineConfig::for_provider("ollama");
+    assert_eq!(
+        base.max_context_tokens,
+        PipelineConfig::context_tokens_for_provider("ollama")
+    );
+
+    // User requests a larger context window than the provider default.
+    let settings = PipelineSettings {
+        max_context_tokens: 999_999,
+        ..Default::default()
+    };
+
+    let merged = base.with_user_settings(&settings);
+    assert_eq!(
+        merged.max_context_tokens,
+        PipelineConfig::context_tokens_for_provider("ollama"),
+        "User max_context_tokens should clamp to provider default"
+    );
+}

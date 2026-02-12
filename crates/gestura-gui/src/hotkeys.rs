@@ -1,5 +1,7 @@
 //! Global hotkeys integration using the Tauri v2 global-shortcut plugin.
-//! This registers the configured hotkey to toggle/show the main window.
+//!
+//! The listen hotkey is intended to **toggle voice listening**, matching the
+//! exact behavior of the tray menu item "Start Listening" / "Stop Listening".
 
 #[allow(unused_imports)]
 use tauri::Manager as _;
@@ -60,10 +62,10 @@ pub fn register_hotkey(app: &AppHandle, hotkey: &str) {
                                 }));
                             }
                         }
-                        if let Some(win) = app.get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.set_focus();
-                        }
+
+                        // IMPORTANT: Do not open any chat window here.
+                        // Hotkey must behave exactly like tray "Start Listening".
+                        crate::tray::toggle_listening_mode(app);
                     }
                     ShortcutState::Released => {}
                 }

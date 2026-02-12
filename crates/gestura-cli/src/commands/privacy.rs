@@ -5,8 +5,6 @@ use crate::PrivacyAction;
 use colored::Colorize;
 use dialoguer::Confirm;
 use gestura_core::get_gdpr_manager;
-use indicatif::{ProgressBar, ProgressStyle};
-use std::time::Duration;
 
 pub fn run(action: &PrivacyAction) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
@@ -22,14 +20,7 @@ pub fn run(action: &PrivacyAction) -> Result<()> {
             println!("Output file: {}", output_path.display());
             println!();
 
-            let spinner = ProgressBar::new_spinner();
-            spinner.set_style(
-                ProgressStyle::default_spinner()
-                    .template("{spinner:.green} {msg}")
-                    .unwrap(),
-            );
-            spinner.set_message("Collecting user data...");
-            spinner.enable_steady_tick(Duration::from_millis(100));
+            let spinner = super::spinner::brand_spinner("Collecting user data...");
 
             rt.block_on(async {
                 let gdpr = get_gdpr_manager().await;
@@ -93,14 +84,7 @@ pub fn run(action: &PrivacyAction) -> Result<()> {
                 }
             }
 
-            let spinner = ProgressBar::new_spinner();
-            spinner.set_style(
-                ProgressStyle::default_spinner()
-                    .template("{spinner:.red} {msg}")
-                    .unwrap(),
-            );
-            spinner.set_message("Deleting user data...");
-            spinner.enable_steady_tick(Duration::from_millis(100));
+            let spinner = super::spinner::brand_spinner("Deleting user data...");
 
             // Delete config directory
             let config_dir = dirs::config_dir().map(|p| p.join("gestura"));

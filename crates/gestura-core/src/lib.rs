@@ -42,14 +42,14 @@ pub mod checkpoints;
 pub mod compaction;
 pub mod config;
 pub mod config_env;
-pub mod config_validation;
-pub mod config_watcher;
+
 pub mod context;
+pub mod default_models;
 pub mod error;
 pub mod events;
 pub mod execution_mode;
 pub mod gdpr;
-pub mod guardrails;
+pub(crate) mod guardrails;
 pub mod hooks;
 pub mod interaction;
 pub mod knowledge;
@@ -59,11 +59,11 @@ pub mod llm_validation;
 pub mod mcp;
 pub mod memory_bank;
 pub mod model_display;
+pub mod model_listing;
 pub mod nats_mq;
 /// OpenAI(-compatible) API compatibility helpers (e.g., parameter support quirks).
 pub mod openai_compat;
 pub mod orchestrator;
-mod persona;
 pub mod pipeline;
 pub mod plugin_system;
 pub mod prompt_enhancement;
@@ -88,6 +88,7 @@ pub mod token_tracker;
 pub mod tool_confirmation;
 pub mod tool_inspection;
 pub mod tools;
+pub mod workflows;
 
 // Re-export common types for convenience
 pub use a2a::{
@@ -121,10 +122,17 @@ pub use compaction::{
     CompactionConfig, CompactionEvent, CompactionEventType, CompactionResult, CompactionStrategy,
     ContextCompactor,
 };
-pub use config::AppConfig;
+pub use config::{
+    AppConfig, AppConfigSecurityExt, McpJsonFile, McpScope, McpServerEntry, McpTransportType,
+    import_claude_desktop_servers,
+};
 pub use context::{
     CacheStats, ContextCache, ContextCategory, ContextManager, ContextManagerStats, EntityType,
     ExtractedEntity, FileContext, RequestAnalysis, RequestAnalyzer, ResolvedContext, ToolContext,
+};
+pub use default_models::{
+    DEFAULT_ANTHROPIC_MODEL, DEFAULT_GEMINI_BASE_URL, DEFAULT_GEMINI_MODEL, DEFAULT_GROK_MODEL,
+    DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_OPENAI_STT_MODEL,
 };
 pub use error::{AppError, Result};
 pub use events::{
@@ -152,10 +160,10 @@ pub use llm_provider::{
     AgentContext, LlmCallResponse, LlmProvider, TokenUsage, UnconfiguredProvider, select_provider,
 };
 pub use mcp::{
-    CachedTool, JsonRpcError, JsonRpcRequest, JsonRpcResponse, LocalMcp, McpCacheStats,
-    McpDiscoveryManager, McpIntegrator, McpRequestContext, McpResourceHandler, McpServer,
-    McpServerConfig, McpServerInfo, McpToolHandler, MdhResource, ServerState, TokenInfo, get_mcp,
-    mdh_translate,
+    CachedTool, JsonRpcError, JsonRpcRequest, JsonRpcResponse, LocalMcp, McpCacheStats, McpClient,
+    McpClientRegistry, McpDiscoveryManager, McpIntegrator, McpRequestContext, McpResourceHandler,
+    McpServer, McpServerConfig, McpServerInfo, McpToolHandler, MdhResource, ServerState, TokenInfo,
+    get_mcp, get_mcp_client_registry, mdh_translate,
 };
 pub use memory_bank::{
     MemoryBankEntry, MemoryBankError, clear_memory_bank, ensure_memory_bank_dir,
@@ -163,12 +171,13 @@ pub use memory_bank::{
     search_memory_bank,
 };
 pub use model_display::{
-    format_anthropic_model_name, format_grok_model_name, format_model_name,
-    format_openai_model_name, is_local_provider,
+    format_anthropic_model_name, format_gemini_model_name, format_grok_model_name,
+    format_model_name, format_openai_model_name, is_local_provider,
 };
+pub use model_listing::{ModelInfo, check_ollama_connectivity, list_models_for_provider};
 pub use pipeline::{
-    AgentPipeline, AgentRequest, AgentResponse, Message, PermissionLevel, PipelineConfig,
-    RequestMetadata, RequestSource, ToolCallRecord, ToolResult,
+    AgentPipeline, AgentRequest, AgentResponse, Message, PausedExecutionState, PermissionLevel,
+    PipelineConfig, PipelineConfigExt, RequestMetadata, RequestSource, ToolCallRecord, ToolResult,
 };
 pub use recommendations::{
     PersonalizedRecommendationEngine, Recommendation, RecommendationConfig, RecommendationFeedback,
@@ -180,8 +189,8 @@ pub use session_workspace::{
     SessionWorkspace, WorkspaceError, WorkspaceResult, cleanup_old_sessions, get_sessions_base_dir,
 };
 pub use speech::{
-    LlmResponse, SpeechConfig, SpeechProcessor, TranscriptionResult, get_speech_processor,
-    is_speech_recording, update_speech_config,
+    LlmResponse, SpeechConfig, SpeechProcessor, SpeechProcessorCoreExt, TranscriptionResult,
+    get_speech_processor, is_speech_recording, update_speech_config,
 };
 pub use stream_error::{StreamError, StreamErrorCategory, StreamResult};
 pub use stream_health::{
@@ -191,7 +200,9 @@ pub use stream_health::{
 pub use stream_reconnect::{
     ReconnectConfig, ReconnectEvent, ReconnectManager, ReconnectState, StreamState,
 };
-pub use streaming::{CancellationToken, StreamChunk, start_streaming};
+pub use streaming::{
+    CancellationToken, ShellOutputStream, ShellProcessState, StreamChunk, start_streaming,
+};
 pub use tasks::{Task, TaskError, TaskList, TaskManager, TaskSource, TaskStatus};
 pub use telemetry::{
     Metric, MetricType, SystemHealth, TelemetryManager, Timer, get_telemetry_manager,
@@ -207,6 +218,7 @@ pub use tools::{
     ToolDefinition, all_tools, find_tool, looks_like_capabilities_question,
     looks_like_tools_question, render_capabilities, render_tool_detail, render_tools_overview,
 };
+pub use workflows::{Workflow, WorkflowError, WorkflowInfo, WorkflowManager};
 
 // NATS MQ module exports (messaging/JetStream)
 #[cfg(feature = "nats")]

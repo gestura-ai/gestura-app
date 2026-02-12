@@ -17,10 +17,35 @@ export interface VoiceSettings {
 
 export interface LlmSettings {
   primary: string;
-  openai?: any;
-  anthropic?: any;
-  grok?: any;
-  ollama?: any;
+  fallback?: string | null;
+  openai?: OpenAiConfig;
+  anthropic?: AnthropicConfig;
+  grok?: GrokConfig;
+  ollama?: OllamaConfig;
+}
+
+export interface OpenAiConfig {
+  api_key: string;
+  base_url?: string;
+  model: string;
+}
+
+export interface AnthropicConfig {
+  api_key: string;
+  base_url?: string;
+  model: string;
+  thinking_budget_tokens?: number | null;
+}
+
+export interface GrokConfig {
+  api_key: string;
+  base_url?: string;
+  model: string;
+}
+
+export interface OllamaConfig {
+  base_url: string;
+  model: string;
 }
 
 export interface SimulatorSettings {
@@ -39,6 +64,46 @@ export interface DeveloperSettings {
   simulator: SimulatorSettings;
 }
 
+/** Transport type for MCP server connections. */
+export type McpTransportType = 'stdio' | 'http' | 'sse';
+
+/** Configuration scope for MCP servers. */
+export type McpScope = 'user' | 'project' | 'local';
+
+/**
+ * Full MCP server configuration entry (Claude Code compatible).
+ *
+ * Supports all three transport types with their respective config fields.
+ */
+export interface McpServerEntry {
+  /** Unique server name / identifier. */
+  name: string;
+  /** Transport type. Serialized as `type` in JSON. */
+  type: McpTransportType;
+  /** Whether this server is enabled. */
+  enabled: boolean;
+  // -- stdio-specific --
+  /** Command to execute (stdio transport). */
+  command?: string;
+  /** Command arguments (stdio transport). */
+  args?: string[];
+  /** Environment variables (stdio transport). */
+  env?: Record<string, string>;
+  // -- http/sse-specific --
+  /** Server URL (http/sse transport). */
+  url?: string;
+  /** Custom HTTP headers (http/sse transport). */
+  headers?: Record<string, string>;
+  // -- common --
+  /** Configuration scope. */
+  scope: McpScope;
+  /** Connection timeout in seconds. */
+  timeout_secs: number;
+  /** Auto-reconnect on failure. */
+  auto_reconnect: boolean;
+}
+
+/** @deprecated Use McpServerEntry instead. Kept for backward compat. */
 export interface McpTool {
   name: string;
   endpoint: string;
@@ -58,7 +123,7 @@ export interface AppConfig {
   voice: VoiceSettings;
   llm: LlmSettings;
   ui: UiSettings;
-  mcp_tools: McpTool[];
+  mcp_servers: McpServerEntry[];
   mdh_pointers: Record<string, string>;
   nats_url: string;
   developer: DeveloperSettings;

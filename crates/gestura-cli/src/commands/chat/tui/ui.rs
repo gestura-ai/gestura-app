@@ -6,12 +6,13 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
 use super::app::{ConfirmAction, Theme, TuiApp, TuiMode};
+use super::markdown;
 use super::widgets::composer;
 
 /// Parsed segment of a message (text or code block)
@@ -354,6 +355,182 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     result
 }
 
+/// Word-wrap already-styled spans to fit within `max_width`.
+///
+/// This uses the same simple whitespace-collapsing approach as [`wrap_text`]
+/// (i.e., it wraps on `split_whitespace()` boundaries).
+fn wrap_spans(spans: &[Span<'static>], max_width: usize) -> Vec<Vec<Span<'static>>> {
+    if max_width == 0 {
+        return vec![spans.to_vec()];
+    }
+
+    #[derive(Clone, Debug)]
+    struct Token {
+        text: String,
+        style: Style,
+    }
+
+    let mut tokens: Vec<Token> = Vec::new();
+    for span in spans {
+        let style = span.style;
+        for w in span.content.as_ref().split_whitespace() {
+            tokens.push(Token {
+                text: w.to_string(),
+                style,
+            });
+        }
+    }
+
+    // Preserve blank lines.
+    if tokens.is_empty() {
+        return vec![Vec::new()];
+    }
+
+    let mut result: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut current: Vec<Span<'static>> = Vec::new();
+    let mut current_len = 0usize;
+    let mut last_style = Style::default();
+
+    for token in tokens {
+        // If token itself is longer than max_width, break it (best effort).
+        if token.text.len() > max_width {
+            if !current.is_empty() {
+                result.push(current);
+                current = Vec::new();
+                current_len = 0;
+            }
+
+            // If the available width is too small to safely hyphenate, just
+            // emit the long token as-is to avoid infinite loops.
+            if max_width <= 1 {
+                result.push(vec![Span::styled(token.text, token.style)]);
+                continue;
+            }
+
+            let mut remaining = token.text.as_str();
+            while remaining.len() > max_width {
+                let take = max_width.saturating_sub(1).max(1);
+                let (chunk, rest) = remaining.split_at(take);
+                result.push(vec![Span::styled(format!("{}-", chunk), token.style)]);
+                remaining = rest;
+            }
+            if !remaining.is_empty() {
+                current = vec![Span::styled(remaining.to_string(), token.style)];
+                current_len = remaining.len();
+                last_style = token.style;
+            }
+            continue;
+        }
+
+        let new_len = if current.is_empty() {
+            token.text.len()
+        } else {
+            current_len + 1 + token.text.len()
+        };
+
+        if new_len <= max_width {
+            if !current.is_empty() {
+                current.push(Span::styled(" ".to_string(), last_style));
+                current_len += 1;
+            }
+            let token_len = token.text.len();
+            current.push(Span::styled(token.text, token.style));
+            current_len += token_len;
+            last_style = token.style;
+        } else {
+            if !current.is_empty() {
+                result.push(current);
+            }
+            let token_len = token.text.len();
+            current = vec![Span::styled(token.text, token.style)];
+            current_len = token_len;
+            last_style = token.style;
+        }
+    }
+
+    if !current.is_empty() {
+        result.push(current);
+    }
+
+    result
+}
+
+fn find_query_ranges(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+
+    let text_lower = text.to_lowercase();
+    let query_lower = query.to_lowercase();
+
+    let mut ranges = Vec::new();
+    let mut pos = 0usize;
+    while let Some(found) = text_lower[pos..].find(&query_lower) {
+        let start = pos + found;
+        ranges.push(start..start + query_lower.len());
+        pos = start + query_lower.len();
+    }
+
+    ranges
+}
+
+fn apply_highlight_ranges_to_spans(
+    spans: &[Span<'static>],
+    ranges: &[std::ops::Range<usize>],
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    if ranges.is_empty() {
+        return spans.to_vec();
+    }
+
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut offset = 0usize;
+
+    for span in spans {
+        let content = span.content.as_ref();
+        let span_len = content.len();
+        let span_start = offset;
+        let span_end = offset + span_len;
+
+        let mut last = 0usize;
+        for range in ranges {
+            if range.end <= span_start || range.start >= span_end {
+                continue;
+            }
+
+            let overlap_start = range.start.saturating_sub(span_start).min(span_len);
+            let overlap_end = range.end.saturating_sub(span_start).min(span_len);
+
+            if overlap_start > last {
+                out.push(Span::styled(
+                    content[last..overlap_start].to_string(),
+                    span.style,
+                ));
+            }
+
+            if overlap_end > overlap_start {
+                out.push(Span::styled(
+                    content[overlap_start..overlap_end].to_string(),
+                    span.style
+                        .fg(theme.header_fg)
+                        .bg(theme.streaming)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+
+            last = overlap_end;
+        }
+
+        if last < span_len {
+            out.push(Span::styled(content[last..].to_string(), span.style));
+        }
+
+        offset += span_len;
+    }
+
+    out
+}
+
 // Note: composer sizing + cursor mapping helpers live in `widgets::composer`.
 
 /// Render the entire TUI
@@ -373,6 +550,13 @@ pub fn render(app: &mut TuiApp, frame: &mut Frame) {
     // We still render one dim line for session context.
     let header_height: u16 = 1;
     let content_min: u16 = if is_compact { 4 } else { 8 };
+    // Visual spacer between transcript and composer (~one terminal row ≈ 10–20px).
+    // On very small terminals we skip it to preserve usable space.
+    let transcript_gap_height: u16 = if area.height >= (MIN_HEIGHT + 2) {
+        1
+    } else {
+        0
+    };
     let status_height: u16 = 1;
 
     // Keep the composer from consuming the whole screen. In practice this yields a
@@ -382,6 +566,7 @@ pub fn render(app: &mut TuiApp, frame: &mut Frame) {
         area.height
             .saturating_sub(header_height)
             .saturating_sub(status_height)
+            .saturating_sub(transcript_gap_height)
             .saturating_sub(content_min)
             .max(min_input_height),
     );
@@ -397,6 +582,7 @@ pub fn render(app: &mut TuiApp, frame: &mut Frame) {
         .constraints([
             Constraint::Length(header_height),
             Constraint::Min(content_min),
+            Constraint::Length(transcript_gap_height),
             Constraint::Length(input_height),
             Constraint::Length(status_height),
         ])
@@ -405,12 +591,12 @@ pub fn render(app: &mut TuiApp, frame: &mut Frame) {
     // Store layout areas for mouse click detection
     app.layout_areas.tabs = Some(chunks[0]);
     app.layout_areas.messages = Some(chunks[1]);
-    app.layout_areas.input = Some(chunks[2]);
+    app.layout_areas.input = Some(chunks[3]);
 
     render_header(app, frame, chunks[0]);
     render_content(app, frame, chunks[1]);
-    composer::render_input(app, frame, chunks[2]);
-    render_status_bar(app, frame, chunks[3]);
+    composer::render_input(app, frame, chunks[3]);
+    render_status_bar(app, frame, chunks[4]);
 
     // Render overlays
     if app.mode == TuiMode::Help {
@@ -423,12 +609,14 @@ pub fn render(app: &mut TuiApp, frame: &mut Frame) {
         render_model_picker_overlay(app, frame, area);
     } else if app.mode == TuiMode::Activity {
         render_activity_overlay(app, frame, area);
+    } else if app.mode == TuiMode::Capabilities {
+        render_capabilities_overlay(app, frame, area);
     } else if app.mode == TuiMode::Command && !app.command_suggestions.is_empty() {
         // Render command palette above the input field
-        render_command_palette(app, frame, chunks[2]);
+        render_command_palette(app, frame, chunks[3]);
     } else if app.mode == TuiMode::Search {
         // Render search bar above the input field
-        render_search_bar(app, frame, chunks[2]);
+        render_search_bar(app, frame, chunks[3]);
     }
 }
 
@@ -452,6 +640,39 @@ fn render_too_small_message(app: &TuiApp, frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
+/// Gestura brand gradient stops (blue → purple) used for pseudo-gradient spans.
+const GESTURA_GRADIENT_START: (u8, u8, u8) = (37, 99, 235);
+const GESTURA_GRADIENT_END: (u8, u8, u8) = (147, 51, 234);
+
+fn gradient_text_spans(
+    text: &str,
+    start: (u8, u8, u8),
+    end: (u8, u8, u8),
+    base: Style,
+) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    if n == 0 {
+        return Vec::new();
+    }
+
+    let denom = (n - 1).max(1) as i32;
+    let (sr, sg, sb) = (start.0 as i32, start.1 as i32, start.2 as i32);
+    let (er, eg, eb) = (end.0 as i32, end.1 as i32, end.2 as i32);
+
+    chars
+        .into_iter()
+        .enumerate()
+        .map(|(i, ch)| {
+            let t = i as i32;
+            let r = (sr + (er - sr) * t / denom).clamp(0, 255) as u8;
+            let g = (sg + (eg - sg) * t / denom).clamp(0, 255) as u8;
+            let b = (sb + (eb - sb) * t / denom).clamp(0, 255) as u8;
+            Span::styled(ch.to_string(), base.fg(Color::Rgb(r, g, b)))
+        })
+        .collect()
+}
+
 /// Render compact header for small terminals (single line, no tabs)
 ///
 /// Displays a Claude Code-like header with:
@@ -461,10 +682,10 @@ fn render_too_small_message(app: &TuiApp, frame: &mut Frame, area: Rect) {
 fn render_compact_header(app: &TuiApp, frame: &mut Frame, area: Rect) {
     use ratatui::widgets::{Block, Borders};
 
-    // Get provider and model info
-    let provider = app.config.llm.primary.as_str();
+    // Get provider and model info (respects session overrides)
+    let provider = app.provider_name();
     let model_id = app.model_name();
-    let formatted_model = gestura_core::format_model_name(provider, model_id);
+    let formatted_model = gestura_core::format_model_name(&provider, &model_id);
 
     // Build header content parts
     let mut parts: Vec<String> = vec![formatted_model];
@@ -499,10 +720,12 @@ fn render_compact_header(app: &TuiApp, frame: &mut Frame, area: Rect) {
         TuiMode::Search => "SEARCH",
         TuiMode::ModelPicker => "MODEL",
         TuiMode::Activity => "ACTIVITY",
+        TuiMode::Settings => "SETTINGS",
+        TuiMode::Workflows => "WORKFLOWS",
+        TuiMode::Tools => "TOOLS",
+        TuiMode::Capabilities => "CAPABILITIES",
     };
     parts.push(mode_str.to_string());
-
-    let header_text = format!(" {} ", parts.join(" │ "));
 
     // Create block with bottom border (Claude Code-like bounding box)
     let block = Block::default().borders(Borders::BOTTOM).border_style(
@@ -510,6 +733,36 @@ fn render_compact_header(app: &TuiApp, frame: &mut Frame, area: Rect) {
             .fg(app.theme.border)
             .add_modifier(Modifier::DIM),
     );
+
+    // For the Gestura brand theme, add a subtle pseudo-gradient label on the left.
+    if app.theme.name == "Gestura" {
+        let base = Style::default()
+            .fg(app.theme.header_fg)
+            .add_modifier(Modifier::BOLD);
+
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        spans.push(Span::styled(" ".to_string(), base));
+        spans.extend(gradient_text_spans(
+            "Gestura",
+            GESTURA_GRADIENT_START,
+            GESTURA_GRADIENT_END,
+            base,
+        ));
+        spans.push(Span::styled(
+            " │ ".to_string(),
+            Style::default()
+                .fg(app.theme.border)
+                .add_modifier(Modifier::DIM),
+        ));
+        spans.push(Span::styled(parts.join(" │ "), base));
+        spans.push(Span::styled(" ".to_string(), base));
+
+        let paragraph = Paragraph::new(Line::from(spans)).block(block);
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    let header_text = format!(" {} ", parts.join(" │ "));
 
     let paragraph = Paragraph::new(header_text)
         .style(
@@ -541,9 +794,21 @@ fn render_content(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     }
 }
 
+/// Push a [`ListItem`] built from a [`Line`] and record its plain text.
+///
+/// This helper exists because `ListItem::content` is `pub(crate)` in ratatui, so once a
+/// `Line` is consumed by `ListItem::new` the text is inaccessible.  Collecting it up-front
+/// avoids that problem.
+fn push_item(items: &mut Vec<ListItem<'static>>, texts: &mut Vec<String>, line: Line<'static>) {
+    texts.push(line.spans.iter().map(|s| s.content.as_ref()).collect());
+    items.push(ListItem::new(line));
+}
+
 /// Render the message list with syntax highlighting for code blocks
 fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
-    let theme = &app.theme;
+    // Clone the theme so we can freely mutate `app` (e.g., follow-tail scrolling) without running
+    // into borrow checker conflicts during rendering.
+    let theme = app.theme.clone();
     let search_query = &app.search_query;
     let has_search = !search_query.is_empty();
 
@@ -565,95 +830,118 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         (0..app.messages.len()).collect()
     };
 
-    let messages: Vec<ListItem> = message_indices
-        .iter()
-        .flat_map(|&msg_idx| {
-            let msg = &app.messages[msg_idx];
-            let match_ranges = if has_search {
-                app.get_match_ranges(msg_idx)
-            } else {
-                None
-            };
+    // Build the flat list of rendered lines and a parallel mapping from each
+    // rendered line back to its source message index.
+    let mut all_items: Vec<ListItem> = Vec::new();
+    let mut line_to_message: Vec<usize> = Vec::new();
+    // Plain-text content of each rendered line (parallel to `all_items`).
+    let mut line_texts: Vec<String> = Vec::new();
 
-            let (prefix, base_style) = match msg.role.as_str() {
-                "user" => ("> ", Style::default().fg(theme.user_msg)),
-                "assistant" => {
-                    if msg.is_streaming {
-                        (
-                            "",
-                            Style::default()
-                                .fg(theme.streaming)
-                                .add_modifier(Modifier::ITALIC),
-                        )
-                    } else {
-                        ("", Style::default().fg(theme.assistant_msg))
-                    }
+    for (iter_idx, &msg_idx) in message_indices.iter().enumerate() {
+        // Insert a blank line between consecutive messages so user input and agent
+        // responses have visible breathing room in the transcript.
+        if iter_idx > 0 {
+            push_item(&mut all_items, &mut line_texts, Line::from(""));
+            line_to_message.push(msg_idx);
+        }
+
+        let msg = &app.messages[msg_idx];
+        let match_ranges = if has_search {
+            app.get_match_ranges(msg_idx)
+        } else {
+            None
+        };
+        let should_highlight = match_ranges.is_some() && has_search;
+
+        let (prefix, base_style) = match msg.role.as_str() {
+            "user" => ("> ", Style::default().fg(theme.user_msg)),
+            "assistant" => {
+                if msg.is_streaming {
+                    (
+                        "",
+                        Style::default()
+                            .fg(theme.streaming)
+                            .add_modifier(Modifier::ITALIC),
+                    )
+                } else {
+                    ("", Style::default().fg(theme.assistant_msg))
                 }
-                "system" => ("# ", Style::default().fg(theme.system_msg)),
-                _ => ("", Style::default()),
-            };
+            }
+            "system" => ("# ", Style::default().fg(theme.system_msg)),
+            _ => ("", Style::default()),
+        };
 
-            let base_style = if msg.is_error {
-                base_style.fg(theme.error_msg).add_modifier(Modifier::BOLD)
-            } else {
-                base_style
-            };
+        let base_style = if msg.is_error {
+            base_style.fg(theme.error_msg).add_modifier(Modifier::BOLD)
+        } else {
+            base_style
+        };
 
-            let content = if msg.is_streaming {
-                // Determine streaming state
-                if msg.thinking.is_some() {
-                    // We are thinking
-                    if msg.content.is_empty() {
-                        String::new() // Don't show text if only thinking
-                    } else {
-                        format!("{}▌", msg.content)
-                    }
+        let content = if msg.is_streaming {
+            // Determine streaming state
+            if msg.thinking.is_some() {
+                // We are thinking
+                if msg.content.is_empty() {
+                    String::new() // Don't show text if only thinking
                 } else {
                     format!("{}▌", msg.content)
                 }
             } else {
-                msg.content.clone()
-            };
+                format!("{}▌", msg.content)
+            }
+        } else {
+            msg.content.clone()
+        };
 
-            // Parse message for code blocks
-            let segments = parse_message_segments(&content);
-            let mut items = Vec::new();
+        // Parse message for code blocks
+        let segments = parse_message_segments(&content);
+        let mut items: Vec<ListItem<'static>> = Vec::new();
+        let mut item_texts: Vec<String> = Vec::new();
 
-            // Render Thinking if present (with word wrapping) using transcript style.
-            if let Some(thinking) = &msg.thinking
-                && !thinking.is_empty()
-            {
-                items.push(ListItem::new(Line::from(Span::styled(
+        // Render Thinking if present (with word wrapping) using transcript style.
+        if let Some(thinking) = &msg.thinking
+            && !thinking.is_empty()
+        {
+            push_item(
+                &mut items,
+                &mut item_texts,
+                Line::from(Span::styled(
                     "... thinking",
                     Style::default()
                         .fg(theme.code_comment)
                         .add_modifier(Modifier::ITALIC | Modifier::DIM),
-                ))));
+                )),
+            );
 
-                // Wrap thinking text (indent 2 spaces)
-                let thinking_wrap_width = wrap_width.saturating_sub(2);
-                let wrapped_thinking = wrap_text(thinking, thinking_wrap_width);
-                for line in wrapped_thinking {
-                    items.push(ListItem::new(Line::from(Span::styled(
+            // Wrap thinking text (indent 2 spaces)
+            let thinking_wrap_width = wrap_width.saturating_sub(2);
+            let wrapped_thinking = wrap_text(thinking, thinking_wrap_width);
+            for line in wrapped_thinking {
+                push_item(
+                    &mut items,
+                    &mut item_texts,
+                    Line::from(Span::styled(
                         format!("  {}", line),
                         Style::default()
                             .fg(theme.code_comment)
                             .add_modifier(Modifier::ITALIC | Modifier::DIM),
-                    ))));
-                }
-
-                items.push(ListItem::new(Line::from("")));
+                    )),
+                );
             }
-            let mut is_first = true;
-            let mut char_offset = 0usize; // Track position in original content
 
-            for segment in segments {
-                match segment {
-                    MessageSegment::Text(text) => {
-                        // Apply word wrapping to the text
-                        let wrapped_lines = wrap_text(&text, wrap_width);
+            push_item(&mut items, &mut item_texts, Line::from(""));
+        }
+        let mut is_first = true;
 
-                        for wrapped_line in wrapped_lines {
+        for segment in segments {
+            match segment {
+                MessageSegment::Text(text) => {
+                    // Render markdown styling first, then wrap styled spans.
+                    let rendered = markdown::markdown_to_text_with_base(&text, &theme, base_style);
+
+                    for rendered_line in rendered.lines {
+                        let wrapped = wrap_spans(&rendered_line.spans, wrap_width);
+                        for wrapped_spans in wrapped {
                             let display_prefix = if is_first {
                                 is_first = false;
                                 prefix
@@ -663,92 +951,141 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
                                 "  "
                             };
 
-                            // Build spans with search highlighting
-                            let spans = if let Some(ranges) = match_ranges {
-                                highlight_search_matches(
-                                    display_prefix,
-                                    &wrapped_line,
-                                    char_offset,
-                                    ranges,
-                                    base_style,
-                                    theme,
-                                )
-                            } else {
-                                vec![Span::styled(
-                                    format!("{}{}", display_prefix, wrapped_line),
-                                    base_style,
-                                )]
-                            };
+                            let mut spans: Vec<Span<'static>> = Vec::new();
+                            spans.push(Span::styled(display_prefix.to_string(), base_style));
 
-                            items.push(ListItem::new(Line::from(spans)));
-                            char_offset += wrapped_line.len() + 1; // +1 for newline
+                            if should_highlight {
+                                let visible: String =
+                                    wrapped_spans.iter().map(|s| s.content.as_ref()).collect();
+                                let ranges = find_query_ranges(&visible, search_query);
+                                spans.extend(apply_highlight_ranges_to_spans(
+                                    &wrapped_spans,
+                                    &ranges,
+                                    &theme,
+                                ));
+                            } else {
+                                spans.extend(wrapped_spans);
+                            }
+
+                            push_item(&mut items, &mut item_texts, Line::from(spans));
                         }
                     }
-                    MessageSegment::CodeBlock { language, code } => {
-                        // Transcript-style fenced code blocks (avoid box-drawing chrome).
-                        let lang_label = language.as_deref().unwrap_or("");
-                        let fence_open = if lang_label.is_empty() {
-                            "```".to_string()
-                        } else {
-                            format!("```{}", lang_label)
-                        };
-                        items.push(ListItem::new(Line::from(Span::styled(
+                }
+                MessageSegment::CodeBlock { language, code } => {
+                    // Transcript-style fenced code blocks (avoid box-drawing chrome).
+                    let lang_label = language.as_deref().unwrap_or("");
+                    let fence_open = if lang_label.is_empty() {
+                        "```".to_string()
+                    } else {
+                        format!("```{}", lang_label)
+                    };
+                    push_item(
+                        &mut items,
+                        &mut item_texts,
+                        Line::from(Span::styled(
                             fence_open,
                             Style::default()
                                 .fg(theme.code_lang_label)
                                 .add_modifier(Modifier::DIM),
-                        ))));
+                        )),
+                    );
 
-                        // Add highlighted code lines (indented)
-                        for code_line in code.lines() {
-                            let mut spans = vec![Span::styled(
-                                "    ".to_string(),
-                                Style::default()
-                                    .fg(theme.code_lang_label)
-                                    .add_modifier(Modifier::DIM),
-                            )];
-                            spans.extend(highlight_code_line_themed(
-                                code_line,
-                                language.as_deref(),
-                                theme,
-                            ));
-                            items.push(ListItem::new(Line::from(spans)));
-                        }
+                    // Add highlighted code lines (indented)
+                    for code_line in code.lines() {
+                        let mut spans = vec![Span::styled(
+                            "    ".to_string(),
+                            Style::default()
+                                .fg(theme.code_lang_label)
+                                .add_modifier(Modifier::DIM),
+                        )];
+                        spans.extend(highlight_code_line_themed(
+                            code_line,
+                            language.as_deref(),
+                            &theme,
+                        ));
+                        push_item(&mut items, &mut item_texts, Line::from(spans));
+                    }
 
-                        items.push(ListItem::new(Line::from(Span::styled(
+                    push_item(
+                        &mut items,
+                        &mut item_texts,
+                        Line::from(Span::styled(
                             "```",
                             Style::default()
                                 .fg(theme.code_lang_label)
                                 .add_modifier(Modifier::DIM),
-                        ))));
-                        items.push(ListItem::new(Line::from("")));
-                        is_first = false;
-                        // Update char_offset for code block (including markers)
-                        char_offset += code.len() + 10; // Approximate for code block markers
-                    }
+                        )),
+                    );
+                    push_item(&mut items, &mut item_texts, Line::from(""));
+                    is_first = false;
                 }
             }
+        }
 
-            if items.is_empty() {
-                vec![ListItem::new(Line::from(Span::styled(
-                    prefix.to_string(),
-                    base_style,
-                )))]
-            } else {
-                items
+        if items.is_empty() {
+            push_item(
+                &mut items,
+                &mut item_texts,
+                Line::from(Span::styled(prefix.to_string(), base_style)),
+            );
+        }
+
+        // Record the mapping and plain-text content: each rendered line maps back
+        // to this message.
+        line_to_message.extend(std::iter::repeat_n(msg_idx, items.len()));
+        line_texts.extend(item_texts);
+        all_items.extend(items);
+    }
+
+    // Persist the line count, mapping, and plain-text content so scroll logic and
+    // selection-copy use the correct bounds and text.
+    app.rendered_line_count = all_items.len();
+    app.line_to_message_map = line_to_message;
+    app.rendered_line_texts = line_texts;
+
+    // Apply any deferred follow-tail scroll after line count recomputation.
+    if app.pending_scroll_to_bottom && !app.user_scrolled {
+        app.scroll_to_bottom();
+    }
+    app.pending_scroll_to_bottom = false;
+
+    // Apply in-app selection highlight to lines within the mouse-drag range.
+    // We use `ListItem::style()` to set an item-level background; span-level fg
+    // colours remain untouched because ratatui merges them on top.
+    if let (Some(anchor), Some(end)) = (app.selection_anchor, app.selection_end) {
+        let sel_start = anchor.min(end);
+        let sel_end = anchor.max(end);
+        let sel_style = Style::default()
+            .bg(theme.selection_bg)
+            .add_modifier(Modifier::BOLD);
+        for idx in sel_start..=sel_end {
+            if idx < all_items.len() {
+                let old = std::mem::replace(&mut all_items[idx], ListItem::new(""));
+                all_items[idx] = old.style(sel_style);
             }
-        })
-        .collect();
+        }
+    }
 
     let messages_block = Block::default().borders(Borders::NONE);
 
-    let list = List::new(messages).block(messages_block).highlight_style(
+    // Use a transparent highlight_style when there is an active multi-line selection so the
+    // single-line cursor doesn't visually conflict with the selection range.
+    let has_selection = app.selection_anchor.is_some() && app.selection_end.is_some();
+    let highlight = if has_selection {
+        Style::default()
+    } else {
         Style::default()
             .bg(theme.selection_bg)
-            .add_modifier(Modifier::BOLD),
-    );
+            .add_modifier(Modifier::BOLD)
+    };
 
-    frame.render_stateful_widget(list, area, &mut app.message_list_state.clone());
+    let list = List::new(all_items)
+        .block(messages_block)
+        .highlight_style(highlight);
+
+    // IMPORTANT: pass the real `message_list_state` — NOT a clone — so ratatui's
+    // viewport offset updates are persisted between frames.
+    frame.render_stateful_widget(list, area, &mut app.message_list_state);
 }
 
 /// Render a Claude Code-like home/default view when there are no messages.
@@ -757,13 +1094,28 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 /// while still guiding first-time users toward the key commands.
 fn render_empty_chat_view(app: &TuiApp, frame: &mut Frame, area: Rect) {
     let model_label = effective_model_label(app);
-    let lines = vec![
+
+    let title_line = if app.theme.name == "Gestura" {
+        let base = Style::default()
+            .fg(app.theme.header_fg)
+            .add_modifier(Modifier::BOLD);
+        Line::from(gradient_text_spans(
+            "Gestura",
+            GESTURA_GRADIENT_START,
+            GESTURA_GRADIENT_END,
+            base,
+        ))
+    } else {
         Line::from(Span::styled(
             "Gestura",
             Style::default()
                 .fg(app.theme.header_fg)
                 .add_modifier(Modifier::BOLD),
-        )),
+        ))
+    };
+
+    let lines = vec![
+        title_line,
         Line::from(Span::styled(
             format!("model: {}", model_label),
             Style::default()
@@ -965,77 +1317,206 @@ fn render_activity_overlay(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     frame.render_stateful_widget(list, popup_area, &mut app.activity_state.list_state);
 }
 
-/// Highlight search matches in a line of text
-fn highlight_search_matches(
-    prefix: &str,
-    text: &str,
-    char_offset: usize,
-    ranges: &[std::ops::Range<usize>],
-    base_style: Style,
-    theme: &super::app::Theme,
-) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    spans.push(Span::styled(prefix.to_string(), base_style));
+/// Render the tools tab as an interactive, scrollable list with optional detail pane.
+fn render_tools_tab(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    let tools = gestura_core::tools::all_tools();
+    // Clone to avoid borrow-checker conflict: we need &mut app for render helpers.
+    let enabled_tools: Option<std::collections::HashMap<String, bool>> = app
+        .session
+        .state
+        .tool_settings
+        .as_ref()
+        .map(|s| s.enabled_tools.clone());
 
-    let text_start = char_offset;
-    let text_end = char_offset + text.len();
-
-    // Find ranges that overlap with this line
-    let mut last_end = 0usize;
-    for range in ranges {
-        // Check if range overlaps with this line
-        if range.end <= text_start || range.start >= text_end {
-            continue;
-        }
-
-        // Calculate overlap within this line
-        let overlap_start = range.start.saturating_sub(text_start).min(text.len());
-        let overlap_end = (range.end - text_start).min(text.len());
-
-        // Add text before the match
-        if overlap_start > last_end {
-            spans.push(Span::styled(
-                text[last_end..overlap_start].to_string(),
-                base_style,
-            ));
-        }
-
-        // Add highlighted match
-        if overlap_end > overlap_start {
-            spans.push(Span::styled(
-                text[overlap_start..overlap_end].to_string(),
-                Style::default()
-                    .fg(theme.header_fg)
-                    .bg(theme.streaming)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-
-        last_end = overlap_end;
+    if app.tools_state.detail_mode {
+        // ── Detail pane ──────────────────────────────────────────────
+        render_tools_detail(app, tools, enabled_tools.as_ref(), frame, area);
+    } else {
+        // ── List pane ────────────────────────────────────────────────
+        render_tools_list(app, tools, enabled_tools.as_ref(), frame, area);
     }
-
-    // Add remaining text after last match
-    if last_end < text.len() {
-        spans.push(Span::styled(text[last_end..].to_string(), base_style));
-    }
-
-    // If no matches were found in this line, just return the whole text
-    if spans.len() == 1 {
-        spans.push(Span::styled(text.to_string(), base_style));
-    }
-
-    spans
 }
 
-/// Render the tools tab
-fn render_tools_tab(app: &TuiApp, frame: &mut Frame, area: Rect) {
-    let tools_text = gestura_core::tools::render_tools_overview();
-    let paragraph = Paragraph::new(tools_text)
+/// Render the selectable tool list.
+fn render_tools_list(
+    app: &mut TuiApp,
+    tools: &[gestura_core::tools::ToolDefinition],
+    enabled_tools: Option<&std::collections::HashMap<String, bool>>,
+    frame: &mut Frame,
+    area: Rect,
+) {
+    let items: Vec<ListItem<'static>> = tools
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let is_enabled = enabled_tools
+                .and_then(|m| m.get(t.name).copied())
+                .unwrap_or(false);
+            let indicator = if is_enabled { "✓" } else { "✗" };
+            let indicator_color = if is_enabled {
+                app.theme.mode_insert
+            } else {
+                app.theme.error_msg
+            };
+            let selected = i == app.tools_state.selected_index;
+            let name_style = if selected {
+                Style::default()
+                    .fg(app.theme.tab_active)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.status_fg)
+            };
+            let line = Line::from(vec![
+                Span::styled(
+                    format!(" {} ", indicator),
+                    Style::default().fg(indicator_color),
+                ),
+                Span::styled(format!("{:<16}", t.name), name_style),
+                Span::styled(
+                    t.summary.to_string(),
+                    Style::default()
+                        .fg(app.theme.status_fg)
+                        .add_modifier(Modifier::DIM),
+                ),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(app.theme.border))
-                .title(" Tools "),
+                .title(" Tools — ↑/↓ navigate  Enter details  Space toggle  Esc close "),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(app.theme.selection_bg)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▸ ");
+
+    frame.render_stateful_widget(list, area, &mut app.tools_state.list_state);
+}
+
+/// Render the detail view for the selected tool.
+fn render_tools_detail(
+    app: &TuiApp,
+    tools: &[gestura_core::tools::ToolDefinition],
+    enabled_tools: Option<&std::collections::HashMap<String, bool>>,
+    frame: &mut Frame,
+    area: Rect,
+) {
+    let Some(tool) = tools.get(app.tools_state.selected_index) else {
+        return;
+    };
+    let is_enabled = enabled_tools
+        .and_then(|m| m.get(tool.name).copied())
+        .unwrap_or(false);
+    let status_label = if is_enabled {
+        "Enabled ✓"
+    } else {
+        "Disabled ✗"
+    };
+    let status_color = if is_enabled {
+        app.theme.mode_insert
+    } else {
+        app.theme.error_msg
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Title
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {} ", tool.name),
+            Style::default()
+                .fg(app.theme.tab_active)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  [{}]", status_label),
+            Style::default().fg(status_color),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    // Summary
+    lines.push(Line::from(Span::styled(
+        format!("  {}", tool.summary),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(""));
+
+    // Inputs
+    if !tool.inputs.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Inputs:",
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for input in tool.inputs {
+            lines.push(Line::from(Span::styled(
+                format!("    • {}", input),
+                Style::default().fg(app.theme.status_fg),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Side effects
+    if !tool.side_effects.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Side Effects:",
+            Style::default()
+                .fg(app.theme.mode_command)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for se in tool.side_effects {
+            lines.push(Line::from(Span::styled(
+                format!("    ⚠ {}", se),
+                Style::default().fg(app.theme.mode_command),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Examples
+    if !tool.examples.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Examples:",
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for ex in tool.examples {
+            lines.push(Line::from(Span::styled(
+                format!("    $ {}", ex),
+                Style::default()
+                    .fg(app.theme.status_fg)
+                    .add_modifier(Modifier::DIM),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Footer hint
+    lines.push(Line::from(Span::styled(
+        "  Space: toggle enable/disable   Esc: back to list",
+        Style::default()
+            .fg(app.theme.status_fg)
+            .add_modifier(Modifier::DIM),
+    )));
+
+    let text = Text::from(lines);
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(format!(" Tool: {} ", tool.name)),
         )
         .wrap(Wrap { trim: true });
     frame.render_widget(paragraph, area);
@@ -1126,10 +1607,11 @@ fn render_status_bar(app: &TuiApp, frame: &mut Frame, area: Rect) {
         .fg(app.theme.status_fg)
         .add_modifier(Modifier::DIM);
 
-    let provider = app.config.llm.primary.as_str();
+    // Use effective provider/model (respects session overrides via /model)
+    let provider = app.provider_name();
     let model = app.model_name();
-    let formatted_model = gestura_core::format_model_name(provider, model);
-    let is_local = gestura_core::is_local_provider(provider);
+    let formatted_model = gestura_core::format_model_name(&provider, &model);
+    let is_local = gestura_core::is_local_provider(&provider);
 
     let mut stats_text = if is_compact {
         // Compact format for narrow terminals
@@ -1268,12 +1750,13 @@ fn render_settings_tab(app: &TuiApp, frame: &mut Frame, area: Rect) {
         ]))
     };
 
-    // 1. Provider
-    items.push(render_field(0, "Provider", &app.config.llm.primary));
+    // 1. Provider (show effective provider, respects session overrides)
+    let provider = app.provider_name();
+    items.push(render_field(0, "Provider", &provider));
 
-    // 2. Model
+    // 2. Model (show effective model, respects session overrides)
     let model = app.model_name();
-    items.push(render_field(1, "Model", model));
+    items.push(render_field(1, "Model", &model));
 
     // 3. System Prompt
     let sys_prompt = app.system_prompt.as_deref().unwrap_or("Default");
@@ -1370,8 +1853,47 @@ fn render_help_overlay(app: &TuiApp, frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, popup_area);
 }
 
+/// Render the capabilities overlay (reference popup, Esc to close, scrollable).
+fn render_capabilities_overlay(app: &TuiApp, frame: &mut Frame, area: Rect) {
+    // Wider/taller popup than help since capabilities content is denser.
+    let popup_width = 76.min(area.width.saturating_sub(4));
+    let popup_height = (area.height - 4).min(area.height.saturating_sub(2));
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    // Build text with scroll offset applied
+    let lines: Vec<Line<'_>> = app
+        .capabilities_text
+        .lines()
+        .skip(app.capabilities_scroll)
+        .map(|l| Line::from(l.to_string()))
+        .collect();
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border_focused))
+                .title(Span::styled(
+                    " Capabilities (Esc to close, j/k to scroll) ",
+                    Style::default()
+                        .fg(app.theme.header_fg)
+                        .add_modifier(Modifier::BOLD),
+                )),
+        )
+        .style(Style::default().fg(app.theme.header_fg))
+        .wrap(Wrap { trim: false });
+
+    frame.render_widget(paragraph, popup_area);
+}
+
 /// Render the command palette popup above the input field
-fn render_command_palette(app: &TuiApp, frame: &mut Frame, input_area: Rect) {
+fn render_command_palette(app: &mut TuiApp, frame: &mut Frame, input_area: Rect) {
     let suggestions = &app.command_suggestions;
     if suggestions.is_empty() {
         return;
@@ -1388,35 +1910,38 @@ fn render_command_palette(app: &TuiApp, frame: &mut Frame, input_area: Rect) {
     // Clear the area behind the popup
     frame.render_widget(Clear, popup_area);
 
-    // Build list items
+    // Build list items — uniform base style; the selected item is styled by
+    // ratatui's `highlight_style` via the stateful `ListState`.
     let items: Vec<ListItem> = suggestions
         .iter()
-        .enumerate()
-        .map(|(i, (cmd, desc))| {
-            let style = if i == app.command_selection {
-                Style::default()
-                    .fg(app.theme.tab_active)
-                    .add_modifier(Modifier::BOLD)
-                    .bg(app.theme.selection_bg)
-            } else {
-                Style::default().fg(app.theme.header_fg)
-            };
+        .map(|(cmd, desc)| {
             let content = format!("{:<15} {}", cmd, desc);
-            ListItem::new(Line::from(Span::styled(content, style)))
+            ListItem::new(Line::from(Span::styled(
+                content,
+                Style::default().fg(app.theme.header_fg),
+            )))
         })
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(app.theme.mode_command))
-            .title(Span::styled(
-                " Commands (Tab to complete, Enter to run, ↑↓ to select) ",
-                Style::default().fg(app.theme.mode_command),
-            )),
-    );
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(Span::styled(
+                    " Commands (Tab to complete, Enter to run, ↑↓ to select) ",
+                    Style::default().fg(app.theme.header_fg),
+                )),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(app.theme.tab_active)
+                .bg(app.theme.selection_bg)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("› ");
 
-    frame.render_widget(list, popup_area);
+    frame.render_stateful_widget(list, popup_area, &mut app.command_list_state);
 }
 
 /// Render a confirmation dialog

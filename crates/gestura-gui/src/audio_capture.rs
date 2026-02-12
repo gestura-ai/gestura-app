@@ -4,6 +4,7 @@
 //! lives in `gestura-core`. The GUI crate keeps only a small adapter to preserve
 //! stable import paths and to apply GUI configuration defaults.
 
+use crate::AppConfigSecurityExt;
 use std::path::Path;
 use std::time::Duration;
 

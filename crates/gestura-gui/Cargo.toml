@@ -26,17 +26,14 @@ image.workspace = true
 
 [features]
 # Default features for production builds - voice-local is always enabled
-default = ["voice-local"]
+default = ["voice-local", "security"]
 # Enable NATS MQ integration
 nats = ["dep:async-nats", "gestura-core/nats"]
 # Local voice via whisper.cpp bindings
 voice-local = ["dep:whisper-rs", "gestura-core/voice-local"]
 # Local voice via Faster-Whisper (CTranslate2) scaffolding
 voice-faster-whisper = []
-# Cloud voice via OpenAI Whisper HTTP
-voice-openai = ["gestura-core/voice-openai"]
-# BLE integration for Haptic Harmony ring
-ble = ["dep:btleplug", "gestura-core/ble"]
+
 # JSON-LD processing for MDH
 json-ld = ["dep:json-ld", "gestura-core/json-ld"]
 # macOS permissions (objc/cocoa bindings for TCC permission dialogs)
@@ -62,6 +59,7 @@ tauri.workspace = true
 dirs.workspace = true
 tauri-plugin-global-shortcut.workspace = true
 tauri-plugin-dialog.workspace = true
+tauri-plugin-opener.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
 async-nats = { workspace = true, optional = true }
@@ -71,7 +69,6 @@ bytes.workspace = true
 hound.workspace = true
 bytemuck.workspace = true
 whisper-rs = { workspace = true, optional = true }
-btleplug = { workspace = true, optional = true }
 json-ld = { workspace = true, optional = true }
 ring = { workspace = true, optional = true }
 keyring = { workspace = true, optional = true }

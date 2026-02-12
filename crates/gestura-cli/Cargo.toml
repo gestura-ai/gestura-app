@@ -11,12 +11,10 @@ name = "gestura"
 path = "src/main.rs"
 
 [features]
-default = ["voice-local"]
+default = ["voice-local", "security"]
 # Pass-through features to gestura-core
 voice-local = ["gestura-core/voice-local"]
-voice-openai = ["gestura-core/voice-openai"]
 nats = ["gestura-core/nats"]
-ble = ["gestura-core/ble"]
 security = ["gestura-core/security"]
 # Development features - enables dev-only code paths
 dev = ["gestura-core/dev"]
@@ -59,6 +57,7 @@ textwrap = "0.16.2"
 regex = "1.12.2"
 reqwest = { workspace = true, features = ["json"] }
 termsize = "0.1.9"
+arboard = "3.6.1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

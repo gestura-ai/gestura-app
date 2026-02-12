@@ -10,7 +10,7 @@
 
 use super::Result;
 use colored::Colorize;
-use gestura_core::{AgentPipeline, AgentRequest, AppConfig, RequestSource};
+use gestura_core::{AgentPipeline, AgentRequest, AppConfig, AppConfigSecurityExt, RequestSource};
 
 /// Agent subcommand options
 pub enum AgentSubcommand {
@@ -55,18 +55,19 @@ fn run_status() -> Result<()> {
             .as_ref()
             .map(|a| !a.api_key.is_empty())
             .unwrap_or(false),
+        "gemini" => config
+            .llm
+            .gemini
+            .as_ref()
+            .map(|g| !g.api_key.is_empty())
+            .unwrap_or(false),
         "grok" => config
             .llm
             .grok
             .as_ref()
             .map(|g| !g.api_key.is_empty())
             .unwrap_or(false),
-        "ollama" => config
-            .llm
-            .ollama
-            .as_ref()
-            .map(|o| !o.base_url.is_empty())
-            .unwrap_or(false),
+        "ollama" => check_ollama_reachable(&config),
         _ => false,
     };
 
@@ -107,14 +108,18 @@ fn run_status() -> Result<()> {
         voice_text
     );
 
-    // Show MCP tools
-    let mcp_count = config.mcp_tools.len();
+    // Show MCP servers
+    let mcp_count = config.mcp_servers.len();
+    let mcp_enabled = config.mcp_servers.iter().filter(|s| s.enabled).count();
     let mcp_icon = if mcp_count > 0 {
         "●".green()
     } else {
         "○".dimmed()
     };
-    println!("  {} MCP Tools: {} configured", mcp_icon, mcp_count);
+    println!(
+        "  {} MCP Servers: {} configured ({} enabled)",
+        mcp_icon, mcp_count, mcp_enabled
+    );
 
     println!();
     println!("{}", "Capabilities:".dimmed());
@@ -229,4 +234,22 @@ fn run_config(agent: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Ping the Ollama endpoint to verify it is reachable.
+///
+/// Delegates to [`gestura_core::check_ollama_connectivity`] (the single source of truth).
+/// Uses a short-lived tokio runtime since the caller is synchronous.
+fn check_ollama_reachable(config: &AppConfig) -> bool {
+    let base_url = config
+        .llm
+        .ollama
+        .as_ref()
+        .map(|o| o.base_url.as_str())
+        .unwrap_or("");
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(_) => return false,
+    };
+    rt.block_on(gestura_core::check_ollama_connectivity(base_url))
 }

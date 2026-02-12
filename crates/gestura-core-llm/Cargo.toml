@@ -1,0 +1,34 @@
+[package]
+name = "gestura-core-llm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description.workspace = true
+
+[features]
+# By default we ship with all first-party providers enabled.
+default = ["openai", "anthropic", "grok", "ollama", "gemini"]
+
+# Provider feature gates (allow workspace consumers to build smaller binaries).
+openai = []
+anthropic = []
+grok = []
+ollama = []
+gemini = []
+
+# Dev/testing-only provider(s).
+dev = []
+
+[dependencies]
+gestura-core-foundation.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+reqwest.workspace = true

@@ -4,6 +4,8 @@ use super::Result;
 use crate::ConfigAction;
 use colored::Colorize;
 use gestura_core::AppConfig;
+use gestura_core::AppConfigSecurityExt;
+use gestura_core::config_env::{is_secret_key, redact_secret};
 use std::path::PathBuf;
 
 /// Get the config file path
@@ -33,7 +35,12 @@ pub fn run(action: &ConfigAction) -> Result<()> {
                     eprintln!("{}: Failed to save config: {}", "error".red(), e);
                     std::process::exit(2);
                 }
-                println!("{} {} = {}", "Set".green(), key.cyan(), value);
+                let display_value = if is_secret_key(key) {
+                    redact_secret(value)
+                } else {
+                    value.to_string()
+                };
+                println!("{} {} = {}", "Set".green(), key.cyan(), display_value);
             } else {
                 eprintln!(
                     "{}: Unknown or read-only config key: {}",
@@ -63,8 +70,8 @@ pub fn run(action: &ConfigAction) -> Result<()> {
                 ],
             );
             print_config_section(
-                "MCP Tools",
-                &[("count", &config.mcp_tools.len().to_string())],
+                "MCP Servers",
+                &[("count", &config.mcp_servers.len().to_string())],
             );
             print_config_section("UI", &[("theme", &config.ui.theme_mode)]);
             print_config_section(
@@ -96,7 +103,24 @@ pub fn run(action: &ConfigAction) -> Result<()> {
                     ),
                 ],
             );
-            println!();
+
+            // API key status from OS keychain
+            let key_status = AppConfig::api_key_keychain_status();
+            let key_items: Vec<(&str, String)> = key_status
+                .iter()
+                .map(|(provider, present)| {
+                    let status = if *present {
+                        "✓ stored".green().to_string()
+                    } else {
+                        "✗ not found".red().to_string()
+                    };
+                    (*provider, status)
+                })
+                .collect();
+            let key_refs: Vec<(&str, &str)> =
+                key_items.iter().map(|(p, s)| (*p, s.as_str())).collect();
+            print_config_section("API Keys (Keychain)", &key_refs);
+
             println!(
                 "Config file: {}",
                 get_config_path().display().to_string().dimmed()
@@ -187,6 +211,32 @@ fn get_config_value(config: &AppConfig, key: &str) -> Option<String> {
         }
         "pipeline.max_context_tokens" => Some(config.pipeline.max_context_tokens.to_string()),
         "pipeline.log_token_usage" => Some(config.pipeline.log_token_usage.to_string()),
+        "llm.openai.api_key" => config
+            .llm
+            .openai
+            .as_ref()
+            .map(|c| redact_secret(&c.api_key)),
+        "llm.anthropic.api_key" => config
+            .llm
+            .anthropic
+            .as_ref()
+            .map(|c| redact_secret(&c.api_key)),
+        "llm.grok.api_key" => config.llm.grok.as_ref().map(|c| redact_secret(&c.api_key)),
+        "voice.openai_api_key" => config
+            .voice
+            .openai_api_key
+            .as_ref()
+            .map(|k| redact_secret(k)),
+        "web_search.serpapi_key" => config
+            .web_search
+            .serpapi_key
+            .as_ref()
+            .map(|k| redact_secret(k)),
+        "web_search.brave_key" => config
+            .web_search
+            .brave_key
+            .as_ref()
+            .map(|k| redact_secret(k)),
         _ => None,
     }
 }
@@ -261,6 +311,34 @@ fn set_config_value(config: &mut AppConfig, key: &str, value: &str) -> bool {
             } else {
                 false
             }
+        }
+        "llm.openai.api_key" => {
+            config.llm.openai.get_or_insert(Default::default()).api_key = value.to_string();
+            true
+        }
+        "llm.anthropic.api_key" => {
+            config
+                .llm
+                .anthropic
+                .get_or_insert(Default::default())
+                .api_key = value.to_string();
+            true
+        }
+        "llm.grok.api_key" => {
+            config.llm.grok.get_or_insert(Default::default()).api_key = value.to_string();
+            true
+        }
+        "voice.openai_api_key" => {
+            config.voice.openai_api_key = Some(value.to_string());
+            true
+        }
+        "web_search.serpapi_key" => {
+            config.web_search.serpapi_key = Some(value.to_string());
+            true
+        }
+        "web_search.brave_key" => {
+            config.web_search.brave_key = Some(value.to_string());
+            true
         }
         _ => false,
     }

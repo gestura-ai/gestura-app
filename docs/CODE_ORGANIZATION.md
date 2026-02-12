@@ -2,17 +2,24 @@
 
 ## Workspace Architecture
 
-Gestura.app uses a **Core-First Architecture** organized as a Rust workspace with three crates:
+Gestura.app uses a **Core-First Architecture** organized as a Rust workspace.
+
+`gestura-core` remains the **public facade** and source-of-truth API surface, while focused
+domain crates hold independently-workable subsystems (e.g., tools) and shared primitives.
 
 ```
 gestura-app/
-├── Cargo.toml              # Workspace manifest
+├── Cargo.toml                     # Workspace manifest
 ├── crates/
-│   ├── gestura-core/       # Shared business logic (source of truth)
-│   ├── gestura-cli/        # CLI binary (thin presentation layer)
-│   └── gestura-gui/        # Tauri desktop app (thin presentation layer)
-├── docs/                   # Documentation
-└── AGENTS.md               # AI assistant guide
+│   ├── gestura-core/              # Public facade + remaining core domains
+│   ├── gestura-core-foundation/   # Shared primitives used across domain crates
+│   ├── gestura-core-tools/        # Built-in tools + tool policy/permissions/registry
+│   ├── gestura-core-mcp/          # MCP protocol domain crate (implementation)
+│   ├── gestura-core-llm/          # LLM providers domain crate (implementation)
+│   ├── gestura-cli/               # CLI binary (thin presentation layer)
+│   └── gestura-gui/               # Tauri desktop app (thin presentation layer)
+├── docs/                          # Documentation
+└── AGENTS.md                      # AI assistant guide
 ```
 
 ## Core-First Design Principles
@@ -30,7 +37,7 @@ The core crate contains all business logic organized by domain:
 | Module | Files | Description |
 |--------|-------|-------------|
 | `pipeline/` | `mod.rs`, `types.rs` | Agent request/response pipeline |
-| `llm_provider.rs` | - | LLM API abstraction (OpenAI, Anthropic) |
+| `llm_provider.rs` | - | **Facade** preserving `gestura_core::llm_provider::*` (implementation lives in `gestura-core-llm`) |
 | `persona.rs` | - | System persona configuration |
 | `speech.rs` | - | Text-to-speech |
 | `stt_provider.rs` | - | Speech-to-text (Whisper) |
@@ -46,18 +53,48 @@ The core crate contains all business logic organized by domain:
 ### Tools & Permissions
 | Module | Files | Description |
 |--------|-------|-------------|
-| `tools/` | `mod.rs`, `registry.rs`, `permissions.rs`, `policy.rs`, `schemas.rs` | Tool definitions and registry |
-| `tools/` | `file.rs`, `shell.rs`, `git.rs`, `web.rs`, `code.rs` | Built-in tool implementations |
+| `tools/` | `mod.rs`, `registry.rs`, `permissions.rs`, `policy.rs`, `schemas.rs` | **Facade** re-exporting the tools domain and providing core-owned adapters |
+| `gestura-core-tools` | `src/file.rs`, `src/shell.rs`, `src/git.rs`, `src/web.rs`, `src/code.rs`, ... | Built-in tool implementations + registry/policy/permissions |
 | `tool_confirmation.rs` | - | User confirmation flow with pause/resume |
 | `tool_inspection.rs` | - | Tool introspection |
+
+## Domain crates (focused work)
+
+### gestura-core-foundation (Shared primitives)
+
+Small, dependency-light building blocks used by multiple domains.
+
+- `error` — shared `AppError` / `Result`
+- `permissions` — shared permission primitives
+- `execution_mode` — execution-mode model/policy (re-exported via `gestura_core::execution_mode`)
+
+### gestura-core-tools (Tools domain)
+
+All built-in tool implementations and tool policy live here.
+
+Developers working on “tools” should start in `crates/gestura-core-tools/`.
 
 ### Protocols
 | Module | Files | Description |
 |--------|-------|-------------|
-| `mcp/` | `mod.rs`, `server.rs`, `types.rs`, `lifecycle.rs`, `discovery.rs` | MCP server (2025-11-25) |
-| `mcp/` | `notifications.rs`, `prompts.rs`, `integrator.rs` | MCP features |
+| `mcp/` | `mod.rs` | **Facade** preserving `gestura_core::mcp::*` (implementation lives in `gestura-core-mcp`) |
 | `a2a/` | `mod.rs`, `server.rs`, `client.rs`, `types.rs` | Agent-to-Agent protocol |
 | `nats_mq/` | `mod.rs` | NATS message queue |
+
+### gestura-core-mcp (MCP domain)
+
+The MCP (Model Context Protocol) implementation lives in `crates/gestura-core-mcp/`.
+
+- Stable import path: `gestura_core::mcp::*` (facade in `crates/gestura-core/src/mcp/mod.rs`)
+- MCP configuration types (e.g., `.mcp.json` helpers) are re-exported from `gestura_core::config::*`
+  but owned by `gestura-core-mcp` to ensure a single source of truth.
+
+### gestura-core-llm (LLM providers domain)
+
+LLM provider implementations live in `crates/gestura-core-llm/`.
+
+- Stable import path: `gestura_core::llm_provider::*` (facade in `crates/gestura-core/src/llm_provider.rs`)
+- Provider implementations are feature-gated in the domain crate (e.g., `openai`, `anthropic`, `grok`, `ollama`; plus `dev` for dev/test-only providers)
 
 ### Security & Sandboxing
 | Module | Files | Description |
@@ -233,7 +270,7 @@ The Core-First architecture migration was completed in 6 phases:
 | Phase 1 | A2A consolidation | ✅ Complete |
 | Phase 2 | Chat session unification | ✅ Complete |
 | Phase 3 | Permissions + security policy | ✅ Complete |
-| Phase 4 | MCP server migration | ✅ Complete |
+| Phase 4 | MCP domain extraction (`gestura-core-mcp`) | ✅ Complete |
 | Phase 5 | GUI subsystems migration | ✅ Complete |
 | Phase 6 | Analytics/Recommendations/Audio | ✅ Complete |
 

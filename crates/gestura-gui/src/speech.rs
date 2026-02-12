@@ -5,7 +5,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 use crate::audio_capture::record_audio;
-use crate::config::AppConfig;
+use crate::config::{AppConfig, AppConfigSecurityExt};
 
 use gestura_core::secrets::SecureStorageSecretProvider;
 use gestura_core::stt_provider::{SttProvider, select_provider_with_session_voice_config};
@@ -39,11 +39,11 @@ impl Default for SpeechConfig {
             llm_provider: "openai-gpt".to_string(),
             openai_api_key: String::new(),
             openai_base_url: "https://api.openai.com".to_string(),
-            openai_model: "gpt-4o-transcribe".to_string(),
+            openai_model: gestura_core::DEFAULT_OPENAI_STT_MODEL.to_string(),
             anthropic_api_key: String::new(),
             google_api_key: String::new(),
             azure_api_key: String::new(),
-            local_llm_endpoint: "http://localhost:11434".to_string(),
+            local_llm_endpoint: gestura_core::DEFAULT_OLLAMA_BASE_URL.to_string(),
             stt_timeout: 30,
             llm_timeout: 60,
             enable_fallback: true,

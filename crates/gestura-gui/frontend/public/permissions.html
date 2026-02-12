@@ -8,50 +8,99 @@
     <link rel="stylesheet" href="icons.css">
     <style>
         :root {
+            /* Gestura brand tokens (unified with gestura.app) */
+            --accent-primary: rgb(37, 99, 235);
+            --accent-primary-rgb: 37, 99, 235;
+            --accent-secondary: rgb(147, 51, 234);
+            --accent-secondary-rgb: 147, 51, 234;
+            --gradient-primary: linear-gradient(to right, rgb(37, 99, 235), rgb(147, 51, 234));
+            --gradient-secondary: linear-gradient(to right, rgb(96, 165, 250), rgb(192, 132, 252));
+            --brand-gradient: var(--gradient-primary);
+
+            /* Semantic tokens (RGB triples for rgba(..., alpha)) */
+            --success-rgb: 52, 199, 89;
+            --warning-rgb: 255, 149, 0;
+            --danger-rgb: 255, 59, 48;
+
             /* Light theme variables */
-            --bg-gradient-start: #667eea;
-            --bg-gradient-end: #764ba2;
+            --bg-gradient-start: rgba(var(--accent-primary-rgb), 0.10);
+            --bg-gradient-end: rgba(var(--accent-secondary-rgb), 0.10);
             --container-bg: rgba(255, 255, 255, 0.95);
             --text-primary: #1D1D1F;
             --text-secondary: #8E8E93;
             --surface-bg: #F2F2F7;
             --surface-border: #E5E5EA;
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.35);
         }
 
         /* Auto mode: respect system preference */
         @media (prefers-color-scheme: dark) {
             :root {
                 /* Dark theme variables */
-                --bg-gradient-start: #1a1a2e;
-                --bg-gradient-end: #16213e;
-                --container-bg: rgba(30, 30, 30, 0.95);
+                --accent-primary: rgb(96, 165, 250);
+                --accent-primary-rgb: 96, 165, 250;
+                --accent-secondary: rgb(192, 132, 252);
+                --accent-secondary-rgb: 192, 132, 252;
+                --brand-gradient: var(--gradient-secondary);
+                --bg-gradient-start: rgba(var(--accent-primary-rgb), 0.14);
+                --bg-gradient-end: rgba(var(--accent-secondary-rgb), 0.14);
+                --container-bg: rgba(15, 23, 42, 0.92);
                 --text-primary: #f5f5f7;
-                --text-secondary: #b0b0b0;
-                --surface-bg: #2d2d2d;
-                --surface-border: #404040;
+                --text-secondary: #94a3b8;
+                --surface-bg: rgba(255, 255, 255, 0.06);
+                --surface-border: rgba(255, 255, 255, 0.12);
+                --focus-ring: rgba(var(--accent-primary-rgb), 0.55);
             }
         }
 
         /* Force light mode (overrides system preference) */
         html[data-theme="light"] {
-            --bg-gradient-start: #667eea;
-            --bg-gradient-end: #764ba2;
+            --accent-primary: rgb(37, 99, 235);
+            --accent-primary-rgb: 37, 99, 235;
+            --accent-secondary: rgb(147, 51, 234);
+            --accent-secondary-rgb: 147, 51, 234;
+            --brand-gradient: var(--gradient-primary);
+            --bg-gradient-start: rgba(var(--accent-primary-rgb), 0.10);
+            --bg-gradient-end: rgba(var(--accent-secondary-rgb), 0.10);
             --container-bg: rgba(255, 255, 255, 0.95);
             --text-primary: #1D1D1F;
             --text-secondary: #8E8E93;
             --surface-bg: #F2F2F7;
             --surface-border: #E5E5EA;
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.35);
         }
 
         /* Force dark mode (overrides system preference) */
         html[data-theme="dark"] {
-            --bg-gradient-start: #1a1a2e;
-            --bg-gradient-end: #16213e;
-            --container-bg: rgba(30, 30, 30, 0.95);
+            --accent-primary: rgb(96, 165, 250);
+            --accent-primary-rgb: 96, 165, 250;
+            --accent-secondary: rgb(192, 132, 252);
+            --accent-secondary-rgb: 192, 132, 252;
+            --brand-gradient: var(--gradient-secondary);
+            --bg-gradient-start: rgba(var(--accent-primary-rgb), 0.14);
+            --bg-gradient-end: rgba(var(--accent-secondary-rgb), 0.14);
+            --container-bg: rgba(15, 23, 42, 0.92);
             --text-primary: #f5f5f7;
-            --text-secondary: #b0b0b0;
-            --surface-bg: #2d2d2d;
-            --surface-border: #404040;
+            --text-secondary: #94a3b8;
+            --surface-bg: rgba(255, 255, 255, 0.06);
+            --surface-border: rgba(255, 255, 255, 0.12);
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.55);
+        }
+
+        .text-gradient {
+            background: var(--brand-gradient);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            -webkit-text-fill-color: transparent;
+        }
+
+        @media (forced-colors: active) {
+            .text-gradient {
+                background: none;
+                color: ButtonText;
+                -webkit-text-fill-color: ButtonText;
+            }
         }
 
         * {
@@ -105,17 +154,17 @@
 
         .permission-item.granted {
             border-left-color: #34C759;
-            background: #F0FDF4;
+            background: rgba(var(--success-rgb), 0.12);
         }
 
         .permission-item.denied {
             border-left-color: #FF3B30;
-            background: #FEF2F2;
+            background: rgba(var(--danger-rgb), 0.10);
         }
 
         .permission-item.pending {
             border-left-color: #FF9500;
-            background: #FFFBEB;
+            background: rgba(var(--warning-rgb), 0.12);
         }
 
         .permission-info {
@@ -168,17 +217,27 @@
 
         .request-button {
             padding: 0.5rem 1rem;
-            background: #007AFF;
+            background: var(--brand-gradient);
             color: white;
             border: none;
             border-radius: 8px;
             cursor: pointer;
             font-size: 0.9rem;
-            transition: background-color 0.2s;
+            box-shadow: 0 10px 22px rgba(var(--accent-primary-rgb), 0.22);
+            transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
         }
 
         .request-button:hover {
-            background: #0056CC;
+            filter: brightness(0.97);
+            transform: translateY(-1px);
+            box-shadow: 0 14px 30px rgba(var(--accent-primary-rgb), 0.28);
+        }
+
+        .request-button:focus-visible {
+            outline: none;
+            box-shadow:
+                0 0 0 4px var(--focus-ring),
+                0 14px 30px rgba(var(--accent-primary-rgb), 0.28);
         }
 
         .request-button:disabled {
@@ -203,39 +262,52 @@
         }
 
         .primary {
-            background: #007AFF;
+            background: var(--brand-gradient);
             color: white;
         }
 
         .primary:hover {
-            background: #0056CC;
+            filter: brightness(0.97);
+            transform: translateY(-1px);
+        }
+
+        .primary:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 4px var(--focus-ring);
         }
 
         .secondary {
-            background: #F2F2F7;
-            color: #1D1D1F;
+            background: var(--surface-bg);
+            color: var(--text-primary);
+            border: 1px solid var(--surface-border);
         }
 
         .secondary:hover {
-            background: #E5E5EA;
+            background: rgba(var(--accent-primary-rgb), 0.08);
+            border-color: rgba(var(--accent-primary-rgb), 0.30);
+        }
+
+        .secondary:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 4px var(--focus-ring);
         }
 
         .warning {
-            background: #FEF2F2;
-            border: 1px solid #FECACA;
+            background: rgba(var(--danger-rgb), 0.10);
+            border: 1px solid rgba(var(--danger-rgb), 0.25);
             border-radius: 8px;
             padding: 1rem;
             margin-bottom: 2rem;
         }
 
         .warning-title {
-            color: #DC2626;
+            color: rgb(var(--danger-rgb));
             font-weight: 600;
             margin-bottom: 0.5rem;
         }
 
         .warning-text {
-            color: #7F1D1D;
+            color: var(--text-secondary);
             font-size: 0.9rem;
             line-height: 1.4;
         }
@@ -291,7 +363,7 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1><span class="icon-lock-open"></span> System Permissions</h1>
+            <h1><span class="icon-lock-open"></span> <span class="text-gradient">Gestura</span> System Permissions</h1>
             <p>Gestura needs these permissions to function properly</p>
         </div>
 

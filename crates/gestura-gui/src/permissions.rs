@@ -462,32 +462,187 @@ pub fn open_system_preferences(pane: &str) -> bool {
 ///
 /// Linux typically doesn't have per-app microphone permission dialogs.
 /// The actual audio access is managed by PulseAudio/PipeWire permissions.
+/// This function checks if either PulseAudio or PipeWire is available and accessible.
 #[cfg(all(target_os = "linux", feature = "linux-permissions"))]
 pub fn check_microphone_permission() -> SystemPermissionStatus {
-    // TODO: Phase 2 - Check PulseAudio/PipeWire audio access
-    tracing::debug!("Linux microphone permission check: returning Granted (no TCC equivalent)");
-    SystemPermissionStatus::Granted
+    match check_audio_server_available() {
+        Ok(true) => {
+            tracing::debug!("Linux microphone permission check: audio server available");
+            SystemPermissionStatus::Granted
+        }
+        Ok(false) => {
+            tracing::warn!("Linux microphone permission check: no audio server available");
+            SystemPermissionStatus::Denied
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Linux microphone permission check failed: {}, assuming granted",
+                e
+            );
+            // Assume granted to avoid blocking features when check fails
+            SystemPermissionStatus::Granted
+        }
+    }
+}
+
+/// Check if PulseAudio or PipeWire audio server is available.
+///
+/// This function attempts to connect to the audio server via D-Bus to verify
+/// that audio input is accessible.
+#[cfg(all(target_os = "linux", feature = "linux-permissions"))]
+fn check_audio_server_available() -> Result<bool, Box<dyn std::error::Error>> {
+    use zbus::blocking::Connection;
+
+    // Try PipeWire first (modern default on most distros)
+    if let Ok(conn) = Connection::session() {
+        // Check for PipeWire via D-Bus
+        let proxy = zbus::blocking::fdo::DBusProxy::new(&conn)?;
+
+        // PipeWire typically runs as org.pipewire.Daemon
+        if proxy.name_has_owner("org.pipewire.Daemon")? {
+            tracing::debug!("PipeWire audio server detected");
+            return Ok(true);
+        }
+
+        // Check for PulseAudio
+        if proxy.name_has_owner("org.PulseAudio1")? {
+            tracing::debug!("PulseAudio server detected");
+            return Ok(true);
+        }
+    }
+
+    // Fallback: Check if PulseAudio socket exists
+    if std::path::Path::new("/run/user")
+        .join(&std::env::var("UID").unwrap_or_else(|_| "1000".to_string()))
+        .join("pulse/native")
+        .exists()
+    {
+        tracing::debug!("PulseAudio socket detected");
+        return Ok(true);
+    }
+
+    tracing::debug!("No audio server detected");
+    Ok(false)
 }
 
 /// Check accessibility permission on Linux.
 ///
 /// Linux accessibility is typically managed through AT-SPI2 and doesn't
-/// require explicit permission dialogs.
+/// require explicit permission dialogs. This function checks if AT-SPI2
+/// is available and accessible via D-Bus.
 #[cfg(all(target_os = "linux", feature = "linux-permissions"))]
 pub fn check_accessibility_permission() -> SystemPermissionStatus {
-    // TODO: Phase 3 - Check AT-SPI2 availability
-    tracing::debug!("Linux accessibility permission check: returning Granted (no TCC equivalent)");
-    SystemPermissionStatus::Granted
+    match check_atspi_available() {
+        Ok(true) => {
+            tracing::debug!("Linux accessibility permission check: AT-SPI2 available");
+            SystemPermissionStatus::Granted
+        }
+        Ok(false) => {
+            tracing::warn!("Linux accessibility permission check: AT-SPI2 not available");
+            SystemPermissionStatus::Denied
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Linux accessibility permission check failed: {}, assuming granted",
+                e
+            );
+            // Assume granted to avoid blocking features when check fails
+            SystemPermissionStatus::Granted
+        }
+    }
+}
+
+/// Check if AT-SPI2 (Assistive Technology Service Provider Interface) is available.
+///
+/// AT-SPI2 is the accessibility framework on Linux. This function checks if the
+/// AT-SPI2 registry daemon is running and accessible via D-Bus.
+#[cfg(all(target_os = "linux", feature = "linux-permissions"))]
+fn check_atspi_available() -> Result<bool, Box<dyn std::error::Error>> {
+    use zbus::blocking::Connection;
+
+    let conn = Connection::session()?;
+    let proxy = zbus::blocking::fdo::DBusProxy::new(&conn)?;
+
+    // AT-SPI2 registry runs as org.a11y.Bus
+    if proxy.name_has_owner("org.a11y.Bus")? {
+        tracing::debug!("AT-SPI2 registry detected");
+        return Ok(true);
+    }
+
+    // Also check for the AT-SPI2 registry daemon
+    if proxy.name_has_owner("org.a11y.atspi.Registry")? {
+        tracing::debug!("AT-SPI2 registry daemon detected");
+        return Ok(true);
+    }
+
+    tracing::debug!("AT-SPI2 not detected");
+    Ok(false)
 }
 
 /// Check bluetooth permission on Linux.
 ///
 /// Linux Bluetooth access is managed through BlueZ and D-Bus policies.
+/// This function checks if BlueZ is available and the user has permission
+/// to access Bluetooth devices.
 #[cfg(all(target_os = "linux", feature = "linux-permissions"))]
 pub fn check_bluetooth_permission() -> SystemPermissionStatus {
-    // TODO: Phase 3 - Check D-Bus bluetooth group membership
-    tracing::debug!("Linux bluetooth permission check: returning Granted (no TCC equivalent)");
-    SystemPermissionStatus::Granted
+    match check_bluez_available() {
+        Ok(true) => {
+            tracing::debug!("Linux bluetooth permission check: BlueZ available");
+            SystemPermissionStatus::Granted
+        }
+        Ok(false) => {
+            tracing::warn!("Linux bluetooth permission check: BlueZ not available");
+            SystemPermissionStatus::Denied
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Linux bluetooth permission check failed: {}, assuming granted",
+                e
+            );
+            // Assume granted to avoid blocking features when check fails
+            SystemPermissionStatus::Granted
+        }
+    }
+}
+
+/// Check if BlueZ Bluetooth stack is available and accessible.
+///
+/// BlueZ is the official Linux Bluetooth protocol stack. This function checks
+/// if the BlueZ daemon is running and accessible via D-Bus.
+#[cfg(all(target_os = "linux", feature = "linux-permissions"))]
+fn check_bluez_available() -> Result<bool, Box<dyn std::error::Error>> {
+    use zbus::blocking::Connection;
+
+    let conn = Connection::system()?;
+    let proxy = zbus::blocking::fdo::DBusProxy::new(&conn)?;
+
+    // BlueZ daemon runs as org.bluez
+    if proxy.name_has_owner("org.bluez")? {
+        tracing::debug!("BlueZ daemon detected");
+
+        // Additional check: Try to access the BlueZ object manager
+        // This verifies we have permission to interact with BlueZ
+        match conn.call_method(
+            Some("org.bluez"),
+            "/",
+            Some("org.freedesktop.DBus.ObjectManager"),
+            "GetManagedObjects",
+            &(),
+        ) {
+            Ok(_) => {
+                tracing::debug!("BlueZ accessible, user has Bluetooth permissions");
+                return Ok(true);
+            }
+            Err(e) => {
+                tracing::warn!("BlueZ detected but not accessible: {}", e);
+                return Ok(false);
+            }
+        }
+    }
+
+    tracing::debug!("BlueZ not detected");
+    Ok(false)
 }
 
 /// Check screen recording permission on Linux.
@@ -515,7 +670,6 @@ pub fn check_screen_recording_permission() -> SystemPermissionStatus {
     }
 
     // Wayland: Check if xdg-desktop-portal is available
-    // We check synchronously using a blocking runtime
     match check_screencast_portal_available() {
         Ok(true) => {
             tracing::debug!(
@@ -531,70 +685,131 @@ pub fn check_screen_recording_permission() -> SystemPermissionStatus {
             SystemPermissionStatus::Denied
         }
         Err(e) => {
-            tracing::warn!("Linux screen recording check failed: {}", e);
+            tracing::warn!(
+                "Linux screen recording check failed: {}, assuming granted",
+                e
+            );
             // If we can't check, assume it's available to avoid blocking features
-            SystemPermissionStatus::Unknown
+            // This is consistent with other Linux permission checks
+            SystemPermissionStatus::Granted
         }
     }
 }
 
 /// Check if the xdg-desktop-portal screencast interface is available.
+///
+/// This function uses zbus to directly query D-Bus for the portal service,
+/// eliminating the dependency on external commands like busctl or dbus-send.
+/// This approach is consistent with other Linux permission checks and works
+/// reliably across all Linux distributions, including those without systemd.
 #[cfg(all(target_os = "linux", feature = "linux-permissions"))]
-fn check_screencast_portal_available() -> Result<bool, String> {
-    use std::process::Command;
+fn check_screencast_portal_available() -> Result<bool, Box<dyn std::error::Error>> {
+    use zbus::blocking::Connection;
 
-    // Check if xdg-desktop-portal is running by querying D-Bus
-    // This is a simple check that doesn't require async runtime
-    let output = Command::new("busctl")
-        .args(["--user", "list"])
-        .output()
-        .map_err(|e| format!("Failed to run busctl: {}", e))?;
+    // Connect to the session bus where xdg-desktop-portal runs
+    let conn = Connection::session()?;
+    let proxy = zbus::blocking::fdo::DBusProxy::new(&conn)?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Check if the xdg-desktop-portal service is available
+    // The portal runs as org.freedesktop.portal.Desktop
+    if proxy.name_has_owner("org.freedesktop.portal.Desktop")? {
+        tracing::debug!("xdg-desktop-portal detected on session bus");
 
-    // Look for the portal service
-    if stdout.contains("org.freedesktop.portal.Desktop") {
-        return Ok(true);
-    }
-
-    // Alternative: check using dbus-send
-    let output = Command::new("dbus-send")
-        .args([
-            "--session",
-            "--dest=org.freedesktop.DBus",
-            "--type=method_call",
-            "--print-reply",
-            "/org/freedesktop/DBus",
-            "org.freedesktop.DBus.ListNames",
-        ])
-        .output();
-
-    match output {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            Ok(stdout.contains("org.freedesktop.portal.Desktop"))
+        // Additional verification: Check if the ScreenCast interface is available
+        // This ensures the portal not only exists but also supports screen recording
+        match conn.call_method(
+            Some("org.freedesktop.portal.Desktop"),
+            "/org/freedesktop/portal/desktop",
+            Some("org.freedesktop.DBus.Introspectable"),
+            "Introspect",
+            &(),
+        ) {
+            Ok(response) => {
+                // Parse the introspection XML to check for ScreenCast interface
+                if let Ok(body) = response.body::<String>() {
+                    if body.contains("org.freedesktop.portal.ScreenCast") {
+                        tracing::debug!("ScreenCast interface available in xdg-desktop-portal");
+                        return Ok(true);
+                    } else {
+                        tracing::warn!(
+                            "xdg-desktop-portal found but ScreenCast interface not available"
+                        );
+                        return Ok(false);
+                    }
+                }
+                // If we can't parse the response, assume it's available
+                tracing::debug!(
+                    "Could not parse portal introspection, assuming ScreenCast available"
+                );
+                Ok(true)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "xdg-desktop-portal detected but introspection failed: {}",
+                    e
+                );
+                // Portal exists but we can't verify ScreenCast interface
+                // Assume it's available to avoid blocking features
+                Ok(true)
+            }
         }
-        Err(_) => {
-            // If dbus-send fails too, assume portal might still be available
-            // (e.g., in Flatpak/Snap environments)
-            tracing::debug!("Could not verify portal availability via D-Bus, assuming available");
-            Ok(true)
-        }
+    } else {
+        tracing::debug!("xdg-desktop-portal not detected on session bus");
+        Ok(false)
     }
 }
 
-/// Request microphone permission on Linux (no-op).
+/// Request microphone permission on Linux.
+///
+/// Linux doesn't have per-app permission dialogs like macOS/Windows.
+/// If audio server is not available, this logs guidance for the user.
 #[cfg(all(target_os = "linux", feature = "linux-permissions"))]
 pub fn request_microphone_permission() -> bool {
-    tracing::debug!("Linux microphone permission request: no dialog needed");
-    true
+    match check_audio_server_available() {
+        Ok(true) => {
+            tracing::debug!("Linux microphone permission: audio server available");
+            true
+        }
+        Ok(false) => {
+            tracing::warn!(
+                "Linux microphone permission: no audio server detected. \
+                Please ensure PulseAudio or PipeWire is running."
+            );
+            false
+        }
+        Err(e) => {
+            tracing::warn!("Linux microphone permission check failed: {}", e);
+            // Assume available to avoid blocking
+            true
+        }
+    }
 }
 
-/// Request bluetooth permission on Linux (no-op).
+/// Request bluetooth permission on Linux.
+///
+/// Linux doesn't have per-app permission dialogs like macOS/Windows.
+/// If BlueZ is not available, this logs guidance for the user.
 #[cfg(all(target_os = "linux", feature = "linux-permissions"))]
 pub fn request_bluetooth_permission() -> bool {
-    tracing::debug!("Linux bluetooth permission request: no dialog needed");
-    true
+    match check_bluez_available() {
+        Ok(true) => {
+            tracing::debug!("Linux bluetooth permission: BlueZ available");
+            true
+        }
+        Ok(false) => {
+            tracing::warn!(
+                "Linux bluetooth permission: BlueZ not detected. \
+                Please ensure BlueZ is installed and the bluetooth service is running. \
+                You may also need to add your user to the 'bluetooth' group."
+            );
+            false
+        }
+        Err(e) => {
+            tracing::warn!("Linux bluetooth permission check failed: {}", e);
+            // Assume available to avoid blocking
+            true
+        }
+    }
 }
 
 /// Request screen recording permission on Linux.

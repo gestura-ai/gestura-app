@@ -75,17 +75,17 @@ help:
 # Production validation - run all checks that CI will run
 validate:
 	@echo "🔍 Running production validation..."
-	./scripts/validate-production.sh
+	./scripts/validate-production.sh --ci
 
 # Quick validation - essential checks only
 validate-quick:
 	@echo "⚡ Running quick validation..."
 	@echo "Checking formatting..."
 	cargo fmt --manifest-path {{app_dir}}/Cargo.toml -- --check
-	@echo "Running clippy (CLI)..."
-	cargo clippy --manifest-path {{app_dir}}/Cargo.toml --features cli-only -- -D warnings
-	@echo "Running tests (CLI)..."
-	cargo test --manifest-path {{app_dir}}/Cargo.toml --features cli-only
+	@echo "Running clippy..."
+	cargo clippy --manifest-path {{app_dir}}/Cargo.toml -- -D warnings
+	@echo "Running tests..."
+	cargo test --manifest-path {{app_dir}}/Cargo.toml
 	@echo "✅ Quick validation complete!"
 
 # Root paths
@@ -152,17 +152,18 @@ dev:
 # Build CLI binary (release)
 build-cli:
 	@echo "🔧 Building CLI binary..."
-	cargo build --release -p gestura-cli --features voice-local
+	cargo build --release -p gestura-cli --features voice-local,security
 
 # Build CLI binary for universal macOS (Intel + Apple Silicon)
+#   Separate CARGO_TARGET_DIR per arch avoids a known rustc ICE with fat LTO.
 build-cli-universal:
 	@echo "🔧 Building universal CLI binary..."
-	cargo build --release -p gestura-cli --features voice-local --target aarch64-apple-darwin
-	cargo build --release -p gestura-cli --features voice-local --target x86_64-apple-darwin
+	CARGO_TARGET_DIR=target/build-arm64 cargo build --release -p gestura-cli --features voice-local,security --target aarch64-apple-darwin
+	CARGO_TARGET_DIR=target/build-x86   cargo build --release -p gestura-cli --features voice-local,security --target x86_64-apple-darwin
 	@mkdir -p target/universal-apple-darwin/release
 	lipo -create \
-		target/aarch64-apple-darwin/release/gestura \
-		target/x86_64-apple-darwin/release/gestura \
+		target/build-arm64/aarch64-apple-darwin/release/gestura \
+		target/build-x86/x86_64-apple-darwin/release/gestura \
 		-output target/universal-apple-darwin/release/gestura
 	@echo "✅ Universal CLI binary created at target/universal-apple-darwin/release/gestura"
 
@@ -211,13 +212,16 @@ build-macos-signed:
 	cd {{frontend_dir}} && npm install
 	cd {{frontend_dir}} && npm run build
 	# 2. Build the CLI binary (universal)
+	#    Use separate CARGO_TARGET_DIR per architecture to avoid a known rustc ICE
+	#    (lto.rs:119 "couldn't open rlib") that occurs when sequential multi-target
+	#    release builds with fat LTO share the same target/ directory.
 	@echo "🔧 Building universal CLI binary..."
-	cargo build --release -p gestura-cli --features voice-local --target aarch64-apple-darwin
-	cargo build --release -p gestura-cli --features voice-local --target x86_64-apple-darwin
+	CARGO_TARGET_DIR=target/build-arm64 cargo build --release -p gestura-cli --features voice-local,security --target aarch64-apple-darwin
+	CARGO_TARGET_DIR=target/build-x86   cargo build --release -p gestura-cli --features voice-local,security --target x86_64-apple-darwin
 	mkdir -p target/universal-apple-darwin/release
 	lipo -create \
-	  target/aarch64-apple-darwin/release/gestura \
-	  target/x86_64-apple-darwin/release/gestura \
+	  target/build-arm64/aarch64-apple-darwin/release/gestura \
+	  target/build-x86/x86_64-apple-darwin/release/gestura \
 	  -output target/universal-apple-darwin/release/gestura
 	# 2b. Stage the CLI for Tauri `bundle.externalBin`.
 	#
@@ -228,8 +232,8 @@ build-macos-signed:
 	# We also stage the universal binary for completeness:
 	#   - binaries/gestura-universal-apple-darwin
 	mkdir -p {{gui_dir}}/binaries
-	cp target/aarch64-apple-darwin/release/gestura {{gui_dir}}/binaries/gestura-aarch64-apple-darwin
-	cp target/x86_64-apple-darwin/release/gestura {{gui_dir}}/binaries/gestura-x86_64-apple-darwin
+	cp target/build-arm64/aarch64-apple-darwin/release/gestura {{gui_dir}}/binaries/gestura-aarch64-apple-darwin
+	cp target/build-x86/x86_64-apple-darwin/release/gestura {{gui_dir}}/binaries/gestura-x86_64-apple-darwin
 	cp target/universal-apple-darwin/release/gestura {{gui_dir}}/binaries/gestura-universal-apple-darwin
 	chmod +x \
 	  {{gui_dir}}/binaries/gestura-aarch64-apple-darwin \

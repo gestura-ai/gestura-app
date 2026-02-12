@@ -14,17 +14,57 @@ pub fn handle_event(app: &mut TuiApp, event: Event) -> Action {
     match event {
         Event::Key(key) => handle_key_event(app, key),
         Event::Mouse(mouse) => handle_mouse_event(app, mouse),
+        Event::Paste(text) => handle_paste_event(app, text),
         Event::Resize(_, _) => Action::Continue, // Terminal will re-render automatically
         _ => Action::Continue,
     }
+}
+
+fn handle_paste_event(app: &mut TuiApp, text: String) -> Action {
+    if text.is_empty() {
+        return Action::Continue;
+    }
+
+    // Normalize newlines. Some terminals send CRLF.
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+
+    match app.mode {
+        TuiMode::Insert => {
+            app.insert_str(&normalized);
+
+            // If paste starts a command, switch into command mode for consistent UX.
+            if app.input.starts_with('/') {
+                app.mode = TuiMode::Command;
+                app.update_command_suggestions();
+            }
+        }
+        TuiMode::Command => {
+            app.insert_str(&normalized);
+            app.update_command_suggestions();
+        }
+        TuiMode::Search => {
+            for ch in normalized.chars() {
+                if ch == '\n' {
+                    continue;
+                }
+                app.search_insert_char(ch);
+            }
+        }
+        _ => {}
+    }
+
+    Action::Continue
 }
 
 /// Handle keyboard events
 fn handle_key_event(app: &mut TuiApp, key: KeyEvent) -> Action {
     // Global keybindings (work in any mode)
     match key.code {
-        // Ctrl+C always quits
+        // Ctrl+C: copy selection if one exists, otherwise quit
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if app.selection_anchor.is_some() {
+                return Action::CopySelection;
+            }
             return Action::Quit;
         }
         // Ctrl+Q always quits
@@ -43,11 +83,6 @@ fn handle_key_event(app: &mut TuiApp, key: KeyEvent) -> Action {
         _ => {}
     }
 
-    // If we are in the Settings tab (index 3), override some keys for navigation
-    if app.mode == TuiMode::Normal && app.active_tab == 3 {
-        return handle_settings_tab(app, key);
-    }
-
     // Mode-specific handling
     match app.mode {
         TuiMode::Normal => handle_normal_mode(app, key),
@@ -59,6 +94,10 @@ fn handle_key_event(app: &mut TuiApp, key: KeyEvent) -> Action {
         TuiMode::Search => handle_search_mode(app, key),
         TuiMode::ModelPicker => handle_model_picker_mode(app, key),
         TuiMode::Activity => handle_activity_mode(app, key),
+        TuiMode::Settings => handle_settings_mode(app, key),
+        TuiMode::Workflows => handle_workflows_mode(app, key),
+        TuiMode::Tools => handle_tools_mode(app, key),
+        TuiMode::Capabilities => handle_capabilities_mode(app, key),
     }
 }
 
@@ -228,6 +267,10 @@ fn handle_normal_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         // Navigation
         KeyCode::Char('j') | KeyCode::Down => Action::ScrollDown,
         KeyCode::Char('k') | KeyCode::Up => Action::ScrollUp,
+        KeyCode::PageUp => Action::PageUp,
+        KeyCode::PageDown => Action::PageDown,
+        // Copy selected message(s) to clipboard (vim 'y' = yank)
+        KeyCode::Char('y') => Action::CopySelection,
         // Vim motions for cursor in input (when in normal mode)
         KeyCode::Char('h') | KeyCode::Left => {
             app.cursor_left();
@@ -484,9 +527,9 @@ fn handle_insert_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
             app.cursor_end();
             Action::Continue
         }
-        // Scroll while in insert mode
-        KeyCode::PageUp => Action::ScrollUp,
-        KeyCode::PageDown => Action::ScrollDown,
+        // Page-level scrolling while in insert mode
+        KeyCode::PageUp => Action::PageUp,
+        KeyCode::PageDown => Action::PageDown,
         _ => Action::Continue,
     }
 }
@@ -582,6 +625,50 @@ fn handle_help_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
     }
 }
 
+/// Handle Capabilities mode keys (reference popup, Esc to close, scrollable)
+fn handle_capabilities_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.mode = TuiMode::Insert;
+            Action::Continue
+        }
+        // Scroll capabilities content
+        KeyCode::Char('j') | KeyCode::Down => {
+            let total_lines = app.capabilities_text.lines().count();
+            if app.capabilities_scroll + 1 < total_lines {
+                app.capabilities_scroll += 1;
+            }
+            Action::Continue
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.capabilities_scroll = app.capabilities_scroll.saturating_sub(1);
+            Action::Continue
+        }
+        // Page-wise scrolling
+        KeyCode::PageDown | KeyCode::Char('d') => {
+            let total_lines = app.capabilities_text.lines().count();
+            app.capabilities_scroll =
+                (app.capabilities_scroll + 10).min(total_lines.saturating_sub(1));
+            Action::Continue
+        }
+        KeyCode::PageUp | KeyCode::Char('u') => {
+            app.capabilities_scroll = app.capabilities_scroll.saturating_sub(10);
+            Action::Continue
+        }
+        // Home / End
+        KeyCode::Char('g') => {
+            app.capabilities_scroll = 0;
+            Action::Continue
+        }
+        KeyCode::Char('G') => {
+            let total_lines = app.capabilities_text.lines().count();
+            app.capabilities_scroll = total_lines.saturating_sub(1);
+            Action::Continue
+        }
+        _ => Action::Continue,
+    }
+}
+
 /// Handle Confirm mode keys (confirmation dialogs)
 fn handle_confirm_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
     match key.code {
@@ -659,17 +746,20 @@ fn handle_mouse_event(app: &mut TuiApp, mouse: MouseEvent) -> Action {
                 }
             }
 
-            // Check if click is in messages area
+            // Check if click is in messages area — start selection anchor
             if let Some(msg_area) = app.layout_areas.messages
                 && y >= msg_area.y
                 && y < msg_area.y + msg_area.height
             {
-                // This is approximate - each message takes ~2 lines
                 let relative_y = (y - msg_area.y) as usize;
-                let msg_index = relative_y / 2; // Rough estimate
-                if msg_index < app.messages.len() {
-                    app.message_list_state.select(Some(msg_index));
+                let offset = app.message_list_state.offset();
+                let line_index = offset + relative_y;
+                if line_index < app.rendered_line_count {
+                    app.message_list_state.select(Some(line_index));
                     app.user_scrolled = true;
+                    // Begin selection drag
+                    app.selection_anchor = Some(line_index);
+                    app.selection_end = Some(line_index);
                 }
             }
 
@@ -679,8 +769,38 @@ fn handle_mouse_event(app: &mut TuiApp, mouse: MouseEvent) -> Action {
                 && y < input_area.y + input_area.height
             {
                 app.mode = TuiMode::Insert;
+                // Clear any message selection on input click and re-enable
+                // auto-scroll so the next message/stream snaps to the bottom.
+                app.selection_anchor = None;
+                app.selection_end = None;
+                app.user_scrolled = false;
             }
 
+            Action::Continue
+        }
+        MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+            // Extend selection as the mouse drags
+            if let Some(msg_area) = app.layout_areas.messages
+                && y >= msg_area.y
+                && y < msg_area.y + msg_area.height
+                && app.selection_anchor.is_some()
+            {
+                let relative_y = (y - msg_area.y) as usize;
+                let offset = app.message_list_state.offset();
+                let line_index =
+                    (offset + relative_y).min(app.rendered_line_count.saturating_sub(1));
+                app.selection_end = Some(line_index);
+            }
+            Action::Continue
+        }
+        MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+            // Auto-copy to clipboard when the user releases the mouse after a drag
+            // selection spanning more than one line.
+            if let (Some(anchor), Some(end)) = (app.selection_anchor, app.selection_end)
+                && anchor != end
+            {
+                return Action::CopySelection;
+            }
             Action::Continue
         }
         _ => Action::Continue,
@@ -727,9 +847,17 @@ fn handle_search_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         _ => Action::Continue,
     }
 }
-/// Handle keys when in the Settings tab
-fn handle_settings_tab(app: &mut TuiApp, key: KeyEvent) -> Action {
+/// Handle keys when in Settings mode
+fn handle_settings_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
     use super::app::SettingsField;
+
+    // Escape returns to chat
+    if key.code == KeyCode::Esc && !app.settings_state.is_editing {
+        app.active_tab = 0; // Return to chat tab
+        app.mode = TuiMode::Insert;
+        app.set_status("Returned to chat");
+        return Action::Continue;
+    }
 
     // If currently editing a field
     if app.settings_state.is_editing {
@@ -806,9 +934,122 @@ fn handle_settings_tab(app: &mut TuiApp, key: KeyEvent) -> Action {
                 };
             Action::Continue
         }
-        // Passthrough for tab switching etc.
         _ => Action::Continue,
     }
+}
+
+/// Handle keys when in Workflows mode
+fn handle_workflows_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Esc => {
+            app.active_tab = 0; // Return to chat tab
+            app.mode = TuiMode::Insert;
+            app.set_status("Returned to chat");
+            Action::Continue
+        }
+        KeyCode::Down | KeyCode::Char('j') => Action::ScrollDown,
+        KeyCode::Up | KeyCode::Char('k') => Action::ScrollUp,
+        KeyCode::Enter => {
+            // TODO: Implement workflow selection and execution
+            // For now, just show a message
+            app.set_status("Workflow execution not yet implemented in modal mode");
+            Action::Continue
+        }
+        _ => Action::Continue,
+    }
+}
+
+/// Handle keys when in Tools mode.
+///
+/// The tools view has two sub-modes:
+/// - **List mode** (default): ↑/↓ to navigate, Enter to open detail, Space to toggle enable/disable, Esc to return to chat.
+/// - **Detail mode**: shows a detail pane for the selected tool. Esc returns to the list.
+fn handle_tools_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    let tool_count = gestura_core::tools::all_tools().len();
+
+    if app.tools_state.detail_mode {
+        // Detail sub-mode — Esc returns to list, Space toggles enable/disable.
+        match key.code {
+            KeyCode::Esc => {
+                app.tools_state.detail_mode = false;
+                app.set_status("Tools: ↑/↓ navigate, Enter details, Space toggle, Esc close");
+                Action::Continue
+            }
+            KeyCode::Char(' ') => {
+                toggle_selected_tool(app);
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    } else {
+        // List sub-mode.
+        match key.code {
+            KeyCode::Esc => {
+                app.active_tab = 0; // Return to chat tab
+                app.mode = TuiMode::Insert;
+                app.set_status("Returned to chat");
+                Action::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.tools_state.select_next(tool_count);
+                Action::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.tools_state.select_prev(tool_count);
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                app.tools_state.detail_mode = true;
+                let tools = gestura_core::tools::all_tools();
+                if let Some(t) = tools.get(app.tools_state.selected_index) {
+                    app.set_status(format!(
+                        "Tool: {} — Space to toggle, Esc to go back",
+                        t.name
+                    ));
+                }
+                Action::Continue
+            }
+            KeyCode::Char(' ') => {
+                toggle_selected_tool(app);
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    }
+}
+
+/// Toggle the enabled/disabled state of the currently selected tool in session settings.
+fn toggle_selected_tool(app: &mut TuiApp) {
+    let tools = gestura_core::tools::all_tools();
+    let Some(tool) = tools.get(app.tools_state.selected_index) else {
+        return;
+    };
+    let tool_name = tool.name.to_string();
+
+    let settings = app
+        .session
+        .state
+        .tool_settings
+        .get_or_insert_with(Default::default);
+
+    let currently_enabled = settings
+        .enabled_tools
+        .get(&tool_name)
+        .copied()
+        .unwrap_or(false);
+    settings
+        .enabled_tools
+        .insert(tool_name.clone(), !currently_enabled);
+
+    // Persist the change to disk.
+    let _ = super::super::save_cli_session(&app.session);
+
+    let label = if !currently_enabled {
+        "enabled"
+    } else {
+        "disabled"
+    };
+    app.set_status(format!("Tool '{}' {}", tool_name, label));
 }
 
 #[cfg(test)]
@@ -873,5 +1114,48 @@ mod tests {
         assert_eq!(action, Action::Continue);
         assert_eq!(app.mode, TuiMode::Command);
         assert!(!app.command_suggestions.is_empty());
+    }
+
+    #[test]
+    fn paste_in_insert_inserts_text_and_preserves_mode() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Insert;
+
+        let action = handle_event(&mut app, Event::Paste("hello world".to_string()));
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Insert);
+        assert_eq!(app.input, "hello world");
+    }
+
+    #[test]
+    fn paste_in_insert_switches_to_command_mode_if_starts_with_slash() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Insert;
+
+        let action = handle_event(&mut app, Event::Paste("/theme dark".to_string()));
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Command);
+        assert!(app.input.starts_with('/'));
+    }
+
+    #[test]
+    fn paste_normalizes_crlf_and_cr_newlines() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Insert;
+
+        let action = handle_event(&mut app, Event::Paste("a\r\nb\rc".to_string()));
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.input, "a\nb\nc");
+    }
+
+    #[test]
+    fn paste_in_search_ignores_newlines() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Search;
+        app.search_query.clear();
+
+        let action = handle_event(&mut app, Event::Paste("a\n\nb".to_string()));
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.search_query, "ab");
     }
 }

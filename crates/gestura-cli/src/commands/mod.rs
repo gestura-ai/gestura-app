@@ -18,6 +18,7 @@ pub mod mcp;
 pub mod model;
 pub mod privacy;
 pub mod session;
+pub mod spinner;
 pub mod tools;
 
 /// Common error type for CLI commands

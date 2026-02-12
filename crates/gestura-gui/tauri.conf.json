@@ -13,30 +13,21 @@
     "withGlobalTauri": true,
     "macOSPrivateApi": true,
     "security": {
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: asset: https://asset.localhost; img-src 'self' asset: https://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'",
+      "assetProtocol": {
+        "enable": true,
+        "scope": {
+          "allow": [
+            "**"
+          ],
+          "requireLiteralLeadingDot": false
+        }
+      },
       "capabilities": [
         "main-capability"
       ]
     },
-    "windows": [
-      {
-        "title": "Gestura",
-        "label": "main",
-        "visible": false,
-        "width": 800,
-        "height": 640,
-        "decorations": true,
-        "center": true,
-        "skipTaskbar": true,
-        "minimizable": true,
-        "maximizable": true,
-        "closable": true,
-        "resizable": true,
-        "transparent": true,
-        "alwaysOnTop": false,
-        "shadow": true,
-        "devtools": true
-      }
-    ]
+    "windows": []
   },
   "bundle": {
     "active": true,

@@ -3,10 +3,8 @@
 use super::Result;
 use crate::{ModelAction, WhisperAction};
 use colored::Colorize;
-use gestura_core::{AgentPipeline, AgentRequest, AppConfig, RequestSource};
-use indicatif::{ProgressBar, ProgressStyle};
+use gestura_core::{AgentPipeline, AgentRequest, AppConfig, AppConfigSecurityExt, RequestSource};
 use std::path::PathBuf;
-use std::time::Duration;
 
 /// Get the models directory
 fn get_models_dir() -> PathBuf {
@@ -53,14 +51,7 @@ pub fn run(action: &ModelAction) -> Result<()> {
                 println!("Testing LLM connection to: {}", provider_name.cyan());
                 println!();
 
-                let spinner = ProgressBar::new_spinner();
-                spinner.set_style(
-                    ProgressStyle::default_spinner()
-                        .template("{spinner:.cyan} {msg}")
-                        .unwrap(),
-                );
-                spinner.enable_steady_tick(Duration::from_millis(100));
-                spinner.set_message("Connecting...");
+                let spinner = super::spinner::brand_spinner("Connecting...");
 
                 spinner.set_message("Sending test message...");
 
@@ -89,6 +80,153 @@ pub fn run(action: &ModelAction) -> Result<()> {
             })?;
             Ok(())
         }
+        ModelAction::List { provider } => run_list_models(provider.as_deref()),
+    }
+}
+
+/// List available LLM models for one or all configured providers.
+fn run_list_models(provider_filter: Option<&str>) -> Result<()> {
+    let config = AppConfig::load();
+    let rt = tokio::runtime::Runtime::new()?;
+
+    let providers: Vec<&str> = if let Some(p) = provider_filter {
+        vec![p]
+    } else {
+        // List only providers that have a usable API key configured
+        // (ollama is local and does not require an API key).
+        let mut ps = Vec::new();
+        if config
+            .llm
+            .openai
+            .as_ref()
+            .is_some_and(|c| !c.api_key.trim().is_empty())
+        {
+            ps.push("openai");
+        }
+        if config
+            .llm
+            .anthropic
+            .as_ref()
+            .is_some_and(|c| !c.api_key.trim().is_empty())
+        {
+            ps.push("anthropic");
+        }
+        if config
+            .llm
+            .gemini
+            .as_ref()
+            .is_some_and(|c| !c.api_key.trim().is_empty())
+        {
+            ps.push("gemini");
+        }
+        if config
+            .llm
+            .grok
+            .as_ref()
+            .is_some_and(|c| !c.api_key.trim().is_empty())
+        {
+            ps.push("grok");
+        }
+        if config.llm.ollama.is_some() {
+            ps.push("ollama");
+        }
+        if ps.is_empty() {
+            println!("{}", "No LLM providers configured.".yellow());
+            return Ok(());
+        }
+        ps
+    };
+
+    for (i, prov) in providers.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+
+        let (api_key, base_url) = api_key_and_base_url_for_provider(&config, prov);
+        let key_ref = api_key.as_deref();
+        let url_ref = base_url.as_deref();
+
+        let spinner = super::spinner::brand_spinner(format!("Fetching {prov} models…"));
+
+        let models = rt.block_on(gestura_core::list_models_for_provider(
+            prov, key_ref, url_ref,
+        ));
+
+        spinner.finish_and_clear();
+
+        match models {
+            Ok(list) if list.is_empty() => {
+                println!(
+                    "{} {} — {}",
+                    "○".dimmed(),
+                    prov.cyan().bold(),
+                    "no models found".yellow()
+                );
+            }
+            Ok(list) => {
+                println!(
+                    "{} {} ({} models)",
+                    "●".green(),
+                    prov.cyan().bold(),
+                    list.len()
+                );
+                for m in &list {
+                    println!("    {} {}", m.id.dimmed(), m.name);
+                }
+            }
+            Err(e) => {
+                println!(
+                    "{} {} — {}",
+                    "✗".red(),
+                    prov.cyan().bold(),
+                    format!("{e}").red()
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Extract the API key and optional base URL for a provider from config.
+fn api_key_and_base_url_for_provider(
+    config: &AppConfig,
+    provider: &str,
+) -> (Option<String>, Option<String>) {
+    match provider {
+        "openai" => {
+            let cfg = config.llm.openai.as_ref();
+            (
+                cfg.map(|c| c.api_key.clone()).filter(|k| !k.is_empty()),
+                cfg.and_then(|c| c.base_url.clone()),
+            )
+        }
+        "anthropic" => {
+            let cfg = config.llm.anthropic.as_ref();
+            (
+                cfg.map(|c| c.api_key.clone()).filter(|k| !k.is_empty()),
+                cfg.and_then(|c| c.base_url.clone()),
+            )
+        }
+        "gemini" => {
+            let cfg = config.llm.gemini.as_ref();
+            (
+                cfg.map(|c| c.api_key.clone()).filter(|k| !k.is_empty()),
+                cfg.and_then(|c| c.base_url.clone()),
+            )
+        }
+        "grok" => {
+            let cfg = config.llm.grok.as_ref();
+            (
+                cfg.map(|c| c.api_key.clone()).filter(|k| !k.is_empty()),
+                cfg.and_then(|c| c.base_url.clone()),
+            )
+        }
+        "ollama" => {
+            let cfg = config.llm.ollama.as_ref();
+            (None, cfg.map(|c| c.base_url.clone()))
+        }
+        _ => (None, None),
     }
 }
 

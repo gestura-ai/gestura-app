@@ -131,24 +131,20 @@ jobs:
     - name: Run tests (json-ld feature)
       run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features json-ld
 
-    # Test ble feature (btleplug for BLE integration with Haptic Harmony ring)
-    - name: Run tests (ble feature)
-      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features ble
-
-    # Test with multiple features enabled (including ble and platform permissions)
+    # Test with multiple features enabled (combined coverage)
     # Each platform includes its native permission feature for complete coverage
     - name: Run tests (combined features - Ubuntu)
       if: matrix.os == 'ubuntu-latest'
-      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features "voice-local,nats,security,json-ld,ble,linux-permissions"
+      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features "voice-local,nats,security,json-ld,linux-permissions"
 
     - name: Run tests (combined features - macOS)
       if: matrix.os == 'macos-14'
-      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features "voice-local,nats,security,json-ld,macos-permissions,ble"
+      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features "voice-local,nats,security,json-ld,macos-permissions"
 
     # Windows combined features test (includes windows-permissions)
     - name: Run tests (combined features - Windows)
       if: matrix.os == 'windows-2022'
-      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features "voice-local,nats,security,json-ld,ble,windows-permissions"
+      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features "voice-local,nats,security,json-ld,windows-permissions"
 
 
   frontend:
@@ -169,15 +165,25 @@ jobs:
       working-directory: crates/gestura-gui/frontend
       run: npm ci
 
-    - name: Type check
+    - name: Lint
+      working-directory: crates/gestura-gui/frontend
+      run: npm run lint
+
+    - name: Build (typecheck + Vite)
       working-directory: crates/gestura-gui/frontend
       run: npm run build
 
-    - name: Lint
+    - name: Unit tests (Vitest)
       working-directory: crates/gestura-gui/frontend
-    - name: Lint
+      run: npm run test:unit
+
+    - name: Install Playwright (Chromium)
       working-directory: crates/gestura-gui/frontend
-      run: npm run lint || true
+      run: npx playwright install --with-deps chromium
+
+    - name: E2E smoke (Playwright)
+      working-directory: crates/gestura-gui/frontend
+      run: npm run test:e2e:smoke
 
   security:
     name: Security Audit

@@ -4,11 +4,45 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Get a Command for the gestura binary
 #[allow(deprecated)] // cargo_bin is deprecated but we need it for tests
 fn gestura() -> Command {
-    Command::cargo_bin("gestura").unwrap()
+    // IMPORTANT: these integration tests run the *real* gestura binary, which
+    // depends on gestura-core as a normal dependency (cfg(test) is false there).
+    // Under `--all-features`, the `security` feature enables OS keychain access,
+    // which can block/hang in non-interactive contexts.
+    //
+    // We disable keychain usage and isolate HOME so tests are deterministic.
+    let mut cmd = Command::cargo_bin("gestura").unwrap();
+
+    cmd.env("GESTURA_DISABLE_KEYCHAIN", "1");
+
+    let home = isolated_home_dir();
+    // `dirs::home_dir()` checks different env vars per platform.
+    cmd.env("HOME", &home);
+    cmd.env("USERPROFILE", &home);
+    cmd.env("HOMEDRIVE", "C:");
+    cmd.env("HOMEPATH", "\\");
+
+    cmd
+}
+
+fn isolated_home_dir() -> PathBuf {
+    let mut dir = std::env::temp_dir();
+    dir.push("gestura-cli-integration-tests");
+    dir.push(format!("pid-{}", std::process::id()));
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    dir.push(format!("run-{}", nanos));
+
+    // Best-effort; tests should still fail loudly later if this can't be created.
+    let _ = std::fs::create_dir_all(&dir);
+    dir
 }
 
 #[test]

@@ -1,5 +1,6 @@
 //! Tauri command handlers for configuration, MCP tools, MDH pointers, and tests.
 use crate::AppConfig;
+use crate::AppConfigSecurityExt;
 
 use gestura_core::pipeline::{AgentPipeline, AgentRequest, RequestSource};
 use tauri::{Emitter, Manager};
@@ -122,22 +123,48 @@ mod tests {
 /// This is used by other modules (e.g., speech.rs) to retrieve API keys from the
 /// system keychain with a fallback to empty string if not found.
 ///
-/// Provider names are case-insensitive and match the keychain key format:
-/// - `"openai"` → `gestura_api_key_openai`
-/// - `"voice_openai"` → `gestura_api_key_voice_openai`
-/// - `"anthropic"` → `gestura_api_key_anthropic`
+/// Provider names are case-insensitive and map to the canonical secure-storage
+/// key names used by `gestura-core`:
+/// - `"openai"` → `gestura_llm_openai_api_key`
+/// - `"anthropic"` → `gestura_llm_anthropic_api_key`
+/// - `"grok"` → `gestura_llm_grok_api_key`
+/// - `"voice_openai"` → `gestura_voice_openai_api_key`
+/// - `"serpapi"` → `gestura_web_search_serpapi_key`
+/// - `"brave"` → `gestura_web_search_brave_key`
 pub fn try_get_api_key_from_keychain_sync(provider: &str) -> String {
-    let key = format!("gestura_api_key_{}", provider.to_lowercase());
+    let canonical_key = match api_key_storage_key_for_provider(provider) {
+        Some(k) => k,
+        None => return String::new(),
+    };
+    let legacy_key = legacy_api_key_storage_key_for_provider(provider);
+
     let storage = crate::security::create_secure_storage();
 
     // Use a blocking runtime to call the async method
-    // This is safe because we're in a sync context and the keychain operation is fast
     match std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .ok()?;
-        rt.block_on(async { storage.get_secret(&key).await.ok().flatten() })
+        rt.block_on(async {
+            // 1) Canonical read
+            if let Ok(Some(v)) = storage.get_secret(canonical_key).await
+                && !v.is_empty()
+            {
+                return Some(v);
+            }
+
+            // 2) Legacy fallback + self-heal
+            if let Some(legacy_key) = legacy_key
+                && let Ok(Some(v)) = storage.get_secret(legacy_key).await
+                && !v.is_empty()
+            {
+                let _ = storage.store_secret(canonical_key, &v).await;
+                return Some(v);
+            }
+
+            None
+        })
     })
     .join()
     {
@@ -152,7 +179,10 @@ pub fn try_get_api_key_from_keychain_sync(provider: &str) -> String {
 /// JS↔Rust interop: This command is exposed to the frontend via Tauri.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn get_config() -> Result<AppConfig, String> {
-    Ok(AppConfig::load_async().await)
+    let mut cfg = AppConfig::load_async().await;
+    // Defense-in-depth: never return plaintext secrets over IPC.
+    strip_secrets_in_place(&mut cfg);
+    Ok(cfg)
 }
 
 /// Persist a new application configuration.
@@ -160,7 +190,33 @@ pub async fn get_config() -> Result<AppConfig, String> {
 /// JS↔Rust interop: The frontend invokes this command with `{ cfg: AppConfig }`.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn save_config(cfg: AppConfig) -> Result<(), String> {
+    // Defense-in-depth: ignore/scrub any secrets the frontend might send.
+    let mut cfg = cfg;
+    strip_secrets_in_place(&mut cfg);
     cfg.save_async().await.map_err(|e| e.to_string())
+}
+
+/// Clear all known plaintext secret fields from an `AppConfig`.
+///
+/// We do this at the GUI IPC boundary to ensure secrets never cross between
+/// backend/frontend via `get_config` / `save_config` payloads.
+fn strip_secrets_in_place(cfg: &mut AppConfig) {
+    if let Some(c) = cfg.llm.openai.as_mut() {
+        c.api_key.clear();
+    }
+    if let Some(c) = cfg.llm.anthropic.as_mut() {
+        c.api_key.clear();
+    }
+    if let Some(c) = cfg.llm.grok.as_mut() {
+        c.api_key.clear();
+    }
+    if let Some(c) = cfg.llm.gemini.as_mut() {
+        c.api_key.clear();
+    }
+
+    cfg.voice.openai_api_key = None;
+    cfg.web_search.serpapi_key = None;
+    cfg.web_search.brave_key = None;
 }
 
 /// Check if this is the first run of the application (no config file exists yet).
@@ -200,24 +256,30 @@ pub fn list_builtin_tools() -> Vec<ToolInfo> {
         .collect()
 }
 
+/// List all configured MCP servers (full spec entries).
 #[tauri::command]
-pub async fn list_mcp_tools() -> Result<Vec<crate::config::McpTool>, String> {
-    Ok(AppConfig::load_async().await.mcp_tools)
+pub async fn list_mcp_tools() -> Result<Vec<crate::config::McpServerEntry>, String> {
+    Ok(AppConfig::load_async().await.mcp_servers)
 }
 
+/// Add or update an MCP server entry in the user config.
 #[tauri::command]
-pub async fn add_mcp_tool(tool: crate::config::McpTool) -> Result<(), String> {
+pub async fn add_mcp_tool(tool: crate::config::McpServerEntry) -> Result<(), String> {
     let mut cfg = AppConfig::load_async().await;
-    if !cfg.mcp_tools.iter().any(|t| t.name == tool.name) {
-        cfg.mcp_tools.push(tool);
+    // Replace existing entry with the same name, or append.
+    if let Some(existing) = cfg.mcp_servers.iter_mut().find(|t| t.name == tool.name) {
+        *existing = tool;
+    } else {
+        cfg.mcp_servers.push(tool);
     }
     cfg.save_async().await.map_err(|e| e.to_string())
 }
 
+/// Remove an MCP server by name.
 #[tauri::command]
 pub async fn remove_mcp_tool(name: String) -> Result<(), String> {
     let mut cfg = AppConfig::load_async().await;
-    cfg.mcp_tools.retain(|t| t.name != name);
+    cfg.mcp_servers.retain(|t| t.name != name);
     cfg.save_async().await.map_err(|e| e.to_string())
 }
 
@@ -225,7 +287,7 @@ pub async fn remove_mcp_tool(name: String) -> Result<(), String> {
 // MCP Discovery Manager - Dynamic Tool Provisioning
 // ============================================================================
 
-use gestura_core::{McpDiscoveryManager, McpServerConfig};
+use gestura_core::McpDiscoveryManager;
 
 /// Global MCP discovery manager instance
 static MCP_DISCOVERY_MANAGER: std::sync::OnceLock<McpDiscoveryManager> = std::sync::OnceLock::new();
@@ -252,25 +314,29 @@ pub struct McpToolInfo {
     pub risk_level: String,
 }
 
-/// Initialize MCP servers from config
-/// This registers all configured MCP servers with the discovery manager
+/// Initialize MCP servers from config.
+///
+/// Registers all enabled MCP servers with the discovery manager using the
+/// full `McpServerEntry` configuration (transport, env, headers, etc.).
 #[tauri::command]
 pub async fn init_mcp_servers() -> Result<usize, String> {
     let config = AppConfig::load_async().await;
     let manager = get_mcp_discovery_manager();
 
     let mut registered = 0;
-    for mcp_tool in &config.mcp_tools {
-        let server_config = McpServerConfig {
-            name: mcp_tool.name.clone(),
-            uri: mcp_tool.endpoint.clone(),
-            enabled: true,
-            timeout_secs: 30,
-            auto_reconnect: true,
-        };
-        manager.register_server(server_config);
+    for srv in &config.mcp_servers {
+        if !srv.enabled {
+            tracing::debug!("Skipping disabled MCP server: {}", srv.name);
+            continue;
+        }
+        manager.register_server(srv.to_discovery_config());
         registered += 1;
-        tracing::info!("Registered MCP server: {}", mcp_tool.name);
+        tracing::info!(
+            "Registered MCP server: {} (transport={}, uri={})",
+            srv.name,
+            srv.transport,
+            srv.effective_uri()
+        );
     }
 
     Ok(registered)
@@ -343,32 +409,25 @@ pub struct McpServerStatus {
     pub last_error: Option<String>,
 }
 
-/// Register a new MCP server and initialize discovery
+/// Register a new MCP server entry and initialize discovery.
+///
+/// Accepts a full `McpServerEntry` from the frontend, persists it to the
+/// user config, and registers with the discovery manager.
 #[tauri::command]
-pub async fn register_mcp_server(name: String, endpoint: String) -> Result<(), String> {
-    // Add to config
-    let tool = crate::config::McpTool {
-        name: name.clone(),
-        endpoint: endpoint.clone(),
-    };
-    add_mcp_tool(tool).await?;
+pub async fn register_mcp_server(server: crate::config::McpServerEntry) -> Result<(), String> {
+    // Persist to config (add_mcp_tool handles upsert)
+    let discovery_cfg = server.to_discovery_config();
+    add_mcp_tool(server.clone()).await?;
 
     // Register with discovery manager
     let manager = get_mcp_discovery_manager();
-    let server_config = McpServerConfig {
-        name: name.clone(),
-        uri: endpoint,
-        enabled: true,
-        timeout_secs: 30,
-        auto_reconnect: true,
-    };
-    manager.register_server(server_config);
+    manager.register_server(discovery_cfg);
 
-    tracing::info!("Registered new MCP server: {}", name);
+    tracing::info!("Registered new MCP server: {}", server.name);
     Ok(())
 }
 
-/// Unregister an MCP server
+/// Unregister an MCP server by name.
 #[tauri::command]
 pub async fn unregister_mcp_server(name: String) -> Result<(), String> {
     // Remove from config
@@ -380,6 +439,102 @@ pub async fn unregister_mcp_server(name: String) -> Result<(), String> {
 
     tracing::info!("Unregistered MCP server: {}", name);
     Ok(())
+}
+
+// ============================================================================
+// MCP Client Runtime — live connections via McpClientRegistry
+// ============================================================================
+
+use gestura_core::mcp::client::get_mcp_client_registry;
+
+/// Connect to an MCP server by name (must already be in config).
+///
+/// Performs the MCP initialize handshake and discovers tools. Returns the list
+/// of tool names discovered from the server.
+#[tauri::command]
+pub async fn connect_mcp_server(name: String) -> Result<Vec<String>, String> {
+    let config = AppConfig::load_async().await;
+    let entry = config
+        .mcp_servers
+        .iter()
+        .find(|s| s.name == name)
+        .ok_or_else(|| format!("MCP server '{}' not found in config", name))?
+        .clone();
+
+    let registry = get_mcp_client_registry();
+    let tools = registry.connect(&entry).await.map_err(|e| e.to_string())?;
+    let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+
+    tracing::info!(
+        "Connected to MCP server '{}': {} tools discovered",
+        name,
+        names.len()
+    );
+    Ok(names)
+}
+
+/// Disconnect from a running MCP server.
+#[tauri::command]
+pub async fn disconnect_mcp_server(name: String) -> Result<(), String> {
+    get_mcp_client_registry().disconnect(&name).await;
+    tracing::info!("Disconnected from MCP server '{}'", name);
+    Ok(())
+}
+
+/// List all currently connected MCP server names.
+#[tauri::command]
+pub async fn list_connected_mcp_servers() -> Vec<String> {
+    get_mcp_client_registry().connected_servers().await
+}
+
+/// Information about a discovered tool from a live MCP connection.
+#[derive(serde::Serialize)]
+pub struct McpClientToolInfo {
+    /// Server the tool belongs to
+    pub server: String,
+    /// Tool name
+    pub name: String,
+    /// Namespaced name used in the agent pipeline (mcp__server__tool)
+    pub qualified_name: String,
+    /// Tool description
+    pub description: Option<String>,
+    /// JSON Schema for input parameters
+    pub input_schema: serde_json::Value,
+}
+
+/// List all tools discovered from live MCP connections.
+#[tauri::command]
+pub async fn list_mcp_client_tools() -> Vec<McpClientToolInfo> {
+    let registry = get_mcp_client_registry();
+    let all = registry.all_tools().await;
+    let mut out = Vec::new();
+    for (server, tools) in all {
+        for t in tools {
+            out.push(McpClientToolInfo {
+                server: server.clone(),
+                qualified_name: format!("mcp__{}__{}", server, t.name),
+                description: t.description.clone(),
+                input_schema: t.input_schema.clone(),
+                name: t.name,
+            });
+        }
+    }
+    out
+}
+
+/// Call a tool on a connected MCP server. Returns the result content as a JSON value.
+#[tauri::command]
+pub async fn call_mcp_tool(
+    server: String,
+    tool: String,
+    arguments: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let registry = get_mcp_client_registry();
+    let result = registry
+        .call_tool(&server, &tool, arguments)
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(result).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -681,69 +836,50 @@ pub async fn list_ollama_models(endpoint: String) -> Result<Vec<serde_json::Valu
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn list_openai_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
-    let client = reqwest::Client::new();
-    let url = "https://api.openai.com/v1/models";
-
-    let resp = client
-        .get(url)
-        .bearer_auth(&api_key)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to list OpenAI models: {}", e))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("OpenAI API error {}: {}", status, body));
+    let mut api_key = api_key.trim().to_string();
+    if api_key.is_empty() {
+        api_key = try_get_api_key_from_keychain("openai");
     }
 
-    let data: serde_json::Value = resp
-        .json()
+    let key = if api_key.is_empty() {
+        None
+    } else {
+        Some(api_key.as_str())
+    };
+    let models = gestura_core::list_models_for_provider("openai", key, None)
         .await
-        .map_err(|e| format!("Invalid response: {}", e))?;
+        .map_err(|e| format!("Failed to list OpenAI models: {e}"))?;
 
-    // Filter to only chat models (gpt-*) and sort by name
-    let models: Vec<serde_json::Value> = data
-        .get("data")
-        .and_then(|d| d.as_array())
-        .map(|arr| {
-            let mut models: Vec<serde_json::Value> = arr
-                .iter()
-                .filter_map(|m| {
-                    let id = m.get("id")?.as_str()?;
-                    // Only include GPT chat models, exclude embeddings, whisper, tts, dall-e, etc.
-                    if id.starts_with("gpt-") && !id.contains("instruct") {
-                        Some(serde_json::json!({
-                            "id": id,
-                            "name": format_openai_model_name(id),
-                            "created": m.get("created").and_then(|c| c.as_i64()).unwrap_or(0)
-                        }))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            // Sort by created date descending (newest first)
-            models.sort_by(|a, b| {
-                let a_created = a.get("created").and_then(|c| c.as_i64()).unwrap_or(0);
-                let b_created = b.get("created").and_then(|c| c.as_i64()).unwrap_or(0);
-                b_created.cmp(&a_created)
-            });
-            models
+    Ok(model_info_to_json(&models))
+}
+
+/// Convert a slice of `ModelInfo` to the JSON shape the frontend expects.
+fn model_info_to_json(models: &[gestura_core::ModelInfo]) -> Vec<serde_json::Value> {
+    models
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "name": m.name
+            })
         })
-        .unwrap_or_default();
-
-    Ok(models)
+        .collect()
 }
 
 /// List available OpenAI STT (Speech-to-Text) models
 /// Fetches from /v1/models and filters for transcription-capable models
 #[tauri::command(rename_all = "snake_case")]
 pub async fn list_openai_stt_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
+    let mut api_key = api_key.trim().to_string();
     if api_key.is_empty() {
-        // Return static list with sensible defaults when no API key
-        return Ok(get_static_openai_stt_models());
+        // Prefer voice-specific key, then fall back to the general OpenAI key.
+        api_key = try_get_api_key_from_keychain("voice_openai");
+        if api_key.is_empty() {
+            api_key = try_get_api_key_from_keychain("openai");
+        }
+    }
+    if api_key.is_empty() {
+        return Ok(vec![]);
     }
 
     let client = reqwest::Client::new();
@@ -758,11 +894,8 @@ pub async fn list_openai_stt_models(api_key: String) -> Result<Vec<serde_json::V
         .map_err(|e| format!("Failed to list OpenAI models: {}", e))?;
 
     if !resp.status().is_success() {
-        tracing::warn!(
-            "OpenAI API returned status {}, falling back to static STT model list",
-            resp.status()
-        );
-        return Ok(get_static_openai_stt_models());
+        tracing::warn!("OpenAI API returned status {}", resp.status());
+        return Ok(vec![]);
     }
 
     let data: serde_json::Value = resp
@@ -803,33 +936,7 @@ pub async fn list_openai_stt_models(api_key: String) -> Result<Vec<serde_json::V
         a_priority.cmp(&b_priority).then_with(|| a_id.cmp(b_id))
     });
 
-    // If no models found from API, return static list
-    if models.is_empty() {
-        return Ok(get_static_openai_stt_models());
-    }
-
     Ok(models)
-}
-
-/// Static list of OpenAI STT models (fallback when API unavailable)
-fn get_static_openai_stt_models() -> Vec<serde_json::Value> {
-    vec![
-        serde_json::json!({
-            "id": "gpt-4o-transcribe",
-            "name": "GPT-4o Transcribe (Best Quality)",
-            "description": "Highest accuracy, lower WER than Whisper"
-        }),
-        serde_json::json!({
-            "id": "gpt-4o-mini-transcribe",
-            "name": "GPT-4o Mini Transcribe (Balanced)",
-            "description": "Good balance of cost and quality"
-        }),
-        serde_json::json!({
-            "id": "whisper-1",
-            "name": "Whisper V2 (Classic)",
-            "description": "Original Whisper model, cost-effective"
-        }),
-    ]
 }
 
 /// Format OpenAI STT model ID to a human-readable name
@@ -856,218 +963,76 @@ fn format_openai_stt_model_name(id: &str) -> String {
     }
 }
 
-/// Format OpenAI model ID to a human-readable name
-fn format_openai_model_name(id: &str) -> String {
-    match id {
-        "gpt-4o" => "GPT-4o".to_string(),
-        "gpt-4o-mini" => "GPT-4o Mini".to_string(),
-        "gpt-4-turbo" => "GPT-4 Turbo".to_string(),
-        "gpt-4-turbo-preview" => "GPT-4 Turbo Preview".to_string(),
-        "gpt-4" => "GPT-4".to_string(),
-        "gpt-3.5-turbo" => "GPT-3.5 Turbo".to_string(),
-        _ => {
-            // Convert kebab-case to Title Case
-            id.split('-')
-                .map(|part| {
-                    let mut chars = part.chars();
-                    match chars.next() {
-                        None => String::new(),
-                        Some(first) => first.to_uppercase().chain(chars).collect(),
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-        }
-    }
-}
-
 /// List available Anthropic models.
+///
+/// Delegates to `gestura_core::list_models_for_provider` for centralised HTTP + filtering logic.
 ///
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn list_anthropic_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
-    let client = reqwest::Client::new();
-    let url = "https://api.anthropic.com/v1/models";
-
-    let resp = client
-        .get(url)
-        .header("x-api-key", &api_key)
-        .header("anthropic-version", "2023-06-01")
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to list Anthropic models: {}", e))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("Anthropic API error {}: {}", status, body));
+    let mut api_key = api_key.trim().to_string();
+    if api_key.is_empty() {
+        api_key = try_get_api_key_from_keychain("anthropic");
     }
 
-    let data: serde_json::Value = resp
-        .json()
+    let key = if api_key.is_empty() {
+        None
+    } else {
+        Some(api_key.as_str())
+    };
+    let models = gestura_core::list_models_for_provider("anthropic", key, None)
         .await
-        .map_err(|e| format!("Invalid response: {}", e))?;
+        .map_err(|e| format!("Failed to list Anthropic models: {e}"))?;
 
-    // Parse the models list
-    let models: Vec<serde_json::Value> = data
-        .get("data")
-        .and_then(|d| d.as_array())
-        .map(|arr| {
-            let mut models: Vec<serde_json::Value> = arr
-                .iter()
-                .filter_map(|m| {
-                    let id = m.get("id")?.as_str()?;
-                    // Only include Claude chat models
-                    if id.starts_with("claude-") {
-                        Some(serde_json::json!({
-                            "id": id,
-                            "name": format_anthropic_model_name(id),
-                            "created": m.get("created_at").and_then(|c| c.as_str()).unwrap_or("")
-                        }))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            // Sort alphabetically by name for consistency
-            models.sort_by(|a, b| {
-                let a_name = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                let b_name = b.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                a_name.cmp(b_name)
-            });
-            models
-        })
-        .unwrap_or_default();
-
-    Ok(models)
+    Ok(model_info_to_json(&models))
 }
 
-/// Format Anthropic model ID to a human-readable name
-fn format_anthropic_model_name(id: &str) -> String {
-    match id {
-        "claude-sonnet-4-20250514" => "Claude Sonnet 4".to_string(),
-        "claude-3-5-sonnet-20241022" => "Claude 3.5 Sonnet".to_string(),
-        "claude-3-opus-20240229" => "Claude 3 Opus".to_string(),
-        "claude-3-sonnet-20240229" => "Claude 3 Sonnet".to_string(),
-        "claude-3-haiku-20240307" => "Claude 3 Haiku".to_string(),
-        _ => {
-            // Try to parse the model name from the ID
-            // Format: claude-{version}-{variant}-{date}
-            let parts: Vec<&str> = id.split('-').collect();
-            if parts.len() >= 3 {
-                let version = parts[1];
-                let variant = parts[2];
-                format!(
-                    "Claude {} {}",
-                    version,
-                    variant
-                        .chars()
-                        .next()
-                        .map(|c| c.to_uppercase().to_string() + &variant[1..])
-                        .unwrap_or_else(|| variant.to_string())
-                )
-            } else {
-                id.to_string()
-            }
-        }
-    }
-}
-
-/// Fetch available Grok models from xAI API
-/// API Reference: https://docs.x.ai/docs/api-reference#list-models
+/// Fetch available Grok models from xAI API.
+///
+/// Delegates to `gestura_core::list_models_for_provider` for centralised HTTP + filtering logic.
 ///
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn list_grok_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
+    let mut api_key = api_key.trim().to_string();
     if api_key.is_empty() {
-        return Ok(get_static_grok_models());
+        api_key = try_get_api_key_from_keychain("grok");
     }
 
-    let client = reqwest::Client::new();
-    let response = client
-        .get("https://api.x.ai/v1/models")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch Grok models: {}", e))?;
-
-    if !response.status().is_success() {
-        tracing::warn!(
-            "Grok API returned status {}, falling back to static list",
-            response.status()
-        );
-        return Ok(get_static_grok_models());
-    }
-
-    let data: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse Grok models response: {}", e))?;
-
-    let models: Vec<serde_json::Value> = data["data"]
-        .as_array()
-        .unwrap_or(&vec![])
-        .iter()
-        .filter_map(|model| {
-            let id = model["id"].as_str()?;
-            // Filter to chat-capable models (exclude image-only models)
-            if id.contains("image") {
-                return None;
-            }
-            Some(serde_json::json!({
-                "id": id,
-                "name": format_grok_model_name(id)
-            }))
-        })
-        .collect();
-
-    if models.is_empty() {
-        Ok(get_static_grok_models())
+    let key = if api_key.is_empty() {
+        None
     } else {
-        Ok(models)
-    }
+        Some(api_key.as_str())
+    };
+    let models = gestura_core::list_models_for_provider("grok", key, None)
+        .await
+        .map_err(|e| format!("Failed to list Grok models: {e}"))?;
+
+    Ok(model_info_to_json(&models))
 }
 
-/// Format Grok model ID to human-readable name
-fn format_grok_model_name(id: &str) -> String {
-    // grok-4-0709 -> Grok 4 (0709)
-    // grok-3-mini -> Grok 3 Mini
-    let parts: Vec<&str> = id.split('-').collect();
-    let mut name = String::new();
-
-    for (i, part) in parts.iter().enumerate() {
-        if i == 0 {
-            name.push_str(&part.to_uppercase().replace("GROK", "Grok"));
-        } else if part.chars().all(|c| c.is_numeric()) {
-            if i == 1 {
-                name.push_str(&format!(" {}", part));
-            } else {
-                name.push_str(&format!(" ({})", part));
-            }
-        } else {
-            let formatted = match *part {
-                "mini" => "Mini",
-                "fast" => "Fast",
-                "vision" => "Vision",
-                "code" => "Code",
-                _ => part,
-            };
-            name.push_str(&format!(" {}", formatted));
-        }
+/// List available Gemini models from Google Generative Language API.
+///
+/// Delegates to `gestura_core::list_models_for_provider` for centralised HTTP + filtering logic.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn list_gemini_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
+    let mut api_key = api_key.trim().to_string();
+    if api_key.is_empty() {
+        api_key = try_get_api_key_from_keychain("gemini");
     }
 
-    name.trim().to_string()
-}
+    let key = if api_key.is_empty() {
+        None
+    } else {
+        Some(api_key.as_str())
+    };
+    let models = gestura_core::list_models_for_provider("gemini", key, None)
+        .await
+        .map_err(|e| format!("Failed to list Gemini models: {e}"))?;
 
-/// Fallback static list of Grok models
-fn get_static_grok_models() -> Vec<serde_json::Value> {
-    vec![
-        serde_json::json!({ "id": "grok-3", "name": "Grok 3" }),
-        serde_json::json!({ "id": "grok-3-mini", "name": "Grok 3 Mini" }),
-        serde_json::json!({ "id": "grok-2-vision-1212", "name": "Grok 2 Vision" }),
-    ]
+    Ok(model_info_to_json(&models))
 }
 
 /// Test local Whisper model with detailed validation
@@ -2164,6 +2129,11 @@ pub async fn process_chat_message_streaming(
         crate::window_manager::add_user_message(sid, &message, message_source);
     }
 
+    // Snapshot history before ownership moves to the request builder.
+    // These are used to build PausedExecutionState if the stream is paused/cancelled.
+    let history_snapshot = history.clone();
+    let input_snapshot = message.clone();
+
     let mut request = AgentRequest::new(&message)
         .with_streaming(true)
         .with_source(request_source)
@@ -2258,6 +2228,9 @@ pub async fn process_chat_message_streaming(
     // Forward chunks to frontend via Tauri events
     let mut assistant_text = String::new();
     let mut assistant_thinking: Option<String> = None;
+    // Tool call tracking for pause/resume state capture.
+    let mut completed_tool_calls: Vec<gestura_core::ToolCallRecord> = Vec::new();
+    let mut current_tool_call: Option<(String, String, String)> = None; // (id, name, args)
     let mut saw_terminal = false;
     // Normal idle timeout detects backend hangs.
     // When we are waiting for *user* tool confirmation, we extend this to avoid
@@ -2298,10 +2271,14 @@ pub async fn process_chat_message_streaming(
                 emit("chat-stream-chunk", serde_json::json!(text));
             }
             StreamChunk::ToolCallStart { id, name } => {
+                current_tool_call = Some((id.clone(), name.clone(), String::new()));
                 let payload = serde_json::json!({ "id": id, "name": name });
                 emit("chat-stream-tool-start", payload);
             }
             StreamChunk::ToolCallArgs(args) => {
+                if let Some((_, _, ref mut acc)) = current_tool_call {
+                    acc.push_str(&args);
+                }
                 emit("chat-stream-tool-args", serde_json::json!(args));
             }
             StreamChunk::ToolCallEnd => {
@@ -2313,6 +2290,21 @@ pub async fn process_chat_message_streaming(
                 output,
                 duration_ms,
             } => {
+                // Finalize the tracked tool call record for pause-state capture.
+                if let Some((tc_id, tc_name, tc_args)) = current_tool_call.take() {
+                    let result = if success {
+                        gestura_core::ToolResult::Success(output.clone())
+                    } else {
+                        gestura_core::ToolResult::Error(output.clone())
+                    };
+                    completed_tool_calls.push(gestura_core::ToolCallRecord {
+                        id: tc_id,
+                        name: tc_name,
+                        arguments: tc_args,
+                        result,
+                        duration_ms,
+                    });
+                }
                 let payload = serde_json::json!({
                     "name": name,
                     "success": success,
@@ -2426,6 +2418,45 @@ pub async fn process_chat_message_streaming(
                 });
                 emit("chat-stream-tool-blocked", payload);
             }
+            StreamChunk::AgentLoopIteration { iteration } => {
+                let payload = serde_json::json!({
+                    "iteration": iteration,
+                    "session_id": resolved_session_id
+                });
+                emit("chat-stream-agent-iteration", payload);
+            }
+            StreamChunk::ShellOutput {
+                process_id,
+                stream,
+                data,
+            } => {
+                let payload = serde_json::json!({
+                    "process_id": process_id,
+                    "stream": stream,
+                    "data": data,
+                    "session_id": resolved_session_id
+                });
+                emit("chat-stream-shell-output", payload);
+            }
+            StreamChunk::ShellLifecycle {
+                process_id,
+                state,
+                exit_code,
+                duration_ms,
+                command,
+                cwd,
+            } => {
+                let payload = serde_json::json!({
+                    "process_id": process_id,
+                    "state": state,
+                    "exit_code": exit_code,
+                    "duration_ms": duration_ms,
+                    "command": command,
+                    "cwd": cwd,
+                    "session_id": resolved_session_id
+                });
+                emit("chat-stream-shell-lifecycle", payload);
+            }
             StreamChunk::Done(usage) => {
                 saw_terminal = true;
                 // Emit token usage if available
@@ -2464,28 +2495,63 @@ pub async fn process_chat_message_streaming(
                 emit("chat-stream-done", serde_json::json!(null));
                 break;
             }
-            StreamChunk::Cancelled => {
+            StreamChunk::Cancelled | StreamChunk::Paused => {
                 saw_terminal = true;
-                    // Persist any partial assistant output so context isn't lost.
-                    if let Some(ref sid) = resolved_session_id
-                        && (!assistant_text.trim().is_empty()
-                            || assistant_thinking
-                                .as_ref()
-                                .is_some_and(|t| !t.trim().is_empty()))
-                    {
-                        crate::window_manager::add_assistant_message(
-                            sid,
-                            &assistant_text,
-                            assistant_thinking.clone(),
-                        );
-                    }
+                let is_paused = matches!(chunk, StreamChunk::Paused);
 
-                // Mark agent task as cancelled
-                if let (Some(sid), Some(task_id)) = (&resolved_session_id, &agent_task_id) {
-                    let _ = crate::task_integration::mark_task_cancelled(&app, sid, task_id);
+                // Persist any partial assistant output so context isn't lost.
+                if let Some(ref sid) = resolved_session_id
+                    && (!assistant_text.trim().is_empty()
+                        || assistant_thinking
+                            .as_ref()
+                            .is_some_and(|t| !t.trim().is_empty()))
+                {
+                    crate::window_manager::add_assistant_message(
+                        sid,
+                        &assistant_text,
+                        assistant_thinking.clone(),
+                    );
                 }
 
-                emit("chat-stream-cancelled", serde_json::json!(null));
+                // Build and persist the paused execution state so the session
+                // can be resumed later.
+                if let Some(ref sid) = resolved_session_id {
+                    let paused_state = gestura_core::PausedExecutionState {
+                        original_input: input_snapshot.clone(),
+                        system_prompt: None,
+                        history: history_snapshot.clone(),
+                        partial_content: assistant_text.clone(),
+                        partial_thinking: assistant_thinking.clone(),
+                        completed_tool_calls: completed_tool_calls.clone(),
+                        iteration: 0,
+                        source: request_source,
+                        session_id: Some(sid.clone()),
+                        workspace_dir: crate::window_manager::get_session_state(sid)
+                            .and_then(|s| s.workspace_dir),
+                        model_snapshot: None,
+                        paused_at: chrono::Utc::now(),
+                    };
+                    crate::window_manager::set_session_paused_execution(
+                        sid,
+                        Some(paused_state),
+                    );
+                }
+
+                // Mark agent task as cancelled when explicitly cancelled.
+                if !is_paused
+                    && let (Some(sid), Some(task_id)) =
+                        (&resolved_session_id, &agent_task_id)
+                {
+                    let _ =
+                        crate::task_integration::mark_task_cancelled(&app, sid, task_id);
+                }
+
+                // Emit the appropriate frontend event.
+                if is_paused {
+                    emit("chat-stream-paused", serde_json::json!(null));
+                } else {
+                    emit("chat-stream-cancelled", serde_json::json!(null));
+                }
                 break;
             }
             StreamChunk::Error(err) => {
@@ -2584,6 +2650,245 @@ pub fn cancel_chat_streaming(
 ) -> Result<(), String> {
     let calling_window_label = webview_window.label().to_string();
     cancel_chat_streaming_internal(Some(calling_window_label), session_id)
+}
+
+/// Resume a previously paused streaming chat session.
+///
+/// Retrieves the `PausedExecutionState` from the session, builds a resume
+/// `AgentRequest`, and kicks off a new streaming pipeline from where the
+/// previous execution left off.
+///
+/// Emits the same `chat-stream-*` events as `process_chat_message_streaming`.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn resume_chat_streaming(
+    webview_window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<(), String> {
+    use gestura_core::{AgentPipeline, AgentRequest, CancellationToken, StreamChunk};
+    use tokio::sync::mpsc;
+
+    // Retrieve and clear the paused state.
+    let paused = crate::window_manager::get_session_paused_execution(&session_id)
+        .ok_or_else(|| "No paused session to resume".to_string())?;
+    crate::window_manager::set_session_paused_execution(&session_id, None);
+
+    let mut cfg = AppConfig::load_async().await;
+    let effective_llm = apply_session_llm_config_overrides(&mut cfg, Some(&session_id));
+
+    let calling_window_label = webview_window.label().to_string();
+    let target_window_label = crate::window_manager::get_session_window_label(&session_id)
+        .unwrap_or_else(|| calling_window_label.clone());
+
+    // Window-scoped event emitter (same pattern as process_chat_message_streaming).
+    let resolved_session_id: Option<String> = Some(session_id.clone());
+    let emit = |event: &str, payload: serde_json::Value| {
+        let payload =
+            crate::chat_events::attach_session_id(payload, resolved_session_id.as_deref());
+        if let Err(err) = crate::chat_events::emit_chat_event_to_window(
+            &app,
+            &target_window_label,
+            &calling_window_label,
+            event,
+            &payload,
+            resolved_session_id.as_deref(),
+        ) {
+            tracing::error!(event = %event, error = %err, "Failed to emit resume chat event");
+        }
+    };
+
+    // Cancellation token scoped to the target window.
+    let cancel_token = CancellationToken::new();
+    let cancel_key = cancel_key_for_window_label(&target_window_label);
+    gestura_core::stream_cancellation::STREAM_CANCELLATIONS
+        .register(cancel_key.clone(), cancel_token.clone());
+
+    // Snapshot for re-pause.
+    let input_snapshot = paused.original_input.clone();
+    let history_snapshot = paused.history.clone();
+    let request_source = paused.source;
+
+    // Build the resume request.
+    let mut request = AgentRequest::new(&paused.original_input)
+        .with_streaming(true)
+        .with_source(request_source)
+        .with_resume_state(paused);
+
+    request = request.with_session(&session_id);
+    if let Some(workspace) =
+        crate::window_manager::get_session_state(&session_id).and_then(|s| s.workspace_dir)
+    {
+        request = request.with_workspace(workspace);
+    }
+    request = request.with_session_llm_config(&effective_llm.provider, &effective_llm.model);
+
+    // Apply permission / tool settings.
+    if let Some(ref sid) = resolved_session_id {
+        use gestura_core::pipeline::PermissionLevel;
+        let tool_settings = crate::window_manager::get_session_tool_settings(sid);
+        let perm_level = match tool_settings.permission_level {
+            crate::window_manager::SessionPermissionLevel::Sandbox => PermissionLevel::Sandbox,
+            crate::window_manager::SessionPermissionLevel::Restricted => {
+                PermissionLevel::Restricted
+            }
+            crate::window_manager::SessionPermissionLevel::Full => PermissionLevel::Full,
+        };
+        request = request.with_permission_level(perm_level);
+        let enabled_tools: Vec<String> = tool_settings
+            .enabled_tools
+            .iter()
+            .filter_map(|(name, enabled)| if *enabled { Some(name.clone()) } else { None })
+            .collect();
+        if !enabled_tools.is_empty() {
+            request = request.with_allowed_tools(enabled_tools);
+        }
+    }
+
+    // Spawn the streaming pipeline.
+    let cfg_clone = cfg.clone();
+    let cancel_token_clone = cancel_token.clone();
+    let (tx, mut rx) = mpsc::channel::<StreamChunk>(100);
+    tokio::spawn(async move {
+        let pipeline = AgentPipeline::with_provider_optimized_config(cfg_clone)
+            .with_knowledge(get_knowledge_store(), get_knowledge_settings());
+        if let Err(e) = pipeline
+            .process_streaming(request, tx.clone(), cancel_token_clone)
+            .await
+        {
+            tracing::error!("Resume pipeline error: {}", e);
+            let _ = tx.send(StreamChunk::Error(e.to_string())).await;
+            let _ = tx.send(StreamChunk::Done(None)).await;
+        }
+    });
+
+    emit("chat-stream-resumed", serde_json::json!(null));
+
+    // Forward chunks — mirrors the loop in process_chat_message_streaming.
+    let mut assistant_text = String::new();
+    let mut assistant_thinking: Option<String> = None;
+    let mut completed_tool_calls: Vec<gestura_core::ToolCallRecord> = Vec::new();
+    let mut current_tool_call: Option<(String, String, String)> = None;
+
+    use tokio::time::{Duration, Instant};
+    let idle_timeout_normal = Duration::from_secs(90);
+    let idle_timeout_waiting_for_user = Duration::from_secs(10 * 60);
+    let mut idle_timeout = idle_timeout_normal;
+    let idle_timer = tokio::time::sleep(idle_timeout);
+    tokio::pin!(idle_timer);
+
+    loop {
+        tokio::select! {
+            maybe_chunk = rx.recv() => {
+                let Some(chunk) = maybe_chunk else { break; };
+                idle_timeout = match &chunk {
+                    StreamChunk::ToolConfirmationRequired { .. } => idle_timeout_waiting_for_user,
+                    _ => idle_timeout_normal,
+                };
+                idle_timer.as_mut().reset(Instant::now() + idle_timeout);
+
+                match chunk {
+                    StreamChunk::Thinking(text) => {
+                        assistant_thinking.get_or_insert_with(String::new).push_str(&text);
+                        emit("chat-stream-thinking", serde_json::json!(text));
+                    }
+                    StreamChunk::Text(text) => {
+                        assistant_text.push_str(&text);
+                        emit("chat-stream-chunk", serde_json::json!(text));
+                    }
+                    StreamChunk::ToolCallStart { id, name } => {
+                        current_tool_call = Some((id.clone(), name.clone(), String::new()));
+                        emit("chat-stream-tool-start", serde_json::json!({ "id": id, "name": name }));
+                    }
+                    StreamChunk::ToolCallArgs(args) => {
+                        if let Some((_, _, ref mut acc)) = current_tool_call { acc.push_str(&args); }
+                        emit("chat-stream-tool-args", serde_json::json!(args));
+                    }
+                    StreamChunk::ToolCallEnd => {
+                        emit("chat-stream-tool-end", serde_json::json!(null));
+                    }
+                    StreamChunk::ToolCallResult { name, success, output, duration_ms } => {
+                        if let Some((tc_id, tc_name, tc_args)) = current_tool_call.take() {
+                            let result = if success {
+                                gestura_core::ToolResult::Success(output.clone())
+                            } else {
+                                gestura_core::ToolResult::Error(output.clone())
+                            };
+                            completed_tool_calls.push(gestura_core::ToolCallRecord {
+                                id: tc_id, name: tc_name, arguments: tc_args, result,
+                                duration_ms,
+                            });
+                        }
+                        emit("chat-stream-tool-result", serde_json::json!({
+                            "name": name, "success": success, "output": output, "duration_ms": duration_ms
+                        }));
+                    }
+                    StreamChunk::Done(_) => {
+                        if let Some(ref sid) = resolved_session_id
+                            && (!assistant_text.trim().is_empty()
+                                || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty()))
+                        {
+                            crate::window_manager::add_assistant_message(sid, &assistant_text, assistant_thinking.clone());
+                        }
+                        emit("chat-stream-done", serde_json::json!(null));
+                        break;
+                    }
+                    StreamChunk::Cancelled | StreamChunk::Paused => {
+                        if let Some(ref sid) = resolved_session_id {
+                            if !assistant_text.trim().is_empty()
+                                || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty())
+                            {
+                                crate::window_manager::add_assistant_message(sid, &assistant_text, assistant_thinking.clone());
+                            }
+                            let paused_state = gestura_core::PausedExecutionState {
+                                original_input: input_snapshot.clone(),
+                                system_prompt: None,
+                                history: history_snapshot.clone(),
+                                partial_content: assistant_text.clone(),
+                                partial_thinking: assistant_thinking.clone(),
+                                completed_tool_calls: completed_tool_calls.clone(),
+                                iteration: 0,
+                                source: request_source,
+                                session_id: Some(sid.clone()),
+                                workspace_dir: crate::window_manager::get_session_state(sid).and_then(|s| s.workspace_dir),
+                                model_snapshot: None,
+                                paused_at: chrono::Utc::now(),
+                            };
+                            crate::window_manager::set_session_paused_execution(sid, Some(paused_state));
+                        }
+                        emit("chat-stream-paused", serde_json::json!(null));
+                        break;
+                    }
+                    StreamChunk::Error(err) => {
+                        if let Some(ref sid) = resolved_session_id
+                            && !assistant_text.trim().is_empty()
+                        {
+                            crate::window_manager::add_assistant_message(sid, &assistant_text, assistant_thinking.clone());
+                        }
+                        emit("chat-stream-error", serde_json::json!({ "error": err }));
+                        break;
+                    }
+                    // Forward other informational chunks.
+                    StreamChunk::Status { message } => {
+                        emit("chat-stream-status", serde_json::json!({ "message": message }));
+                    }
+                    StreamChunk::AgentLoopIteration { iteration } => {
+                        emit("chat-stream-agent-iteration", serde_json::json!({ "iteration": iteration }));
+                    }
+                    _ => {}
+                }
+            }
+            () = &mut idle_timer => {
+                tracing::warn!("Resume stream idle timeout");
+                break;
+            }
+        }
+    }
+
+    // Clean up cancellation token.
+    gestura_core::stream_cancellation::STREAM_CANCELLATIONS.remove(&cancel_key);
+    Ok(())
 }
 
 /// Approve a pending tool confirmation request.
@@ -3148,6 +3453,76 @@ pub async fn capture_window_screenshot(
     }
 }
 
+/// Capture a system-wide screenshot
+#[tauri::command]
+pub async fn capture_screenshot(
+    output_path: String,
+    region: Option<(u32, u32, u32, u32)>,
+    display: Option<u32>,
+) -> Result<gestura_core::tools::screen::ScreenshotResult, String> {
+    use gestura_core::tools::screen::{CaptureRegion, ScreenTools};
+
+    tracing::info!("📸 Capturing screenshot to: {}", output_path);
+
+    let tools = ScreenTools::new();
+    let region_opt = region.map(|(x, y, w, h)| CaptureRegion {
+        x,
+        y,
+        width: w,
+        height: h,
+    });
+
+    tools
+        .screenshot(std::path::Path::new(&output_path), region_opt, display)
+        .map_err(|e| {
+            tracing::error!("Screenshot failed: {}", e);
+            e.to_string()
+        })
+}
+
+/// Start screen recording
+#[tauri::command]
+pub async fn start_screen_recording(
+    output_path: String,
+    region: Option<(u32, u32, u32, u32)>,
+    display: Option<u32>,
+) -> Result<gestura_core::tools::screen::RecordingStartResult, String> {
+    use gestura_core::tools::screen::{CaptureRegion, ScreenTools};
+
+    tracing::info!("🎥 Starting screen recording to: {}", output_path);
+
+    let tools = ScreenTools::new();
+    let region_opt = region.map(|(x, y, w, h)| CaptureRegion {
+        x,
+        y,
+        width: w,
+        height: h,
+    });
+
+    tools
+        .start_recording(std::path::Path::new(&output_path), region_opt, display)
+        .map_err(|e| {
+            tracing::error!("Failed to start recording: {}", e);
+            e.to_string()
+        })
+}
+
+/// Stop screen recording
+#[tauri::command]
+pub async fn stop_screen_recording(
+    recording_id: String,
+) -> Result<gestura_core::tools::screen::RecordingStopResult, String> {
+    use gestura_core::tools::screen::ScreenTools;
+
+    tracing::info!("⏹️ Stopping screen recording: {}", recording_id);
+
+    let tools = ScreenTools::new();
+    tools.stop_recording(&recording_id).map_err(|e| {
+        tracing::error!("Failed to stop recording: {}", e);
+        e.to_string()
+    })
+}
+
 #[tauri::command]
 pub async fn validate_window_content(
     window_label: String,
@@ -3227,6 +3602,29 @@ pub fn toggle_listening(_app: tauri::AppHandle) -> Result<String, String> {
 /// Update speech processing configuration
 #[tauri::command]
 pub fn update_speech_config(config: crate::speech::SpeechConfig) -> Result<(), String> {
+    let mut config = config;
+
+    // Do not require the UI to pass secrets across IPC. If keys are empty, try
+    // to hydrate them from secure storage.
+    if config.openai_api_key.trim().is_empty() {
+        let voice_key = try_get_api_key_from_keychain_sync("voice_openai");
+        if !voice_key.is_empty() {
+            config.openai_api_key = voice_key;
+        } else {
+            let general_key = try_get_api_key_from_keychain_sync("openai");
+            if !general_key.is_empty() {
+                config.openai_api_key = general_key;
+            }
+        }
+    }
+
+    if config.anthropic_api_key.trim().is_empty() {
+        let key = try_get_api_key_from_keychain_sync("anthropic");
+        if !key.is_empty() {
+            config.anthropic_api_key = key;
+        }
+    }
+
     crate::speech::update_speech_config(config);
     Ok(())
 }
@@ -3511,6 +3909,69 @@ pub async fn pick_workspace_directory(
 #[tauri::command(rename_all = "snake_case")]
 pub fn open_shell_for_session(session_id: String) -> Result<(), String> {
     crate::window_manager::open_shell_session_for_chat_resume(&session_id)
+}
+
+// ============================================================================
+// Shell Process Control Commands (stop / pause / resume inline shell consoles)
+// ============================================================================
+
+/// Stop a running shell process by sending SIGTERM (then SIGKILL after 3 s).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn shell_process_stop(process_id: String) -> Result<(), String> {
+    gestura_core::tools::shell_streaming::stop_process(&process_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Pause a running shell process (SIGSTOP, unix-only).
+/// On non-unix platforms this returns an error.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn shell_process_pause(process_id: String) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        gestura_core::tools::shell_streaming::pause_process(&process_id)
+            .await
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = process_id;
+        Err("Pause is only supported on unix platforms".into())
+    }
+}
+
+/// Resume a paused shell process (SIGCONT, unix-only).
+/// On non-unix platforms this returns an error.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn shell_process_resume(process_id: String) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        gestura_core::tools::shell_streaming::resume_process(&process_id)
+            .await
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = process_id;
+        Err("Resume is only supported on unix platforms".into())
+    }
+}
+
+/// Retrieve re-run info for a previously-executed shell process.
+///
+/// Returns `{ command, cwd, timeout_secs }` if the process was registered,
+/// or `null` if no record exists (the map is cleared on process exit).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn shell_process_rerun_info(process_id: String) -> Option<serde_json::Value> {
+    gestura_core::tools::shell_streaming::get_rerun_info(&process_id)
+        .await
+        .map(|(command, cwd, _env, timeout_secs)| {
+            serde_json::json!({
+                "command": command,
+                "cwd": cwd,
+                "timeout_secs": timeout_secs,
+            })
+        })
 }
 
 // ============================================================================
@@ -4360,6 +4821,30 @@ fn validate_llm_config_with_config(
                 );
             }
         }
+        "gemini" => {
+            if let Some(c) = &config.llm.gemini {
+                if c.api_key.trim().is_empty() {
+                    return llm_error(
+                        "LLM_CONFIG_INCOMPLETE",
+                        "Gemini LLM provider is selected but API key is missing.",
+                        "Add your Gemini API key in Settings → AI Providers → Gemini.",
+                    );
+                }
+                if c.model.trim().is_empty() {
+                    return llm_error(
+                        "LLM_CONFIG_INCOMPLETE",
+                        "Gemini LLM provider is selected but no model is configured.",
+                        "Choose a Gemini model in Settings → AI Providers → Gemini.",
+                    );
+                }
+            } else {
+                return llm_error(
+                    "LLM_CONFIG_MISSING",
+                    "Gemini LLM provider is selected but not configured.",
+                    "Fill in Gemini LLM settings under Settings → AI Providers → Gemini.",
+                );
+            }
+        }
         "grok" => {
             if let Some(c) = &config.llm.grok {
                 if c.api_key.trim().is_empty() {
@@ -4700,6 +5185,50 @@ pub fn is_keychain_available() -> bool {
     }
 }
 
+fn api_key_storage_key_for_provider(provider: &str) -> Option<&'static str> {
+    let p = provider.trim();
+
+    if p.eq_ignore_ascii_case("openai") {
+        Some("gestura_llm_openai_api_key")
+    } else if p.eq_ignore_ascii_case("anthropic") {
+        Some("gestura_llm_anthropic_api_key")
+    } else if p.eq_ignore_ascii_case("gemini") {
+        Some("gestura_llm_gemini_api_key")
+    } else if p.eq_ignore_ascii_case("grok") {
+        Some("gestura_llm_grok_api_key")
+    } else if p.eq_ignore_ascii_case("voice_openai") {
+        Some("gestura_voice_openai_api_key")
+    } else if p.eq_ignore_ascii_case("serpapi") {
+        Some("gestura_web_search_serpapi_key")
+    } else if p.eq_ignore_ascii_case("brave") {
+        Some("gestura_web_search_brave_key")
+    } else {
+        None
+    }
+}
+
+fn legacy_api_key_storage_key_for_provider(provider: &str) -> Option<&'static str> {
+    let p = provider.trim();
+
+    if p.eq_ignore_ascii_case("openai") {
+        Some("gestura_api_key_openai")
+    } else if p.eq_ignore_ascii_case("anthropic") {
+        Some("gestura_api_key_anthropic")
+    } else if p.eq_ignore_ascii_case("gemini") {
+        Some("gestura_api_key_gemini")
+    } else if p.eq_ignore_ascii_case("grok") {
+        Some("gestura_api_key_grok")
+    } else if p.eq_ignore_ascii_case("voice_openai") {
+        Some("gestura_api_key_voice_openai")
+    } else if p.eq_ignore_ascii_case("serpapi") {
+        Some("gestura_api_key_serpapi")
+    } else if p.eq_ignore_ascii_case("brave") {
+        Some("gestura_api_key_brave")
+    } else {
+        None
+    }
+}
+
 /// Store an API key securely.
 ///
 /// Convenience wrapper that uses provider-specific key names.
@@ -4708,8 +5237,9 @@ pub fn is_keychain_available() -> bool {
 /// JS↔Rust interop: This command is exposed to the frontend via Tauri.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn store_api_key(provider: String, api_key: String) -> Result<(), String> {
-    let key = format!("gestura_api_key_{}", provider.to_lowercase());
-    store_secret(key, api_key).await
+    let key = api_key_storage_key_for_provider(&provider)
+        .ok_or_else(|| format!("Unknown provider: {provider}"))?;
+    store_secret(key.to_string(), api_key).await
 }
 
 /// Retrieve an API key from secure storage.
@@ -4717,8 +5247,34 @@ pub async fn store_api_key(provider: String, api_key: String) -> Result<(), Stri
 /// JS↔Rust interop: This command is exposed to the frontend via Tauri.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn get_api_key(provider: String) -> Result<Option<String>, String> {
-    let key = format!("gestura_api_key_{}", provider.to_lowercase());
-    get_secret(key).await
+    let canonical_key = api_key_storage_key_for_provider(&provider)
+        .ok_or_else(|| format!("Unknown provider: {provider}"))?;
+    let legacy_key = legacy_api_key_storage_key_for_provider(&provider);
+
+    let storage = crate::security::create_secure_storage();
+
+    if let Some(v) = storage
+        .get_secret(canonical_key)
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(Some(v));
+    }
+
+    if let Some(legacy_key) = legacy_key
+        && let Some(v) = storage
+            .get_secret(legacy_key)
+            .await
+            .map_err(|e| e.to_string())?
+            .filter(|s| !s.is_empty())
+    {
+        // Best-effort self-heal to canonical name.
+        let _ = storage.store_secret(canonical_key, &v).await;
+        return Ok(Some(v));
+    }
+
+    Ok(None)
 }
 
 /// Delete an API key from secure storage.
@@ -4726,8 +5282,123 @@ pub async fn get_api_key(provider: String) -> Result<Option<String>, String> {
 /// JS↔Rust interop: This command is exposed to the frontend via Tauri.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn delete_api_key(provider: String) -> Result<(), String> {
-    let key = format!("gestura_api_key_{}", provider.to_lowercase());
-    delete_secret(key).await
+    let canonical_key = api_key_storage_key_for_provider(&provider)
+        .ok_or_else(|| format!("Unknown provider: {provider}"))?;
+    let legacy_key = legacy_api_key_storage_key_for_provider(&provider);
+
+    let storage = crate::security::create_secure_storage();
+    storage
+        .delete_secret(canonical_key)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(legacy_key) = legacy_key {
+        // Best-effort cleanup of legacy keys.
+        let _ = storage.delete_secret(legacy_key).await;
+    }
+    Ok(())
+}
+
+/// Check if an API key exists for a provider without exposing the key value.
+///
+/// Returns true if a non-empty API key is found in secure storage or config file.
+/// This is used by the frontend to determine which providers are available.
+///
+/// JS↔Rust interop: This command is exposed to the frontend via Tauri.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn has_api_key(provider: String) -> Result<bool, String> {
+    // Check secure storage first
+    if let Ok(Some(key)) = get_api_key(provider.clone()).await
+        && !key.is_empty()
+    {
+        return Ok(true);
+    }
+
+    // Fallback: check config file
+    let config = AppConfig::load_async().await;
+    let has_key = match provider.to_lowercase().as_str() {
+        "openai" => config
+            .llm
+            .openai
+            .as_ref()
+            .map(|c| !c.api_key.trim().is_empty())
+            .unwrap_or(false),
+        "anthropic" => config
+            .llm
+            .anthropic
+            .as_ref()
+            .map(|c| !c.api_key.trim().is_empty())
+            .unwrap_or(false),
+        "gemini" => config
+            .llm
+            .gemini
+            .as_ref()
+            .map(|c| !c.api_key.trim().is_empty())
+            .unwrap_or(false),
+        "grok" => config
+            .llm
+            .grok
+            .as_ref()
+            .map(|c| !c.api_key.trim().is_empty())
+            .unwrap_or(false),
+        "voice_openai" => config
+            .voice
+            .openai_api_key
+            .as_ref()
+            .map(|k| !k.trim().is_empty())
+            .unwrap_or(false),
+        "serpapi" => config
+            .web_search
+            .serpapi_key
+            .as_ref()
+            .map(|k| !k.trim().is_empty())
+            .unwrap_or(false),
+        "brave" => config
+            .web_search
+            .brave_key
+            .as_ref()
+            .map(|k| !k.trim().is_empty())
+            .unwrap_or(false),
+        _ => false,
+    };
+
+    Ok(has_key)
+}
+
+/// Check which LLM providers have API keys configured.
+///
+/// Returns a JSON object with provider names as keys and boolean values indicating
+/// whether an API key is available. Ollama availability is checked by pinging its
+/// endpoint with a short timeout.
+///
+/// Example response: {"openai": true, "anthropic": false, "gemini": false, "grok": false, "ollama": true}
+///
+/// JS↔Rust interop: This command is exposed to the frontend via Tauri.
+#[tauri::command]
+pub async fn get_available_llm_providers() -> Result<serde_json::Value, String> {
+    let providers = vec!["openai", "anthropic", "gemini", "grok"];
+    let mut result = serde_json::Map::new();
+
+    for provider in providers {
+        let has_key = has_api_key(provider.to_string()).await.unwrap_or(false);
+        result.insert(provider.to_string(), serde_json::Value::Bool(has_key));
+    }
+
+    // Check Ollama availability by pinging its endpoint (no API key required, but
+    // the server must be running).  Delegates to gestura_core (single source of truth).
+    let cfg = AppConfig::load_async().await;
+    let ollama_base = cfg
+        .llm
+        .ollama
+        .as_ref()
+        .map(|o| o.base_url.as_str())
+        .unwrap_or("");
+    let ollama_available = gestura_core::check_ollama_connectivity(ollama_base).await;
+    result.insert(
+        "ollama".to_string(),
+        serde_json::Value::Bool(ollama_available),
+    );
+
+    Ok(serde_json::Value::Object(result))
 }
 
 /// Migrate API keys from config file to secure storage.
@@ -4743,7 +5414,7 @@ pub async fn migrate_api_keys_to_keychain() -> Result<serde_json::Value, String>
         && !openai.api_key.is_empty()
     {
         storage
-            .store_secret("gestura_api_key_openai", &openai.api_key)
+            .store_secret("gestura_llm_openai_api_key", &openai.api_key)
             .await
             .map_err(|e| e.to_string())?;
         migrated.push("openai".to_string());
@@ -4754,7 +5425,7 @@ pub async fn migrate_api_keys_to_keychain() -> Result<serde_json::Value, String>
         && !anthropic.api_key.is_empty()
     {
         storage
-            .store_secret("gestura_api_key_anthropic", &anthropic.api_key)
+            .store_secret("gestura_llm_anthropic_api_key", &anthropic.api_key)
             .await
             .map_err(|e| e.to_string())?;
         migrated.push("anthropic".to_string());
@@ -4765,7 +5436,7 @@ pub async fn migrate_api_keys_to_keychain() -> Result<serde_json::Value, String>
         && !grok.api_key.is_empty()
     {
         storage
-            .store_secret("gestura_api_key_grok", &grok.api_key)
+            .store_secret("gestura_llm_grok_api_key", &grok.api_key)
             .await
             .map_err(|e| e.to_string())?;
         migrated.push("grok".to_string());
@@ -4776,7 +5447,7 @@ pub async fn migrate_api_keys_to_keychain() -> Result<serde_json::Value, String>
         && !key.is_empty()
     {
         storage
-            .store_secret("gestura_api_key_serpapi", key)
+            .store_secret("gestura_web_search_serpapi_key", key)
             .await
             .map_err(|e| e.to_string())?;
         migrated.push("serpapi".to_string());
@@ -4787,7 +5458,7 @@ pub async fn migrate_api_keys_to_keychain() -> Result<serde_json::Value, String>
         && !key.is_empty()
     {
         storage
-            .store_secret("gestura_api_key_brave", key)
+            .store_secret("gestura_web_search_brave_key", key)
             .await
             .map_err(|e| e.to_string())?;
         migrated.push("brave".to_string());
@@ -4798,7 +5469,7 @@ pub async fn migrate_api_keys_to_keychain() -> Result<serde_json::Value, String>
         && !key.is_empty()
     {
         storage
-            .store_secret("gestura_api_key_voice_openai", key)
+            .store_secret("gestura_voice_openai_api_key", key)
             .await
             .map_err(|e| e.to_string())?;
         migrated.push("voice_openai".to_string());

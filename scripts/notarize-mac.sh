@@ -39,6 +39,7 @@ BUNDLE_ID="ai.gestura.desktop"
 
 # Paths
 GUI_DIR="${ROOT_DIR}/crates/gestura-gui"
+CLI_DIR="${ROOT_DIR}/crates/gestura-cli"
 
 # In a Cargo workspace, build artifacts are typically written to the workspace
 # root `target/` directory (even when running `cargo` from a member crate).
@@ -223,8 +224,11 @@ sign_cli() {
         return 0
     fi
 
-    # Sign the CLI binary
+    # Sign the CLI binary with entitlements (matching the GUI signing pattern).
+    # Without entitlements, the hardened-runtime CLI may be denied keychain access
+    # for items created by the GUI.
     codesign --force --options runtime --timestamp \
+        --entitlements "${CLI_DIR}/entitlements.plist" \
         --sign "${APPLE_SIGNING_IDENTITY}" \
         "${CLI_PATH}"
 

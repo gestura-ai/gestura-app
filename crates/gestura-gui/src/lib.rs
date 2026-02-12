@@ -13,6 +13,7 @@
 
 // Core types and configuration (re-exported from gestura-core)
 pub use gestura_core::AppConfig;
+pub use gestura_core::AppConfigSecurityExt;
 pub use gestura_core::AppError;
 pub use gestura_core::Result;
 pub use gestura_core::config;
@@ -44,6 +45,7 @@ pub mod telemetry;
 // ============================================================================
 
 // UI and interface
+pub mod app_lifecycle;
 pub mod commands;
 pub mod hotkeys;
 pub mod tray;

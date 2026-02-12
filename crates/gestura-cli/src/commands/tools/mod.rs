@@ -7,11 +7,13 @@
 //! - `gestura tools code` - Code analysis
 //! - `gestura tools web` - Web fetching
 //! - `gestura tools permissions` - Permission management
+//! - `gestura tools screen` - Screen capture and recording
 
 pub mod code;
 pub mod file;
 pub mod git;
 pub mod permissions;
+pub mod screen;
 pub mod shell;
 pub mod web;
 
@@ -25,6 +27,7 @@ pub enum ToolsCategory {
     Code(code::CodeSubcommand),
     Web(web::WebSubcommand),
     Permissions(permissions::PermissionsSubcommand),
+    Screen(screen::ScreenSubcommand),
 }
 
 /// Run a tools subcommand
@@ -36,5 +39,6 @@ pub fn run(category: ToolsCategory) -> Result<()> {
         ToolsCategory::Code(cmd) => code::run(cmd),
         ToolsCategory::Web(cmd) => web::run(cmd),
         ToolsCategory::Permissions(cmd) => permissions::run(cmd),
+        ToolsCategory::Screen(cmd) => screen::run(cmd),
     }
 }

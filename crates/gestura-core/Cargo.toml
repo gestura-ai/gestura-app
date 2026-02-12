@@ -9,17 +9,13 @@ description = "Shared core library for Gestura voice-first AI assistant"
 [features]
 default = ["voice-local"]
 # Local voice via whisper.cpp bindings
-voice-local = ["dep:whisper-rs"]
-# Cloud voice via OpenAI Whisper HTTP
-voice-openai = []
+voice-local = ["dep:whisper-rs", "gestura-core-audio/voice-local"]
 # NATS messaging integration
 nats = ["dep:async-nats"]
-# BLE integration for Haptic Harmony ring
-ble = ["dep:btleplug"]
 # JSON-LD processing for MDH
 json-ld = ["dep:json-ld"]
 # Security features (encryption, keychain)
-security = ["dep:ring", "dep:keyring"]
+security = ["gestura-core-security/security", "dep:keyring"]
 # macOS permissions (objc/cocoa bindings for TCC permission dialogs)
 macos-permissions = ["dep:objc", "dep:cocoa"]
 # Linux permissions (xdg-desktop-portal for Wayland, D-Bus for system checks)
@@ -28,7 +24,7 @@ linux-permissions = ["dep:ashpd", "dep:zbus"]
 windows-permissions = []
 # Development/testing features - enables dev-only code paths
 # WARNING: Do NOT enable in production releases
-dev = []
+dev = ["gestura-core-llm/dev", "gestura-core-streaming/dev"]
 
 [dependencies]
 # Core dependencies from workspace
@@ -47,6 +43,18 @@ futures.workspace = true
 futures-util.workspace = true
 bytes.workspace = true
 
+# Internal crates
+gestura-core-foundation.workspace = true
+gestura-core-tools.workspace = true
+gestura-core-mcp.workspace = true
+gestura-core-llm.workspace = true
+gestura-core-pipeline.workspace = true
+gestura-core-tasks.workspace = true
+gestura-core-streaming.workspace = true
+gestura-core-sessions.workspace = true
+gestura-core-config.workspace = true
+gestura-core-security.workspace = true
+
 # Audio processing
 cpal.workspace = true
 hound.workspace = true
@@ -55,15 +63,13 @@ bytemuck.workspace = true
 # Voice processing (optional)
 whisper-rs = { version = "0.14", optional = true }
 
-# BLE integration (optional)
-btleplug = { version = "0.11", optional = true }
-
 # JSON-LD processing (optional)
 json-ld = { version = "0.16", optional = true }
 
-# Security (optional)
-ring = { version = "0.17", optional = true }
-keyring = { version = "2.3", optional = true }
+
+
+# Security (optional — keyring direct usage in config bridge)
+keyring = { workspace = true, optional = true }
 
 # NATS messaging (optional)
 async-nats = { version = "0.42", optional = true }
@@ -81,14 +87,18 @@ lazy_static.workspace = true
 tempfile.workspace = true
 hex.workspace = true
 base64.workspace = true
+image.workspace = true
 rand.workspace = true
 toml.workspace = true
 regex.workspace = true
 urlencoding.workspace = true
-scraper = "0.25.0"
-url = "2.5.8"
-notify = { version = "8.2.0", features = ["macos_fsevent"] }
-serde_yaml = "0.9.34"
+notify.workspace = true
+serde_yaml.workspace = true
+gestura-core-audio.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# Unix signal handling (for screen recording on Unix platforms)
+nix = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

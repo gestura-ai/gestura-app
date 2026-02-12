@@ -2,9 +2,9 @@
 
 use super::Result;
 use colored::Colorize;
-use gestura_core::{AudioCaptureConfig, get_speech_processor, is_microphone_available};
-use indicatif::{ProgressBar, ProgressStyle};
-use std::time::Duration;
+use gestura_core::{
+    AudioCaptureConfig, SpeechProcessorCoreExt, get_speech_processor, is_microphone_available,
+};
 
 pub fn run(transcribe_only: bool, whisper_model: &str) -> Result<()> {
     // Check microphone availability first
@@ -38,14 +38,7 @@ pub fn run(transcribe_only: bool, whisper_model: &str) -> Result<()> {
 
     rt.block_on(async {
         // Show recording indicator
-        let spinner = ProgressBar::new_spinner();
-        spinner.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner:.green} {msg}")
-                .unwrap(),
-        );
-        spinner.set_message("Listening... (speak now)");
-        spinner.enable_steady_tick(Duration::from_millis(100));
+        let spinner = super::spinner::brand_spinner("Listening... (speak now)");
 
         // Record audio using gestura-core
         let speech_processor = get_speech_processor();

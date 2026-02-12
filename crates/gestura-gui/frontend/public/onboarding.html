@@ -20,17 +20,34 @@
         }
 
         :root {
+            /* Gestura brand tokens (unified with gestura.app) */
+            --accent-primary: rgb(37, 99, 235);
+            --accent-primary-rgb: 37, 99, 235;
+            --accent-secondary: rgb(147, 51, 234);
+            --accent-secondary-rgb: 147, 51, 234;
+            --gradient-primary: linear-gradient(to right, rgb(37, 99, 235), rgb(147, 51, 234));
+            --gradient-secondary: linear-gradient(to right, rgb(96, 165, 250), rgb(192, 132, 252));
+            --brand-gradient: var(--gradient-primary);
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.35);
+
+            /* Motion tokens (snappy, non-sliding) */
+            --motion-fast: 120ms;
+            --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+            /* Semantic RGB triples for rgba(..., alpha) */
+            --success-rgb: 52, 199, 89;
+            --warning-rgb: 255, 149, 0;
+            --danger-rgb: 255, 59, 48;
+
             /* Light theme variables */
             --background-color: #ffffff;
             --text-color: #1a1a1a;
             --text-secondary: #666666;
             --border-color: #e0e0e0;
             --surface-color: #f8f9fa;
-            --accent-color: #007bff;
-            --accent-hover: #0056b3;
-            --success-color: #28a745;
-            --warning-color: #ffc107;
-            --error-color: #dc3545;
+            --success-color: rgb(var(--success-rgb));
+            --warning-color: rgb(var(--warning-rgb));
+            --error-color: rgb(var(--danger-rgb));
         }
 
         /* Auto mode: respect system preference */
@@ -42,40 +59,61 @@
                 --text-secondary: #b0b0b0;
                 --border-color: #404040;
                 --surface-color: #2d2d2d;
-                --accent-color: #4da3ff;
-                --accent-hover: #2d8cf0;
-                --success-color: #48c774;
-                --warning-color: #ffdd57;
-                --error-color: #ff6b6b;
+                --accent-primary: rgb(96, 165, 250);
+                --accent-primary-rgb: 96, 165, 250;
+                --accent-secondary: rgb(192, 132, 252);
+                --accent-secondary-rgb: 192, 132, 252;
+                --brand-gradient: var(--gradient-secondary);
+                --focus-ring: rgba(var(--accent-primary-rgb), 0.55);
             }
         }
 
         /* Force light mode (overrides system preference) */
         html[data-theme="light"] {
+            --accent-primary: rgb(37, 99, 235);
+            --accent-primary-rgb: 37, 99, 235;
+            --accent-secondary: rgb(147, 51, 234);
+            --accent-secondary-rgb: 147, 51, 234;
+            --brand-gradient: var(--gradient-primary);
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.35);
+
             --background-color: #ffffff;
             --text-color: #1a1a1a;
             --text-secondary: #666666;
             --border-color: #e0e0e0;
             --surface-color: #f8f9fa;
-            --accent-color: #007bff;
-            --accent-hover: #0056b3;
-            --success-color: #28a745;
-            --warning-color: #ffc107;
-            --error-color: #dc3545;
         }
 
         /* Force dark mode (overrides system preference) */
         html[data-theme="dark"] {
+            --accent-primary: rgb(96, 165, 250);
+            --accent-primary-rgb: 96, 165, 250;
+            --accent-secondary: rgb(192, 132, 252);
+            --accent-secondary-rgb: 192, 132, 252;
+            --brand-gradient: var(--gradient-secondary);
+            --focus-ring: rgba(var(--accent-primary-rgb), 0.55);
+
             --background-color: #1e1e1e;
             --text-color: #ffffff;
             --text-secondary: #b0b0b0;
             --border-color: #404040;
             --surface-color: #2d2d2d;
-            --accent-color: #4da3ff;
-            --accent-hover: #2d8cf0;
-            --success-color: #48c774;
-            --warning-color: #ffdd57;
-            --error-color: #ff6b6b;
+        }
+
+        .text-gradient {
+            background: var(--brand-gradient);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            -webkit-text-fill-color: transparent;
+        }
+
+        @media (forced-colors: active) {
+            .text-gradient {
+                background: none;
+                color: ButtonText;
+                -webkit-text-fill-color: ButtonText;
+            }
         }
 
         body {
@@ -127,8 +165,8 @@
 
         .progress-fill {
             height: 100%;
-            background: var(--accent-color);
-            transition: width 0.3s ease;
+            background: var(--brand-gradient);
+            transition: width var(--motion-fast) var(--motion-ease);
         }
 
         .step-indicator {
@@ -140,12 +178,43 @@
         }
 
         .step-content {
-            flex: 1;
+            /*
+	             * Default: content-driven height (no internal scrolling).
+	             * If the window height is clamped (max height), JS will toggle
+	             * `.is-scrollable` to keep header/footer fixed and scroll only the
+	             * content area.
+	             */
+            flex: 0 0 auto;
             background: var(--surface-color);
             border-radius: 10px;
             padding: 1.25rem;
             border: 1px solid var(--border-color);
+            overflow-y: hidden;
+            opacity: 1;
+            transition: opacity var(--motion-fast) var(--motion-ease), max-height var(--motion-fast) var(--motion-ease);
+            will-change: opacity;
+        }
+
+        .step-content.is-scrollable {
+            flex: 1 1 auto;
+            min-height: 0;
             overflow-y: auto;
+        }
+
+        .step-content.is-hidden {
+            opacity: 0;
+        }
+
+        .step-content.is-visible {
+            opacity: 1;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+
+            .progress-fill,
+            .step-content {
+                transition: none !important;
+            }
         }
 
         .step-content h2 {
@@ -194,12 +263,18 @@
         }
 
         .btn-primary {
-            background: var(--accent-color);
+            background: var(--brand-gradient);
             color: white;
         }
 
         .btn-primary:hover {
-            background: var(--accent-hover);
+            filter: brightness(0.97);
+            transform: translateY(-1px);
+        }
+
+        .btn:focus-visible {
+            outline: none;
+            box-shadow: 0 0 0 4px var(--focus-ring);
         }
 
         .btn-secondary {
@@ -262,18 +337,21 @@
         }
 
         .status-granted {
-            background: var(--success-color);
-            color: white;
+            background: rgba(var(--success-rgb), 0.14);
+            border: 1px solid rgba(var(--success-rgb), 0.28);
+            color: rgb(var(--success-rgb));
         }
 
         .status-denied {
-            background: var(--error-color);
-            color: white;
+            background: rgba(var(--danger-rgb), 0.14);
+            border: 1px solid rgba(var(--danger-rgb), 0.28);
+            color: rgb(var(--danger-rgb));
         }
 
         .status-unknown {
-            background: var(--warning-color);
-            color: #333;
+            background: rgba(var(--warning-rgb), 0.14);
+            border: 1px solid rgba(var(--warning-rgb), 0.28);
+            color: rgb(var(--warning-rgb));
         }
 
         select {
@@ -289,7 +367,8 @@
 
         select:focus {
             outline: none;
-            border-color: var(--accent-color);
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 0 4px var(--focus-ring);
         }
 
         .config-section {
@@ -302,13 +381,90 @@
             font-weight: 500;
             font-size: 0.85rem;
         }
+
+        /* Shared input styling for onboarding provider fields */
+        input[type="text"].onb-input,
+        input[type="password"].onb-input,
+        select.onb-input {
+            width: 100%;
+            padding: 0.6rem;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            background: var(--background-color);
+            color: var(--text-color);
+            font-size: 0.9rem;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        input[type="text"].onb-input:focus,
+        input[type="password"].onb-input:focus,
+        select.onb-input:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 0 4px var(--focus-ring);
+        }
+
+        input[type="text"].onb-input::placeholder,
+        input[type="password"].onb-input::placeholder {
+            color: var(--text-secondary);
+            opacity: 0.7;
+        }
+
+        /* API key row layout */
+        .api-key-row {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .api-key-row .onb-input {
+            flex: 1;
+        }
+
+        .btn-delete-api-key {
+            white-space: nowrap;
+            padding: 0.4rem 0.75rem;
+            border: 1px solid rgb(var(--danger-rgb, 220, 38, 38));
+            color: rgb(var(--danger-rgb, 220, 38, 38));
+            background: transparent;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: background 0.15s, color 0.15s;
+        }
+
+        .btn-delete-api-key:hover {
+            background: rgb(var(--danger-rgb, 220, 38, 38));
+            color: #fff;
+        }
+
+        /* Radio option cards – keep radio circle on the same line as the text */
+        .option-card label {
+            display: flex;
+            align-items: flex-start;
+            cursor: pointer;
+            gap: 0.75rem;
+        }
+
+        .option-card label input[type="radio"] {
+            flex-shrink: 0;
+            margin-top: 0.2rem;
+        }
+
+        .option-card label>div {
+            flex: 1;
+            min-width: 0;
+        }
     </style>
 </head>
 
 <body>
     <div class="onboarding-container">
         <div class="header">
-            <h1><img src="../assets/gestura-app.svg" alt="Gestura" style="width: 28px; height: 28px; vertical-align: middle; margin-right: 8px;">Welcome to Gestura</h1>
+            <h1><img src="assets/gestura-app.svg" alt="Gestura"
+                    style="width: 140px; height: 140px; vertical-align: middle; margin-right: 8px;">Welcome to <span
+                    class="text-gradient">Gestura</span>
+            </h1>
             <p>Let's get you set up with voice commands and haptic feedback</p>
         </div>
 
@@ -317,7 +473,7 @@
                 <div class="progress-fill" id="progressFill"></div>
             </div>
             <div class="step-indicator">
-                <span id="stepNumber">Step 1 of 6</span>
+                <span id="stepNumber">Step 1 of 9</span>
                 <span id="stepName">Welcome</span>
             </div>
         </div>
@@ -327,27 +483,49 @@
         </div>
 
         <div class="button-row" style="display: flex; justify-content: space-between; margin-top: 1.5rem;">
-            <button class="btn btn-secondary" id="prevBtn" onclick="previousStep()"
-                style="visibility: hidden;">Previous</button>
-            <button class="btn btn-primary" id="nextBtn" onclick="nextStep()">Get Started</button>
+            <button class="btn btn-secondary" id="prevBtn" style="visibility: hidden;">Previous</button>
+            <button class="btn btn-primary" id="nextBtn">Get Started</button>
         </div>
     </div>
 
     <script>
+        function getTauriInvoke() {
+            const w = window;
+            // Tauri (public global) support
+            if (w.__TAURI__ && w.__TAURI__.core && typeof w.__TAURI__.core.invoke === 'function') {
+                return w.__TAURI__.core.invoke;
+            }
+            // Tauri (internal) support (useful for tests / alternate runtimes)
+            if (w.__TAURI_INTERNALS__ && typeof w.__TAURI_INTERNALS__.invoke === 'function') {
+                return w.__TAURI_INTERNALS__.invoke;
+            }
+            return null;
+        }
+
         // =====================================================================
         // Theme Management
         // =====================================================================
         async function initTheme() {
             try {
-                const config = await window.__TAURI__.core.invoke('get_config');
+                const tauriInvoke = getTauriInvoke();
+                if (!tauriInvoke) {
+                    applyTheme('system');
+                    return;
+                }
+                const config = await tauriInvoke('get_config');
                 const themeMode = config?.ui?.theme_mode || 'system';
                 applyTheme(themeMode);
 
                 if (themeMode === 'system') {
                     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-                    mediaQuery.addEventListener('change', (e) => {
-                        applyTheme('system');
-                    });
+                    const handler = () => applyTheme('system');
+                    // Safari 13 compatibility: MediaQueryList used addListener/removeListener.
+                    if (typeof mediaQuery.addEventListener === 'function') {
+                        mediaQuery.addEventListener('change', handler);
+                    } else if (typeof mediaQuery.addListener === 'function') {
+                        // eslint-disable-next-line deprecation/deprecation
+                        mediaQuery.addListener(handler);
+                    }
                 }
             } catch (e) {
                 console.error('[Theme] Failed to initialize theme:', e);
@@ -366,24 +544,314 @@
             }
         }
 
-        if (window.__TAURI__) {
-            initTheme();
-        }
+        void initTheme();
 
         // =====================================================================
         // Onboarding Logic
         // =====================================================================
-        const { invoke } = window.__TAURI__.core;
+        let invoke = getTauriInvoke();
+        if (!invoke) {
+            console.warn('[Onboarding] Tauri API not available — some actions may be unavailable (completion, downloads, permissions)');
+            invoke = () => Promise.reject(new Error('Tauri API not available'));
+        }
 
         let currentStep = 0;
         let lastSystemPermissionsResult = null;
+        let isTransitioning = false;
+        let prefersReducedMotion = false;
+
+        function initReducedMotionListener() {
+            if (!window.matchMedia) return;
+            const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+            const update = () => {
+                prefersReducedMotion = !!media.matches;
+            };
+            update();
+
+            if ('addEventListener' in media) {
+                media.addEventListener('change', update);
+            } else {
+                // Safari 13 compatibility
+                // eslint-disable-next-line deprecation/deprecation
+                media.addListener(update);
+            }
+        }
+
+        function getMotionMs() {
+            return prefersReducedMotion ? 0 : 120;
+        }
+
+        // =====================================================================
+        // Dynamic window height (step-aware)
+        // =====================================================================
+        const ONBOARDING_MIN_HEIGHT_PX = 580;
+        const ONBOARDING_MAX_HEIGHT_PX_CAP = 900;
+        const ONBOARDING_MAX_HEIGHT_SCREEN_RATIO = 0.9;
+        const ONBOARDING_RESIZE_EASING = { x1: 0.2, y1: 0.8, x2: 0.2, y2: 1 };
+        const ONBOARDING_HEIGHT_EPSILON_PX = 2;
+        const ONBOARDING_SCROLL_MIN_CONTENT_PX = 160;
+
+        let lastRequestedWindowHeightPx = null;
+        let resizeAnimationToken = 0;
+        let resizeDebounceTimer = null;
+
+        function clamp(n, min, max) {
+            return Math.max(min, Math.min(max, n));
+        }
+
+        function getMaxWindowHeightPx() {
+            const screenAvail = (window.screen && Number.isFinite(window.screen.availHeight))
+                ? window.screen.availHeight
+                : 1000;
+            const byScreen = Math.floor(screenAvail * ONBOARDING_MAX_HEIGHT_SCREEN_RATIO);
+            return Math.max(ONBOARDING_MIN_HEIGHT_PX, Math.min(ONBOARDING_MAX_HEIGHT_PX_CAP, byScreen));
+        }
+
+        function makeCubicBezier(x1, y1, x2, y2) {
+            // Maps x in [0,1] -> y in [0,1] for the CSS cubic-bezier curve.
+            // Uses Newton iterations with a binary-search fallback.
+            const cx = 3 * x1;
+            const bx = 3 * (x2 - x1) - cx;
+            const ax = 1 - cx - bx;
+            const cy = 3 * y1;
+            const by = 3 * (y2 - y1) - cy;
+            const ay = 1 - cy - by;
+
+            const sampleX = (t) => ((ax * t + bx) * t + cx) * t;
+            const sampleY = (t) => ((ay * t + by) * t + cy) * t;
+            const sampleDerivX = (t) => (3 * ax * t + 2 * bx) * t + cx;
+
+            const solveTForX = (x) => {
+                let t = x;
+                for (let i = 0; i < 8; i++) {
+                    const xEst = sampleX(t) - x;
+                    const d = sampleDerivX(t);
+                    if (Math.abs(xEst) < 1e-4) return t;
+                    if (Math.abs(d) < 1e-6) break;
+                    t = t - xEst / d;
+                }
+                // Fallback binary search
+                let lo = 0;
+                let hi = 1;
+                t = x;
+                for (let i = 0; i < 12; i++) {
+                    const xMid = sampleX(t);
+                    if (Math.abs(xMid - x) < 1e-4) return t;
+                    if (xMid < x) lo = t;
+                    else hi = t;
+                    t = (lo + hi) / 2;
+                }
+                return t;
+            };
+
+            return (x) => {
+                if (x <= 0) return 0;
+                if (x >= 1) return 1;
+                return sampleY(solveTForX(x));
+            };
+        }
+
+        const easeWindowHeight = makeCubicBezier(
+            ONBOARDING_RESIZE_EASING.x1,
+            ONBOARDING_RESIZE_EASING.y1,
+            ONBOARDING_RESIZE_EASING.x2,
+            ONBOARDING_RESIZE_EASING.y2,
+        );
+
+        function measureDesiredWindowHeightPx() {
+            const container = document.querySelector('.onboarding-container');
+            if (!container) return null;
+
+            const containerWidth = Math.max(1, Math.floor(container.getBoundingClientRect().width || window.innerWidth || 720));
+
+            // Clone the container off-screen and let it size to content.
+            const clone = container.cloneNode(true);
+            clone.style.position = 'absolute';
+            clone.style.left = '-10000px';
+            clone.style.top = '0';
+            clone.style.width = `${containerWidth}px`;
+            clone.style.maxWidth = `${containerWidth}px`;
+            clone.style.height = 'auto';
+            clone.style.maxHeight = 'none';
+            clone.style.visibility = 'hidden';
+            clone.style.pointerEvents = 'none';
+
+            const cloneStepContent = clone.querySelector('#stepContent');
+            if (cloneStepContent) {
+                cloneStepContent.classList.remove('is-scrollable');
+                cloneStepContent.style.maxHeight = 'none';
+                cloneStepContent.style.overflowY = 'visible';
+                cloneStepContent.style.flex = '0 0 auto';
+            }
+
+            document.body.appendChild(clone);
+            const totalHeight = Math.ceil(clone.getBoundingClientRect().height);
+            const stepContentHeight = cloneStepContent ? Math.ceil(cloneStepContent.getBoundingClientRect().height) : 0;
+            document.body.removeChild(clone);
+
+            return { totalHeight, stepContentHeight };
+        }
+
+        function applyStepContentScrollConstraint(enabled, maxHeightPx) {
+            const stepContent = document.getElementById('stepContent');
+            if (!stepContent) return;
+
+            stepContent.classList.toggle('is-scrollable', enabled);
+            if (!enabled) {
+                stepContent.style.maxHeight = '';
+                return;
+            }
+
+            const maxPx = Math.max(ONBOARDING_SCROLL_MIN_CONTENT_PX, Math.floor(maxHeightPx));
+            stepContent.style.maxHeight = `${maxPx}px`;
+        }
+
+        async function safeSetWindowSize(widthPx, heightPx) {
+            try {
+                await invoke('set_window_size', { width: widthPx, height: heightPx });
+                return true;
+            } catch (e) {
+                // Non-fatal: onboarding can still function without dynamic resizing.
+                console.warn('[Onboarding] set_window_size failed:', e);
+                return false;
+            }
+        }
+
+        async function animateWindowHeightTo(targetHeightPx) {
+            const motionMs = getMotionMs();
+            const widthPx = Math.max(1, Math.round(window.innerWidth || 720));
+            const fromHeightPx = Math.max(1, Math.round(lastRequestedWindowHeightPx ?? window.innerHeight ?? ONBOARDING_MIN_HEIGHT_PX));
+
+            if (Math.abs(targetHeightPx - fromHeightPx) < ONBOARDING_HEIGHT_EPSILON_PX) {
+                lastRequestedWindowHeightPx = targetHeightPx;
+                void safeSetWindowSize(widthPx, targetHeightPx);
+                return;
+            }
+
+            if (motionMs === 0) {
+                lastRequestedWindowHeightPx = targetHeightPx;
+                await safeSetWindowSize(widthPx, targetHeightPx);
+                return;
+            }
+
+            const token = ++resizeAnimationToken;
+            const start = performance.now();
+
+            return new Promise((resolve) => {
+                const tick = (now) => {
+                    if (token !== resizeAnimationToken) return resolve();
+                    const t = clamp((now - start) / motionMs, 0, 1);
+                    const eased = easeWindowHeight(t);
+                    const h = Math.round(fromHeightPx + (targetHeightPx - fromHeightPx) * eased);
+                    void safeSetWindowSize(widthPx, h);
+                    if (t >= 1) {
+                        lastRequestedWindowHeightPx = targetHeightPx;
+                        return resolve();
+                    }
+                    window.requestAnimationFrame(tick);
+                };
+                window.requestAnimationFrame(tick);
+            });
+        }
+
+        async function resizeOnboardingWindowToFitContent() {
+            const measured = measureDesiredWindowHeightPx();
+            if (!measured) return;
+
+            const maxHeight = getMaxWindowHeightPx();
+            const desiredUnclamped = measured.totalHeight;
+            const targetHeight = clamp(desiredUnclamped, ONBOARDING_MIN_HEIGHT_PX, maxHeight);
+
+            const fixedParts = Math.max(0, measured.totalHeight - (measured.stepContentHeight || 0));
+            const shouldScroll = desiredUnclamped > maxHeight;
+            const contentMax = shouldScroll ? (maxHeight - fixedParts) : null;
+
+            if (shouldScroll && contentMax != null) {
+                applyStepContentScrollConstraint(true, contentMax);
+            } else {
+                applyStepContentScrollConstraint(false, 0);
+            }
+
+            await animateWindowHeightTo(targetHeight);
+        }
+
+        function scheduleResizeToFit() {
+            if (resizeDebounceTimer) window.clearTimeout(resizeDebounceTimer);
+            resizeDebounceTimer = window.setTimeout(() => {
+                resizeDebounceTimer = null;
+                void resizeOnboardingWindowToFitContent();
+            }, 0);
+        }
+
+        function initResizeObserver() {
+            if (typeof ResizeObserver !== 'function') return;
+            const stepContent = document.getElementById('stepContent');
+            if (!stepContent) return;
+            try {
+                const ro = new ResizeObserver(() => scheduleResizeToFit());
+                ro.observe(stepContent);
+            } catch {
+                // ignore
+            }
+        }
+
+        function sleep(ms) {
+            return new Promise((resolve) => window.setTimeout(resolve, ms));
+        }
+
+        function nextFrame() {
+            return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+        }
+
+        function setNavDisabled(disabled) {
+            const prevBtn = document.getElementById('prevBtn');
+            const nextBtn = document.getElementById('nextBtn');
+            if (prevBtn) prevBtn.disabled = disabled;
+            if (nextBtn) {
+                nextBtn.disabled = disabled;
+                if (disabled) nextBtn.setAttribute('aria-busy', 'true');
+                else nextBtn.removeAttribute('aria-busy');
+            }
+        }
+
+        async function setStepContentHtml(html) {
+            const stepContent = document.getElementById('stepContent');
+            if (!stepContent) return;
+            const motionMs = getMotionMs();
+
+            stepContent.classList.add('is-visible');
+            stepContent.classList.remove('is-hidden');
+
+            if (motionMs === 0) {
+                stepContent.innerHTML = html;
+                await resizeOnboardingWindowToFitContent();
+                return;
+            }
+
+            stepContent.classList.add('is-hidden');
+            stepContent.classList.remove('is-visible');
+            await sleep(motionMs);
+
+            stepContent.innerHTML = html;
+
+            // Resize while the new content is still hidden to avoid flicker.
+            await resizeOnboardingWindowToFitContent();
+
+            // Fade back in on next frame so hidden styles apply before transitioning.
+            await nextFrame();
+            stepContent.classList.add('is-visible');
+            stepContent.classList.remove('is-hidden');
+            await sleep(motionMs);
+        }
+
+        initReducedMotionListener();
 
         const steps = [
             {
                 id: 'welcome',
                 title: 'Welcome',
                 content: `
-                    <h2>Welcome to Gestura</h2>
+	                    <h2>Welcome to <span class="text-gradient">Gestura</span></h2>
                     <p>Gestura is your intelligent voice and gesture assistant. Control your computer with natural speech commands and get tactile feedback through connected hardware.</p>
                     <div class="features-grid">
                         <div class="feature-card">
@@ -421,9 +889,9 @@
                     <h2>Voice Processing Setup</h2>
                     <p>Choose how you want to process voice commands:</p>
                     <div style="margin: 1rem 0;">
-                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 2px solid var(--accent-color);">
-                            <label style="display: flex; align-items: center; cursor: pointer;">
-                                <input type="radio" name="voiceMode" value="local" checked style="margin-right: 0.75rem;" onchange="updateVoiceMode(this.value)">
+	                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 2px solid var(--accent-primary);">
+                            <label>
+                                <input type="radio" name="voiceMode" value="local" checked>
                                 <div>
                                     <strong>Local Processing (Recommended)</strong>
                                     <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Uses Whisper AI on your device. Private and works offline.</p>
@@ -431,8 +899,8 @@
                             </label>
                         </div>
                         <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; border: 1px solid var(--border-color);">
-                            <label style="display: flex; align-items: center; cursor: pointer;">
-                                <input type="radio" name="voiceMode" value="openai" style="margin-right: 0.75rem;" onchange="updateVoiceMode(this.value)">
+                            <label>
+                                <input type="radio" name="voiceMode" value="openai">
                                 <div>
                                     <strong>OpenAI Whisper API</strong>
                                     <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Uses cloud API. Faster but requires internet and API key.</p>
@@ -442,7 +910,7 @@
                     </div>
                     <div class="config-section" style="margin-top: 1rem;">
                         <label for="microphoneSelect"><span class="icon-microphone"></span> Microphone</label>
-                        <select id="microphoneSelect" onchange="updateMicrophone(this.value)">
+                        <select id="microphoneSelect">
                             <option value="">Loading devices...</option>
                         </select>
                     </div>
@@ -456,7 +924,7 @@
                     <p>Select the Whisper model for speech-to-text processing:</p>
                     <div class="config-section">
                         <label for="whisperModel">Whisper Model</label>
-                        <select id="whisperModel" onchange="updateWhisperModel(this.value)">
+                        <select id="whisperModel">
                             <option value="ggml-tiny.en.bin">Tiny English (75MB) - Fastest</option>
                             <option value="ggml-base.en.bin" selected>Base English (142MB) - Balanced</option>
                             <option value="ggml-small.en.bin">Small English (466MB) - Better accuracy</option>
@@ -477,10 +945,11 @@
                     <p>Select the AI provider for the agent loop:</p>
                     <div class="config-section">
                         <label for="llmProvider">LLM Provider</label>
-                        <select id="llmProvider" onchange="updateLLMProvider(this.value)">
+                        <select id="llmProvider">
                             <option value="ollama" selected>Ollama (Local)</option>
                             <option value="openai">OpenAI</option>
                             <option value="anthropic">Anthropic</option>
+                            <option value="gemini">Gemini (Google)</option>
                             <option value="grok">Grok (xAI)</option>
                         </select>
                     </div>
@@ -495,7 +964,7 @@
                     <p>If you have tactile hardware (e.g., haptic ring), you can connect it now for gesture control and haptic feedback.</p>
                     <div style="text-align: center; margin: 1.5rem 0;">
                         <div style="font-size: 3rem; margin-bottom: 0.75rem;"><span class="icon-ring icon-xl"></span></div>
-                        <button class="btn btn-primary" id="scanBtn" onclick="scanForRings()">Scan for Devices</button>
+                        <button class="btn btn-primary" id="scanBtn">Scan for Devices</button>
                         <p id="ringStatus" style="margin-top: 0.75rem; color: var(--text-secondary); font-size: 0.85rem;">No device connected</p>
                     </div>
                     <p style="font-size: 0.8rem; color: var(--text-secondary);">Don't have a device? No problem! You can skip this step and set it up later.</p>
@@ -529,6 +998,44 @@
                             </div>
                         </label>
                     </div>
+                `
+            },
+            {
+                id: 'agent-permissions',
+                title: 'Agent Permissions',
+                content: `
+                    <h2>Default Agent Permission Level</h2>
+                    <p>Choose the default permission level for AI agents. You can change this per-session later.</p>
+                    <div style="margin: 1rem 0;">
+                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 1px solid var(--border-color);">
+                            <label>
+                                <input type="radio" name="agentPermLevel" value="sandbox">
+                                <div>
+                                    <strong><span class="icon-lock"></span> Sandbox (Most Restrictive)</strong>
+                                    <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Read-only access. Agents cannot write files or execute commands.</p>
+                                </div>
+                            </label>
+                        </div>
+	                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 2px solid var(--accent-primary);">
+                            <label>
+                                <input type="radio" name="agentPermLevel" value="restricted" checked>
+                                <div>
+	                                    <strong><span class="icon-check-circle" style="color: var(--accent-primary);"></span> Restricted (Recommended)</strong>
+                                    <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Agents ask for confirmation before write operations or shell commands.</p>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; border: 1px solid var(--border-color);">
+                            <label>
+                                <input type="radio" name="agentPermLevel" value="full">
+                                <div>
+                                    <strong>⚡ Full Access</strong>
+                                    <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">No confirmation required. Use only if you fully trust the agent environment.</p>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+                    <p style="font-size: 0.8rem; color: var(--text-secondary);"><span class="icon-lock"></span> You can override this per-session in Settings → Permissions.</p>
                 `
             },
             {
@@ -600,11 +1107,16 @@
 	                        </div>
 	                        ${isGranted
                             ? `<span class="permission-status status-granted"><span class="icon-check"></span> Approved</span>`
-                            : `<button class="btn btn-small btn-primary" onclick="enablePermission('${id}')">${buttonLabel}</button>`
+                            : `<button class="btn btn-small btn-primary" data-permission-id="${id}">${buttonLabel}</button>`
                         }
 	                    </div>
 	                `;
                 }).join('');
+
+                // Attach click listeners to permission buttons (CSP-safe).
+                container.querySelectorAll('button[data-permission-id]').forEach(btn => {
+                    btn.addEventListener('click', () => enablePermission(btn.dataset.permissionId));
+                });
             } catch (error) {
                 console.error('Error loading system permissions:', error);
                 container.innerHTML = '<p class="help-text">Unable to load system permissions. Please try again.</p>';
@@ -630,44 +1142,185 @@
             }
         }
 
+        /// Attach programmatic event listeners to step elements.
+        /// Tauri v2 injects CSP nonces into <script> tags which, per CSP3,
+        /// disables 'unsafe-inline' for scripts — making inline event handlers
+        /// (onchange, onclick, oninput) silently fail.  We use addEventListener
+        /// instead so that all user interactions work regardless of CSP policy.
+        function hydrateStepListeners(stepId) {
+            if (stepId === 'voice') {
+                document.querySelectorAll('input[name="voiceMode"]').forEach(el => {
+                    el.addEventListener('change', () => updateVoiceMode(el.value));
+                });
+                document.getElementById('microphoneSelect')?.addEventListener('change', function () {
+                    updateMicrophone(this.value);
+                });
+            } else if (stepId === 'voice-model') {
+                document.getElementById('whisperModel')?.addEventListener('change', function () {
+                    updateWhisperModel(this.value);
+                });
+            } else if (stepId === 'llm') {
+                document.getElementById('llmProvider')?.addEventListener('change', function () {
+                    updateLLMProvider(this.value);
+                });
+            } else if (stepId === 'ring') {
+                document.getElementById('scanBtn')?.addEventListener('click', () => scanForRings());
+            } else if (stepId === 'agent-permissions') {
+                document.querySelectorAll('input[name="agentPermLevel"]').forEach(el => {
+                    el.addEventListener('change', () => updateAgentPermissionLevel(el.value));
+                });
+            }
+            // Note: 'permissions' step listeners are attached inside
+            // renderPermissions() after the dynamic HTML is set.
+        }
+
         async function updateUI() {
             const step = steps[currentStep];
-            document.getElementById('progressFill').style.width = `${((currentStep + 1) / steps.length) * 100}%`;
-            document.getElementById('stepNumber').textContent = `Step ${currentStep + 1} of ${steps.length}`;
-            document.getElementById('stepName').textContent = step.title;
-            document.getElementById('stepContent').innerHTML = step.content;
+            const progressFill = document.getElementById('progressFill');
+            const stepNumber = document.getElementById('stepNumber');
+            const stepName = document.getElementById('stepName');
+            if (progressFill) progressFill.style.width = `${((currentStep + 1) / steps.length) * 100}%`;
+            if (stepNumber) stepNumber.textContent = `Step ${currentStep + 1} of ${steps.length}`;
+            if (stepName) stepName.textContent = step.title;
+            await setStepContentHtml(step.content);
+
+            // Attach programmatic event listeners to elements rendered by
+            // the step template (CSP nonces override 'unsafe-inline').
+            hydrateStepListeners(step.id);
 
             // Step-specific initialization (async where needed)
-            if (step.id === 'permissions') await renderPermissions();
-            if (step.id === 'voice') await loadMicrophoneDevices();
-            if (step.id === 'voice-model') await loadVoiceModelConfig();
-            if (step.id === 'llm') await loadLLMConfig();
+            // Do not allow a failed Tauri call to break navigation/rendering.
+            if (step.id === 'permissions') {
+                try { await renderPermissions(); } catch (e) { console.error('[Onboarding] renderPermissions failed:', e); }
+            }
+            if (step.id === 'voice') {
+                try { await loadMicrophoneDevices(); } catch (e) { console.error('[Onboarding] loadMicrophoneDevices failed:', e); }
+            }
+            if (step.id === 'voice-model') {
+                try { await loadVoiceModelConfig(); } catch (e) { console.error('[Onboarding] loadVoiceModelConfig failed:', e); }
+            }
+            if (step.id === 'llm') {
+                try { await loadLLMConfig(); } catch (e) { console.error('[Onboarding] loadLLMConfig failed:', e); }
+            }
+            if (step.id === 'agent-permissions') {
+                try { await loadAgentPermissionLevel(); } catch (e) { console.error('[Onboarding] loadAgentPermissionLevel failed:', e); }
+            }
+
+            // Step init functions may change layout after async work; re-fit once more.
+            try {
+                await resizeOnboardingWindowToFitContent();
+            } catch (e) {
+                console.warn('[Onboarding] resizeOnboardingWindowToFitContent failed:', e);
+            }
 
             const prevBtn = document.getElementById('prevBtn');
             const nextBtn = document.getElementById('nextBtn');
-            prevBtn.style.visibility = currentStep === 0 ? 'hidden' : 'visible';
-            nextBtn.textContent = currentStep === steps.length - 1 ? 'Start Using Gestura' : (currentStep === 0 ? 'Get Started' : 'Continue');
+            if (nextBtn) {
+                nextBtn.dataset.overrideHandler = 'false';
+                // Some steps may temporarily override behavior via onclick.
+                // Clear it so the default handler works consistently.
+                nextBtn.onclick = null;
+                nextBtn.textContent = currentStep === steps.length - 1
+                    ? 'Start Using Gestura'
+                    : (currentStep === 0 ? 'Get Started' : 'Continue');
+            }
+            if (prevBtn) prevBtn.style.visibility = currentStep === 0 ? 'hidden' : 'visible';
+        }
+
+        function setupButtonListeners() {
+            const nextBtn = document.getElementById('nextBtn');
+            const prevBtn = document.getElementById('prevBtn');
+
+            // Attach once (safe if init runs multiple times).
+            if (nextBtn && nextBtn.dataset.listenersAttached !== 'true') {
+                nextBtn.addEventListener('click', async function (e) {
+                    e.preventDefault();
+                    if (nextBtn.dataset.overrideHandler === 'true') return;
+                    console.log('[Onboarding] Next button clicked, currentStep:', currentStep);
+                    try {
+                        await nextStep();
+                    } catch (error) {
+                        console.error('[Onboarding] Error in next button handler:', error);
+                    }
+                });
+                nextBtn.dataset.listenersAttached = 'true';
+                console.log('[Onboarding] Next button listener attached');
+            }
+
+            if (prevBtn && prevBtn.dataset.listenersAttached !== 'true') {
+                prevBtn.addEventListener('click', async function (e) {
+                    e.preventDefault();
+                    console.log('[Onboarding] Previous button clicked, currentStep:', currentStep);
+                    try {
+                        await previousStep();
+                    } catch (error) {
+                        console.error('[Onboarding] Error in previous button handler:', error);
+                    }
+                });
+                prevBtn.dataset.listenersAttached = 'true';
+                console.log('[Onboarding] Previous button listener attached');
+            }
+        }
+
+        async function initOnboarding() {
+            console.log('[Onboarding] Initializing onboarding wizard...');
+            setupButtonListeners();
+            initResizeObserver();
+            try {
+                await updateUI();
+            } catch (e) {
+                console.error('[Onboarding] Error during initial updateUI:', e);
+            }
         }
 
         async function nextStep() {
-            // Save LLM config when leaving the LLM step
-            await saveLLMConfigIfNeeded();
+            if (isTransitioning) return;
+            isTransitioning = true;
+            setNavDisabled(true);
+            try {
+                // Save LLM config when leaving the LLM step
+                await saveLLMConfigIfNeeded();
 
-            if (currentStep === steps.length - 1) {
-                completeOnboarding();
-            } else {
-                currentStep++;
-                updateUI();
+                if (currentStep === steps.length - 1) {
+                    await completeOnboarding();
+                } else {
+                    currentStep++;
+                    await updateUI();
+                }
+            } catch (error) {
+                console.error('[Onboarding] Error in nextStep:', error);
+                // Still try to advance so user isn't stuck
+                if (currentStep < steps.length - 1) {
+                    currentStep++;
+                    try { await updateUI(); } catch (e) { console.error('[Onboarding] Error updating UI:', e); }
+                }
+            } finally {
+                isTransitioning = false;
+                setNavDisabled(false);
             }
         }
 
         async function previousStep() {
-            // Save LLM config when leaving the LLM step
-            await saveLLMConfigIfNeeded();
+            if (isTransitioning) return;
+            isTransitioning = true;
+            setNavDisabled(true);
+            try {
+                // Save LLM config when leaving the LLM step
+                await saveLLMConfigIfNeeded();
 
-            if (currentStep > 0) {
-                currentStep--;
-                updateUI();
+                if (currentStep > 0) {
+                    currentStep--;
+                    await updateUI();
+                }
+            } catch (error) {
+                console.error('[Onboarding] Error in previousStep:', error);
+                if (currentStep > 0) {
+                    currentStep--;
+                    try { await updateUI(); } catch (e) { console.error('[Onboarding] Error updating UI:', e); }
+                }
+            } finally {
+                isTransitioning = false;
+                setNavDisabled(false);
             }
         }
 
@@ -675,15 +1328,38 @@
             const currentStepId = steps[currentStep]?.id;
             if (currentStepId !== 'llm') return;
 
-            const provider = document.getElementById('llmProvider')?.value;
+            const provider = document.getElementById('llmProvider')?.value || 'ollama';
+
+            // Always persist the selected provider when leaving this step.
+            try {
+                await invoke('update_llm_provider', { provider });
+            } catch (e) {
+                console.error('Failed to save LLM provider:', e);
+            }
+
             if (provider === 'ollama') {
                 const url = document.getElementById('ollamaUrl')?.value || 'http://localhost:11434';
                 const model = document.getElementById('ollamaModel')?.value || 'llama3.2';
                 try {
-                    await invoke('update_ollama_config', { baseUrl: url, model: model });
+                    await invoke('update_ollama_config', { base_url: url, model: model });
                     console.log('Saved Ollama config:', url, model);
                 } catch (e) {
                     console.error('Failed to save Ollama config:', e);
+                }
+            } else if (provider === 'openai' || provider === 'anthropic' || provider === 'gemini' || provider === 'grok') {
+                // Keys never cross the normal config IPC boundary; store secrets in secure storage.
+                const keyInput = document.getElementById('apiKey');
+                const apiKey = keyInput?.value?.trim?.() || '';
+                if (apiKey.length > 0) {
+                    try {
+                        await invoke('store_api_key', { provider, api_key: apiKey });
+                        // Clear typed secrets from DOM as soon as we can.
+                        keyInput.value = '';
+                        keyInput.placeholder = '••••••••••••••••';
+                        console.log(`Stored ${provider} API key in secure storage.`);
+                    } catch (e) {
+                        console.error('Failed to store API key:', e);
+                    }
                 }
             }
         }
@@ -719,13 +1395,12 @@
         }
 
         async function showDownloadProgress(modelFilename) {
-            const stepContent = document.getElementById('stepContent');
             const nextBtn = document.getElementById('nextBtn');
             const prevBtn = document.getElementById('prevBtn');
 
             // Hide navigation buttons during download
-            nextBtn.style.display = 'none';
-            prevBtn.style.display = 'none';
+            if (nextBtn) nextBtn.style.display = 'none';
+            if (prevBtn) prevBtn.style.display = 'none';
 
             // Get model info for size display
             let modelInfo = null;
@@ -738,19 +1413,23 @@
 
             const sizeText = modelInfo ? ` (${modelInfo.size_mb} MB)` : '';
 
-            stepContent.innerHTML = `
+            await setStepContentHtml(`
                 <h2><span class="icon-download"></span> Downloading Voice Model</h2>
                 <p>Downloading the Whisper speech recognition model${sizeText}...</p>
                 <div style="margin: 2rem 0;">
                     <div class="progress-bar" style="height: 12px; background: var(--surface-color); border-radius: 6px; overflow: hidden;">
-                        <div id="downloadProgressFill" class="progress-fill" style="width: 0%; height: 100%; background: var(--accent-color); transition: width 0.3s;"></div>
+	                        <div id="downloadProgressFill" class="progress-fill" style="width: 0%; height: 100%; background: var(--brand-gradient);"></div>
                     </div>
                     <p id="downloadStatus" style="text-align: center; margin-top: 1rem; color: var(--text-secondary);">Starting download...</p>
                 </div>
                 <p style="font-size: 0.85rem; color: var(--text-secondary);">This may take a few minutes depending on your connection speed. The model will be cached locally for future use.</p>
-            `;
+	            `);
 
             // Listen for download progress events
+            if (!window.__TAURI__ || !window.__TAURI__.event || typeof window.__TAURI__.event.listen !== 'function') {
+                console.error('[Onboarding] Cannot listen for download progress events (Tauri event API unavailable).');
+                return;
+            }
             const { listen } = window.__TAURI__.event;
             const unlisten = await listen('whisper-download-progress', (event) => {
                 const data = event.payload;
@@ -767,7 +1446,7 @@
                     } else if (data.status === 'complete') {
                         statusText.innerHTML = '<span class="icon-check"></span> Download complete!';
                     } else if (data.status === 'error') {
-                        statusText.innerHTML = `<span class="icon-x-circle" style="color: var(--error-color);"></span> Error: ${data.error || 'Download failed'}`;
+                        statusText.innerHTML = `<span class="icon-x-circle" style="color: rgb(var(--danger-rgb));"></span> Error: ${data.error || 'Download failed'}`;
                     }
                 }
 
@@ -793,11 +1472,12 @@
                 console.error('Download failed:', error);
                 const statusText = document.getElementById('downloadStatus');
                 if (statusText) {
-                    statusText.innerHTML = `<span class="icon-x-circle" style="color: var(--error-color);"></span> Download failed: ${error}`;
+                    statusText.innerHTML = `<span class="icon-x-circle" style="color: rgb(var(--danger-rgb));"></span> Download failed: ${error}`;
                 }
                 // Show retry button
                 nextBtn.textContent = 'Retry Download';
                 nextBtn.style.display = 'block';
+                nextBtn.dataset.overrideHandler = 'true';
                 nextBtn.onclick = () => showDownloadProgress(modelFilename);
                 unlisten();
             }
@@ -820,13 +1500,133 @@
         }
 
         async function updateLLMProvider(provider) {
+            // Render config UI immediately so the form always reflects the
+            // selected provider, even if the backend invoke fails.
+            renderLLMConfig();
             try {
                 await invoke('update_llm_provider', { provider });
-                renderLLMConfig();
             } catch (error) {
                 console.error('Error updating LLM provider:', error);
             }
         }
+
+        function llmApiKeyLabel(provider) {
+            if (provider === 'openai') return 'OpenAI API Key';
+            if (provider === 'anthropic') return 'Anthropic API Key';
+            if (provider === 'gemini') return 'Gemini (Google) API Key';
+            if (provider === 'grok') return 'Grok (xAI) API Key';
+            return 'API Key';
+        }
+
+        function llmApiKeyPlaceholder(provider) {
+            if (provider === 'openai') return 'sk-...';
+            if (provider === 'anthropic') return 'sk-ant-...';
+            if (provider === 'gemini') return 'AIza...';
+            if (provider === 'grok') return 'xai-...';
+            return 'Enter your API key';
+        }
+
+        async function hydrateLlmApiKeyPlaceholder(provider) {
+            try {
+                // Only relevant for hosted providers.
+                if (!(provider === 'openai' || provider === 'anthropic' || provider === 'gemini' || provider === 'grok')) return;
+
+                // Avoid updating stale DOM if the user switched providers quickly.
+                const currentProvider = document.getElementById('llmProvider')?.value;
+                if (currentProvider !== provider) return;
+
+                const input = document.getElementById('apiKey');
+                if (!input) return;
+
+                // Never populate actual API keys into the DOM.
+                input.value = '';
+                input.placeholder = llmApiKeyPlaceholder(provider);
+
+                const deleteBtn = document.getElementById('deleteApiKeyBtn');
+
+                const hasKey = await invoke('has_api_key', { provider });
+                if (hasKey === true) {
+                    input.placeholder = '••••••••••••••••';
+                    // Show the delete button and wire it up (CSP-safe).
+                    if (deleteBtn) {
+                        deleteBtn.style.display = '';
+                        deleteBtn.addEventListener('click', async () => {
+                            try {
+                                await invoke('delete_api_key', { provider });
+                                input.value = '';
+                                input.placeholder = llmApiKeyPlaceholder(provider);
+                                deleteBtn.style.display = 'none';
+                            } catch (err) {
+                                console.error('Failed to delete API key:', err);
+                            }
+                        });
+                    }
+                } else if (deleteBtn) {
+                    deleteBtn.style.display = 'none';
+                }
+            } catch (e) {
+                // Non-fatal; keep base placeholder.
+                console.warn('[Onboarding] has_api_key placeholder hydration failed:', e);
+            }
+        }
+
+        // Debounce timer for URL input changes
+        let _ollamaRefreshTimer = null;
+
+        /// Debounced refresh: waits 500ms after the user stops typing in the URL field.
+        function refreshOllamaModels() {
+            clearTimeout(_ollamaRefreshTimer);
+            _ollamaRefreshTimer = setTimeout(() => void fetchOllamaModels(), 500);
+        }
+
+        /// Fetch models from the Ollama endpoint and populate the model dropdown.
+        /// Falls back to a manual text input if the server is unreachable.
+        async function fetchOllamaModels() {
+            const endpoint = (document.getElementById('ollamaUrl')?.value || '').trim() || 'http://localhost:11434';
+            const container = document.getElementById('ollamaModelContainer');
+            const status = document.getElementById('ollamaStatus');
+            const section = document.getElementById('ollamaModelSection');
+            if (!container) return;
+
+            try {
+                const models = await invoke('list_ollama_models', { endpoint });
+                if (!models || models.length === 0) {
+                    // No models available — keep model section hidden
+                    if (section) section.style.display = 'none';
+                    showOllamaFallbackInput(container, status, 'Ollama is running but no models found. Pull a model first.');
+                    return;
+                }
+                // Build a <select> with the fetched models
+                const currentVal = document.getElementById('ollamaModel')?.value || 'llama3.2';
+                let options = models.map(m => {
+                    const name = m.name || 'unknown';
+                    const selected = name === currentVal ? ' selected' : '';
+                    return `<option value="${name}"${selected}>${name}</option>`;
+                }).join('');
+                container.innerHTML = `<select id="ollamaModel" class="onb-input">${options}</select>`;
+                if (status) {
+                    status.style.color = 'var(--success-color, #22c55e)';
+                    status.textContent = `✓ Ollama connected — ${models.length} model${models.length !== 1 ? 's' : ''} available`;
+                }
+                // Models loaded — show model section
+                if (section) section.style.display = '';
+            } catch (e) {
+                // Connection failed — keep model section hidden
+                if (section) section.style.display = 'none';
+                showOllamaFallbackInput(container, status, 'Ollama is not reachable. Enter a model name manually.');
+            }
+        }
+
+        /// Replace the model dropdown with a text input when Ollama is unreachable.
+        function showOllamaFallbackInput(container, status, message) {
+            const currentVal = document.getElementById('ollamaModel')?.value || 'llama3.2';
+            container.innerHTML = `<input type="text" id="ollamaModel" class="onb-input" value="${currentVal}" placeholder="e.g., llama3.2, mistral, gemma2">`;
+            if (status) {
+                status.style.color = 'var(--warning-color, #f59e0b)';
+                status.textContent = message;
+            }
+        }
+
 
         function renderLLMConfig() {
             const container = document.getElementById('llmConfig');
@@ -837,26 +1637,46 @@
                 html = `
                     <div class="config-section">
                         <label for="ollamaUrl">Ollama URL</label>
-                        <input type="text" id="ollamaUrl" value="http://localhost:11434" style="width:100%;padding:0.6rem;border:1px solid var(--border-color);border-radius:6px;background:var(--background-color);color:var(--text-color);font-size:0.9rem;">
+                        <input type="text" id="ollamaUrl" class="onb-input" value="http://localhost:11434">
                     </div>
-                    <div class="config-section" style="margin-top:0.75rem;">
-                        <label for="ollamaModel">Model Name</label>
-                        <input type="text" id="ollamaModel" value="llama3.2" placeholder="e.g., llama3.2, mistral, gemma2" style="width:100%;padding:0.6rem;border:1px solid var(--border-color);border-radius:6px;background:var(--background-color);color:var(--text-color);font-size:0.9rem;">
-                        <p style="font-size:0.75rem;color:var(--text-secondary);margin-top:0.25rem;">Enter the model name you have pulled in Ollama (e.g., llama3.2, mistral, gemma2)</p>
+                    <div id="ollamaModelSection" class="config-section" style="margin-top:0.75rem; display:none;">
+                        <label for="ollamaModel">Model</label>
+                        <div id="ollamaModelContainer">
+                            <select id="ollamaModel" class="onb-input">
+                                <option value="">Loading models…</option>
+                            </select>
+                        </div>
+                        <div id="ollamaStatus" style="font-size:0.75rem;margin-top:0.25rem;color:var(--text-secondary);">Checking Ollama…</div>
                     </div>
                     <p style="font-size:0.8rem;color:var(--text-secondary);margin-top:0.5rem;">Make sure Ollama is running locally with your model pulled.</p>
                 `;
-            } else if (provider === 'openai' || provider === 'anthropic') {
+                // Fetch models asynchronously after the DOM is updated
+                setTimeout(() => void fetchOllamaModels(), 0);
+            } else if (provider === 'openai' || provider === 'anthropic' || provider === 'gemini' || provider === 'grok') {
                 html = `
                     <div class="config-section">
-                        <label for="apiKey">${provider === 'openai' ? 'OpenAI' : 'Anthropic'} API Key</label>
-                        <input type="password" id="apiKey" placeholder="Enter your API key" style="width:100%;padding:0.6rem;border:1px solid var(--border-color);border-radius:6px;background:var(--background-color);color:var(--text-color);font-size:0.9rem;">
+                        <label for="apiKey">${llmApiKeyLabel(provider)}</label>
+                        <div class="api-key-row">
+                            <input type="password" id="apiKey" class="onb-input" placeholder="${llmApiKeyPlaceholder(provider)}">
+                            <button id="deleteApiKeyBtn" class="btn btn-small btn-delete-api-key" style="display:none;" title="Delete stored API key">Delete Key</button>
+                        </div>
+                        <p style="font-size:0.75rem;color:var(--text-secondary);margin-top:0.25rem;">Keys are stored securely in your OS keychain. Leave blank to keep your existing key.</p>
                     </div>
                 `;
             } else {
-                html = `<p style="font-size:0.85rem;color:var(--text-secondary);">Echo mode will repeat your input for testing.</p>`;
+                html = `<p style="font-size:0.85rem;color:var(--text-secondary);">No additional configuration UI is available for this provider.</p>`;
             }
             container.innerHTML = html;
+
+            // Attach programmatic listeners for dynamic content (CSP-safe).
+            if (provider === 'ollama') {
+                document.getElementById('ollamaUrl')?.addEventListener('input', () => refreshOllamaModels());
+            }
+
+            // Async placeholder hydration (key existence) without blocking UI render.
+            if (provider === 'openai' || provider === 'anthropic' || provider === 'gemini' || provider === 'grok') {
+                void hydrateLlmApiKeyPlaceholder(provider);
+            }
         }
 
         // Load microphone devices into the dropdown
@@ -923,21 +1743,69 @@
                     providerSelect.value = llmPrimary;
                 }
 
-                // Render config UI
+                // Render config UI (this triggers async Ollama model fetch for the
+                // ollama provider).
                 renderLLMConfig();
 
-                // Populate Ollama fields if applicable
+                // Populate Ollama fields if applicable.
                 if (llmPrimary === 'ollama' && ollamaConfig) {
-                    setTimeout(() => {
-                        const urlInput = document.getElementById('ollamaUrl');
-                        const modelInput = document.getElementById('ollamaModel');
-                        if (urlInput && ollamaConfig.base_url) urlInput.value = ollamaConfig.base_url;
-                        if (modelInput && ollamaConfig.model) modelInput.value = ollamaConfig.model;
-                    }, 50);
+                    // Set the URL first so the model fetch uses the saved endpoint.
+                    const urlInput = document.getElementById('ollamaUrl');
+                    if (urlInput && ollamaConfig.base_url) urlInput.value = ollamaConfig.base_url;
+
+                    // Fetch models from the saved endpoint, then select the saved
+                    // model.  The model element may be a <select> (if Ollama
+                    // responded) or a text <input> (fallback).
+                    try {
+                        await fetchOllamaModels();
+                    } catch (_) { /* fallback input already rendered */ }
+
+                    const modelEl = document.getElementById('ollamaModel');
+                    if (modelEl && ollamaConfig.model) modelEl.value = ollamaConfig.model;
                 }
             } catch (error) {
                 console.error('Error loading LLM config:', error);
                 renderLLMConfig();
+            }
+        }
+
+        async function updateAgentPermissionLevel(level) {
+            try {
+                await invoke('set_default_permission_level', { level });
+                console.log('[Onboarding] Set default agent permission level:', level);
+                // Update visual selection state
+                document.querySelectorAll('input[name="agentPermLevel"]').forEach(radio => {
+                    const card = radio.closest('.option-card');
+                    if (card) {
+                        card.style.border = radio.value === level
+                            ? '2px solid var(--accent-primary)'
+                            : '1px solid var(--border-color)';
+                    }
+                });
+            } catch (error) {
+                console.error('[Onboarding] Error setting agent permission level:', error);
+            }
+        }
+
+        async function loadAgentPermissionLevel() {
+            try {
+                const settings = await invoke('get_global_permission_settings');
+                const level = (settings?.default_level || 'restricted').toLowerCase();
+                const radio = document.querySelector(`input[name="agentPermLevel"][value="${level}"]`);
+                if (radio) {
+                    radio.checked = true;
+                    // Update visual borders
+                    document.querySelectorAll('input[name="agentPermLevel"]').forEach(r => {
+                        const card = r.closest('.option-card');
+                        if (card) {
+                            card.style.border = r.value === level
+                                ? '2px solid var(--accent-primary)'
+                                : '1px solid var(--border-color)';
+                        }
+                    });
+                }
+            } catch (error) {
+                console.error('[Onboarding] Error loading agent permission level:', error);
             }
         }
 
@@ -957,8 +1825,29 @@
             }
         }
 
-        // Initialize
-        updateUI();
+        // Initialize when DOM is ready (handles cases where the script executes after DOMContentLoaded).
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => {
+                void initOnboarding();
+            });
+        } else {
+            void initOnboarding();
+        }
+
+        // External link handler — open in system default browser via opener plugin
+        document.addEventListener('click', (e) => {
+            const anchor = e.target.closest('a[href]');
+            if (!anchor) return;
+            const href = anchor.getAttribute('href') || '';
+            if (/^https?:\/\//i.test(href)) {
+                e.preventDefault();
+                if (window.__TAURI__?.opener?.openUrl) {
+                    window.__TAURI__.opener.openUrl(href).catch((err) =>
+                        console.error('[opener] Failed to open URL:', href, err)
+                    );
+                }
+            }
+        });
     </script>
 </body>
 

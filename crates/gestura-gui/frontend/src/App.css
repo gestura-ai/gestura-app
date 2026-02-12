@@ -3,7 +3,7 @@
 
   NOTE:
   The React UI uses class names like `.app`, `.header`, `.main`, `.sidebar`, `.content`, `.btn`.
-  Those base layout/styles previously existed only in `frontend/public/index.html` (static).
+	Those base layout/styles originally lived in legacy static HTML prototypes (since removed).
   Without them, the Tauri webview can render an incomplete layout where the chat input appears
   to overlap header controls.
 */
@@ -16,9 +16,23 @@
   --text: #0f172a;
   --text-secondary: #64748b;
 
+  /* Motion tokens (snappy, non-sliding) */
+  --motion-fast: 120ms;
+  --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
   /* These are also dynamically overridden by ThemeController */
   --accent: #2563eb;
   --accent-contrast: #ffffff;
+  --accent-rgb: 37, 99, 235;
+
+  /* Gestura brand gradients (https://gestura.app/) */
+  --gradient-primary: linear-gradient(to right, rgb(37, 99, 235), rgb(147, 51, 234));
+  --gradient-secondary: linear-gradient(to right, rgb(96, 165, 250), rgb(192, 132, 252));
+  /* One token for “the” brand gradient so we can adapt per theme */
+  --brand-gradient: var(--gradient-primary);
+
+  /* Accessible focus ring used by :focus-visible */
+  --focus-ring: rgba(var(--accent-rgb), 0.35);
 
   --success: #22c55e;
   --warning: #f59e0b;
@@ -34,6 +48,11 @@
 
   --accent: #60a5fa;
   --accent-contrast: #1e293b;
+  --accent-rgb: 96, 165, 250;
+
+  /* Dark mode: slightly lighter gradient reads cleaner on dark surfaces */
+  --brand-gradient: var(--gradient-secondary);
+  --focus-ring: rgba(var(--accent-rgb), 0.45);
 }
 
 * {
@@ -66,13 +85,63 @@ body {
 
 .header {
   padding: 1rem;
-  border-bottom: 1px solid var(--border);
   background: var(--surface);
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 0.75rem;
   flex-shrink: 0;
+  position: relative;
+}
+
+/* Subtle brand accent line (strategic gradient usage: minimal chrome) */
+.header::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--brand-gradient);
+  opacity: 0.8;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+/* Gradient text utility (use sparingly: titles/brand only) */
+.text-gradient {
+  display: inline-block;
+  background: var(--brand-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+@supports not (-webkit-background-clip: text) {
+  .text-gradient {
+    background: none;
+    color: var(--accent);
+  }
+}
+
+@media (forced-colors: active) {
+  .text-gradient {
+    background: none;
+    -webkit-text-fill-color: CanvasText;
+    color: CanvasText;
+  }
+
+  .btn:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+    box-shadow: none;
+  }
 }
 
 .main {
@@ -124,6 +193,11 @@ body {
   transition: opacity 0.2s, background 0.2s, border-color 0.2s;
 }
 
+.btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
 .btn:hover {
   opacity: 0.92;
 }
@@ -142,6 +216,25 @@ body {
 .btn-secondary:hover {
   opacity: 1;
   border-color: var(--accent);
+}
+
+/* Brand primary button (strategic gradient usage: key CTAs only) */
+.btn-primary,
+.btn-gradient {
+  background: var(--brand-gradient);
+  color: #ffffff;
+  border: 1px solid transparent;
+}
+
+.btn-primary:hover,
+.btn-gradient:hover {
+  opacity: 1;
+  filter: brightness(1.02);
+}
+
+.btn-primary:active,
+.btn-gradient:active {
+  filter: brightness(0.98);
 }
 
 .form-group {
@@ -172,6 +265,27 @@ body {
   padding: 1rem;
 }
 
+/* Status dots (used by StatusBar + RingPanel) */
+.status-indicator {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 0.5rem;
+}
+
+.status-connected {
+  background: var(--success);
+}
+
+.status-disconnected {
+  background: var(--error);
+}
+
+.status-unknown {
+  background: var(--text-secondary);
+}
+
 /* Onboarding Wizard Styles */
 .modal-overlay {
   position: fixed;
@@ -184,6 +298,7 @@ body {
   align-items: center;
   justify-content: center;
   z-index: 1000;
+  animation: onboarding-overlay-in var(--motion-fast) var(--motion-ease) both;
 }
 
 .onboarding-wizard {
@@ -194,6 +309,7 @@ body {
   max-height: 90vh;
   overflow: hidden;
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+  animation: onboarding-card-in var(--motion-fast) var(--motion-ease) both;
 }
 
 .onboarding-header {
@@ -213,7 +329,7 @@ body {
 .progress-fill {
   height: 100%;
   background: var(--accent);
-  transition: width 0.3s ease;
+  transition: width var(--motion-fast) var(--motion-ease);
 }
 
 .step-info {
@@ -237,6 +353,54 @@ body {
   padding: 2rem;
   max-height: 60vh;
   overflow-y: auto;
+}
+
+.onboarding-content-inner {
+  opacity: 1;
+  transition: opacity var(--motion-fast) var(--motion-ease);
+  will-change: opacity;
+}
+
+.onboarding-content-inner.is-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.onboarding-content-inner.is-visible {
+  opacity: 1;
+}
+
+@keyframes onboarding-overlay-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes onboarding-card-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+  .modal-overlay,
+  .onboarding-wizard {
+    animation: none !important;
+  }
+
+  .onboarding-content-inner,
+  .progress-fill {
+    transition: none !important;
+  }
 }
 
 .onboarding-step h2 {
@@ -549,34 +713,6 @@ kbd {
   height: 2rem;
 }
 
-/* Chat Panel Styles */
-.chat-panel {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-}
-
-.chat-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.5rem 1rem;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.chat-header h2 {
-  margin: 0;
-  font-size: 1.2rem;
-}
-
-.chat-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
 /* Workspace directory display in chat header */
 .workspace-display {
   font-size: 0.75rem;
@@ -835,10 +971,21 @@ kbd {
   font-weight: 600;
 }
 
-.message-content h1 { font-size: 1.4rem; }
-.message-content h2 { font-size: 1.2rem; }
-.message-content h3 { font-size: 1.1rem; }
-.message-content h4 { font-size: 1rem; }
+.message-content h1 {
+  font-size: 1.4rem;
+}
+
+.message-content h2 {
+  font-size: 1.2rem;
+}
+
+.message-content h3 {
+  font-size: 1.1rem;
+}
+
+.message-content h4 {
+  font-size: 1rem;
+}
 
 /* Markdown blockquote */
 .message-content blockquote {
@@ -1080,6 +1227,37 @@ kbd {
   color: white;
   border-radius: 4px;
   font-size: 0.75rem;
+}
+
+/* Screenshot result display */
+.screenshot-result {
+  margin: 0.5rem 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.screenshot-image {
+  width: 100%;
+  max-width: 600px;
+  height: auto;
+  display: block;
+  border-bottom: 1px solid var(--border);
+}
+
+.screenshot-info {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-family: monospace;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.screenshot-info span {
+  white-space: nowrap;
 }
 
 /* Fix chat input container z-index */

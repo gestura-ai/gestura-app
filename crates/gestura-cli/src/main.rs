@@ -201,6 +201,12 @@ enum ModelAction {
         /// Provider to test
         provider: Option<String>,
     },
+    /// List available LLM models for a provider
+    List {
+        /// Provider to list models for (e.g. openai, anthropic, grok, gemini, ollama).
+        /// If omitted, lists models for all configured providers.
+        provider: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -229,12 +235,40 @@ enum DeviceAction {
 enum McpAction {
     /// List configured MCP servers
     List,
-    /// Add an MCP server
+    /// Add an MCP server (Claude Code compatible)
     Add {
+        /// Server name (unique identifier)
+        name: String,
+        /// For stdio: the command to run; for http/sse: the URL
+        command_or_url: String,
+        /// Transport type (stdio, http, sse). Default: auto-detected.
+        #[arg(short, long, default_value = "stdio")]
+        transport: String,
+        /// Configuration scope (user, project, local). Default: user.
+        #[arg(short, long, default_value = "user")]
+        scope: String,
+        /// Environment variables (KEY=VALUE). Stdio only.
+        #[arg(short, long, value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// HTTP headers (Header: Value). Http/SSE only.
+        #[arg(long, value_name = "HEADER")]
+        header: Vec<String>,
+        /// Additional args passed to the command. Stdio only.
+        /// Everything after `--` is treated as command args.
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+    /// Add an MCP server from a raw JSON string (Claude Code compatible)
+    AddJson {
         /// Server name
         name: String,
-        /// Server command
-        command: String,
+        /// Raw JSON config string
+        json: String,
+    },
+    /// Get detailed info for a specific MCP server
+    Get {
+        /// Server name
+        name: String,
     },
     /// Remove an MCP server
     Remove { name: String },
@@ -248,6 +282,31 @@ enum McpAction {
     Prompts,
     /// Show server capabilities
     Capabilities,
+    /// Connect to an MCP server (starts the client and performs handshake)
+    Connect {
+        /// Server name (must be configured)
+        name: String,
+    },
+    /// Disconnect from a running MCP server
+    Disconnect {
+        /// Server name
+        name: String,
+    },
+    /// List tools discovered from connected MCP servers
+    Tools {
+        /// If provided, list tools for this server only; otherwise list all
+        name: Option<String>,
+    },
+    /// Call a tool on a connected MCP server
+    Call {
+        /// Server name
+        server: String,
+        /// Tool name
+        tool: String,
+        /// JSON arguments (e.g. '{"path": "/tmp/test.txt"}')
+        #[arg(default_value = "{}")]
+        arguments: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -439,6 +498,11 @@ enum ToolsAction {
     Permissions {
         #[command(subcommand)]
         action: PermissionsToolAction,
+    },
+    /// Screen capture and recording
+    Screen {
+        #[command(subcommand)]
+        action: ScreenToolAction,
     },
 }
 
@@ -728,8 +792,45 @@ enum PermissionsToolAction {
     },
 }
 
+#[derive(Subcommand)]
+enum ScreenToolAction {
+    /// Capture a screenshot
+    Capture {
+        /// Output path for screenshot
+        path: std::path::PathBuf,
+        /// Region to capture (format: x,y,width,height)
+        #[arg(short, long)]
+        region: Option<String>,
+        /// Display number (0 = primary)
+        #[arg(short, long)]
+        display: Option<u32>,
+    },
+    /// Start screen recording
+    RecordStart {
+        /// Output path for recording
+        path: std::path::PathBuf,
+        /// Region to record (format: x,y,width,height)
+        #[arg(short, long)]
+        region: Option<String>,
+        /// Display number (0 = primary)
+        #[arg(short, long)]
+        display: Option<u32>,
+    },
+    /// Stop screen recording
+    RecordStop {
+        /// Recording ID to stop
+        recording_id: String,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
+
+    // Respect `--no-color` / `NO_COLOR` across output helpers (`colored`, `console`).
+    if cli.no_color {
+        colored::control::set_override(false);
+        console::set_colors_enabled(false);
+    }
 
     // The TUI uses an alternate screen; any writes to stdout/stderr from tracing can corrupt the
     // layout. When running `chat` in TUI mode, we default tracing output to a sink.
@@ -1028,6 +1129,36 @@ fn main() {
                         }
                     };
                     ToolsCategory::Permissions(cmd)
+                }
+                ToolsAction::Screen {
+                    action: screen_action,
+                } => {
+                    let cmd = match screen_action {
+                        ScreenToolAction::Capture {
+                            path,
+                            region,
+                            display,
+                        } => screen::ScreenSubcommand::Capture {
+                            path: path.clone(),
+                            region: region.clone(),
+                            display: *display,
+                        },
+                        ScreenToolAction::RecordStart {
+                            path,
+                            region,
+                            display,
+                        } => screen::ScreenSubcommand::RecordStart {
+                            path: path.clone(),
+                            region: region.clone(),
+                            display: *display,
+                        },
+                        ScreenToolAction::RecordStop { recording_id } => {
+                            screen::ScreenSubcommand::RecordStop {
+                                recording_id: recording_id.clone(),
+                            }
+                        }
+                    };
+                    ToolsCategory::Screen(cmd)
                 }
             };
             run(category)

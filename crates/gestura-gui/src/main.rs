@@ -6,7 +6,7 @@
 #[allow(unused_imports)]
 use std::sync::Arc;
 #[allow(unused_imports)]
-use tauri::{Builder, Manager};
+use tauri::{Builder, Manager, RunEvent};
 
 use gestura_gui::agents::AgentManager;
 #[allow(unused_imports)]
@@ -15,7 +15,7 @@ use gestura_gui::commands;
 use gestura_gui::dispatcher::EventDispatcher;
 use gestura_gui::hotkeys::register_hotkey;
 use gestura_gui::kv::KvStore;
-use gestura_gui::{AppConfig, AppState};
+use gestura_gui::{AppConfig, AppConfigSecurityExt, AppState};
 
 #[tokio::main]
 async fn main() {
@@ -96,10 +96,11 @@ async fn main() {
     tracing_subscriber::fmt::init();
     tracing::info!("Starting Gestura app");
 
-    // Run Tauri
-    Builder::default()
+    // Build Tauri
+    let app = Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             gestura_gui::api::get_config,
@@ -116,6 +117,12 @@ async fn main() {
             gestura_gui::api::get_mcp_server_status,
             gestura_gui::api::register_mcp_server,
             gestura_gui::api::unregister_mcp_server,
+            // MCP Client Runtime commands
+            gestura_gui::api::connect_mcp_server,
+            gestura_gui::api::disconnect_mcp_server,
+            gestura_gui::api::list_connected_mcp_servers,
+            gestura_gui::api::list_mcp_client_tools,
+            gestura_gui::api::call_mcp_tool,
             gestura_gui::api::get_mdh_pointers,
             gestura_gui::api::set_mdh_pointer,
             gestura_gui::api::remove_mdh_pointer,
@@ -132,6 +139,7 @@ async fn main() {
             gestura_gui::api::list_openai_stt_models,
             gestura_gui::api::list_anthropic_models,
             gestura_gui::api::list_grok_models,
+            gestura_gui::api::list_gemini_models,
             gestura_gui::api::test_local_whisper,
             gestura_gui::api::validate_whisper_model,
             gestura_gui::api::get_whisper_models,
@@ -161,6 +169,7 @@ async fn main() {
             gestura_gui::api::process_chat_message,
             gestura_gui::api::process_chat_message_streaming,
             gestura_gui::api::cancel_chat_streaming,
+            gestura_gui::api::resume_chat_streaming,
             // Tool confirmation (Restricted mode pause/resume)
             gestura_gui::api::approve_tool_confirmation,
             gestura_gui::api::resolve_tool_confirmation_decision,
@@ -194,6 +203,10 @@ async fn main() {
             gestura_gui::api::validate_window_content,
             gestura_gui::api::get_window_list,
             gestura_gui::api::close_test_windows,
+            // Screen capture commands
+            gestura_gui::api::capture_screenshot,
+            gestura_gui::api::start_screen_recording,
+            gestura_gui::api::stop_screen_recording,
             // Automated testing commands
             gestura_gui::automated_testing::run_automated_tests,
             gestura_gui::automated_testing::test_specific_window,
@@ -223,6 +236,11 @@ async fn main() {
             gestura_gui::api::pick_workspace_directory,
             // Session convenience actions
             gestura_gui::api::open_shell_for_session,
+            // Shell process control (inline shell console)
+            gestura_gui::api::shell_process_stop,
+            gestura_gui::api::shell_process_pause,
+            gestura_gui::api::shell_process_resume,
+            gestura_gui::api::shell_process_rerun_info,
             // Session LLM config (session-scoped, doesn't modify global config)
             gestura_gui::api::get_session_llm_config,
             gestura_gui::api::set_session_llm_provider,
@@ -296,6 +314,8 @@ async fn main() {
             gestura_gui::api::store_api_key,
             gestura_gui::api::get_api_key,
             gestura_gui::api::delete_api_key,
+            gestura_gui::api::has_api_key,
+            gestura_gui::api::get_available_llm_providers,
             gestura_gui::api::migrate_api_keys_to_keychain,
             // Hooks settings
             gestura_gui::api::get_hooks_settings,
@@ -314,6 +334,23 @@ async fn main() {
             gestura_gui::api::set_default_permission_level
         ])
         .setup(move |app| {
+            // Extend the asset-protocol scope so the webview can load screenshots
+            // and other artifacts stored under ~/.gestura/ (session workspaces).
+            if let Some(home) = dirs::home_dir() {
+                let gestura_dir = home.join(".gestura");
+                if let Err(e) = app
+                    .asset_protocol_scope()
+                    .allow_directory(&gestura_dir, true)
+                {
+                    tracing::warn!(
+                        "Failed to add {} to asset protocol scope: {}",
+                        gestura_dir.display(),
+                        e
+                    );
+                }
+                tracing::info!("Asset protocol scope extended to {}", gestura_dir.display());
+            }
+
             // Attach the GUI observer for core orchestrator task lifecycle events.
             //
             // This keeps the orchestrator core-owned (tauri-free) while still enabling
@@ -332,7 +369,8 @@ async fn main() {
             // Check if this is the first run and show onboarding window
             if gestura_gui::AppConfig::is_first_run() {
                 tracing::info!("First run detected - showing onboarding window");
-                // Create a dedicated onboarding window (not the transparent main window)
+                // Create a dedicated onboarding window (the app is tray-first and does not
+                // create a default "main" window at startup).
                 if let Err(e) = gestura_gui::window_manager::open_onboarding_window() {
                     tracing::error!("Failed to open onboarding window: {}", e);
                 }
@@ -341,6 +379,25 @@ async fn main() {
             tracing::info!("Gestura app initialized");
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Gestura app");
+        .build(tauri::generate_context!())
+        .expect("error while building Gestura app");
+
+    // Tray-first behavior:
+    // - Closing the last window should NOT terminate the process.
+    // - Explicit Quit/Exit (tray menu) should terminate.
+    app.run(|_app_handle, event| {
+        if let RunEvent::ExitRequested { api, .. } = event {
+            // Only prevent exiting when we successfully created a tray icon.
+            // If the tray failed to initialize, allow exit so the app doesn't become
+            // un-quit-able.
+            let tray_ok = gestura_gui::tray::is_tray_running();
+
+            if tray_ok && !gestura_gui::app_lifecycle::is_exit_requested() {
+                tracing::info!(
+                    "Exit requested while in tray-first mode (likely last window closed); preventing exit"
+                );
+                api.prevent_exit();
+            }
+        }
+    });
 }
