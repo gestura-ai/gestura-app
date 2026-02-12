@@ -153,16 +153,54 @@ pub fn format_grok_model_name(id: &str) -> String {
     name.trim().to_string()
 }
 
+/// Format a Gemini model ID to a human-readable name.
+///
+/// # Examples
+/// - `gemini-2.0-flash` → `Gemini 2.0 Flash`
+/// - `gemini-2.0-flash-lite` → `Gemini 2.0 Flash Lite`
+/// - `gemini-1.5-pro` → `Gemini 1.5 Pro`
+pub fn format_gemini_model_name(id: &str) -> String {
+    let parts: Vec<&str> = id.split('-').collect();
+    let mut name = String::new();
+
+    for (i, part) in parts.iter().enumerate() {
+        if i == 0 && part.eq_ignore_ascii_case("gemini") {
+            name.push_str("Gemini");
+        } else {
+            let formatted = match *part {
+                "pro" => "Pro",
+                "flash" => "Flash",
+                "lite" => "Lite",
+                "ultra" => "Ultra",
+                "nano" => "Nano",
+                "exp" => "Experimental",
+                "latest" => "(Latest)",
+                other => {
+                    // Numeric version segments (e.g. "2.0", "1.5") are kept as-is.
+                    name.push(' ');
+                    name.push_str(other);
+                    continue;
+                }
+            };
+            name.push(' ');
+            name.push_str(formatted);
+        }
+    }
+
+    name.trim().to_string()
+}
+
 /// Format any model name based on provider.
 ///
 /// # Arguments
-/// - `provider`: LLM provider name (openai, anthropic, grok, ollama)
+/// - `provider`: LLM provider name (openai, anthropic, grok, gemini, ollama)
 /// - `model_id`: Raw model identifier
 pub fn format_model_name(provider: &str, model_id: &str) -> String {
     match provider.to_lowercase().as_str() {
         "openai" => format_openai_model_name(model_id),
         "anthropic" => format_anthropic_model_name(model_id),
         "grok" => format_grok_model_name(model_id),
+        "gemini" => format_gemini_model_name(model_id),
         "ollama" => capitalize_first(model_id),
         _ => model_id.to_string(),
     }
@@ -273,6 +311,31 @@ mod tests {
             "Grok 2 Vision (1212)"
         );
         assert_eq!(format_grok_model_name("grok-beta"), "Grok Beta");
+    }
+
+    #[test]
+    fn test_gemini_format() {
+        assert_eq!(
+            format_gemini_model_name("gemini-2.0-flash"),
+            "Gemini 2.0 Flash"
+        );
+        assert_eq!(
+            format_gemini_model_name("gemini-2.0-flash-lite"),
+            "Gemini 2.0 Flash Lite"
+        );
+        assert_eq!(format_gemini_model_name("gemini-1.5-pro"), "Gemini 1.5 Pro");
+        assert_eq!(
+            format_gemini_model_name("gemini-1.5-flash"),
+            "Gemini 1.5 Flash"
+        );
+    }
+
+    #[test]
+    fn test_format_model_name_gemini_dispatch() {
+        assert_eq!(
+            format_model_name("gemini", "gemini-2.0-flash"),
+            "Gemini 2.0 Flash"
+        );
     }
 
     #[test]

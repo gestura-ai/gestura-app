@@ -9,6 +9,7 @@
 //! - Echo (testing only - requires `dev` feature)
 
 pub mod default_models;
+pub mod model_listing;
 
 use gestura_core_foundation::AppError;
 use serde::{Deserialize, Serialize};
