@@ -30,6 +30,7 @@ pub(crate) fn render_input(app: &TuiApp, frame: &mut Frame, area: Rect) {
         TuiMode::Settings => ("SETTINGS", app.theme.mode_normal),
         TuiMode::Workflows => ("WORKFLOWS", app.theme.mode_normal),
         TuiMode::Tools => ("TOOLS", app.theme.mode_normal),
+        TuiMode::Capabilities => ("CAPABILITIES", app.theme.mode_normal),
     };
 
     // Always use the muted border color for the separator line so it stays subtle.

@@ -723,6 +723,7 @@ fn render_compact_header(app: &TuiApp, frame: &mut Frame, area: Rect) {
         TuiMode::Settings => "SETTINGS",
         TuiMode::Workflows => "WORKFLOWS",
         TuiMode::Tools => "TOOLS",
+        TuiMode::Capabilities => "CAPABILITIES",
     };
     parts.push(mode_str.to_string());
 
@@ -1885,7 +1886,7 @@ fn render_capabilities_overlay(app: &TuiApp, frame: &mut Frame, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 )),
         )
-        .style(Style::default().fg(app.theme.text_primary))
+        .style(Style::default().fg(app.theme.header_fg))
         .wrap(Wrap { trim: false });
 
     frame.render_widget(paragraph, popup_area);

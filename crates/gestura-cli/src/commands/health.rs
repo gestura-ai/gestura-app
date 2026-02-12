@@ -64,6 +64,16 @@ pub fn run() -> Result<()> {
             .map(|a| !a.api_key.is_empty())
             .unwrap_or(false),
     );
+    let gemini_ok = check_provider(
+        "Gemini",
+        "GEMINI_API_KEY",
+        config
+            .llm
+            .gemini
+            .as_ref()
+            .map(|g| !g.api_key.is_empty())
+            .unwrap_or(false),
+    );
     let grok_ok = check_provider(
         "Grok",
         "GROK_API_KEY",
@@ -75,24 +85,29 @@ pub fn run() -> Result<()> {
             .unwrap_or(false),
     );
 
-    // Check Ollama connectivity
+    // Check Ollama connectivity by pinging its endpoint
     let ollama_url = config
         .llm
         .ollama
         .as_ref()
         .map(|o| o.base_url.clone())
         .unwrap_or_else(|| "http://localhost:11434".to_string());
+    let ollama_ok = check_ollama_connectivity(&ollama_url);
     print!("  Ollama:       ");
-    // Simple check - just report configured URL
-    println!("{} ({})", "configured".dimmed(), ollama_url.dimmed());
+    if ollama_ok {
+        println!("connected {} ({})", "✓".green(), ollama_url.dimmed());
+    } else {
+        println!("not reachable {} ({})", "✗".red(), ollama_url.dimmed());
+    }
     println!();
 
     // Check if primary provider is configured
     let primary_ok = match config.llm.primary.as_str() {
         "openai" => openai_ok,
         "anthropic" => anthropic_ok,
+        "gemini" => gemini_ok,
         "grok" => grok_ok,
-        "ollama" => true, // Assume Ollama is available locally
+        "ollama" => ollama_ok,
         _ => false,
     };
     if !primary_ok {
@@ -206,4 +221,16 @@ fn check_provider(name: &str, env_var: &str, config_has_key: bool) -> bool {
         );
     }
     configured
+}
+
+/// Ping the Ollama endpoint to verify it is reachable.
+///
+/// Delegates to [`gestura_core::check_ollama_connectivity`] (the single source of truth).
+/// Uses a short-lived tokio runtime since the health command is synchronous.
+fn check_ollama_connectivity(base_url: &str) -> bool {
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(_) => return false,
+    };
+    rt.block_on(gestura_core::check_ollama_connectivity(base_url))
 }
