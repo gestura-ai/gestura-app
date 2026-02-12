@@ -43,7 +43,9 @@ use std::time::Duration;
 
 use chrono::Local;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture},
+    event::{
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -121,46 +123,87 @@ fn effective_provider_model_for_ui(app: &TuiApp) -> (String, String) {
 }
 
 /// Populate and open the model picker overlay.
-fn open_model_picker(app: &mut TuiApp) {
+///
+/// Fetches the dynamic model list for each configured provider (cached after
+/// the first call) and builds picker items for every available model. The
+/// currently active model is marked with a `●` prefix.
+fn open_model_picker(app: &mut TuiApp, rt: &tokio::runtime::Runtime) {
     let primary = app.config.llm.primary.clone();
     let mut items: Vec<app::ModelPickerItem> = Vec::new();
 
-    // Keep ordering predictable (primary first).
+    // Keep ordering predictable (primary provider first).
     let mut providers: Vec<&str> = Vec::new();
     providers.push(primary.as_str());
-    for p in ["openai", "anthropic", "grok", "ollama"] {
+    for p in ["openai", "anthropic", "grok", "gemini", "ollama"] {
         if p != primary.as_str() {
             providers.push(p);
         }
     }
     providers.dedup();
 
+    // Determine the currently active provider+model so we can mark it.
+    let (active_provider, active_model) = effective_provider_model_for_ui(app);
+
     for provider in providers {
-        // Only show providers that exist in config (and have a model).
-        let Some(model) = model_for_provider(&app.config, provider) else {
-            continue;
-        };
-        let model = model.trim().to_string();
-        if model.is_empty() {
+        // Only show providers that have a config section.
+        if model_for_provider(&app.config, provider).is_none() {
             continue;
         }
-        items.push(app::ModelPickerItem {
-            label: format!("{}:{}", provider, model),
-            provider: provider.to_string(),
-            model,
-        });
+
+        // Fetch or reuse cached model list for this provider.
+        let models = if let Some(cached) = app.cached_model_lists.get(provider) {
+            cached.clone()
+        } else {
+            let (api_key, base_url) = tui_api_key_and_base_url(&app.config, provider);
+            let key_ref = api_key.as_deref();
+            let url_ref = base_url.as_deref();
+            let fetched = rt
+                .block_on(gestura_core::list_models_for_provider(
+                    provider, key_ref, url_ref,
+                ))
+                .unwrap_or_else(|_| gestura_core::static_models_for_provider(provider));
+            app.cached_model_lists
+                .insert(provider.to_string(), fetched.clone());
+            fetched
+        };
+
+        if models.is_empty() {
+            // Fallback: show at least the configured default model.
+            if let Some(model) = model_for_provider(&app.config, provider) {
+                let model = model.trim().to_string();
+                if !model.is_empty() {
+                    let active = provider == active_provider && model == active_model;
+                    let prefix = if active { "● " } else { "  " };
+                    items.push(app::ModelPickerItem {
+                        label: format!("{prefix}{provider}:{model}"),
+                        provider: provider.to_string(),
+                        model,
+                    });
+                }
+            }
+            continue;
+        }
+
+        for m in &models {
+            let active = provider == active_provider && m.id == active_model;
+            let prefix = if active { "● " } else { "  " };
+            items.push(app::ModelPickerItem {
+                label: format!("{prefix}{provider}:{}", m.id),
+                provider: provider.to_string(),
+                model: m.id.clone(),
+            });
+        }
     }
 
     app.model_picker_state.items = items;
     app.model_picker_state.reset();
 
     // Preselect the effective provider/model when possible.
-    let (provider, model) = effective_provider_model_for_ui(app);
     if let Some(pos) = app.model_picker_state.filtered.iter().position(|idx| {
         app.model_picker_state
             .items
             .get(*idx)
-            .is_some_and(|it| it.provider == provider && it.model == model)
+            .is_some_and(|it| it.provider == active_provider && it.model == active_model)
     }) {
         app.model_picker_state.list_state.select(Some(pos));
     }
@@ -175,10 +218,10 @@ fn open_model_picker(app: &mut TuiApp) {
 /// - `provider:model` (explicit)
 /// - `provider` (provider only; selects provider default model)
 /// - `model` (model id only; will infer provider from model prefix when possible)
-fn apply_model_selection(app: &mut TuiApp, spec: &str) -> Result<()> {
+fn apply_model_selection(app: &mut TuiApp, spec: &str, rt: &tokio::runtime::Runtime) -> Result<()> {
     let spec = spec.trim();
     if spec.is_empty() {
-        open_model_picker(app);
+        open_model_picker(app, rt);
         return Ok(());
     }
 
@@ -187,7 +230,7 @@ fn apply_model_selection(app: &mut TuiApp, spec: &str) -> Result<()> {
     } else {
         // Distinguish provider-only vs model-only.
         match spec.to_ascii_lowercase().as_str() {
-            "openai" | "anthropic" | "grok" | "ollama" => {
+            "openai" | "anthropic" | "grok" | "gemini" | "ollama" => {
                 let p = spec.trim().to_string();
                 let m = model_for_provider(&app.config, &p).unwrap_or_default();
                 (p, m)
@@ -392,7 +435,15 @@ pub fn run_tui(opts: ChatOptions<'_>) -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // Enable mouse capture so we receive wheel-scroll and click/drag events (used for in-app
+    // transcript scrolling and text selection). Bracketed paste is also enabled so terminals
+    // emit `Event::Paste(...)` for reliable paste support in raw mode.
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -410,7 +461,8 @@ pub fn run_tui(opts: ChatOptions<'_>) -> Result<()> {
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture
+        DisableMouseCapture,
+        DisableBracketedPaste
     )?;
     terminal.show_cursor()?;
 
@@ -442,6 +494,11 @@ fn run_main_loop(
 
         // Render
         terminal.draw(|f| ui::render(app, f))?;
+
+        // Advance the thinking-spinner animation counter each frame while loading.
+        if app.is_loading {
+            app.loading_tick = app.loading_tick.wrapping_add(1);
+        }
 
         // Process streaming chunks if active
         if let Some(ref mut stream_state) = streaming {
@@ -857,7 +914,7 @@ fn run_main_loop(
                             "Still streaming — press Esc to cancel before running commands"
                                 .to_string(),
                         );
-                    } else if let Some(action) = handle_command(app, &cmd)? {
+                    } else if let Some(action) = handle_command(app, &cmd, rt)? {
                         match action {
                             Action::Quit => break,
                             Action::ResumeSession => {
@@ -904,9 +961,9 @@ fn run_main_loop(
                     app.page_down(page_size);
                 }
                 Action::CopySelection => {
-                    // Determine which message(s) to copy.
+                    // Determine which rendered line(s) to copy.
                     // If there's a mouse selection range, use that; otherwise
-                    // fall back to the currently selected line's message.
+                    // fall back to the currently selected line.
                     let (start, end) =
                         if let (Some(a), Some(e)) = (app.selection_anchor, app.selection_end) {
                             (a.min(e), a.max(e))
@@ -915,30 +972,21 @@ fn run_main_loop(
                             (sel, sel)
                         };
 
-                    // Collect unique message indices in order.
-                    let mut msg_indices: Vec<usize> = Vec::new();
-                    for line_idx in start..=end {
-                        if let Some(&mi) = app.line_to_message_map.get(line_idx)
-                            && msg_indices.last() != Some(&mi)
-                        {
-                            msg_indices.push(mi);
-                        }
-                    }
-
-                    let text: String = msg_indices
-                        .iter()
-                        .filter_map(|&mi| app.messages.get(mi))
-                        .map(|m| m.content.as_str())
+                    // Join the plain-text content of each rendered line in the range.
+                    let line_count = end.saturating_sub(start) + 1;
+                    let text: String = (start..=end)
+                        .filter_map(|idx| app.rendered_line_texts.get(idx))
+                        .cloned()
                         .collect::<Vec<_>>()
-                        .join("\n\n");
+                        .join("\n");
 
                     if !text.is_empty() {
                         match arboard::Clipboard::new() {
                             Ok(mut clipboard) => match clipboard.set_text(&text) {
                                 Ok(()) => {
                                     app.set_status(format!(
-                                        "Copied {} message(s) to clipboard",
-                                        msg_indices.len()
+                                        "Copied {} line(s) to clipboard",
+                                        line_count
                                     ));
                                 }
                                 Err(e) => {
@@ -1036,18 +1084,17 @@ fn start_streaming_message(
     rt: &tokio::runtime::Runtime,
     message: &str,
 ) -> Result<Option<StreamingState>> {
-    // Handle explicit /tools command only (not natural language questions)
-    // Natural language questions should go through the LLM for dynamic, session-aware responses
+    // Redirect /tools to the interactive tools tab (handled the same as :tools command).
     if message.trim().starts_with("/tools") {
-        app.add_message("user", message);
-        let response = gestura_core::tools::render_tools_overview();
-        app.add_message("assistant", &response);
+        let parts: Vec<&str> = message.split_whitespace().collect();
+        open_tools_tab(app, &parts[1..]);
         return Ok(None);
     }
 
     // Add user message
     app.add_message("user", message);
     app.is_loading = true;
+    app.loading_tick = 0;
     app.set_status("Streaming via AgentPipeline...");
 
     // Add placeholder for streaming response
@@ -1161,6 +1208,7 @@ fn start_resume_streaming(
     // Show resume indicator in chat
     app.add_message("system", "⏵ Resuming paused session…");
     app.is_loading = true;
+    app.loading_tick = 0;
     app.set_status("Resuming paused session…");
     app.add_streaming_message();
 
@@ -1232,10 +1280,80 @@ fn start_resume_streaming(
     }))
 }
 
+/// Open the interactive tools tab.
+///
+/// Supports the following argument patterns:
+/// - no args        → open list view
+/// - `<name>`       → open detail view for that tool
+/// - `enable <name>`  / `disable <name>` → toggle and stay on list
+fn open_tools_tab(app: &mut TuiApp, args: &[&str]) {
+    let tools = gestura_core::tools::all_tools();
+
+    match args {
+        // `/tools enable <name>` or `/tools disable <name>`
+        [verb, name, ..]
+            if verb.eq_ignore_ascii_case("enable") || verb.eq_ignore_ascii_case("disable") =>
+        {
+            let want_enabled = verb.eq_ignore_ascii_case("enable");
+            if let Some(idx) = tools.iter().position(|t| t.name.eq_ignore_ascii_case(name)) {
+                let tool_name = tools[idx].name.to_string();
+                let settings = app
+                    .session
+                    .state
+                    .tool_settings
+                    .get_or_insert_with(Default::default);
+                settings
+                    .enabled_tools
+                    .insert(tool_name.clone(), want_enabled);
+                let _ = super::save_cli_session(&app.session);
+
+                // Switch to tools tab with the toggled item selected.
+                app.tools_state.select(idx, tools.len());
+                app.active_tab = 2;
+                app.mode = TuiMode::Tools;
+                let label = if want_enabled { "enabled" } else { "disabled" };
+                app.set_status(format!("Tool '{}' {}", tool_name, label));
+            } else {
+                app.set_error(format!("Unknown tool: {}", name));
+            }
+        }
+        // `/tools <name>` → detail view
+        [name, ..] => {
+            if let Some(idx) = tools.iter().position(|t| t.name.eq_ignore_ascii_case(name)) {
+                app.tools_state.select(idx, tools.len());
+                app.tools_state.detail_mode = true;
+                app.active_tab = 2;
+                app.mode = TuiMode::Tools;
+                app.set_status(format!(
+                    "Tool: {} — Space to toggle, Esc to go back",
+                    tools[idx].name
+                ));
+            } else {
+                app.set_error(format!("Unknown tool: {}", name));
+            }
+        }
+        // `/tools` → list view
+        [] => {
+            app.tools_state.detail_mode = false;
+            // Initialise selection if not already set.
+            if app.tools_state.list_state.selected().is_none() && !tools.is_empty() {
+                app.tools_state.select(0, tools.len());
+            }
+            app.active_tab = 2;
+            app.mode = TuiMode::Tools;
+            app.set_status("Tools: ↑/↓ navigate, Enter details, Space toggle, Esc close");
+        }
+    }
+}
+
 /// Handle slash commands.
 ///
 /// Returns an optional `Action` for commands that should affect the main loop.
-fn handle_command(app: &mut TuiApp, command: &str) -> Result<Option<Action>> {
+fn handle_command(
+    app: &mut TuiApp,
+    command: &str,
+    rt: &tokio::runtime::Runtime,
+) -> Result<Option<Action>> {
     let parts: Vec<&str> = command.split_whitespace().collect();
     let cmd = parts.first().map(|s| s.to_lowercase()).unwrap_or_default();
     let args = &parts[1..];
@@ -1265,29 +1383,13 @@ fn handle_command(app: &mut TuiApp, command: &str) -> Result<Option<Action>> {
         }
         "/model" => {
             if let Some(spec) = first_non_flag_arg(args) {
-                apply_model_selection(app, spec)?;
+                apply_model_selection(app, spec, rt)?;
             } else {
-                open_model_picker(app);
+                open_model_picker(app, rt);
             }
         }
         "/tools" => {
-            if let Some(name) = args.first() {
-                if let Some(detail) = gestura_core::tools::render_tool_detail(name) {
-                    app.messages.push(app::TuiMessage {
-                        role: "system".to_string(),
-                        content: detail,
-                        thinking: None,
-                        is_streaming: false,
-                        is_error: false,
-                    });
-                } else {
-                    app.set_error(format!("Unknown tool: {}", name));
-                }
-            } else {
-                app.active_tab = 2; // Switch to tools tab
-                app.mode = TuiMode::Tools;
-                app.set_status("Tools: ↑/↓ to scroll, Esc to return to chat");
-            }
+            open_tools_tab(app, args);
         }
         "/clear" => {
             app.show_confirm(ConfirmAction::ClearMessages);
@@ -1676,8 +1778,53 @@ fn model_for_provider(cfg: &gestura_core::AppConfig, provider: &str) -> Option<S
         "openai" => cfg.llm.openai.as_ref().map(|c| c.model.clone()),
         "anthropic" => cfg.llm.anthropic.as_ref().map(|c| c.model.clone()),
         "grok" => cfg.llm.grok.as_ref().map(|c| c.model.clone()),
+        "gemini" => cfg.llm.gemini.as_ref().map(|c| c.model.clone()),
         "ollama" => cfg.llm.ollama.as_ref().map(|c| c.model.clone()),
         _ => None,
+    }
+}
+
+/// Extract the API key and optional base URL for a provider from config.
+///
+/// Used by the model picker to pass credentials to `list_models_for_provider`.
+fn tui_api_key_and_base_url(
+    config: &gestura_core::AppConfig,
+    provider: &str,
+) -> (Option<String>, Option<String>) {
+    match provider {
+        "openai" => {
+            let cfg = config.llm.openai.as_ref();
+            (
+                cfg.map(|c| c.api_key.clone()).filter(|k| !k.is_empty()),
+                cfg.and_then(|c| c.base_url.clone()),
+            )
+        }
+        "anthropic" => {
+            let cfg = config.llm.anthropic.as_ref();
+            (
+                cfg.map(|c| c.api_key.clone()).filter(|k| !k.is_empty()),
+                cfg.and_then(|c| c.base_url.clone()),
+            )
+        }
+        "gemini" => {
+            let cfg = config.llm.gemini.as_ref();
+            (
+                cfg.map(|c| c.api_key.clone()).filter(|k| !k.is_empty()),
+                cfg.and_then(|c| c.base_url.clone()),
+            )
+        }
+        "grok" => {
+            let cfg = config.llm.grok.as_ref();
+            (
+                cfg.map(|c| c.api_key.clone()).filter(|k| !k.is_empty()),
+                cfg.and_then(|c| c.base_url.clone()),
+            )
+        }
+        "ollama" => {
+            let cfg = config.llm.ollama.as_ref();
+            (None, cfg.map(|c| c.base_url.clone()))
+        }
+        _ => (None, None),
     }
 }
 

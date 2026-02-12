@@ -550,6 +550,13 @@ pub fn render(app: &mut TuiApp, frame: &mut Frame) {
     // We still render one dim line for session context.
     let header_height: u16 = 1;
     let content_min: u16 = if is_compact { 4 } else { 8 };
+    // Visual spacer between transcript and composer (~one terminal row ≈ 10–20px).
+    // On very small terminals we skip it to preserve usable space.
+    let transcript_gap_height: u16 = if area.height >= (MIN_HEIGHT + 2) {
+        1
+    } else {
+        0
+    };
     let status_height: u16 = 1;
 
     // Keep the composer from consuming the whole screen. In practice this yields a
@@ -559,6 +566,7 @@ pub fn render(app: &mut TuiApp, frame: &mut Frame) {
         area.height
             .saturating_sub(header_height)
             .saturating_sub(status_height)
+            .saturating_sub(transcript_gap_height)
             .saturating_sub(content_min)
             .max(min_input_height),
     );
@@ -574,6 +582,7 @@ pub fn render(app: &mut TuiApp, frame: &mut Frame) {
         .constraints([
             Constraint::Length(header_height),
             Constraint::Min(content_min),
+            Constraint::Length(transcript_gap_height),
             Constraint::Length(input_height),
             Constraint::Length(status_height),
         ])
@@ -582,12 +591,12 @@ pub fn render(app: &mut TuiApp, frame: &mut Frame) {
     // Store layout areas for mouse click detection
     app.layout_areas.tabs = Some(chunks[0]);
     app.layout_areas.messages = Some(chunks[1]);
-    app.layout_areas.input = Some(chunks[2]);
+    app.layout_areas.input = Some(chunks[3]);
 
     render_header(app, frame, chunks[0]);
     render_content(app, frame, chunks[1]);
-    composer::render_input(app, frame, chunks[2]);
-    render_status_bar(app, frame, chunks[3]);
+    composer::render_input(app, frame, chunks[3]);
+    render_status_bar(app, frame, chunks[4]);
 
     // Render overlays
     if app.mode == TuiMode::Help {
@@ -602,10 +611,10 @@ pub fn render(app: &mut TuiApp, frame: &mut Frame) {
         render_activity_overlay(app, frame, area);
     } else if app.mode == TuiMode::Command && !app.command_suggestions.is_empty() {
         // Render command palette above the input field
-        render_command_palette(app, frame, chunks[2]);
+        render_command_palette(app, frame, chunks[3]);
     } else if app.mode == TuiMode::Search {
         // Render search bar above the input field
-        render_search_bar(app, frame, chunks[2]);
+        render_search_bar(app, frame, chunks[3]);
     }
 }
 
@@ -782,9 +791,21 @@ fn render_content(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     }
 }
 
+/// Push a [`ListItem`] built from a [`Line`] and record its plain text.
+///
+/// This helper exists because `ListItem::content` is `pub(crate)` in ratatui, so once a
+/// `Line` is consumed by `ListItem::new` the text is inaccessible.  Collecting it up-front
+/// avoids that problem.
+fn push_item(items: &mut Vec<ListItem<'static>>, texts: &mut Vec<String>, line: Line<'static>) {
+    texts.push(line.spans.iter().map(|s| s.content.as_ref()).collect());
+    items.push(ListItem::new(line));
+}
+
 /// Render the message list with syntax highlighting for code blocks
 fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
-    let theme = &app.theme;
+    // Clone the theme so we can freely mutate `app` (e.g., follow-tail scrolling) without running
+    // into borrow checker conflicts during rendering.
+    let theme = app.theme.clone();
     let search_query = &app.search_query;
     let has_search = !search_query.is_empty();
 
@@ -810,8 +831,17 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     // rendered line back to its source message index.
     let mut all_items: Vec<ListItem> = Vec::new();
     let mut line_to_message: Vec<usize> = Vec::new();
+    // Plain-text content of each rendered line (parallel to `all_items`).
+    let mut line_texts: Vec<String> = Vec::new();
 
-    for &msg_idx in &message_indices {
+    for (iter_idx, &msg_idx) in message_indices.iter().enumerate() {
+        // Insert a blank line between consecutive messages so user input and agent
+        // responses have visible breathing room in the transcript.
+        if iter_idx > 0 {
+            push_item(&mut all_items, &mut line_texts, Line::from(""));
+            line_to_message.push(msg_idx);
+        }
+
         let msg = &app.messages[msg_idx];
         let match_ranges = if has_search {
             app.get_match_ranges(msg_idx)
@@ -862,32 +892,41 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 
         // Parse message for code blocks
         let segments = parse_message_segments(&content);
-        let mut items = Vec::new();
+        let mut items: Vec<ListItem<'static>> = Vec::new();
+        let mut item_texts: Vec<String> = Vec::new();
 
         // Render Thinking if present (with word wrapping) using transcript style.
         if let Some(thinking) = &msg.thinking
             && !thinking.is_empty()
         {
-            items.push(ListItem::new(Line::from(Span::styled(
-                "... thinking",
-                Style::default()
-                    .fg(theme.code_comment)
-                    .add_modifier(Modifier::ITALIC | Modifier::DIM),
-            ))));
+            push_item(
+                &mut items,
+                &mut item_texts,
+                Line::from(Span::styled(
+                    "... thinking",
+                    Style::default()
+                        .fg(theme.code_comment)
+                        .add_modifier(Modifier::ITALIC | Modifier::DIM),
+                )),
+            );
 
             // Wrap thinking text (indent 2 spaces)
             let thinking_wrap_width = wrap_width.saturating_sub(2);
             let wrapped_thinking = wrap_text(thinking, thinking_wrap_width);
             for line in wrapped_thinking {
-                items.push(ListItem::new(Line::from(Span::styled(
-                    format!("  {}", line),
-                    Style::default()
-                        .fg(theme.code_comment)
-                        .add_modifier(Modifier::ITALIC | Modifier::DIM),
-                ))));
+                push_item(
+                    &mut items,
+                    &mut item_texts,
+                    Line::from(Span::styled(
+                        format!("  {}", line),
+                        Style::default()
+                            .fg(theme.code_comment)
+                            .add_modifier(Modifier::ITALIC | Modifier::DIM),
+                    )),
+                );
             }
 
-            items.push(ListItem::new(Line::from("")));
+            push_item(&mut items, &mut item_texts, Line::from(""));
         }
         let mut is_first = true;
 
@@ -895,7 +934,7 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
             match segment {
                 MessageSegment::Text(text) => {
                     // Render markdown styling first, then wrap styled spans.
-                    let rendered = markdown::markdown_to_text_with_base(&text, theme, base_style);
+                    let rendered = markdown::markdown_to_text_with_base(&text, &theme, base_style);
 
                     for rendered_line in rendered.lines {
                         let wrapped = wrap_spans(&rendered_line.spans, wrap_width);
@@ -919,13 +958,13 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
                                 spans.extend(apply_highlight_ranges_to_spans(
                                     &wrapped_spans,
                                     &ranges,
-                                    theme,
+                                    &theme,
                                 ));
                             } else {
                                 spans.extend(wrapped_spans);
                             }
 
-                            items.push(ListItem::new(Line::from(spans)));
+                            push_item(&mut items, &mut item_texts, Line::from(spans));
                         }
                     }
                 }
@@ -937,12 +976,16 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
                     } else {
                         format!("```{}", lang_label)
                     };
-                    items.push(ListItem::new(Line::from(Span::styled(
-                        fence_open,
-                        Style::default()
-                            .fg(theme.code_lang_label)
-                            .add_modifier(Modifier::DIM),
-                    ))));
+                    push_item(
+                        &mut items,
+                        &mut item_texts,
+                        Line::from(Span::styled(
+                            fence_open,
+                            Style::default()
+                                .fg(theme.code_lang_label)
+                                .add_modifier(Modifier::DIM),
+                        )),
+                    );
 
                     // Add highlighted code lines (indented)
                     for code_line in code.lines() {
@@ -955,50 +998,87 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
                         spans.extend(highlight_code_line_themed(
                             code_line,
                             language.as_deref(),
-                            theme,
+                            &theme,
                         ));
-                        items.push(ListItem::new(Line::from(spans)));
+                        push_item(&mut items, &mut item_texts, Line::from(spans));
                     }
 
-                    items.push(ListItem::new(Line::from(Span::styled(
-                        "```",
-                        Style::default()
-                            .fg(theme.code_lang_label)
-                            .add_modifier(Modifier::DIM),
-                    ))));
-                    items.push(ListItem::new(Line::from("")));
+                    push_item(
+                        &mut items,
+                        &mut item_texts,
+                        Line::from(Span::styled(
+                            "```",
+                            Style::default()
+                                .fg(theme.code_lang_label)
+                                .add_modifier(Modifier::DIM),
+                        )),
+                    );
+                    push_item(&mut items, &mut item_texts, Line::from(""));
                     is_first = false;
                 }
             }
         }
 
-        let final_items = if items.is_empty() {
-            vec![ListItem::new(Line::from(Span::styled(
-                prefix.to_string(),
-                base_style,
-            )))]
-        } else {
-            items
-        };
-
-        // Record the mapping: each rendered line maps back to this message.
-        for _ in &final_items {
-            line_to_message.push(msg_idx);
+        if items.is_empty() {
+            push_item(
+                &mut items,
+                &mut item_texts,
+                Line::from(Span::styled(prefix.to_string(), base_style)),
+            );
         }
-        all_items.extend(final_items);
+
+        // Record the mapping and plain-text content: each rendered line maps back
+        // to this message.
+        line_to_message.extend(std::iter::repeat_n(msg_idx, items.len()));
+        line_texts.extend(item_texts);
+        all_items.extend(items);
     }
 
-    // Persist the line count and mapping so scroll logic uses the correct bounds.
+    // Persist the line count, mapping, and plain-text content so scroll logic and
+    // selection-copy use the correct bounds and text.
     app.rendered_line_count = all_items.len();
     app.line_to_message_map = line_to_message;
+    app.rendered_line_texts = line_texts;
+
+    // Apply any deferred follow-tail scroll after line count recomputation.
+    if app.pending_scroll_to_bottom && !app.user_scrolled {
+        app.scroll_to_bottom();
+    }
+    app.pending_scroll_to_bottom = false;
+
+    // Apply in-app selection highlight to lines within the mouse-drag range.
+    // We use `ListItem::style()` to set an item-level background; span-level fg
+    // colours remain untouched because ratatui merges them on top.
+    if let (Some(anchor), Some(end)) = (app.selection_anchor, app.selection_end) {
+        let sel_start = anchor.min(end);
+        let sel_end = anchor.max(end);
+        let sel_style = Style::default()
+            .bg(theme.selection_bg)
+            .add_modifier(Modifier::BOLD);
+        for idx in sel_start..=sel_end {
+            if idx < all_items.len() {
+                let old = std::mem::replace(&mut all_items[idx], ListItem::new(""));
+                all_items[idx] = old.style(sel_style);
+            }
+        }
+    }
 
     let messages_block = Block::default().borders(Borders::NONE);
 
-    let list = List::new(all_items).block(messages_block).highlight_style(
+    // Use a transparent highlight_style when there is an active multi-line selection so the
+    // single-line cursor doesn't visually conflict with the selection range.
+    let has_selection = app.selection_anchor.is_some() && app.selection_end.is_some();
+    let highlight = if has_selection {
+        Style::default()
+    } else {
         Style::default()
             .bg(theme.selection_bg)
-            .add_modifier(Modifier::BOLD),
-    );
+            .add_modifier(Modifier::BOLD)
+    };
+
+    let list = List::new(all_items)
+        .block(messages_block)
+        .highlight_style(highlight);
 
     // IMPORTANT: pass the real `message_list_state` — NOT a clone — so ratatui's
     // viewport offset updates are persisted between frames.
@@ -1234,16 +1314,206 @@ fn render_activity_overlay(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     frame.render_stateful_widget(list, popup_area, &mut app.activity_state.list_state);
 }
 
-/// Render the tools tab
-fn render_tools_tab(app: &TuiApp, frame: &mut Frame, area: Rect) {
-    let tools_markdown = gestura_core::tools::render_tools_overview();
-    let tools_text = markdown::markdown_to_text(&tools_markdown, &app.theme);
-    let paragraph = Paragraph::new(tools_text)
+/// Render the tools tab as an interactive, scrollable list with optional detail pane.
+fn render_tools_tab(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    let tools = gestura_core::tools::all_tools();
+    // Clone to avoid borrow-checker conflict: we need &mut app for render helpers.
+    let enabled_tools: Option<std::collections::HashMap<String, bool>> = app
+        .session
+        .state
+        .tool_settings
+        .as_ref()
+        .map(|s| s.enabled_tools.clone());
+
+    if app.tools_state.detail_mode {
+        // ── Detail pane ──────────────────────────────────────────────
+        render_tools_detail(app, tools, enabled_tools.as_ref(), frame, area);
+    } else {
+        // ── List pane ────────────────────────────────────────────────
+        render_tools_list(app, tools, enabled_tools.as_ref(), frame, area);
+    }
+}
+
+/// Render the selectable tool list.
+fn render_tools_list(
+    app: &mut TuiApp,
+    tools: &[gestura_core::tools::ToolDefinition],
+    enabled_tools: Option<&std::collections::HashMap<String, bool>>,
+    frame: &mut Frame,
+    area: Rect,
+) {
+    let items: Vec<ListItem<'static>> = tools
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let is_enabled = enabled_tools
+                .and_then(|m| m.get(t.name).copied())
+                .unwrap_or(false);
+            let indicator = if is_enabled { "✓" } else { "✗" };
+            let indicator_color = if is_enabled {
+                app.theme.mode_insert
+            } else {
+                app.theme.error_msg
+            };
+            let selected = i == app.tools_state.selected_index;
+            let name_style = if selected {
+                Style::default()
+                    .fg(app.theme.tab_active)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.status_fg)
+            };
+            let line = Line::from(vec![
+                Span::styled(
+                    format!(" {} ", indicator),
+                    Style::default().fg(indicator_color),
+                ),
+                Span::styled(format!("{:<16}", t.name), name_style),
+                Span::styled(
+                    t.summary.to_string(),
+                    Style::default()
+                        .fg(app.theme.status_fg)
+                        .add_modifier(Modifier::DIM),
+                ),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(app.theme.border))
-                .title(" Tools "),
+                .title(" Tools — ↑/↓ navigate  Enter details  Space toggle  Esc close "),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(app.theme.selection_bg)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▸ ");
+
+    frame.render_stateful_widget(list, area, &mut app.tools_state.list_state);
+}
+
+/// Render the detail view for the selected tool.
+fn render_tools_detail(
+    app: &TuiApp,
+    tools: &[gestura_core::tools::ToolDefinition],
+    enabled_tools: Option<&std::collections::HashMap<String, bool>>,
+    frame: &mut Frame,
+    area: Rect,
+) {
+    let Some(tool) = tools.get(app.tools_state.selected_index) else {
+        return;
+    };
+    let is_enabled = enabled_tools
+        .and_then(|m| m.get(tool.name).copied())
+        .unwrap_or(false);
+    let status_label = if is_enabled {
+        "Enabled ✓"
+    } else {
+        "Disabled ✗"
+    };
+    let status_color = if is_enabled {
+        app.theme.mode_insert
+    } else {
+        app.theme.error_msg
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Title
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {} ", tool.name),
+            Style::default()
+                .fg(app.theme.tab_active)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  [{}]", status_label),
+            Style::default().fg(status_color),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    // Summary
+    lines.push(Line::from(Span::styled(
+        format!("  {}", tool.summary),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(""));
+
+    // Inputs
+    if !tool.inputs.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Inputs:",
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for input in tool.inputs {
+            lines.push(Line::from(Span::styled(
+                format!("    • {}", input),
+                Style::default().fg(app.theme.status_fg),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Side effects
+    if !tool.side_effects.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Side Effects:",
+            Style::default()
+                .fg(app.theme.mode_command)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for se in tool.side_effects {
+            lines.push(Line::from(Span::styled(
+                format!("    ⚠ {}", se),
+                Style::default().fg(app.theme.mode_command),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Examples
+    if !tool.examples.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Examples:",
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for ex in tool.examples {
+            lines.push(Line::from(Span::styled(
+                format!("    $ {}", ex),
+                Style::default()
+                    .fg(app.theme.status_fg)
+                    .add_modifier(Modifier::DIM),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Footer hint
+    lines.push(Line::from(Span::styled(
+        "  Space: toggle enable/disable   Esc: back to list",
+        Style::default()
+            .fg(app.theme.status_fg)
+            .add_modifier(Modifier::DIM),
+    )));
+
+    let text = Text::from(lines);
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(format!(" Tool: {} ", tool.name)),
         )
         .wrap(Wrap { trim: true });
     frame.render_widget(paragraph, area);
@@ -1581,7 +1851,7 @@ fn render_help_overlay(app: &TuiApp, frame: &mut Frame, area: Rect) {
 }
 
 /// Render the command palette popup above the input field
-fn render_command_palette(app: &TuiApp, frame: &mut Frame, input_area: Rect) {
+fn render_command_palette(app: &mut TuiApp, frame: &mut Frame, input_area: Rect) {
     let suggestions = &app.command_suggestions;
     if suggestions.is_empty() {
         return;
@@ -1598,35 +1868,38 @@ fn render_command_palette(app: &TuiApp, frame: &mut Frame, input_area: Rect) {
     // Clear the area behind the popup
     frame.render_widget(Clear, popup_area);
 
-    // Build list items
+    // Build list items — uniform base style; the selected item is styled by
+    // ratatui's `highlight_style` via the stateful `ListState`.
     let items: Vec<ListItem> = suggestions
         .iter()
-        .enumerate()
-        .map(|(i, (cmd, desc))| {
-            let style = if i == app.command_selection {
-                Style::default()
-                    .fg(app.theme.tab_active)
-                    .add_modifier(Modifier::BOLD)
-                    .bg(app.theme.selection_bg)
-            } else {
-                Style::default().fg(app.theme.header_fg)
-            };
+        .map(|(cmd, desc)| {
             let content = format!("{:<15} {}", cmd, desc);
-            ListItem::new(Line::from(Span::styled(content, style)))
+            ListItem::new(Line::from(Span::styled(
+                content,
+                Style::default().fg(app.theme.header_fg),
+            )))
         })
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(app.theme.mode_command))
-            .title(Span::styled(
-                " Commands (Tab to complete, Enter to run, ↑↓ to select) ",
-                Style::default().fg(app.theme.mode_command),
-            )),
-    );
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.mode_command))
+                .title(Span::styled(
+                    " Commands (Tab to complete, Enter to run, ↑↓ to select) ",
+                    Style::default().fg(app.theme.mode_command),
+                )),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(app.theme.tab_active)
+                .bg(app.theme.selection_bg)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("› ");
 
-    frame.render_widget(list, popup_area);
+    frame.render_stateful_widget(list, popup_area, &mut app.command_list_state);
 }
 
 /// Render a confirmation dialog

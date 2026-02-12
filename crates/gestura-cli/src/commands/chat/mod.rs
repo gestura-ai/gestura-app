@@ -12,13 +12,11 @@ use gestura_core::{
     get_speech_processor,
     tool_confirmation::{TOOL_CONFIRMATIONS, ToolConfirmationDecision},
 };
-use indicatif::{ProgressBar, ProgressStyle};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 mod markdown_ansi;
@@ -180,6 +178,105 @@ fn export_cli_session(session: &ChatSession, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Handle `/tools` subcommands in basic (readline) mode.
+///
+/// - no args              → list tools with enabled status
+/// - `<name>`             → show detail for a specific tool
+/// - `enable <name>`      → enable a tool
+/// - `disable <name>`     → disable a tool
+fn basic_mode_tools_command(args: &[&str], session: &mut ChatSession) {
+    let tools = gestura_core::tools::all_tools();
+    let enabled_map = session
+        .state
+        .tool_settings
+        .as_ref()
+        .map(|s| &s.enabled_tools);
+
+    match args {
+        // enable / disable
+        [verb, name, ..]
+            if verb.eq_ignore_ascii_case("enable") || verb.eq_ignore_ascii_case("disable") =>
+        {
+            let want_enabled = verb.eq_ignore_ascii_case("enable");
+            if gestura_core::tools::find_tool(name).is_some() {
+                let tool_name = name.to_ascii_lowercase();
+                let settings = session
+                    .state
+                    .tool_settings
+                    .get_or_insert_with(Default::default);
+                settings
+                    .enabled_tools
+                    .insert(tool_name.clone(), want_enabled);
+                let _ = save_cli_session(session);
+                let label = if want_enabled { "enabled" } else { "disabled" };
+                println!("{} Tool '{}' {}", "✓".green(), tool_name, label);
+            } else {
+                println!(
+                    "{}: Unknown tool '{}'. Try /tools to list.",
+                    "error".red(),
+                    name
+                );
+            }
+        }
+        // detail
+        [name, ..] => match gestura_core::tools::render_tool_detail(name) {
+            Some(text) => {
+                let tool = gestura_core::tools::find_tool(name).unwrap();
+                let is_enabled = enabled_map
+                    .and_then(|m| m.get(tool.name).copied())
+                    .unwrap_or(false);
+                let status = if is_enabled {
+                    format!("{}", "✓ enabled".green())
+                } else {
+                    format!("{}", "✗ disabled".red())
+                };
+                println!("  Status: {}", status);
+                println!();
+                println!("{}", markdown_ansi::markdown_to_ansi(&text));
+                println!(
+                    "{}",
+                    format!(
+                        "Use /tools {} <name> to toggle.",
+                        if is_enabled { "disable" } else { "enable" }
+                    )
+                    .dimmed()
+                );
+            }
+            None => println!(
+                "{}: Unknown tool '{}'. Try /tools to list.",
+                "error".red(),
+                name
+            ),
+        },
+        // list
+        [] => {
+            println!("{} {}", "◆".blue().bold(), "Built-in Tools:".blue());
+            println!();
+            for t in tools {
+                let is_enabled = enabled_map
+                    .and_then(|m| m.get(t.name).copied())
+                    .unwrap_or(false);
+                let indicator = if is_enabled {
+                    format!("{}", "✓".green())
+                } else {
+                    format!("{}", "✗".red())
+                };
+                println!(
+                    "  {} {:<16} {}",
+                    indicator,
+                    t.name.bold(),
+                    t.summary.dimmed()
+                );
+            }
+            println!();
+            println!(
+                "{}",
+                "Use /tools <name> for details · /tools enable|disable <name> to toggle".dimmed()
+            );
+        }
+    }
+}
+
 /// List all available sessions with metadata
 pub fn list_sessions() -> Result<Vec<SessionInfo>> {
     list_sessions_filtered(SessionFilter::All)
@@ -204,6 +301,7 @@ fn model_for_provider(cfg: &AppConfig, provider: &str) -> Option<String> {
         "openai" => cfg.llm.openai.as_ref().map(|c| c.model.clone()),
         "anthropic" => cfg.llm.anthropic.as_ref().map(|c| c.model.clone()),
         "grok" => cfg.llm.grok.as_ref().map(|c| c.model.clone()),
+        "gemini" => cfg.llm.gemini.as_ref().map(|c| c.model.clone()),
         "ollama" => cfg.llm.ollama.as_ref().map(|c| c.model.clone()),
         _ => None,
     }
@@ -291,6 +389,21 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
             "anthropic" => {
                 if let Some(ref mut anthropic) = config.llm.anthropic {
                     anthropic.model = model_name.to_string();
+                }
+            }
+            "grok" => {
+                if let Some(ref mut grok) = config.llm.grok {
+                    grok.model = model_name.to_string();
+                }
+            }
+            "gemini" => {
+                if let Some(ref mut gemini) = config.llm.gemini {
+                    gemini.model = model_name.to_string();
+                }
+            }
+            "ollama" => {
+                if let Some(ref mut ollama) = config.llm.ollama {
+                    ollama.model = model_name.to_string();
                 }
             }
             _ => {}
@@ -560,7 +673,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 "{}  {}      {}",
                                 "│".dimmed(),
                                 "/tools [name]".green(),
-                                "List all tools or show detail for one".dimmed()
+                                "List tools, show detail, enable/disable".dimmed()
                             );
                             println!(
                                 "{}  {}        {}",
@@ -633,21 +746,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                         }
                         "/tools" => {
                             println!();
-                            if let Some(name) = args.first() {
-                                match gestura_core::tools::render_tool_detail(name) {
-                                    Some(text) => {
-                                        println!("{}", markdown_ansi::markdown_to_ansi(&text))
-                                    }
-                                    None => println!(
-                                        "{}: Unknown tool '{}'. Try /tools to list tools.",
-                                        "error".red(),
-                                        name
-                                    ),
-                                }
-                            } else {
-                                let text = gestura_core::tools::render_tools_overview();
-                                println!("{}", markdown_ansi::markdown_to_ansi(&text));
-                            }
+                            basic_mode_tools_command(&args, &mut chat_session);
                             println!();
                             continue;
                         }
@@ -1007,18 +1106,11 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 chat_session.add_user_message(&input, input_source);
 
                 // Handle explicit /tools command only (not natural language questions)
-                // Natural language questions should go through the LLM for dynamic, session-aware responses
                 if input.trim().starts_with("/tools") {
-                    let text = gestura_core::tools::render_tools_overview();
+                    let parts: Vec<&str> = input.split_whitespace().collect();
                     println!();
-                    println!(
-                        "{} {}",
-                        "◆".blue().bold(),
-                        "Here are the available tools:".blue()
-                    );
+                    basic_mode_tools_command(&parts[1..], &mut chat_session);
                     println!();
-                    println!("{}", markdown_ansi::markdown_to_ansi(&text));
-                    chat_session.add_assistant_message(&text, None);
                     continue;
                 }
 
@@ -1664,14 +1756,8 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
 /// Record voice input and return transcribed text
 fn record_voice_input(rt: &tokio::runtime::Runtime) -> Result<String> {
     // Show recording indicator
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} {msg}")
-            .unwrap(),
-    );
-    spinner.set_message("Listening... (speak now, silence will stop recording)");
-    spinner.enable_steady_tick(Duration::from_millis(100));
+    let spinner =
+        super::spinner::brand_spinner("Listening... (speak now, silence will stop recording)");
 
     let result = rt.block_on(async {
         let speech_processor = get_speech_processor();

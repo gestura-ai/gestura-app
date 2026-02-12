@@ -32,11 +32,9 @@ pub(crate) fn render_input(app: &TuiApp, frame: &mut Frame, area: Rect) {
         TuiMode::Tools => ("TOOLS", app.theme.mode_normal),
     };
 
-    let border_style = if app.mode == TuiMode::Insert || app.mode == TuiMode::Command {
-        Style::default().fg(mode_indicator.1)
-    } else {
-        Style::default().fg(app.theme.border)
-    };
+    // Always use the muted border color for the separator line so it stays subtle.
+    // The mode indicator label retains its bright accent color for at-a-glance feedback.
+    let border_style = Style::default().fg(app.theme.border);
 
     // Claude-like composer: no full box. Use a single subtle top separator line.
     // That line consumes 1 row; the remaining rows are the editable area.

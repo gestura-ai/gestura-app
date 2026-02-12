@@ -3,6 +3,8 @@
 //! This module contains the core application state machine for the TUI,
 //! including mode management, message handling, and state transitions.
 
+use std::collections::HashMap;
+
 use chrono::Utc;
 use gestura_core::AppConfig;
 use gestura_core::chat_sessions::MessageSource;
@@ -59,7 +61,8 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::pro()
+        // Default to Gestura's GUI-matched palette so the CLI TUI aligns with the desktop app.
+        Self::gestura()
     }
 }
 
@@ -67,19 +70,51 @@ impl Theme {
     /// Select an initial TUI theme based on the configured UI theme mode.
     ///
     /// Gestura’s config stores a *mode* (`"system" | "light" | "dark"`) rather than a
-    /// specific palette name. For the TUI, we map that mode into one of the built-in
-    /// terminal-first themes:
+    /// specific palette name. For the TUI we default to the **Gestura** theme so the
+    /// terminal UI matches the GUI styling (using the GUI token palette).
     ///
-    /// - `light`  → [`Theme::light`]
-    /// - `dark`   → [`Theme::pro`] (Claude-like, dark)
-    /// - `system` → [`Theme::pro`] (we currently treat system as dark for the TUI)
-    ///
-    /// Any unknown value falls back to [`Theme::default`].
+    /// Note: this function doesn't receive an `accent`, so it falls back to the GUI's
+    /// default accent (`blue`). For accent-aware initialization prefer
+    /// [`Theme::from_config`].
+    #[allow(dead_code)]
     pub fn from_theme_mode(theme_mode: &str) -> Self {
-        match theme_mode.trim().to_lowercase().as_str() {
-            "light" => Self::light(),
-            "dark" | "system" => Self::pro(),
-            _ => Self::default(),
+        Self::gestura_for(theme_mode, Some("blue"))
+    }
+
+    /// Create an initial theme from the full application config.
+    ///
+    /// This allows the TUI to respect both `theme_mode` and `accent`, matching the GUI.
+    pub fn from_config(config: &AppConfig) -> Self {
+        Self::gestura_for(&config.ui.theme_mode, config.ui.accent.as_deref())
+    }
+
+    fn is_dark_theme_mode(theme_mode: &str) -> bool {
+        match theme_mode.trim().to_ascii_lowercase().as_str() {
+            "light" => false,
+            "dark" | "system" => true,
+            // Default to dark: this matches prior TUI behavior for `system` and keeps
+            // terminals readable when the user provides an unknown value.
+            _ => true,
+        }
+    }
+
+    fn accent_color(is_dark: bool, accent: Option<&str>) -> Color {
+        let accent = accent.unwrap_or("blue").trim().to_ascii_lowercase();
+        match (accent.as_str(), is_dark) {
+            // Keep in sync with `crates/gestura-gui/frontend/src/app/ThemeController.tsx`
+            ("blue", false) => Color::Rgb(37, 99, 235),
+            ("blue", true) => Color::Rgb(96, 165, 250),
+            ("emerald", false) => Color::Rgb(16, 185, 129),
+            ("emerald", true) => Color::Rgb(52, 211, 153),
+            ("amber", false) => Color::Rgb(245, 158, 11),
+            ("amber", true) => Color::Rgb(251, 191, 36),
+            ("purple", false) => Color::Rgb(139, 92, 246),
+            ("purple", true) => Color::Rgb(167, 139, 250),
+            ("rose", false) => Color::Rgb(244, 63, 94),
+            ("rose", true) => Color::Rgb(251, 113, 133),
+            // Unknown accent -> GUI default.
+            (_, false) => Color::Rgb(37, 99, 235),
+            (_, true) => Color::Rgb(96, 165, 250),
         }
     }
 
@@ -245,37 +280,102 @@ impl Theme {
 
     /// Gestura brand theme (blue → purple).
     ///
-    /// This theme approximates the gestura.app look while keeping the TUI readable on
-    /// dark terminals. Gradients are represented in the UI renderer via per-span RGB
-    /// coloring where appropriate.
+    /// This theme mirrors the GUI's design tokens (`--background`, `--surface`, `--border`,
+    /// `--text`, `--text-secondary`) and uses the configured accent when available.
+    ///
+    /// Gradients are represented in the UI renderer via per-span RGB coloring.
     pub fn gestura() -> Self {
+        // Default to the GUI's default accent and dark palette.
+        Self::gestura_for("dark", Some("blue"))
+    }
+
+    /// Build the Gestura theme from a UI mode + accent.
+    ///
+    /// `theme_mode` uses the same semantics as the GUI (`system|light|dark`). For the
+    /// TUI we currently treat `system` as dark (same as the previous TUI behavior).
+    pub fn gestura_for(theme_mode: &str, accent: Option<&str>) -> Self {
+        let is_dark = Self::is_dark_theme_mode(theme_mode);
+        let accent = Self::accent_color(is_dark, accent);
+
+        // Brand palette aligned with gestura.app website theme.
+        let (background, surface, border, text, text_secondary) = if is_dark {
+            (
+                Color::Rgb(10, 10, 10),    // --background (near-black, website dark)
+                Color::Rgb(26, 26, 26),    // --surface (dark gray, website dark)
+                Color::Rgb(51, 65, 85),    // --border (slate-700)
+                Color::Rgb(241, 245, 249), // --text (slate-100)
+                Color::Rgb(148, 163, 184), // --text-secondary (slate-400)
+            )
+        } else {
+            (
+                Color::Rgb(255, 255, 255), // --background
+                Color::Rgb(248, 250, 252), // --surface (slate-50)
+                Color::Rgb(226, 232, 240), // --border (slate-200)
+                Color::Rgb(30, 41, 59),    // --foreground (slate-800, website light)
+                Color::Rgb(100, 116, 139), // --text-secondary (slate-500)
+            )
+        };
+
+        // Secondary brand color from the blue→violet gradient endpoint.
+        let secondary = if is_dark {
+            Color::Rgb(167, 139, 250) // purple-400 (#a78bfa)
+        } else {
+            Color::Rgb(124, 58, 237) // violet-600 (#7c3aed)
+        };
+
+        let error = Color::Rgb(239, 68, 68); // red-500
+
+        // Code syntax highlighting (conventional, softened to fit brand).
+        let code_string = if is_dark {
+            Color::Rgb(94, 234, 212) // teal-300
+        } else {
+            Color::Rgb(13, 148, 136) // teal-600
+        };
+        let code_number = if is_dark {
+            Color::Rgb(251, 191, 36) // amber-400
+        } else {
+            Color::Rgb(217, 119, 6) // amber-600
+        };
+
         Self {
             name: "Gestura",
-            header_bg: Color::Rgb(2, 6, 23),
-            header_fg: Color::Rgb(226, 232, 240),
-            user_msg: Color::Rgb(248, 250, 252),
-            assistant_msg: Color::Rgb(192, 132, 252),
-            system_msg: Color::Rgb(148, 163, 184),
-            error_msg: Color::Rgb(248, 113, 113),
-            streaming: Color::Rgb(96, 165, 250),
-            border: Color::Rgb(51, 65, 85),
-            border_focused: Color::Rgb(37, 99, 235),
-            status_bg: Color::Rgb(2, 6, 23),
-            status_fg: Color::Rgb(148, 163, 184),
-            mode_normal: Color::Rgb(96, 165, 250),
-            mode_insert: Color::Rgb(192, 132, 252),
-            mode_command: Color::Rgb(248, 250, 252),
-            tab_active: Color::Rgb(37, 99, 235),
-            tab_inactive: Color::Rgb(71, 85, 105),
-            selection_bg: Color::Rgb(30, 41, 59),
-            code_bg: Color::Rgb(15, 23, 42),
-            code_fg: Color::Rgb(226, 232, 240),
-            code_keyword: Color::Rgb(96, 165, 250),
-            code_string: Color::Rgb(192, 132, 252),
-            code_comment: Color::Rgb(100, 116, 139),
-            code_number: Color::Rgb(147, 197, 253),
-            code_function: Color::Rgb(167, 139, 250),
-            code_lang_label: Color::Rgb(148, 163, 184),
+            header_bg: surface,
+            header_fg: text,
+
+            // Message role styling: accent for user prompt + streaming/thinking;
+            // primary text for assistant; muted for system messages.
+            user_msg: accent,
+            assistant_msg: text,
+            system_msg: text_secondary,
+            error_msg: error,
+            streaming: accent,
+
+            border,
+            border_focused: accent,
+
+            status_bg: background,
+            status_fg: text_secondary,
+
+            // Mode colors use brand palette (muted / blue / violet) for visual
+            // distinction without relying on non-brand green or amber.
+            mode_normal: text_secondary,
+            mode_insert: accent,
+            mode_command: secondary,
+
+            tab_active: accent,
+            tab_inactive: text_secondary,
+
+            selection_bg: surface,
+
+            // Code blocks: surface bg with brand-tinted syntax colors.
+            code_bg: surface,
+            code_fg: text,
+            code_keyword: accent,
+            code_string,
+            code_comment: text_secondary,
+            code_number,
+            code_function: secondary,
+            code_lang_label: text_secondary,
         }
     }
 
@@ -335,6 +435,8 @@ pub enum TuiMode {
     Workflows,
     /// Tools submenu mode - viewing tools tab
     Tools,
+    /// Capabilities overlay is displayed (reference popup, Esc to close)
+    Capabilities,
 }
 
 /// Types of confirmation dialogs
@@ -491,6 +593,8 @@ pub struct TuiApp {
     pub mode: TuiMode,
     /// Whether we're waiting for a response
     pub is_loading: bool,
+    /// Frame counter for the animated thinking spinner (incremented each render tick while loading).
+    pub loading_tick: u64,
     /// Current status message
     pub status: String,
     /// Error message (if any)
@@ -515,6 +619,8 @@ pub struct TuiApp {
     pub command_suggestions: Vec<(String, String)>,
     /// Command palette: selected suggestion index
     pub command_selection: usize,
+    /// Command palette: list state for scrollable viewport tracking
+    pub command_list_state: ListState,
     /// Command history for up/down navigation
     pub command_history: Vec<String>,
     /// Current position in command history
@@ -544,10 +650,19 @@ pub struct TuiApp {
     /// Original prompt before enhancement (for undo with Cmd+Z)
     pub original_prompt: Option<String>,
 
+    /// Rendered capabilities text (populated when `/capabilities` is invoked).
+    pub capabilities_text: String,
+    /// Scroll offset for the capabilities overlay.
+    pub capabilities_scroll: usize,
+
     /// Agent activity state (tool-call transcript, separate from chat transcript).
     pub activity_state: ActivityState,
+    /// Interactive tools list state (Tools tab).
+    pub tools_state: ToolsState,
     /// Model picker overlay state.
     pub model_picker_state: ModelPickerState,
+    /// Cached dynamic model lists per provider (populated on first `/model` open).
+    pub cached_model_lists: HashMap<String, Vec<gestura_core::ModelInfo>>,
 
     // ========== Scrolling & Selection ==========
     /// Total number of rendered lines in the last frame (set by `render_messages`).
@@ -557,10 +672,21 @@ pub struct TuiApp {
     pub rendered_line_count: usize,
     /// Mapping from rendered-line index → source message index (set by `render_messages`).
     pub line_to_message_map: Vec<usize>,
+    /// Plain-text content of each rendered line (set by `render_messages`).
+    ///
+    /// Used by the in-app selection/copy feature so we can copy the exact visible text of
+    /// selected lines rather than whole message content.
+    pub rendered_line_texts: Vec<String>,
     /// Start of the current mouse-drag text selection (rendered-line index).
     pub selection_anchor: Option<usize>,
     /// End of the current mouse-drag text selection (rendered-line index).
     pub selection_end: Option<usize>,
+
+    /// When true, the next render pass should snap the transcript scroll position to the bottom.
+    ///
+    /// This is used to implement reliable follow-tail scrolling during streaming updates where
+    /// new content changes the rendered line count.
+    pub pending_scroll_to_bottom: bool,
 }
 
 /// A single line in the agent activity transcript.
@@ -633,6 +759,50 @@ impl ActivityState {
     pub fn is_at_bottom(&self) -> bool {
         let selected = self.list_state.selected().unwrap_or(0);
         selected >= self.entries.len().saturating_sub(1)
+    }
+}
+
+/// State for the interactive tools list.
+#[derive(Debug, Clone, Default)]
+pub struct ToolsState {
+    /// Currently selected tool index in the list.
+    pub selected_index: usize,
+    /// Whether we are viewing the detail pane for the selected tool.
+    pub detail_mode: bool,
+    /// Selection state used by ratatui's stateful list widget.
+    pub list_state: ListState,
+}
+
+impl ToolsState {
+    /// Move the selection up.
+    pub fn select_prev(&mut self, tool_count: usize) {
+        if tool_count == 0 {
+            return;
+        }
+        self.selected_index = if self.selected_index == 0 {
+            tool_count - 1
+        } else {
+            self.selected_index - 1
+        };
+        self.list_state.select(Some(self.selected_index));
+    }
+
+    /// Move the selection down.
+    pub fn select_next(&mut self, tool_count: usize) {
+        if tool_count == 0 {
+            return;
+        }
+        self.selected_index = (self.selected_index + 1) % tool_count;
+        self.list_state.select(Some(self.selected_index));
+    }
+
+    /// Select a specific index (clamped to bounds).
+    pub fn select(&mut self, index: usize, tool_count: usize) {
+        if tool_count == 0 {
+            return;
+        }
+        self.selected_index = index.min(tool_count - 1);
+        self.list_state.select(Some(self.selected_index));
     }
 }
 
@@ -775,10 +945,13 @@ impl TuiApp {
             .map(TuiMessage::from)
             .collect();
 
-        let initial_theme = Theme::from_theme_mode(&config.ui.theme_mode);
+        let has_initial_messages = !messages.is_empty();
+
+        let initial_theme = Theme::from_config(&config);
 
         let mut message_list_state = ListState::default();
-        // Select the last message if any exist
+        // Select the last message if any exist (best-effort; we will snap to the true bottom
+        // after first render when wrapped line counts are known).
         if !messages.is_empty() {
             message_list_state.select(Some(messages.len().saturating_sub(1)));
         }
@@ -794,6 +967,7 @@ impl TuiApp {
             system_prompt,
             mode: TuiMode::Insert, // Start in insert mode for immediate typing
             is_loading: false,
+            loading_tick: 0,
             status: "Ready".to_string(),
             error: None,
             error_timestamp: None,
@@ -805,6 +979,7 @@ impl TuiApp {
             settings_state: SettingsState::default(),
             command_suggestions: Vec::new(),
             command_selection: 0,
+            command_list_state: ListState::default(),
             command_history: Vec::new(),
             command_history_pos: None,
             pending_confirm: None,
@@ -820,13 +995,21 @@ impl TuiApp {
             session_cost_usd: 0.0,
             original_prompt: None,
 
+            capabilities_text: String::new(),
+            capabilities_scroll: 0,
+
             activity_state: ActivityState::default(),
+            tools_state: ToolsState::default(),
             model_picker_state: ModelPickerState::default(),
+            cached_model_lists: HashMap::new(),
 
             rendered_line_count: 0,
             line_to_message_map: Vec::new(),
+            rendered_line_texts: Vec::new(),
             selection_anchor: None,
             selection_end: None,
+
+            pending_scroll_to_bottom: has_initial_messages,
         }
     }
 
@@ -868,7 +1051,13 @@ impl TuiApp {
 
     /// Set the theme by name
     pub fn set_theme(&mut self, name: &str) {
-        self.theme = Theme::by_name(name);
+        let normalized = name.trim().to_ascii_lowercase();
+        if normalized == "gestura" || normalized == "brand" {
+            self.theme =
+                Theme::gestura_for(&self.config.ui.theme_mode, self.config.ui.accent.as_deref());
+        } else {
+            self.theme = Theme::by_name(name);
+        }
         self.set_status(format!("Theme changed to: {}", self.theme.name));
     }
 
@@ -1002,12 +1191,14 @@ impl TuiApp {
         if self.command_selection >= self.command_suggestions.len() {
             self.command_selection = 0;
         }
+        self.sync_command_list_state();
     }
 
     /// Select next command suggestion
     pub fn next_command_suggestion(&mut self) {
         if !self.command_suggestions.is_empty() {
             self.command_selection = (self.command_selection + 1) % self.command_suggestions.len();
+            self.sync_command_list_state();
         }
     }
 
@@ -1019,6 +1210,18 @@ impl TuiApp {
             } else {
                 self.command_selection - 1
             };
+            self.sync_command_list_state();
+        }
+    }
+
+    /// Sync the `command_list_state` with the current `command_selection` so
+    /// ratatui's stateful `List` widget scrolls the viewport to keep the
+    /// selected item visible.
+    fn sync_command_list_state(&mut self) {
+        if self.command_suggestions.is_empty() {
+            self.command_list_state.select(None);
+        } else {
+            self.command_list_state.select(Some(self.command_selection));
         }
     }
 
@@ -1146,10 +1349,13 @@ impl TuiApp {
             }
         }
 
-        // Auto-scroll to bottom unless user has scrolled up
-        if !self.user_scrolled {
-            self.scroll_to_bottom();
+        // A new message (especially from the user) is a strong signal that the
+        // conversation should follow-tail.  Unconditionally re-enable auto-scroll
+        // so the view snaps to the bottom on the next render.
+        if role == "user" {
+            self.user_scrolled = false;
         }
+        self.pending_scroll_to_bottom = true;
     }
 
     /// Add a streaming message (placeholder that will be updated)
@@ -1161,15 +1367,21 @@ impl TuiApp {
             is_streaming: true,
             is_error: false,
         });
-        if !self.user_scrolled {
-            self.scroll_to_bottom();
-        }
+        // A streaming placeholder always follows a user message, so auto-scroll
+        // should already be re-enabled.  Set the flag unconditionally to be safe.
+        self.pending_scroll_to_bottom = true;
     }
 
     /// Update the last message (for streaming)
     pub fn update_last_message(&mut self, content: &str) {
         if let Some(last) = self.messages.last_mut() {
             last.content = content.to_string();
+        }
+
+        // Streaming updates can change the rendered line count due to wrapping. Defer the actual
+        // scroll-to-bottom until after the next render computes the updated line count.
+        if !self.user_scrolled {
+            self.pending_scroll_to_bottom = true;
         }
     }
 
@@ -1207,15 +1419,18 @@ impl TuiApp {
         });
         self.error_message_count += 1;
 
-        if !self.user_scrolled {
-            self.scroll_to_bottom();
-        }
+        // Error messages are important — always scroll to make them visible.
+        self.pending_scroll_to_bottom = true;
     }
 
     /// Update the last message thinking content
     pub fn update_last_message_thinking(&mut self, thinking: &str) {
         if let Some(last) = self.messages.last_mut() {
             last.thinking = Some(thinking.to_string());
+        }
+
+        if !self.user_scrolled {
+            self.pending_scroll_to_bottom = true;
         }
     }
 
@@ -1312,22 +1527,79 @@ impl TuiApp {
         }
     }
 
-    /// Insert a character at cursor position
+    /// Clamp the cursor to a valid UTF-8 character boundary within the current input.
+    fn clamp_cursor_to_char_boundary(&mut self) {
+        self.cursor_pos = self.cursor_pos.min(self.input.len());
+        while self.cursor_pos > 0 && !self.input.is_char_boundary(self.cursor_pos) {
+            self.cursor_pos = self.cursor_pos.saturating_sub(1);
+        }
+    }
+
+    /// Return the previous UTF-8 character boundary at or before `idx`.
+    fn prev_char_boundary(&self, idx: usize) -> usize {
+        if idx == 0 {
+            return 0;
+        }
+
+        let mut i = idx.min(self.input.len());
+        // If `idx` is a boundary, moving left should go to the previous char.
+        i = i.saturating_sub(1);
+        while i > 0 && !self.input.is_char_boundary(i) {
+            i = i.saturating_sub(1);
+        }
+        i
+    }
+
+    /// Return the next UTF-8 character boundary strictly after `idx`.
+    fn next_char_boundary(&self, idx: usize) -> usize {
+        let len = self.input.len();
+        if idx >= len {
+            return len;
+        }
+
+        let mut i = (idx + 1).min(len);
+        while i < len && !self.input.is_char_boundary(i) {
+            i += 1;
+        }
+        i
+    }
+
+    /// Insert a character at the cursor position.
+    ///
+    /// `cursor_pos` is treated as a **byte offset** into the UTF-8 string.
     pub fn insert_char(&mut self, c: char) {
+        self.clamp_cursor_to_char_boundary();
         self.input.insert(self.cursor_pos, c);
-        self.cursor_pos += 1;
+        self.cursor_pos += c.len_utf8();
+    }
+
+    /// Insert a string at the cursor position (used for bracketed paste).
+    ///
+    /// `cursor_pos` is treated as a **byte offset** into the UTF-8 string.
+    pub fn insert_str(&mut self, s: &str) {
+        if s.is_empty() {
+            return;
+        }
+        self.clamp_cursor_to_char_boundary();
+        self.input.insert_str(self.cursor_pos, s);
+        self.cursor_pos = self.cursor_pos.saturating_add(s.len());
     }
 
     /// Delete the character before cursor
     pub fn delete_char_before(&mut self) {
-        if self.cursor_pos > 0 {
-            self.cursor_pos -= 1;
-            self.input.remove(self.cursor_pos);
+        self.clamp_cursor_to_char_boundary();
+        if self.cursor_pos == 0 {
+            return;
         }
+
+        let prev = self.prev_char_boundary(self.cursor_pos);
+        self.input.remove(prev);
+        self.cursor_pos = prev;
     }
 
     /// Delete the character after cursor
     pub fn delete_char_after(&mut self) {
+        self.clamp_cursor_to_char_boundary();
         if self.cursor_pos < self.input.len() {
             self.input.remove(self.cursor_pos);
         }
@@ -1335,14 +1607,14 @@ impl TuiApp {
 
     /// Move cursor left
     pub fn cursor_left(&mut self) {
-        self.cursor_pos = self.cursor_pos.saturating_sub(1);
+        self.clamp_cursor_to_char_boundary();
+        self.cursor_pos = self.prev_char_boundary(self.cursor_pos);
     }
 
     /// Move cursor right
     pub fn cursor_right(&mut self) {
-        if self.cursor_pos < self.input.len() {
-            self.cursor_pos += 1;
-        }
+        self.clamp_cursor_to_char_boundary();
+        self.cursor_pos = self.next_char_boundary(self.cursor_pos);
     }
 
     /// Move cursor to start
@@ -1357,70 +1629,103 @@ impl TuiApp {
 
     /// Move cursor to next word (vim 'w' motion)
     pub fn cursor_word_forward(&mut self) {
-        let chars: Vec<char> = self.input.chars().collect();
-        let len = chars.len();
+        self.clamp_cursor_to_char_boundary();
+        let len = self.input.len();
         if self.cursor_pos >= len {
             return;
         }
 
+        let mut i = self.cursor_pos;
+
         // Skip current word (non-whitespace)
-        while self.cursor_pos < len && !chars[self.cursor_pos].is_whitespace() {
-            self.cursor_pos += 1;
+        while i < len {
+            let ch = self.input[i..].chars().next().unwrap_or(' ');
+            if ch.is_whitespace() {
+                break;
+            }
+            i += ch.len_utf8();
         }
+
         // Skip whitespace
-        while self.cursor_pos < len && chars[self.cursor_pos].is_whitespace() {
-            self.cursor_pos += 1;
+        while i < len {
+            let ch = self.input[i..].chars().next().unwrap_or(' ');
+            if !ch.is_whitespace() {
+                break;
+            }
+            i += ch.len_utf8();
         }
+
+        self.cursor_pos = i;
     }
 
     /// Move cursor to previous word (vim 'b' motion)
     pub fn cursor_word_backward(&mut self) {
+        self.clamp_cursor_to_char_boundary();
         if self.cursor_pos == 0 {
             return;
         }
 
-        let chars: Vec<char> = self.input.chars().collect();
-
-        // Move back one to start
-        self.cursor_pos -= 1;
+        let mut i = self.prev_char_boundary(self.cursor_pos);
 
         // Skip whitespace
-        while self.cursor_pos > 0 && chars[self.cursor_pos].is_whitespace() {
-            self.cursor_pos -= 1;
+        while i > 0 {
+            let ch = self.input[i..].chars().next().unwrap_or(' ');
+            if !ch.is_whitespace() {
+                break;
+            }
+            i = self.prev_char_boundary(i);
         }
+
         // Skip to start of word
-        while self.cursor_pos > 0 && !chars[self.cursor_pos - 1].is_whitespace() {
-            self.cursor_pos -= 1;
+        while i > 0 {
+            let prev = self.prev_char_boundary(i);
+            let ch = self.input[prev..].chars().next().unwrap_or(' ');
+            if ch.is_whitespace() {
+                break;
+            }
+            i = prev;
         }
+
+        self.cursor_pos = i;
     }
 
     /// Delete word before cursor (vim 'db' or Ctrl+W)
     pub fn delete_word_before(&mut self) {
+        self.clamp_cursor_to_char_boundary();
         if self.cursor_pos == 0 {
             return;
         }
 
-        let chars: Vec<char> = self.input.chars().collect();
         let original_pos = self.cursor_pos;
+        let mut i = self.cursor_pos;
 
         // Skip whitespace
-        while self.cursor_pos > 0 && chars[self.cursor_pos - 1].is_whitespace() {
-            self.cursor_pos -= 1;
-        }
-        // Skip to start of word
-        while self.cursor_pos > 0 && !chars[self.cursor_pos - 1].is_whitespace() {
-            self.cursor_pos -= 1;
+        while i > 0 {
+            let prev = self.prev_char_boundary(i);
+            let ch = self.input[prev..].chars().next().unwrap_or(' ');
+            if !ch.is_whitespace() {
+                break;
+            }
+            i = prev;
         }
 
-        // Remove the characters
-        self.input = chars[..self.cursor_pos]
-            .iter()
-            .chain(chars[original_pos..].iter())
-            .collect();
+        // Skip to start of word
+        while i > 0 {
+            let prev = self.prev_char_boundary(i);
+            let ch = self.input[prev..].chars().next().unwrap_or(' ');
+            if ch.is_whitespace() {
+                break;
+            }
+            i = prev;
+        }
+
+        self.input.replace_range(i..original_pos, "");
+        self.cursor_pos = i;
     }
 
     /// Delete to end of line (vim 'D' or Ctrl+K)
     pub fn delete_to_end(&mut self) {
+        self.clamp_cursor_to_char_boundary();
         self.input.truncate(self.cursor_pos);
     }
 
@@ -1966,9 +2271,9 @@ mod tests {
     fn test_theme_switching() {
         let mut app = create_test_app();
 
-        // Default theme is "Pro" (display name, not slug)
+        // Default theme is "Gestura" (GUI-matched)
         let initial_theme = app.theme.name;
-        assert_eq!(initial_theme, "Pro");
+        assert_eq!(initial_theme, "Gestura");
 
         app.set_theme("light");
         assert_eq!(app.theme.name, "Light");
@@ -1991,10 +2296,14 @@ mod tests {
     fn test_theme_cycling() {
         let mut app = create_test_app();
 
-        // Get initial theme name and verify it's the default (Pro)
+        // Get initial theme name and verify it's the default (Gestura)
+        assert_eq!(app.theme.name, "Gestura");
+
+        // Cycle to next theme (Gestura -> Pro)
+        app.cycle_theme();
         assert_eq!(app.theme.name, "Pro");
 
-        // Cycle to next theme - Pro is last, so cycling wraps to the first theme.
+        // Pro is last, so cycling wraps to the first theme.
         app.cycle_theme();
         // After cycling from pro, should wrap to catppuccin-mocha.
         assert_eq!(app.theme.name, "Catppuccin Mocha");
@@ -2018,6 +2327,21 @@ mod tests {
         // Cycle wraps back to Pro
         app.cycle_theme();
         assert_eq!(app.theme.name, "Pro");
+    }
+
+    #[test]
+    fn test_gestura_theme_respects_config_accent() {
+        let session = new_cli_session(None).unwrap();
+        let mut config = AppConfig::default();
+        config.ui.theme_mode = "dark".to_string();
+        config.ui.accent = Some("emerald".to_string());
+
+        let app = TuiApp::new(session, config, None);
+
+        assert_eq!(app.theme.name, "Gestura");
+        assert_eq!(app.theme.border_focused, Color::Rgb(52, 211, 153));
+        assert_eq!(app.theme.streaming, Color::Rgb(52, 211, 153));
+        assert_eq!(app.theme.user_msg, Color::Rgb(52, 211, 153));
     }
 
     // ==================== Command Suggestion Tests ====================

@@ -201,6 +201,12 @@ enum ModelAction {
         /// Provider to test
         provider: Option<String>,
     },
+    /// List available LLM models for a provider
+    List {
+        /// Provider to list models for (e.g. openai, anthropic, grok, gemini, ollama).
+        /// If omitted, lists models for all configured providers.
+        provider: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

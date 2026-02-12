@@ -20,6 +20,7 @@ use ratatui::{
 use super::app::Theme;
 
 /// Convert a small Markdown subset to styled ratatui `Text`.
+#[allow(dead_code)]
 pub(crate) fn markdown_to_text(markdown: &str, theme: &Theme) -> Text<'static> {
     let base = Style::default().fg(theme.header_fg);
     let bullet = Style::default()
