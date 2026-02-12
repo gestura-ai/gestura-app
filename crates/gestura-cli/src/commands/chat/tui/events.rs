@@ -97,6 +97,7 @@ fn handle_key_event(app: &mut TuiApp, key: KeyEvent) -> Action {
         TuiMode::Settings => handle_settings_mode(app, key),
         TuiMode::Workflows => handle_workflows_mode(app, key),
         TuiMode::Tools => handle_tools_mode(app, key),
+        TuiMode::Capabilities => handle_capabilities_mode(app, key),
     }
 }
 
@@ -620,6 +621,49 @@ fn handle_help_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         // Scroll help content
         KeyCode::Char('j') | KeyCode::Down => Action::ScrollDown,
         KeyCode::Char('k') | KeyCode::Up => Action::ScrollUp,
+        _ => Action::Continue,
+    }
+}
+
+/// Handle Capabilities mode keys (reference popup, Esc to close, scrollable)
+fn handle_capabilities_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.mode = TuiMode::Insert;
+            Action::Continue
+        }
+        // Scroll capabilities content
+        KeyCode::Char('j') | KeyCode::Down => {
+            let total_lines = app.capabilities_text.lines().count();
+            if app.capabilities_scroll + 1 < total_lines {
+                app.capabilities_scroll += 1;
+            }
+            Action::Continue
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.capabilities_scroll = app.capabilities_scroll.saturating_sub(1);
+            Action::Continue
+        }
+        // Page-wise scrolling
+        KeyCode::PageDown | KeyCode::Char('d') => {
+            let total_lines = app.capabilities_text.lines().count();
+            app.capabilities_scroll = (app.capabilities_scroll + 10).min(total_lines.saturating_sub(1));
+            Action::Continue
+        }
+        KeyCode::PageUp | KeyCode::Char('u') => {
+            app.capabilities_scroll = app.capabilities_scroll.saturating_sub(10);
+            Action::Continue
+        }
+        // Home / End
+        KeyCode::Char('g') => {
+            app.capabilities_scroll = 0;
+            Action::Continue
+        }
+        KeyCode::Char('G') => {
+            let total_lines = app.capabilities_text.lines().count();
+            app.capabilities_scroll = total_lines.saturating_sub(1);
+            Action::Continue
+        }
         _ => Action::Continue,
     }
 }

@@ -609,6 +609,8 @@ pub fn render(app: &mut TuiApp, frame: &mut Frame) {
         render_model_picker_overlay(app, frame, area);
     } else if app.mode == TuiMode::Activity {
         render_activity_overlay(app, frame, area);
+    } else if app.mode == TuiMode::Capabilities {
+        render_capabilities_overlay(app, frame, area);
     } else if app.mode == TuiMode::Command && !app.command_suggestions.is_empty() {
         // Render command palette above the input field
         render_command_palette(app, frame, chunks[3]);
@@ -1846,6 +1848,45 @@ fn render_help_overlay(app: &TuiApp, frame: &mut Frame, area: Rect) {
                 )),
         )
         .style(Style::default().fg(app.theme.header_fg));
+
+    frame.render_widget(paragraph, popup_area);
+}
+
+/// Render the capabilities overlay (reference popup, Esc to close, scrollable).
+fn render_capabilities_overlay(app: &TuiApp, frame: &mut Frame, area: Rect) {
+    // Wider/taller popup than help since capabilities content is denser.
+    let popup_width = 76.min(area.width.saturating_sub(4));
+    let popup_height = (area.height - 4).min(area.height.saturating_sub(2));
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    // Build text with scroll offset applied
+    let lines: Vec<Line<'_>> = app
+        .capabilities_text
+        .lines()
+        .skip(app.capabilities_scroll)
+        .map(|l| Line::from(l.to_string()))
+        .collect();
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border_focused))
+                .title(Span::styled(
+                    " Capabilities (Esc to close, j/k to scroll) ",
+                    Style::default()
+                        .fg(app.theme.header_fg)
+                        .add_modifier(Modifier::BOLD),
+                )),
+        )
+        .style(Style::default().fg(app.theme.text_primary))
+        .wrap(Wrap { trim: false });
 
     frame.render_widget(paragraph, popup_area);
 }

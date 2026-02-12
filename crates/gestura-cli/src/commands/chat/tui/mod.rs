@@ -1434,14 +1434,10 @@ fn handle_command(
             app.set_status("Settings: ↑/↓ to navigate, Enter to edit, Esc to return to chat");
         }
         "/capabilities" => {
-            let caps = gestura_core::tools::render_capabilities(&app.config);
-            app.messages.push(app::TuiMessage {
-                role: "system".to_string(),
-                content: caps,
-                thinking: None,
-                is_streaming: false,
-                is_error: false,
-            });
+            app.capabilities_text =
+                gestura_core::tools::render_capabilities(&app.config);
+            app.capabilities_scroll = 0;
+            app.mode = TuiMode::Capabilities;
         }
         "/theme" => {
             if let Some(name) = args.first() {
