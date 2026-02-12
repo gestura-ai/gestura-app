@@ -437,6 +437,24 @@
             background: rgb(var(--danger-rgb, 220, 38, 38));
             color: #fff;
         }
+
+        /* Radio option cards – keep radio circle on the same line as the text */
+        .option-card label {
+            display: flex;
+            align-items: flex-start;
+            cursor: pointer;
+            gap: 0.75rem;
+        }
+
+        .option-card label input[type="radio"] {
+            flex-shrink: 0;
+            margin-top: 0.2rem;
+        }
+
+        .option-card label>div {
+            flex: 1;
+            min-width: 0;
+        }
     </style>
 </head>
 
@@ -872,8 +890,8 @@
                     <p>Choose how you want to process voice commands:</p>
                     <div style="margin: 1rem 0;">
 	                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 2px solid var(--accent-primary);">
-                            <label style="display: flex; align-items: center; cursor: pointer;">
-                                <input type="radio" name="voiceMode" value="local" checked style="margin-right: 0.75rem;">
+                            <label>
+                                <input type="radio" name="voiceMode" value="local" checked>
                                 <div>
                                     <strong>Local Processing (Recommended)</strong>
                                     <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Uses Whisper AI on your device. Private and works offline.</p>
@@ -881,8 +899,8 @@
                             </label>
                         </div>
                         <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; border: 1px solid var(--border-color);">
-                            <label style="display: flex; align-items: center; cursor: pointer;">
-                                <input type="radio" name="voiceMode" value="openai" style="margin-right: 0.75rem;">
+                            <label>
+                                <input type="radio" name="voiceMode" value="openai">
                                 <div>
                                     <strong>OpenAI Whisper API</strong>
                                     <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Uses cloud API. Faster but requires internet and API key.</p>
@@ -990,8 +1008,8 @@
                     <p>Choose the default permission level for AI agents. You can change this per-session later.</p>
                     <div style="margin: 1rem 0;">
                         <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 1px solid var(--border-color);">
-                            <label style="display: flex; align-items: center; cursor: pointer;">
-                                <input type="radio" name="agentPermLevel" value="sandbox" style="margin-right: 0.75rem;">
+                            <label>
+                                <input type="radio" name="agentPermLevel" value="sandbox">
                                 <div>
                                     <strong><span class="icon-lock"></span> Sandbox (Most Restrictive)</strong>
                                     <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Read-only access. Agents cannot write files or execute commands.</p>
@@ -999,8 +1017,8 @@
                             </label>
                         </div>
 	                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 2px solid var(--accent-primary);">
-                            <label style="display: flex; align-items: center; cursor: pointer;">
-                                <input type="radio" name="agentPermLevel" value="restricted" checked style="margin-right: 0.75rem;">
+                            <label>
+                                <input type="radio" name="agentPermLevel" value="restricted" checked>
                                 <div>
 	                                    <strong><span class="icon-check-circle" style="color: var(--accent-primary);"></span> Restricted (Recommended)</strong>
                                     <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Agents ask for confirmation before write operations or shell commands.</p>
@@ -1008,8 +1026,8 @@
                             </label>
                         </div>
                         <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; border: 1px solid var(--border-color);">
-                            <label style="display: flex; align-items: center; cursor: pointer;">
-                                <input type="radio" name="agentPermLevel" value="full" style="margin-right: 0.75rem;">
+                            <label>
+                                <input type="radio" name="agentPermLevel" value="full">
                                 <div>
                                     <strong>⚡ Full Access</strong>
                                     <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">No confirmation required. Use only if you fully trust the agent environment.</p>
@@ -1567,11 +1585,14 @@
             const endpoint = (document.getElementById('ollamaUrl')?.value || '').trim() || 'http://localhost:11434';
             const container = document.getElementById('ollamaModelContainer');
             const status = document.getElementById('ollamaStatus');
+            const section = document.getElementById('ollamaModelSection');
             if (!container) return;
 
             try {
                 const models = await invoke('list_ollama_models', { endpoint });
                 if (!models || models.length === 0) {
+                    // No models available — keep model section hidden
+                    if (section) section.style.display = 'none';
                     showOllamaFallbackInput(container, status, 'Ollama is running but no models found. Pull a model first.');
                     return;
                 }
@@ -1587,7 +1608,11 @@
                     status.style.color = 'var(--success-color, #22c55e)';
                     status.textContent = `✓ Ollama connected — ${models.length} model${models.length !== 1 ? 's' : ''} available`;
                 }
+                // Models loaded — show model section
+                if (section) section.style.display = '';
             } catch (e) {
+                // Connection failed — keep model section hidden
+                if (section) section.style.display = 'none';
                 showOllamaFallbackInput(container, status, 'Ollama is not reachable. Enter a model name manually.');
             }
         }
@@ -1614,7 +1639,7 @@
                         <label for="ollamaUrl">Ollama URL</label>
                         <input type="text" id="ollamaUrl" class="onb-input" value="http://localhost:11434">
                     </div>
-                    <div class="config-section" style="margin-top:0.75rem;">
+                    <div id="ollamaModelSection" class="config-section" style="margin-top:0.75rem; display:none;">
                         <label for="ollamaModel">Model</label>
                         <div id="ollamaModelContainer">
                             <select id="ollamaModel" class="onb-input">

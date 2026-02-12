@@ -210,6 +210,9 @@ fn strip_secrets_in_place(cfg: &mut AppConfig) {
     if let Some(c) = cfg.llm.grok.as_mut() {
         c.api_key.clear();
     }
+    if let Some(c) = cfg.llm.gemini.as_mut() {
+        c.api_key.clear();
+    }
 
     cfg.voice.openai_api_key = None;
     cfg.web_search.serpapi_key = None;
@@ -876,7 +879,7 @@ pub async fn list_openai_stt_models(api_key: String) -> Result<Vec<serde_json::V
         }
     }
     if api_key.is_empty() {
-        return Ok(get_static_openai_stt_models());
+        return Ok(vec![]);
     }
 
     let client = reqwest::Client::new();
@@ -891,11 +894,8 @@ pub async fn list_openai_stt_models(api_key: String) -> Result<Vec<serde_json::V
         .map_err(|e| format!("Failed to list OpenAI models: {}", e))?;
 
     if !resp.status().is_success() {
-        tracing::warn!(
-            "OpenAI API returned status {}, falling back to static STT model list",
-            resp.status()
-        );
-        return Ok(get_static_openai_stt_models());
+        tracing::warn!("OpenAI API returned status {}", resp.status());
+        return Ok(vec![]);
     }
 
     let data: serde_json::Value = resp
@@ -936,26 +936,7 @@ pub async fn list_openai_stt_models(api_key: String) -> Result<Vec<serde_json::V
         a_priority.cmp(&b_priority).then_with(|| a_id.cmp(b_id))
     });
 
-    // If no models found from API, return static list
-    if models.is_empty() {
-        return Ok(get_static_openai_stt_models());
-    }
-
     Ok(models)
-}
-
-/// Static list of OpenAI STT models (fallback when API unavailable)
-fn get_static_openai_stt_models() -> Vec<serde_json::Value> {
-    gestura_core::OPENAI_STT_MODELS
-        .iter()
-        .map(|id| {
-            serde_json::json!({
-                "id": id,
-                "name": format_openai_stt_model_name(id),
-                "description": ""
-            })
-        })
-        .collect()
 }
 
 /// Format OpenAI STT model ID to a human-readable name

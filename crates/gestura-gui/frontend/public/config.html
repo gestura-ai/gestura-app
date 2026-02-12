@@ -425,13 +425,17 @@
             display: block;
         }
 
-        .provider-config .help-text a {
+        .help-text a {
             color: var(--accent);
             text-decoration: none;
+            border-bottom: 1px solid rgba(var(--accent-rgb), 0.3);
+            transition: border-color 0.2s, opacity 0.2s;
         }
 
-        .provider-config .help-text a:hover {
-            text-decoration: underline;
+        .help-text a:hover {
+            text-decoration: none;
+            border-bottom-color: var(--accent);
+            opacity: 0.85;
         }
 
         /* Permissions Styles */
@@ -1726,9 +1730,7 @@
                                         <label class="form-label" for="openaiSttModel">Transcription Model</label>
                                         <div class="input-with-button">
                                             <select class="form-select" id="openaiSttModel" name="openai_stt_model">
-                                                <option value="gpt-4o-transcribe">GPT-4o Transcribe (Best)</option>
-                                                <option value="gpt-4o-mini-transcribe">GPT-4o Mini Transcribe</option>
-                                                <option value="whisper-1">Whisper V2 (Classic)</option>
+                                                <option value="">Loading models…</option>
                                             </select>
                                             <button type="button" class="btn btn-secondary btn-sm" id="refreshSttModels"
                                                 title="Refresh models from API">
@@ -1953,13 +1955,10 @@
                                                 Delete</button>
                                         </div>
                                     </div>
-                                    <div class="form-group">
+                                    <div class="form-group" id="openaiModelRow" style="display: none;">
                                         <label class="form-label" for="openaiLlmModel">Model</label>
                                         <select class="form-select" id="openaiLlmModel" name="openai_llm_model">
-                                            <option value="gpt-4o">GPT-4o</option>
-                                            <option value="gpt-4o-mini">GPT-4o Mini</option>
-                                            <option value="gpt-4-turbo">GPT-4 Turbo</option>
-                                            <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                                            <option value="">Loading models…</option>
                                         </select>
                                     </div>
                                 </div>
@@ -1985,13 +1984,10 @@
                                                 Delete</button>
                                         </div>
                                     </div>
-                                    <div class="form-group">
+                                    <div class="form-group" id="anthropicModelRow" style="display: none;">
                                         <label class="form-label" for="anthropicLlmModel">Model</label>
                                         <select class="form-select" id="anthropicLlmModel" name="anthropic_llm_model">
-                                            <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
-                                            <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</option>
-                                            <option value="claude-3-opus-20240229">Claude 3 Opus</option>
-                                            <option value="claude-3-haiku-20240307">Claude 3 Haiku</option>
+                                            <option value="">Loading models…</option>
                                         </select>
                                     </div>
                                 </div>
@@ -2016,11 +2012,10 @@
                                                 Delete</button>
                                         </div>
                                     </div>
-                                    <div class="form-group">
+                                    <div class="form-group" id="grokModelRow" style="display: none;">
                                         <label class="form-label" for="grokLlmModel">Model</label>
                                         <select class="form-select" id="grokLlmModel" name="grok_llm_model">
-                                            <option value="grok-2">Grok 2</option>
-                                            <option value="grok-2-mini">Grok 2 Mini</option>
+                                            <option value="">Loading models…</option>
                                         </select>
                                     </div>
                                 </div>
@@ -2045,13 +2040,10 @@
                                                 Delete</button>
                                         </div>
                                     </div>
-                                    <div class="form-group">
+                                    <div class="form-group" id="geminiModelRow" style="display: none;">
                                         <label class="form-label" for="geminiLlmModel">Model</label>
                                         <select class="form-select" id="geminiLlmModel" name="gemini_llm_model">
-                                            <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-                                            <option value="gemini-2.0-flash-lite">Gemini 2.0 Flash Lite</option>
-                                            <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
-                                            <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+                                            <option value="">Loading models…</option>
                                         </select>
                                     </div>
                                 </div>
@@ -2072,7 +2064,7 @@
                                             name="local_llm_endpoint" placeholder="http://localhost:11434"
                                             value="http://localhost:11434">
                                     </div>
-                                    <div class="form-group">
+                                    <div class="form-group" id="ollamaModelRow" style="display: none;">
                                         <label class="form-label" for="ollamaModel">Model</label>
                                         <div class="input-with-button">
                                             <select class="form-select" id="ollamaModel" name="ollama_model">
@@ -3849,6 +3841,8 @@
                     refreshAnthropicModels();
                 } else if (provider === 'grok') {
                     loadGrokModels();
+                } else if (provider === 'gemini') {
+                    loadGeminiModels();
                 }
             }
 
@@ -3950,6 +3944,16 @@
                     const btn = document.getElementById(btnId);
                     if (btn) btn.classList.remove('visible');
                 }
+
+                // Hide the model row now that the key is gone
+                const modelRowMap = {
+                    'openai': 'openaiModelRow',
+                    'anthropic': 'anthropicModelRow',
+                    'gemini': 'geminiModelRow',
+                    'grok': 'grokModelRow',
+                };
+                const modelRowId = modelRowMap[provider];
+                if (modelRowId) setModelRowVisible(modelRowId, false);
 
                 showStatus(`${provider} API key deleted`, 'success');
             } catch (err) {
@@ -4141,12 +4145,13 @@
                         setSecretInputState(openaiLlmApiKey, hasKey, 'sk-proj-...');
                         const btn = document.getElementById('deleteOpenaiKey');
                         if (btn) btn.classList.toggle('visible', hasKey);
+                        setModelRowVisible('openaiModelRow', hasKey);
                     } else {
                         openaiLlmApiKey.value = '';
                     }
                 }
                 const openaiLlmModel = document.getElementById('openaiLlmModel');
-                if (openaiLlmModel) openaiLlmModel.value = llmConfig?.openai?.model || 'gpt-4o';
+                if (openaiLlmModel) openaiLlmModel.value = llmConfig?.openai?.model || '';
                 // Store for later selection after dynamic models are loaded
                 if (llmConfig?.openai?.model) {
                     window._savedOpenAIModel = llmConfig.openai.model;
@@ -4161,13 +4166,13 @@
                         setSecretInputState(anthropicApiKey, hasKey, 'sk-ant-...');
                         const btn = document.getElementById('deleteAnthropicKey');
                         if (btn) btn.classList.toggle('visible', hasKey);
+                        setModelRowVisible('anthropicModelRow', hasKey);
                     } else {
                         anthropicApiKey.value = '';
                     }
                 }
                 const anthropicLlmModel = document.getElementById('anthropicLlmModel');
-                // Note: Default matches gestura_core::DEFAULT_ANTHROPIC_MODEL
-                if (anthropicLlmModel) anthropicLlmModel.value = llmConfig?.anthropic?.model || 'claude-sonnet-4-20250514';
+                if (anthropicLlmModel) anthropicLlmModel.value = llmConfig?.anthropic?.model || '';
                 // Store for later selection after dynamic models are loaded
                 if (llmConfig?.anthropic?.model) {
                     window._savedAnthropicModel = llmConfig.anthropic.model;
@@ -4182,12 +4187,13 @@
                         setSecretInputState(grokApiKey, hasKey, 'xai-...');
                         const btn = document.getElementById('deleteGrokKey');
                         if (btn) btn.classList.toggle('visible', hasKey);
+                        setModelRowVisible('grokModelRow', hasKey);
                     } else {
                         grokApiKey.value = '';
                     }
                 }
                 const grokLlmModel = document.getElementById('grokLlmModel');
-                if (grokLlmModel) grokLlmModel.value = llmConfig?.grok?.model || 'grok-3';
+                if (grokLlmModel) grokLlmModel.value = llmConfig?.grok?.model || '';
                 // Store saved model for restoration after dynamic loading
                 if (llmConfig?.grok?.model) {
                     window._savedGrokModel = llmConfig.grok.model;
@@ -4202,13 +4208,16 @@
                         setSecretInputState(geminiApiKey, hasKey, 'AIza...');
                         const btn = document.getElementById('deleteGeminiKey');
                         if (btn) btn.classList.toggle('visible', hasKey);
+                        setModelRowVisible('geminiModelRow', hasKey);
                     } else {
                         geminiApiKey.value = '';
                     }
                 }
                 const geminiLlmModel = document.getElementById('geminiLlmModel');
-                if (geminiLlmModel) geminiLlmModel.value = llmConfig?.gemini?.model || 'gemini-2.0-flash';
+                if (geminiLlmModel) geminiLlmModel.value = llmConfig?.gemini?.model || '';
+                // Store for later selection after dynamic models are loaded
                 if (llmConfig?.gemini?.model) {
+                    window._savedGeminiModel = llmConfig.gemini.model;
                     cacheLlmModelSelection('gemini', llmConfig.gemini.model);
                 }
 
@@ -4248,8 +4257,7 @@
                 }
 
                 // OpenAI STT model selection
-                // Note: Default matches gestura_core::DEFAULT_OPENAI_STT_MODEL
-                const savedSttModel = voiceConfig?.openai_model || 'gpt-4o-transcribe';
+                const savedSttModel = voiceConfig?.openai_model || '';
                 const sttModelSelect = document.getElementById('openaiSttModel');
                 if (sttModelSelect) {
                     // Store for later selection after models are loaded
@@ -4556,14 +4564,26 @@
                             }
 
                             // Success: update UI state without exposing secrets.
+                            const providerModelRowMap = {
+                                'openai': 'openaiModelRow',
+                                'anthropic': 'anthropicModelRow',
+                                'gemini': 'geminiModelRow',
+                                'grok': 'grokModelRow',
+                            };
                             if (op.action === 'store') {
                                 setSecretInputState(op.input, true, op.placeholderWhenMissing);
                                 const btn = document.getElementById(op.deleteButtonId);
                                 if (btn) btn.classList.toggle('visible', true);
+                                // Show the model row now that a key is stored
+                                const rowId = providerModelRowMap[op.provider];
+                                if (rowId) setModelRowVisible(rowId, true);
                             } else if (op.action === 'delete') {
                                 setSecretInputState(op.input, false, op.placeholderWhenMissing);
                                 const btn = document.getElementById(op.deleteButtonId);
                                 if (btn) btn.classList.toggle('visible', false);
+                                // Hide the model row now that the key is gone
+                                const rowId = providerModelRowMap[op.provider];
+                                if (rowId) setModelRowVisible(rowId, false);
                             }
                         });
 
@@ -4585,7 +4605,7 @@
                 // OpenAI config: always keep object so model persists even if API key is stored securely.
                 const openaiApiKey = (document.getElementById('openaiLlmApiKey')?.value || '').trim();
                 const openaiModelSelected = ((document.getElementById('openaiLlmModel')?.value || '').trim()) || (llmModelSelectionCache.openai || '').trim();
-                const openaiModel = openaiModelSelected || llmSettings.openai?.model || 'gpt-4o';
+                const openaiModel = openaiModelSelected || llmSettings.openai?.model || '';
                 llmSettings.openai = llmSettings.openai || { api_key: '', base_url: null, model: openaiModel };
                 llmSettings.openai.model = openaiModel;
                 cacheLlmModelSelection('openai', openaiModel);
@@ -4596,28 +4616,27 @@
                 // Anthropic config
                 const anthropicApiKey = (document.getElementById('anthropicApiKey')?.value || '').trim();
                 const anthropicModelSelected = ((document.getElementById('anthropicLlmModel')?.value || '').trim()) || (llmModelSelectionCache.anthropic || '').trim();
-                // Note: Default matches gestura_core::DEFAULT_ANTHROPIC_MODEL
-                const anthropicModel = anthropicModelSelected || llmSettings.anthropic?.model || 'claude-sonnet-4-20250514';
+                const anthropicModel = anthropicModelSelected || llmSettings.anthropic?.model || '';
                 llmSettings.anthropic = llmSettings.anthropic || { api_key: '', base_url: null, model: anthropicModel };
                 llmSettings.anthropic.model = anthropicModel;
                 cacheLlmModelSelection('anthropic', anthropicModel);
                 llmSettings.anthropic.api_key = '';
                 if (typeof llmSettings.anthropic.base_url === 'undefined') llmSettings.anthropic.base_url = null;
 
-                // Gemini config (default matches gestura-core)
+                // Gemini config
                 const geminiApiKeyVal = (document.getElementById('geminiApiKey')?.value || '').trim();
                 const geminiModelSelected = ((document.getElementById('geminiLlmModel')?.value || '').trim()) || (llmModelSelectionCache.gemini || '').trim();
-                const geminiModel = geminiModelSelected || llmSettings.gemini?.model || 'gemini-2.0-flash';
+                const geminiModel = geminiModelSelected || llmSettings.gemini?.model || '';
                 llmSettings.gemini = llmSettings.gemini || { api_key: '', base_url: null, model: geminiModel };
                 llmSettings.gemini.model = geminiModel;
                 cacheLlmModelSelection('gemini', geminiModel);
                 llmSettings.gemini.api_key = '';
                 if (typeof llmSettings.gemini.base_url === 'undefined') llmSettings.gemini.base_url = null;
 
-                // Grok config (default matches gestura-core)
+                // Grok config
                 const grokApiKey = (document.getElementById('grokApiKey')?.value || '').trim();
                 const grokModelSelected = ((document.getElementById('grokLlmModel')?.value || '').trim()) || (llmModelSelectionCache.grok || '').trim();
-                const grokModel = grokModelSelected || llmSettings.grok?.model || 'grok-3';
+                const grokModel = grokModelSelected || llmSettings.grok?.model || '';
                 llmSettings.grok = llmSettings.grok || { api_key: '', base_url: null, model: grokModel };
                 llmSettings.grok.model = grokModel;
                 cacheLlmModelSelection('grok', grokModel);
@@ -5052,13 +5071,22 @@
                 const models = await window.__TAURI__.core.invoke('list_ollama_models', { endpoint });
                 if (!isLatestRefreshToken('ollamaModels', token)) return;
                 modelSelect.innerHTML = '<option value="">Select a model...</option>';
-                models.forEach(model => {
-                    const sizeMB = (model.size / 1000000).toFixed(0);
-                    const option = document.createElement('option');
-                    option.value = model.name;
-                    option.textContent = `${model.name} (${sizeMB} MB)`;
-                    modelSelect.appendChild(option);
-                });
+                if (!models || models.length === 0) {
+                    // Connected but no models — hide model row
+                    setModelRowVisible('ollamaModelRow', false);
+                    modelSelect.innerHTML = '<option value="">No models available</option>';
+                } else {
+                    models.forEach(model => {
+                        const sizeMB = (model.size / 1000000).toFixed(0);
+                        const option = document.createElement('option');
+                        option.value = model.name;
+                        option.textContent = `${model.name} (${sizeMB} MB)`;
+                        modelSelect.appendChild(option);
+                    });
+
+                    // Models loaded — show model row
+                    setModelRowVisible('ollamaModelRow', true);
+                }
 
                 // Restore cached/saved selection (even if it's not in the fetched list).
                 if (preferredValue) {
@@ -5069,6 +5097,8 @@
             } catch (error) {
                 if (!isLatestRefreshToken('ollamaModels', token)) return;
                 console.error('Failed to list Ollama models:', error);
+                // Connection failed — hide model row
+                setModelRowVisible('ollamaModelRow', false);
                 modelSelect.innerHTML = '';
                 if (preferredValue) {
                     ensureSavedModelOption(modelSelect, preferredValue);
@@ -5111,12 +5141,16 @@
                 const hasKeyInKeychain = !hasKeyInInput && await window.__TAURI__.core.invoke('has_api_key', { provider: 'openai' });
 
                 if (!hasKeyInInput && !hasKeyInKeychain) {
-                    // No API key available anywhere - show placeholder message
+                    // No API key available anywhere - hide model row entirely
+                    setModelRowVisible('openaiModelRow', false);
                     modelSelect.innerHTML = '<option value="">Enter API key to load models</option>';
                     modelSelect.disabled = true;
                     setDropdownError('openaiLlmModel', 'Enter your OpenAI API key above to load available models.');
                     return;
                 }
+
+                // Key exists — make sure model row is visible
+                setModelRowVisible('openaiModelRow', true);
 
                 // Show indicator if using keychain
                 if (hasKeyInKeychain && !hasKeyInInput) {
@@ -5192,12 +5226,16 @@
                 const hasKeyInKeychain = !hasKeyInInput && await window.__TAURI__.core.invoke('has_api_key', { provider: 'anthropic' });
 
                 if (!hasKeyInInput && !hasKeyInKeychain) {
-                    // No API key available anywhere - show placeholder message
+                    // No API key available anywhere - hide model row entirely
+                    setModelRowVisible('anthropicModelRow', false);
                     modelSelect.innerHTML = '<option value="">Enter API key to load models</option>';
                     modelSelect.disabled = true;
                     setDropdownError('anthropicLlmModel', 'Enter your Anthropic API key above to load available models.');
                     return;
                 }
+
+                // Key exists — make sure model row is visible
+                setModelRowVisible('anthropicModelRow', true);
 
                 // Show indicator if using keychain
                 if (hasKeyInKeychain && !hasKeyInInput) {
@@ -5270,12 +5308,16 @@
                 const hasKeyInKeychain = !hasKeyInInput && await window.__TAURI__.core.invoke('has_api_key', { provider: 'grok' });
 
                 if (!hasKeyInInput && !hasKeyInKeychain) {
-                    // No API key available anywhere - show placeholder message
+                    // No API key available anywhere - hide model row entirely
+                    setModelRowVisible('grokModelRow', false);
                     modelSelect.innerHTML = '<option value="">Enter API key to load models</option>';
                     modelSelect.disabled = true;
                     setDropdownError('grokLlmModel', 'Enter your Grok API key above to load available models.');
                     return;
                 }
+
+                // Key exists — make sure model row is visible
+                setModelRowVisible('grokModelRow', true);
 
                 // Show indicator if using keychain
                 if (hasKeyInKeychain && !hasKeyInInput) {
@@ -5327,6 +5369,93 @@
             loadGrokModels();
         }, 1000);
 
+        // Load Gemini models dynamically from Google AI API
+        async function loadGeminiModels() {
+            clearDropdownError('geminiLlmModel');
+            if (!isTauriAvailable()) {
+                setDropdownLoading('geminiLlmModel', false);
+                return;
+            }
+
+            const modelSelect = document.getElementById('geminiLlmModel');
+            const token = nextRefreshToken('geminiModels');
+            const preferredValue = (llmModelSelectionCache.gemini || modelSelect.value || window._savedGeminiModel || '').trim();
+
+            // Get API key from input field
+            const apiKeyInput = document.getElementById('geminiApiKey');
+            const apiKeyFromInput = (apiKeyInput?.value || '').trim();
+
+            try {
+                setDropdownLoading('geminiLlmModel', true);
+
+                // Check if API key exists in input field
+                const hasKeyInInput = apiKeyFromInput.length > 0 && apiKeyFromInput !== MASKED_SECRET;
+
+                // Check if API key exists in keychain
+                const hasKeyInKeychain = !hasKeyInInput && await window.__TAURI__.core.invoke('has_api_key', { provider: 'gemini' });
+
+                if (!hasKeyInInput && !hasKeyInKeychain) {
+                    // No API key available anywhere - hide model row entirely
+                    setModelRowVisible('geminiModelRow', false);
+                    modelSelect.innerHTML = '<option value="">Enter API key to load models</option>';
+                    modelSelect.disabled = true;
+                    setDropdownError('geminiLlmModel', 'Enter your Gemini API key above to load available models.');
+                    return;
+                }
+
+                // Key exists — make sure model row is visible
+                setModelRowVisible('geminiModelRow', true);
+
+                // Show indicator if using keychain
+                if (hasKeyInKeychain && !hasKeyInInput) {
+                    console.log('[Gemini] Using API key from secure storage (keychain)');
+                }
+
+                // API key exists - fetch models (backend will check keychain if apiKey is empty)
+                const models = await window.__TAURI__.core.invoke('list_gemini_models', { api_key: apiKeyFromInput });
+                if (!isLatestRefreshToken('geminiModels', token)) return;
+
+                modelSelect.disabled = false;
+                modelSelect.innerHTML = '';
+
+                if (!Array.isArray(models) || models.length === 0) {
+                    setDropdownError('geminiLlmModel', 'Gemini returned no models. Verify the API key and connectivity.');
+                    return;
+                }
+
+                models.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model.id;
+                    option.textContent = model.name || model.id;
+                    modelSelect.appendChild(option);
+                });
+
+                // Restore cached/saved selection (even if it's not in the fetched list).
+                if (preferredValue) {
+                    ensureSavedModelOption(modelSelect, preferredValue);
+                    cacheLlmModelSelection('gemini', preferredValue);
+                    if (window._savedGeminiModel === preferredValue) window._savedGeminiModel = null;
+                }
+            } catch (error) {
+                if (!isLatestRefreshToken('geminiModels', token)) return;
+                console.error('Failed to load Gemini models:', error);
+                setDropdownError('geminiLlmModel', `Failed to load Gemini models: ${error}`);
+                if (preferredValue) {
+                    modelSelect.innerHTML = '';
+                    ensureSavedModelOption(modelSelect, preferredValue);
+                }
+            } finally {
+                if (isLatestRefreshToken('geminiModels', token)) {
+                    setDropdownLoading('geminiLlmModel', false);
+                }
+            }
+        }
+
+        // Debounced Gemini model refresh on API key change
+        const debouncedGeminiRefresh = debounce(() => {
+            loadGeminiModels();
+        }, 1000);
+
         // Debounce helper for API key input
         function debounce(func, wait) {
             let timeout;
@@ -5344,6 +5473,9 @@
         document.getElementById('openaiLlmApiKey')?.addEventListener('input', debounce(refreshOpenAIModels, 1000));
         document.getElementById('anthropicApiKey')?.addEventListener('input', debounce(refreshAnthropicModels, 1000));
         document.getElementById('grokApiKey')?.addEventListener('input', debouncedGrokRefresh);
+
+        // Gemini: refresh models dynamically when API key changes
+        document.getElementById('geminiApiKey')?.addEventListener('input', debouncedGeminiRefresh);
 
         // =====================================================================
         // API Key Auto-Sync (OpenAI LLM <-> STT)
@@ -6121,6 +6253,15 @@
          *
          * @param {string} selectId
          */
+        /**
+         * Show or hide a model row container by its element id.
+         * Used to hide the model dropdown when no API key / connection is present.
+         */
+        function setModelRowVisible(rowId, visible) {
+            const row = document.getElementById(rowId);
+            if (row) row.style.display = visible ? '' : 'none';
+        }
+
         function clearDropdownError(selectId) {
             const select = document.getElementById(selectId);
             if (!select) return;
@@ -6425,6 +6566,23 @@
 
         // Start initialization
         initializeApp();
+
+        // =====================================================================
+        // External link handler — open in system default browser via opener plugin
+        // =====================================================================
+        document.addEventListener('click', (e) => {
+            const anchor = e.target.closest('a[href]');
+            if (!anchor) return;
+            const href = anchor.getAttribute('href') || '';
+            if (/^https?:\/\//i.test(href)) {
+                e.preventDefault();
+                if (window.__TAURI__?.opener?.openUrl) {
+                    window.__TAURI__.opener.openUrl(href).catch((err) =>
+                        console.error('[opener] Failed to open URL:', href, err)
+                    );
+                }
+            }
+        });
     </script>
 </body>
 

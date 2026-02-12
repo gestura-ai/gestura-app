@@ -6439,15 +6439,8 @@
                             : [];
                         console.log('[DEBUG] ✅ OpenAI models fetched from API:', models.length, 'models');
                     } else {
-                        console.warn('[DEBUG] ⚠️ OpenAI API key missing from both keychain and config, fetching static fallback from backend');
-                        // Backend returns static fallback when no API key provided
-                        const result = await window.__TAURI__.core.invoke('list_openai_models', { api_key: '' });
-                        models = Array.isArray(result)
-                            ? result
-                                .map((m) => ({ id: m?.id, label: m?.name || m?.id }))
-                                .filter((m) => typeof m.id === 'string' && m.id.length > 0)
-                            : [];
-                        console.log('[DEBUG] Using static OpenAI models from backend:', models.length);
+                        console.warn('[DEBUG] ⚠️ OpenAI API key missing from both keychain and config');
+                        models = [];
                     }
                 } else if (provider === 'anthropic') {
                     // Anthropic: fetch API key from keychain first, then fallback to config file
@@ -6478,15 +6471,8 @@
                             : [];
                         console.log('[DEBUG] ✅ Anthropic models fetched from API:', models.length, 'models');
                     } else {
-                        console.warn('[DEBUG] ⚠️ Anthropic API key missing from both keychain and config, fetching static fallback from backend');
-                        // Backend returns static fallback when no API key provided
-                        const result = await window.__TAURI__.core.invoke('list_anthropic_models', { api_key: '' });
-                        models = Array.isArray(result)
-                            ? result
-                                .map((m) => ({ id: m?.id, label: m?.name || m?.id }))
-                                .filter((m) => typeof m.id === 'string' && m.id.length > 0)
-                            : [];
-                        console.log('[DEBUG] Using static Anthropic models from backend:', models.length);
+                        console.warn('[DEBUG] ⚠️ Anthropic API key missing from both keychain and config');
+                        models = [];
                     }
                 } else if (provider === 'grok') {
                     // Grok: fetch API key from keychain first, then fallback to config file
@@ -6507,15 +6493,42 @@
                         });
                     }
 
-                    // Grok backend command has built-in static fallback, so we can pass empty string
-                    console.log('[DEBUG] Calling list_grok_models...');
-                    const result = await window.__TAURI__.core.invoke('list_grok_models', { api_key: apiKey || '' });
-                    models = Array.isArray(result)
-                        ? result
-                            .map((m) => ({ id: m?.id, label: m?.name || m?.id }))
-                            .filter((m) => typeof m.id === 'string' && m.id.length > 0)
-                        : [];
-                    console.log('[DEBUG] ✅ Grok models fetched:', models.length, 'models', apiKey ? '(from API)' : '(static fallback)');
+                    if (apiKey) {
+                        console.log('[DEBUG] Calling list_grok_models...');
+                        const result = await window.__TAURI__.core.invoke('list_grok_models', { api_key: apiKey });
+                        models = Array.isArray(result)
+                            ? result
+                                .map((m) => ({ id: m?.id, label: m?.name || m?.id }))
+                                .filter((m) => typeof m.id === 'string' && m.id.length > 0)
+                            : [];
+                        console.log('[DEBUG] ✅ Grok models fetched:', models.length, 'models');
+                    } else {
+                        console.warn('[DEBUG] ⚠️ Grok API key missing from both keychain and config');
+                        models = [];
+                    }
+                } else if (provider === 'gemini') {
+                    // Gemini: fetch API key from keychain first, then fallback to config file
+                    console.log('[DEBUG] Fetching Gemini API key from keychain...');
+                    let apiKey = await window.__TAURI__.core.invoke('get_api_key', { provider: 'gemini' });
+
+                    // Fallback: try config file if keychain is empty
+                    if (!apiKey && providerCfg?.api_key) {
+                        apiKey = providerCfg.api_key;
+                    }
+
+                    if (apiKey) {
+                        console.log('[DEBUG] Calling list_gemini_models...');
+                        const result = await window.__TAURI__.core.invoke('list_gemini_models', { api_key: apiKey });
+                        models = Array.isArray(result)
+                            ? result
+                                .map((m) => ({ id: m?.id, label: m?.name || m?.id }))
+                                .filter((m) => typeof m.id === 'string' && m.id.length > 0)
+                            : [];
+                        console.log('[DEBUG] ✅ Gemini models fetched:', models.length, 'models');
+                    } else {
+                        console.warn('[DEBUG] ⚠️ Gemini API key missing from both keychain and config');
+                        models = [];
+                    }
                 }
 
                 console.log('[DEBUG] Total models after fetch:', models.length);
@@ -7983,8 +7996,12 @@
                 sessionLlmProvider.value = currentProvider;
                 console.log('[Providers] Current LLM provider:', currentProvider);
 
-                // Load models for current provider
-                await loadModelsForProvider(currentProvider, sessionLlm?.model);
+                // Load models for current provider.
+                // Fall back to the global config's model for this provider when there is
+                // no session-scoped model override so the dropdown pre-selects the user's
+                // configured default rather than the first entry in the list.
+                const globalModelForProvider = globalConfig?.llm?.[currentProvider]?.model;
+                await loadModelsForProvider(currentProvider, sessionLlm?.model || globalModelForProvider);
 
                 // Load session-scoped voice/STT overrides (fallback to global config)
                 const sessionVoice = await window.__TAURI__.core.invoke('get_session_voice_config', { session_id: sessionId });
@@ -8016,7 +8033,7 @@
                     if (modelValue) sessionSttModel.value = modelValue;
                 } else if (sttProvider === 'openai') {
                     const globalOpenAiModel = globalConfig?.voice?.openai_model;
-                    const modelValue = String(sessionVoice?.model || globalOpenAiModel || 'gpt-4o-transcribe');
+                    const modelValue = String(sessionVoice?.model || globalOpenAiModel || '');
                     if (modelValue) sessionSttModel.value = modelValue;
                 }
 
@@ -8106,13 +8123,19 @@
                         }
                         break;
                     case 'gemini':
-                        // Gemini uses a static model list (no list_gemini_models API)
-                        models = [
-                            { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
-                            { id: 'gemini-2.0-flash-lite', name: 'Gemini 2.0 Flash Lite' },
-                            { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro' },
-                            { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash' },
-                        ];
+                        {
+                            const apiKey = await resolveApiKey('gemini', config);
+                            if (!apiKey) {
+                                sessionLlmModel.innerHTML = '<option value="">Set Gemini API key to load models</option>';
+                                return;
+                            }
+                            const result = await window.__TAURI__.core.invoke('list_gemini_models', { api_key: apiKey });
+                            models = Array.isArray(result)
+                                ? result
+                                    .map((m) => ({ id: m?.id, name: m?.name || m?.id }))
+                                    .filter((m) => typeof m.id === 'string' && m.id.length > 0)
+                                : [];
+                        }
                         break;
                     case 'grok':
                         {
@@ -8208,7 +8231,7 @@
                         `<option value="${m.id}">${m.name || m.id}</option>`
                     ).join('');
                 } catch (e) {
-                    sessionSttModel.innerHTML = '<option value="whisper-1">Whisper V2</option>';
+                    sessionSttModel.innerHTML = '<option value="">Failed to load STT models</option>';
                 }
             } else {
                 sttModelField.style.display = 'none';
@@ -8225,7 +8248,11 @@
                     session_id: sessionId,
                     provider: provider
                 });
-                await loadModelsForProvider(provider, null);
+                // Pre-select the global config's default model for the new provider
+                // so the user sees their configured default rather than the first entry.
+                const cfg = await window.__TAURI__.core.invoke('get_config');
+                const globalModel = cfg?.llm?.[provider]?.model || null;
+                await loadModelsForProvider(provider, globalModel);
             } catch (e) {
                 console.error('[Providers] Failed to set LLM provider:', e);
                 showToast('Failed to update provider: ' + e, 'error');
