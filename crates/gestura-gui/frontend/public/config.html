@@ -1506,13 +1506,6 @@
                     </ul>
                 </li>
 
-                <!-- Advanced section hidden - only contains NATS config which is hidden -->
-                <!-- TODO: Re-enable when there are visible advanced settings -->
-                <li class="toc-item" style="display: none;">
-                    <a href="#advanced-settings" class="toc-link" data-section="advanced-settings">
-                        <span class="toc-icon icon-wrench"></span>Advanced
-                    </a>
-                </li>
             </ul>
         </nav>
 
@@ -1580,7 +1573,7 @@
                             </div>
                         </div>
 
-                        <button type="button" class="button secondary" onclick="refreshPermissions()"><span
+                        <button type="button" class="button secondary" id="btnRefreshPermissions"><span
                                 class="icon-refresh"></span> Refresh
                             Permissions</button>
                     </div>
@@ -1724,8 +1717,9 @@
                                             <input type="password" class="form-input" id="openaiApiKey"
                                                 name="openai_api_key" placeholder="sk-proj-...">
                                             <button type="button" class="btn-delete-key" id="deleteVoiceOpenaiKey"
-                                                onclick="deleteApiKey('voice_openai', 'openaiApiKey', 'sk-proj-...')"
-                                                title="Delete key from keychain">✕ Delete</button>
+                                                data-provider="voice_openai" data-input-id="openaiApiKey"
+                                                data-placeholder="sk-proj-..." title="Delete key from keychain">✕
+                                                Delete</button>
                                         </div>
                                     </div>
                                     <div class="form-group">
@@ -1933,11 +1927,11 @@
                         <div class="form-group">
                             <label class="form-label" for="llmProvider">Primary AI Provider</label>
                             <select class="form-select" id="llmProvider" name="llm_provider">
-                                <option value="openai">OpenAI GPT</option>
-                                <option value="anthropic">Anthropic Claude</option>
-                                <option value="gemini">Gemini (Google)</option>
+                                <option value="openai">OpenAI</option>
+                                <option value="anthropic">Anthropic</option>
+                                <option value="gemini">Gemini</option>
                                 <option value="ollama">Ollama (Local)</option>
-                                <option value="grok">Grok (xAI)</option>
+                                <option value="grok">xAI</option>
                             </select>
                             <div class="help-text">Choose your preferred AI language model for processing commands and
                                 conversations</div>
@@ -1954,8 +1948,9 @@
                                             <input type="password" class="form-input" id="openaiLlmApiKey"
                                                 name="openai_llm_api_key" placeholder="sk-proj-...">
                                             <button type="button" class="btn-delete-key" id="deleteOpenaiKey"
-                                                onclick="deleteApiKey('openai', 'openaiLlmApiKey', 'sk-proj-...')"
-                                                title="Delete key from keychain">✕ Delete</button>
+                                                data-provider="openai" data-input-id="openaiLlmApiKey"
+                                                data-placeholder="sk-proj-..." title="Delete key from keychain">✕
+                                                Delete</button>
                                         </div>
                                     </div>
                                     <div class="form-group">
@@ -1985,8 +1980,9 @@
                                             <input type="password" class="form-input" id="anthropicApiKey"
                                                 name="anthropic_api_key" placeholder="sk-ant-...">
                                             <button type="button" class="btn-delete-key" id="deleteAnthropicKey"
-                                                onclick="deleteApiKey('anthropic', 'anthropicApiKey', 'sk-ant-...')"
-                                                title="Delete key from keychain">✕ Delete</button>
+                                                data-provider="anthropic" data-input-id="anthropicApiKey"
+                                                data-placeholder="sk-ant-..." title="Delete key from keychain">✕
+                                                Delete</button>
                                         </div>
                                     </div>
                                     <div class="form-group">
@@ -2015,8 +2011,9 @@
                                             <input type="password" class="form-input" id="grokApiKey"
                                                 name="grok_api_key" placeholder="xai-...">
                                             <button type="button" class="btn-delete-key" id="deleteGrokKey"
-                                                onclick="deleteApiKey('grok', 'grokApiKey', 'xai-...')"
-                                                title="Delete key from keychain">✕ Delete</button>
+                                                data-provider="grok" data-input-id="grokApiKey"
+                                                data-placeholder="xai-..." title="Delete key from keychain">✕
+                                                Delete</button>
                                         </div>
                                     </div>
                                     <div class="form-group">
@@ -2043,8 +2040,9 @@
                                             <input type="password" class="form-input" id="geminiApiKey"
                                                 name="gemini_api_key" placeholder="AIza...">
                                             <button type="button" class="btn-delete-key" id="deleteGeminiKey"
-                                                onclick="deleteApiKey('gemini', 'geminiApiKey', 'AIza...')"
-                                                title="Delete key from keychain">✕ Delete</button>
+                                                data-provider="gemini" data-input-id="geminiApiKey"
+                                                data-placeholder="AIza..." title="Delete key from keychain">✕
+                                                Delete</button>
                                         </div>
                                     </div>
                                     <div class="form-group">
@@ -2183,10 +2181,10 @@
                         </div>
 
                         <div class="form-row">
-                            <button type="button" class="button secondary" onclick="scanForDevices()"><span
+                            <button type="button" class="button secondary" id="btnScanDevices"><span
                                     class="icon-search"></span> Scan for
                                 Devices</button>
-                            <button type="button" class="button secondary" onclick="refreshDevices()"><span
+                            <button type="button" class="button secondary" id="btnRefreshDevices"><span
                                     class="icon-refresh"></span>
                                 Refresh</button>
                         </div>
@@ -2668,7 +2666,8 @@
                                         <input type="password" class="form-input" id="braveSearchKey"
                                             name="brave_search_key" placeholder="Enter your Brave Search API key">
                                         <button type="button" class="btn-delete-key" id="deleteBraveKey"
-                                            onclick="deleteApiKey('brave', 'braveSearchKey', 'Enter your Brave Search API key')"
+                                            data-provider="brave" data-input-id="braveSearchKey"
+                                            data-placeholder="Enter your Brave Search API key"
                                             title="Delete key from keychain">✕ Delete</button>
                                     </div>
                                     <div class="help-text">
@@ -2686,8 +2685,9 @@
                                         <input type="password" class="form-input" id="serpapiKey" name="serpapi_key"
                                             placeholder="Enter your SerpAPI key">
                                         <button type="button" class="btn-delete-key" id="deleteSerpapiKey"
-                                            onclick="deleteApiKey('serpapi', 'serpapiKey', 'Enter your SerpAPI key')"
-                                            title="Delete key from keychain">✕ Delete</button>
+                                            data-provider="serpapi" data-input-id="serpapiKey"
+                                            data-placeholder="Enter your SerpAPI key" title="Delete key from keychain">✕
+                                            Delete</button>
                                     </div>
                                     <div class="help-text">
                                         Get an API key at <a href="https://serpapi.com/"
@@ -2834,7 +2834,7 @@
                         <div class="subsection-title"
                             style="display:flex;justify-content:space-between;align-items:center;">
                             <span><span class="icon icon-plug"></span>Configured Servers</span>
-                            <button type="button" class="button primary" onclick="openMcpAddForm()"
+                            <button type="button" class="button primary" id="btnAddMcpServer"
                                 style="padding:0.3rem 0.8rem;font-size:0.85rem;">+ Add Server</button>
                         </div>
 
@@ -2930,9 +2930,9 @@
                             </div>
 
                             <div class="mcp-form-actions">
-                                <button type="button" class="button primary" onclick="saveMcpServerForm()">Save
+                                <button type="button" class="button primary" id="btnSaveMcpServer">Save
                                     Server</button>
-                                <button type="button" class="button secondary" onclick="closeMcpForm()">Cancel</button>
+                                <button type="button" class="button secondary" id="btnCloseMcpForm">Cancel</button>
                             </div>
                         </div>
 
@@ -3149,54 +3149,12 @@
                     </div>
                 </section>
 
-                <!-- Advanced Settings - Hidden (only contains NATS config which is also hidden) -->
-                <!-- TODO: Re-enable when there are visible advanced settings to configure -->
-                <section class="config-section" id="advanced-settings" style="display: none;">
-                    <div class="section-title">
-                        <span class="icon icon-sparkles"></span>Advanced Settings
-                    </div>
-                    <div class="section-description">
-                        Advanced features for power users.
-                    </div>
-
-                    <!-- NATS Network Configuration - Hidden for future integration -->
-                    <!-- TODO: Re-enable when NATS messaging is fully implemented -->
-                    <div class="subsection" id="natsConfigSection" style="display: none;">
-                        <div class="subsection-title">
-                            <span class="icon icon-globe"></span>Network Configuration
-                        </div>
-
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label class="form-label" for="natsPort">NATS Port</label>
-                                <input type="number" class="form-input" id="natsPort" name="nats_port" value="4223"
-                                    min="1024" max="65535">
-                                <div class="help-text">Custom port for NATS communication (default: 4223)</div>
-                            </div>
-
-                            <div class="form-group">
-                                <label class="form-label" for="natsHost">NATS Host</label>
-                                <input type="text" class="form-input" id="natsHost" name="nats_host" value="127.0.0.1">
-                                <div class="help-text">NATS server host address</div>
-                            </div>
-                        </div>
-
-                        <div class="checkbox-group">
-                            <input type="checkbox" class="form-checkbox" id="natsSecure" name="nats_secure" checked>
-                            <div class="checkbox-label">
-                                Enable NATS security
-                                <div class="checkbox-description">Use secure communication with authentication and
-                                    encryption</div>
-                            </div>
-                        </div>
-                    </div>
-                </section>
             </form>
 
             <div class="actions">
-                <button type="button" class="button secondary" onclick="resetConfig()">Reset to Defaults</button>
-                <button type="button" class="button secondary" onclick="loadConfig()">Reload</button>
-                <button type="button" class="button primary" onclick="saveConfig()">Save Configuration</button>
+                <button type="button" class="button secondary" id="btnResetConfig">Reset to Defaults</button>
+                <button type="button" class="button secondary" id="btnLoadConfig">Reload</button>
+                <button type="button" class="button primary" id="btnSaveConfig">Save Configuration</button>
             </div>
         </main>
     </div>
@@ -3673,13 +3631,21 @@
                     html += '  <div class="mcp-server-tools">🔧 ' + st.tool_count + ' tool(s) available</div>';
                 }
                 html += '  <div class="mcp-server-actions">';
-                html += '    <button type="button" class="button secondary" onclick="openMcpEditForm(\'' + escapeHtml(srv.name) + '\')">Edit</button>';
-                html += '    <button type="button" class="button secondary" onclick="toggleMcpServer(\'' + escapeHtml(srv.name) + '\')">' + (srv.enabled !== false ? 'Disable' : 'Enable') + '</button>';
-                html += '    <button type="button" class="mcp-btn-danger" onclick="removeMcpServer(\'' + escapeHtml(srv.name) + '\')">Remove</button>';
+                html += '    <button type="button" class="button secondary" data-mcp-action="edit" data-mcp-name="' + escapeHtml(srv.name) + '">Edit</button>';
+                html += '    <button type="button" class="button secondary" data-mcp-action="toggle" data-mcp-name="' + escapeHtml(srv.name) + '">' + (srv.enabled !== false ? 'Disable' : 'Enable') + '</button>';
+                html += '    <button type="button" class="mcp-btn-danger" data-mcp-action="remove" data-mcp-name="' + escapeHtml(srv.name) + '">Remove</button>';
                 html += '  </div>';
                 html += '</div>';
             });
             container.innerHTML = html;
+            // Hydrate MCP server action buttons (CSP nonces block inline onclick)
+            container.querySelectorAll('button[data-mcp-action]').forEach(btn => {
+                const name = btn.dataset.mcpName;
+                const action = btn.dataset.mcpAction;
+                if (action === 'edit') btn.addEventListener('click', () => openMcpEditForm(name));
+                else if (action === 'toggle') btn.addEventListener('click', () => toggleMcpServer(name));
+                else if (action === 'remove') btn.addEventListener('click', () => removeMcpServer(name));
+            });
         }
 
         /** Minimal HTML escaping for dynamic content. */
@@ -3964,12 +3930,16 @@
                 if (input) {
                     input.value = '';
                     input.placeholder = placeholder;
+                    // Keep UI state in sync with secure storage.
+                    input.dataset.hasKey = 'false';
+                    input.dataset.touched = 'false';
                 }
 
                 // Hide the delete button
                 const deleteButtonMap = {
                     'openai': 'deleteOpenaiKey',
                     'anthropic': 'deleteAnthropicKey',
+                    'gemini': 'deleteGeminiKey',
                     'grok': 'deleteGrokKey',
                     'voice_openai': 'deleteVoiceOpenaiKey',
                     'brave': 'deleteBraveKey',
@@ -3985,6 +3955,52 @@
             } catch (err) {
                 console.error('Failed to delete API key:', err);
                 showStatus(`Failed to delete ${provider} key: ${err}`, 'error');
+            }
+        }
+
+        // =============================================================
+        // Secret input tracking (clear + Save = delete)
+        // =============================================================
+        // We never display real tokens, but when a key exists we *do* put a masked
+        // sentinel into the input value so users can clear/replace it directly.
+        // Save semantics:
+        // - value == MASKED_SECRET => unchanged
+        // - value == '' and had key and user touched => delete
+        // - non-empty and != MASKED_SECRET => store
+        const MASKED_SECRET = '********';
+
+        function ensureSecretInputTracking(input) {
+            if (!input) return;
+            if (input.dataset.secretTracked === 'true') return;
+            input.dataset.secretTracked = 'true';
+            input.dataset.touched = 'false';
+
+            // Mark touched on any user edit (paste, delete, typing).
+            input.addEventListener('input', () => {
+                input.dataset.touched = 'true';
+            });
+
+            // UX: if a key exists and the field shows the masked sentinel, selecting all
+            // on focus makes it easy to replace (typing overwrites).
+            input.addEventListener('focus', () => {
+                if ((input.value || '') === MASKED_SECRET) {
+                    try { input.select(); } catch (_) { }
+                }
+            });
+        }
+
+        function setSecretInputState(input, hasKey, placeholderWhenMissing) {
+            if (!input) return;
+            ensureSecretInputTracking(input);
+            input.dataset.hasKey = hasKey ? 'true' : 'false';
+            input.dataset.touched = 'false';
+
+            if (hasKey) {
+                input.value = MASKED_SECRET;
+                input.placeholder = '';
+            } else {
+                input.value = '';
+                input.placeholder = placeholderWhenMissing;
             }
         }
 
@@ -4111,6 +4127,10 @@
                 const llmProvider = llmConfig?.primary || 'anthropic';
                 document.getElementById('llmProvider').value = llmProvider;
 
+                // Set up provider section visibility immediately so the correct
+                // section is shown even if a later `await` throws.
+                setupLlmProviderVisibility();
+
                 // OpenAI LLM settings
                 const openaiLlmApiKey = document.getElementById('openaiLlmApiKey');
                 // Never populate actual API keys from config. Keys live in OS secure storage.
@@ -4118,8 +4138,7 @@
                 if (openaiLlmApiKey) {
                     if (isTauriAvailable()) {
                         const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'openai' });
-                        openaiLlmApiKey.value = '';
-                        openaiLlmApiKey.placeholder = hasKey ? '••••••••••••••••' : 'sk-...';
+                        setSecretInputState(openaiLlmApiKey, hasKey, 'sk-proj-...');
                         const btn = document.getElementById('deleteOpenaiKey');
                         if (btn) btn.classList.toggle('visible', hasKey);
                     } else {
@@ -4139,8 +4158,7 @@
                 if (anthropicApiKey) {
                     if (isTauriAvailable()) {
                         const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'anthropic' });
-                        anthropicApiKey.value = '';
-                        anthropicApiKey.placeholder = hasKey ? '••••••••••••••••' : 'sk-ant-...';
+                        setSecretInputState(anthropicApiKey, hasKey, 'sk-ant-...');
                         const btn = document.getElementById('deleteAnthropicKey');
                         if (btn) btn.classList.toggle('visible', hasKey);
                     } else {
@@ -4161,8 +4179,7 @@
                 if (grokApiKey) {
                     if (isTauriAvailable()) {
                         const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'grok' });
-                        grokApiKey.value = '';
-                        grokApiKey.placeholder = hasKey ? '••••••••••••••••' : 'xai-...';
+                        setSecretInputState(grokApiKey, hasKey, 'xai-...');
                         const btn = document.getElementById('deleteGrokKey');
                         if (btn) btn.classList.toggle('visible', hasKey);
                     } else {
@@ -4182,8 +4199,7 @@
                 if (geminiApiKey) {
                     if (isTauriAvailable()) {
                         const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'gemini' });
-                        geminiApiKey.value = '';
-                        geminiApiKey.placeholder = hasKey ? '••••••••••••••••' : 'AIza...';
+                        setSecretInputState(geminiApiKey, hasKey, 'AIza...');
                         const btn = document.getElementById('deleteGeminiKey');
                         if (btn) btn.classList.toggle('visible', hasKey);
                     } else {
@@ -4223,8 +4239,7 @@
                 if (openaiApiKey) {
                     if (isTauriAvailable()) {
                         const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'voice_openai' });
-                        openaiApiKey.value = '';
-                        openaiApiKey.placeholder = hasKey ? '••••••••••••••••' : 'sk-...';
+                        setSecretInputState(openaiApiKey, hasKey, 'sk-proj-...');
                         const btn = document.getElementById('deleteVoiceOpenaiKey');
                         if (btn) btn.classList.toggle('visible', hasKey);
                     } else {
@@ -4298,10 +4313,6 @@
                 document.getElementById('maxSessions').value = 10;
                 document.getElementById('logLevel').value = 'info';
 
-                // Advanced defaults
-                document.getElementById('natsPort').value = 4223;
-                document.getElementById('natsHost').value = '127.0.0.1';
-                document.getElementById('natsSecure').checked = true;
                 document.getElementById('debugMode').checked = false;
                 document.getElementById('devTools').checked = false;
 
@@ -4366,8 +4377,7 @@
                 if (braveSearchKeyInput) {
                     if (isTauriAvailable()) {
                         const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'brave' });
-                        braveSearchKeyInput.value = '';
-                        braveSearchKeyInput.placeholder = hasKey ? '••••••••••••••••' : 'BSA...';
+                        setSecretInputState(braveSearchKeyInput, hasKey, 'Enter your Brave Search API key');
                         const btn = document.getElementById('deleteBraveKey');
                         if (btn) btn.classList.toggle('visible', hasKey);
                     } else {
@@ -4378,8 +4388,7 @@
                 if (serpapiKeyInput) {
                     if (isTauriAvailable()) {
                         const hasKey = await window.__TAURI__.core.invoke('has_api_key', { provider: 'serpapi' });
-                        serpapiKeyInput.value = '';
-                        serpapiKeyInput.placeholder = hasKey ? '••••••••••••••••' : '';
+                        setSecretInputState(serpapiKeyInput, hasKey, 'Enter your SerpAPI key');
                         const btn = document.getElementById('deleteSerpapiKey');
                         if (btn) btn.classList.toggle('visible', hasKey);
                     } else {
@@ -4447,7 +4456,7 @@
                     'voice_activation', 'push_to_talk', 'noise_reduction',
                     'auto_discover_mcp', 'data_collection', 'crash_reports',
                     'voice_data_local', 'require_auth', 'exit_confirmation',
-                    'start_on_boot', 'nats_secure', 'debug_mode', 'dev_tools',
+                    'start_on_boot', 'debug_mode', 'dev_tools',
                     'extract_content'
                 ];
 
@@ -4462,7 +4471,7 @@
                 const numericFields = [
                     'sensitivity', 'listening_timeout', 'stt_timeout', 'llm_timeout',
                     'mcp_timeout', 'mcp_retries', 'mdh_timeout', 'auth_timeout',
-                    'grace_period_secs', 'max_sessions', 'nats_port'
+                    'grace_period_secs', 'max_sessions'
                 ];
 
                 numericFields.forEach(field => {
@@ -4485,46 +4494,84 @@
                 // Store any newly-entered API keys into OS secure storage and
                 // NEVER include them in the AppConfig payload persisted to YAML.
                 if (isTauriAvailable()) {
-                    const secretStores = [];
+                    // Queue secure-storage operations.
+                    // - value == MASKED_SECRET => unchanged
+                    // - non-empty and != MASKED_SECRET => store
+                    // - empty + (had key) + (touched) => delete
+                    const secretOps = [];
 
-                    const openaiLlmKey = (document.getElementById('openaiLlmApiKey')?.value || '').trim();
-                    const anthropicKey = (document.getElementById('anthropicApiKey')?.value || '').trim();
-                    const geminiKey = (document.getElementById('geminiApiKey')?.value || '').trim();
-                    const grokKey = (document.getElementById('grokApiKey')?.value || '').trim();
-                    const openaiSttKey = (document.getElementById('openaiApiKey')?.value || '').trim();
-                    const braveKey = (document.getElementById('braveSearchKey')?.value || '').trim();
-                    const serpapiKey = (document.getElementById('serpapiKey')?.value || '').trim();
+                    function queueSecretOp(provider, inputId, placeholderWhenMissing, deleteButtonId) {
+                        const input = document.getElementById(inputId);
+                        if (!input) return;
+                        ensureSecretInputTracking(input);
 
-                    if (openaiLlmKey) secretStores.push({ provider: 'openai', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'openai', api_key: openaiLlmKey }) });
-                    if (anthropicKey) secretStores.push({ provider: 'anthropic', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'anthropic', api_key: anthropicKey }) });
-                    if (geminiKey) secretStores.push({ provider: 'gemini', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'gemini', api_key: geminiKey }) });
-                    if (grokKey) secretStores.push({ provider: 'grok', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'grok', api_key: grokKey }) });
-                    if (openaiSttKey) secretStores.push({ provider: 'voice_openai', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'voice_openai', api_key: openaiSttKey }) });
-                    if (braveKey) secretStores.push({ provider: 'brave', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'brave', api_key: braveKey }) });
-                    if (serpapiKey) secretStores.push({ provider: 'serpapi', promise: window.__TAURI__.core.invoke('store_api_key', { provider: 'serpapi', api_key: serpapiKey }) });
+                        const val = (input.value || '').trim();
+                        const hadKey = (input.dataset.hasKey === 'true');
+                        const touched = (input.dataset.touched === 'true');
 
-                    // Best-effort: store in parallel.
-                    if (secretStores.length > 0) {
-                        const results = await Promise.allSettled(secretStores.map(s => s.promise));
+                        if (val === MASKED_SECRET) {
+                            // Unchanged existing key.
+                            return;
+                        }
+
+                        if (val.length > 0) {
+                            secretOps.push({
+                                provider,
+                                action: 'store',
+                                input,
+                                placeholderWhenMissing,
+                                deleteButtonId,
+                                promise: window.__TAURI__.core.invoke('store_api_key', { provider, api_key: val })
+                            });
+                        } else if (touched && hadKey) {
+                            secretOps.push({
+                                provider,
+                                action: 'delete',
+                                input,
+                                placeholderWhenMissing,
+                                deleteButtonId,
+                                promise: window.__TAURI__.core.invoke('delete_api_key', { provider })
+                            });
+                        }
+                    }
+
+                    queueSecretOp('openai', 'openaiLlmApiKey', 'sk-proj-...', 'deleteOpenaiKey');
+                    queueSecretOp('anthropic', 'anthropicApiKey', 'sk-ant-...', 'deleteAnthropicKey');
+                    queueSecretOp('gemini', 'geminiApiKey', 'AIza...', 'deleteGeminiKey');
+                    queueSecretOp('grok', 'grokApiKey', 'xai-...', 'deleteGrokKey');
+                    queueSecretOp('voice_openai', 'openaiApiKey', 'sk-proj-...', 'deleteVoiceOpenaiKey');
+                    queueSecretOp('brave', 'braveSearchKey', 'Enter your Brave Search API key', 'deleteBraveKey');
+                    queueSecretOp('serpapi', 'serpapiKey', 'Enter your SerpAPI key', 'deleteSerpapiKey');
+
+                    // Best-effort: execute in parallel.
+                    if (secretOps.length > 0) {
+                        const results = await Promise.allSettled(secretOps.map(s => s.promise));
                         const failedProviders = [];
+
                         results.forEach((r, idx) => {
-                            if (r.status === 'rejected') failedProviders.push(secretStores[idx].provider);
+                            const op = secretOps[idx];
+                            if (r.status === 'rejected') {
+                                failedProviders.push(op.provider);
+                                return;
+                            }
+
+                            // Success: update UI state without exposing secrets.
+                            if (op.action === 'store') {
+                                setSecretInputState(op.input, true, op.placeholderWhenMissing);
+                                const btn = document.getElementById(op.deleteButtonId);
+                                if (btn) btn.classList.toggle('visible', true);
+                            } else if (op.action === 'delete') {
+                                setSecretInputState(op.input, false, op.placeholderWhenMissing);
+                                const btn = document.getElementById(op.deleteButtonId);
+                                if (btn) btn.classList.toggle('visible', false);
+                            }
                         });
 
                         if (failedProviders.length > 0) {
                             secretStoreFailed = true;
                             // Do not log secrets; provider names are fine.
-                            console.error('Failed to store one or more API keys in secure storage for providers:', failedProviders);
-                            showStatus('One or more API keys failed to store in secure storage. Please retry.', 'error');
-                        } else {
-                            // Clear password inputs after successful secure-storage write.
-                            if (document.getElementById('openaiLlmApiKey')) document.getElementById('openaiLlmApiKey').value = '';
-                            if (document.getElementById('anthropicApiKey')) document.getElementById('anthropicApiKey').value = '';
-                            if (document.getElementById('geminiApiKey')) document.getElementById('geminiApiKey').value = '';
-                            if (document.getElementById('grokApiKey')) document.getElementById('grokApiKey').value = '';
-                            if (document.getElementById('openaiApiKey')) document.getElementById('openaiApiKey').value = '';
-                            if (document.getElementById('braveSearchKey')) document.getElementById('braveSearchKey').value = '';
-                            if (document.getElementById('serpapiKey')) document.getElementById('serpapiKey').value = '';
+                            console.error('Failed to store/delete one or more API keys in secure storage for providers:', failedProviders);
+                            showStatus('One or more API key operations failed (store/delete). Please retry.', 'error');
                         }
                     }
                 }
@@ -4744,7 +4791,7 @@
                         <span class="status-badge ${permission.status.replace('_', '-')}">${formatStatus(permission.status)}</span>
                         ${permission.status !== 'granted' ? `
                             <button class="button small secondary"
-                                    onclick="requestPermission('${permission.id}')"
+                                    data-permission-id="${permission.id}"
                                     style="margin-left: 8px; padding: 4px 8px; font-size: 0.75rem;">
                                 ${isAccessibility ? '<span class="icon-settings"></span> Open Settings' : (permission.status === 'denied' ? '<span class="icon-settings"></span> Open Settings' : '<span class="icon-lock-open"></span> Request')}
                             </button>
@@ -4752,6 +4799,11 @@
                     </div>
                 </div>
             `}).join('');
+
+            // Hydrate permission request buttons (CSP nonces block inline onclick)
+            permissionsList.querySelectorAll('button[data-permission-id]').forEach(btn => {
+                btn.addEventListener('click', () => requestPermission(btn.dataset.permissionId));
+            });
 
             // Update summary
             document.getElementById('grantedCount').textContent = summary.granted;
@@ -4866,9 +4918,9 @@
 	                            </div>
 	                            <div class="device-actions">
 	                                ${connected
-                            ? `<button class="device-button" onclick="testDevice('${deviceId}')">Test</button>
-	                                       <button class="device-button danger" onclick="disconnectDevice('${deviceId}')">Disconnect</button>`
-                            : `<button class="device-button" onclick="connectDevice('${deviceId}')">Connect</button>`
+                            ? `<button class="device-button" data-device-action="test" data-device-id="${deviceId}">Test</button>
+	                                       <button class="device-button danger" data-device-action="disconnect" data-device-id="${deviceId}">Disconnect</button>`
+                            : `<button class="device-button" data-device-action="connect" data-device-id="${deviceId}">Connect</button>`
                         }
 	                            </div>
 	                        </div>
@@ -4876,6 +4928,14 @@
                 }
 
                 renderDevices(deviceList, cards);
+                // Hydrate device action buttons (CSP nonces block inline onclick)
+                deviceList.querySelectorAll('button[data-device-action]').forEach(btn => {
+                    const id = btn.dataset.deviceId;
+                    const action = btn.dataset.deviceAction;
+                    if (action === 'test') btn.addEventListener('click', () => testDevice(id));
+                    else if (action === 'disconnect') btn.addEventListener('click', () => disconnectDevice(id));
+                    else if (action === 'connect') btn.addEventListener('click', () => connectDevice(id));
+                });
                 showStatus(`Scan complete: ${deviceIds.length} device(s) found`);
             } catch (error) {
                 console.error('Device scan failed:', error);
@@ -6072,8 +6132,48 @@
             delete select.dataset.errorMessage;
         }
 
+        // =====================================================================
+        // Hydrate static listeners (CSP nonces block inline onclick handlers)
+        // =====================================================================
+        function hydrateStaticListeners() {
+            // Refresh Permissions button
+            const btnRefreshPerms = document.getElementById('btnRefreshPermissions');
+            if (btnRefreshPerms) btnRefreshPerms.addEventListener('click', () => window.refreshPermissions());
+
+            // Device buttons
+            const btnScan = document.getElementById('btnScanDevices');
+            if (btnScan) btnScan.addEventListener('click', () => window.scanForDevices());
+            const btnRefreshDev = document.getElementById('btnRefreshDevices');
+            if (btnRefreshDev) btnRefreshDev.addEventListener('click', () => window.refreshDevices());
+
+            // MCP form buttons
+            const btnAddMcp = document.getElementById('btnAddMcpServer');
+            if (btnAddMcp) btnAddMcp.addEventListener('click', () => window.openMcpAddForm());
+            const btnSaveMcp = document.getElementById('btnSaveMcpServer');
+            if (btnSaveMcp) btnSaveMcp.addEventListener('click', () => window.saveMcpServerForm());
+            const btnCloseMcp = document.getElementById('btnCloseMcpForm');
+            if (btnCloseMcp) btnCloseMcp.addEventListener('click', () => window.closeMcpForm());
+
+            // Bottom action buttons
+            const btnReset = document.getElementById('btnResetConfig');
+            if (btnReset) btnReset.addEventListener('click', () => window.resetConfig());
+            const btnLoad = document.getElementById('btnLoadConfig');
+            if (btnLoad) btnLoad.addEventListener('click', () => window.loadConfig());
+            const btnSave = document.getElementById('btnSaveConfig');
+            if (btnSave) btnSave.addEventListener('click', () => window.saveConfig());
+
+            // Delete API key buttons (use data-* attributes for parameters)
+            document.querySelectorAll('.btn-delete-key[data-provider]').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    deleteApiKey(btn.dataset.provider, btn.dataset.inputId, btn.dataset.placeholder);
+                });
+            });
+        }
+
         // Initialize everything with Tauri API check
         async function initializeApp() {
+            // Hydrate static button listeners (CSP nonces block inline onclick)
+            hydrateStaticListeners();
             // Attach listeners once so we always cache explicit user selections.
             attachLlmModelSelectionListeners();
             setupProviderSelection();

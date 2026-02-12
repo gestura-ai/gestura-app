@@ -837,81 +837,27 @@ pub async fn list_openai_models(api_key: String) -> Result<Vec<serde_json::Value
     if api_key.is_empty() {
         api_key = try_get_api_key_from_keychain("openai");
     }
-    if api_key.is_empty() {
-        // No key in UI and no key in secure storage; return a sensible static list.
-        return Ok(get_static_openai_chat_models());
-    }
 
-    let client = reqwest::Client::new();
-    let url = "https://api.openai.com/v1/models";
-
-    let resp = client
-        .get(url)
-        .bearer_auth(&api_key)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
+    let key = if api_key.is_empty() {
+        None
+    } else {
+        Some(api_key.as_str())
+    };
+    let models = gestura_core::list_models_for_provider("openai", key, None)
         .await
-        .map_err(|e| format!("Failed to list OpenAI models: {}", e))?;
+        .map_err(|e| format!("Failed to list OpenAI models: {e}"))?;
 
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("OpenAI API error {}: {}", status, body));
-    }
-
-    let data: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Invalid response: {}", e))?;
-
-    // Filter to chat-capable models and sort by creation date
-    let models: Vec<serde_json::Value> = data
-        .get("data")
-        .and_then(|d| d.as_array())
-        .map(|arr| {
-            let mut models: Vec<serde_json::Value> = arr
-                .iter()
-                .filter_map(|m| {
-                    let id = m.get("id")?.as_str()?;
-                    // Include GPT chat models and o-series reasoning models.
-                    // Exclude embeddings, whisper, tts, dall-e, instruct, etc.
-                    let is_chat_model = (id.starts_with("gpt-") && !id.contains("instruct"))
-                        || id.starts_with("o1-")
-                        || id.starts_with("o3-")
-                        || id.starts_with("o4-")
-                        || id.starts_with("o5-");
-                    if is_chat_model {
-                        Some(serde_json::json!({
-                            "id": id,
-                            "name": gestura_core::format_openai_model_name(id),
-                            "created": m.get("created").and_then(|c| c.as_i64()).unwrap_or(0)
-                        }))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            // Sort by created date descending (newest first)
-            models.sort_by(|a, b| {
-                let a_created = a.get("created").and_then(|c| c.as_i64()).unwrap_or(0);
-                let b_created = b.get("created").and_then(|c| c.as_i64()).unwrap_or(0);
-                b_created.cmp(&a_created)
-            });
-            models
-        })
-        .unwrap_or_default();
-
-    Ok(models)
+    Ok(model_info_to_json(&models))
 }
 
-fn get_static_openai_chat_models() -> Vec<serde_json::Value> {
-    gestura_core::OPENAI_CHAT_MODELS
+/// Convert a slice of `ModelInfo` to the JSON shape the frontend expects.
+fn model_info_to_json(models: &[gestura_core::ModelInfo]) -> Vec<serde_json::Value> {
+    models
         .iter()
-        .map(|id| {
+        .map(|m| {
             serde_json::json!({
-                "id": id,
-                "name": gestura_core::format_openai_model_name(id),
-                "created": 0
+                "id": m.id,
+                "name": m.name
             })
         })
         .collect()
@@ -1038,6 +984,8 @@ fn format_openai_stt_model_name(id: &str) -> String {
 
 /// List available Anthropic models.
 ///
+/// Delegates to `gestura_core::list_models_for_provider` for centralised HTTP + filtering logic.
+///
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn list_anthropic_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
@@ -1045,82 +993,22 @@ pub async fn list_anthropic_models(api_key: String) -> Result<Vec<serde_json::Va
     if api_key.is_empty() {
         api_key = try_get_api_key_from_keychain("anthropic");
     }
-    if api_key.is_empty() {
-        return Ok(get_static_anthropic_models());
-    }
 
-    let client = reqwest::Client::new();
-    let url = "https://api.anthropic.com/v1/models";
-
-    let resp = client
-        .get(url)
-        .header("x-api-key", &api_key)
-        .header("anthropic-version", "2023-06-01")
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
+    let key = if api_key.is_empty() {
+        None
+    } else {
+        Some(api_key.as_str())
+    };
+    let models = gestura_core::list_models_for_provider("anthropic", key, None)
         .await
-        .map_err(|e| format!("Failed to list Anthropic models: {}", e))?;
+        .map_err(|e| format!("Failed to list Anthropic models: {e}"))?;
 
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("Anthropic API error {}: {}", status, body));
-    }
-
-    let data: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Invalid response: {}", e))?;
-
-    // Parse the models list
-    let models: Vec<serde_json::Value> = data
-        .get("data")
-        .and_then(|d| d.as_array())
-        .map(|arr| {
-            let mut models: Vec<serde_json::Value> = arr
-                .iter()
-                .filter_map(|m| {
-                    let id = m.get("id")?.as_str()?;
-                    // Only include Claude chat models
-                    if id.starts_with("claude-") {
-                        Some(serde_json::json!({
-                            "id": id,
-                            "name": gestura_core::format_anthropic_model_name(id),
-                            "created": m.get("created_at").and_then(|c| c.as_str()).unwrap_or("")
-                        }))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            // Sort alphabetically by name for consistency
-            models.sort_by(|a, b| {
-                let a_name = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                let b_name = b.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                a_name.cmp(b_name)
-            });
-            models
-        })
-        .unwrap_or_default();
-
-    Ok(models)
+    Ok(model_info_to_json(&models))
 }
 
-fn get_static_anthropic_models() -> Vec<serde_json::Value> {
-    gestura_core::ANTHROPIC_MODELS
-        .iter()
-        .map(|id| {
-            serde_json::json!({
-                "id": id,
-                "name": gestura_core::format_anthropic_model_name(id),
-                "created": ""
-            })
-        })
-        .collect()
-}
-
-/// Fetch available Grok models from xAI API
-/// API Reference: https://docs.x.ai/docs/api-reference#list-models
+/// Fetch available Grok models from xAI API.
+///
+/// Delegates to `gestura_core::list_models_for_provider` for centralised HTTP + filtering logic.
 ///
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
@@ -1129,67 +1017,41 @@ pub async fn list_grok_models(api_key: String) -> Result<Vec<serde_json::Value>,
     if api_key.is_empty() {
         api_key = try_get_api_key_from_keychain("grok");
     }
-    if api_key.is_empty() {
-        return Ok(get_static_grok_models());
-    }
 
-    let client = reqwest::Client::new();
-    let response = client
-        .get("https://api.x.ai/v1/models")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch Grok models: {}", e))?;
-
-    if !response.status().is_success() {
-        tracing::warn!(
-            "Grok API returned status {}, falling back to static list",
-            response.status()
-        );
-        return Ok(get_static_grok_models());
-    }
-
-    let data: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse Grok models response: {}", e))?;
-
-    let models: Vec<serde_json::Value> = data["data"]
-        .as_array()
-        .unwrap_or(&vec![])
-        .iter()
-        .filter_map(|model| {
-            let id = model["id"].as_str()?;
-            // Filter to chat-capable models (exclude image-only models)
-            if id.contains("image") {
-                return None;
-            }
-            Some(serde_json::json!({
-                "id": id,
-                "name": gestura_core::format_grok_model_name(id)
-            }))
-        })
-        .collect();
-
-    if models.is_empty() {
-        Ok(get_static_grok_models())
+    let key = if api_key.is_empty() {
+        None
     } else {
-        Ok(models)
-    }
+        Some(api_key.as_str())
+    };
+    let models = gestura_core::list_models_for_provider("grok", key, None)
+        .await
+        .map_err(|e| format!("Failed to list Grok models: {e}"))?;
+
+    Ok(model_info_to_json(&models))
 }
 
-/// Fallback static list of Grok models
-fn get_static_grok_models() -> Vec<serde_json::Value> {
-    gestura_core::GROK_MODELS
-        .iter()
-        .map(|id| {
-            serde_json::json!({
-                "id": id,
-                "name": gestura_core::format_grok_model_name(id)
-            })
-        })
-        .collect()
+/// List available Gemini models from Google Generative Language API.
+///
+/// Delegates to `gestura_core::list_models_for_provider` for centralised HTTP + filtering logic.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn list_gemini_models(api_key: String) -> Result<Vec<serde_json::Value>, String> {
+    let mut api_key = api_key.trim().to_string();
+    if api_key.is_empty() {
+        api_key = try_get_api_key_from_keychain("gemini");
+    }
+
+    let key = if api_key.is_empty() {
+        None
+    } else {
+        Some(api_key.as_str())
+    };
+    let models = gestura_core::list_models_for_provider("gemini", key, None)
+        .await
+        .map_err(|e| format!("Failed to list Gemini models: {e}"))?;
+
+    Ok(model_info_to_json(&models))
 }
 
 /// Test local Whisper model with detailed validation
@@ -5349,6 +5211,8 @@ fn api_key_storage_key_for_provider(provider: &str) -> Option<&'static str> {
         Some("gestura_llm_openai_api_key")
     } else if p.eq_ignore_ascii_case("anthropic") {
         Some("gestura_llm_anthropic_api_key")
+    } else if p.eq_ignore_ascii_case("gemini") {
+        Some("gestura_llm_gemini_api_key")
     } else if p.eq_ignore_ascii_case("grok") {
         Some("gestura_llm_grok_api_key")
     } else if p.eq_ignore_ascii_case("voice_openai") {
@@ -5369,6 +5233,8 @@ fn legacy_api_key_storage_key_for_provider(provider: &str) -> Option<&'static st
         Some("gestura_api_key_openai")
     } else if p.eq_ignore_ascii_case("anthropic") {
         Some("gestura_api_key_anthropic")
+    } else if p.eq_ignore_ascii_case("gemini") {
+        Some("gestura_api_key_gemini")
     } else if p.eq_ignore_ascii_case("grok") {
         Some("gestura_api_key_grok")
     } else if p.eq_ignore_ascii_case("voice_openai") {
@@ -5520,7 +5386,8 @@ pub async fn has_api_key(provider: String) -> Result<bool, String> {
 /// Check which LLM providers have API keys configured.
 ///
 /// Returns a JSON object with provider names as keys and boolean values indicating
-/// whether an API key is available. Ollama is always included as true since it's local.
+/// whether an API key is available. Ollama availability is checked by pinging its
+/// endpoint with a short timeout.
 ///
 /// Example response: {"openai": true, "anthropic": false, "gemini": false, "grok": false, "ollama": true}
 ///
@@ -5535,8 +5402,20 @@ pub async fn get_available_llm_providers() -> Result<serde_json::Value, String> 
         result.insert(provider.to_string(), serde_json::Value::Bool(has_key));
     }
 
-    // Ollama is always available (local, no API key required)
-    result.insert("ollama".to_string(), serde_json::Value::Bool(true));
+    // Check Ollama availability by pinging its endpoint (no API key required, but
+    // the server must be running).  Delegates to gestura_core (single source of truth).
+    let cfg = AppConfig::load_async().await;
+    let ollama_base = cfg
+        .llm
+        .ollama
+        .as_ref()
+        .map(|o| o.base_url.as_str())
+        .unwrap_or("");
+    let ollama_available = gestura_core::check_ollama_connectivity(ollama_base).await;
+    result.insert(
+        "ollama".to_string(),
+        serde_json::Value::Bool(ollama_available),
+    );
 
     Ok(serde_json::Value::Object(result))
 }

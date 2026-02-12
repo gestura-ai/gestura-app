@@ -2614,9 +2614,11 @@
         .quick-access-bar {
             display: flex;
             align-items: center;
-            justify-content: center;
+            justify-content: flex-start;
             gap: 6px;
             padding-top: 6px;
+            width: 100%;
+            max-width: 800px;
         }
 
         .quick-access-bar .btn-icon {
@@ -7949,13 +7951,10 @@
                 const availableProviders = await window.__TAURI__.core.invoke('get_available_llm_providers');
                 console.log('[Providers] Available providers:', availableProviders);
 
-                // Filter LLM_PROVIDERS to only include those with API keys
-                const filteredProviders = LLM_PROVIDERS.filter(p => {
-                    // Ollama is always available (local)
-                    if (p.id === 'ollama') return true;
-                    // Check if provider has API key
-                    return availableProviders[p.id] === true;
-                });
+                // Filter LLM_PROVIDERS to only those the backend reports as
+                // available (API key present for cloud providers, connectivity
+                // verified for Ollama).
+                const filteredProviders = LLM_PROVIDERS.filter(p => availableProviders[p.id] === true);
 
                 // Populate LLM provider dropdown with filtered providers
                 if (filteredProviders.length === 0) {

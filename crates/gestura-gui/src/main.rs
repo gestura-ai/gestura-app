@@ -138,6 +138,7 @@ async fn main() {
             gestura_gui::api::list_openai_stt_models,
             gestura_gui::api::list_anthropic_models,
             gestura_gui::api::list_grok_models,
+            gestura_gui::api::list_gemini_models,
             gestura_gui::api::test_local_whisper,
             gestura_gui::api::validate_whisper_model,
             gestura_gui::api::get_whisper_models,
