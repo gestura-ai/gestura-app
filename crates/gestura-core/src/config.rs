@@ -133,6 +133,82 @@ fn get_keychain_secret_with_legacy_fallback(
     Some(legacy)
 }
 
+/// Async secure-storage secret read with canonical-key preference and legacy fallback.
+///
+/// If the secret is found under the legacy key, this best-effort self-heals by
+/// copying it to the canonical key.
+#[cfg(feature = "security")]
+async fn get_secret_with_legacy(
+    storage: &dyn crate::security::SecureStorage,
+    canonical_key: &str,
+    legacy_key: &str,
+) -> Option<String> {
+    if let Ok(Some(v)) = storage.get_secret(canonical_key).await
+        && !v.is_empty()
+    {
+        return Some(v);
+    }
+
+    if let Ok(Some(v)) = storage.get_secret(legacy_key).await
+        && !v.is_empty()
+    {
+        // Best-effort convergence to canonical key name.
+        let _ = storage.store_secret(canonical_key, &v).await;
+        return Some(v);
+    }
+
+    None
+}
+
+/// Fresh-install UX: If we loaded defaults (no YAML/legacy JSON) and the default
+/// primary provider is unconfigured, pick a usable primary provider based on
+/// hydrated keychain secrets.
+///
+/// This avoids the confusing "provider not configured" state after reinstall
+/// when API tokens still exist in the OS keychain.
+#[cfg(feature = "security")]
+fn autoselect_primary_llm_provider_from_hydrated_secrets(config: &mut AppConfig) {
+    fn provider_is_configured(llm: &LlmSettings, provider: &str) -> bool {
+        if provider.eq_ignore_ascii_case("openai") {
+            llm.openai
+                .as_ref()
+                .is_some_and(|c| !c.api_key.trim().is_empty())
+        } else if provider.eq_ignore_ascii_case("anthropic") {
+            llm.anthropic
+                .as_ref()
+                .is_some_and(|c| !c.api_key.trim().is_empty())
+        } else if provider.eq_ignore_ascii_case("gemini") {
+            llm.gemini
+                .as_ref()
+                .is_some_and(|c| !c.api_key.trim().is_empty())
+        } else if provider.eq_ignore_ascii_case("grok") {
+            llm.grok
+                .as_ref()
+                .is_some_and(|c| !c.api_key.trim().is_empty())
+        } else if provider.eq_ignore_ascii_case("ollama") {
+            // Local provider; does not require an API key.
+            true
+        } else {
+            false
+        }
+    }
+
+    // Keep the user's chosen primary if it's already configured.
+    if provider_is_configured(&config.llm, &config.llm.primary) {
+        return;
+    }
+
+    // Prefer any configured cloud provider, otherwise choose ollama.
+    for candidate in ["anthropic", "openai", "gemini", "grok"] {
+        if provider_is_configured(&config.llm, candidate) {
+            config.llm.primary = candidate.to_string();
+            return;
+        }
+    }
+
+    config.llm.primary = "ollama".to_string();
+}
+
 /// Returns true if secure storage contains a non-empty secret under either the
 /// canonical or legacy key.
 ///
@@ -212,15 +288,18 @@ impl AppConfigSecurityExt for AppConfig {
         let yaml_path = Self::default_path();
         let json_path = Self::legacy_json_path();
         let backup_path = Self::legacy_json_backup_path();
+        let had_yaml = yaml_path.exists();
+        let had_json = json_path.exists();
+        let used_default_config = !had_yaml && !had_json;
         // Capture the initial state so we can decide whether to perform JSON->YAML
         // migration even if later steps (e.g., secret hydration) create the YAML.
-        let needs_format_migration = !yaml_path.exists() && json_path.exists();
+        let needs_format_migration = !had_yaml && had_json;
         #[allow(unused_mut)] // config is mutated by hydrate_secrets/migrate_secrets
-        let mut config = if yaml_path.exists() {
+        let mut config = if had_yaml {
             Self::load_from_path(&yaml_path)
         } else {
             // Check for legacy JSON
-            if json_path.exists() {
+            if had_json {
                 if let Ok(s) = fs::read_to_string(&json_path) {
                     // We found JSON but no YAML. We will return this config.
                     // Persisting (format migration) happens below.
@@ -250,6 +329,14 @@ impl AppConfigSecurityExt for AppConfig {
 
                 // Keychain-first: if secure storage has secrets, they override YAML values.
                 let _ = config.hydrate_secrets_sync();
+
+                // Fresh installs often have no config file but do have secrets in the keychain.
+                // If the default primary provider is unconfigured, but another provider has a
+                // configured key, switch primary in-memory to avoid the confusing
+                // "provider not configured" experience.
+                if used_default_config {
+                    autoselect_primary_llm_provider_from_hydrated_secrets(&mut config);
+                }
 
                 // Migrate YAML secrets into secure storage only when secure storage is empty.
                 let migrated = config.migrate_secrets_sync().unwrap_or(false);
@@ -285,6 +372,7 @@ impl AppConfigSecurityExt for AppConfig {
         let backup_path = Self::legacy_json_backup_path();
         let had_yaml = tokio::fs::try_exists(&yaml_path).await.unwrap_or(false);
         let had_json = tokio::fs::try_exists(&json_path).await.unwrap_or(false);
+        let used_default_config = !had_yaml && !had_json;
         let needs_format_migration = !had_yaml && had_json;
         #[allow(unused_mut)] // config is mutated by hydrate_secrets/migrate_secrets
         let mut config = if had_yaml {
@@ -311,6 +399,10 @@ impl AppConfigSecurityExt for AppConfig {
 
                 // Keychain-first precedence.
                 let _ = config.hydrate_secrets().await;
+
+                if used_default_config {
+                    autoselect_primary_llm_provider_from_hydrated_secrets(&mut config);
+                }
 
                 // Migrate YAML secrets into secure storage only if secure storage is empty.
                 let migrated = config.migrate_secrets().await.unwrap_or(false);
@@ -573,43 +665,39 @@ Set secrets via environment variables or re-enable keychain access (unset GESTUR
         }
 
         // OpenAI
-        if let Some(c) = &mut self.llm.openai
-            && let Some(secret) = get_keychain_secret_with_legacy_fallback(
-                "gestura_llm_openai_api_key",
-                "gestura_api_key_openai",
-            )
-        {
+        if let Some(secret) = get_keychain_secret_with_legacy_fallback(
+            "gestura_llm_openai_api_key",
+            "gestura_api_key_openai",
+        ) {
             // Keychain-first: overwrite YAML value if a key exists in secure storage.
+            let c = self.llm.openai.get_or_insert_with(Default::default);
             c.api_key = secret;
         }
 
         // Anthropic
-        if let Some(c) = &mut self.llm.anthropic
-            && let Some(secret) = get_keychain_secret_with_legacy_fallback(
-                "gestura_llm_anthropic_api_key",
-                "gestura_api_key_anthropic",
-            )
-        {
+        if let Some(secret) = get_keychain_secret_with_legacy_fallback(
+            "gestura_llm_anthropic_api_key",
+            "gestura_api_key_anthropic",
+        ) {
+            let c = self.llm.anthropic.get_or_insert_with(Default::default);
             c.api_key = secret;
         }
 
         // Grok
-        if let Some(c) = &mut self.llm.grok
-            && let Some(secret) = get_keychain_secret_with_legacy_fallback(
-                "gestura_llm_grok_api_key",
-                "gestura_api_key_grok",
-            )
-        {
+        if let Some(secret) = get_keychain_secret_with_legacy_fallback(
+            "gestura_llm_grok_api_key",
+            "gestura_api_key_grok",
+        ) {
+            let c = self.llm.grok.get_or_insert_with(Default::default);
             c.api_key = secret;
         }
 
         // Gemini
-        if let Some(c) = &mut self.llm.gemini
-            && let Some(secret) = get_keychain_secret_with_legacy_fallback(
-                "gestura_llm_gemini_api_key",
-                "gestura_api_key_gemini",
-            )
-        {
+        if let Some(secret) = get_keychain_secret_with_legacy_fallback(
+            "gestura_llm_gemini_api_key",
+            "gestura_api_key_gemini",
+        ) {
+            let c = self.llm.gemini.get_or_insert_with(Default::default);
             c.api_key = secret;
         }
 
@@ -694,33 +782,47 @@ Set secrets via environment variables or re-enable keychain access (unset GESTUR
             };
         }
 
-        if let Some(c) = &mut self.llm.openai {
-            hydrate_with_legacy!(
-                &mut c.api_key,
-                "gestura_llm_openai_api_key",
-                "gestura_api_key_openai"
-            );
+        // LLM providers: if the key exists in secure storage, bootstrap the provider config
+        // object even when it is missing from YAML (common on fresh installs).
+        if let Some(secret) = get_secret_with_legacy(
+            storage.as_ref(),
+            "gestura_llm_openai_api_key",
+            "gestura_api_key_openai",
+        )
+        .await
+        {
+            let c = self.llm.openai.get_or_insert_with(Default::default);
+            c.api_key = secret;
         }
-        if let Some(c) = &mut self.llm.anthropic {
-            hydrate_with_legacy!(
-                &mut c.api_key,
-                "gestura_llm_anthropic_api_key",
-                "gestura_api_key_anthropic"
-            );
+        if let Some(secret) = get_secret_with_legacy(
+            storage.as_ref(),
+            "gestura_llm_anthropic_api_key",
+            "gestura_api_key_anthropic",
+        )
+        .await
+        {
+            let c = self.llm.anthropic.get_or_insert_with(Default::default);
+            c.api_key = secret;
         }
-        if let Some(c) = &mut self.llm.grok {
-            hydrate_with_legacy!(
-                &mut c.api_key,
-                "gestura_llm_grok_api_key",
-                "gestura_api_key_grok"
-            );
+        if let Some(secret) = get_secret_with_legacy(
+            storage.as_ref(),
+            "gestura_llm_grok_api_key",
+            "gestura_api_key_grok",
+        )
+        .await
+        {
+            let c = self.llm.grok.get_or_insert_with(Default::default);
+            c.api_key = secret;
         }
-        if let Some(c) = &mut self.llm.gemini {
-            hydrate_with_legacy!(
-                &mut c.api_key,
-                "gestura_llm_gemini_api_key",
-                "gestura_api_key_gemini"
-            );
+        if let Some(secret) = get_secret_with_legacy(
+            storage.as_ref(),
+            "gestura_llm_gemini_api_key",
+            "gestura_api_key_gemini",
+        )
+        .await
+        {
+            let c = self.llm.gemini.get_or_insert_with(Default::default);
+            c.api_key = secret;
         }
 
         hydrate_with_legacy!(
@@ -1096,6 +1198,15 @@ mod tests {
             }
             Self { key, old }
         }
+
+        fn unset(key: &'static str) -> Self {
+            let old = std::env::var(key).ok();
+            // Rust 2024: mutating process-wide environment variables is `unsafe`.
+            unsafe {
+                std::env::remove_var(key);
+            }
+            Self { key, old }
+        }
     }
 
     impl Drop for ScopedEnvVar {
@@ -1118,7 +1229,16 @@ mod tests {
     )]
     fn migrates_legacy_json_config_to_yaml_on_load() {
         // This test mutates process-wide env vars; serialize it.
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+
+        // When the `security` feature is enabled, `load()` will hydrate secrets from secure
+        // storage. Ensure the test keychain shim is empty so we can compare against the legacy
+        // JSON contents deterministically.
+        #[cfg(feature = "security")]
+        {
+            let _keychain_guard = keychain_lock().lock().unwrap_or_else(|e| e.into_inner());
+            clear_test_keychain_store();
+        }
 
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().to_path_buf();
@@ -1159,10 +1279,10 @@ mod tests {
     )]
     fn migrates_plaintext_openai_key_to_keystore_and_sanitizes_yaml_on_load() {
         // This test mutates process-wide env vars; serialize it.
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
 
         // This test also mutates the process-global test keychain store.
-        let _keychain_guard = keychain_lock().lock().unwrap();
+        let _keychain_guard = keychain_lock().lock().unwrap_or_else(|e| e.into_inner());
 
         clear_test_keychain_store();
 
@@ -1233,10 +1353,10 @@ mod tests {
     )]
     fn keychain_secret_overrides_yaml_and_plaintext_is_sanitized_on_load() {
         // This test mutates process-wide env vars; serialize it.
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
 
         // This test also mutates the process-global test keychain store.
-        let _keychain_guard = keychain_lock().lock().unwrap();
+        let _keychain_guard = keychain_lock().lock().unwrap_or_else(|e| e.into_inner());
 
         clear_test_keychain_store();
 
@@ -1291,8 +1411,136 @@ mod tests {
 
     #[test]
     #[cfg(feature = "security")]
+    #[cfg_attr(
+        target_os = "windows",
+        ignore = "dirs::home_dir() bypasses env var overrides on Windows"
+    )]
+    fn fresh_install_with_keychain_openai_secret_bootstraps_provider_and_autoselects_primary() {
+        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _keychain_guard = keychain_lock().lock().unwrap_or_else(|e| e.into_inner());
+
+        // Ensure keychain access is not implicitly disabled in CI-like environments.
+        let _ci = ScopedEnvVar::unset("CI");
+
+        clear_test_keychain_store();
+        let secret = "sk-keychain-openai-fresh-install";
+        set_keychain_secret("gestura_llm_openai_api_key", secret).unwrap();
+
+        // Fresh install: no YAML or legacy JSON.
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().to_path_buf();
+        let _home = ScopedEnvVar::set("HOME", home.to_string_lossy().to_string());
+        let _userprofile = ScopedEnvVar::set("USERPROFILE", home.to_string_lossy().to_string());
+        let _homedrive = ScopedEnvVar::set("HOMEDRIVE", "C:".to_string());
+        let _homepath = ScopedEnvVar::set("HOMEPATH", "\\".to_string());
+
+        let loaded = AppConfig::load();
+
+        assert_eq!(
+            loaded.llm.openai.as_ref().unwrap().api_key,
+            secret,
+            "fresh install should hydrate OpenAI secret from keychain"
+        );
+        assert_eq!(
+            loaded.llm.primary, "openai",
+            "fresh install should autoselect a configured provider instead of staying on an unconfigured default"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "security")]
+    #[cfg_attr(
+        target_os = "windows",
+        ignore = "dirs::home_dir() bypasses env var overrides on Windows"
+    )]
+    fn fresh_install_with_legacy_openai_secret_autoselects_and_self_heals() {
+        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _keychain_guard = keychain_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _ci = ScopedEnvVar::unset("CI");
+
+        clear_test_keychain_store();
+        let legacy_secret = "sk-legacy-openai-fresh-install";
+        set_keychain_secret("gestura_api_key_openai", legacy_secret).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().to_path_buf();
+        let _home = ScopedEnvVar::set("HOME", home.to_string_lossy().to_string());
+        let _userprofile = ScopedEnvVar::set("USERPROFILE", home.to_string_lossy().to_string());
+        let _homedrive = ScopedEnvVar::set("HOMEDRIVE", "C:".to_string());
+        let _homepath = ScopedEnvVar::set("HOMEPATH", "\\".to_string());
+
+        let loaded = AppConfig::load();
+
+        assert_eq!(loaded.llm.primary, "openai");
+        assert_eq!(loaded.llm.openai.as_ref().unwrap().api_key, legacy_secret);
+
+        // Legacy fallback should self-heal to the canonical key name.
+        let canonical = get_keychain_secret("gestura_llm_openai_api_key");
+        assert_eq!(canonical.as_deref(), Some(legacy_secret));
+    }
+
+    #[test]
+    #[cfg(feature = "security")]
+    #[cfg_attr(
+        target_os = "windows",
+        ignore = "dirs::home_dir() bypasses env var overrides on Windows"
+    )]
+    fn fresh_install_with_only_gemini_keychain_secret_autoselects_gemini() {
+        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _keychain_guard = keychain_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _ci = ScopedEnvVar::unset("CI");
+
+        clear_test_keychain_store();
+        let secret = "AIza-fresh-install-gemini";
+        set_keychain_secret("gestura_llm_gemini_api_key", secret).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().to_path_buf();
+        let _home = ScopedEnvVar::set("HOME", home.to_string_lossy().to_string());
+        let _userprofile = ScopedEnvVar::set("USERPROFILE", home.to_string_lossy().to_string());
+        let _homedrive = ScopedEnvVar::set("HOMEDRIVE", "C:".to_string());
+        let _homepath = ScopedEnvVar::set("HOMEPATH", "\\".to_string());
+
+        let loaded = AppConfig::load();
+        assert_eq!(loaded.llm.primary, "gemini");
+        assert_eq!(loaded.llm.gemini.as_ref().unwrap().api_key, secret);
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "security")]
+    async fn get_secret_with_legacy_prefers_canonical() {
+        use crate::security::SecureStorage as _;
+
+        let storage = crate::security::MockSecureStorage::new();
+        storage
+            .store_secret("canonical_key", "canonical")
+            .await
+            .unwrap();
+        storage.store_secret("legacy_key", "legacy").await.unwrap();
+
+        let v = get_secret_with_legacy(&storage, "canonical_key", "legacy_key").await;
+        assert_eq!(v.as_deref(), Some("canonical"));
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "security")]
+    async fn get_secret_with_legacy_falls_back_and_self_heals() {
+        use crate::security::SecureStorage as _;
+
+        let storage = crate::security::MockSecureStorage::new();
+        storage.store_secret("legacy_key", "legacy").await.unwrap();
+
+        let v = get_secret_with_legacy(&storage, "canonical_key", "legacy_key").await;
+        assert_eq!(v.as_deref(), Some("legacy"));
+
+        let canonical = storage.get_secret("canonical_key").await.unwrap();
+        assert_eq!(canonical.as_deref(), Some("legacy"));
+    }
+
+    #[test]
+    #[cfg(feature = "security")]
     fn hydrate_secrets_sync_falls_back_to_legacy_keys_and_self_heals() {
-        let _keychain_guard = keychain_lock().lock().unwrap();
+        let _keychain_guard = keychain_lock().lock().unwrap_or_else(|e| e.into_inner());
 
         clear_test_keychain_store();
 
