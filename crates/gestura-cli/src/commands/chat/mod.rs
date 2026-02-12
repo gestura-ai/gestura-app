@@ -610,6 +610,13 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 // Add to history
                 let _ = rl.add_history_entry(&input);
 
+                // Handle /exec by stripping the prefix so it goes to the LLM
+                let input = if let Some(rest) = input.strip_prefix("/exec ") {
+                    rest.to_string()
+                } else {
+                    input
+                };
+
                 // Handle commands
                 if input.starts_with('/') {
                     let mut parts = input.split_whitespace();
@@ -713,6 +720,95 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                     "Record voice input via microphone".dimmed()
                                 );
                             }
+                            println!(
+                                "{}",
+                                "├─ System ───────────────────────────────────────────────────┤"
+                                    .dimmed()
+                            );
+                            println!(
+                                "{}  {} {}",
+                                "│".dimmed(),
+                                "/mcp [status|list|tools|get|add|remove|enable|disable|connect|disconnect]".green(),
+                                "".dimmed()
+                            );
+                            println!(
+                                "{}  {}   {}",
+                                "│".dimmed(),
+                                "".dimmed(),
+                                "MCP server management".dimmed()
+                            );
+                            println!(
+                                "{}  {}  {}",
+                                "│".dimmed(),
+                                "/config [list|get|set|path|reset]".green(),
+                                "Configuration management".dimmed()
+                            );
+                            println!(
+                                "{}  {} {}",
+                                "│".dimmed(),
+                                "/session [info|list|delete|export]".green(),
+                                "Session management".dimmed()
+                            );
+                            println!(
+                                "{}  {}  {}",
+                                "│".dimmed(),
+                                "/context [status|analyze|categories|clear]".green(),
+                                "Context system".dimmed()
+                            );
+                            println!(
+                                "{}  {}  {}",
+                                "│".dimmed(),
+                                "/model [provider:model]".green(),
+                                "View or switch LLM model".dimmed()
+                            );
+                            println!(
+                                "{}  {}   {}",
+                                "│".dimmed(),
+                                "/exec <prompt>".green(),
+                                "Execute prompt (bypass slash-cmd detection)".dimmed()
+                            );
+                            println!(
+                                "{}  {} {}",
+                                "│".dimmed(),
+                                "/a2a [status|profiles|agents]".green(),
+                                "A2A protocol status".dimmed()
+                            );
+                            println!(
+                                "{}  {}    {}",
+                                "│".dimmed(),
+                                "/knowledge [list|search]".green(),
+                                "Browse knowledge base".dimmed()
+                            );
+                            println!(
+                                "{}  {}    {}",
+                                "│".dimmed(),
+                                "/agent [status|config]".green(),
+                                "Agent info and LLM config".dimmed()
+                            );
+                            println!(
+                                "{}  {}        {}",
+                                "│".dimmed(),
+                                "/device [list]".green(),
+                                "Audio input devices".dimmed()
+                            );
+                            println!(
+                                "{}  {}            {}",
+                                "│".dimmed(),
+                                "/health".green(),
+                                "System health diagnostics".dimmed()
+                            );
+                            println!(
+                                "{}  {}  {}",
+                                "│".dimmed(),
+                                "/privacy [status|policy]".green(),
+                                "Privacy & GDPR tools".dimmed()
+                            );
+                            println!(
+                                "{}  {}            {}",
+                                "│".dimmed(),
+                                "/listen".green(),
+                                "Voice input status".dimmed()
+                            );
                             println!(
                                 "{}",
                                 "├─ Keyboard ─────────────────────────────────────────────────┤"
@@ -1085,6 +1181,82 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 "New session started:".dimmed(),
                                 chat_session.id
                             );
+                            println!();
+                            continue;
+                        }
+                        "/mcp" => {
+                            println!();
+                            basic_mode_mcp_command(&args);
+                            println!();
+                            continue;
+                        }
+                        "/a2a" => {
+                            println!();
+                            basic_mode_a2a_command(&args);
+                            println!();
+                            continue;
+                        }
+                        "/knowledge" => {
+                            println!();
+                            basic_mode_knowledge_command(&args);
+                            println!();
+                            continue;
+                        }
+                        "/agent" => {
+                            println!();
+                            basic_mode_agent_command(&args, &config, &chat_session);
+                            println!();
+                            continue;
+                        }
+                        "/device" => {
+                            println!();
+                            basic_mode_device_command();
+                            println!();
+                            continue;
+                        }
+                        "/health" => {
+                            println!();
+                            basic_mode_health_command(&config);
+                            println!();
+                            continue;
+                        }
+                        "/privacy" => {
+                            println!();
+                            basic_mode_privacy_command(&args);
+                            println!();
+                            continue;
+                        }
+                        "/listen" => {
+                            println!();
+                            basic_mode_listen_command();
+                            println!();
+                            continue;
+                        }
+                        "/config" => {
+                            println!();
+                            basic_mode_config_command(&args);
+                            println!();
+                            continue;
+                        }
+                        "/session" | "/sessions" => {
+                            println!();
+                            basic_mode_session_command(&args, &chat_session);
+                            println!();
+                            continue;
+                        }
+                        "/context" => {
+                            println!();
+                            basic_mode_context_command(&args);
+                            println!();
+                            continue;
+                        }
+                        "/model" => {
+                            println!();
+                            if let Some(new_model) =
+                                basic_mode_model_command(&args, &config, &chat_session)
+                            {
+                                chat_session.model = Some(new_model);
+                            }
                             println!();
                             continue;
                         }
@@ -1864,5 +2036,1500 @@ fn truncate_output(output: &str, max_len: usize) -> String {
             .map(|line| format!("    {}", line))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+/// Basic mode `/mcp` slash command handler.
+fn basic_mode_mcp_command(args: &[&str]) {
+    use gestura_core::config::{McpScope, McpServerEntry, McpTransportType};
+
+    let subcommand = args.first().map(|s| s.to_ascii_lowercase());
+    match subcommand.as_deref() {
+        None | Some("status") => {
+            let config = AppConfig::load();
+            println!("{}", "MCP Server Status".bold().cyan());
+            println!("{}", "═".repeat(50));
+            let total = config.mcp_servers.len();
+            let enabled = config.mcp_servers.iter().filter(|s| s.enabled).count();
+            println!(
+                "{}: {} configured ({} enabled)",
+                "Servers".bold(),
+                total,
+                enabled
+            );
+            for server in &config.mcp_servers {
+                let status = if server.enabled {
+                    "✓".green()
+                } else {
+                    "○".dimmed()
+                };
+                let endpoint = match server.transport {
+                    McpTransportType::Stdio => {
+                        let cmd = server.command.as_deref().unwrap_or("");
+                        let cmd_args = server.args.join(" ");
+                        format!("{} {}", cmd, cmd_args).trim().to_string()
+                    }
+                    _ => server.url.clone().unwrap_or_default(),
+                };
+                println!(
+                    "  {} {} [{}] {}",
+                    status,
+                    server.name.cyan(),
+                    format!("{}", server.transport).dimmed(),
+                    endpoint.dimmed()
+                );
+            }
+            // Also show connected servers
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let registry = gestura_core::get_mcp_client_registry();
+            let connected = rt.block_on(registry.connected_servers());
+            if !connected.is_empty() {
+                println!();
+                println!("{}", "Connected:".bold().yellow());
+                for name in &connected {
+                    println!("  {} {}", "✓".green(), name);
+                }
+            }
+        }
+        Some("list") => {
+            let config = AppConfig::load();
+            if config.mcp_servers.is_empty() {
+                println!("{}", "No MCP servers configured.".dimmed());
+                println!(
+                    "Add one with: {}",
+                    "/mcp add <name> <command_or_url>".cyan()
+                );
+            } else {
+                println!("{}", "MCP Servers".bold().cyan());
+                println!("{}", "═".repeat(60));
+                println!(
+                    "{:20} {:8} {:8} {}",
+                    "NAME".underline(),
+                    "TYPE".underline(),
+                    "SCOPE".underline(),
+                    "ENDPOINT / COMMAND".underline()
+                );
+                for srv in &config.mcp_servers {
+                    let status = if srv.enabled { "✓" } else { "○" };
+                    let endpoint = match srv.transport {
+                        McpTransportType::Stdio => {
+                            let cmd = srv.command.as_deref().unwrap_or("");
+                            let cmd_args = srv.args.join(" ");
+                            format!("{} {}", cmd, cmd_args).trim().to_string()
+                        }
+                        _ => srv.url.clone().unwrap_or_default(),
+                    };
+                    println!(
+                        "{} {:18} {:8} {:8} {}",
+                        status,
+                        srv.name.cyan(),
+                        format!("{}", srv.transport).dimmed(),
+                        format!("{}", srv.scope).dimmed(),
+                        endpoint.dimmed()
+                    );
+                }
+                println!();
+                println!("Total: {} server(s)", config.mcp_servers.len());
+            }
+        }
+        Some("tools") => {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let registry = gestura_core::get_mcp_client_registry();
+            let server_filter = args.get(1).map(|s| s.to_string());
+            let all = rt.block_on(registry.all_tools());
+            let filtered: Vec<_> = if let Some(ref filter) = server_filter {
+                all.into_iter().filter(|(name, _)| name == filter).collect()
+            } else {
+                all
+            };
+            if filtered.is_empty() {
+                println!(
+                    "{}",
+                    "No MCP tools available. Connect a server first.".dimmed()
+                );
+            } else {
+                println!("{}", "MCP Tools".bold().cyan());
+                println!("{}", "═".repeat(50));
+                let mut total = 0;
+                for (server_name, server_tools) in &filtered {
+                    println!(
+                        "\n{} ({} tools):",
+                        server_name.bold(),
+                        server_tools.len()
+                    );
+                    for tool in server_tools {
+                        let desc = tool.description.as_deref().unwrap_or("(no description)");
+                        println!("  {} {} — {}", "•".cyan(), tool.name, desc.dimmed());
+                    }
+                    total += server_tools.len();
+                }
+                println!();
+                println!(
+                    "Total: {} tool(s) across {} server(s)",
+                    total,
+                    filtered.len()
+                );
+            }
+        }
+        Some("get") => {
+            if let Some(name) = args.get(1) {
+                let config = AppConfig::load();
+                match config.mcp_servers.iter().find(|t| t.name == *name) {
+                    Some(srv) => {
+                        println!("{}", srv.name.bold().cyan());
+                        println!("{}", "═".repeat(50));
+                        println!(
+                            "  {} {}",
+                            "Transport:".dimmed(),
+                            format!("{}", srv.transport).cyan()
+                        );
+                        println!(
+                            "  {} {}",
+                            "Enabled:".dimmed(),
+                            if srv.enabled {
+                                "yes".green()
+                            } else {
+                                "no".red()
+                            }
+                        );
+                        println!("  {} {}", "Scope:".dimmed(), srv.scope);
+                        println!("  {} {}s", "Timeout:".dimmed(), srv.timeout_secs);
+                        println!(
+                            "  {} {}",
+                            "Auto-reconnect:".dimmed(),
+                            srv.auto_reconnect
+                        );
+                        match srv.transport {
+                            McpTransportType::Stdio => {
+                                println!(
+                                    "  {} {}",
+                                    "Command:".dimmed(),
+                                    srv.command.as_deref().unwrap_or("(none)")
+                                );
+                                if !srv.args.is_empty() {
+                                    println!("  {} {:?}", "Args:".dimmed(), srv.args);
+                                }
+                                if !srv.env.is_empty() {
+                                    println!("  {}", "Env:".dimmed());
+                                    for (k, v) in &srv.env {
+                                        println!("    {}={}", k, v);
+                                    }
+                                }
+                            }
+                            _ => {
+                                println!(
+                                    "  {} {}",
+                                    "URL:".dimmed(),
+                                    srv.url.as_deref().unwrap_or("(none)")
+                                );
+                                if !srv.headers.is_empty() {
+                                    println!("  {}", "Headers:".dimmed());
+                                    for (k, v) in &srv.headers {
+                                        println!("    {}: {}", k, v);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        println!("{} MCP server '{}' not found", "✗".red(), name);
+                    }
+                }
+            } else {
+                println!("{} Usage: /mcp get <name>", "✗".red());
+            }
+        }
+        Some("enable") => {
+            if let Some(name) = args.get(1) {
+                let mut config = AppConfig::load();
+                match config.mcp_servers.iter_mut().find(|t| t.name == *name) {
+                    Some(srv) => {
+                        srv.enabled = true;
+                        if let Err(e) = config.save() {
+                            println!("{} Failed to save config: {}", "✗".red(), e);
+                        } else {
+                            println!("{} Enabled MCP server: {}", "✓".green(), name.cyan());
+                        }
+                    }
+                    None => {
+                        println!("{} MCP server '{}' not found", "✗".red(), name);
+                    }
+                }
+            } else {
+                println!("{} Usage: /mcp enable <name>", "✗".red());
+            }
+        }
+        Some("disable") => {
+            if let Some(name) = args.get(1) {
+                let mut config = AppConfig::load();
+                match config.mcp_servers.iter_mut().find(|t| t.name == *name) {
+                    Some(srv) => {
+                        srv.enabled = false;
+                        if let Err(e) = config.save() {
+                            println!("{} Failed to save config: {}", "✗".red(), e);
+                        } else {
+                            println!("{} Disabled MCP server: {}", "✓".green(), name.cyan());
+                        }
+                    }
+                    None => {
+                        println!("{} MCP server '{}' not found", "✗".red(), name);
+                    }
+                }
+            } else {
+                println!("{} Usage: /mcp disable <name>", "✗".red());
+            }
+        }
+        Some("add") => {
+            // /mcp add <name> <command_or_url> [--transport stdio|http|sse] [--scope user|project|local]
+            if args.len() < 3 {
+                println!("{} Usage: /mcp add <name> <command_or_url> [--transport stdio|http|sse] [--scope user|project|local]", "✗".red());
+                return;
+            }
+            let name = args[1].to_string();
+            let command_or_url = args[2].to_string();
+            let mut transport_str = "stdio".to_string();
+            let mut scope_str = "user".to_string();
+
+            // Parse optional flags
+            let mut i = 3;
+            while i < args.len() {
+                match args[i] {
+                    "--transport" | "-t" => {
+                        if let Some(val) = args.get(i + 1) {
+                            transport_str = val.to_string();
+                            i += 1;
+                        }
+                    }
+                    "--scope" | "-s" => {
+                        if let Some(val) = args.get(i + 1) {
+                            scope_str = val.to_string();
+                            i += 1;
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+
+            let transport_type: McpTransportType = match transport_str.parse() {
+                Ok(t) => t,
+                Err(e) => {
+                    println!("{} {}", "✗".red(), e);
+                    return;
+                }
+            };
+            let scope_val: McpScope = match scope_str.parse() {
+                Ok(s) => s,
+                Err(e) => {
+                    println!("{} {}", "✗".red(), e);
+                    return;
+                }
+            };
+
+            let mut config = AppConfig::load();
+            if config.mcp_servers.iter().any(|t| t.name == name) {
+                println!(
+                    "{} MCP server '{}' already exists. Use {} first.",
+                    "✗".red(),
+                    name,
+                    "/mcp remove".cyan()
+                );
+                return;
+            }
+
+            let entry = match transport_type {
+                McpTransportType::Stdio => McpServerEntry {
+                    name: name.clone(),
+                    transport: transport_type,
+                    enabled: true,
+                    command: Some(command_or_url.clone()),
+                    scope: scope_val,
+                    ..McpServerEntry::default()
+                },
+                McpTransportType::Http | McpTransportType::Sse => McpServerEntry {
+                    name: name.clone(),
+                    transport: transport_type,
+                    enabled: true,
+                    url: Some(command_or_url.clone()),
+                    scope: scope_val,
+                    ..McpServerEntry::default()
+                },
+            };
+
+            config.mcp_servers.push(entry);
+            if let Err(e) = config.save() {
+                println!("{} Failed to save config: {}", "✗".red(), e);
+            } else {
+                println!(
+                    "{} Added MCP server: {} ({})",
+                    "✓".green(),
+                    name.cyan(),
+                    transport_str
+                );
+            }
+        }
+        Some("remove") => {
+            if let Some(name) = args.get(1) {
+                let mut config = AppConfig::load();
+                let original_len = config.mcp_servers.len();
+                config.mcp_servers.retain(|t| t.name != *name);
+                if config.mcp_servers.len() == original_len {
+                    println!("{} MCP server '{}' not found", "✗".red(), name);
+                } else if let Err(e) = config.save() {
+                    println!("{} Failed to save config: {}", "✗".red(), e);
+                } else {
+                    println!("{} Removed MCP server: {}", "✓".green(), name.cyan());
+                }
+            } else {
+                println!("{} Usage: /mcp remove <name>", "✗".red());
+            }
+        }
+        Some("connect") => {
+            if let Some(name) = args.get(1) {
+                let config = AppConfig::load();
+                if let Some(srv) = config.mcp_servers.iter().find(|s| s.name == *name) {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    let registry = gestura_core::get_mcp_client_registry();
+                    match rt.block_on(registry.connect(srv)) {
+                        Ok(tools) => {
+                            println!(
+                                "{} Connected to MCP server: {} ({} tools discovered)",
+                                "✓".green(),
+                                name.cyan(),
+                                tools.len()
+                            );
+                            for t in &tools {
+                                println!("  {} {}", "•".cyan(), t.name);
+                                if let Some(desc) = &t.description {
+                                    println!("    {}", desc.dimmed());
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!(
+                                "{} Failed to connect to '{}': {}",
+                                "✗".red(),
+                                name,
+                                e
+                            );
+                        }
+                    }
+                } else {
+                    println!("{} MCP server '{}' not found in config", "✗".red(), name);
+                }
+            } else {
+                println!("{} Usage: /mcp connect <name>", "✗".red());
+            }
+        }
+        Some("disconnect") => {
+            if let Some(name) = args.get(1) {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                let registry = gestura_core::get_mcp_client_registry();
+                rt.block_on(registry.disconnect(name));
+                println!(
+                    "{} Disconnected from MCP server: {}",
+                    "✓".green(),
+                    name.cyan()
+                );
+            } else {
+                println!("{} Usage: /mcp disconnect <name>", "✗".red());
+            }
+        }
+        Some(other) => {
+            println!(
+                "{} Unknown /mcp subcommand: '{}'",
+                "✗".red(),
+                other
+            );
+            println!();
+            println!("Usage:");
+            println!("  {} - Show MCP server status", "/mcp".green());
+            println!("  {} - List configured servers", "/mcp list".green());
+            println!("  {} - List tools from connected servers", "/mcp tools".green());
+            println!(
+                "  {} - Show server details",
+                "/mcp get <name>".green()
+            );
+            println!(
+                "  {} - Add a new MCP server",
+                "/mcp add <name> <cmd_or_url>".green()
+            );
+            println!(
+                "  {} - Remove an MCP server",
+                "/mcp remove <name>".green()
+            );
+            println!(
+                "  {} - Enable an MCP server",
+                "/mcp enable <name>".green()
+            );
+            println!(
+                "  {} - Disable an MCP server",
+                "/mcp disable <name>".green()
+            );
+            println!(
+                "  {} - Connect to an MCP server",
+                "/mcp connect <name>".green()
+            );
+            println!(
+                "  {} - Disconnect from an MCP server",
+                "/mcp disconnect <name>".green()
+            );
+        }
+    }
+}
+
+/// Basic mode `/a2a` slash command handler.
+fn basic_mode_a2a_command(args: &[&str]) {
+    let subcommand = args.first().map(|s| s.to_ascii_lowercase());
+    match subcommand.as_deref() {
+        None | Some("status") => {
+            println!("{}", "A2A Protocol Status".bold().cyan());
+            println!("{}", "═".repeat(50));
+            println!();
+            println!("{}: Agent2Agent (A2A)", "Protocol".bold());
+            println!("{}: 0.3.0", "Version".bold());
+            println!("{}: Linux Foundation", "Governance".bold());
+            println!();
+            println!("{}", "Features".bold().yellow());
+            println!("  {} Agent discovery via Agent Cards", "✓".green());
+            println!("  {} Task-based communication", "✓".green());
+            println!("  {} JSON-RPC 2.0 protocol", "✓".green());
+            println!("  {} Bearer token authentication", "✓".green());
+            println!("  {} Profile propagation", "✓".green());
+            println!("  {} SSE streaming support", "✓".green());
+        }
+        Some("profiles") => {
+            println!("{}", "No A2A profiles registered yet.".dimmed());
+            println!(
+                "Use {} to register a new profile.",
+                "gestura a2a register".cyan()
+            );
+        }
+        Some("agents") => {
+            println!("{}", "No remote agents discovered yet.".dimmed());
+            println!(
+                "Use {} to discover a remote agent.",
+                "gestura a2a discover <url>".cyan()
+            );
+        }
+        Some("discover") => {
+            if let Some(url) = args.get(1) {
+                println!(
+                    "Use {} from CLI for agent discovery.",
+                    format!("gestura a2a discover {url}").cyan()
+                );
+            } else {
+                println!("{} Usage: /a2a discover <url>", "✗".red());
+            }
+        }
+        Some(other) => {
+            println!(
+                "{} Unknown /a2a subcommand: {}. Try: status, profiles, agents, discover",
+                "✗".red(),
+                other
+            );
+        }
+    }
+}
+
+/// Basic mode `/knowledge` slash command handler.
+fn basic_mode_knowledge_command(args: &[&str]) {
+    use gestura_core::knowledge::{KnowledgeQuery, KnowledgeStore, register_builtin_knowledge};
+
+    let subcommand = args.first().map(|s| s.to_ascii_lowercase());
+    let store = KnowledgeStore::with_default_dir();
+    register_builtin_knowledge(&store);
+
+    match subcommand.as_deref() {
+        None | Some("list") => {
+            let items = store.list();
+            if items.is_empty() {
+                println!("{}", "No knowledge items registered.".dimmed());
+            } else {
+                println!("{}", "Knowledge Base".bold().cyan());
+                println!("{}", "═".repeat(50));
+                for item in &items {
+                    println!(
+                        "  {} [{}] {} — {}",
+                        "•".cyan(),
+                        item.category,
+                        item.name.bold(),
+                        item.description.dimmed()
+                    );
+                }
+                println!();
+                println!("{}", format!("{} items total", items.len()).dimmed());
+            }
+        }
+        Some("search") => {
+            let query_text = args.get(1..).unwrap_or_default().join(" ");
+            if query_text.is_empty() {
+                println!("{} Usage: /knowledge search <query>", "✗".red());
+            } else {
+                let query = KnowledgeQuery {
+                    query: query_text.clone(),
+                    limit: Some(10),
+                    ..Default::default()
+                };
+                let matches = store.find(&query);
+                if matches.is_empty() {
+                    println!("{}", format!("No results for '{query_text}'.").dimmed());
+                } else {
+                    println!("{}", format!("Search: '{query_text}'").bold().cyan());
+                    println!("{}", "═".repeat(50));
+                    for m in &matches {
+                        println!(
+                            "  {} {} (score: {:.2}) — {}",
+                            "•".cyan(),
+                            m.item.name.bold(),
+                            m.score,
+                            m.item.description.dimmed()
+                        );
+                    }
+                    println!();
+                    println!("{}", format!("{} result(s)", matches.len()).dimmed());
+                }
+            }
+        }
+        Some("categories") => {
+            let cats = store.categories();
+            if cats.is_empty() {
+                println!("{}", "No knowledge categories found.".dimmed());
+            } else {
+                println!("{}", "Knowledge Categories".bold().cyan());
+                println!("{}", "═".repeat(50));
+                for cat in &cats {
+                    let count = store.list_by_category(cat).len();
+                    println!("  {} {} ({} items)", "•".cyan(), cat, count);
+                }
+            }
+        }
+        Some("status") => {
+            println!("{}", "Knowledge Base Status".bold().cyan());
+            println!("{}", "═".repeat(50));
+            println!("Total items: {}", store.count());
+            println!("Categories: {}", store.categories().len());
+            println!("Base directory: {}", store.base_dir().display());
+        }
+        Some(other) => {
+            println!(
+                "{} Unknown /knowledge subcommand: {}. Try: list, search, categories, status",
+                "✗".red(),
+                other
+            );
+        }
+    }
+}
+
+/// Basic mode `/agent` slash command handler.
+fn basic_mode_agent_command(args: &[&str], config: &AppConfig, session: &ChatSession) {
+    let subcommand = args.first().map(|s| s.to_ascii_lowercase());
+    match subcommand.as_deref() {
+        None | Some("status") => {
+            println!("{}", "Agent Status".bold().cyan());
+            println!("{}", "═".repeat(50));
+            println!("{}: {}", "Version".bold(), gestura_core::VERSION);
+            println!("{}: {}", "Primary LLM".bold(), config.llm.primary);
+            println!(
+                "{}: {}",
+                "Model".bold(),
+                session.model.as_deref().unwrap_or("(default)")
+            );
+            println!("{}: {}", "Session".bold(), &session.id[..8]);
+            println!("{}: {}", "Messages".bold(), session.message_count());
+            println!();
+            println!("{}", "Provider Status:".bold().yellow());
+            let has_openai = std::env::var("OPENAI_API_KEY").is_ok()
+                || config
+                    .llm
+                    .openai
+                    .as_ref()
+                    .is_some_and(|o| !o.api_key.is_empty());
+            let has_anthropic = std::env::var("ANTHROPIC_API_KEY").is_ok()
+                || config
+                    .llm
+                    .anthropic
+                    .as_ref()
+                    .is_some_and(|a| !a.api_key.is_empty());
+            println!(
+                "  {} OpenAI",
+                if has_openai {
+                    "✓".green()
+                } else {
+                    "○".dimmed()
+                }
+            );
+            println!(
+                "  {} Anthropic",
+                if has_anthropic {
+                    "✓".green()
+                } else {
+                    "○".dimmed()
+                }
+            );
+        }
+        Some("config") => {
+            println!("{}", "Agent Configuration".bold().cyan());
+            println!("{}", "═".repeat(50));
+            println!("{}: {}", "Primary".bold(), config.llm.primary);
+            if let Some(ref openai) = config.llm.openai {
+                println!("OpenAI model: {}", openai.model);
+            }
+            if let Some(ref anthropic) = config.llm.anthropic {
+                println!("Anthropic model: {}", anthropic.model);
+            }
+            if let Some(ref grok) = config.llm.grok {
+                println!("Grok model: {}", grok.model);
+            }
+            if let Some(ref ollama) = config.llm.ollama {
+                println!("Ollama model: {}", ollama.model);
+                println!("Ollama base URL: {}", ollama.base_url);
+            }
+        }
+        Some(other) => {
+            println!(
+                "{} Unknown /agent subcommand: {}. Try: status, config",
+                "✗".red(),
+                other
+            );
+        }
+    }
+}
+
+/// Basic mode `/device` slash command handler.
+fn basic_mode_device_command() {
+    let devices = gestura_core::list_audio_input_devices();
+    let mic_available = gestura_core::is_microphone_available();
+
+    println!("{}", "Audio Devices".bold().cyan());
+    println!("{}", "═".repeat(50));
+    println!(
+        "Microphone available: {}",
+        if mic_available {
+            "✓ yes".green()
+        } else {
+            "✗ no".red()
+        }
+    );
+    println!();
+    if devices.is_empty() {
+        println!("{}", "No audio input devices found.".dimmed());
+    } else {
+        println!("{} device(s) detected:", devices.len());
+        for dev in &devices {
+            let marker = if dev.is_default { " (default)" } else { "" };
+            println!("  {} {}{}", "•".cyan(), dev.name, marker);
+        }
+    }
+}
+
+/// Basic mode `/health` slash command handler.
+fn basic_mode_health_command(config: &AppConfig) {
+    println!("{}", "System Health".bold().cyan());
+    println!("{}", "═".repeat(50));
+
+    println!("{} Gestura v{}", "✓".green(), gestura_core::VERSION);
+
+    let config_path = AppConfig::default_path();
+    let config_ok = config_path.exists();
+    println!(
+        "{} Config: {}",
+        if config_ok {
+            "✓".green()
+        } else {
+            "○".dimmed()
+        },
+        config_path.display()
+    );
+
+    println!();
+    println!("{}", "LLM Providers:".bold().yellow());
+    let has_openai = std::env::var("OPENAI_API_KEY").is_ok()
+        || config
+            .llm
+            .openai
+            .as_ref()
+            .is_some_and(|o| !o.api_key.is_empty());
+    let has_anthropic = std::env::var("ANTHROPIC_API_KEY").is_ok()
+        || config
+            .llm
+            .anthropic
+            .as_ref()
+            .is_some_and(|a| !a.api_key.is_empty());
+    let has_grok = std::env::var("XAI_API_KEY").is_ok()
+        || config
+            .llm
+            .grok
+            .as_ref()
+            .is_some_and(|g| !g.api_key.is_empty());
+    let has_ollama = config.llm.ollama.is_some();
+
+    println!(
+        "  {} OpenAI",
+        if has_openai {
+            "✓".green()
+        } else {
+            "○".dimmed()
+        }
+    );
+    println!(
+        "  {} Anthropic",
+        if has_anthropic {
+            "✓".green()
+        } else {
+            "○".dimmed()
+        }
+    );
+    println!(
+        "  {} Grok",
+        if has_grok {
+            "✓".green()
+        } else {
+            "○".dimmed()
+        }
+    );
+    println!(
+        "  {} Ollama",
+        if has_ollama {
+            "✓".green()
+        } else {
+            "○".dimmed()
+        }
+    );
+
+    println!();
+    println!("{}", "Audio:".bold().yellow());
+    let mic = gestura_core::is_microphone_available();
+    let devices = gestura_core::list_audio_input_devices();
+    println!(
+        "  {} Microphone",
+        if mic { "✓".green() } else { "○".dimmed() }
+    );
+    println!("  {} device(s) detected", devices.len());
+
+    println!();
+    println!("{}", "MCP:".bold().yellow());
+    let mcp_count = config.mcp_servers.len();
+    let mcp_enabled = config.mcp_servers.iter().filter(|s| s.enabled).count();
+    println!(
+        "  {} server(s) configured ({} enabled)",
+        mcp_count, mcp_enabled
+    );
+}
+
+/// Basic mode `/privacy` slash command handler.
+fn basic_mode_privacy_command(args: &[&str]) {
+    let subcommand = args.first().map(|s| s.to_ascii_lowercase());
+    match subcommand.as_deref() {
+        None | Some("status") => {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let report = rt.block_on(async {
+                let manager = gestura_core::get_gdpr_manager().await;
+                manager.generate_privacy_report().await
+            });
+            println!("{}", "Privacy Report".bold().cyan());
+            println!("{}", "═".repeat(50));
+            if let Ok(pretty) = serde_json::to_string_pretty(&report) {
+                println!("{pretty}");
+            } else {
+                println!("{report:?}");
+            }
+        }
+        Some("policy") => {
+            println!("{}", "Data Retention Policy".bold().cyan());
+            println!("{}", "═".repeat(50));
+            println!();
+            println!("Gestura respects user privacy and GDPR compliance:");
+            println!();
+            println!(
+                "  {} Voice recordings: Temporary only, deleted after transcription",
+                "•".cyan()
+            );
+            println!(
+                "  {} Chat sessions: Stored locally in workspace",
+                "•".cyan()
+            );
+            println!(
+                "  {} API keys: Stored in local config file only",
+                "•".cyan()
+            );
+            println!(
+                "  {} Memory bank: Stored locally in .gestura/memory/",
+                "•".cyan()
+            );
+            println!(
+                "  {} No data is sent to third parties except configured LLM providers",
+                "•".cyan()
+            );
+            println!();
+            println!(
+                "Use {} for a full GDPR data export.",
+                "gestura privacy export".cyan()
+            );
+            println!(
+                "Use {} to exercise right to erasure.",
+                "gestura privacy delete".cyan()
+            );
+        }
+        Some("export") => {
+            println!(
+                "{}: Use {} from CLI for data export.",
+                "Note".yellow(),
+                "gestura privacy export".cyan()
+            );
+        }
+        Some(other) => {
+            println!(
+                "{} Unknown /privacy subcommand: {}. Try: status, policy, export",
+                "✗".red(),
+                other
+            );
+        }
+    }
+}
+
+/// Basic mode `/listen` slash command handler.
+fn basic_mode_listen_command() {
+    let mic_available = gestura_core::is_microphone_available();
+    let is_recording = gestura_core::is_speech_recording();
+
+    println!("{}", "Voice Input".bold().cyan());
+    println!("{}", "═".repeat(50));
+    println!(
+        "Microphone: {}",
+        if mic_available {
+            "✓ available".green()
+        } else {
+            "✗ not available".red()
+        }
+    );
+    println!(
+        "Recording: {}",
+        if is_recording {
+            "active".yellow()
+        } else {
+            "idle".dimmed()
+        }
+    );
+    println!();
+    println!(
+        "For full voice input, use {} from CLI.",
+        "gestura listen".cyan()
+    );
+}
+
+/// Basic mode `/config` slash command handler.
+fn basic_mode_config_command(args: &[&str]) {
+    use gestura_core::config_env::{is_secret_key, redact_secret};
+
+    let subcommand = args.first().map(|s| s.to_ascii_lowercase());
+    match subcommand.as_deref() {
+        None | Some("list") => {
+            let config = AppConfig::load();
+            println!("{}", "Configuration".bold().cyan());
+            println!("{}", "═".repeat(60));
+            let keys = [
+                "llm.primary",
+                "voice.provider",
+                "voice.local_model_path",
+                "voice.audio_device",
+                "ui.theme_mode",
+                "hotkey_listen",
+                "nats_url",
+                "pipeline.max_history_messages",
+                "pipeline.auto_compact_threshold_percent",
+                "pipeline.compaction_strategy",
+                "pipeline.max_context_tokens",
+                "pipeline.log_token_usage",
+            ];
+            for key in keys {
+                let value = basic_mode_get_config_value(&config, key);
+                println!(
+                    "  {:42} {}",
+                    key.dimmed(),
+                    value.unwrap_or_else(|| "(unset)".to_string())
+                );
+            }
+            println!();
+            println!("{}", "Config file:".dimmed());
+            println!("  {}", AppConfig::default_path().display());
+        }
+        Some("get") => {
+            if let Some(key) = args.get(1) {
+                let config = AppConfig::load();
+                match basic_mode_get_config_value(&config, key) {
+                    Some(v) => println!("{} = {}", key.cyan(), v),
+                    None => println!("{} Unknown config key: {}", "✗".red(), key),
+                }
+            } else {
+                println!("{} Usage: /config get <key>", "✗".red());
+            }
+        }
+        Some("set") => {
+            if args.len() < 3 {
+                println!(
+                    "{} Usage: /config set <key> <value>",
+                    "✗".red()
+                );
+                return;
+            }
+            let key = args[1];
+            let value = args[2..].join(" ");
+            let mut config = AppConfig::load();
+            if basic_mode_set_config_value(&mut config, key, &value) {
+                if let Err(e) = config.save() {
+                    println!("{} Failed to save config: {}", "✗".red(), e);
+                } else {
+                    let display_value = if is_secret_key(key) {
+                        redact_secret(&value)
+                    } else {
+                        value.to_string()
+                    };
+                    println!("{} {} = {}", "✓".green(), key.cyan(), display_value);
+                }
+            } else {
+                println!(
+                    "{} Unknown or read-only config key: {}",
+                    "✗".red(),
+                    key
+                );
+            }
+        }
+        Some("path") => {
+            println!(
+                "{}: {}",
+                "Config file".dimmed(),
+                AppConfig::default_path().display()
+            );
+        }
+        Some("reset") => {
+            let config = AppConfig::default();
+            if let Err(e) = config.save() {
+                println!("{} Failed to save config: {}", "✗".red(), e);
+            } else {
+                println!("{} Configuration reset to defaults", "✓".green());
+            }
+        }
+        Some(other) => {
+            println!(
+                "{} Unknown /config subcommand: '{}'. Try: list, get, set, path, reset",
+                "✗".red(),
+                other
+            );
+        }
+    }
+}
+
+/// Get a config value by key (mirrors `commands/config.rs` logic).
+fn basic_mode_get_config_value(config: &AppConfig, key: &str) -> Option<String> {
+    use gestura_core::config_env::redact_secret;
+    match key {
+        "llm.primary" => Some(config.llm.primary.clone()),
+        "voice.provider" => Some(config.voice.provider.clone()),
+        "voice.local_model_path" => Some(config.voice.local_model_path.clone().unwrap_or_default()),
+        "voice.audio_device" => Some(config.voice.audio_device.clone().unwrap_or_default()),
+        "ui.theme_mode" => Some(config.ui.theme_mode.clone()),
+        "hotkey_listen" => Some(config.hotkey_listen.clone()),
+        "nats_url" => Some(config.nats_url.clone()),
+        "pipeline.max_history_messages" => Some(config.pipeline.max_history_messages.to_string()),
+        "pipeline.auto_compact_threshold_percent" => {
+            Some(config.pipeline.auto_compact_threshold_percent.to_string())
+        }
+        "pipeline.compaction_strategy" => {
+            Some(format!("{:?}", config.pipeline.compaction_strategy))
+        }
+        "pipeline.max_context_tokens" => Some(config.pipeline.max_context_tokens.to_string()),
+        "pipeline.log_token_usage" => Some(config.pipeline.log_token_usage.to_string()),
+        "llm.openai.api_key" => config
+            .llm
+            .openai
+            .as_ref()
+            .map(|c| redact_secret(&c.api_key)),
+        "llm.anthropic.api_key" => config
+            .llm
+            .anthropic
+            .as_ref()
+            .map(|c| redact_secret(&c.api_key)),
+        "llm.grok.api_key" => config.llm.grok.as_ref().map(|c| redact_secret(&c.api_key)),
+        _ => None,
+    }
+}
+
+/// Set a config value by key (mirrors `commands/config.rs` logic).
+fn basic_mode_set_config_value(config: &mut AppConfig, key: &str, value: &str) -> bool {
+    match key {
+        "llm.primary" => {
+            config.llm.primary = value.to_string();
+            true
+        }
+        "voice.provider" => {
+            config.voice.provider = value.to_string();
+            true
+        }
+        "voice.local_model_path" => {
+            config.voice.local_model_path = Some(value.to_string());
+            true
+        }
+        "voice.audio_device" => {
+            config.voice.audio_device = Some(value.to_string());
+            true
+        }
+        "ui.theme_mode" => {
+            config.ui.theme_mode = value.to_string();
+            true
+        }
+        "hotkey_listen" => {
+            config.hotkey_listen = value.to_string();
+            true
+        }
+        "nats_url" => {
+            config.nats_url = value.to_string();
+            true
+        }
+        "pipeline.max_history_messages" => {
+            if let Ok(val) = value.parse::<usize>() {
+                config.pipeline.max_history_messages = val;
+                true
+            } else {
+                false
+            }
+        }
+        "pipeline.auto_compact_threshold_percent" => {
+            if let Ok(val) = value.parse::<u8>() {
+                if val <= 100 {
+                    config.pipeline.auto_compact_threshold_percent = val;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+        "pipeline.compaction_strategy" => {
+            use gestura_core::pipeline::CompactionStrategy;
+            config.pipeline.compaction_strategy = CompactionStrategy::parse(value);
+            true
+        }
+        "pipeline.max_context_tokens" => {
+            if let Ok(val) = value.parse::<usize>() {
+                config.pipeline.max_context_tokens = val;
+                true
+            } else {
+                false
+            }
+        }
+        "pipeline.log_token_usage" => {
+            if let Ok(val) = value.parse::<bool>() {
+                config.pipeline.log_token_usage = val;
+                true
+            } else {
+                false
+            }
+        }
+        "llm.openai.api_key" => {
+            config.llm.openai.get_or_insert(Default::default()).api_key = value.to_string();
+            true
+        }
+        "llm.anthropic.api_key" => {
+            config
+                .llm
+                .anthropic
+                .get_or_insert(Default::default())
+                .api_key = value.to_string();
+            true
+        }
+        "llm.grok.api_key" => {
+            config.llm.grok.get_or_insert(Default::default()).api_key = value.to_string();
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Basic mode `/session` slash command handler.
+fn basic_mode_session_command(args: &[&str], current: &ChatSession) {
+    let subcommand = args.first().map(|s| s.to_ascii_lowercase());
+    match subcommand.as_deref() {
+        None | Some("info") => {
+            println!("{}", "Current Session".bold().cyan());
+            println!("{}", "═".repeat(50));
+            println!("  {} {}", "ID:".dimmed(), current.id);
+            println!("  {} {}", "Title:".dimmed(), current.title);
+            println!("  {} {}", "Created:".dimmed(), current.created_at);
+            println!("  {} {}", "Last active:".dimmed(), current.last_active);
+            println!("  {} {}", "Messages:".dimmed(), current.message_count());
+            println!(
+                "  {} {}",
+                "Model:".dimmed(),
+                current.model.as_deref().unwrap_or("(default)")
+            );
+            if let Some(ref ws) = current.state.workspace_dir {
+                println!("  {} {}", "Workspace:".dimmed(), ws.display());
+            }
+        }
+        Some("list") => {
+            let store = session_store();
+            match store.list(gestura_core::chat_sessions::SessionFilter::All) {
+                Ok(sessions) => {
+                    if sessions.is_empty() {
+                        println!("{}", "No sessions found.".dimmed());
+                    } else {
+                        println!("{}", "Chat Sessions".bold().cyan());
+                        println!("{}", "═".repeat(60));
+                        println!(
+                            "{:38} {:6} {}",
+                            "SESSION ID".underline(),
+                            "MSGS".underline(),
+                            "LAST ACTIVE".underline()
+                        );
+                        for info in sessions.iter().take(20) {
+                            let active_str = {
+                                let elapsed = chrono::Utc::now()
+                                    .signed_duration_since(info.last_active);
+                                let secs = elapsed.num_seconds();
+                                if secs < 60 {
+                                    "just now".to_string()
+                                } else if secs < 3600 {
+                                    format!("{} min ago", secs / 60)
+                                } else if secs < 86400 {
+                                    format!("{} hours ago", secs / 3600)
+                                } else {
+                                    format!("{} days ago", secs / 86400)
+                                }
+                            };
+                            let marker = if info.id == current.id {
+                                "▸".green()
+                            } else {
+                                " ".normal()
+                            };
+                            println!(
+                                "{} {:36} {:6} {}",
+                                marker,
+                                info.id[..info.id.len().min(36)].cyan(),
+                                info.message_count,
+                                active_str.dimmed()
+                            );
+                        }
+                        println!();
+                        println!("Total: {} session(s)", sessions.len());
+                    }
+                }
+                Err(e) => println!("{} Failed to list sessions: {}", "✗".red(), e),
+            }
+        }
+        Some("delete") => {
+            if let Some(id) = args.get(1) {
+                if *id == current.id {
+                    println!("{} Cannot delete the current active session", "✗".red());
+                    return;
+                }
+                match delete_cli_session(id) {
+                    Ok(true) => println!("{} Deleted session: {}", "✓".green(), id.cyan()),
+                    Ok(false) => println!("{} Session '{}' not found", "✗".red(), id),
+                    Err(e) => println!("{} Failed to delete: {}", "✗".red(), e),
+                }
+            } else {
+                println!("{} Usage: /session delete <id>", "✗".red());
+            }
+        }
+        Some("export") => {
+            let current_id_str = current.id.as_str();
+            let target_id = args.get(1).unwrap_or(&current_id_str);
+            let session_to_export = if *target_id == current.id {
+                current.clone()
+            } else {
+                match load_cli_session(target_id) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        println!("{} Failed to load session: {}", "✗".red(), e);
+                        return;
+                    }
+                }
+            };
+            let filename = format!("session-{}.json", &session_to_export.id[..8]);
+            match serde_json::to_string_pretty(&session_to_export) {
+                Ok(json) => match std::fs::write(&filename, &json) {
+                    Ok(()) => {
+                        println!("{} Exported to: {}", "✓".green(), filename.cyan());
+                    }
+                    Err(e) => println!("{} Failed to write: {}", "✗".red(), e),
+                },
+                Err(e) => println!("{} Failed to serialize: {}", "✗".red(), e),
+            }
+        }
+        Some(other) => {
+            println!(
+                "{} Unknown /session subcommand: '{}'. Try: info, list, delete, export",
+                "✗".red(),
+                other
+            );
+        }
+    }
+}
+
+/// Basic mode `/context` slash command handler.
+fn basic_mode_context_command(args: &[&str]) {
+    use gestura_core::context::{ContextCategory, ContextManager, RequestAnalyzer};
+
+    let subcommand = args.first().map(|s| s.to_ascii_lowercase());
+    match subcommand.as_deref() {
+        None | Some("status") => {
+            let manager = ContextManager::new();
+            let stats = manager.cache_stats();
+            println!("{}", "Context Manager Status".bold().cyan());
+            println!("{}", "═".repeat(50));
+            println!();
+            println!("{}", "Cache Statistics".yellow());
+            println!(
+                "  Context Cache: {} / {} entries",
+                stats.context_cache.size, stats.context_cache.max_size
+            );
+            println!(
+                "  File Cache:    {} / {} entries",
+                stats.file_cache.size, stats.file_cache.max_size
+            );
+            println!(
+                "  History Cache: {} / {} entries",
+                stats.history_cache.size, stats.history_cache.max_size
+            );
+            println!();
+            println!("{}", "Features".yellow());
+            println!("  {} Request analysis without LLM", "✓".green());
+            println!("  {} Category-based tool filtering", "✓".green());
+            println!("  {} Smart context caching with TTL", "✓".green());
+            println!("  {} Entity extraction (paths, URLs)", "✓".green());
+            println!("  {} Follow-up detection", "✓".green());
+        }
+        Some("analyze") => {
+            if args.len() < 2 {
+                println!("{} Usage: /context analyze <request text>", "✗".red());
+                return;
+            }
+            let request = args[1..].join(" ");
+            let analyzer = RequestAnalyzer::new();
+            let analysis = analyzer.analyze(&request);
+
+            println!("{}", "Request Analysis".bold().cyan());
+            println!("{}", "═".repeat(60));
+            println!("{}: {}", "Request".dimmed(), request);
+            println!();
+
+            println!("{}", "Detected Categories".yellow());
+            if analysis.categories.is_empty() {
+                println!("  {}", "(none)".dimmed());
+            } else {
+                for cat in &analysis.categories {
+                    let icon = context_category_icon(*cat);
+                    println!("  {} {:?}", icon, cat);
+                }
+            }
+            println!();
+
+            println!("{}", "Suggested Tools".yellow());
+            if analysis.suggested_tools.is_empty() {
+                println!("  {}", "(none — general conversation)".dimmed());
+            } else {
+                for tool in &analysis.suggested_tools {
+                    println!("  ● {}", tool);
+                }
+            }
+            println!();
+
+            if !analysis.entities.is_empty() {
+                println!("{}", "Extracted Entities".yellow());
+                for entity in &analysis.entities {
+                    println!(
+                        "  → [{:?}]: {}",
+                        entity.entity_type, entity.value
+                    );
+                }
+                println!();
+            }
+
+            println!("{}", "Analysis Flags".yellow());
+            let needs_tools = if analysis.needs_tools {
+                "✓".green()
+            } else {
+                "✗".red()
+            };
+            let is_followup = if analysis.is_followup {
+                "✓".green()
+            } else {
+                "✗".red()
+            };
+            println!("  Needs Tools: {}", needs_tools);
+            println!("  Is Follow-up: {}", is_followup);
+            println!(
+                "  Confidence: {}%",
+                (analysis.confidence * 100.0) as u32
+            );
+        }
+        Some("categories") => {
+            println!("{}", "Context Categories".bold().cyan());
+            println!("{}", "═".repeat(50));
+            println!();
+            let categories = [
+                (ContextCategory::FileSystem, "File system operations (read, write, edit)"),
+                (ContextCategory::Shell, "Shell command execution"),
+                (ContextCategory::Git, "Git version control operations"),
+                (ContextCategory::Code, "Code analysis (symbols, references)"),
+                (ContextCategory::Web, "Web fetching and search"),
+                (ContextCategory::Voice, "Voice and audio processing"),
+                (ContextCategory::Config, "Configuration management"),
+                (ContextCategory::Session, "Session and history"),
+                (ContextCategory::Tools, "Tool introspection"),
+                (ContextCategory::Agent, "Agent orchestration"),
+                (ContextCategory::Mcp, "MCP protocol operations"),
+                (ContextCategory::A2a, "A2A protocol operations"),
+                (ContextCategory::General, "General conversation (no tools)"),
+            ];
+            for (cat, desc) in categories {
+                let icon = context_category_icon(cat);
+                println!("{} {:?}", icon, cat);
+                println!("  {}", desc.dimmed());
+            }
+        }
+        Some("clear") => {
+            let manager = ContextManager::new();
+            manager.clear_caches();
+            println!("{} All context caches cleared", "✓".green());
+        }
+        Some(other) => {
+            println!(
+                "{} Unknown /context subcommand: '{}'. Try: status, analyze, categories, clear",
+                "✗".red(),
+                other
+            );
+        }
+    }
+}
+
+/// Icon for a context category (used by `/context` handler).
+fn context_category_icon(cat: gestura_core::context::ContextCategory) -> &'static str {
+    use gestura_core::context::ContextCategory;
+    match cat {
+        ContextCategory::FileSystem => "📁",
+        ContextCategory::Shell => "🖥️",
+        ContextCategory::Git => "🔀",
+        ContextCategory::Code => "💻",
+        ContextCategory::Web => "🌐",
+        ContextCategory::Voice => "🎤",
+        ContextCategory::Config => "⚙️",
+        ContextCategory::Session => "📜",
+        ContextCategory::Tools => "🔧",
+        ContextCategory::Agent => "🤖",
+        ContextCategory::Mcp => "🔌",
+        ContextCategory::A2a => "🔗",
+        ContextCategory::General => "💬",
+    }
+}
+
+/// Basic mode `/model` slash command handler.
+///
+/// Returns `Some(new_model)` if the user changed the session model so the
+/// caller can update `chat_session.model`.
+fn basic_mode_model_command(
+    args: &[&str],
+    config: &AppConfig,
+    session: &ChatSession,
+) -> Option<String> {
+    if args.is_empty() {
+        // Show current model info
+        let provider = session
+            .state
+            .llm_config
+            .as_ref()
+            .and_then(|c| c.provider.as_deref())
+            .unwrap_or(&config.llm.primary);
+        let model = session
+            .state
+            .llm_config
+            .as_ref()
+            .and_then(|c| c.model.as_deref())
+            .or_else(|| basic_mode_model_for_provider(config, provider));
+        println!("{}", "Active Model".bold().cyan());
+        println!("{}", "═".repeat(40));
+        println!("  {} {}", "Provider:".dimmed(), provider);
+        println!(
+            "  {} {}",
+            "Model:".dimmed(),
+            model.unwrap_or("(provider default)")
+        );
+        if let Some(legacy) = session.model.as_deref() {
+            println!("  {} {}", "Session hint:".dimmed(), legacy);
+        }
+        println!();
+        println!(
+            "{} /model <provider:model>  e.g. /model openai:gpt-4o",
+            "Set:".dimmed()
+        );
+        println!(
+            "  {} openai, anthropic, grok, gemini, ollama",
+            "Providers:".dimmed()
+        );
+        return None;
+    }
+
+    let spec = args.join(" ");
+    let spec = spec.trim();
+
+    // Parse spec — supports `provider:model`, provider-only, or model-only
+    let (provider, model) = if let Some((p, m)) = spec.split_once(':') {
+        let p = p.trim().to_string();
+        let m = m.trim().to_string();
+        (p, if m.is_empty() { None } else { Some(m) })
+    } else {
+        match spec.to_ascii_lowercase().as_str() {
+            "openai" | "anthropic" | "grok" | "gemini" | "ollama" => {
+                let p = spec.to_string();
+                let m = basic_mode_model_for_provider(config, &p).map(|s| s.to_string());
+                (p, m)
+            }
+            _ => {
+                // Model-only — infer provider
+                let inferred = gestura_core::llm_validation::infer_provider_from_model_id(spec)
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| config.llm.primary.clone());
+                (inferred, Some(spec.to_string()))
+            }
+        }
+    };
+
+    // Validate compatibility
+    if let Some(ref m) = model
+        && let Err(err) =
+            gestura_core::llm_validation::validate_model_for_provider(&provider, m)
+    {
+        println!("{} {}", "✗".red(), err);
+        return None;
+    }
+
+    let display_model = model.as_deref().unwrap_or("(provider default)");
+    println!(
+        "{} Model set to {} ({})",
+        "✓".green(),
+        display_model.cyan(),
+        provider.dimmed()
+    );
+
+    // Return spec for caller to set on session
+    let result = if let Some(ref m) = model {
+        format!("{}:{}", provider, m)
+    } else {
+        provider.clone()
+    };
+    Some(result)
+}
+
+/// Resolve the default model for a provider from config.
+fn basic_mode_model_for_provider<'a>(config: &'a AppConfig, provider: &str) -> Option<&'a str> {
+    match provider {
+        "openai" => config.llm.openai.as_ref().map(|c| c.model.as_str()),
+        "anthropic" => config.llm.anthropic.as_ref().map(|c| c.model.as_str()),
+        "grok" => config.llm.grok.as_ref().map(|c| c.model.as_str()),
+        "gemini" => config.llm.gemini.as_ref().map(|c| c.model.as_str()),
+        "ollama" => config.llm.ollama.as_ref().map(|c| c.model.as_str()),
+        _ => None,
     }
 }

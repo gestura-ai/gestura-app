@@ -161,7 +161,7 @@ fn open_model_picker(app: &mut TuiApp, rt: &tokio::runtime::Runtime) {
                 .block_on(gestura_core::list_models_for_provider(
                     provider, key_ref, url_ref,
                 ))
-                .unwrap_or_else(|_| gestura_core::static_models_for_provider(provider));
+                .unwrap_or_else(|_| Vec::new());
             app.cached_model_lists
                 .insert(provider.to_string(), fetched.clone());
             fetched
@@ -1434,8 +1434,7 @@ fn handle_command(
             app.set_status("Settings: ↑/↓ to navigate, Enter to edit, Esc to return to chat");
         }
         "/capabilities" => {
-            app.capabilities_text =
-                gestura_core::tools::render_capabilities(&app.config);
+            app.capabilities_text = gestura_core::tools::render_capabilities(&app.config);
             app.capabilities_scroll = 0;
             app.mode = TuiMode::Capabilities;
         }
@@ -1494,6 +1493,44 @@ fn handle_command(
                 return Ok(Some(Action::ResumeSession));
             } else {
                 app.set_error("No paused session to resume");
+            }
+        }
+        "/mcp" => {
+            handle_mcp_command(app, args, rt)?;
+        }
+        "/a2a" => {
+            handle_a2a_command(app, args)?;
+        }
+        "/knowledge" => {
+            handle_knowledge_command(app, args)?;
+        }
+        "/agent" => {
+            handle_agent_command(app, args)?;
+        }
+        "/device" => {
+            handle_device_command(app, args)?;
+        }
+        "/health" => {
+            handle_health_command(app)?;
+        }
+        "/privacy" => {
+            handle_privacy_command(app, args, rt)?;
+        }
+        "/memory" => {
+            handle_memory_command(app, args, rt)?;
+        }
+        "/summarize" => {
+            handle_summarize_command(app)?;
+        }
+        "/listen" | "/voice" => {
+            handle_listen_command(app, rt)?;
+        }
+        "/exec" => {
+            if args.is_empty() {
+                app.set_error("Usage: /exec <prompt>");
+            } else {
+                let prompt = args.join(" ");
+                return Ok(Some(Action::SendMessage(prompt)));
             }
         }
         _ => {
@@ -2410,6 +2447,1028 @@ fn handle_context_command(app: &mut TuiApp) -> Result<()> {
         "  Auto-compact: {}%",
         app.config.pipeline.auto_compact_threshold_percent
     ));
+
+    app.messages.push(app::TuiMessage {
+        role: "system".to_string(),
+        content: lines.join("\n"),
+        thinking: None,
+        is_streaming: false,
+        is_error: false,
+    });
+    Ok(())
+}
+
+/// Handle `/mcp` command - MCP server management.
+///
+/// Subcommands:
+/// - `/mcp` or `/mcp status` - Show MCP protocol status
+/// - `/mcp list` - List configured servers
+/// - `/mcp tools` - List tools from connected servers
+/// - `/mcp connect <name>` - Connect to a server
+/// - `/mcp disconnect <name>` - Disconnect from a server
+fn handle_mcp_command(app: &mut TuiApp, args: &[&str], rt: &tokio::runtime::Runtime) -> Result<()> {
+    let subcommand = args.first().map(|s| s.to_lowercase());
+
+    match subcommand.as_deref() {
+        None | Some("status") => {
+            let mut lines = vec!["━━━ MCP Protocol Status ━━━".to_string(), String::new()];
+            lines.push(format!(
+                "Protocol Version: {}",
+                gestura_core::mcp::PROTOCOL_VERSION
+            ));
+            let config = AppConfig::load();
+            let server_count = config.mcp_servers.len();
+            let enabled = config.mcp_servers.iter().filter(|s| s.enabled).count();
+            lines.push(format!(
+                "Servers: {} configured ({} enabled)",
+                server_count, enabled
+            ));
+
+            // Check connected servers
+            let registry = gestura_core::mcp::client::get_mcp_client_registry();
+            let connected = rt.block_on(async { registry.connected_servers().await });
+            lines.push(format!("Connected: {}", connected.len()));
+            if !connected.is_empty() {
+                lines.push(String::new());
+                lines.push("Connected servers:".to_string());
+                for name in &connected {
+                    lines.push(format!("  ✓ {}", name));
+                }
+            }
+            app.messages.push(app::TuiMessage {
+                role: "system".to_string(),
+                content: lines.join("\n"),
+                thinking: None,
+                is_streaming: false,
+                is_error: false,
+            });
+        }
+        Some("list") => {
+            let config = AppConfig::load();
+            if config.mcp_servers.is_empty() {
+                app.set_status("No MCP servers configured. Use 'gestura mcp add' to add one.");
+            } else {
+                let mut lines = vec!["━━━ MCP Servers ━━━".to_string(), String::new()];
+                for srv in &config.mcp_servers {
+                    let status = if srv.enabled { "✓" } else { "○" };
+                    let endpoint = match srv.transport {
+                        gestura_core::config::McpTransportType::Stdio => {
+                            let cmd = srv.command.as_deref().unwrap_or("");
+                            let cmd_args = srv.args.join(" ");
+                            format!("{} {}", cmd, cmd_args).trim().to_string()
+                        }
+                        _ => srv.url.clone().unwrap_or_default(),
+                    };
+                    lines.push(format!(
+                        "  {} {} [{}] {}",
+                        status, srv.name, srv.transport, endpoint
+                    ));
+                }
+                app.messages.push(app::TuiMessage {
+                    role: "system".to_string(),
+                    content: lines.join("\n"),
+                    thinking: None,
+                    is_streaming: false,
+                    is_error: false,
+                });
+            }
+        }
+        Some("tools") => {
+            let registry = gestura_core::mcp::client::get_mcp_client_registry();
+            let server_filter = args.get(1).map(|s| s.to_string());
+            let all = rt.block_on(async { registry.all_tools().await });
+            let filtered: Vec<_> = if let Some(ref filter) = server_filter {
+                all.into_iter().filter(|(name, _)| name == filter).collect()
+            } else {
+                all
+            };
+            if filtered.is_empty() {
+                app.set_status("No MCP tools discovered. Connect to a server first.");
+            } else {
+                let mut lines = vec!["━━━ MCP Tools ━━━".to_string(), String::new()];
+                let mut total = 0;
+                for (srv, tools) in &filtered {
+                    lines.push(format!("  {} ({} tools)", srv, tools.len()));
+                    for tool in tools {
+                        lines.push(format!(
+                            "    • {} — {}",
+                            tool.name,
+                            tool.description.as_deref().unwrap_or("(no description)")
+                        ));
+                    }
+                    total += tools.len();
+                }
+                lines.push(String::new());
+                lines.push(format!(
+                    "Total: {} tool(s) across {} server(s)",
+                    total,
+                    filtered.len()
+                ));
+                app.messages.push(app::TuiMessage {
+                    role: "system".to_string(),
+                    content: lines.join("\n"),
+                    thinking: None,
+                    is_streaming: false,
+                    is_error: false,
+                });
+            }
+        }
+        Some("connect") => {
+            if let Some(name) = args.get(1) {
+                let registry = gestura_core::mcp::client::get_mcp_client_registry();
+                let config = AppConfig::load();
+                if let Some(srv) = config.mcp_servers.iter().find(|s| s.name == *name) {
+                    match rt.block_on(async { registry.connect(srv).await }) {
+                        Ok(_) => app.set_status(format!("Connected to MCP server '{}'", name)),
+                        Err(e) => app.set_error(format!("Failed to connect to '{}': {}", name, e)),
+                    }
+                } else {
+                    app.set_error(format!("MCP server '{}' not found in config", name));
+                }
+            } else {
+                app.set_error("Usage: /mcp connect <name>");
+            }
+        }
+        Some("disconnect") => {
+            if let Some(name) = args.get(1) {
+                let registry = gestura_core::mcp::client::get_mcp_client_registry();
+                rt.block_on(async { registry.disconnect(name).await });
+                app.set_status(format!("Disconnected from MCP server '{}'", name));
+            } else {
+                app.set_error("Usage: /mcp disconnect <name>");
+            }
+        }
+        Some("get") => {
+            if let Some(name) = args.get(1) {
+                let config = AppConfig::load();
+                match config.mcp_servers.iter().find(|t| t.name == *name) {
+                    Some(srv) => {
+                        use gestura_core::config::McpTransportType;
+                        let mut lines = vec![
+                            format!("━━━ MCP Server: {} ━━━", srv.name),
+                            String::new(),
+                            format!("  Transport: {}", srv.transport),
+                            format!(
+                                "  Enabled:   {}",
+                                if srv.enabled { "yes" } else { "no" }
+                            ),
+                            format!("  Scope:     {}", srv.scope),
+                            format!("  Timeout:   {}s", srv.timeout_secs),
+                            format!("  Auto-reconnect: {}", srv.auto_reconnect),
+                        ];
+                        match srv.transport {
+                            McpTransportType::Stdio => {
+                                lines.push(format!(
+                                    "  Command:   {}",
+                                    srv.command.as_deref().unwrap_or("(none)")
+                                ));
+                                if !srv.args.is_empty() {
+                                    lines.push(format!("  Args:      {}", srv.args.join(" ")));
+                                }
+                            }
+                            _ => {
+                                lines.push(format!(
+                                    "  URL:       {}",
+                                    srv.url.as_deref().unwrap_or("(none)")
+                                ));
+                            }
+                        }
+                        if !srv.env.is_empty() {
+                            lines.push(String::new());
+                            lines.push("  Environment:".to_string());
+                            for (k, v) in &srv.env {
+                                lines.push(format!("    {}={}", k, v));
+                            }
+                        }
+                        app.messages.push(app::TuiMessage {
+                            role: "system".to_string(),
+                            content: lines.join("\n"),
+                            thinking: None,
+                            is_streaming: false,
+                            is_error: false,
+                        });
+                    }
+                    None => {
+                        app.set_error(format!("MCP server '{}' not found", name));
+                    }
+                }
+            } else {
+                app.set_error("Usage: /mcp get <name>");
+            }
+        }
+        Some("enable") => {
+            if let Some(name) = args.get(1) {
+                let mut config = AppConfig::load();
+                match config.mcp_servers.iter_mut().find(|t| t.name == *name) {
+                    Some(srv) => {
+                        srv.enabled = true;
+                        if let Err(e) = config.save() {
+                            app.set_error(format!("Failed to save config: {}", e));
+                        } else {
+                            app.set_status(format!("Enabled MCP server: {}", name));
+                        }
+                    }
+                    None => {
+                        app.set_error(format!("MCP server '{}' not found", name));
+                    }
+                }
+            } else {
+                app.set_error("Usage: /mcp enable <name>");
+            }
+        }
+        Some("disable") => {
+            if let Some(name) = args.get(1) {
+                let mut config = AppConfig::load();
+                match config.mcp_servers.iter_mut().find(|t| t.name == *name) {
+                    Some(srv) => {
+                        srv.enabled = false;
+                        if let Err(e) = config.save() {
+                            app.set_error(format!("Failed to save config: {}", e));
+                        } else {
+                            app.set_status(format!("Disabled MCP server: {}", name));
+                        }
+                    }
+                    None => {
+                        app.set_error(format!("MCP server '{}' not found", name));
+                    }
+                }
+            } else {
+                app.set_error("Usage: /mcp disable <name>");
+            }
+        }
+        Some("add") => {
+            use gestura_core::config::{McpServerEntry, McpScope, McpTransportType};
+            if args.len() < 3 {
+                app.set_error("Usage: /mcp add <name> <cmd_or_url> [--transport stdio|http|sse] [--scope user|project|local]");
+            } else {
+                let name = args[1].to_string();
+                let command_or_url = args[2].to_string();
+                let mut transport_str = "stdio".to_string();
+                let mut scope_str = "user".to_string();
+                let mut i = 3;
+                while i < args.len() {
+                    match args[i] {
+                        "--transport" | "-t" => {
+                            if let Some(val) = args.get(i + 1) {
+                                transport_str = val.to_string();
+                                i += 1;
+                            }
+                        }
+                        "--scope" | "-s" => {
+                            if let Some(val) = args.get(i + 1) {
+                                scope_str = val.to_string();
+                                i += 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                let transport_type: McpTransportType = match transport_str.parse() {
+                    Ok(t) => t,
+                    Err(e) => {
+                        app.set_error(e.to_string());
+                        return Ok(());
+                    }
+                };
+                let scope_val: McpScope = match scope_str.parse() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        app.set_error(e.to_string());
+                        return Ok(());
+                    }
+                };
+                let mut config = AppConfig::load();
+                if config.mcp_servers.iter().any(|t| t.name == name) {
+                    app.set_error(format!(
+                        "MCP server '{}' already exists. Use /mcp remove first.",
+                        name
+                    ));
+                } else {
+                    let entry = match transport_type {
+                        McpTransportType::Stdio => McpServerEntry {
+                            name: name.clone(),
+                            transport: transport_type,
+                            enabled: true,
+                            command: Some(command_or_url.clone()),
+                            scope: scope_val,
+                            ..McpServerEntry::default()
+                        },
+                        McpTransportType::Http | McpTransportType::Sse => McpServerEntry {
+                            name: name.clone(),
+                            transport: transport_type,
+                            enabled: true,
+                            url: Some(command_or_url.clone()),
+                            scope: scope_val,
+                            ..McpServerEntry::default()
+                        },
+                    };
+                    config.mcp_servers.push(entry);
+                    if let Err(e) = config.save() {
+                        app.set_error(format!("Failed to save config: {}", e));
+                    } else {
+                        app.set_status(format!(
+                            "Added MCP server: {} ({})",
+                            name, transport_str
+                        ));
+                    }
+                }
+            }
+        }
+        Some("remove") => {
+            if let Some(name) = args.get(1) {
+                let mut config = AppConfig::load();
+                let original_len = config.mcp_servers.len();
+                config.mcp_servers.retain(|t| t.name != *name);
+                if config.mcp_servers.len() == original_len {
+                    app.set_error(format!("MCP server '{}' not found", name));
+                } else if let Err(e) = config.save() {
+                    app.set_error(format!("Failed to save config: {}", e));
+                } else {
+                    app.set_status(format!("Removed MCP server: {}", name));
+                }
+            } else {
+                app.set_error("Usage: /mcp remove <name>");
+            }
+        }
+        Some(other) => {
+            app.set_error(format!(
+                "Unknown /mcp subcommand: '{}'. Try: status, list, tools, get, enable, disable, add, remove, connect, disconnect",
+                other
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Handle `/a2a` command - Agent-to-Agent protocol.
+///
+/// Subcommands:
+/// - `/a2a` or `/a2a status` - Show A2A protocol status
+/// - `/a2a profiles` - List registered profiles
+/// - `/a2a agents` - List known agents
+/// - `/a2a discover <url>` - Discover a remote agent
+fn handle_a2a_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
+    let subcommand = args.first().map(|s| s.to_lowercase());
+
+    match subcommand.as_deref() {
+        None | Some("status") => {
+            let lines = vec![
+                "━━━ A2A Protocol Status ━━━".to_string(),
+                String::new(),
+                "Protocol: Agent2Agent (A2A)".to_string(),
+                "Version: 0.3.0".to_string(),
+                "Governance: Linux Foundation".to_string(),
+                "License: Apache 2.0".to_string(),
+                String::new(),
+                "Features:".to_string(),
+                "  ✓ Agent discovery via Agent Cards".to_string(),
+                "  ✓ Task-based communication".to_string(),
+                "  ✓ JSON-RPC 2.0 protocol".to_string(),
+                "  ✓ Bearer token authentication".to_string(),
+                "  ✓ Profile propagation".to_string(),
+                "  ✓ SSE streaming support".to_string(),
+                String::new(),
+                "Endpoints:".to_string(),
+                "  • agent/discover".to_string(),
+                "  • task/create".to_string(),
+                "  • task/status".to_string(),
+                "  • task/cancel".to_string(),
+                "  • profile/register".to_string(),
+                "  • profile/validate".to_string(),
+            ];
+            app.messages.push(app::TuiMessage {
+                role: "system".to_string(),
+                content: lines.join("\n"),
+                thinking: None,
+                is_streaming: false,
+                is_error: false,
+            });
+        }
+        Some("profiles") => {
+            app.set_status(
+                "No A2A profiles registered yet. Use 'gestura a2a register' to add one.",
+            );
+        }
+        Some("agents") => {
+            app.set_status(
+                "No remote agents discovered yet. Use '/a2a discover <url>' to find one.",
+            );
+        }
+        Some("discover") => {
+            if let Some(url) = args.get(1) {
+                app.set_status(format!(
+                    "Agent discovery requires async network call. Use 'gestura a2a discover {}' from CLI.",
+                    url
+                ));
+            } else {
+                app.set_error("Usage: /a2a discover <url>");
+            }
+        }
+        Some(other) => {
+            app.set_error(format!(
+                "Unknown /a2a subcommand: {}. Try: status, profiles, agents, discover",
+                other
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Handle `/knowledge` command - Knowledge base management.
+///
+/// Subcommands:
+/// - `/knowledge` or `/knowledge list` - List all knowledge items
+/// - `/knowledge search <query>` - Search knowledge
+/// - `/knowledge categories` - List categories
+/// - `/knowledge status` - Show knowledge base status
+/// - `/knowledge show <id>` - Show a specific item
+fn handle_knowledge_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
+    use gestura_core::knowledge::{KnowledgeQuery, KnowledgeStore, register_builtin_knowledge};
+
+    let subcommand = args.first().map(|s| s.to_lowercase());
+    let store = KnowledgeStore::with_default_dir();
+    register_builtin_knowledge(&store);
+
+    match subcommand.as_deref() {
+        None | Some("list") => {
+            let items = store.list();
+            if items.is_empty() {
+                app.set_status("No knowledge items registered.");
+            } else {
+                let mut lines = vec![
+                    format!("━━━ Knowledge Base ({} items) ━━━", items.len()),
+                    String::new(),
+                ];
+                for item in &items {
+                    lines.push(format!(
+                        "  • [{}] {} — {}",
+                        item.category, item.name, item.description
+                    ));
+                }
+                app.messages.push(app::TuiMessage {
+                    role: "system".to_string(),
+                    content: lines.join("\n"),
+                    thinking: None,
+                    is_streaming: false,
+                    is_error: false,
+                });
+            }
+        }
+        Some("search") => {
+            let query_text = args.get(1..).unwrap_or_default().join(" ");
+            if query_text.is_empty() {
+                app.set_error("Usage: /knowledge search <query>");
+            } else {
+                let query = KnowledgeQuery {
+                    query: query_text.clone(),
+                    limit: Some(10),
+                    ..Default::default()
+                };
+                let matches = store.find(&query);
+                if matches.is_empty() {
+                    app.set_status(format!("No knowledge items match '{}'.", query_text));
+                } else {
+                    let mut lines = vec![
+                        format!("━━━ Knowledge Search: '{}' ━━━", query_text),
+                        String::new(),
+                    ];
+                    for m in &matches {
+                        lines.push(format!(
+                            "  • {} (score: {:.2}) — {}",
+                            m.item.name, m.score, m.item.description
+                        ));
+                    }
+                    lines.push(String::new());
+                    lines.push(format!("{} result(s)", matches.len()));
+                    app.messages.push(app::TuiMessage {
+                        role: "system".to_string(),
+                        content: lines.join("\n"),
+                        thinking: None,
+                        is_streaming: false,
+                        is_error: false,
+                    });
+                }
+            }
+        }
+        Some("categories") => {
+            let cats = store.categories();
+            if cats.is_empty() {
+                app.set_status("No knowledge categories found.");
+            } else {
+                let mut lines = vec!["━━━ Knowledge Categories ━━━".to_string(), String::new()];
+                for cat in &cats {
+                    let count = store.list_by_category(cat).len();
+                    lines.push(format!("  • {} ({} items)", cat, count));
+                }
+                app.messages.push(app::TuiMessage {
+                    role: "system".to_string(),
+                    content: lines.join("\n"),
+                    thinking: None,
+                    is_streaming: false,
+                    is_error: false,
+                });
+            }
+        }
+        Some("status") => {
+            let mut lines = vec!["━━━ Knowledge Base Status ━━━".to_string(), String::new()];
+            lines.push(format!("Total items: {}", store.count()));
+            lines.push(format!("Categories: {}", store.categories().len()));
+            lines.push(format!("Base directory: {}", store.base_dir().display()));
+            app.messages.push(app::TuiMessage {
+                role: "system".to_string(),
+                content: lines.join("\n"),
+                thinking: None,
+                is_streaming: false,
+                is_error: false,
+            });
+        }
+        Some("show") => {
+            if let Some(id) = args.get(1) {
+                if let Some(item) = store.get(id) {
+                    let mut lines = vec![
+                        format!("━━━ {} ━━━", item.name),
+                        String::new(),
+                        format!("ID: {}", item.id),
+                        format!("Category: {}", item.category),
+                        format!("Description: {}", item.description),
+                        format!("Triggers: {}", item.triggers.join(", ")),
+                        String::new(),
+                    ];
+                    if !item.core_content.is_empty() {
+                        lines.push("Content:".to_string());
+                        lines.push(item.core_content.clone());
+                    }
+                    app.messages.push(app::TuiMessage {
+                        role: "system".to_string(),
+                        content: lines.join("\n"),
+                        thinking: None,
+                        is_streaming: false,
+                        is_error: false,
+                    });
+                } else {
+                    app.set_error(format!("Knowledge item '{}' not found.", id));
+                }
+            } else {
+                app.set_error("Usage: /knowledge show <id>");
+            }
+        }
+        Some(other) => {
+            app.set_error(format!(
+                "Unknown /knowledge subcommand: {}. Try: list, search, categories, status, show",
+                other
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Handle `/agent` command - Agent status and configuration.
+///
+/// Subcommands:
+/// - `/agent` or `/agent status` - Show agent status
+/// - `/agent config` - Show LLM provider configuration
+fn handle_agent_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
+    let subcommand = args.first().map(|s| s.to_lowercase());
+
+    match subcommand.as_deref() {
+        None | Some("status") => {
+            let config = &app.config;
+            let mut lines = vec!["━━━ Agent Status ━━━".to_string(), String::new()];
+            lines.push(format!("Version: {}", gestura_core::VERSION));
+            lines.push(format!("Primary LLM: {}", config.llm.primary));
+            lines.push(format!(
+                "Model: {}",
+                app.session.model.as_deref().unwrap_or("(default)")
+            ));
+            lines.push(format!("Session: {}", &app.session.id[..8]));
+            lines.push(format!("Messages: {}", app.session.message_count()));
+
+            // Check provider status
+            lines.push(String::new());
+            lines.push("Provider Status:".to_string());
+            let has_openai = std::env::var("OPENAI_API_KEY").is_ok()
+                || config
+                    .llm
+                    .openai
+                    .as_ref()
+                    .is_some_and(|o| !o.api_key.is_empty());
+            let has_anthropic = std::env::var("ANTHROPIC_API_KEY").is_ok()
+                || config
+                    .llm
+                    .anthropic
+                    .as_ref()
+                    .is_some_and(|a| !a.api_key.is_empty());
+            lines.push(format!("  {} OpenAI", if has_openai { "✓" } else { "○" }));
+            lines.push(format!(
+                "  {} Anthropic",
+                if has_anthropic { "✓" } else { "○" }
+            ));
+
+            app.messages.push(app::TuiMessage {
+                role: "system".to_string(),
+                content: lines.join("\n"),
+                thinking: None,
+                is_streaming: false,
+                is_error: false,
+            });
+        }
+        Some("config") => {
+            let config = &app.config;
+            let mut lines = vec!["━━━ Agent Configuration ━━━".to_string(), String::new()];
+            lines.push(format!("Primary: {}", config.llm.primary));
+            if let Some(ref openai) = config.llm.openai {
+                lines.push(format!("OpenAI model: {}", openai.model));
+            }
+            if let Some(ref anthropic) = config.llm.anthropic {
+                lines.push(format!("Anthropic model: {}", anthropic.model));
+            }
+            if let Some(ref grok) = config.llm.grok {
+                lines.push(format!("Grok model: {}", grok.model));
+            }
+            if let Some(ref ollama) = config.llm.ollama {
+                lines.push(format!("Ollama model: {}", ollama.model));
+                lines.push(format!("Ollama base URL: {}", ollama.base_url));
+            }
+            app.messages.push(app::TuiMessage {
+                role: "system".to_string(),
+                content: lines.join("\n"),
+                thinking: None,
+                is_streaming: false,
+                is_error: false,
+            });
+        }
+        Some(other) => {
+            app.set_error(format!(
+                "Unknown /agent subcommand: {}. Try: status, config",
+                other
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Handle `/device` command - Audio device listing.
+///
+/// Subcommands:
+/// - `/device` or `/device list` - List audio input devices
+fn handle_device_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
+    let subcommand = args.first().map(|s| s.to_lowercase());
+
+    match subcommand.as_deref() {
+        None | Some("list") | Some("scan") => {
+            let devices = gestura_core::list_audio_input_devices();
+            let mic_available = gestura_core::is_microphone_available();
+
+            let mut lines = vec!["━━━ Audio Devices ━━━".to_string(), String::new()];
+            lines.push(format!(
+                "Microphone available: {}",
+                if mic_available { "✓ yes" } else { "✗ no" }
+            ));
+            lines.push(String::new());
+
+            if devices.is_empty() {
+                lines.push("No audio input devices found.".to_string());
+            } else {
+                lines.push(format!("{} device(s) detected:", devices.len()));
+                for dev in &devices {
+                    let marker = if dev.is_default { " (default)" } else { "" };
+                    lines.push(format!("  • {}{}", dev.name, marker));
+                }
+            }
+            app.messages.push(app::TuiMessage {
+                role: "system".to_string(),
+                content: lines.join("\n"),
+                thinking: None,
+                is_streaming: false,
+                is_error: false,
+            });
+        }
+        Some(other) => {
+            app.set_error(format!(
+                "Unknown /device subcommand: {}. Try: list, scan",
+                other
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Handle `/health` command - System health diagnostics.
+fn handle_health_command(app: &mut TuiApp) -> Result<()> {
+    let config = &app.config;
+    let mut lines = vec!["━━━ System Health ━━━".to_string(), String::new()];
+
+    // Version
+    lines.push(format!("✓ Gestura v{}", gestura_core::VERSION));
+
+    // Config path
+    let config_path = AppConfig::default_path();
+    let config_ok = config_path.exists();
+    lines.push(format!(
+        "{} Config: {}",
+        if config_ok { "✓" } else { "○" },
+        config_path.display()
+    ));
+
+    // LLM Providers
+    lines.push(String::new());
+    lines.push("LLM Providers:".to_string());
+
+    let has_openai = std::env::var("OPENAI_API_KEY").is_ok()
+        || config
+            .llm
+            .openai
+            .as_ref()
+            .is_some_and(|o| !o.api_key.is_empty());
+    let has_anthropic = std::env::var("ANTHROPIC_API_KEY").is_ok()
+        || config
+            .llm
+            .anthropic
+            .as_ref()
+            .is_some_and(|a| !a.api_key.is_empty());
+    let has_grok = std::env::var("XAI_API_KEY").is_ok()
+        || config
+            .llm
+            .grok
+            .as_ref()
+            .is_some_and(|g| !g.api_key.is_empty());
+    let has_ollama = config.llm.ollama.is_some();
+
+    lines.push(format!("  {} OpenAI", if has_openai { "✓" } else { "○" }));
+    lines.push(format!(
+        "  {} Anthropic",
+        if has_anthropic { "✓" } else { "○" }
+    ));
+    lines.push(format!("  {} Grok", if has_grok { "✓" } else { "○" }));
+    lines.push(format!("  {} Ollama", if has_ollama { "✓" } else { "○" }));
+
+    // Audio
+    lines.push(String::new());
+    lines.push("Audio:".to_string());
+    let mic = gestura_core::is_microphone_available();
+    let devices = gestura_core::list_audio_input_devices();
+    lines.push(format!("  {} Microphone", if mic { "✓" } else { "○" }));
+    lines.push(format!("  {} device(s) detected", devices.len()));
+
+    // MCP
+    lines.push(String::new());
+    lines.push("MCP:".to_string());
+    let mcp_count = config.mcp_servers.len();
+    let mcp_enabled = config.mcp_servers.iter().filter(|s| s.enabled).count();
+    lines.push(format!(
+        "  {} server(s) configured ({} enabled)",
+        mcp_count, mcp_enabled
+    ));
+
+    app.messages.push(app::TuiMessage {
+        role: "system".to_string(),
+        content: lines.join("\n"),
+        thinking: None,
+        is_streaming: false,
+        is_error: false,
+    });
+    Ok(())
+}
+
+/// Handle `/privacy` command - GDPR and privacy tools.
+///
+/// Subcommands:
+/// - `/privacy` or `/privacy status` - Generate privacy report
+/// - `/privacy policy` - Show data retention policy
+/// - `/privacy export` - Guidance on data export
+fn handle_privacy_command(
+    app: &mut TuiApp,
+    args: &[&str],
+    rt: &tokio::runtime::Runtime,
+) -> Result<()> {
+    let subcommand = args.first().map(|s| s.to_lowercase());
+
+    match subcommand.as_deref() {
+        None | Some("status") => {
+            let report = rt.block_on(async {
+                let manager = gestura_core::get_gdpr_manager().await;
+                manager.generate_privacy_report().await
+            });
+            let pretty =
+                serde_json::to_string_pretty(&report).unwrap_or_else(|_| format!("{report:?}"));
+            let mut lines = vec!["━━━ Privacy Report ━━━".to_string(), String::new()];
+            lines.push(pretty);
+            app.messages.push(app::TuiMessage {
+                role: "system".to_string(),
+                content: lines.join("\n"),
+                thinking: None,
+                is_streaming: false,
+                is_error: false,
+            });
+        }
+        Some("policy") => {
+            let lines = vec![
+                "━━━ Data Retention Policy ━━━".to_string(),
+                String::new(),
+                "Gestura respects user privacy and GDPR compliance:".to_string(),
+                String::new(),
+                "• Voice recordings: Temporary only, deleted after transcription".to_string(),
+                "• Chat sessions: Stored locally in workspace".to_string(),
+                "• API keys: Stored in local config file only".to_string(),
+                "• Memory bank: Stored locally in .gestura/memory/".to_string(),
+                "• No data is sent to third parties except configured LLM providers".to_string(),
+                String::new(),
+                "Use 'gestura privacy export' for a full GDPR data export.".to_string(),
+                "Use 'gestura privacy delete' to exercise right to erasure.".to_string(),
+            ];
+            app.messages.push(app::TuiMessage {
+                role: "system".to_string(),
+                content: lines.join("\n"),
+                thinking: None,
+                is_streaming: false,
+                is_error: false,
+            });
+        }
+        Some("export") => {
+            app.set_status("Data export requires file I/O. Use 'gestura privacy export' from CLI.");
+        }
+        Some(other) => {
+            app.set_error(format!(
+                "Unknown /privacy subcommand: {}. Try: status, policy, export",
+                other
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Handle `/memory` command - Memory bank management.
+///
+/// Subcommands:
+/// - `/memory` or `/memory list` - List memory bank entries
+/// - `/memory save` - Save current conversation to memory bank
+/// - `/memory clear` - Clear the memory bank
+fn handle_memory_command(
+    app: &mut TuiApp,
+    args: &[&str],
+    rt: &tokio::runtime::Runtime,
+) -> Result<()> {
+    let subcommand = args.first().map(|s| s.to_lowercase());
+
+    match subcommand.as_deref() {
+        None | Some("list") => {
+            if let Some(workspace_dir) = app.session.workspace_dir() {
+                let result =
+                    rt.block_on(gestura_core::memory_bank::list_memory_bank(workspace_dir));
+                match result {
+                    Ok(entries) if !entries.is_empty() => {
+                        let mut lines = vec![
+                            format!("━━━ Memory Bank ({} entries) ━━━", entries.len()),
+                            String::new(),
+                        ];
+                        for entry in &entries {
+                            lines.push(format!(
+                                "  • [{}] {}",
+                                entry.timestamp.format("%Y-%m-%d %H:%M"),
+                                entry.summary
+                            ));
+                        }
+                        app.messages.push(app::TuiMessage {
+                            role: "system".to_string(),
+                            content: lines.join("\n"),
+                            thinking: None,
+                            is_streaming: false,
+                            is_error: false,
+                        });
+                    }
+                    Ok(_) => {
+                        app.set_status("Memory bank is empty. Use '/memory save' to store conversation context.");
+                    }
+                    Err(e) => {
+                        app.set_error(format!("Failed to read memory bank: {e}"));
+                    }
+                }
+            } else {
+                app.set_error("No workspace directory set for this session.");
+            }
+        }
+        Some("save") => {
+            if let Some(workspace_dir) = app.session.workspace_dir() {
+                let history: Vec<String> = app
+                    .session
+                    .state
+                    .messages
+                    .iter()
+                    .map(|msg| msg.content.clone())
+                    .collect();
+                if history.is_empty() {
+                    app.set_error("No conversation to save.");
+                } else {
+                    use gestura_core::context::ContextManager;
+                    let context_manager = ContextManager::new();
+                    let summary = context_manager.summarize_history(&history);
+                    let content = history.join("\n\n");
+
+                    let entry = gestura_core::memory_bank::MemoryBankEntry {
+                        timestamp: chrono::Utc::now(),
+                        session_id: app.session.id.clone(),
+                        summary: summary.clone(),
+                        content,
+                        file_path: None,
+                    };
+
+                    let result = rt.block_on(gestura_core::memory_bank::save_to_memory_bank(
+                        workspace_dir,
+                        &entry,
+                    ));
+                    match result {
+                        Ok(path) => {
+                            app.set_status(format!("Saved to memory bank: {}", path.display()));
+                        }
+                        Err(e) => {
+                            app.set_error(format!("Failed to save to memory bank: {e}"));
+                        }
+                    }
+                }
+            } else {
+                app.set_error("No workspace directory set for this session.");
+            }
+        }
+        Some("clear") => {
+            if let Some(workspace_dir) = app.session.workspace_dir() {
+                let result =
+                    rt.block_on(gestura_core::memory_bank::clear_memory_bank(workspace_dir));
+                match result {
+                    Ok(count) => {
+                        app.set_status(format!("Cleared {count} memory bank entries."));
+                    }
+                    Err(e) => {
+                        app.set_error(format!("Failed to clear memory bank: {e}"));
+                    }
+                }
+            } else {
+                app.set_error("No workspace directory set for this session.");
+            }
+        }
+        Some(other) => {
+            app.set_error(format!(
+                "Unknown /memory subcommand: {}. Try: list, save, clear",
+                other
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Handle `/summarize` command - Summarize current conversation.
+fn handle_summarize_command(app: &mut TuiApp) -> Result<()> {
+    let history: Vec<String> = app
+        .session
+        .state
+        .messages
+        .iter()
+        .map(|msg| msg.content.clone())
+        .collect();
+
+    if history.is_empty() {
+        app.set_error("No conversation to summarize.");
+    } else {
+        use gestura_core::context::ContextManager;
+        let context_manager = ContextManager::new();
+        let summary = context_manager.summarize_history(&history);
+
+        let mut lines = vec!["━━━ Conversation Summary ━━━".to_string(), String::new()];
+        lines.push(summary);
+        app.messages.push(app::TuiMessage {
+            role: "system".to_string(),
+            content: lines.join("\n"),
+            thinking: None,
+            is_streaming: false,
+            is_error: false,
+        });
+    }
+    Ok(())
+}
+
+/// Handle `/listen` or `/voice` command - Voice input status.
+fn handle_listen_command(app: &mut TuiApp, rt: &tokio::runtime::Runtime) -> Result<()> {
+    let _ = rt; // available if we need async later
+    let mic_available = gestura_core::is_microphone_available();
+    let is_recording = gestura_core::is_speech_recording();
+
+    let mut lines = vec!["━━━ Voice Input ━━━".to_string(), String::new()];
+    lines.push(format!(
+        "Microphone: {}",
+        if mic_available {
+            "✓ available"
+        } else {
+            "✗ not available"
+        }
+    ));
+    lines.push(format!(
+        "Recording: {}",
+        if is_recording { "active" } else { "idle" }
+    ));
+    lines.push(String::new());
+    lines.push("Voice recording in TUI mode is limited. For full voice input:".to_string());
+    lines.push("  • Use 'gestura listen' from CLI".to_string());
+    lines.push("  • Use the GUI app for integrated voice chat".to_string());
 
     app.messages.push(app::TuiMessage {
         role: "system".to_string(),
