@@ -92,18 +92,39 @@ fn run_list_models(provider_filter: Option<&str>) -> Result<()> {
     let providers: Vec<&str> = if let Some(p) = provider_filter {
         vec![p]
     } else {
-        // List all configured providers
+        // List only providers that have a usable API key configured
+        // (ollama is local and does not require an API key).
         let mut ps = Vec::new();
-        if config.llm.openai.is_some() {
+        if config
+            .llm
+            .openai
+            .as_ref()
+            .is_some_and(|c| !c.api_key.trim().is_empty())
+        {
             ps.push("openai");
         }
-        if config.llm.anthropic.is_some() {
+        if config
+            .llm
+            .anthropic
+            .as_ref()
+            .is_some_and(|c| !c.api_key.trim().is_empty())
+        {
             ps.push("anthropic");
         }
-        if config.llm.gemini.is_some() {
+        if config
+            .llm
+            .gemini
+            .as_ref()
+            .is_some_and(|c| !c.api_key.trim().is_empty())
+        {
             ps.push("gemini");
         }
-        if config.llm.grok.is_some() {
+        if config
+            .llm
+            .grok
+            .as_ref()
+            .is_some_and(|c| !c.api_key.trim().is_empty())
+        {
             ps.push("grok");
         }
         if config.llm.ollama.is_some() {
