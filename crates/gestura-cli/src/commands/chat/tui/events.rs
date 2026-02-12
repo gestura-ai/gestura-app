@@ -647,7 +647,8 @@ fn handle_capabilities_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         // Page-wise scrolling
         KeyCode::PageDown | KeyCode::Char('d') => {
             let total_lines = app.capabilities_text.lines().count();
-            app.capabilities_scroll = (app.capabilities_scroll + 10).min(total_lines.saturating_sub(1));
+            app.capabilities_scroll =
+                (app.capabilities_scroll + 10).min(total_lines.saturating_sub(1));
             Action::Continue
         }
         KeyCode::PageUp | KeyCode::Char('u') => {

@@ -1927,10 +1927,10 @@ fn render_command_palette(app: &mut TuiApp, frame: &mut Frame, input_area: Rect)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(app.theme.mode_command))
+                .border_style(Style::default().fg(app.theme.border))
                 .title(Span::styled(
                     " Commands (Tab to complete, Enter to run, ↑↓ to select) ",
-                    Style::default().fg(app.theme.mode_command),
+                    Style::default().fg(app.theme.header_fg),
                 )),
         )
         .highlight_style(
