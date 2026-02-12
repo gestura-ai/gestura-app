@@ -57,7 +57,8 @@
     "global-shortcut:allow-unregister",
     "global-shortcut:allow-is-registered",
     "dialog:default",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "opener:default"
   ],
   "remote": {
     "urls": [

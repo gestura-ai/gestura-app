@@ -1808,6 +1808,21 @@
         } else {
             void initOnboarding();
         }
+
+        // External link handler — open in system default browser via opener plugin
+        document.addEventListener('click', (e) => {
+            const anchor = e.target.closest('a[href]');
+            if (!anchor) return;
+            const href = anchor.getAttribute('href') || '';
+            if (/^https?:\/\//i.test(href)) {
+                e.preventDefault();
+                if (window.__TAURI__?.opener?.openUrl) {
+                    window.__TAURI__.opener.openUrl(href).catch((err) =>
+                        console.error('[opener] Failed to open URL:', href, err)
+                    );
+                }
+            }
+        });
     </script>
 </body>
 

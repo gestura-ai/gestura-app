@@ -59,6 +59,7 @@ tauri.workspace = true
 dirs.workspace = true
 tauri-plugin-global-shortcut.workspace = true
 tauri-plugin-dialog.workspace = true
+tauri-plugin-opener.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
 async-nats = { workspace = true, optional = true }

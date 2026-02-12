@@ -80,6 +80,7 @@ tauri = { version = "2", features = ["macos-private-api", "tray-icon", "protocol
 tauri-build = { version = "2", features = [] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
 
 # JSON-LD processing
 json-ld = "0.16"
