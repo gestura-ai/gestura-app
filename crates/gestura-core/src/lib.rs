@@ -131,9 +131,8 @@ pub use context::{
     ExtractedEntity, FileContext, RequestAnalysis, RequestAnalyzer, ResolvedContext, ToolContext,
 };
 pub use default_models::{
-    ANTHROPIC_MODELS, DEFAULT_ANTHROPIC_MODEL, DEFAULT_GEMINI_BASE_URL, DEFAULT_GEMINI_MODEL,
-    DEFAULT_GROK_MODEL, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL, DEFAULT_OPENAI_MODEL,
-    DEFAULT_OPENAI_STT_MODEL, GEMINI_MODELS, GROK_MODELS, OPENAI_CHAT_MODELS, OPENAI_STT_MODELS,
+    DEFAULT_ANTHROPIC_MODEL, DEFAULT_GEMINI_BASE_URL, DEFAULT_GEMINI_MODEL, DEFAULT_GROK_MODEL,
+    DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_OPENAI_STT_MODEL,
 };
 pub use error::{AppError, Result};
 pub use events::{
@@ -175,9 +174,7 @@ pub use model_display::{
     format_anthropic_model_name, format_gemini_model_name, format_grok_model_name,
     format_model_name, format_openai_model_name, is_local_provider,
 };
-pub use model_listing::{
-    ModelInfo, check_ollama_connectivity, list_models_for_provider, static_models_for_provider,
-};
+pub use model_listing::{ModelInfo, check_ollama_connectivity, list_models_for_provider};
 pub use pipeline::{
     AgentPipeline, AgentRequest, AgentResponse, Message, PausedExecutionState, PermissionLevel,
     PipelineConfig, PipelineConfigExt, RequestMetadata, RequestSource, ToolCallRecord, ToolResult,

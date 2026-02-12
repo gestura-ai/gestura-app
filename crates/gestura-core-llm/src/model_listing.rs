@@ -8,7 +8,7 @@
 use gestura_core_foundation::AppError;
 use serde::{Deserialize, Serialize};
 
-use crate::default_models::*;
+use crate::default_models::{DEFAULT_GEMINI_BASE_URL, DEFAULT_OLLAMA_BASE_URL};
 
 /// Timeout for model-listing HTTP calls (shorter than inference calls).
 const MODEL_LIST_TIMEOUT_SECS: u64 = 10;
@@ -39,7 +39,8 @@ fn listing_client() -> reqwest::Client {
 
 /// List available models for the given provider.
 ///
-/// Tries a live API call first; on any failure falls back to the static list.
+/// Tries a live API call; returns an empty list when no API key is provided
+/// or the API is unreachable.
 ///
 /// # Arguments
 /// * `provider` – one of `openai`, `anthropic`, `grok`, `gemini`, `ollama`
@@ -68,21 +69,11 @@ pub async fn list_models_for_provider(
 }
 
 /// Return the static / fallback model list for a provider (no network).
-pub fn static_models_for_provider(provider: &str) -> Vec<ModelInfo> {
-    let (ids, prov): (&[&str], &str) = match provider.to_lowercase().as_str() {
-        "openai" => (OPENAI_CHAT_MODELS, "openai"),
-        "anthropic" => (ANTHROPIC_MODELS, "anthropic"),
-        "grok" => (GROK_MODELS, "grok"),
-        "gemini" => (GEMINI_MODELS, "gemini"),
-        _ => return Vec::new(),
-    };
-    ids.iter()
-        .map(|id| ModelInfo {
-            id: id.to_string(),
-            name: gestura_core_foundation::model_display::format_model_name(prov, id),
-            provider: prov.to_string(),
-        })
-        .collect()
+///
+/// Returns an empty list — static fallback lists have been removed.
+/// Kept for API compatibility.
+pub fn static_models_for_provider(_provider: &str) -> Vec<ModelInfo> {
+    Vec::new()
 }
 
 // ---------------------------------------------------------------------------
@@ -96,7 +87,7 @@ async fn list_openai(
 ) -> Result<Vec<ModelInfo>, AppError> {
     let key = match api_key.filter(|k| !k.is_empty()) {
         Some(k) => k,
-        None => return Ok(static_models_for_provider("openai")),
+        None => return Ok(Vec::new()),
     };
     let base = base_url
         .filter(|u| !u.is_empty())
@@ -111,11 +102,8 @@ async fn list_openai(
         .map_err(|e| AppError::Llm(format!("openai model list failed: {e}")))?;
 
     if !resp.status().is_success() {
-        tracing::warn!(
-            "OpenAI /v1/models returned {}, using static list",
-            resp.status()
-        );
-        return Ok(static_models_for_provider("openai"));
+        tracing::warn!("OpenAI /v1/models returned {}", resp.status());
+        return Ok(Vec::new());
     }
 
     let data: serde_json::Value = resp.json().await?;
@@ -147,9 +135,6 @@ async fn list_openai(
         .unwrap_or_default();
 
     models.sort_by(|a, b| a.name.cmp(&b.name));
-    if models.is_empty() {
-        return Ok(static_models_for_provider("openai"));
-    }
     Ok(models)
 }
 
@@ -157,7 +142,7 @@ async fn list_openai(
 async fn list_anthropic(api_key: Option<&str>) -> Result<Vec<ModelInfo>, AppError> {
     let key = match api_key.filter(|k| !k.is_empty()) {
         Some(k) => k,
-        None => return Ok(static_models_for_provider("anthropic")),
+        None => return Ok(Vec::new()),
     };
 
     let url = "https://api.anthropic.com/v1/models";
@@ -170,11 +155,8 @@ async fn list_anthropic(api_key: Option<&str>) -> Result<Vec<ModelInfo>, AppErro
         .map_err(|e| AppError::Llm(format!("anthropic model list failed: {e}")))?;
 
     if !resp.status().is_success() {
-        tracing::warn!(
-            "Anthropic /v1/models returned {}, using static list",
-            resp.status()
-        );
-        return Ok(static_models_for_provider("anthropic"));
+        tracing::warn!("Anthropic /v1/models returned {}", resp.status());
+        return Ok(Vec::new());
     }
 
     let data: serde_json::Value = resp.json().await?;
@@ -202,9 +184,6 @@ async fn list_anthropic(api_key: Option<&str>) -> Result<Vec<ModelInfo>, AppErro
         .unwrap_or_default();
 
     models.sort_by(|a, b| a.name.cmp(&b.name));
-    if models.is_empty() {
-        return Ok(static_models_for_provider("anthropic"));
-    }
     Ok(models)
 }
 
@@ -212,7 +191,7 @@ async fn list_anthropic(api_key: Option<&str>) -> Result<Vec<ModelInfo>, AppErro
 async fn list_grok(api_key: Option<&str>) -> Result<Vec<ModelInfo>, AppError> {
     let key = match api_key.filter(|k| !k.is_empty()) {
         Some(k) => k,
-        None => return Ok(static_models_for_provider("grok")),
+        None => return Ok(Vec::new()),
     };
 
     let url = "https://api.x.ai/v1/models";
@@ -224,11 +203,8 @@ async fn list_grok(api_key: Option<&str>) -> Result<Vec<ModelInfo>, AppError> {
         .map_err(|e| AppError::Llm(format!("grok model list failed: {e}")))?;
 
     if !resp.status().is_success() {
-        tracing::warn!(
-            "Grok /v1/models returned {}, using static list",
-            resp.status()
-        );
-        return Ok(static_models_for_provider("grok"));
+        tracing::warn!("Grok /v1/models returned {}", resp.status());
+        return Ok(Vec::new());
     }
 
     let data: serde_json::Value = resp.json().await?;
@@ -253,9 +229,6 @@ async fn list_grok(api_key: Option<&str>) -> Result<Vec<ModelInfo>, AppError> {
         .unwrap_or_default();
 
     models.sort_by(|a, b| a.name.cmp(&b.name));
-    if models.is_empty() {
-        return Ok(static_models_for_provider("grok"));
-    }
     Ok(models)
 }
 
@@ -266,7 +239,7 @@ async fn list_gemini(
 ) -> Result<Vec<ModelInfo>, AppError> {
     let key = match api_key.filter(|k| !k.is_empty()) {
         Some(k) => k,
-        None => return Ok(static_models_for_provider("gemini")),
+        None => return Ok(Vec::new()),
     };
     let base = base_url
         .filter(|u| !u.is_empty())
@@ -281,11 +254,8 @@ async fn list_gemini(
         .map_err(|e| AppError::Llm(format!("gemini model list failed: {e}")))?;
 
     if !resp.status().is_success() {
-        tracing::warn!(
-            "Gemini /v1beta/models returned {}, using static list",
-            resp.status()
-        );
-        return Ok(static_models_for_provider("gemini"));
+        tracing::warn!("Gemini /v1beta/models returned {}", resp.status());
+        return Ok(Vec::new());
     }
 
     let data: serde_json::Value = resp.json().await?;
@@ -320,9 +290,6 @@ async fn list_gemini(
         .unwrap_or_default();
 
     models.sort_by(|a, b| a.name.cmp(&b.name));
-    if models.is_empty() {
-        return Ok(static_models_for_provider("gemini"));
-    }
     Ok(models)
 }
 
@@ -413,33 +380,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn static_openai_returns_known_models() {
+    fn static_openai_returns_empty() {
         let models = static_models_for_provider("openai");
-        assert!(!models.is_empty());
-        assert!(models.iter().all(|m| m.provider == "openai"));
-        assert!(models.iter().any(|m| m.id == "gpt-4o"));
+        assert!(models.is_empty());
     }
 
     #[test]
-    fn static_anthropic_returns_known_models() {
+    fn static_anthropic_returns_empty() {
         let models = static_models_for_provider("anthropic");
-        assert!(!models.is_empty());
-        assert!(models.iter().all(|m| m.provider == "anthropic"));
+        assert!(models.is_empty());
     }
 
     #[test]
-    fn static_grok_returns_known_models() {
+    fn static_grok_returns_empty() {
         let models = static_models_for_provider("grok");
-        assert!(!models.is_empty());
-        assert!(models.iter().all(|m| m.provider == "grok"));
+        assert!(models.is_empty());
     }
 
     #[test]
-    fn static_gemini_returns_known_models() {
+    fn static_gemini_returns_empty() {
         let models = static_models_for_provider("gemini");
-        assert!(!models.is_empty());
-        assert!(models.iter().all(|m| m.provider == "gemini"));
-        assert!(models.iter().any(|m| m.id == "gemini-2.0-flash"));
+        assert!(models.is_empty());
     }
 
     #[test]
@@ -449,12 +410,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_without_key_returns_static_fallback() {
-        // Cloud providers without an API key should return the static list.
+    async fn list_without_key_returns_empty() {
+        // Cloud providers without an API key should return an empty list.
         let models = list_models_for_provider("openai", None, None)
             .await
             .unwrap();
-        assert!(!models.is_empty());
-        assert!(models.iter().all(|m| m.provider == "openai"));
+        assert!(models.is_empty());
     }
 }
