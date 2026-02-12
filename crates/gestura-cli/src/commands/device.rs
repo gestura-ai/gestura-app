@@ -4,7 +4,6 @@ use super::Result;
 use crate::DeviceAction;
 use colored::Colorize;
 use gestura_core::list_audio_input_devices;
-use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 
 pub fn run(action: &DeviceAction) -> Result<()> {
@@ -50,14 +49,7 @@ pub fn run(action: &DeviceAction) -> Result<()> {
             println!("{}", "Scanning for audio devices...".cyan());
             println!();
 
-            let spinner = ProgressBar::new_spinner();
-            spinner.set_style(
-                ProgressStyle::default_spinner()
-                    .template("{spinner:.cyan} {msg}")
-                    .unwrap(),
-            );
-            spinner.enable_steady_tick(Duration::from_millis(100));
-            spinner.set_message("Enumerating devices...");
+            let spinner = super::spinner::brand_spinner("Enumerating devices...");
 
             // Small delay to show the spinner
             std::thread::sleep(Duration::from_millis(500));

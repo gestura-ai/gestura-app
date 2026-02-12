@@ -4,3 +4,4 @@
 //! module can stay small and Claude Code visual parity tweaks are localized.
 
 pub(crate) mod composer;
+pub(crate) mod thinking;

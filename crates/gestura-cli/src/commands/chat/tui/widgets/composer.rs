@@ -8,11 +8,12 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::{Modifier, Style},
-    text::Span,
+    text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
 use super::super::app::{TuiApp, TuiMode};
+use super::thinking;
 
 /// Render the pinned composer (input field) including cursor placement.
 pub(crate) fn render_input(app: &TuiApp, frame: &mut Frame, area: Rect) {
@@ -29,12 +30,6 @@ pub(crate) fn render_input(app: &TuiApp, frame: &mut Frame, area: Rect) {
         TuiMode::Settings => ("SETTINGS", app.theme.mode_normal),
         TuiMode::Workflows => ("WORKFLOWS", app.theme.mode_normal),
         TuiMode::Tools => ("TOOLS", app.theme.mode_normal),
-    };
-
-    let title = if app.is_loading {
-        " waiting for response… ".to_string()
-    } else {
-        format!(" {} ", mode_indicator.0.to_lowercase())
     };
 
     let border_style = if app.mode == TuiMode::Insert || app.mode == TuiMode::Command {
@@ -67,18 +62,26 @@ pub(crate) fn render_input(app: &TuiApp, frame: &mut Frame, area: Rect) {
         cursor_col_logical.min(inner_width.saturating_sub(1))
     };
 
+    // Build the block with either the animated thinking title or the static mode title.
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(border_style.add_modifier(Modifier::DIM));
+
+    let block = if app.is_loading {
+        let spans = thinking::thinking_title_spans(app.loading_tick);
+        block.title(Line::from(spans))
+    } else {
+        let title = format!(" {} ", mode_indicator.0.to_lowercase());
+        block.title(Span::styled(
+            title,
+            Style::default()
+                .fg(mode_indicator.1)
+                .add_modifier(Modifier::DIM),
+        ))
+    };
+
     let input = Paragraph::new(app.input.as_str())
-        .block(
-            Block::default()
-                .borders(Borders::TOP)
-                .border_style(border_style.add_modifier(Modifier::DIM))
-                .title(Span::styled(
-                    title,
-                    Style::default()
-                        .fg(mode_indicator.1)
-                        .add_modifier(Modifier::DIM),
-                )),
-        )
+        .block(block)
         .style(Style::default().fg(app.theme.header_fg))
         .wrap(Wrap { trim: false })
         .scroll((scroll_y as u16, 0));
