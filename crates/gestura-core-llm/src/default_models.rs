@@ -28,8 +28,6 @@ pub const DEFAULT_OPENAI_MODEL: &str = "gpt-4o";
 /// with lower Word Error Rate (WER) for voice input.
 pub const DEFAULT_OPENAI_STT_MODEL: &str = "gpt-4o-transcribe";
 
-
-
 // ============================================================================
 // Anthropic Models
 // ============================================================================
@@ -39,8 +37,6 @@ pub const DEFAULT_OPENAI_STT_MODEL: &str = "gpt-4o-transcribe";
 /// Claude Sonnet 4 (2025-05-14) is the latest and most capable model.
 pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
 
-
-
 // ============================================================================
 // Grok Models (xAI)
 // ============================================================================
@@ -49,8 +45,6 @@ pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
 ///
 /// Grok-3 is the latest stable model from xAI.
 pub const DEFAULT_GROK_MODEL: &str = "grok-3";
-
-
 
 // ============================================================================
 // Google Gemini Models
@@ -64,8 +58,6 @@ pub const DEFAULT_GEMINI_MODEL: &str = "gemini-2.0-flash";
 /// Default Gemini API base URL (Google AI Studio / Generative Language API).
 pub const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 
-
-
 // ============================================================================
 // Ollama Models
 // ============================================================================
@@ -77,5 +69,3 @@ pub const DEFAULT_OLLAMA_MODEL: &str = "llama3.2";
 
 /// Default Ollama base URL for local inference.
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
-
-

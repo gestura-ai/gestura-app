@@ -124,6 +124,9 @@ pub mod task_integration;
 
 pub mod api;
 
+/// Chat window file explorer helpers (secure, workspace-scoped).
+pub mod explorer;
+
 // ============================================================================
 // NATS connection type alias
 // ============================================================================

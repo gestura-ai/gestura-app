@@ -11,7 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
-use super::app::{ConfirmAction, Theme, TuiApp, TuiMode};
+use super::app::{ConfirmAction, CopyButtonHit, Theme, TuiApp, TuiMode};
 use super::markdown;
 use super::widgets::composer;
 
@@ -364,6 +364,17 @@ fn wrap_spans(spans: &[Span<'static>], max_width: usize) -> Vec<Vec<Span<'static
         return vec![spans.to_vec()];
     }
 
+    // Preserve pre-formatted lines produced by the markdown renderer.
+    //
+    // The markdown table renderer outputs box-drawing ASCII art that relies on
+    // fixed-width spacing for alignment. Our normal wrapping strategy
+    // (`split_whitespace()`) would collapse that spacing and destroy the table.
+    //
+    // For these lines, prefer clipping (handled by ratatui) over wrapping.
+    if spans_look_like_box_drawing_table(spans) {
+        return vec![spans.to_vec()];
+    }
+
     #[derive(Clone, Debug)]
     struct Token {
         text: String,
@@ -453,6 +464,12 @@ fn wrap_spans(spans: &[Span<'static>], max_width: usize) -> Vec<Vec<Span<'static
     }
 
     result
+}
+
+fn spans_look_like_box_drawing_table(spans: &[Span<'static>]) -> bool {
+    let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+    let first = text.chars().find(|c| !c.is_whitespace());
+    matches!(first, Some('┌' | '├' | '└' | '│'))
 }
 
 fn find_query_ranges(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
@@ -611,6 +628,26 @@ pub fn render(app: &mut TuiApp, frame: &mut Frame) {
         render_activity_overlay(app, frame, area);
     } else if app.mode == TuiMode::Capabilities {
         render_capabilities_overlay(app, frame, area);
+    } else if app.mode == TuiMode::Mcp {
+        render_mcp_browser_overlay(app, frame, area);
+    } else if app.mode == TuiMode::Knowledge {
+        render_knowledge_browser_overlay(app, frame, area);
+    } else if app.mode == TuiMode::Hooks {
+        render_hooks_browser_overlay(app, frame, area);
+    } else if app.mode == TuiMode::Agent {
+        render_agent_browser_overlay(app, frame, area);
+    } else if app.mode == TuiMode::Memory {
+        render_memory_browser_overlay(app, frame, area);
+    } else if app.mode == TuiMode::Devices {
+        render_devices_browser_overlay(app, frame, area);
+    } else if app.mode == TuiMode::Permissions {
+        render_permissions_browser_overlay(app, frame, area);
+    } else if app.mode == TuiMode::Sessions {
+        render_sessions_browser_overlay(app, frame, area);
+    } else if app.mode == TuiMode::Tasks {
+        render_tasks_browser_overlay(app, frame, area);
+    } else if app.mode == TuiMode::Themes {
+        render_themes_browser_overlay(app, frame, area);
     } else if app.mode == TuiMode::Command && !app.command_suggestions.is_empty() {
         // Render command palette above the input field
         render_command_palette(app, frame, chunks[3]);
@@ -724,6 +761,16 @@ fn render_compact_header(app: &TuiApp, frame: &mut Frame, area: Rect) {
         TuiMode::Workflows => "WORKFLOWS",
         TuiMode::Tools => "TOOLS",
         TuiMode::Capabilities => "CAPABILITIES",
+        TuiMode::Mcp => "MCP",
+        TuiMode::Knowledge => "KNOWLEDGE",
+        TuiMode::Hooks => "HOOKS",
+        TuiMode::Agent => "AGENT",
+        TuiMode::Memory => "MEMORY",
+        TuiMode::Devices => "DEVICES",
+        TuiMode::Permissions => "PERMISSIONS",
+        TuiMode::Sessions => "SESSIONS",
+        TuiMode::Tasks => "TASKS",
+        TuiMode::Themes => "THEMES",
     };
     parts.push(mode_str.to_string());
 
@@ -814,6 +861,9 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 
     // Claude Code-style default view: when there are no messages yet, render a
     // minimal home screen with tips and current model.
+    // Recompute overlay hit targets every frame.
+    app.assistant_copy_buttons.clear();
+
     if app.messages.is_empty() {
         render_empty_chat_view(app, frame, area);
         return;
@@ -837,6 +887,10 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     // Plain-text content of each rendered line (parallel to `all_items`).
     let mut line_texts: Vec<String> = Vec::new();
 
+    // Track the bottom rendered line index for each *finalized* assistant message so we can
+    // place the overlay "copy" control at the bottom-right of the message block.
+    let mut assistant_bottom_lines: Vec<(usize, usize)> = Vec::new();
+
     for (iter_idx, &msg_idx) in message_indices.iter().enumerate() {
         // Insert a blank line between consecutive messages so user input and agent
         // responses have visible breathing room in the transcript.
@@ -846,6 +900,7 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
         }
 
         let msg = &app.messages[msg_idx];
+        let is_assistant = msg.role.as_str() == "assistant";
         let match_ranges = if has_search {
             app.get_match_ranges(msg_idx)
         } else {
@@ -1032,9 +1087,20 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 
         // Record the mapping and plain-text content: each rendered line maps back
         // to this message.
+        let before_len = all_items.len();
         line_to_message.extend(std::iter::repeat_n(msg_idx, items.len()));
         line_texts.extend(item_texts);
         all_items.extend(items);
+
+        // Don't show the per-message "copy" control for the streaming placeholder.
+        // It should only appear once the assistant response has been finalized.
+        if is_assistant
+            && !msg.is_streaming
+            && !msg.content.trim().is_empty()
+            && all_items.len() > before_len
+        {
+            assistant_bottom_lines.push((msg_idx, all_items.len().saturating_sub(1)));
+        }
     }
 
     // Persist the line count, mapping, and plain-text content so scroll logic and
@@ -1086,6 +1152,63 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     // IMPORTANT: pass the real `message_list_state` — NOT a clone — so ratatui's
     // viewport offset updates are persisted between frames.
     frame.render_stateful_widget(list, area, &mut app.message_list_state);
+
+    // Render per-assistant-message "copy" overlay controls (not part of transcript text).
+    let focused_message_idx = app
+        .message_list_state
+        .selected()
+        .and_then(|line| app.line_to_message_map.get(line).copied());
+
+    let offset = app.message_list_state.offset();
+    let label = "copy";
+    let label_width = label.len() as u16;
+    let pad = 1u16;
+
+    if area.width > label_width + pad {
+        for (msg_idx, end_line_idx) in assistant_bottom_lines {
+            if end_line_idx < offset {
+                continue;
+            }
+            let relative_y = end_line_idx - offset;
+            if relative_y >= area.height as usize {
+                continue;
+            }
+
+            let x = area.x + area.width.saturating_sub(label_width + pad);
+            let y = area.y + relative_y as u16;
+            let rect = Rect {
+                x,
+                y,
+                width: label_width,
+                height: 1,
+            };
+
+            // Use a *very* muted style when idle, highlight only on hover or selection, and
+            // show a pressed state (dim) while mouse button is held.
+            let is_focused = Some(msg_idx) == focused_message_idx;
+            let is_hovered = app.hovered_copy_button == Some(msg_idx);
+            let is_pressed = app.pressed_copy_button == Some(msg_idx);
+
+            let style = if is_pressed {
+                Style::default()
+                    .fg(theme.border)
+                    .add_modifier(Modifier::DIM)
+            } else if is_focused || is_hovered {
+                Style::default().fg(theme.border_focused)
+            } else {
+                Style::default()
+                    .fg(theme.border)
+                    .add_modifier(Modifier::DIM)
+            };
+
+            app.assistant_copy_buttons.push(CopyButtonHit {
+                message_index: msg_idx,
+                rect,
+            });
+
+            frame.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), rect);
+        }
+    }
 }
 
 /// Render a Claude Code-like home/default view when there are no messages.
@@ -1522,6 +1645,1575 @@ fn render_tools_detail(
     frame.render_widget(paragraph, area);
 }
 
+// ============================================================================
+// MCP Browser Overlay
+// ============================================================================
+
+/// Render the MCP browser as a full-screen overlay with list/detail sub-modes.
+fn render_mcp_browser_overlay(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    let popup_width = 80.min(area.width.saturating_sub(4));
+    let popup_height = (area.height.saturating_sub(4)).max(10);
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    if app.mcp_browser_state.detail_mode {
+        render_mcp_detail(app, frame, popup_area);
+    } else {
+        render_mcp_list(app, frame, popup_area);
+    }
+}
+
+/// Render the MCP server list view.
+fn render_mcp_list(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    if app.mcp_browser_state.servers.is_empty() {
+        let msg = Paragraph::new(
+			"\n  No MCP servers configured.\n\n  Press 'n' or Enter to add one.\n  Or type: /mcp add <name> <cmd_or_url>",
+        )
+        .style(Style::default().fg(app.theme.status_fg))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(" MCP Servers "),
+        );
+        frame.render_widget(msg, area);
+        return;
+    }
+
+    let items: Vec<ListItem<'static>> = app
+        .mcp_browser_state
+        .servers
+        .iter()
+        .enumerate()
+        .map(|(i, srv)| {
+            let enabled_indicator = if srv.entry.enabled { "✓" } else { "✗" };
+            let enabled_color = if srv.entry.enabled {
+                app.theme.mode_insert
+            } else {
+                app.theme.error_msg
+            };
+            let connected_badge = if srv.connected { " ●" } else { " ○" };
+            let connected_color = if srv.connected {
+                app.theme.mode_insert
+            } else {
+                app.theme.status_fg
+            };
+            let selected = i == app.mcp_browser_state.selected_index;
+            let name_style = if selected {
+                Style::default()
+                    .fg(app.theme.tab_active)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.status_fg)
+            };
+            let line = Line::from(vec![
+                Span::styled(
+                    format!(" {} ", enabled_indicator),
+                    Style::default().fg(enabled_color),
+                ),
+                Span::styled(format!("{:<20}", srv.entry.name), name_style),
+                Span::styled(
+                    format!("[{}]", srv.entry.transport),
+                    Style::default()
+                        .fg(app.theme.mode_command)
+                        .add_modifier(Modifier::DIM),
+                ),
+                Span::styled(
+                    format!(" {:<8}", srv.entry.scope),
+                    Style::default()
+                        .fg(app.theme.status_fg)
+                        .add_modifier(Modifier::DIM),
+                ),
+                Span::styled(
+                    connected_badge.to_string(),
+                    Style::default().fg(connected_color),
+                ),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(
+                    " MCP Servers — ↑/↓ navigate  Enter details  Space toggle  c connect  d disconnect  x remove  Esc close ",
+                ),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(app.theme.selection_bg)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▸ ");
+
+    frame.render_stateful_widget(list, area, &mut app.mcp_browser_state.list_state);
+}
+
+/// Render the MCP server detail view.
+fn render_mcp_detail(app: &TuiApp, frame: &mut Frame, area: Rect) {
+    let idx = app.mcp_browser_state.selected_index;
+    let Some(srv) = app.mcp_browser_state.servers.get(idx) else {
+        return;
+    };
+    let entry = &srv.entry;
+    let status_label = if entry.enabled {
+        "Enabled ✓"
+    } else {
+        "Disabled ✗"
+    };
+    let status_color = if entry.enabled {
+        app.theme.mode_insert
+    } else {
+        app.theme.error_msg
+    };
+    let conn_label = if srv.connected {
+        "Connected ●"
+    } else {
+        "Disconnected ○"
+    };
+    let conn_color = if srv.connected {
+        app.theme.mode_insert
+    } else {
+        app.theme.status_fg
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Title
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {} ", entry.name),
+            Style::default()
+                .fg(app.theme.tab_active)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  [{}]", status_label),
+            Style::default().fg(status_color),
+        ),
+        Span::styled(
+            format!("  [{}]", conn_label),
+            Style::default().fg(conn_color),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    // Transport
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  Transport: ",
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            entry.transport.to_string(),
+            Style::default().fg(app.theme.mode_command),
+        ),
+    ]));
+
+    // Scope
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  Scope:     ",
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            entry.scope.to_string(),
+            Style::default().fg(app.theme.status_fg),
+        ),
+    ]));
+
+    // Transport-specific fields
+    match entry.transport {
+        gestura_core::config::McpTransportType::Stdio => {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  Command:   {}",
+                    entry.command.as_deref().unwrap_or("(none)")
+                ),
+                Style::default().fg(app.theme.status_fg),
+            )));
+            if !entry.args.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("  Args:      {}", entry.args.join(" ")),
+                    Style::default().fg(app.theme.status_fg),
+                )));
+            }
+        }
+        _ => {
+            lines.push(Line::from(Span::styled(
+                format!("  URL:       {}", entry.url.as_deref().unwrap_or("(none)")),
+                Style::default().fg(app.theme.status_fg),
+            )));
+        }
+    }
+
+    // Timeout & auto-reconnect
+    lines.push(Line::from(Span::styled(
+        format!("  Timeout:   {}s", entry.timeout_secs),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  Auto-reconnect: {}", entry.auto_reconnect),
+        Style::default().fg(app.theme.status_fg),
+    )));
+
+    // Env vars
+    if !entry.env.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Environment Variables:",
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for (k, v) in &entry.env {
+            lines.push(Line::from(Span::styled(
+                format!("    {}={}", k, v),
+                Style::default()
+                    .fg(app.theme.status_fg)
+                    .add_modifier(Modifier::DIM),
+            )));
+        }
+    }
+
+    // Headers
+    if !entry.headers.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  HTTP Headers:",
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for (k, v) in &entry.headers {
+            lines.push(Line::from(Span::styled(
+                format!("    {}: {}", k, v),
+                Style::default()
+                    .fg(app.theme.status_fg)
+                    .add_modifier(Modifier::DIM),
+            )));
+        }
+    }
+
+    // Footer hint
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Space: toggle enable/disable   Esc: back to list",
+        Style::default()
+            .fg(app.theme.status_fg)
+            .add_modifier(Modifier::DIM),
+    )));
+
+    let text = Text::from(lines);
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(format!(" MCP: {} ", entry.name)),
+        )
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+// ============================================================================
+// Knowledge Browser Overlay
+// ============================================================================
+
+/// Render the knowledge browser as a full-screen overlay with list/detail sub-modes.
+fn render_knowledge_browser_overlay(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    let popup_width = 80.min(area.width.saturating_sub(4));
+    let popup_height = (area.height.saturating_sub(4)).max(10);
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    if app.knowledge_browser_state.detail_mode {
+        render_knowledge_detail(app, frame, popup_area);
+    } else {
+        render_knowledge_list(app, frame, popup_area);
+    }
+}
+
+/// Render the knowledge item list view.
+fn render_knowledge_list(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    if app.knowledge_browser_state.items.is_empty() {
+        let msg = Paragraph::new("\n  No knowledge items registered.")
+            .style(Style::default().fg(app.theme.status_fg))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(app.theme.border))
+                    .title(" Knowledge Base "),
+            );
+        frame.render_widget(msg, area);
+        return;
+    }
+
+    let items: Vec<ListItem<'static>> = app
+        .knowledge_browser_state
+        .items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let enabled_indicator = if item.enabled { "✓" } else { "✗" };
+            let enabled_color = if item.enabled {
+                app.theme.mode_insert
+            } else {
+                app.theme.error_msg
+            };
+            let selected = i == app.knowledge_browser_state.selected_index;
+            let name_style = if selected {
+                Style::default()
+                    .fg(app.theme.tab_active)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.status_fg)
+            };
+            let line = Line::from(vec![
+                Span::styled(
+                    format!(" {} ", enabled_indicator),
+                    Style::default().fg(enabled_color),
+                ),
+                Span::styled(format!("{:<24}", item.name), name_style),
+                Span::styled(
+                    format!("[{}]", item.category),
+                    Style::default()
+                        .fg(app.theme.mode_command)
+                        .add_modifier(Modifier::DIM),
+                ),
+                Span::styled(
+                    format!(" {}", truncate_str(&item.description, 40)),
+                    Style::default()
+                        .fg(app.theme.status_fg)
+                        .add_modifier(Modifier::DIM),
+                ),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(" Knowledge — ↑/↓ navigate  Enter details  Space toggle  Esc close "),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(app.theme.selection_bg)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▸ ");
+
+    frame.render_stateful_widget(list, area, &mut app.knowledge_browser_state.list_state);
+}
+
+/// Render the knowledge item detail view.
+fn render_knowledge_detail(app: &TuiApp, frame: &mut Frame, area: Rect) {
+    let idx = app.knowledge_browser_state.selected_index;
+    let Some(item) = app.knowledge_browser_state.items.get(idx) else {
+        return;
+    };
+    let status_label = if item.enabled {
+        "Enabled ✓"
+    } else {
+        "Disabled ✗"
+    };
+    let status_color = if item.enabled {
+        app.theme.mode_insert
+    } else {
+        app.theme.error_msg
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Title + category
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {} ", item.name),
+            Style::default()
+                .fg(app.theme.tab_active)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  [{}]", item.category),
+            Style::default().fg(app.theme.mode_command),
+        ),
+        Span::styled(
+            format!("  [{}]", status_label),
+            Style::default().fg(status_color),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    // Description
+    lines.push(Line::from(Span::styled(
+        format!("  {}", item.description),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(""));
+
+    // Triggers
+    if !item.triggers.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Triggers:",
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for trigger in &item.triggers {
+            lines.push(Line::from(Span::styled(
+                format!("    • {}", trigger),
+                Style::default()
+                    .fg(app.theme.status_fg)
+                    .add_modifier(Modifier::DIM),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Content preview (first ~10 lines)
+    if !item.core_content.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Content Preview:",
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for content_line in item.core_content.lines().take(10) {
+            lines.push(Line::from(Span::styled(
+                format!("    {}", content_line),
+                Style::default()
+                    .fg(app.theme.status_fg)
+                    .add_modifier(Modifier::DIM),
+            )));
+        }
+        let total_lines = item.core_content.lines().count();
+        if total_lines > 10 {
+            lines.push(Line::from(Span::styled(
+                format!("    ... ({} more lines)", total_lines - 10),
+                Style::default()
+                    .fg(app.theme.status_fg)
+                    .add_modifier(Modifier::DIM),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Priority
+    lines.push(Line::from(Span::styled(
+        format!("  Priority: {}", item.priority),
+        Style::default().fg(app.theme.status_fg),
+    )));
+
+    // Footer hint
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Space: toggle enable/disable   Esc: back to list",
+        Style::default()
+            .fg(app.theme.status_fg)
+            .add_modifier(Modifier::DIM),
+    )));
+
+    let text = Text::from(lines);
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(format!(" Knowledge: {} ", item.name)),
+        )
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+// ===================== Hooks Browser =====================
+
+/// Render the hooks browser overlay.
+fn render_hooks_browser_overlay(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    let popup_width = 80.min(area.width.saturating_sub(4));
+    let popup_height = (area.height.saturating_sub(4)).max(10);
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+    frame.render_widget(Clear, popup_area);
+
+    if app.hooks_browser_state.detail_mode {
+        render_hooks_detail(app, frame, popup_area);
+    } else {
+        render_hooks_list(app, frame, popup_area);
+    }
+}
+
+/// Render the hooks list view.
+fn render_hooks_list(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    let data = &app.hooks_browser_data;
+    if data.hooks.is_empty() {
+        let enabled_str = if data.enabled { "yes" } else { "no" };
+        let msg = Paragraph::new(format!(
+            "\n  No hooks configured.\n\n  Space: toggle enabled (currently: {})\n  n: new hook    a: allow+    r: allow-\n  t: set timeout    m: set max output\n\n  Tip: Enter also starts /hooks create\n  Config: ~/.gestura/config.yaml",
+            enabled_str
+        ))
+        .style(Style::default().fg(app.theme.status_fg))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(" Hooks — Space toggle  n new  a/r allow  t timeout  m max  Esc close "),
+        );
+        frame.render_widget(msg, area);
+        return;
+    }
+
+    let items: Vec<ListItem<'static>> = data
+        .hooks
+        .iter()
+        .enumerate()
+        .map(|(i, (name, event, program, _args))| {
+            let selected = i == app.hooks_browser_state.selected_index;
+            let name_style = if selected {
+                Style::default()
+                    .fg(app.theme.tab_active)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.status_fg)
+            };
+            let line = Line::from(vec![
+                Span::styled(
+                    if data.enabled { " ✓ " } else { " ✗ " }.to_string(),
+                    Style::default().fg(if data.enabled {
+                        app.theme.mode_insert
+                    } else {
+                        app.theme.error_msg
+                    }),
+                ),
+                Span::styled(format!("{:<20}", name), name_style),
+                Span::styled(
+                    format!("[{}]", event),
+                    Style::default()
+                        .fg(app.theme.mode_command)
+                        .add_modifier(Modifier::DIM),
+                ),
+                Span::styled(
+                    format!("  {}", program),
+                    Style::default()
+                        .fg(app.theme.status_fg)
+                        .add_modifier(Modifier::DIM),
+                ),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(
+                    " Hooks — ↑/↓ navigate  Enter details  Space toggle  n new  e edit  x delete  a/r allow  t timeout  m max  Esc close ",
+                ),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(app.theme.selection_bg)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_stateful_widget(list, area, &mut app.hooks_browser_state.list_state);
+}
+
+/// Render hooks detail view.
+fn render_hooks_detail(app: &TuiApp, frame: &mut Frame, area: Rect) {
+    let idx = app.hooks_browser_state.selected_index;
+    let data = &app.hooks_browser_data;
+    let Some((name, event, program, args)) = data.hooks.get(idx) else {
+        return;
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!("  Hook: {}", name),
+        Style::default()
+            .fg(app.theme.tab_active)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("  Event:   {}", event),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  Program: {}", program),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  Args:    {}", args),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  Global enabled: {}",
+            if data.enabled { "yes" } else { "no" }
+        ),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  Timeout: {} ms", data.timeout_ms),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  Max output: {} bytes", data.max_output_bytes),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    if !data.allowed_programs.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("  Allowed programs: {}", data.allowed_programs.join(", ")),
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::DIM),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Space: toggle  n: new  e: edit  x: delete  a/r: allow  t: timeout  m: max  Esc: back",
+        Style::default()
+            .fg(app.theme.status_fg)
+            .add_modifier(Modifier::DIM),
+    )));
+
+    let text = Text::from(lines);
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(format!(" Hook: {} ", name)),
+        )
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+/// Truncate a string to `max_len` characters, appending `…` if truncated.
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max_len.saturating_sub(1)])
+    }
+}
+
+// ===================== Agent Browser =====================
+
+/// Render the agent browser overlay.
+fn render_agent_browser_overlay(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    let popup_width = 80.min(area.width.saturating_sub(4));
+    let popup_height = (area.height.saturating_sub(4)).max(10);
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+    frame.render_widget(Clear, popup_area);
+
+    if app.agent_browser_state.detail_mode {
+        render_agent_detail(app, frame, popup_area);
+    } else {
+        render_agent_list(app, frame, popup_area);
+    }
+}
+
+/// Render the agent dashboard list.
+fn render_agent_list(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    let items: Vec<ListItem<'static>> = app
+        .agent_browser_data
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(i, (label, value))| {
+            let selected = i == app.agent_browser_state.selected_index;
+            let label_style = if selected {
+                Style::default()
+                    .fg(app.theme.tab_active)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(app.theme.status_fg)
+                    .add_modifier(Modifier::BOLD)
+            };
+            let line = Line::from(vec![
+                Span::styled(format!("  {:<20}", label), label_style),
+                Span::styled(value.clone(), Style::default().fg(app.theme.status_fg)),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(" Agent Status — ↑/↓ navigate  Enter details  Esc close "),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(app.theme.selection_bg)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_stateful_widget(list, area, &mut app.agent_browser_state.list_state);
+}
+
+/// Render agent detail view.
+fn render_agent_detail(app: &TuiApp, frame: &mut Frame, area: Rect) {
+    let idx = app.agent_browser_state.selected_index;
+    let Some((label, value)) = app.agent_browser_data.rows.get(idx) else {
+        return;
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!("  {}", label),
+        Style::default()
+            .fg(app.theme.tab_active)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("  Value: {}", value),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Esc: back to list",
+        Style::default()
+            .fg(app.theme.status_fg)
+            .add_modifier(Modifier::DIM),
+    )));
+
+    let text = Text::from(lines);
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(format!(" Agent: {} ", label)),
+        )
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+// ===================== Memory Browser =====================
+
+/// Render the memory browser overlay.
+fn render_memory_browser_overlay(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    let popup_width = 80.min(area.width.saturating_sub(4));
+    let popup_height = (area.height.saturating_sub(4)).max(10);
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+    frame.render_widget(Clear, popup_area);
+
+    if app.memory_browser_state.detail_mode {
+        render_memory_detail(app, frame, popup_area);
+    } else {
+        render_memory_list(app, frame, popup_area);
+    }
+}
+
+/// Render the memory list view.
+fn render_memory_list(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    if app.memory_browser_entries.is_empty() {
+        let msg = Paragraph::new(
+			"\n  Memory bank is empty.\n\n  Press 's' or Enter to save memory from this chat.\n  Or type: /memory save",
+        )
+        .style(Style::default().fg(app.theme.status_fg))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(" Memory Bank "),
+        );
+        frame.render_widget(msg, area);
+        return;
+    }
+
+    let items: Vec<ListItem<'static>> = app
+        .memory_browser_entries
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            let selected = i == app.memory_browser_state.selected_index;
+            let name_style = if selected {
+                Style::default()
+                    .fg(app.theme.tab_active)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.status_fg)
+            };
+            let mut spans: Vec<Span<'static>> = vec![
+                Span::styled(
+                    format!("  [{}] ", entry.timestamp),
+                    Style::default()
+                        .fg(app.theme.mode_command)
+                        .add_modifier(Modifier::DIM),
+                ),
+                Span::styled(truncate_str(&entry.summary, 50), name_style),
+            ];
+
+            if let Some(cat) = entry.category.as_deref() {
+                spans.push(Span::styled(
+                    format!("  [{}]", truncate_str(cat, 18)),
+                    Style::default()
+                        .fg(app.theme.status_fg)
+                        .add_modifier(Modifier::DIM),
+                ));
+            }
+
+            let line = Line::from(spans);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(" Memory Bank — ↑/↓ navigate  Enter details  x delete  Esc close "),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(app.theme.selection_bg)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_stateful_widget(list, area, &mut app.memory_browser_state.list_state);
+}
+
+/// Render memory detail view.
+fn render_memory_detail(app: &TuiApp, frame: &mut Frame, area: Rect) {
+    let idx = app.memory_browser_state.selected_index;
+    let Some(entry) = app.memory_browser_entries.get(idx) else {
+        return;
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!("  {}", entry.summary),
+        Style::default()
+            .fg(app.theme.tab_active)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("  Timestamp:  {}", entry.timestamp),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  Session:    {}",
+            &entry.session_id[..entry.session_id.len().min(8)]
+        ),
+        Style::default().fg(app.theme.status_fg),
+    )));
+
+    if let Some(category) = entry.category.as_deref() {
+        lines.push(Line::from(Span::styled(
+            format!("  Category:   {}", category),
+            Style::default().fg(app.theme.status_fg),
+        )));
+    }
+
+    if let Some(path) = entry.file_path.as_deref() {
+        lines.push(Line::from(Span::styled(
+            format!("  File:       {}", path),
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::DIM),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Content Preview:",
+        Style::default()
+            .fg(app.theme.status_fg)
+            .add_modifier(Modifier::BOLD),
+    )));
+    for content_line in entry.content.lines().take(15) {
+        lines.push(Line::from(Span::styled(
+            format!("    {}", content_line),
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::DIM),
+        )));
+    }
+    let total = entry.content.lines().count();
+    if total > 15 {
+        lines.push(Line::from(Span::styled(
+            format!("    ... ({} more lines)", total - 15),
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::DIM),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  x: delete    Esc: back to list",
+        Style::default()
+            .fg(app.theme.status_fg)
+            .add_modifier(Modifier::DIM),
+    )));
+
+    let text = Text::from(lines);
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(" Memory Entry — x delete  Esc back "),
+        )
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+// ===================== Devices Browser =====================
+
+/// Render the devices browser overlay.
+fn render_devices_browser_overlay(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    let popup_width = 70.min(area.width.saturating_sub(4));
+    let popup_height = (area.height.saturating_sub(4)).max(10);
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+    frame.render_widget(Clear, popup_area);
+
+    if app.devices_browser_state.detail_mode {
+        render_devices_detail(app, frame, popup_area);
+    } else {
+        render_devices_list(app, frame, popup_area);
+    }
+}
+
+/// Render the devices list view.
+fn render_devices_list(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    if app.devices_browser_entries.is_empty() {
+        let msg = Paragraph::new("\n  No audio input devices found.")
+            .style(Style::default().fg(app.theme.status_fg))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(app.theme.border))
+                    .title(" Audio Devices "),
+            );
+        frame.render_widget(msg, area);
+        return;
+    }
+
+    let items: Vec<ListItem<'static>> = app
+        .devices_browser_entries
+        .iter()
+        .enumerate()
+        .map(|(i, dev)| {
+            let selected = i == app.devices_browser_state.selected_index;
+            let name_style = if selected {
+                Style::default()
+                    .fg(app.theme.tab_active)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.status_fg)
+            };
+            let default_badge = if dev.is_default { " (default)" } else { "" };
+            let line = Line::from(vec![
+                Span::styled(
+                    if dev.is_default { " ★ " } else { "   " }.to_string(),
+                    Style::default().fg(app.theme.mode_insert),
+                ),
+                Span::styled(dev.name.clone(), name_style),
+                Span::styled(
+                    default_badge.to_string(),
+                    Style::default()
+                        .fg(app.theme.mode_command)
+                        .add_modifier(Modifier::DIM),
+                ),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(" Audio Devices — ↑/↓ navigate  Enter details  Esc close "),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(app.theme.selection_bg)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_stateful_widget(list, area, &mut app.devices_browser_state.list_state);
+}
+
+/// Render device detail view.
+fn render_devices_detail(app: &TuiApp, frame: &mut Frame, area: Rect) {
+    let idx = app.devices_browser_state.selected_index;
+    let Some(dev) = app.devices_browser_entries.get(idx) else {
+        return;
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!("  Device: {}", dev.name),
+        Style::default()
+            .fg(app.theme.tab_active)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("  Default: {}", if dev.is_default { "Yes" } else { "No" }),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  Type:    Audio Input".to_string(),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Esc: back to list",
+        Style::default()
+            .fg(app.theme.status_fg)
+            .add_modifier(Modifier::DIM),
+    )));
+
+    let text = Text::from(lines);
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(format!(" Device: {} ", dev.name)),
+        )
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+// ===================== Permissions Browser =====================
+
+/// Render the permissions browser overlay.
+fn render_permissions_browser_overlay(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    let popup_width = 80.min(area.width.saturating_sub(4));
+    let popup_height = (area.height.saturating_sub(4)).max(10);
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+    frame.render_widget(Clear, popup_area);
+
+    if app.permissions_browser_state.detail_mode {
+        render_permissions_detail(app, frame, popup_area);
+    } else {
+        render_permissions_list(app, frame, popup_area);
+    }
+}
+
+/// Render the permissions list view.
+fn render_permissions_list(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    if app.permissions_browser_entries.is_empty() {
+        let msg = Paragraph::new(
+            "\n  No tool permissions granted.\n\n  g: grant    l: set level    r: reset\n\n  Tip: Enter also starts /permissions grant",
+        )
+        .style(Style::default().fg(app.theme.status_fg))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(" Permissions — g grant  l level  r reset  Esc close "),
+        );
+        frame.render_widget(msg, area);
+        return;
+    }
+
+    let items: Vec<ListItem<'static>> = app
+        .permissions_browser_entries
+        .iter()
+        .enumerate()
+        .map(|(i, perm)| {
+            let selected = i == app.permissions_browser_state.selected_index;
+            let name_style = if selected {
+                Style::default()
+                    .fg(app.theme.tab_active)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.status_fg)
+            };
+            let line = Line::from(vec![
+                Span::styled(
+                    " ✓ ".to_string(),
+                    Style::default().fg(app.theme.mode_insert),
+                ),
+                Span::styled(format!("{:<16}", perm.tool), name_style),
+                Span::styled(
+                    format!(":{:<12}", perm.action),
+                    Style::default().fg(app.theme.status_fg),
+                ),
+                Span::styled(
+                    format!("[{}]", perm.scope),
+                    Style::default()
+                        .fg(app.theme.mode_command)
+                        .add_modifier(Modifier::DIM),
+                ),
+                Span::styled(
+                    format!("  exp: {}", perm.expires),
+                    Style::default()
+                        .fg(app.theme.status_fg)
+                        .add_modifier(Modifier::DIM),
+                ),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(
+                    " Permissions — ↑/↓ navigate  Enter details  g grant  x revoke  r reset  l level  Esc close ",
+                ),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(app.theme.selection_bg)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_stateful_widget(list, area, &mut app.permissions_browser_state.list_state);
+}
+
+/// Render permission detail view.
+fn render_permissions_detail(app: &TuiApp, frame: &mut Frame, area: Rect) {
+    let idx = app.permissions_browser_state.selected_index;
+    let Some(perm) = app.permissions_browser_entries.get(idx) else {
+        return;
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!("  Permission: {}:{}", perm.tool, perm.action),
+        Style::default()
+            .fg(app.theme.tab_active)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("  Tool:     {}", perm.tool),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  Action:   {}", perm.action),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  Scope:    {}", perm.scope),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  Expires:  {}", perm.expires),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  g: grant   x: revoke   r: reset   l: level   Esc: back",
+        Style::default()
+            .fg(app.theme.status_fg)
+            .add_modifier(Modifier::DIM),
+    )));
+
+    let text = Text::from(lines);
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(format!(" Permission: {}:{} ", perm.tool, perm.action)),
+        )
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+// ===================== Sessions Browser =====================
+
+/// Render the sessions browser overlay.
+fn render_sessions_browser_overlay(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    let popup_width = 80.min(area.width.saturating_sub(4));
+    let popup_height = (area.height.saturating_sub(4)).max(10);
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+    frame.render_widget(Clear, popup_area);
+
+    if app.sessions_browser_state.detail_mode {
+        render_sessions_detail(app, frame, popup_area);
+    } else {
+        render_sessions_list(app, frame, popup_area);
+    }
+}
+
+/// Render the sessions list view.
+fn render_sessions_list(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    if app.sessions_browser_entries.is_empty() {
+        let msg = Paragraph::new("\n  No saved sessions found.")
+            .style(Style::default().fg(app.theme.status_fg))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(app.theme.border))
+                    .title(" Sessions "),
+            );
+        frame.render_widget(msg, area);
+        return;
+    }
+
+    let items: Vec<ListItem<'static>> = app
+        .sessions_browser_entries
+        .iter()
+        .enumerate()
+        .map(|(i, sess)| {
+            let selected = i == app.sessions_browser_state.selected_index;
+            let name_style = if selected {
+                Style::default()
+                    .fg(app.theme.tab_active)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.status_fg)
+            };
+            let current_marker = if sess.is_current { "▸" } else { " " };
+            let line = Line::from(vec![
+                Span::styled(
+                    format!(" {} ", current_marker),
+                    Style::default().fg(app.theme.mode_insert),
+                ),
+                Span::styled(
+                    format!("{:<10}", &sess.id[..sess.id.len().min(8)]),
+                    name_style,
+                ),
+                Span::styled(
+                    format!("{:>4} msgs", sess.message_count),
+                    Style::default()
+                        .fg(app.theme.status_fg)
+                        .add_modifier(Modifier::DIM),
+                ),
+                Span::styled(
+                    format!("  {}", sess.last_active),
+                    Style::default()
+                        .fg(app.theme.mode_command)
+                        .add_modifier(Modifier::DIM),
+                ),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(
+                    " Sessions — ↑/↓ navigate  Enter details  l load  x delete  e export  Esc close ",
+                ),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(app.theme.selection_bg)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_stateful_widget(list, area, &mut app.sessions_browser_state.list_state);
+}
+
+/// Render session detail view.
+fn render_sessions_detail(app: &TuiApp, frame: &mut Frame, area: Rect) {
+    let idx = app.sessions_browser_state.selected_index;
+    let Some(sess) = app.sessions_browser_entries.get(idx) else {
+        return;
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  Session: {}{}",
+            &sess.id[..sess.id.len().min(8)],
+            if sess.is_current { " (current)" } else { "" }
+        ),
+        Style::default()
+            .fg(app.theme.tab_active)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("  ID:          {}", sess.id),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  Model:       {}", sess.model),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  Messages:    {}", sess.message_count),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  Created:     {}", sess.created),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  Last active: {}", sess.last_active),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  l: load   x: delete   e: export   Esc: back to list",
+        Style::default()
+            .fg(app.theme.status_fg)
+            .add_modifier(Modifier::DIM),
+    )));
+
+    let text = Text::from(lines);
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(format!(" Session: {} ", &sess.id[..sess.id.len().min(8)])),
+        )
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+// ===================== Tasks Browser =====================
+
+/// Render the tasks browser overlay.
+fn render_tasks_browser_overlay(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    let popup_width = 80.min(area.width.saturating_sub(4));
+    let popup_height = (area.height.saturating_sub(4)).max(10);
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+    frame.render_widget(Clear, popup_area);
+
+    if app.tasks_browser_state.detail_mode {
+        render_tasks_detail(app, frame, popup_area);
+    } else {
+        render_tasks_list(app, frame, popup_area);
+    }
+}
+
+/// Render the tasks list view.
+fn render_tasks_list(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    if app.tasks_browser_entries.is_empty() {
+        let msg = Paragraph::new(
+            "\n  No tasks in this session.\n\n  n: new task    Enter: start /task create\n\n  Tip: once you have tasks:\n    e: edit name   d: edit desc   s: subtask   a: add dep\n    Space: cycle status   c: set current   u: clear current   x: delete",
+        )
+        .style(Style::default().fg(app.theme.status_fg))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(" Tasks — n new  Enter create  Esc close "),
+        );
+        frame.render_widget(msg, area);
+        return;
+    }
+
+    let items: Vec<ListItem<'static>> = app
+        .tasks_browser_entries
+        .iter()
+        .enumerate()
+        .map(|(i, task)| {
+            let selected = i == app.tasks_browser_state.selected_index;
+            let name_style = if selected {
+                Style::default()
+                    .fg(app.theme.tab_active)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.status_fg)
+            };
+            let indent = if task.parent_id.is_some() {
+                "    "
+            } else {
+                "  "
+            };
+            let line = Line::from(vec![
+                Span::styled(
+                    format!("{}{} ", indent, task.status_icon),
+                    Style::default().fg(app.theme.mode_command),
+                ),
+                Span::styled(truncate_str(&task.name, 50), name_style),
+                Span::styled(
+                    format!("  [{}]", task.source),
+                    Style::default()
+                        .fg(app.theme.status_fg)
+                        .add_modifier(Modifier::DIM),
+                ),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(
+                    " Tasks — ↑/↓ navigate  Enter details  n new  e/d edit  s sub  a dep  Space status  c current  u clear  x delete  Esc close ",
+                ),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(app.theme.selection_bg)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_stateful_widget(list, area, &mut app.tasks_browser_state.list_state);
+}
+
+/// Render task detail view.
+fn render_tasks_detail(app: &TuiApp, frame: &mut Frame, area: Rect) {
+    let idx = app.tasks_browser_state.selected_index;
+    let Some(task) = app.tasks_browser_entries.get(idx) else {
+        return;
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!("  {} {}", task.status_icon, task.name),
+        Style::default()
+            .fg(app.theme.tab_active)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("  Status:  {}", task.status),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  Source:  {}", task.source),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  ID:      {}", &task.id[..task.id.len().min(8)]),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  Created: {}", task.created),
+        Style::default().fg(app.theme.status_fg),
+    )));
+    if !task.description.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Description:",
+            Style::default()
+                .fg(app.theme.status_fg)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for desc_line in task.description.lines().take(10) {
+            lines.push(Line::from(Span::styled(
+                format!("    {}", desc_line),
+                Style::default()
+                    .fg(app.theme.status_fg)
+                    .add_modifier(Modifier::DIM),
+            )));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  n: new  e: name  d: desc  s: sub  a: dep  Space: status  c: current  u: clear  x: delete  Esc: back",
+        Style::default()
+            .fg(app.theme.status_fg)
+            .add_modifier(Modifier::DIM),
+    )));
+
+    let text = Text::from(lines);
+    let paragraph = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(format!(" Task: {} ", truncate_str(&task.name, 30))),
+        )
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, area);
+}
+
+// ===================== Themes Browser =====================
+
+/// Render the themes browser overlay.
+fn render_themes_browser_overlay(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
+    let popup_width = 50.min(area.width.saturating_sub(4));
+    let popup_height = (area.height.saturating_sub(6)).max(8);
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+    frame.render_widget(Clear, popup_area);
+
+    let items: Vec<ListItem<'static>> = app
+        .themes_browser_names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let selected = i == app.themes_browser_state.selected_index;
+            let is_current = *name == app.theme.name;
+            let marker = if is_current { "▸" } else { " " };
+            let name_style = if selected {
+                Style::default()
+                    .fg(app.theme.tab_active)
+                    .add_modifier(Modifier::BOLD)
+            } else if is_current {
+                Style::default()
+                    .fg(app.theme.mode_insert)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.status_fg)
+            };
+            let line = Line::from(vec![
+                Span::styled(
+                    format!(" {} ", marker),
+                    Style::default().fg(app.theme.mode_insert),
+                ),
+                Span::styled(name.clone(), name_style),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .title(" Themes — ↑/↓ navigate  Enter apply  Esc close "),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(app.theme.selection_bg)
+                .add_modifier(Modifier::BOLD),
+        );
+    frame.render_stateful_widget(list, area, &mut app.themes_browser_state.list_state);
+}
+
 /// Render the help tab
 fn render_help_tab(app: &TuiApp, frame: &mut Frame, area: Rect) {
     let help_text = r#"Keyboard Shortcuts:
@@ -1946,25 +3638,44 @@ fn render_command_palette(app: &mut TuiApp, frame: &mut Frame, input_area: Rect)
 
 /// Render a confirmation dialog
 fn render_confirm_dialog(app: &TuiApp, frame: &mut Frame, area: Rect) {
-    let (title, message) = match &app.pending_confirm {
+    let (title, message): (String, String) = match &app.pending_confirm {
         Some(ConfirmAction::QuitWithoutSave) => (
-            " Quit Without Saving? ",
-            "You have unsaved changes. Are you sure you want to quit?\n\n  [Y] Yes, quit    [N] No, cancel",
+            " Quit Without Saving? ".to_string(),
+            "You have unsaved changes. Are you sure you want to quit?\n\n  [Y] Yes, quit    [N] No, cancel"
+                .to_string(),
         ),
         Some(ConfirmAction::ClearMessages) => (
-            " Clear Messages? ",
-            "This will clear all messages in the current session.\n\n  [Y] Yes, clear    [N] No, cancel",
+            " Clear Messages? ".to_string(),
+            "This will clear all messages in the current session.\n\n  [Y] Yes, clear    [N] No, cancel"
+                .to_string(),
         ),
         Some(ConfirmAction::NewSession) => (
-            " Start New Session? ",
-            "This will save the current session and start a new one.\n\n  [Y] Yes, continue    [N] No, cancel",
+            " Start New Session? ".to_string(),
+            "This will save the current session and start a new one.\n\n  [Y] Yes, continue    [N] No, cancel"
+                .to_string(),
+        ),
+        Some(ConfirmAction::ExecuteCommand { title, message, .. }) => (
+            format!(" {title} "),
+            message.clone(),
         ),
         None => return,
     };
 
-    // Center the popup
-    let popup_width = 50;
-    let popup_height = 7;
+    // Size the popup based on content, but clamp to a reasonable window.
+    let lines: Vec<&str> = message.lines().collect();
+    let max_line_len = lines
+        .iter()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(title.chars().count());
+
+    let max_width = area.width.saturating_sub(4).max(20) as usize;
+    let popup_width = (max_line_len + 4).clamp(40, max_width) as u16;
+
+    let max_height = area.height.saturating_sub(4).max(7);
+    let popup_height = ((lines.len() + 2) as u16).clamp(7, max_height);
+
     let x = (area.width.saturating_sub(popup_width)) / 2;
     let y = (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(x, y, popup_width, popup_height);
@@ -2169,5 +3880,15 @@ mod tests {
             lines,
             vec!["abcd-".to_string(), "efgh-".to_string(), "ij".to_string()]
         );
+    }
+
+    #[test]
+    fn wrap_spans_preserves_box_drawing_tables_without_collapsing_spaces() {
+        let spans = vec![Span::raw("│ a    │     1 │")];
+        let wrapped = wrap_spans(&spans, 5);
+
+        assert_eq!(wrapped.len(), 1);
+        let rendered: String = wrapped[0].iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(rendered, "│ a    │     1 │");
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! Command-line interface providing feature parity with the GUI application.
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use colored::Colorize;
 
 mod commands;
@@ -64,6 +64,32 @@ enum Commands {
         /// System prompt to use
         #[arg(long)]
         system: Option<String>,
+
+        /// Override the session permission level (and persist it to the session).
+        ///
+        /// Values: sandbox | restricted | full
+        #[arg(
+            long,
+            value_enum,
+            conflicts_with_all = [
+                "full_permissions",
+                "restricted_permissions",
+                "sandbox_permissions"
+            ]
+        )]
+        permission_level: Option<ChatPermissionLevelArg>,
+
+        /// Convenience alias for `--permission-level full`.
+        #[arg(long, conflicts_with_all = ["permission_level", "restricted_permissions", "sandbox_permissions"]) ]
+        full_permissions: bool,
+
+        /// Convenience alias for `--permission-level restricted`.
+        #[arg(long, conflicts_with_all = ["permission_level", "full_permissions", "sandbox_permissions"]) ]
+        restricted_permissions: bool,
+
+        /// Convenience alias for `--permission-level sandbox`.
+        #[arg(long, conflicts_with_all = ["permission_level", "full_permissions", "restricted_permissions"]) ]
+        sandbox_permissions: bool,
     },
 
     /// Execute a single prompt (non-interactive)
@@ -173,6 +199,23 @@ enum Commands {
 
     /// First-time setup wizard
     Init,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ChatPermissionLevelArg {
+    Sandbox,
+    Restricted,
+    Full,
+}
+
+impl ChatPermissionLevelArg {
+    fn to_session(self) -> gestura_core::chat_sessions::SessionPermissionLevel {
+        match self {
+            Self::Sandbox => gestura_core::chat_sessions::SessionPermissionLevel::Sandbox,
+            Self::Restricted => gestura_core::chat_sessions::SessionPermissionLevel::Restricted,
+            Self::Full => gestura_core::chat_sessions::SessionPermissionLevel::Full,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -872,6 +915,10 @@ fn main() {
             basic,
             voice,
             system,
+            permission_level,
+            full_permissions,
+            restricted_permissions,
+            sandbox_permissions,
         }) => commands::chat::run(commands::chat::ChatOptions {
             model: model.as_deref(),
             resume: *resume,
@@ -879,6 +926,17 @@ fn main() {
             tui: !*basic, // TUI is default, --basic disables it
             voice: *voice,
             system: system.as_deref(),
+            permission_level_override: permission_level.map(|p| p.to_session()).or(
+                if *full_permissions {
+                    Some(gestura_core::chat_sessions::SessionPermissionLevel::Full)
+                } else if *restricted_permissions {
+                    Some(gestura_core::chat_sessions::SessionPermissionLevel::Restricted)
+                } else if *sandbox_permissions {
+                    Some(gestura_core::chat_sessions::SessionPermissionLevel::Sandbox)
+                } else {
+                    None
+                },
+            ),
         }),
         Some(Commands::Exec {
             prompt,

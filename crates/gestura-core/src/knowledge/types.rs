@@ -105,7 +105,7 @@ impl KnowledgeItem {
             core_content: String::new(),
             references: Vec::new(),
             metadata: HashMap::new(),
-            enabled: true,
+            enabled: false,
             priority: 50,
         }
     }
@@ -131,6 +131,24 @@ impl KnowledgeItem {
     /// Set the core content
     pub fn with_content(mut self, content: impl Into<String>) -> Self {
         self.core_content = content.into();
+        self
+    }
+
+    /// Set a metadata key/value pair (used for attribution, source tracking, filtering, etc.)
+    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.metadata.insert(key.into(), value.into());
+        self
+    }
+
+    /// Set whether this item is enabled (note: session-scoped enablement is handled separately).
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Set priority for conflict resolution (higher = more important)
+    pub fn with_priority(mut self, priority: u32) -> Self {
+        self.priority = priority;
         self
     }
 

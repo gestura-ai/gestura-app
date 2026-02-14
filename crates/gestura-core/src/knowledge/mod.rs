@@ -49,6 +49,7 @@ mod builtin {
     // Builtin knowledge content is included at compile time
 }
 
+pub use session_settings::DEFAULT_KNOWLEDGE_SETTINGS_SESSION_ID;
 pub use session_settings::{KnowledgeSettingsManager, SessionKnowledgeSettings};
 pub use store::{KnowledgeError, KnowledgeStore, register_builtin_knowledge};
 pub use types::{KnowledgeItem, KnowledgeMatch, KnowledgeQuery, KnowledgeReference, LoadCondition};
@@ -56,6 +57,7 @@ pub use types::{KnowledgeItem, KnowledgeMatch, KnowledgeQuery, KnowledgeReferenc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn test_store_creation() {
@@ -65,7 +67,8 @@ mod tests {
 
     #[test]
     fn test_register_and_find() {
-        let store = KnowledgeStore::new("/tmp/test-knowledge");
+        let tmp = tempdir().unwrap();
+        let store = KnowledgeStore::new(tmp.path());
 
         let item = KnowledgeItem::new("test-item", "Test Item", "A test knowledge item")
             .with_triggers(["test", "example"]);
@@ -85,7 +88,8 @@ mod tests {
 
     #[test]
     fn test_builtin_knowledge() {
-        let store = KnowledgeStore::new("/tmp/test-knowledge");
+        let tmp = tempdir().unwrap();
+        let store = KnowledgeStore::new(tmp.path());
         register_builtin_knowledge(&store);
 
         // Should have builtin items
@@ -102,11 +106,45 @@ mod tests {
 
     #[test]
     fn test_categories() {
-        let store = KnowledgeStore::new("/tmp/test-knowledge");
+        let tmp = tempdir().unwrap();
+        let store = KnowledgeStore::new(tmp.path());
         register_builtin_knowledge(&store);
 
         let cats = store.categories();
         assert!(cats.contains(&"language".to_string()));
         assert!(cats.contains(&"framework".to_string()));
+    }
+
+    #[test]
+    fn persist_and_reload_user_item() {
+        let tmp = tempdir().unwrap();
+
+        let store = KnowledgeStore::new(tmp.path());
+        register_builtin_knowledge(&store);
+
+        let user_item = KnowledgeItem::new(
+            "my-custom",
+            "My Custom",
+            "Custom knowledge for testing persistence",
+        )
+        .with_triggers(["custom", "persist"])
+        .with_category("user")
+        .with_content("Hello from disk");
+
+        store.upsert_user_item(user_item).unwrap();
+
+        // New store should be able to load it.
+        let store2 = KnowledgeStore::new(tmp.path());
+        register_builtin_knowledge(&store2);
+        let loaded = store2.load_user_items().unwrap();
+        assert_eq!(loaded, 1);
+
+        let fetched = store2.get("my-custom").unwrap();
+        assert_eq!(fetched.name, "My Custom");
+        assert!(fetched.core_content.contains("Hello from disk"));
+        assert_eq!(
+            fetched.metadata.get("origin").map(|s| s.as_str()),
+            Some("user")
+        );
     }
 }

@@ -115,6 +115,15 @@ pub fn apply_session_llm_overrides(
     }
 
     let provider = cfg.llm.primary.clone();
+
+    // Ensure the active provider has a materialized provider config with a non-empty model.
+    //
+    // Why: `AppConfig::default()` intentionally does not materialize every provider config
+    // object, and GUI/CLI adapters rely on `EffectiveLlmConfig` to preselect dropdown values.
+    // Without this, switching providers (or rejecting an incompatible model override) can
+    // yield an empty effective model string.
+    cfg.llm.ensure_provider_config(&provider);
+
     let model = get_model_for_provider(cfg, &provider).unwrap_or_default();
     EffectiveLlmConfig { provider, model }
 }
@@ -309,9 +318,12 @@ mod tests {
 
         let eff = apply_session_llm_overrides(&mut cfg, Some(&session), |_| None);
         assert_eq!(eff.provider, "openai");
-        // Because openai config isn't created when model override is rejected, model falls back to empty.
-        assert_eq!(eff.model, "");
-        assert!(cfg.llm.openai.is_none());
+        // The incompatible model override is ignored, but we still ensure the provider has a
+        // default model so adapters can bind/preselect reliably.
+        assert!(!eff.model.is_empty());
+        assert_ne!(eff.model, "grok-2");
+        assert_eq!(cfg.llm.primary, "openai");
+        assert!(cfg.llm.openai.is_some());
     }
 
     #[test]

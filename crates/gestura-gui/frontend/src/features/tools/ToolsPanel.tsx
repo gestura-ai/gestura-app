@@ -7,16 +7,34 @@ const ToolsPanel: React.FC = () => {
   const [selectedTool, setSelectedTool] = useState<ToolInfo | null>(null);
   const [filter, setFilter] = useState('');
 
+  const formatError = (e: unknown): string => {
+    return e instanceof Error ? e.message : String(e);
+  };
+
   const toolsState = useAsyncState(
     async () => {
-      const [builtin, mcp] = await Promise.all([listBuiltinTools(), listMcpTools()]);
-      return { builtin, mcp };
+      const [builtinRes, mcpRes] = await Promise.allSettled([listBuiltinTools(), listMcpTools()]);
+
+      const builtin = builtinRes.status === 'fulfilled' ? builtinRes.value : [];
+      const mcp = mcpRes.status === 'fulfilled' ? mcpRes.value : [];
+      const warnings: string[] = [];
+
+      if (builtinRes.status === 'rejected') warnings.push(`Built-in tools unavailable: ${String(builtinRes.reason)}`);
+      if (mcpRes.status === 'rejected') warnings.push(`MCP tools unavailable: ${String(mcpRes.reason)}`);
+
+      // Only hard-fail if *both* sources fail. Otherwise, show what we have.
+      if (builtinRes.status === 'rejected' && mcpRes.status === 'rejected') {
+        throw new Error(warnings.join(' | '));
+      }
+
+      return { builtin, mcp, warnings };
     },
     { errorMessage: 'Failed to load tools:' }
   );
 
   const builtinTools: ToolInfo[] = toolsState.data?.builtin ?? [];
   const mcpTools: McpServer[] = toolsState.data?.mcp ?? [];
+  const warnings: string[] = toolsState.data?.warnings ?? [];
 
   const filteredBuiltinTools = builtinTools.filter(
     (t) => t.name.toLowerCase().includes(filter.toLowerCase()) || t.summary.toLowerCase().includes(filter.toLowerCase())
@@ -50,6 +68,13 @@ const ToolsPanel: React.FC = () => {
           onChange={(e) => setFilter(e.target.value)}
         />
       </div>
+
+      {toolsState.error != null && (
+        <p className="tools-error">Failed to load tools: {formatError(toolsState.error)}</p>
+      )}
+      {warnings.length > 0 && (
+        <p className="tools-warning">{warnings.join(' • ')}</p>
+      )}
 
       <div className="tools-content">
         <div className="tools-list">

@@ -56,6 +56,32 @@ sudo dpkg -i gestura.deb
 sudo apt-get install -f
 ```
 
+### Chat / Project Explorer Issues
+
+#### Issue: Explorer shows "Not a git repository."
+**Cause**: The project folder is not a git repository (no `.git` directory), or git metadata is not accessible.
+**Solutions**:
+- If you expected git badges, open a folder that contains a git repo or run `git init` in the project root.
+- If you are in a monorepo, ensure the chat session workspace is inside the repo you expect.
+
+#### Issue: Explorer shows "Git status unavailable."
+**Cause**: Git is not installed / not available on PATH, or the status check failed.
+**Solutions**:
+- Verify git is installed: `git --version`
+- macOS: install Xcode Command Line Tools (`xcode-select --install`)
+- Windows: install Git for Windows and restart Gestura
+- Linux: install via your package manager (for example: `sudo apt install git`)
+
+#### Issue: Explorer shows "failed to list directory" / "permission denied"
+**Cause**: OS-level filesystem permissions prevent reading some portion of the workspace.
+**Solutions**:
+- Ensure the workspace directory is readable by your user account.
+- On macOS, check System Settings → Privacy & Security (Files & Folders / Full Disk Access).
+- Re-open Gestura and select a workspace you have access to.
+
+#### Note: Workspace scoping (security)
+The Explorer is restricted to the chat session's **Project Root**. Paths outside the workspace (including symlinks that would escape the workspace) are rejected for safety.
+
 ### Voice Recognition Issues
 
 #### Issue: Voice commands not recognized

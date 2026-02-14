@@ -35,6 +35,7 @@
             --user-text: #ffffff;
             --agent-bubble: rgba(0, 0, 0, 0.04);
             --agent-text: #1d1d1f;
+            --warning: #ff9f0a;
             --success: #34c759;
             --error: #ff3b30;
             --tool-bg: rgba(52, 199, 89, 0.1);
@@ -65,6 +66,7 @@
                 --user-text: #ffffff;
                 --agent-bubble: rgba(255, 255, 255, 0.08);
                 --agent-text: #f5f5f7;
+                --warning: #ff9f0a;
                 --success: #30d158;
                 --error: #ff453a;
                 --tool-bg: rgba(48, 209, 88, 0.15);
@@ -93,6 +95,7 @@
             --user-text: #ffffff;
             --agent-bubble: rgba(0, 0, 0, 0.04);
             --agent-text: #1d1d1f;
+            --warning: #ff9f0a;
             --success: #34c759;
             --error: #ff3b30;
             --tool-bg: rgba(52, 199, 89, 0.1);
@@ -120,6 +123,7 @@
             --user-text: #ffffff;
             --agent-bubble: rgba(255, 255, 255, 0.08);
             --agent-text: #f5f5f7;
+            --warning: #ff9f0a;
             --success: #30d158;
             --error: #ff453a;
             --tool-bg: rgba(48, 209, 88, 0.15);
@@ -397,6 +401,180 @@
 
         .session-panel.open {
             right: 0;
+        }
+
+        /* Explorer Panel (left sidebar) */
+        .explorer-panel {
+            position: fixed;
+            top: 0;
+            left: -340px;
+            width: 340px;
+            height: 100%;
+            background: var(--bg-glass-strong);
+            backdrop-filter: var(--blur);
+            -webkit-backdrop-filter: var(--blur);
+            border-right: 1px solid var(--glass-border);
+            z-index: 100;
+            transition: left 0.3s ease;
+            display: flex;
+            flex-direction: column;
+            box-shadow: var(--shadow-md);
+        }
+
+        .explorer-panel.open {
+            left: 0;
+        }
+
+        .explorer-panel .session-panel-header {
+            /* reuse existing panel header styles */
+        }
+
+        .explorer-panel-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+        }
+
+        .explorer-root {
+            padding: 10px 12px;
+            border: 1px solid var(--glass-border);
+            background: var(--bg-glass);
+            border-radius: 12px;
+            margin-bottom: 10px;
+        }
+
+        .explorer-root-title {
+            font-size: 12px;
+            font-weight: 600;
+            margin: 0 0 4px 0;
+        }
+
+        .explorer-root-path {
+            font-size: 11px;
+            color: var(--text-secondary);
+            word-break: break-word;
+        }
+
+        .explorer-tree {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .explorer-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            border-radius: 10px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .explorer-row:hover {
+            background: var(--bg-glass);
+        }
+
+        .explorer-indent {
+            width: calc(var(--explorer-depth, 0) * 14px);
+            flex: 0 0 auto;
+        }
+
+        .explorer-caret {
+            width: 16px;
+            height: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-secondary);
+            opacity: 0.85;
+            flex: 0 0 auto;
+            font-size: 12px;
+        }
+
+        .explorer-icon {
+            width: 16px;
+            height: 16px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+        }
+
+        .explorer-icon span[class^="icon-"] {
+            width: 16px;
+            height: 16px;
+        }
+
+        .explorer-name {
+            flex: 1;
+            font-size: 12px;
+            color: var(--text-primary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .explorer-meta {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex: 0 0 auto;
+        }
+
+        .explorer-git-badges {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .git-badge {
+            min-width: 18px;
+            height: 18px;
+            padding: 0 6px;
+            border-radius: 10px;
+            font-size: 11px;
+            line-height: 18px;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text-secondary);
+        }
+
+        .git-badge.modified {
+            color: var(--warning);
+            border-color: rgba(255, 159, 10, 0.35);
+        }
+
+        .git-badge.added {
+            color: var(--success);
+            border-color: rgba(48, 209, 88, 0.35);
+        }
+
+        .git-badge.deleted {
+            color: var(--error);
+            border-color: rgba(255, 69, 58, 0.35);
+        }
+
+        .git-badge.renamed,
+        .git-badge.copied {
+            color: var(--accent-primary);
+            border-color: rgba(var(--accent-primary-rgb), 0.35);
+        }
+
+        .git-badge.untracked {
+            color: var(--text-primary);
+            border-color: rgba(255, 255, 255, 0.25);
+        }
+
+        .explorer-note {
+            margin-top: 8px;
+            padding: 8px 10px;
+            border-radius: 10px;
+            border: 1px dashed rgba(255, 255, 255, 0.16);
+            color: var(--text-secondary);
+            font-size: 11px;
         }
 
         .session-panel-header {
@@ -1568,30 +1746,9 @@
             align-items: center;
         }
 
-        .tool-call.collapsed .tool-call-body .tool-args,
-        .tool-call.collapsed .tool-call-body .tool-result,
-        .tool-call.collapsed .tool-call-body .tool-duration,
-        .tool-call.collapsed .tool-call-body .retry-tool-btn {
+        /* When collapsed, show only the single-line header; hide all detail content (args/result/duration/shell, etc.) */
+        .tool-call.collapsed .tool-call-details {
             display: none;
-        }
-
-        .tool-call .collapse-toggle {
-            margin-left: auto;
-            background: none;
-            border: none;
-            color: var(--text-secondary);
-            font-size: 11px;
-            cursor: pointer;
-            padding: 2px 6px;
-            border-radius: 4px;
-            opacity: 0.7;
-            transition: opacity 0.15s;
-            flex-shrink: 0;
-        }
-
-        .tool-call .collapse-toggle:hover {
-            opacity: 1;
-            background: rgba(128, 128, 128, 0.1);
         }
 
         /* Agent iteration separator */
@@ -1650,6 +1807,71 @@
             gap: 6px;
             min-width: 0;
             flex: 1;
+        }
+
+        /* Single-line, clickable header for tool activity */
+        .tool-call-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+            min-width: 0;
+            padding: 0;
+            margin: 0;
+            background: none;
+            border: none;
+            color: inherit;
+            font: inherit;
+            text-align: left;
+            cursor: pointer;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        .tool-call-label {
+            color: var(--text-secondary);
+            flex-shrink: 0;
+        }
+
+        .tool-call-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            min-width: 0;
+        }
+
+        .tool-call-status {
+            color: var(--text-secondary);
+            font-size: 12px;
+            /* Keep header single-line even when status text is long */
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .tool-call-chevron {
+            margin-left: auto;
+            color: var(--text-secondary);
+            font-size: 11px;
+            opacity: 0.7;
+            transition: transform 0.15s, opacity 0.15s;
+            flex-shrink: 0;
+        }
+
+        .tool-call-header:hover .tool-call-chevron {
+            opacity: 1;
+        }
+
+        .tool-call.collapsed .tool-call-chevron {
+            transform: rotate(-90deg);
+        }
+
+        .tool-call-details {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            min-width: 0;
         }
 
         .tool-args {
@@ -3289,6 +3511,34 @@
         </div>
     </div>
 
+    <!-- Explorer Panel Overlay -->
+    <div class="session-panel-overlay" id="explorerPanelOverlay"></div>
+
+    <!-- Explorer Panel -->
+    <div class="explorer-panel" id="explorerPanel">
+        <div class="session-panel-header">
+            <h3>Explorer</h3>
+            <div class="task-header-actions">
+                <button class="task-header-btn" id="explorerRefreshBtn" title="Refresh">
+                    <span class="icon-refresh"></span>
+                </button>
+            </div>
+            <button class="session-panel-close" id="explorerPanelClose">
+                <span class="icon-close"></span>
+            </button>
+        </div>
+        <div class="explorer-panel-content">
+            <div class="explorer-root">
+                <div class="explorer-root-title">Project Root</div>
+                <div class="explorer-root-path" id="explorerRootPath">Loading…</div>
+            </div>
+            <div class="explorer-tree" id="explorerTree">
+                <div class="explorer-note">Open the panel to load your project tree.</div>
+            </div>
+            <div class="explorer-note" id="explorerGitInfo" style="display:none;"></div>
+        </div>
+    </div>
+
     <!-- Menu Panel Overlay -->
     <div class="session-panel-overlay" id="menuPanelOverlay"></div>
 
@@ -3508,12 +3758,20 @@
         </div>
         <div class="session-panel-content">
             <div class="session-field">
-                <label>Working Directory</label>
+                <label>Project Root</label>
                 <div class="session-field-row">
-                    <input type="text" id="sessionWorkDir" placeholder="Select folder..." readonly>
-                    <button id="pickWorkDirBtn" title="Browse">📁</button>
+                    <input type="text" id="sessionProjectRoot" placeholder="Project root..." readonly>
                 </div>
-                <div class="session-info" id="workDirInfo">Commands will run in this directory</div>
+                <div class="session-info" id="projectRootInfo">Project root is derived from the session workspace</div>
+            </div>
+
+            <div class="session-field">
+                <label>Workspace Directory</label>
+                <div class="session-field-row">
+                    <input type="text" id="sessionWorkspaceDir" placeholder="Workspace directory..." readonly>
+                    <button class="btn-secondary" id="pickWorkspaceBtn">Change...</button>
+                </div>
+                <div class="session-info" id="workspaceDirInfo">Scopes file/shell/git tools and the explorer</div>
             </div>
 
             <div class="session-divider"></div>
@@ -3542,12 +3800,6 @@
 
     <!-- Chat Stream -->
     <div class="chat-container" id="messages">
-        <!-- Welcome Message -->
-        <div class="message agent">
-            <div class="message-content markdown-body">
-                Hello! I'm Gestura. How can I assist you naturally today?
-            </div>
-        </div>
         <!-- Scroll-to-bottom button (shown when user scrolls up) -->
         <button class="scroll-to-bottom-btn" id="scrollToBottomBtn" title="Scroll to bottom">↓</button>
     </div>
@@ -3567,7 +3819,7 @@
             </button>
             <textarea class="message-input" id="messageInput" placeholder="Type a message..." rows="1"
                 autocomplete="off"></textarea>
-            <button class="btn-icon" id="enhanceButton" title="Enhance prompt (Cmd+K)">
+            <button class="btn-icon" id="enhanceButton" title="Enhance prompt (Cmd/Ctrl+K)">
                 <span class="icon-sparkles"></span>
             </button>
             <button class="btn-icon" id="sendButton" title="Send message">
@@ -3575,7 +3827,10 @@
             </button>
         </div>
         <div class="quick-access-bar">
-            <button class="btn-icon" id="quickTasksBtn" title="Tasks">
+            <button class="btn-icon" id="quickExplorerBtn" title="Explorer (Cmd/Ctrl+B)">
+                <span class="icon-folder"></span>
+            </button>
+            <button class="btn-icon" id="quickTasksBtn" title="Tasks (Cmd/Ctrl+T)">
                 <span class="icon-checklist"></span>
             </button>
             <button class="btn-icon" id="quickTerminalBtn" title="Open in Terminal">
@@ -5626,9 +5881,9 @@
                         // Collapse all completed (success/error) tool cards above this point
                         contentDiv.querySelectorAll('.tool-call.success:not(.collapsed), .tool-call.error:not(.collapsed)').forEach(card => {
                             card.classList.add('collapsed');
-                            // Update toggle button text if present
-                            const toggle = card.querySelector('.collapse-toggle');
-                            if (toggle) toggle.textContent = 'Expand';
+                            // Keep the header's aria-expanded in sync
+                            const headerBtn = card.querySelector('.tool-call-header');
+                            if (headerBtn) headerBtn.setAttribute('aria-expanded', 'false');
                         });
 
                         // Insert an iteration separator
@@ -5666,12 +5921,30 @@
                 currentToolCard.innerHTML = `
 	                    <svg class="tool-icon" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.7-3.7a1 1 0 0 0 0-1.4 1 1 0 0 0-1.4 0L17 7.3l-1.6-1.6a1 1 0 0 0-1.4 0zM20 21h-4c-1 0-2-1-2-2v-4c0-1 1-2 2-2h4c1 0 2 1 2 2v4c0 1-1 2-2 2zM12 21H8c-1 0-2-1-2-2V9c0-1 1-2 2-2h4c1 0 2 1 2 2v10c0 1-1 2-2 2z"/></svg>
 	                    <div class="tool-call-body">
-	                        <div>Using tool: <strong></strong></div>
-	                        <pre class="tool-args" style="display:none"></pre>
+		                        <button type="button" class="tool-call-header" aria-expanded="true">
+		                            <span class="tool-call-label">Tool</span>
+		                            <strong class="tool-call-name"></strong>
+		                            <span class="tool-call-status">Running…</span>
+		                            <span class="tool-call-chevron">▾</span>
+		                        </button>
+		                        <div class="tool-call-details">
+		                            <pre class="tool-args" style="display:none"></pre>
+		                        </div>
 	                    </div>
 	                `;
-                currentToolCard.querySelector('strong').textContent = toolName;
+                const nameEl = currentToolCard.querySelector('.tool-call-name');
+                if (nameEl) nameEl.textContent = toolName;
                 currentToolArgsEl = currentToolCard.querySelector('.tool-args');
+
+                // Clicking the header toggles the full tool activity details
+                const headerBtn = currentToolCard.querySelector('.tool-call-header');
+                if (headerBtn) {
+                    headerBtn.addEventListener('click', (ev) => {
+                        ev.stopPropagation();
+                        const isCollapsed = currentToolCard.classList.toggle('collapsed');
+                        headerBtn.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+                    });
+                }
 
                 contentDiv.appendChild(currentToolCard);
                 // Nullify the text container so that any text arriving after this tool card
@@ -5725,11 +5998,21 @@
                     targetCard.classList.remove('executing', 'done');
                     targetCard.classList.add(success ? 'success' : 'error');
 
+                    // Update header status (kept visible in collapsed mode)
+                    const statusEl = targetCard.querySelector('.tool-call-status');
+                    if (statusEl) {
+                        const base = success ? 'Success' : 'Error';
+                        statusEl.textContent = (duration_ms !== undefined)
+                            ? `${base} • ${duration_ms}ms`
+                            : base;
+                    }
+
                     // Add result display
                     const body = targetCard.querySelector('.tool-call-body');
-                    if (body) {
+                    const details = targetCard.querySelector('.tool-call-details') || body;
+                    if (details) {
                         // Remove any existing result
-                        const existingResult = body.querySelector('.tool-result');
+                        const existingResult = details.querySelector('.tool-result');
                         if (existingResult) existingResult.remove();
 
                         // Add result section
@@ -5875,14 +6158,14 @@
                             }
                         }
 
-                        body.appendChild(resultDiv);
+                        details.appendChild(resultDiv);
 
                         // Add duration
                         if (duration_ms !== undefined) {
                             const durationDiv = document.createElement('div');
                             durationDiv.className = 'tool-duration';
                             durationDiv.textContent = `Completed in ${duration_ms}ms`;
-                            body.appendChild(durationDiv);
+                            details.appendChild(durationDiv);
                         }
 
                         // Add retry button for failed tool operations
@@ -5903,30 +6186,9 @@
                                 sendMessage();
                                 announceToScreenReader(`Retrying ${name} tool operation`);
                             });
-                            body.appendChild(retryBtn);
+                            details.appendChild(retryBtn);
                         }
                     }
-                }
-
-                // Add collapse/expand toggle to completed tool cards
-                if (targetCard && !targetCard.querySelector('.collapse-toggle')) {
-                    const toggle = document.createElement('button');
-                    toggle.className = 'collapse-toggle';
-                    toggle.textContent = 'Collapse';
-                    toggle.addEventListener('click', (ev) => {
-                        ev.stopPropagation();
-                        const isCollapsed = targetCard.classList.toggle('collapsed');
-                        toggle.textContent = isCollapsed ? 'Expand' : 'Collapse';
-                    });
-                    targetCard.appendChild(toggle);
-
-                    // Also allow clicking the card itself to expand when collapsed
-                    targetCard.addEventListener('click', (ev) => {
-                        if (targetCard.classList.contains('collapsed') && ev.target === targetCard) {
-                            targetCard.classList.remove('collapsed');
-                            toggle.textContent = 'Collapse';
-                        }
-                    });
                 }
 
                 // Clear the current tool card reference
@@ -5961,9 +6223,10 @@
 
                     if (hostCard) {
                         const body = hostCard.querySelector('.tool-call-body');
-                        if (body) {
+                        const details = hostCard.querySelector('.tool-call-details') || body;
+                        if (details) {
                             const consoleEl = createShellConsole(process_id, command, cwd);
-                            body.appendChild(consoleEl);
+                            details.appendChild(consoleEl);
                             // Link the process_id to this card so tool-result can find it
                             hostCard.dataset.shellProcessId = process_id;
                         }
@@ -6772,7 +7035,7 @@
                 messageInput.focus();
 
                 // Show success feedback
-                showToast('✨ Prompt enhanced! Press Cmd+Z to undo.', 'success');
+                showToast('✨ Prompt enhanced! Press Cmd/Ctrl+Z to undo.', 'success');
             } catch (error) {
                 console.error('[Enhance] Enhancement failed:', error);
                 showToast('Failed to enhance prompt: ' + error, 'error');
@@ -6884,10 +7147,38 @@
         const sessionPanelOverlay = document.getElementById('sessionPanelOverlay');
         const sessionSettingsBtn = document.getElementById('sessionSettingsBtn');
         const sessionPanelClose = document.getElementById('sessionPanelClose');
-        const sessionWorkDir = document.getElementById('sessionWorkDir');
-        const pickWorkDirBtn = document.getElementById('pickWorkDirBtn');
+        const sessionProjectRoot = document.getElementById('sessionProjectRoot');
+        const sessionWorkspaceDir = document.getElementById('sessionWorkspaceDir');
+        const pickWorkspaceBtn = document.getElementById('pickWorkspaceBtn');
         const sessionPermission = document.getElementById('sessionPermission');
-        const workDirInfo = document.getElementById('workDirInfo');
+        const projectRootInfo = document.getElementById('projectRootInfo');
+        const workspaceDirInfo = document.getElementById('workspaceDirInfo');
+
+        pickWorkspaceBtn?.addEventListener('click', async () => {
+            if (!sessionId || !window.__TAURI__) {
+                showToast('No active session', 'error');
+                return;
+            }
+            try {
+                const picked = await withTimeout(
+                    window.__TAURI__.core.invoke('pick_workspace_directory', { session_id: sessionId }),
+                    30000,
+                    'pick_workspace_directory'
+                );
+                if (!picked) return;
+
+                // Refresh settings + explorer if it's currently open.
+                await loadSessionSettings();
+                const explorerWasOpen = explorerPanel?.classList.contains('open');
+                if (explorerWasOpen) {
+                    await loadExplorer(true);
+                }
+                showToast('Workspace updated', 'success');
+            } catch (e) {
+                console.warn('[Settings] pick_workspace_directory failed:', e);
+                showToast('Failed to change workspace: ' + e, 'error');
+            }
+        });
 
         /**
          * Await a promise with a timeout.
@@ -6910,6 +7201,353 @@
             });
             return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
         }
+
+        // =====================================================================
+        // Project Explorer Panel (left sidebar)
+        // =====================================================================
+        const explorerPanel = document.getElementById('explorerPanel');
+        const explorerPanelOverlay = document.getElementById('explorerPanelOverlay');
+        const explorerPanelClose = document.getElementById('explorerPanelClose');
+        const explorerRefreshBtn = document.getElementById('explorerRefreshBtn');
+        const explorerRootPath = document.getElementById('explorerRootPath');
+        const explorerTree = document.getElementById('explorerTree');
+        const explorerGitInfo = document.getElementById('explorerGitInfo');
+
+        const explorerState = {
+            root: null,
+            isGitRepo: false,
+            /** @type {Map<string, { entries: any[], truncated: boolean }>} */
+            dirCache: new Map(),
+            /** @type {Set<string>} */
+            expandedDirs: new Set(['']),
+            /** @type {Record<string, any>} */
+            gitPaths: {},
+            /** @type {Map<string, { staged?: string|null, unstaged?: string|null, untracked?: boolean }>} */
+            gitDirAgg: new Map(),
+            /** @type {Set<string>} */
+            loadingDirs: new Set(),
+        };
+
+        function openExplorerPanel() {
+            explorerPanel?.classList.add('open');
+            explorerPanelOverlay?.classList.add('visible');
+            // Load lazily on open.
+            loadExplorer(false);
+        }
+
+        function closeExplorerPanel() {
+            explorerPanel?.classList.remove('open');
+            explorerPanelOverlay?.classList.remove('visible');
+        }
+
+        function toggleExplorerPanel() {
+            if (explorerPanel?.classList.contains('open')) {
+                closeExplorerPanel();
+            } else {
+                openExplorerPanel();
+            }
+        }
+
+        function kindPriority(kind) {
+            // Higher = more important.
+            switch ((kind || '').toLowerCase()) {
+                case 'deleted': return 60;
+                case 'modified': return 50;
+                case 'added': return 40;
+                case 'renamed': return 30;
+                case 'copied': return 20;
+                case 'unknown': return 10;
+                default: return 0;
+            }
+        }
+
+        function pickBetterKind(a, b) {
+            if (!a) return b || null;
+            if (!b) return a || null;
+            return kindPriority(b) > kindPriority(a) ? b : a;
+        }
+
+        function mergeAgg(into, status) {
+            const out = into || { staged: null, unstaged: null, untracked: false };
+            if (status?.staged) out.staged = pickBetterKind(out.staged, status.staged);
+            if (status?.unstaged) out.unstaged = pickBetterKind(out.unstaged, status.unstaged);
+            if (status?.untracked) out.untracked = true;
+            return out;
+        }
+
+        function computeGitDirAgg(gitPathsObj) {
+            const agg = new Map();
+            for (const [rel, st] of Object.entries(gitPathsObj || {})) {
+                // root aggregate
+                agg.set('', mergeAgg(agg.get(''), st));
+                const parts = rel.split('/').filter(Boolean);
+                // all parent dirs
+                for (let i = 0; i < Math.max(0, parts.length - 1); i++) {
+                    const dirRel = parts.slice(0, i + 1).join('/');
+                    agg.set(dirRel, mergeAgg(agg.get(dirRel), st));
+                }
+            }
+            return agg;
+        }
+
+        function badgeForKind(kind, isUntracked) {
+            if (isUntracked) return { text: 'U', cls: 'untracked', title: 'Untracked' };
+            switch ((kind || '').toLowerCase()) {
+                case 'modified': return { text: 'M', cls: 'modified', title: 'Modified' };
+                case 'added': return { text: 'A', cls: 'added', title: 'Added' };
+                case 'deleted': return { text: 'D', cls: 'deleted', title: 'Deleted' };
+                case 'renamed': return { text: 'R', cls: 'renamed', title: 'Renamed' };
+                case 'copied': return { text: 'C', cls: 'copied', title: 'Copied' };
+                case 'unknown': return { text: '?', cls: 'unknown', title: 'Changed' };
+                default: return null;
+            }
+        }
+
+        function buildGitBadges(status) {
+            const el = document.createElement('div');
+            el.className = 'explorer-git-badges';
+            if (!status) return el;
+
+            // Untracked is a strong signal, show it first.
+            const u = status?.untracked ? badgeForKind(null, true) : null;
+            if (u) {
+                const b = document.createElement('span');
+                b.className = `git-badge ${u.cls}`;
+                b.textContent = u.text;
+                b.title = u.title;
+                el.appendChild(b);
+            }
+
+            const unstaged = badgeForKind(status?.unstaged, false);
+            if (unstaged) {
+                const b = document.createElement('span');
+                b.className = `git-badge ${unstaged.cls}`;
+                b.textContent = unstaged.text;
+                b.title = `Working tree: ${unstaged.title}`;
+                el.appendChild(b);
+            }
+
+            const staged = badgeForKind(status?.staged, false);
+            if (staged) {
+                const b = document.createElement('span');
+                b.className = `git-badge ${staged.cls}`;
+                b.textContent = staged.text;
+                b.title = `Staged: ${staged.title}`;
+                el.appendChild(b);
+            }
+
+            return el;
+        }
+
+        async function ensureDirLoaded(dirRel, force) {
+            const key = (dirRel || '').trim();
+            if (!force && explorerState.dirCache.has(key)) return;
+            if (!sessionId || !window.__TAURI__) return;
+            if (explorerState.loadingDirs.has(key)) return;
+            explorerState.loadingDirs.add(key);
+            try {
+                const resp = await withTimeout(
+                    window.__TAURI__.core.invoke('explorer_list_dir', { session_id: sessionId, dir_rel: key }),
+                    12000,
+                    `explorer_list_dir:${key || '[root]'}`
+                );
+                explorerState.dirCache.set(key, { entries: resp?.entries || [], truncated: !!resp?.truncated });
+            } catch (e) {
+                console.warn('[Explorer] Failed to list dir:', key, e);
+                showToast('Explorer failed to list directory: ' + e, 'error');
+            } finally {
+                explorerState.loadingDirs.delete(key);
+            }
+        }
+
+        async function refreshGitStatus() {
+            explorerState.gitPaths = {};
+            explorerState.gitDirAgg = new Map();
+            if (!sessionId || !window.__TAURI__) return;
+            if (!explorerState.isGitRepo) {
+                if (explorerGitInfo) {
+                    explorerGitInfo.style.display = 'block';
+                    explorerGitInfo.textContent = 'Not a git repository.';
+                }
+                return;
+            }
+            try {
+                const resp = await withTimeout(
+                    window.__TAURI__.core.invoke('explorer_git_status', { session_id: sessionId }),
+                    15000,
+                    'explorer_git_status'
+                );
+                explorerState.gitPaths = resp?.paths || {};
+                explorerState.gitDirAgg = computeGitDirAgg(explorerState.gitPaths);
+                if (explorerGitInfo) {
+                    explorerGitInfo.style.display = 'none';
+                    explorerGitInfo.textContent = '';
+                }
+            } catch (e) {
+                console.warn('[Explorer] Git status failed:', e);
+                if (explorerGitInfo) {
+                    explorerGitInfo.style.display = 'block';
+                    explorerGitInfo.textContent = 'Git status unavailable.';
+                }
+            }
+        }
+
+        function renderExplorerTree() {
+            if (!explorerTree) return;
+            explorerTree.innerHTML = '';
+
+            if (!explorerState.root) {
+                const note = document.createElement('div');
+                note.className = 'explorer-note';
+                note.textContent = 'Project root not available.';
+                explorerTree.appendChild(note);
+                return;
+            }
+
+            const renderDir = (dirRel, depth) => {
+                const dirKey = (dirRel || '').trim();
+                const cached = explorerState.dirCache.get(dirKey);
+                const entries = cached?.entries || [];
+
+                for (const entry of entries) {
+                    const row = document.createElement('div');
+                    row.className = 'explorer-row';
+                    row.style.setProperty('--explorer-depth', String(depth));
+
+                    const indent = document.createElement('div');
+                    indent.className = 'explorer-indent';
+
+                    const caret = document.createElement('div');
+                    caret.className = 'explorer-caret';
+
+                    const icon = document.createElement('div');
+                    icon.className = 'explorer-icon';
+                    const iconSpan = document.createElement('span');
+
+                    const name = document.createElement('div');
+                    name.className = 'explorer-name';
+                    name.textContent = entry?.name || '';
+
+                    const meta = document.createElement('div');
+                    meta.className = 'explorer-meta';
+
+                    const relPath = (entry?.rel_path || '').toString();
+                    const kind = (entry?.kind || '').toString();
+                    const isDir = kind === 'dir';
+
+                    if (isDir) {
+                        const expanded = explorerState.expandedDirs.has(relPath);
+                        caret.textContent = expanded ? '▾' : '▸';
+                        iconSpan.className = 'icon-folder';
+                        row.title = relPath;
+
+                        // Directory aggregated git status
+                        const agg = explorerState.gitDirAgg.get(relPath);
+                        meta.appendChild(buildGitBadges(agg));
+
+                        row.addEventListener('click', async (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (explorerState.expandedDirs.has(relPath)) {
+                                explorerState.expandedDirs.delete(relPath);
+                                renderExplorerTree();
+                            } else {
+                                explorerState.expandedDirs.add(relPath);
+                                await ensureDirLoaded(relPath, false);
+                                renderExplorerTree();
+                            }
+                        });
+                    } else {
+                        caret.textContent = '';
+                        iconSpan.className = 'icon-file-02';
+                        row.title = relPath;
+
+                        const st = explorerState.gitPaths?.[relPath];
+                        meta.appendChild(buildGitBadges(st));
+                    }
+
+                    icon.appendChild(iconSpan);
+                    row.appendChild(indent);
+                    row.appendChild(caret);
+                    row.appendChild(icon);
+                    row.appendChild(name);
+                    row.appendChild(meta);
+                    explorerTree.appendChild(row);
+
+                    if (isDir && explorerState.expandedDirs.has(relPath)) {
+                        if (!explorerState.dirCache.has(relPath) && !explorerState.loadingDirs.has(relPath)) {
+                            // Trigger async load if user expanded but we haven't loaded yet.
+                            ensureDirLoaded(relPath, false).then(renderExplorerTree);
+                        }
+                        renderDir(relPath, depth + 1);
+
+                        const childCached = explorerState.dirCache.get(relPath);
+                        if (childCached?.truncated) {
+                            const note = document.createElement('div');
+                            note.className = 'explorer-note';
+                            note.style.marginLeft = `${(depth + 1) * 14 + 28}px`;
+                            note.textContent = 'Directory listing truncated.';
+                            explorerTree.appendChild(note);
+                        }
+                    }
+                }
+
+                if (cached?.truncated && dirKey === '') {
+                    const note = document.createElement('div');
+                    note.className = 'explorer-note';
+                    note.textContent = 'Root listing truncated.';
+                    explorerTree.appendChild(note);
+                }
+            };
+
+            // Root directory listing (dir_rel = '')
+            renderDir('', 0);
+        }
+
+        async function loadExplorer(force) {
+            if (!sessionId) return;
+            if (!window.__TAURI__) return;
+
+            try {
+                const rootResp = await withTimeout(
+                    window.__TAURI__.core.invoke('explorer_get_root', { session_id: sessionId }),
+                    8000,
+                    'explorer_get_root'
+                );
+                explorerState.root = rootResp?.root || null;
+                explorerState.isGitRepo = !!rootResp?.is_git_repo;
+                if (explorerRootPath) explorerRootPath.textContent = explorerState.root || 'Unknown';
+
+                if (force) {
+                    explorerState.dirCache.clear();
+                    explorerState.expandedDirs = new Set(['']);
+                }
+
+                await Promise.all([
+                    ensureDirLoaded('', false),
+                    refreshGitStatus(),
+                ]);
+
+                renderExplorerTree();
+            } catch (e) {
+                console.warn('[Explorer] Failed to load explorer:', e);
+                if (explorerRootPath) explorerRootPath.textContent = 'Failed to detect project root';
+                if (explorerTree) {
+                    explorerTree.innerHTML = '';
+                    const note = document.createElement('div');
+                    note.className = 'explorer-note';
+                    note.textContent = 'Explorer unavailable: ' + e;
+                    explorerTree.appendChild(note);
+                }
+            }
+        }
+
+        explorerPanelClose?.addEventListener('click', closeExplorerPanel);
+        explorerPanelOverlay?.addEventListener('click', closeExplorerPanel);
+        explorerRefreshBtn?.addEventListener('click', async () => {
+            await loadExplorer(true);
+            showToast('Explorer refreshed', 'success');
+        });
 
         // Menu Panel elements
         const menuPanel = document.getElementById('menuPanel');
@@ -6978,6 +7616,10 @@
         });
 
         // Quick-access bar buttons (below input area)
+        document.getElementById('quickExplorerBtn')?.addEventListener('click', () => {
+            toggleExplorerPanel();
+        });
+
         document.getElementById('quickTasksBtn')?.addEventListener('click', () => {
             const taskPanel = document.getElementById('taskPanel');
             const taskPanelOverlay = document.getElementById('taskPanelOverlay');
@@ -7018,17 +7660,49 @@
                 return;
             }
             try {
-                // Load workspace directory (fixed: use snake_case)
-                const workDir = await window.__TAURI__.core.invoke('get_session_workspace_by_id', { session_id: sessionId });
-                console.log('[Settings] Workspace directory:', workDir);
-                // UI fallback: always show the session default path even if the backend has not
-                // persisted/loaded the workspace for this session yet.
-                const effectiveWorkDir = workDir || `~/.gestura/sessions/${sessionId}/`;
-                if (sessionWorkDir) sessionWorkDir.value = effectiveWorkDir;
-                if (workDirInfo) {
-                    workDirInfo.textContent = workDir
-                        ? `Commands run in: ${workDir}`
-                        : `Commands run in: ${effectiveWorkDir} (default)`;
+                // The GUI treats "Project Root" and "Workspace Directory" as the same root.
+                let projectRoot = null;
+                let isGitRepo = false;
+                let workspaceDir = null;
+                try {
+                    const rootResp = await withTimeout(
+                        window.__TAURI__.core.invoke('explorer_get_root', { session_id: sessionId }),
+                        8000,
+                        'explorer_get_root(settings)'
+                    );
+                    projectRoot = rootResp?.root || null;
+                    isGitRepo = !!rootResp?.is_git_repo;
+                } catch (e) {
+                    console.warn('[Settings] explorer_get_root failed:', e);
+                }
+
+                try {
+                    workspaceDir = await withTimeout(
+                        window.__TAURI__.core.invoke('get_session_workspace_by_id', { session_id: sessionId }),
+                        8000,
+                        'get_session_workspace_by_id'
+                    );
+                } catch (e) {
+                    console.warn('[Settings] get_session_workspace_by_id failed:', e);
+                }
+
+                if (!workspaceDir) workspaceDir = projectRoot;
+
+                if (sessionProjectRoot) sessionProjectRoot.value = projectRoot || 'Unknown';
+                if (sessionWorkspaceDir) sessionWorkspaceDir.value = workspaceDir || 'Unknown';
+
+                if (projectRootInfo) {
+                    projectRootInfo.textContent = projectRoot
+                        ? `Project root: ${projectRoot}${isGitRepo ? ' (git repo)' : ''}`
+                        : 'Project root not available';
+                }
+                if (workspaceDirInfo) {
+                    workspaceDirInfo.textContent = workspaceDir
+                        ? `Workspace: ${workspaceDir}`
+                        : 'Workspace directory not set';
+                    if (projectRoot && workspaceDir && projectRoot !== workspaceDir) {
+                        workspaceDirInfo.textContent += ' (warning: differs from project root)';
+                    }
                 }
 
                 // Load tool settings (permission level and enabled tools) (fixed: use snake_case)
@@ -7341,17 +8015,11 @@
         sessionPanelClose?.addEventListener('click', closeSessionPanel);
         sessionPanelOverlay?.addEventListener('click', closeSessionPanel);
 
-        // Pick working directory
-        pickWorkDirBtn?.addEventListener('click', async () => {
-            if (!sessionId) return;
-            try {
-                const result = await window.__TAURI__.core.invoke('pick_workspace_directory', { session_id: sessionId });
-                if (result) {
-                    sessionWorkDir.value = result;
-                    workDirInfo.textContent = `Commands run in: ${result}`;
-                }
-            } catch (e) {
-                console.error('Failed to pick directory:', e);
+        // Keyboard shortcut: Ctrl/Cmd + B (toggle Explorer)
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'b' || e.key === 'B')) {
+                e.preventDefault();
+                toggleExplorerPanel();
             }
         });
 

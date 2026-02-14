@@ -16,7 +16,7 @@ use gestura_core::config::AppConfigSecurityExt;
 /// Compute the default per-session workspace directory (`~/.gestura/sessions/{session_id}`).
 ///
 /// This mirrors the workspace convention used when creating new chat sessions.
-fn default_session_workspace_dir(session_id: &str) -> PathBuf {
+pub(crate) fn default_session_workspace_dir(session_id: &str) -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".gestura")
@@ -246,34 +246,45 @@ impl WindowManager {
 
         tracing::info!("Creating new chat session: {}", session_id);
 
-        // Default to a session-specific workspace directory:
-        // ~/.gestura/sessions/{session_uuid}/
-        // This ensures each session has its own isolated workspace for file operations.
-        // Users can still override this via pick_workspace_directory.
+        // Default workspace semantics (GUI): the explorer root, "project root", and sandbox
+        // workspace should all refer to the same directory.
+        //
+        // Prefer a real project directory (discovered from the current working directory).
+        // If we cannot resolve one (e.g., app launched outside a repo), fall back to a
+        // per-session workspace (~/.gestura/sessions/{session_uuid}/). The user can still
+        // override via pick_workspace_directory.
+        let project_workspace = get_project_directory();
         let session_workspace = default_session_workspace_dir(&session_id);
 
-        // Create the session workspace directory if it doesn't exist
-        if let Err(e) = std::fs::create_dir_all(&session_workspace) {
+        let mut preferred_workspace = project_workspace
+            .clone()
+            .unwrap_or_else(|| session_workspace.clone());
+
+        if let Err(e) = std::fs::create_dir_all(&preferred_workspace) {
             tracing::warn!(
                 session_id = %session_id,
                 error = %e,
-                path = %session_workspace.display(),
-                "Failed to create session workspace directory"
+                path = %preferred_workspace.display(),
+                "Failed to create preferred workspace directory"
             );
         }
 
-        let session_state = if session_workspace.exists() {
+        preferred_workspace = preferred_workspace
+            .canonicalize()
+            .unwrap_or(preferred_workspace);
+
+        let session_state = if preferred_workspace.exists() {
             tracing::info!(
                 session_id = %session_id,
-                workspace = %session_workspace.display(),
-                "Session initialized with dedicated workspace"
+                workspace = %preferred_workspace.display(),
+                source = %if project_workspace.is_some() { "project" } else { "session" },
+                "Session initialized with workspace"
             );
-            SessionState::with_workspace(session_workspace)
+            SessionState::with_workspace(preferred_workspace)
         } else {
-            // Fallback: try project directory, home, or temp
-            let fallback_workspace = get_project_directory()
-                .or_else(dirs::home_dir)
-                .or_else(|| std::env::temp_dir().canonicalize().ok());
+            // Last-resort fallback: home or temp
+            let fallback_workspace =
+                dirs::home_dir().or_else(|| std::env::temp_dir().canonicalize().ok());
 
             if let Some(ref workspace) = fallback_workspace {
                 tracing::info!(
@@ -842,9 +853,19 @@ pub fn get_active_session_workspace() -> Option<PathBuf> {
 /// Set the workspace directory for a session
 pub fn set_session_workspace(session_id: &str, workspace_dir: PathBuf) {
     if let Some(manager) = get_window_manager() {
-        let mut sessions = manager.sessions.lock().unwrap();
-        if let Some(session) = sessions.get_mut(session_id) {
-            session.state.workspace_dir = Some(workspace_dir);
+        let workspace_dir = workspace_dir.canonicalize().unwrap_or(workspace_dir);
+        let mut updated = false;
+
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.state.workspace_dir = Some(workspace_dir);
+                updated = true;
+            }
+        }
+
+        if updated {
+            manager.save_sessions_to_disk();
         }
     }
 }
@@ -1304,10 +1325,13 @@ pub fn open_shell_session_for_chat_resume(session_id: &str) -> Result<(), String
     spawn_shell(config).map_err(|e| format!("Failed to open shell session: {}", e))
 }
 
-/// Get the current Gestura project directory
+/// Get the current Gestura project directory.
 ///
-/// Checks for common project indicators like .gestura/, Cargo.toml, package.json
-fn get_project_directory() -> Option<std::path::PathBuf> {
+/// This is used as the **project-root** for UI features like the chat file
+/// explorer. It searches upward from the current working directory looking for
+/// common project indicators like `.gestura/`, `Cargo.toml`, `package.json`, or
+/// `.git`.
+pub fn get_project_directory() -> Option<std::path::PathBuf> {
     // Start from current directory
     let cwd = std::env::current_dir().ok()?;
 

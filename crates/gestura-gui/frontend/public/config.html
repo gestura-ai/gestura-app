@@ -1384,6 +1384,146 @@
         .mcp-transport-section {
             /* Visibility controlled via inline style.display by updateMcpTransportVisibility() */
         }
+
+        /* ============================================================= */
+        /* Knowledge Management                                           */
+        /* ============================================================= */
+        .knowledge-item-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .knowledge-empty-state {
+            text-align: center;
+            padding: 2rem 1rem;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            border: 2px dashed var(--border-color);
+            border-radius: 8px;
+        }
+
+        .knowledge-card {
+            background: var(--input-background);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            transition: border-color 0.2s, opacity 0.2s;
+        }
+
+        .knowledge-card:hover {
+            border-color: var(--accent);
+        }
+
+        .knowledge-card.disabled {
+            opacity: 0.65;
+        }
+
+        .knowledge-card-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .knowledge-name {
+            font-weight: 600;
+            font-size: 1rem;
+            color: var(--text-color);
+        }
+
+        .knowledge-badge {
+            display: inline-block;
+            padding: 0.125rem 0.5rem;
+            border-radius: 999px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        .knowledge-badge-builtin {
+            background: rgba(var(--warning-rgb), 0.12);
+            color: rgb(var(--warning-rgb));
+        }
+
+        .knowledge-badge-user {
+            background: rgba(var(--accent-rgb), 0.12);
+            color: var(--accent);
+        }
+
+        .knowledge-badge-category {
+            background: var(--section-background);
+            color: var(--text-secondary);
+        }
+
+        .knowledge-enabled-toggle {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            user-select: none;
+        }
+
+        .knowledge-description {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.75rem;
+            white-space: pre-wrap;
+        }
+
+        .knowledge-actions {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .knowledge-actions .button {
+            padding: 0.3rem 0.7rem;
+            font-size: 0.8rem;
+        }
+
+        .knowledge-btn-danger {
+            background: transparent;
+            border: 1px solid rgb(var(--danger-rgb));
+            color: rgb(var(--danger-rgb));
+            padding: 0.3rem 0.7rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: background 0.2s, color 0.2s;
+        }
+
+        .knowledge-btn-danger:hover {
+            background: rgb(var(--danger-rgb));
+            color: #fff;
+        }
+
+        .knowledge-form-container {
+            background: var(--section-background);
+            border: 1px solid var(--accent);
+            border-radius: 10px;
+            padding: 1.25rem;
+            margin-top: 1rem;
+        }
+
+        .knowledge-form-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-color);
+            margin-bottom: 1rem;
+        }
+
+        .knowledge-form-actions {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 1rem;
+            flex-wrap: wrap;
+        }
     </style>
 </head>
 
@@ -1472,6 +1612,11 @@
                         <li class="toc-item">
                             <a href="#builtin-tools-settings" class="toc-link" data-section="builtin-tools-settings">
                                 <span class="toc-icon icon-tools"></span>Built-in Tools
+                            </a>
+                        </li>
+                        <li class="toc-item">
+                            <a href="#knowledge-settings" class="toc-link" data-section="knowledge-settings">
+                                <span class="toc-icon icon-knowledge"></span>Knowledge
                             </a>
                         </li>
                         <li class="toc-item">
@@ -2811,6 +2956,113 @@
 
                 </section>
 
+                <!-- Knowledge Settings -->
+                <section class="config-section" id="knowledge-settings">
+                    <div class="section-title">
+                        <span class="icon icon-knowledge"></span>Knowledge
+                    </div>
+                    <div class="section-description">
+                        Manage built-in and custom knowledge items. These can be enabled by default for new chat
+                        sessions, and used by the agent to provide richer context and best-practice guidance.
+                    </div>
+
+                    <div class="subsection">
+                        <!-- Multi-step view: list view vs form view -->
+                        <div id="knowledgeListContainer">
+                            <div class="subsection-title"
+                                style="display:flex;justify-content:space-between;align-items:center;">
+                                <span><span class="icon icon-knowledge"></span>Knowledge Items</span>
+                                <div style="display:flex;gap:0.5rem;">
+                                    <button type="button" class="button secondary" id="btnRefreshKnowledge"
+                                        style="padding:0.3rem 0.8rem;font-size:0.85rem;">Refresh</button>
+                                    <button type="button" class="button primary" id="btnAddKnowledgeItem"
+                                        style="padding:0.3rem 0.8rem;font-size:0.85rem;">+ Add Knowledge</button>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label" for="knowledgeSearch">Search</label>
+                                <input type="text" class="form-input" id="knowledgeSearch"
+                                    placeholder="Filter by name, description, category, or trigger">
+                                <div class="help-text">
+                                    “Enabled by default” applies to new sessions (existing sessions keep their own saved
+                                    settings).
+                                </div>
+                            </div>
+
+                            <div id="knowledgeItemList" class="knowledge-item-list">
+                                <div class="knowledge-empty-state">Loading knowledge items…</div>
+                            </div>
+                        </div>
+
+                        <!-- Add / Edit form (hidden by default) -->
+                        <div id="knowledgeFormContainer" class="knowledge-form-container" style="display:none;">
+                            <div class="knowledge-form-title" id="knowledgeFormTitle">Add Knowledge Item</div>
+
+                            <div class="form-row">
+                                <div class="form-group" style="flex: 1;">
+                                    <label class="form-label" for="knowledgeFormId">ID</label>
+                                    <input type="text" class="form-input" id="knowledgeFormId" disabled>
+                                    <div class="help-text">Read-only identifier used for toggles and references.</div>
+                                </div>
+                                <div class="form-group" style="flex: 1;">
+                                    <label class="toggle-label">
+                                        <input type="checkbox" id="knowledgeFormEnabledByDefault">
+                                        <span class="toggle-slider"></span>
+                                        <span class="toggle-text">Enabled by default</span>
+                                    </label>
+                                    <div class="help-text">Controls defaults for new sessions.</div>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label" for="knowledgeFormName">Name</label>
+                                <input type="text" class="form-input" id="knowledgeFormName"
+                                    placeholder="e.g. Rust Expert, Tauri Best Practices">
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label" for="knowledgeFormDescription">Description</label>
+                                <textarea class="form-textarea" id="knowledgeFormDescription" rows="2"
+                                    placeholder="Short summary and when it should be used"></textarea>
+                            </div>
+
+                            <div class="form-row">
+                                <div class="form-group" style="flex: 1;">
+                                    <label class="form-label" for="knowledgeFormCategory">Category</label>
+                                    <input type="text" class="form-input" id="knowledgeFormCategory"
+                                        placeholder="e.g. language, framework, tool">
+                                </div>
+                                <div class="form-group" style="flex: 1;">
+                                    <label class="form-label" for="knowledgeFormPriority">Priority</label>
+                                    <input type="number" class="form-input" id="knowledgeFormPriority" min="0"
+                                        value="10">
+                                    <div class="help-text">Higher wins when multiple items conflict.</div>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label" for="knowledgeFormTriggers">Triggers (one per line)</label>
+                                <textarea class="form-textarea" id="knowledgeFormTriggers" rows="3"
+                                    placeholder="rust\ntaori\nserde"></textarea>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label" for="knowledgeFormContent">Core Content (Markdown)</label>
+                                <textarea class="form-textarea" id="knowledgeFormContent" rows="10"
+                                    placeholder="Keep it lean (≈80 lines). Include guidelines, examples, and pitfalls."></textarea>
+                            </div>
+
+                            <div class="knowledge-form-actions">
+                                <button type="button" class="button primary" id="btnSaveKnowledgeItem">Save</button>
+                                <button type="button" class="button secondary" id="btnEditKnowledgeItem"
+                                    style="display:none;">Edit</button>
+                                <button type="button" class="button secondary" id="btnCloseKnowledgeForm">Back</button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
                 <!-- MCP Servers Settings -->
                 <section class="config-section" id="mcp-servers-settings">
                     <div class="section-title">
@@ -3731,6 +3983,513 @@
             }
         };
 
+        // =============================================================
+        // Knowledge Management
+        // =============================================================
+        let _knowledgeItems = [];
+        let _knowledgeDefaultSessionId = null;
+        let _knowledgeEnabledIds = new Set();
+        let _knowledgeEditingItem = null;
+        let _knowledgeFormMode = 'view'; // view | edit | add
+        let _knowledgeFormPendingEnabledByDefault = false;
+        let _knowledgeRoutingInitialized = false;
+        let _knowledgeApplyingRoute = false;
+
+        function getKnowledgeOrigin(item) {
+            const origin = item && item.metadata ? item.metadata.origin : null;
+            return origin || 'user';
+        }
+
+        function isBuiltinKnowledgeItem(item) {
+            return getKnowledgeOrigin(item) === 'builtin';
+        }
+
+        function generateKnowledgeId() {
+            try {
+                if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+            } catch (_) {
+                // ignore
+            }
+            return 'knowledge_' + Date.now() + '_' + Math.random().toString(16).slice(2);
+        }
+
+        function normalizeStringLines(text) {
+            return (text || '')
+                .split('\n')
+                .map(s => (s || '').trim())
+                .filter(Boolean);
+        }
+
+        function filterKnowledgeItems(items, query) {
+            const q = (query || '').trim().toLowerCase();
+            if (!q) return items;
+            return (items || []).filter(it => {
+                const hay = [
+                    it.id,
+                    it.name,
+                    it.description,
+                    it.category,
+                    ...(it.triggers || []),
+                ].join(' ').toLowerCase();
+                return hay.includes(q);
+            });
+        }
+
+        function renderKnowledgeItemList() {
+            const container = document.getElementById('knowledgeItemList');
+            if (!container) return;
+
+            const queryEl = document.getElementById('knowledgeSearch');
+            const query = queryEl ? queryEl.value : '';
+            const items = filterKnowledgeItems(_knowledgeItems, query)
+                .slice()
+                .sort((a, b) => (a.category || '').localeCompare(b.category || '') || (a.name || '').localeCompare(b.name || ''));
+
+            if (!items || items.length === 0) {
+                container.innerHTML = '<div class="knowledge-empty-state">No knowledge items found.</div>';
+                return;
+            }
+
+            let html = '';
+            items.forEach(item => {
+                const origin = getKnowledgeOrigin(item);
+                const enabledByDefault = _knowledgeEnabledIds.has(item.id);
+                const disabledClass = enabledByDefault ? '' : ' disabled';
+
+                html += '<div class="knowledge-card' + disabledClass + '">';
+                html += '  <div class="knowledge-card-header">';
+                html += '    <span class="knowledge-name">' + escapeHtml(item.name) + '</span>';
+                html += '    <span class="knowledge-badge knowledge-badge-' + escapeHtml(origin) + '">' + escapeHtml(origin) + '</span>';
+                html += '    <span class="knowledge-badge knowledge-badge-category">' + escapeHtml(item.category || '') + '</span>';
+                html += '    <label class="knowledge-enabled-toggle" title="Enable by default for new sessions">';
+                html += '      <input type="checkbox" data-knowledge-toggle="default" data-knowledge-id="' + escapeHtml(item.id) + '" ' + (enabledByDefault ? 'checked' : '') + ' />';
+                html += '      Enabled by default';
+                html += '    </label>';
+                html += '  </div>';
+
+                html += '  <div class="knowledge-description">' + escapeHtml(item.description || '') + '</div>';
+
+                html += '  <div class="knowledge-actions">';
+                html += '    <button type="button" class="button secondary" data-knowledge-action="view" data-knowledge-id="' + escapeHtml(item.id) + '">View</button>';
+                if (origin !== 'builtin') {
+                    html += '    <button type="button" class="button secondary" data-knowledge-action="edit" data-knowledge-id="' + escapeHtml(item.id) + '">Edit</button>';
+                    html += '    <button type="button" class="knowledge-btn-danger" data-knowledge-action="delete" data-knowledge-id="' + escapeHtml(item.id) + '">Delete</button>';
+                }
+                html += '  </div>';
+                html += '</div>';
+            });
+
+            container.innerHTML = html;
+
+            // Hydrate dynamic knowledge buttons/toggles (CSP blocks inline onclick)
+            container.querySelectorAll('button[data-knowledge-action]').forEach(btn => {
+                const action = btn.dataset.knowledgeAction;
+                const id = btn.dataset.knowledgeId;
+                if (action === 'view') btn.addEventListener('click', () => window.openKnowledgeViewForm(id));
+                else if (action === 'edit') btn.addEventListener('click', () => window.openKnowledgeEditForm(id));
+                else if (action === 'delete') btn.addEventListener('click', () => window.deleteKnowledgeItem(id));
+            });
+
+            container.querySelectorAll('input[data-knowledge-toggle="default"]').forEach(chk => {
+                const id = chk.dataset.knowledgeId;
+                chk.addEventListener('change', async () => {
+                    await window.setKnowledgeEnabledByDefault(id, !!chk.checked);
+                });
+            });
+        }
+
+        async function ensureKnowledgeDefaultsLoaded() {
+            if (!isTauriAvailable()) return;
+            if (!_knowledgeDefaultSessionId) {
+                _knowledgeDefaultSessionId = await window.__TAURI__.core.invoke('knowledge_default_session_id');
+            }
+            const ids = await window.__TAURI__.core.invoke('get_enabled_knowledge', { session_id: _knowledgeDefaultSessionId });
+            _knowledgeEnabledIds = new Set(ids || []);
+        }
+
+        async function loadKnowledgeItems() {
+            if (!isTauriAvailable()) return;
+            const items = await window.__TAURI__.core.invoke('list_knowledge_items');
+            _knowledgeItems = items || [];
+        }
+
+        async function refreshKnowledgeUi() {
+            if (!isTauriAvailable()) return;
+            try {
+                await Promise.all([ensureKnowledgeDefaultsLoaded(), loadKnowledgeItems()]);
+                renderKnowledgeItemList();
+            } catch (e) {
+                console.error('[Knowledge] Failed to refresh:', e);
+                const container = document.getElementById('knowledgeItemList');
+                if (container) container.innerHTML = '<div class="knowledge-empty-state">Failed to load knowledge items.</div>';
+            }
+        }
+
+        async function hydrateKnowledgeFormEnabledToggle(knowledgeId) {
+            const toggle = document.getElementById('knowledgeFormEnabledByDefault');
+            if (!toggle) return;
+            toggle.dataset.knowledgeId = knowledgeId || '';
+            toggle.checked = !!(knowledgeId && _knowledgeEnabledIds.has(knowledgeId));
+            _knowledgeFormPendingEnabledByDefault = !!toggle.checked;
+        }
+
+        function setKnowledgeFormReadOnly(readOnly) {
+            ['knowledgeFormName', 'knowledgeFormDescription', 'knowledgeFormCategory', 'knowledgeFormPriority', 'knowledgeFormTriggers', 'knowledgeFormContent']
+                .forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.disabled = !!readOnly;
+                });
+        }
+
+        function showKnowledgeView(view) {
+            const list = document.getElementById('knowledgeListContainer');
+            const form = document.getElementById('knowledgeFormContainer');
+            const showForm = view === 'form';
+            if (list) list.style.display = showForm ? 'none' : 'block';
+            if (form) form.style.display = showForm ? 'block' : 'none';
+        }
+
+        function scrollToKnowledgeSection() {
+            const section = document.getElementById('knowledge-settings');
+            if (section) section.scrollIntoView({ block: 'start' });
+        }
+
+        function buildKnowledgeHash(mode, id) {
+            const base = 'knowledge-settings';
+            if (!mode || mode === 'list') return base;
+            const params = new URLSearchParams();
+            params.set('mode', mode);
+            if (id) params.set('id', id);
+            return base + '?' + params.toString();
+        }
+
+        function setKnowledgeRoute(mode, id, opts) {
+            const options = opts || {};
+            const hash = buildKnowledgeHash(mode, id);
+            const url = '#' + hash;
+            if (options.replace) {
+                history.replaceState(null, '', url);
+            } else {
+                window.location.hash = hash;
+            }
+        }
+
+        function parseKnowledgeRouteFromLocation() {
+            const raw = (window.location.hash || '').replace(/^#/, '');
+            if (!raw) return null;
+            const parts = raw.split('?');
+            const section = parts[0];
+            if (section !== 'knowledge-settings') return null;
+            const query = parts.slice(1).join('?');
+            const params = new URLSearchParams(query || '');
+            const mode = (params.get('mode') || 'list').toLowerCase();
+            const id = params.get('id') || '';
+            return { mode, id };
+        }
+
+        async function applyKnowledgeRouteFromLocation() {
+            if (_knowledgeApplyingRoute) return;
+            _knowledgeApplyingRoute = true;
+            try {
+                const route = parseKnowledgeRouteFromLocation();
+                if (!route) {
+                    // If user navigates away to another section, ensure we revert to list view.
+                    window.closeKnowledgeForm({ skipRoute: true });
+                    return;
+                }
+
+                scrollToKnowledgeSection();
+
+                if (route.mode === 'add') {
+                    await window.openKnowledgeAddForm({ skipRoute: true });
+                    return;
+                }
+
+                if (route.mode === 'view' || route.mode === 'edit') {
+                    if (!route.id) {
+                        showStatus('Missing knowledge id in link.', 'error');
+                        setKnowledgeRoute('list', null, { replace: true });
+                        window.closeKnowledgeForm({ skipRoute: true });
+                        return;
+                    }
+                    if (route.mode === 'view') {
+                        await window.openKnowledgeViewForm(route.id, { skipRoute: true });
+                    } else {
+                        await window.openKnowledgeEditForm(route.id, { skipRoute: true });
+                    }
+                    return;
+                }
+
+                // Default: list
+                window.closeKnowledgeForm({ skipRoute: true });
+            } finally {
+                _knowledgeApplyingRoute = false;
+            }
+        }
+
+        window.openKnowledgeAddForm = async function (opts) {
+            const options = opts || {};
+            if (!options.skipRoute) {
+                setKnowledgeRoute('add');
+                // Route handler will reopen with skipRoute=true (avoid generating a new ID twice).
+                if (_knowledgeRoutingInitialized) return;
+            }
+            _knowledgeFormMode = 'add';
+            const newId = generateKnowledgeId();
+            _knowledgeEditingItem = {
+                id: newId,
+                name: '',
+                description: '',
+                triggers: [],
+                category: 'custom',
+                core_content: '',
+                references: [],
+                metadata: { origin: 'user' },
+                enabled: true,
+                priority: 10,
+            };
+
+            document.getElementById('knowledgeFormTitle').textContent = 'Add Knowledge Item';
+            document.getElementById('knowledgeFormId').value = _knowledgeEditingItem.id;
+            document.getElementById('knowledgeFormName').value = '';
+            document.getElementById('knowledgeFormDescription').value = '';
+            document.getElementById('knowledgeFormCategory').value = _knowledgeEditingItem.category;
+            document.getElementById('knowledgeFormPriority').value = _knowledgeEditingItem.priority;
+            document.getElementById('knowledgeFormTriggers').value = '';
+            document.getElementById('knowledgeFormContent').value = '';
+
+            setKnowledgeFormReadOnly(false);
+            document.getElementById('btnSaveKnowledgeItem').style.display = 'inline-block';
+            document.getElementById('btnEditKnowledgeItem').style.display = 'none';
+
+            await ensureKnowledgeDefaultsLoaded();
+            await hydrateKnowledgeFormEnabledToggle(_knowledgeEditingItem.id);
+            showKnowledgeView('form');
+        };
+
+        async function loadKnowledgeItemById(id) {
+            const cached = (_knowledgeItems || []).find(it => it.id === id);
+            if (cached && cached.core_content) return cached;
+            const full = await window.__TAURI__.core.invoke('get_knowledge_item', { knowledge_id: id });
+            return full;
+        }
+
+        window.openKnowledgeViewForm = async function (id, opts) {
+            if (!isTauriAvailable()) return;
+            try {
+                const options = opts || {};
+                if (!options.skipRoute) {
+                    setKnowledgeRoute('view', id);
+                    if (_knowledgeRoutingInitialized) return;
+                }
+                _knowledgeFormMode = 'view';
+                const item = await loadKnowledgeItemById(id);
+                if (!item) {
+                    showStatus('Knowledge item not found: ' + id, 'error');
+                    setKnowledgeRoute('list', null, { replace: true });
+                    window.closeKnowledgeForm({ skipRoute: true });
+                    return;
+                }
+                _knowledgeEditingItem = item;
+
+                document.getElementById('knowledgeFormTitle').textContent = 'View: ' + (item.name || id);
+                document.getElementById('knowledgeFormId').value = item.id;
+                document.getElementById('knowledgeFormName').value = item.name || '';
+                document.getElementById('knowledgeFormDescription').value = item.description || '';
+                document.getElementById('knowledgeFormCategory').value = item.category || '';
+                document.getElementById('knowledgeFormPriority').value = (item.priority != null) ? item.priority : 10;
+                document.getElementById('knowledgeFormTriggers').value = (item.triggers || []).join('\n');
+                document.getElementById('knowledgeFormContent').value = item.core_content || '';
+
+                setKnowledgeFormReadOnly(true);
+                document.getElementById('btnSaveKnowledgeItem').style.display = 'none';
+                document.getElementById('btnEditKnowledgeItem').style.display = isBuiltinKnowledgeItem(item) ? 'none' : 'inline-block';
+
+                await ensureKnowledgeDefaultsLoaded();
+                await hydrateKnowledgeFormEnabledToggle(item.id);
+                showKnowledgeView('form');
+            } catch (e) {
+                console.error('[Knowledge] Failed to open view form:', e);
+                showStatus('Failed to load knowledge item: ' + e, 'error');
+            }
+        };
+
+        window.openKnowledgeEditForm = async function (id, opts) {
+            if (!isTauriAvailable()) return;
+            try {
+                const options = opts || {};
+                if (!options.skipRoute) {
+                    setKnowledgeRoute('edit', id);
+                    if (_knowledgeRoutingInitialized) return;
+                }
+                _knowledgeFormMode = 'edit';
+                const item = await loadKnowledgeItemById(id);
+                if (!item) {
+                    showStatus('Knowledge item not found: ' + id, 'error');
+                    setKnowledgeRoute('list', null, { replace: true });
+                    window.closeKnowledgeForm({ skipRoute: true });
+                    return;
+                }
+                if (isBuiltinKnowledgeItem(item)) {
+                    showStatus('Built-in knowledge items are read-only.', 'error');
+                    await window.openKnowledgeViewForm(id, { skipRoute: true });
+                    setKnowledgeRoute('view', id, { replace: true });
+                    return;
+                }
+
+                _knowledgeEditingItem = item;
+                document.getElementById('knowledgeFormTitle').textContent = 'Edit: ' + (item.name || id);
+                document.getElementById('knowledgeFormId').value = item.id;
+                document.getElementById('knowledgeFormName').value = item.name || '';
+                document.getElementById('knowledgeFormDescription').value = item.description || '';
+                document.getElementById('knowledgeFormCategory').value = item.category || '';
+                document.getElementById('knowledgeFormPriority').value = (item.priority != null) ? item.priority : 10;
+                document.getElementById('knowledgeFormTriggers').value = (item.triggers || []).join('\n');
+                document.getElementById('knowledgeFormContent').value = item.core_content || '';
+
+                setKnowledgeFormReadOnly(false);
+                document.getElementById('btnSaveKnowledgeItem').style.display = 'inline-block';
+                document.getElementById('btnEditKnowledgeItem').style.display = 'none';
+
+                await ensureKnowledgeDefaultsLoaded();
+                await hydrateKnowledgeFormEnabledToggle(item.id);
+                showKnowledgeView('form');
+            } catch (e) {
+                console.error('[Knowledge] Failed to open edit form:', e);
+                showStatus('Failed to load knowledge item: ' + e, 'error');
+            }
+        };
+
+        window.closeKnowledgeForm = function (opts) {
+            const options = opts || {};
+            if (!options.skipRoute) setKnowledgeRoute('list');
+            showKnowledgeView('list');
+            _knowledgeEditingItem = null;
+            _knowledgeFormMode = 'view';
+            _knowledgeFormPendingEnabledByDefault = false;
+        };
+
+        window.saveKnowledgeItemForm = async function () {
+            if (!isTauriAvailable()) return;
+            if (!_knowledgeEditingItem) {
+                showStatus('No knowledge item loaded.', 'error');
+                return;
+            }
+            if (_knowledgeFormMode === 'view') {
+                showStatus('This knowledge item is read-only.', 'error');
+                return;
+            }
+
+            const name = document.getElementById('knowledgeFormName').value.trim();
+            const description = document.getElementById('knowledgeFormDescription').value.trim();
+            const category = document.getElementById('knowledgeFormCategory').value.trim();
+            const priority = parseInt(document.getElementById('knowledgeFormPriority').value, 10);
+            const triggers = normalizeStringLines(document.getElementById('knowledgeFormTriggers').value);
+            const coreContent = document.getElementById('knowledgeFormContent').value;
+
+            if (!name) {
+                showStatus('Name is required.', 'error');
+                return;
+            }
+            if (!description) {
+                showStatus('Description is required.', 'error');
+                return;
+            }
+            if (!category) {
+                showStatus('Category is required.', 'error');
+                return;
+            }
+            if (!coreContent || !coreContent.trim()) {
+                showStatus('Core content is required.', 'error');
+                return;
+            }
+
+            const next = {
+                ..._knowledgeEditingItem,
+                id: _knowledgeEditingItem.id,
+                name: name,
+                description: description,
+                category: category,
+                priority: Number.isFinite(priority) && priority >= 0 ? priority : 10,
+                triggers: triggers,
+                core_content: coreContent,
+                enabled: true,
+                metadata: { ...(_knowledgeEditingItem.metadata || {}), origin: 'user' },
+            };
+
+            try {
+                await window.__TAURI__.core.invoke('upsert_knowledge_item', { item: next });
+
+                // Apply pending default toggle AFTER save so it never points at a non-existent id.
+                await window.setKnowledgeEnabledByDefault(next.id, !!_knowledgeFormPendingEnabledByDefault);
+
+                showStatus('Knowledge item saved.');
+                window.closeKnowledgeForm();
+                await refreshKnowledgeUi();
+            } catch (e) {
+                console.error('[Knowledge] Failed to save item:', e);
+                showStatus('Failed to save knowledge item: ' + e, 'error');
+            }
+        };
+
+        window.deleteKnowledgeItem = async function (id) {
+            if (!confirm('Delete custom knowledge item "' + id + '"?')) return;
+            try {
+                await window.__TAURI__.core.invoke('delete_knowledge_item', { knowledge_id: id });
+                showStatus('Knowledge item deleted.');
+                if (_knowledgeEditingItem && _knowledgeEditingItem.id === id) {
+                    window.closeKnowledgeForm();
+                }
+                await refreshKnowledgeUi();
+            } catch (e) {
+                console.error('[Knowledge] Failed to delete item:', e);
+                showStatus('Failed to delete knowledge item: ' + e, 'error');
+            }
+        };
+
+        window.setKnowledgeEnabledByDefault = async function (knowledgeId, enabled) {
+            if (!isTauriAvailable()) return;
+            try {
+                await ensureKnowledgeDefaultsLoaded();
+                await window.__TAURI__.core.invoke('set_knowledge_enabled', {
+                    session_id: _knowledgeDefaultSessionId,
+                    knowledge_id: knowledgeId,
+                    enabled: !!enabled,
+                });
+
+                if (enabled) _knowledgeEnabledIds.add(knowledgeId);
+                else _knowledgeEnabledIds.delete(knowledgeId);
+
+                // Keep form toggle in sync (if open)
+                const toggle = document.getElementById('knowledgeFormEnabledByDefault');
+                if (toggle && toggle.dataset.knowledgeId === knowledgeId) {
+                    toggle.checked = !!enabled;
+                }
+
+                renderKnowledgeItemList();
+            } catch (e) {
+                console.error('[Knowledge] Failed to set enabled:', e);
+                showStatus('Failed to update knowledge defaults: ' + e, 'error');
+            }
+        };
+
+        async function loadKnowledgeUi() {
+            if (!isTauriAvailable()) return;
+            // Only initialize if the section exists in the DOM.
+            const listEl = document.getElementById('knowledgeItemList');
+            if (!listEl) return;
+            await refreshKnowledgeUi();
+            // Ensure we start in list view, then apply any deep-linked route.
+            showKnowledgeView('list');
+            if (!_knowledgeRoutingInitialized) {
+                _knowledgeRoutingInitialized = true;
+                window.addEventListener('hashchange', () => {
+                    applyKnowledgeRouteFromLocation().catch(e => console.warn('[Knowledge] Route apply failed:', e));
+                });
+            }
+            await applyKnowledgeRouteFromLocation();
+        }
+
         // Provider selection functionality
         function setupProviderSelection() {
             // Setup STT provider visibility
@@ -4646,7 +5405,12 @@
                 // Ollama config (doesn't require API key)
                 const ollamaBaseUrl = (document.getElementById('localLlmEndpoint')?.value || '').trim() || llmSettings.ollama?.base_url || 'http://localhost:11434';
                 const ollamaModelSelected = ((document.getElementById('ollamaModel')?.value || '').trim()) || (llmModelSelectionCache.ollama || '').trim();
-                const ollamaModel = ollamaModelSelected || llmSettings.ollama?.model || 'llama3.2';
+                // Avoid hard-coding a fallback model here.
+                //
+                // Why: if the dropdown hasn't loaded yet (or the user never interacts with it),
+                // writing a hard-coded default can clobber a previously persisted model.
+                // The core layer will ensure an effective non-empty model at runtime.
+                const ollamaModel = ollamaModelSelected || llmSettings.ollama?.model || '';
                 llmSettings.ollama = llmSettings.ollama || { base_url: ollamaBaseUrl, model: ollamaModel };
                 llmSettings.ollama.base_url = ollamaBaseUrl;
                 llmSettings.ollama.model = ollamaModel;
@@ -6295,6 +7059,35 @@
             const btnCloseMcp = document.getElementById('btnCloseMcpForm');
             if (btnCloseMcp) btnCloseMcp.addEventListener('click', () => window.closeMcpForm());
 
+            // Knowledge buttons / form
+            const btnRefreshKnowledge = document.getElementById('btnRefreshKnowledge');
+            if (btnRefreshKnowledge) btnRefreshKnowledge.addEventListener('click', () => refreshKnowledgeUi());
+            const btnAddKnowledge = document.getElementById('btnAddKnowledgeItem');
+            if (btnAddKnowledge) btnAddKnowledge.addEventListener('click', () => window.openKnowledgeAddForm());
+            const btnSaveKnowledge = document.getElementById('btnSaveKnowledgeItem');
+            if (btnSaveKnowledge) btnSaveKnowledge.addEventListener('click', () => window.saveKnowledgeItemForm());
+            const btnEditKnowledge = document.getElementById('btnEditKnowledgeItem');
+            if (btnEditKnowledge) btnEditKnowledge.addEventListener('click', () => {
+                if (_knowledgeEditingItem && _knowledgeEditingItem.id) {
+                    window.openKnowledgeEditForm(_knowledgeEditingItem.id);
+                }
+            });
+            const btnCloseKnowledge = document.getElementById('btnCloseKnowledgeForm');
+            if (btnCloseKnowledge) btnCloseKnowledge.addEventListener('click', () => window.closeKnowledgeForm());
+            const knowledgeSearch = document.getElementById('knowledgeSearch');
+            if (knowledgeSearch) knowledgeSearch.addEventListener('input', () => renderKnowledgeItemList());
+            const knowledgeFormToggle = document.getElementById('knowledgeFormEnabledByDefault');
+            if (knowledgeFormToggle) {
+                knowledgeFormToggle.addEventListener('change', async () => {
+                    _knowledgeFormPendingEnabledByDefault = !!knowledgeFormToggle.checked;
+                    // If the item already exists (view/edit modes), apply immediately.
+                    const id = knowledgeFormToggle.dataset.knowledgeId;
+                    if (id && (_knowledgeFormMode === 'edit' || _knowledgeFormMode === 'view')) {
+                        await window.setKnowledgeEnabledByDefault(id, _knowledgeFormPendingEnabledByDefault);
+                    }
+                });
+            }
+
             // Bottom action buttons
             const btnReset = document.getElementById('btnResetConfig');
             if (btnReset) btnReset.addEventListener('click', () => window.resetConfig());
@@ -6355,6 +7148,7 @@
                 loadPermissions().catch(e => console.warn('Permission load failed:', e)),
                 loadAudioDevices().catch(e => console.warn('Audio devices load failed:', e)),
                 initWhisperModelUI().catch(e => console.warn('Whisper UI init failed:', e)),
+                loadKnowledgeUi().catch(e => console.warn('Knowledge UI init failed:', e)),
             ];
 
             // Config loading is special - it sets up provider visibility which triggers model loads

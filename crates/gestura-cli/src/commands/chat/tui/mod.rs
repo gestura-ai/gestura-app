@@ -51,12 +51,48 @@ use crossterm::{
 };
 use gestura_core::{
     AgentPipeline, AgentRequest, AppConfig, AppConfigSecurityExt, CancellationToken, RequestSource,
-    StreamChunk,
+    SpeechProcessorCoreExt, StreamChunk, chat_sessions::MessageSource, get_speech_processor,
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 
 use super::{ChatOptions, Result};
+
+const KNOWN_LLM_PROVIDERS: [&str; 5] = ["openai", "anthropic", "grok", "gemini", "ollama"];
+
+fn is_known_llm_provider(provider: &str) -> bool {
+    KNOWN_LLM_PROVIDERS
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case(provider.trim()))
+}
+
+/// Parse a CLI/TUI-style selector string into a session override.
+///
+/// This is intentionally legacy-aware:
+/// - `provider:model` => provider+model
+/// - `provider` (if matches known providers) => provider-only
+/// - otherwise => model-only
+fn parse_cli_model_selector_legacy_aware(
+    spec: &str,
+) -> Option<gestura_core::chat_sessions::SessionLlmConfig> {
+    let s = spec.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    if s.contains(':') {
+        return gestura_core::llm_overrides::session_llm_config_from_cli_model_arg(s);
+    }
+
+    if is_known_llm_provider(s) {
+        return Some(gestura_core::chat_sessions::SessionLlmConfig {
+            provider: Some(s.to_ascii_lowercase()),
+            model: None,
+        });
+    }
+
+    gestura_core::llm_overrides::session_llm_config_from_cli_model_arg(s)
+}
 
 /// Resolve the session-scoped LLM override for the current TUI session.
 ///
@@ -73,7 +109,7 @@ fn resolve_session_llm_override(
     app.session
         .model
         .as_deref()
-        .and_then(gestura_core::llm_overrides::session_llm_config_from_cli_model_arg)
+        .and_then(parse_cli_model_selector_legacy_aware)
 }
 
 /// Return true if the token looks like a CLI flag (e.g. `--confirmed`).
@@ -93,33 +129,13 @@ fn first_non_flag_arg<'a>(args: &'a [&'a str]) -> Option<&'a str> {
 /// 2) legacy `session.model` hint (supports `provider:model`)
 /// 3) `app.config.llm.primary` + provider default model
 fn effective_provider_model_for_ui(app: &TuiApp) -> (String, String) {
-    if let Some(cfg) = app.session.state.llm_config.as_ref() {
-        let provider = cfg.provider.as_deref().unwrap_or("").trim().to_string();
-        let model = cfg.model.as_deref().unwrap_or("").trim().to_string();
-        if !provider.is_empty() {
-            let effective_model = if !model.is_empty() {
-                model
-            } else {
-                model_for_provider(&app.config, &provider).unwrap_or_default()
-            };
-            return (provider, effective_model);
-        }
-    }
-
-    if let Some(m) = app.session.model.as_deref() {
-        let m = m.trim();
-        if let Some((p, model)) = m.split_once(':') {
-            let p = p.trim();
-            let model = model.trim();
-            if !p.is_empty() {
-                return (p.to_string(), model.to_string());
-            }
-        }
-    }
-
-    let provider = app.config.llm.primary.clone();
-    let model = model_for_provider(&app.config, &provider).unwrap_or_default();
-    (provider, model)
+    let session_llm = resolve_session_llm_override(app);
+    let mut config = app.config.clone();
+    let effective = gestura_core::llm_overrides::apply_cli_session_llm_overrides(
+        &mut config,
+        session_llm.as_ref(),
+    );
+    (effective.provider, effective.model)
 }
 
 /// Populate and open the model picker overlay.
@@ -145,8 +161,10 @@ fn open_model_picker(app: &mut TuiApp, rt: &tokio::runtime::Runtime) {
     let (active_provider, active_model) = effective_provider_model_for_ui(app);
 
     for provider in providers {
-        // Only show providers that have a config section.
-        if model_for_provider(&app.config, provider).is_none() {
+        // Skip providers that are not configured (cloud providers need an API key;
+        // ollama just needs a config section).  This mirrors the filtering in
+        // `run_list_models` (gestura model list).
+        if !is_provider_configured(&app.config, provider) {
             continue;
         }
 
@@ -168,18 +186,25 @@ fn open_model_picker(app: &mut TuiApp, rt: &tokio::runtime::Runtime) {
         };
 
         if models.is_empty() {
-            // Fallback: show at least the configured default model.
-            if let Some(model) = model_for_provider(&app.config, provider) {
-                let model = model.trim().to_string();
-                if !model.is_empty() {
-                    let active = provider == active_provider && model == active_model;
-                    let prefix = if active { "● " } else { "  " };
-                    items.push(app::ModelPickerItem {
-                        label: format!("{prefix}{provider}:{model}"),
-                        provider: provider.to_string(),
-                        model,
-                    });
-                }
+            // Fallback: always show at least the provider default model by using core overrides.
+            let provider_only = gestura_core::chat_sessions::SessionLlmConfig {
+                provider: Some(provider.to_string()),
+                model: None,
+            };
+            let mut tmp = app.config.clone();
+            let effective = gestura_core::llm_overrides::apply_cli_session_llm_overrides(
+                &mut tmp,
+                Some(&provider_only),
+            );
+            let model = effective.model.trim().to_string();
+            if !model.is_empty() {
+                let active = provider == active_provider && model == active_model;
+                let prefix = if active { "● " } else { "  " };
+                items.push(app::ModelPickerItem {
+                    label: format!("{prefix}{provider}:{model}"),
+                    provider: provider.to_string(),
+                    model,
+                });
             }
             continue;
         }
@@ -225,62 +250,98 @@ fn apply_model_selection(app: &mut TuiApp, spec: &str, rt: &tokio::runtime::Runt
         return Ok(());
     }
 
-    let (mut provider, mut model) = if let Some((p, m)) = spec.split_once(':') {
-        (p.trim().to_string(), m.trim().to_string())
+    // Parse `spec` into an override, then let core resolve defaults / ensure model is non-empty.
+    let mut selected = if let Some((p, m)) = spec.split_once(':') {
+        let p = p.trim().to_string();
+        let m = m.trim();
+        if m.is_empty() {
+            gestura_core::chat_sessions::SessionLlmConfig {
+                provider: Some(p),
+                model: None,
+            }
+        } else {
+            gestura_core::chat_sessions::SessionLlmConfig {
+                provider: Some(p),
+                model: Some(m.to_string()),
+            }
+        }
+    } else if is_known_llm_provider(spec) {
+        gestura_core::chat_sessions::SessionLlmConfig {
+            provider: Some(spec.to_ascii_lowercase()),
+            model: None,
+        }
     } else {
-        // Distinguish provider-only vs model-only.
-        match spec.to_ascii_lowercase().as_str() {
-            "openai" | "anthropic" | "grok" | "gemini" | "ollama" => {
-                let p = spec.trim().to_string();
-                let m = model_for_provider(&app.config, &p).unwrap_or_default();
-                (p, m)
-            }
-            _ => {
-                // Model-only. Prefer inferred provider, else keep the current provider.
-                let inferred = gestura_core::llm_validation::infer_provider_from_model_id(spec)
-                    .map(|p| p.to_string());
+        // Model-only. Prefer inferred provider, else keep the current provider.
+        let inferred =
+            gestura_core::llm_validation::infer_provider_from_model_id(spec).map(|p| p.to_string());
 
-                let current_provider = app
-                    .session
-                    .state
-                    .llm_config
-                    .as_ref()
-                    .and_then(|c| c.provider.as_deref())
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| app.config.llm.primary.clone());
+        let current_provider = app
+            .session
+            .state
+            .llm_config
+            .as_ref()
+            .and_then(|c| c.provider.as_deref())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| app.config.llm.primary.clone());
 
-                (inferred.unwrap_or(current_provider), spec.to_string())
-            }
+        gestura_core::chat_sessions::SessionLlmConfig {
+            provider: Some(inferred.unwrap_or(current_provider)),
+            model: Some(spec.to_string()),
         }
     };
 
-    provider = provider.trim().to_string();
-    model = model.trim().to_string();
+    // Validate explicit model selections before we persist any session change.
+    let provider = selected
+        .provider
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if provider.is_empty() {
         app.set_error("Model selection is missing provider".to_string());
         return Ok(());
     }
-    if model.is_empty() {
-        app.set_error("Model selection is missing model".to_string());
-        return Ok(());
+    if let Some(model) = selected
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if let Err(msg) =
+            gestura_core::llm_validation::validate_model_for_provider(&provider, model)
+        {
+            app.set_error(msg);
+            return Ok(());
+        }
+    } else {
+        selected.model = None;
     }
 
-    if let Err(msg) = gestura_core::llm_validation::validate_model_for_provider(&provider, &model) {
-        app.set_error(msg);
+    // Resolve to a concrete provider+model using the canonical override helper.
+    let mut tmp = app.config.clone();
+    let effective =
+        gestura_core::llm_overrides::apply_cli_session_llm_overrides(&mut tmp, Some(&selected));
+    if effective.model.trim().is_empty() {
+        app.set_error(format!(
+            "Could not resolve a default model for provider '{provider}'"
+        ));
         return Ok(());
     }
 
     app.session.state.llm_config = Some(gestura_core::chat_sessions::SessionLlmConfig {
-        provider: Some(provider.clone()),
-        model: Some(model.clone()),
+        provider: Some(effective.provider.clone()),
+        model: Some(effective.model.clone()),
     });
     // Keep the legacy hint in sync for compatibility across CLI modes.
-    app.session.model = Some(format!("{}:{}", provider, model));
+    app.session.model = Some(format!("{}:{}", effective.provider, effective.model));
 
     super::save_cli_session(&app.session)?;
     app.mode = TuiMode::Insert;
-    app.set_status(format!("Model set: {}:{}", provider, model));
+    app.set_status(format!(
+        "Model set: {}:{}",
+        effective.provider, effective.model
+    ));
     Ok(())
 }
 
@@ -315,6 +376,15 @@ struct PromptEnhancementState {
     receiver: mpsc::Receiver<std::result::Result<String, String>>,
     /// The original input captured when enhancement started (used for undo).
     original_input: String,
+}
+
+/// In-flight voice capture (record + transcribe) state.
+///
+/// Voice capture must never block the TUI event loop; we run the capture on the Tokio runtime and
+/// poll the receiver from the main loop (similar to streaming responses).
+struct VoiceCaptureState {
+    /// Receiver for the transcription result.
+    receiver: mpsc::Receiver<std::result::Result<String, String>>,
 }
 
 /// Whether a command should be allowed to run while a stream is in progress.
@@ -425,7 +495,13 @@ pub fn run_tui(opts: ChatOptions<'_>) -> Result<()> {
     }
 
     // Ensure persisted sessions have tool settings (migration / defaults).
-    if super::ensure_session_tool_settings(&mut session, &config) {
+    let mut session_changed = super::ensure_session_tool_settings(&mut session, &config);
+
+    // Apply startup override for session permission level.
+    session_changed |=
+        super::apply_permission_level_override(&mut session, opts.permission_level_override);
+
+    if session_changed {
         super::save_cli_session(&session)?;
     }
 
@@ -450,11 +526,27 @@ pub fn run_tui(opts: ChatOptions<'_>) -> Result<()> {
     // Create tokio runtime for async LLM calls
     let rt = tokio::runtime::Runtime::new()?;
 
+    // Start local hotkey IPC server so the GUI global shortcut can route here.
+    //
+    // This is best-effort: if it fails (e.g., temp dir issues), the TUI should
+    // still run normally.
+    let (hotkey_tx, mut hotkey_rx) = mpsc::unbounded_channel::<()>();
+    let _hotkey_guard = match rt.block_on(gestura_core::hotkey_ipc::start_cli_hotkey_server(
+        hotkey_tx,
+        gestura_core::hotkey_ipc::default_cli_hotkey_port_file(),
+    )) {
+        Ok(g) => Some(g),
+        Err(e) => {
+            tracing::warn!("Failed to start CLI hotkey IPC server: {e}");
+            None
+        }
+    };
+
     // Load initial workflows
     load_workflows(&mut app);
 
     // Run the main loop
-    let result = run_main_loop(&mut terminal, &mut app, &rt);
+    let result = run_main_loop(&mut terminal, &mut app, &rt, &mut hotkey_rx);
 
     // Restore terminal
     disable_raw_mode()?;
@@ -479,13 +571,21 @@ fn run_main_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut TuiApp,
     rt: &tokio::runtime::Runtime,
+    hotkey_rx: &mut mpsc::UnboundedReceiver<()>,
 ) -> Result<()> {
     // Optional streaming state
     let mut streaming: Option<StreamingState> = None;
     // Optional prompt enhancement state
     let mut prompt_enhancement: Option<PromptEnhancementState> = None;
+    // Optional voice capture state
+    let mut voice_capture: Option<VoiceCaptureState> = None;
 
     loop {
+        // Handle triggers from the GUI global hotkey (routed via local IPC).
+        while hotkey_rx.try_recv().is_ok() {
+            handle_toggle_recording_action(app, &streaming, &mut voice_capture, rt);
+        }
+
         // Check for auto-dismiss of transient errors (15 second timeout)
         // Skip if user is actively interacting (in Insert or Command mode)
         if app.mode != TuiMode::Insert && app.mode != TuiMode::Command {
@@ -860,6 +960,57 @@ fn run_main_loop(
             }
         }
 
+        // Process voice capture results (non-blocking)
+        if let Some(ref mut capture_state) = voice_capture {
+            let mut completed = false;
+            match capture_state.receiver.try_recv() {
+                Ok(Ok(transcript)) => {
+                    let transcript = transcript.trim().to_string();
+                    if transcript.is_empty() {
+                        app.set_status("No speech detected".to_string());
+                    } else if streaming.is_none() {
+                        // Clear any stale pause state when the user sends a new message.
+                        if app.session.state.paused_execution.is_some() {
+                            app.session.state.paused_execution = None;
+                            let _ = super::save_cli_session(&app.session);
+                        }
+
+                        streaming =
+                            start_streaming_message(app, rt, &transcript, MessageSource::Voice)?;
+                    } else {
+                        // Should not happen (we block starting voice while streaming), but keep the UI safe.
+                        app.input = transcript;
+                        app.cursor_pos = app.input.len();
+                        app.set_status(
+                            "Response streaming; voice transcript inserted — press Enter after stream completes"
+                                .to_string(),
+                        );
+                    }
+                    completed = true;
+                }
+                Ok(Err(e)) => {
+                    let msg = e.to_string();
+                    let msg_lc = msg.to_ascii_lowercase();
+                    if msg_lc.contains("cancel") {
+                        app.set_status("Recording cancelled".to_string());
+                    } else {
+                        app.set_error(format!("Voice capture failed: {}", msg));
+                    }
+                    completed = true;
+                }
+                Err(mpsc::error::TryRecvError::Empty) => {}
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    app.set_error("Voice capture task ended unexpectedly".to_string());
+                    completed = true;
+                }
+            }
+
+            if completed {
+                app.voice_capture_in_progress = false;
+                voice_capture = None;
+            }
+        }
+
         // Poll for events with timeout (allows for streaming updates)
         if event::poll(Duration::from_millis(50))? {
             let event = event::read()?;
@@ -870,6 +1021,9 @@ fn run_main_loop(
                     // Cancel any active stream before quitting
                     if let Some(ref stream_state) = streaming {
                         stream_state.cancel_token.cancel();
+                    }
+                    if app.voice_capture_in_progress {
+                        gestura_core::request_stop_recording();
                     }
                     break;
                 }
@@ -889,7 +1043,7 @@ fn run_main_loop(
                             app.session.state.paused_execution = None;
                             let _ = super::save_cli_session(&app.session);
                         }
-                        streaming = start_streaming_message(app, rt, &msg)?;
+                        streaming = start_streaming_message(app, rt, &msg, MessageSource::Text)?;
                     } else {
                         // Preserve the user's input so it isn't lost while a stream is active.
                         app.input = msg;
@@ -921,6 +1075,35 @@ fn run_main_loop(
                                 if streaming.is_none() {
                                     streaming = start_resume_streaming(app, rt)?;
                                 }
+                            }
+                            Action::SendMessage(msg) => {
+                                if streaming.is_none() {
+                                    if app.session.state.paused_execution.is_some() {
+                                        app.session.state.paused_execution = None;
+                                        let _ = super::save_cli_session(&app.session);
+                                    }
+                                    streaming = start_streaming_message(
+                                        app,
+                                        rt,
+                                        &msg,
+                                        MessageSource::Text,
+                                    )?;
+                                } else {
+                                    app.input = msg;
+                                    app.cursor_pos = app.input.len();
+                                    app.set_status(
+                                        "Response streaming; wait for completion (Esc to cancel), then press Enter"
+                                            .to_string(),
+                                    );
+                                }
+                            }
+                            Action::ToggleRecording => {
+                                handle_toggle_recording_action(
+                                    app,
+                                    &streaming,
+                                    &mut voice_capture,
+                                    rt,
+                                );
                             }
                             _ => {}
                         }
@@ -1003,6 +1186,39 @@ fn run_main_loop(
                     app.selection_anchor = None;
                     app.selection_end = None;
                 }
+                Action::CopyMessageRaw(msg_idx) => {
+                    let text = match app.messages.get(msg_idx) {
+                        Some(msg) if !msg.content.is_empty() => msg.content.clone(),
+                        Some(_) => {
+                            app.set_status("Message is empty".to_string());
+                            String::new()
+                        }
+                        None => {
+                            app.set_status("Message not found".to_string());
+                            String::new()
+                        }
+                    };
+
+                    if !text.is_empty() {
+                        match arboard::Clipboard::new() {
+                            Ok(mut clipboard) => match clipboard.set_text(&text) {
+                                Ok(()) => {
+                                    app.set_status("Copied message to clipboard".to_string());
+                                }
+                                Err(e) => {
+                                    app.set_status(format!("Clipboard error: {e}"));
+                                }
+                            },
+                            Err(e) => {
+                                app.set_status(format!("Clipboard unavailable: {e}"));
+                            }
+                        }
+                    }
+
+                    // Clear selection after copy (consistent with CopySelection behavior).
+                    app.selection_anchor = None;
+                    app.selection_end = None;
+                }
                 Action::ClearInput => {
                     app.clear_input();
                 }
@@ -1012,10 +1228,14 @@ fn run_main_loop(
                         stream_state.cancel_token.cancel();
                         app.set_status("Cancelling...");
                     }
+
+                    if app.voice_capture_in_progress {
+                        gestura_core::request_stop_recording();
+                        app.set_status("Stopping recording...".to_string());
+                    }
                 }
                 Action::ToggleRecording => {
-                    // Voice recording toggle - not implemented in CLI TUI
-                    app.set_status("Voice recording not available in CLI mode");
+                    handle_toggle_recording_action(app, &streaming, &mut voice_capture, rt);
                 }
                 Action::EnhancePrompt => {
                     // Don't enhance while streaming, while enhancement is already running, or if input is empty.
@@ -1083,6 +1303,7 @@ fn start_streaming_message(
     app: &mut TuiApp,
     rt: &tokio::runtime::Runtime,
     message: &str,
+    source: MessageSource,
 ) -> Result<Option<StreamingState>> {
     // Redirect /tools to the interactive tools tab (handled the same as :tools command).
     if message.trim().starts_with("/tools") {
@@ -1091,8 +1312,8 @@ fn start_streaming_message(
         return Ok(None);
     }
 
-    // Add user message
-    app.add_message("user", message);
+    // Add user message (persist with explicit source)
+    app.add_user_message_with_source(message, source);
     app.is_loading = true;
     app.loading_tick = 0;
     app.set_status("Streaming via AgentPipeline...");
@@ -1141,11 +1362,7 @@ fn start_streaming_message(
         session_llm.as_ref(),
     );
     let provider_name = effective.provider;
-    let model_name = if !effective.model.trim().is_empty() {
-        effective.model
-    } else {
-        model_for_provider(&config, &provider_name).unwrap_or_default()
-    };
+    let model_name = effective.model;
     let (permission_level, allowed_tools) = super::derive_request_policy(&app.session);
     request = request
         .with_session_llm_config(provider_name, model_name)
@@ -1238,11 +1455,7 @@ fn start_resume_streaming(
         session_llm.as_ref(),
     );
     let provider_name = effective.provider;
-    let model_name = if !effective.model.trim().is_empty() {
-        effective.model
-    } else {
-        model_for_provider(&config, &provider_name).unwrap_or_default()
-    };
+    let model_name = effective.model;
     let (permission_level, allowed_tools) = super::derive_request_policy(&app.session);
     request = request
         .with_session_llm_config(provider_name, model_name)
@@ -1346,6 +1559,413 @@ fn open_tools_tab(app: &mut TuiApp, args: &[&str]) {
     }
 }
 
+/// Open the interactive MCP server browser overlay.
+///
+/// Loads the current MCP server configuration, resolves which servers are
+/// currently connected via the global [`McpClientRegistry`], and populates
+/// [`McpBrowserState`] before switching to [`TuiMode::Mcp`].
+fn open_mcp_browser(app: &mut TuiApp, rt: &tokio::runtime::Runtime) {
+    // Use the in-memory config (kept in sync with on-disk saves) so the overlay
+    // reflects mutations performed within the TUI.
+    let config = &app.config;
+    let registry = gestura_core::mcp::client::get_mcp_client_registry();
+    let connected_names = rt.block_on(registry.connected_servers());
+
+    let servers: Vec<app::McpBrowserEntry> = config
+        .mcp_servers
+        .iter()
+        .map(|entry| app::McpBrowserEntry {
+            entry: entry.clone(),
+            connected: connected_names.contains(&entry.name),
+        })
+        .collect();
+
+    let count = servers.len();
+    app.mcp_browser_state.servers = servers;
+    app.mcp_browser_state.detail_mode = false;
+    app.mcp_browser_state.selected_index = 0;
+    if count > 0 {
+        app.mcp_browser_state.list_state.select(Some(0));
+    } else {
+        app.mcp_browser_state.list_state.select(None);
+    }
+    app.mode = TuiMode::Mcp;
+    app.set_status(
+	        "MCP: ↑/↓ navigate  Enter details  n add  Space toggle  c connect  d disconnect  x remove  Esc close",
+	    );
+}
+
+/// Open the interactive knowledge browser overlay.
+///
+/// Loads all registered knowledge items (including builtins) and populates
+/// [`KnowledgeBrowserState`] before switching to [`TuiMode::Knowledge`].
+///
+/// The `enabled` state on each item is derived from the current session's
+/// persisted settings via [`KnowledgeSettingsManager`], not from the item's
+/// default `enabled` field.
+fn open_knowledge_browser(app: &mut TuiApp) {
+    let store = gestura_core::knowledge::KnowledgeStore::with_default_dir();
+    gestura_core::knowledge::register_builtin_knowledge(&store);
+    let mut items = store.list();
+    items.sort_by(|a, b| a.name.cmp(&b.name));
+
+    // Overlay per-session enabled state from KnowledgeSettingsManager.
+    let session_id = &app.session.id;
+    let settings_mgr = gestura_core::knowledge::KnowledgeSettingsManager::new(
+        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
+    );
+    if let Ok(enabled_ids) = settings_mgr.get_enabled_knowledge(session_id) {
+        for item in &mut items {
+            item.enabled = enabled_ids.contains(&item.id);
+        }
+    }
+
+    let count = items.len();
+    app.knowledge_browser_state.items = items;
+    app.knowledge_browser_state.detail_mode = false;
+    app.knowledge_browser_state.selected_index = 0;
+    if count > 0 {
+        app.knowledge_browser_state.list_state.select(Some(0));
+    } else {
+        app.knowledge_browser_state.list_state.select(None);
+    }
+    app.mode = TuiMode::Knowledge;
+    app.set_status("Knowledge: ↑/↓ navigate  Enter details  Space toggle  Esc close");
+}
+
+/// Open the interactive hooks browser overlay.
+fn open_hooks_browser(app: &mut TuiApp) {
+    let hooks = &app.config.hooks;
+    let data = app::HooksBrowserData {
+        enabled: hooks.enabled,
+        timeout_ms: hooks.timeout_ms,
+        max_output_bytes: hooks.max_output_bytes,
+        allowed_programs: hooks.allowed_programs.clone(),
+        hooks: hooks
+            .hooks
+            .iter()
+            .map(|h| {
+                (
+                    h.name.clone(),
+                    format!("{:?}", h.event),
+                    h.command.program.clone(),
+                    h.command.args.join(" "),
+                )
+            })
+            .collect(),
+    };
+    let count = data.hooks.len().max(1); // at least 1 for the empty state
+    app.hooks_browser_data = data;
+    app.hooks_browser_state.reset(count);
+    app.mode = TuiMode::Hooks;
+    app.set_status(
+        "Hooks: ↑/↓ navigate  Enter details  Space toggle  n new  e edit  x delete  a allow+  r allow-  t timeout  m max  Esc close",
+    );
+}
+
+/// Open the interactive agent browser overlay.
+fn open_agent_browser(app: &mut TuiApp) {
+    let config = &app.config;
+    let mut rows: Vec<(String, String)> = vec![
+        ("Version".to_string(), gestura_core::VERSION.to_string()),
+        ("Primary LLM".to_string(), config.llm.primary.clone()),
+        (
+            "Model".to_string(),
+            app.session
+                .model
+                .as_deref()
+                .unwrap_or("(default)")
+                .to_string(),
+        ),
+        (
+            "Session".to_string(),
+            app.session.id[..app.session.id.len().min(8)].to_string(),
+        ),
+        (
+            "Messages".to_string(),
+            app.session.message_count().to_string(),
+        ),
+    ];
+
+    let has_openai = std::env::var("OPENAI_API_KEY").is_ok()
+        || config
+            .llm
+            .openai
+            .as_ref()
+            .is_some_and(|o| !o.api_key.is_empty());
+    let has_anthropic = std::env::var("ANTHROPIC_API_KEY").is_ok()
+        || config
+            .llm
+            .anthropic
+            .as_ref()
+            .is_some_and(|a| !a.api_key.is_empty());
+    rows.push((
+        "OpenAI".to_string(),
+        if has_openai {
+            "✓ configured"
+        } else {
+            "○ not configured"
+        }
+        .to_string(),
+    ));
+    rows.push((
+        "Anthropic".to_string(),
+        if has_anthropic {
+            "✓ configured"
+        } else {
+            "○ not configured"
+        }
+        .to_string(),
+    ));
+
+    if let Some(ref openai) = config.llm.openai {
+        rows.push(("OpenAI model".to_string(), openai.model.clone()));
+    }
+    if let Some(ref anthropic) = config.llm.anthropic {
+        rows.push(("Anthropic model".to_string(), anthropic.model.clone()));
+    }
+
+    let count = rows.len();
+    app.agent_browser_data = app::AgentBrowserData { rows };
+    app.agent_browser_state.reset(count);
+    app.mode = TuiMode::Agent;
+    app.set_status("Agent: ↑/↓ navigate  Enter details  Esc close");
+}
+
+/// Open the interactive memory browser overlay.
+fn open_memory_browser(app: &mut TuiApp, rt: &tokio::runtime::Runtime) {
+    use super::live_actions::{MemoryExecOutput, execute_memory_live_action};
+
+    let Some(workspace_dir) = app.session.workspace_dir().cloned() else {
+        app.set_error("No workspace directory set for this session.");
+        return;
+    };
+
+    let out = match super::slash::run_memory_subcommand(&["list"], &app.session) {
+        Ok(out) => out,
+        Err(e) => {
+            app.set_error(e);
+            return;
+        }
+    };
+
+    let Some(act) = out.live_action else {
+        app.set_error("Internal error: /memory list produced no live action");
+        return;
+    };
+
+    match execute_memory_live_action(rt, &workspace_dir, act) {
+        Ok(MemoryExecOutput::Listed(entries)) => {
+            let browser_entries: Vec<app::MemoryBrowserEntry> = entries
+                .iter()
+                .map(|e| {
+                    let file_path = e.file_path.as_ref().and_then(|p| {
+                        if let Ok(rel) = p.strip_prefix(&workspace_dir) {
+                            Some(rel.to_string_lossy().to_string())
+                        } else {
+                            p.file_name().map(|name| {
+                                std::path::PathBuf::from(".gestura/memory")
+                                    .join(name)
+                                    .to_string_lossy()
+                                    .to_string()
+                            })
+                        }
+                    });
+
+                    app::MemoryBrowserEntry {
+                        timestamp: e.timestamp.format("%Y-%m-%d %H:%M").to_string(),
+                        category: e.category.clone(),
+                        summary: e.summary.clone(),
+                        content: e.content.clone(),
+                        session_id: e.session_id.clone(),
+                        file_path,
+                    }
+                })
+                .collect();
+
+            // Keep a stable selection model even when empty.
+            let count = browser_entries.len().max(1);
+            app.memory_browser_entries = browser_entries;
+            app.memory_browser_state.reset(count);
+            app.mode = TuiMode::Memory;
+            app.set_status("Memory: ↑/↓ navigate  Enter details  s save  x delete  Esc close");
+        }
+        Ok(other) => {
+            app.set_error(format!("Unexpected /memory list output: {other:?}"));
+        }
+        Err(e) => {
+            app.set_error(format!("Failed to read memory bank: {e}"));
+        }
+    }
+}
+
+/// Open the interactive devices browser overlay.
+fn open_devices_browser(app: &mut TuiApp) {
+    let devices = gestura_core::list_audio_input_devices();
+    let entries: Vec<app::DeviceBrowserEntry> = devices
+        .iter()
+        .map(|d| app::DeviceBrowserEntry {
+            name: d.name.clone(),
+            is_default: d.is_default,
+        })
+        .collect();
+    let count = entries.len();
+    app.devices_browser_entries = entries;
+    app.devices_browser_state.reset(count);
+    app.mode = TuiMode::Devices;
+    app.set_status("Devices: ↑/↓ navigate  Enter details  Esc close");
+}
+
+/// Open the interactive permissions browser overlay.
+fn open_permissions_browser(app: &mut TuiApp) {
+    use crate::commands::tools::permissions::permission_manager;
+
+    match permission_manager().list() {
+        Ok(perms) => {
+            let entries: Vec<app::PermissionBrowserEntry> = perms
+                .iter()
+                .map(|p| {
+                    let scope_str = match &p.scope {
+                        gestura_core::PermissionScope::Global => "global".to_string(),
+                        gestura_core::PermissionScope::Path(path) => format!("path:{}", path),
+                        gestura_core::PermissionScope::Command(cmd) => format!("cmd:{}", cmd),
+                    };
+                    let expires = p
+                        .expires_at
+                        .map(|e| e.format("%Y-%m-%d %H:%M").to_string())
+                        .unwrap_or_else(|| "never".to_string());
+                    app::PermissionBrowserEntry {
+                        tool: p.tool.clone(),
+                        action: p.action.clone(),
+                        scope: scope_str,
+                        expires,
+                    }
+                })
+                .collect();
+            let count = entries.len().max(1); // at least 1 for the empty state
+            app.permissions_browser_entries = entries;
+            app.permissions_browser_state.reset(count);
+            app.mode = TuiMode::Permissions;
+            app.set_status(
+                "Permissions: ↑/↓ navigate  Enter details  g grant  x revoke  r reset  l level  Esc close",
+            );
+        }
+        Err(e) => {
+            app.set_error(format!("Failed to list permissions: {}", e));
+        }
+    }
+}
+
+/// Open the interactive sessions browser overlay.
+fn open_sessions_browser(app: &mut TuiApp) {
+    match super::list_sessions_filtered(super::SessionFilter::All) {
+        Ok(sessions) => {
+            let current_id = app.session.id.clone();
+            let entries: Vec<app::SessionBrowserEntry> = sessions
+                .iter()
+                .map(|s| app::SessionBrowserEntry {
+                    id: s.id.clone(),
+                    model: s.model.as_deref().unwrap_or("default").to_string(),
+                    message_count: s.message_count,
+                    created: s
+                        .created_at
+                        .with_timezone(&Local)
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string(),
+                    last_active: s
+                        .last_active
+                        .with_timezone(&Local)
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string(),
+                    is_current: s.id == current_id,
+                })
+                .collect();
+            let count = entries.len();
+            app.sessions_browser_entries = entries;
+            app.sessions_browser_state.reset(count);
+            app.mode = TuiMode::Sessions;
+            app.set_status(
+                "Sessions: ↑/↓ navigate  Enter details  l load  x delete  e export  Esc close",
+            );
+        }
+        Err(e) => {
+            app.set_error(format!("Failed to list sessions: {}", e));
+        }
+    }
+}
+
+/// Open the interactive tasks browser overlay.
+fn open_tasks_browser(app: &mut TuiApp) {
+    use gestura_core::tasks::TaskManager;
+
+    let task_manager =
+        TaskManager::new(dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")));
+    match task_manager.get_hierarchy(&app.session.id) {
+        Ok(hierarchy) => {
+            let mut entries: Vec<app::TaskBrowserEntry> = Vec::new();
+            for (root, subtasks) in &hierarchy {
+                let status_icon = match root.status {
+                    gestura_core::tasks::TaskStatus::NotStarted => "[ ]",
+                    gestura_core::tasks::TaskStatus::InProgress => "[/]",
+                    gestura_core::tasks::TaskStatus::Completed => "[x]",
+                    gestura_core::tasks::TaskStatus::Cancelled => "[-]",
+                };
+                entries.push(app::TaskBrowserEntry {
+                    id: root.id.clone(),
+                    name: root.name.clone(),
+                    description: root.description.clone(),
+                    status: format!("{:?}", root.status),
+                    status_icon: status_icon.to_string(),
+                    parent_id: None,
+                    source: format!("{:?}", root.source),
+                    created: root.created_at.format("%Y-%m-%d %H:%M").to_string(),
+                });
+                for sub in subtasks {
+                    let sub_icon = match sub.status {
+                        gestura_core::tasks::TaskStatus::NotStarted => "[ ]",
+                        gestura_core::tasks::TaskStatus::InProgress => "[/]",
+                        gestura_core::tasks::TaskStatus::Completed => "[x]",
+                        gestura_core::tasks::TaskStatus::Cancelled => "[-]",
+                    };
+                    entries.push(app::TaskBrowserEntry {
+                        id: sub.id.clone(),
+                        name: sub.name.clone(),
+                        description: sub.description.clone(),
+                        status: format!("{:?}", sub.status),
+                        status_icon: sub_icon.to_string(),
+                        parent_id: sub.parent_id.clone(),
+                        source: format!("{:?}", sub.source),
+                        created: sub.created_at.format("%Y-%m-%d %H:%M").to_string(),
+                    });
+                }
+            }
+            let count = entries.len().max(1); // at least 1 for the empty state
+            app.tasks_browser_entries = entries;
+            app.tasks_browser_state.reset(count);
+            app.mode = TuiMode::Tasks;
+            app.set_status(
+                "Tasks: ↑/↓ navigate  Enter details  n new  e name  d desc  s sub  a dep  Space status  c current  u clear  x delete  Esc close",
+	            );
+        }
+        Err(e) => {
+            app.set_error(format!("Failed to list tasks: {}", e));
+        }
+    }
+}
+
+/// Open the interactive themes browser overlay.
+fn open_themes_browser(app: &mut TuiApp) {
+    let themes: Vec<String> = app::Theme::available_themes()
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let count = themes.len();
+    app.themes_browser_names = themes;
+    app.themes_browser_state.reset(count);
+    app.mode = TuiMode::Themes;
+    app.set_status("Themes: ↑/↓ navigate  Enter apply  Esc close");
+}
+
 /// Handle slash commands.
 ///
 /// Returns an optional `Action` for commands that should affect the main loop.
@@ -1439,12 +2059,10 @@ fn handle_command(
             app.mode = TuiMode::Capabilities;
         }
         "/theme" => {
-            if let Some(name) = args.first() {
-                app.set_theme(name);
+            if args.is_empty() {
+                open_themes_browser(app);
             } else {
-                // Show available themes
-                let themes = app::Theme::available_themes().join(", ");
-                app.set_status(format!("Available themes: {} (Ctrl+T to cycle)", themes));
+                app.set_theme(args[0]);
             }
         }
         "/search" | "/find" => {
@@ -1465,7 +2083,11 @@ fn handle_command(
             }
         }
         "/sessions" | "/session" => {
-            handle_session_command(app, args)?;
+            if args.is_empty() {
+                open_sessions_browser(app);
+            } else {
+                handle_session_command(app, args)?;
+            }
         }
         "/workflow" | "/workflows" => {
             handle_workflow_command(app, args)?;
@@ -1477,13 +2099,34 @@ fn handle_command(
             handle_rewind_command(app, args)?;
         }
         "/tasks" => {
-            handle_tasks_command(app)?;
+            if args.is_empty() {
+                open_tasks_browser(app);
+            } else {
+                handle_tasks_command(app, args)?;
+            }
         }
-        "/hooks" => {
-            handle_hooks_command(app)?;
+        "/task" => {
+            // `/task` is the subcommand-oriented interface, but treat `/task` (no args)
+            // as an alias for `/tasks` to avoid surprising users with usage output.
+            if args.is_empty() {
+                open_tasks_browser(app);
+            } else {
+                handle_tasks_command(app, args)?;
+            }
         }
-        "/permissions" => {
-            handle_permissions_command(app, args)?;
+        "/hooks" | "/hook" => {
+            if args.is_empty() {
+                open_hooks_browser(app);
+            } else {
+                handle_hooks_command(app, args)?;
+            }
+        }
+        "/permissions" | "/permission" => {
+            if args.is_empty() {
+                open_permissions_browser(app);
+            } else {
+                handle_permissions_command(app, args)?;
+            }
         }
         "/context" => {
             handle_context_command(app)?;
@@ -1496,19 +2139,35 @@ fn handle_command(
             }
         }
         "/mcp" => {
-            handle_mcp_command(app, args, rt)?;
+            if args.is_empty() {
+                open_mcp_browser(app, rt);
+            } else {
+                handle_mcp_command(app, args, rt)?;
+            }
         }
         "/a2a" => {
             handle_a2a_command(app, args)?;
         }
         "/knowledge" => {
-            handle_knowledge_command(app, args)?;
+            if args.is_empty() {
+                open_knowledge_browser(app);
+            } else {
+                handle_knowledge_command(app, args)?;
+            }
         }
         "/agent" => {
-            handle_agent_command(app, args)?;
+            if args.is_empty() {
+                open_agent_browser(app);
+            } else {
+                handle_agent_command(app, args)?;
+            }
         }
         "/device" => {
-            handle_device_command(app, args)?;
+            if args.is_empty() {
+                open_devices_browser(app);
+            } else {
+                handle_device_command(app, args)?;
+            }
         }
         "/health" => {
             handle_health_command(app)?;
@@ -1517,13 +2176,36 @@ fn handle_command(
             handle_privacy_command(app, args, rt)?;
         }
         "/memory" => {
-            handle_memory_command(app, args, rt)?;
+            if args.is_empty() {
+                open_memory_browser(app, rt);
+            } else {
+                handle_memory_command(app, args, rt)?;
+            }
         }
         "/summarize" => {
             handle_summarize_command(app)?;
         }
-        "/listen" | "/voice" => {
-            handle_listen_command(app, rt)?;
+        "/listen" => {
+            if app.voice_capture_in_progress {
+                app.set_status("Recording in progress; press Esc to cancel".to_string());
+            } else if app.listening_mode {
+                app.listening_mode = false;
+                app.set_status("Listening mode disabled".to_string());
+            } else if !gestura_core::is_microphone_available() {
+                app.set_error("No microphone available".to_string());
+            } else {
+                app.listening_mode = true;
+                app.set_status(
+                    "Listening mode enabled: press Enter on an empty prompt to record".to_string(),
+                );
+            }
+        }
+        "/voice" => {
+            if !gestura_core::is_microphone_available() {
+                app.set_error("No microphone available".to_string());
+            } else {
+                return Ok(Some(Action::ToggleRecording));
+            }
         }
         "/exec" => {
             if args.is_empty() {
@@ -1806,17 +2488,6 @@ fn get_workflow_manager() -> gestura_core::WorkflowManager {
     gestura_core::WorkflowManager::new()
 }
 
-fn model_for_provider(cfg: &gestura_core::AppConfig, provider: &str) -> Option<String> {
-    match provider {
-        "openai" => cfg.llm.openai.as_ref().map(|c| c.model.clone()),
-        "anthropic" => cfg.llm.anthropic.as_ref().map(|c| c.model.clone()),
-        "grok" => cfg.llm.grok.as_ref().map(|c| c.model.clone()),
-        "gemini" => cfg.llm.gemini.as_ref().map(|c| c.model.clone()),
-        "ollama" => cfg.llm.ollama.as_ref().map(|c| c.model.clone()),
-        _ => None,
-    }
-}
-
 /// Extract the API key and optional base URL for a provider from config.
 ///
 /// Used by the model picker to pass credentials to `list_models_for_provider`.
@@ -1858,6 +2529,38 @@ fn tui_api_key_and_base_url(
             (None, cfg.map(|c| c.base_url.clone()))
         }
         _ => (None, None),
+    }
+}
+
+/// Check whether a provider is usable (has credentials for cloud providers,
+/// or has a config section for local providers like ollama).
+///
+/// This is the single source of truth for "should this provider appear in the
+/// model picker / model list" and mirrors the logic in `run_list_models`.
+fn is_provider_configured(config: &gestura_core::AppConfig, provider: &str) -> bool {
+    match provider {
+        "openai" => config
+            .llm
+            .openai
+            .as_ref()
+            .is_some_and(|c| !c.api_key.trim().is_empty()),
+        "anthropic" => config
+            .llm
+            .anthropic
+            .as_ref()
+            .is_some_and(|c| !c.api_key.trim().is_empty()),
+        "gemini" => config
+            .llm
+            .gemini
+            .as_ref()
+            .is_some_and(|c| !c.api_key.trim().is_empty()),
+        "grok" => config
+            .llm
+            .grok
+            .as_ref()
+            .is_some_and(|c| !c.api_key.trim().is_empty()),
+        "ollama" => config.llm.ollama.is_some(),
+        _ => false,
     }
 }
 
@@ -2183,101 +2886,98 @@ fn handle_rewind_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Handle `/tasks` command - show current task list.
-fn handle_tasks_command(app: &mut TuiApp) -> Result<()> {
+/// Handle `/task`/`/tasks <subcommand...>` command - manage tasks for the current session.
+fn handle_tasks_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
     use gestura_core::tasks::TaskManager;
 
     let task_manager =
         TaskManager::new(dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")));
-    match task_manager.get_hierarchy(&app.session.id) {
-        Ok(hierarchy) => {
-            if hierarchy.is_empty() {
-                app.messages.push(app::TuiMessage {
-                    role: "system".to_string(),
-                    content: "No tasks found for this session.\n\nTasks are created by the AI agent during complex workflows.".to_string(),
-                    thinking: None,
-                    is_streaming: false,
-                    is_error: false,
-                });
-            } else {
-                let mut lines = vec!["━━━ Task List ━━━".to_string(), String::new()];
-                for (root, subtasks) in &hierarchy {
-                    let status_icon = match root.status {
-                        gestura_core::TaskStatus::NotStarted => "[ ]",
-                        gestura_core::TaskStatus::InProgress => "[/]",
-                        gestura_core::TaskStatus::Completed => "[x]",
-                        gestura_core::TaskStatus::Cancelled => "[-]",
-                    };
-                    lines.push(format!("{} {}", status_icon, root.name));
-                    for sub in subtasks {
-                        let sub_icon = match sub.status {
-                            gestura_core::TaskStatus::NotStarted => "[ ]",
-                            gestura_core::TaskStatus::InProgress => "[/]",
-                            gestura_core::TaskStatus::Completed => "[x]",
-                            gestura_core::TaskStatus::Cancelled => "[-]",
-                        };
-                        lines.push(format!("  {} {}", sub_icon, sub.name));
-                    }
-                }
-                app.messages.push(app::TuiMessage {
-                    role: "system".to_string(),
-                    content: lines.join("\n"),
-                    thinking: None,
-                    is_streaming: false,
-                    is_error: false,
-                });
+
+    match super::slash::run_tasks_subcommand(args, &task_manager, &app.session.id) {
+        Ok(out) => {
+            app.messages.push(app::TuiMessage {
+                role: "system".to_string(),
+                content: out.lines.join("\n"),
+                thinking: None,
+                is_streaming: false,
+                is_error: false,
+            });
+            app.scroll_to_bottom();
+
+            // If the tasks overlay is open, refresh its contents after mutations.
+            if out.changed && app.mode == TuiMode::Tasks {
+                open_tasks_browser(app);
             }
         }
         Err(e) => {
-            app.set_error(format!("Failed to load tasks: {}", e));
+            app.set_error(&e);
+            if let Ok(out) =
+                super::slash::run_tasks_subcommand(&["help"], &task_manager, &app.session.id)
+            {
+                app.messages.push(app::TuiMessage {
+                    role: "system".to_string(),
+                    content: out.lines.join("\n"),
+                    thinking: None,
+                    is_streaming: false,
+                    is_error: false,
+                });
+                app.scroll_to_bottom();
+            }
         }
     }
+
     Ok(())
 }
 
-/// Handle `/hooks` command - show hooks configuration.
-fn handle_hooks_command(app: &mut TuiApp) -> Result<()> {
-    let hooks = &app.config.hooks;
-    let mut lines = vec!["━━━ Hooks Configuration ━━━".to_string(), String::new()];
-    lines.push(format!(
-        "Enabled: {}",
-        if hooks.enabled { "yes" } else { "no" }
-    ));
-    lines.push(format!("Timeout: {} ms", hooks.timeout_ms));
-    lines.push(format!("Max output: {} bytes", hooks.max_output_bytes));
-    lines.push(String::new());
+/// Handle `/hooks <subcommand...>` command - manage hook settings & definitions.
+fn handle_hooks_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
+    let mut cfg = app.config.clone();
 
-    if hooks.allowed_programs.is_empty() {
-        lines.push("Allowed programs: (none)".to_string());
-    } else {
-        lines.push("Allowed programs:".to_string());
-        for prog in &hooks.allowed_programs {
-            lines.push(format!("  - {}", prog));
+    match super::slash::apply_hooks_subcommand(args, &mut cfg) {
+        Ok(outcome) => {
+            let changed = outcome.changed();
+            let lines = outcome.into_lines();
+
+            app.messages.push(app::TuiMessage {
+                role: "system".to_string(),
+                content: lines.join("\n"),
+                thinking: None,
+                is_streaming: false,
+                is_error: false,
+            });
+            app.scroll_to_bottom();
+
+            if changed {
+                match cfg.save() {
+                    Ok(()) => {
+                        app.config = cfg;
+
+                        // If the hooks overlay is open, refresh its contents.
+                        if app.mode == TuiMode::Hooks {
+                            open_hooks_browser(app);
+                        }
+                    }
+                    Err(e) => {
+                        app.set_error(format!("Failed to save config: {}", e));
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            app.set_error(&e);
+            if let Ok(outcome) = super::slash::apply_hooks_subcommand(&["help"], &mut cfg) {
+                app.messages.push(app::TuiMessage {
+                    role: "system".to_string(),
+                    content: outcome.into_lines().join("\n"),
+                    thinking: None,
+                    is_streaming: false,
+                    is_error: false,
+                });
+                app.scroll_to_bottom();
+            }
         }
     }
-    lines.push(String::new());
 
-    if hooks.hooks.is_empty() {
-        lines.push("Configured hooks: (none)".to_string());
-    } else {
-        lines.push("Configured hooks:".to_string());
-        for hook in &hooks.hooks {
-            lines.push(format!("  {} ({:?})", hook.name, hook.event));
-            lines.push(format!(
-                "    cmd: {} {}",
-                hook.command.program,
-                hook.command.args.join(" ")
-            ));
-        }
-    }
-
-    app.messages.push(app::TuiMessage {
-        role: "system".to_string(),
-        content: lines.join("\n"),
-        thinking: None,
-        is_streaming: false,
-        is_error: false,
-    });
     Ok(())
 }
 
@@ -2286,98 +2986,46 @@ fn handle_hooks_command(app: &mut TuiApp) -> Result<()> {
 /// - `/permissions` or `/permissions list` - List granted permissions
 /// - `/permissions audit` - Show permission audit log
 fn handle_permissions_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
-    use gestura_core::tools::permissions::PermissionManager;
-
-    let manager = PermissionManager::new();
-    let subcommand = args.first().map(|s| s.to_lowercase());
-
-    match subcommand.as_deref() {
-        None | Some("list") => match manager.list() {
-            Ok(perms) => {
-                if perms.is_empty() {
-                    app.messages.push(app::TuiMessage {
-                            role: "system".to_string(),
-                            content: "No tool permissions have been granted.\n\nGrant permissions with 'AllowAlways' when prompted for tool confirmation.".to_string(),
-                            thinking: None,
-                            is_streaming: false,
-                            is_error: false,
-                        });
-                } else {
-                    let mut lines = vec!["━━━ Granted Permissions ━━━".to_string(), String::new()];
-                    for perm in &perms {
-                        let scope_str = match &perm.scope {
-                            gestura_core::PermissionScope::Global => "global".to_string(),
-                            gestura_core::PermissionScope::Path(p) => format!("path:{}", p),
-                            gestura_core::PermissionScope::Command(c) => format!("cmd:{}", c),
-                        };
-                        let expires = perm
-                            .expires_at
-                            .map(|e| e.format("%Y-%m-%d %H:%M").to_string())
-                            .unwrap_or_else(|| "never".to_string());
-                        lines.push(format!(
-                            "  {}:{} [{}] expires: {}",
-                            perm.tool, perm.action, scope_str, expires
-                        ));
-                    }
-                    lines.push(String::new());
-                    lines.push("Use /permissions audit to see check history.".to_string());
-                    app.messages.push(app::TuiMessage {
-                        role: "system".to_string(),
-                        content: lines.join("\n"),
-                        thinking: None,
-                        is_streaming: false,
-                        is_error: false,
-                    });
-                }
+    match super::slash::run_permissions_subcommand(args, &mut app.session) {
+        Ok(out) => {
+            if !out.lines.is_empty() {
+                app.messages.push(app::TuiMessage {
+                    role: "system".to_string(),
+                    content: out.lines.join("\n"),
+                    thinking: None,
+                    is_streaming: false,
+                    is_error: false,
+                });
+                app.scroll_to_bottom();
             }
-            Err(e) => {
-                app.set_error(format!("Failed to list permissions: {}", e));
+
+            if out.session_changed
+                && let Err(e) = super::save_cli_session(&app.session)
+            {
+                app.set_error(format!("Failed to save session: {e}"));
             }
-        },
-        Some("audit") => {
-            match manager.audit_log() {
-                Ok(log) => {
-                    if log.is_empty() {
-                        app.messages.push(app::TuiMessage {
-                            role: "system".to_string(),
-                            content: "Permission audit log is empty.".to_string(),
-                            thinking: None,
-                            is_streaming: false,
-                            is_error: false,
-                        });
-                    } else {
-                        let mut lines =
-                            vec!["━━━ Permission Audit Log ━━━".to_string(), String::new()];
-                        // Show last 20 entries
-                        for entry in log.iter().rev().take(20) {
-                            let status = if entry.allowed { "✓" } else { "✗" };
-                            let res = entry.resource.as_deref().unwrap_or("-");
-                            lines.push(format!(
-                                "  {} {}:{} [{}] - {}",
-                                status, entry.tool, entry.action, res, entry.reason
-                            ));
-                        }
-                        if log.len() > 20 {
-                            lines.push(format!("  ... and {} more entries", log.len() - 20));
-                        }
-                        app.messages.push(app::TuiMessage {
-                            role: "system".to_string(),
-                            content: lines.join("\n"),
-                            thinking: None,
-                            is_streaming: false,
-                            is_error: false,
-                        });
-                    }
-                }
-                Err(e) => {
-                    app.set_error(format!("Failed to load audit log: {}", e));
-                }
+
+            // If the permissions overlay is open, refresh it after mutations.
+            if out.changed_permissions && app.mode == TuiMode::Permissions {
+                open_permissions_browser(app);
             }
         }
-        Some(other) => {
-            app.set_error(format!("Unknown /permissions subcommand: {}", other));
+        Err(e) => {
+            app.set_error(&e);
+            if let Ok(help) = super::slash::run_permissions_subcommand(&["help"], &mut app.session)
+            {
+                app.messages.push(app::TuiMessage {
+                    role: "system".to_string(),
+                    content: help.lines.join("\n"),
+                    thinking: None,
+                    is_streaming: false,
+                    is_error: false,
+                });
+                app.scroll_to_bottom();
+            }
         }
     }
+
     Ok(())
 }
 
@@ -2467,88 +3115,75 @@ fn handle_context_command(app: &mut TuiApp) -> Result<()> {
 /// - `/mcp connect <name>` - Connect to a server
 /// - `/mcp disconnect <name>` - Disconnect from a server
 fn handle_mcp_command(app: &mut TuiApp, args: &[&str], rt: &tokio::runtime::Runtime) -> Result<()> {
-    let subcommand = args.first().map(|s| s.to_lowercase());
+    fn execute_mcp_live_action(
+        rt: &tokio::runtime::Runtime,
+        cfg: &AppConfig,
+        act: super::slash::McpLiveAction,
+    ) -> Vec<String> {
+        use gestura_core::config::McpTransportType;
 
-    match subcommand.as_deref() {
-        None | Some("status") => {
-            let mut lines = vec!["━━━ MCP Protocol Status ━━━".to_string(), String::new()];
-            lines.push(format!(
-                "Protocol Version: {}",
-                gestura_core::mcp::PROTOCOL_VERSION
-            ));
-            let config = AppConfig::load();
-            let server_count = config.mcp_servers.len();
-            let enabled = config.mcp_servers.iter().filter(|s| s.enabled).count();
-            lines.push(format!(
-                "Servers: {} configured ({} enabled)",
-                server_count, enabled
-            ));
+        let registry = gestura_core::mcp::client::get_mcp_client_registry();
 
-            // Check connected servers
-            let registry = gestura_core::mcp::client::get_mcp_client_registry();
-            let connected = rt.block_on(async { registry.connected_servers().await });
-            lines.push(format!("Connected: {}", connected.len()));
-            if !connected.is_empty() {
-                lines.push(String::new());
-                lines.push("Connected servers:".to_string());
-                for name in &connected {
-                    lines.push(format!("  ✓ {}", name));
+        match act {
+            super::slash::McpLiveAction::Status => {
+                let connected = rt.block_on(registry.connected_servers());
+
+                let mut lines = vec!["━━━ MCP Server Status ━━━".to_string(), String::new()];
+                lines.push(format!("Servers: {} configured", cfg.mcp_servers.len()));
+                lines.push(format!(
+                    "Enabled: {}",
+                    cfg.mcp_servers.iter().filter(|s| s.enabled).count()
+                ));
+
+                if !cfg.mcp_servers.is_empty() {
+                    lines.push(String::new());
+                    for srv in &cfg.mcp_servers {
+                        let status = if srv.enabled { "✓" } else { "○" };
+                        let conn = if connected.contains(&srv.name) {
+                            "●"
+                        } else {
+                            "○"
+                        };
+                        let endpoint = match srv.transport {
+                            McpTransportType::Stdio => {
+                                let cmd = srv.command.as_deref().unwrap_or("");
+                                let cmd_args = srv.args.join(" ");
+                                format!("{} {}", cmd, cmd_args).trim().to_string()
+                            }
+                            _ => srv.url.clone().unwrap_or_default(),
+                        };
+                        lines.push(format!(
+                            "  {status} {conn} {} [{}] {endpoint}",
+                            srv.name, srv.transport
+                        ));
+                    }
                 }
-            }
-            app.messages.push(app::TuiMessage {
-                role: "system".to_string(),
-                content: lines.join("\n"),
-                thinking: None,
-                is_streaming: false,
-                is_error: false,
-            });
-        }
-        Some("list") => {
-            let config = AppConfig::load();
-            if config.mcp_servers.is_empty() {
-                app.set_status("No MCP servers configured. Use 'gestura mcp add' to add one.");
-            } else {
-                let mut lines = vec!["━━━ MCP Servers ━━━".to_string(), String::new()];
-                for srv in &config.mcp_servers {
-                    let status = if srv.enabled { "✓" } else { "○" };
-                    let endpoint = match srv.transport {
-                        gestura_core::config::McpTransportType::Stdio => {
-                            let cmd = srv.command.as_deref().unwrap_or("");
-                            let cmd_args = srv.args.join(" ");
-                            format!("{} {}", cmd, cmd_args).trim().to_string()
-                        }
-                        _ => srv.url.clone().unwrap_or_default(),
-                    };
-                    lines.push(format!(
-                        "  {} {} [{}] {}",
-                        status, srv.name, srv.transport, endpoint
-                    ));
+
+                if !connected.is_empty() {
+                    lines.push(String::new());
+                    lines.push("Connected:".to_string());
+                    for name in connected {
+                        lines.push(format!("  ✓ {name}"));
+                    }
                 }
-                app.messages.push(app::TuiMessage {
-                    role: "system".to_string(),
-                    content: lines.join("\n"),
-                    thinking: None,
-                    is_streaming: false,
-                    is_error: false,
-                });
+                lines
             }
-        }
-        Some("tools") => {
-            let registry = gestura_core::mcp::client::get_mcp_client_registry();
-            let server_filter = args.get(1).map(|s| s.to_string());
-            let all = rt.block_on(async { registry.all_tools().await });
-            let filtered: Vec<_> = if let Some(ref filter) = server_filter {
-                all.into_iter().filter(|(name, _)| name == filter).collect()
-            } else {
-                all
-            };
-            if filtered.is_empty() {
-                app.set_status("No MCP tools discovered. Connect to a server first.");
-            } else {
+            super::slash::McpLiveAction::Tools { server } => {
+                let all = rt.block_on(registry.all_tools());
+                let filtered: Vec<_> = if let Some(ref filter) = server {
+                    all.into_iter().filter(|(name, _)| name == filter).collect()
+                } else {
+                    all
+                };
+
+                if filtered.is_empty() {
+                    return vec!["No MCP tools discovered. Connect to a server first.".to_string()];
+                }
+
                 let mut lines = vec!["━━━ MCP Tools ━━━".to_string(), String::new()];
-                let mut total = 0;
+                let mut total = 0usize;
                 for (srv, tools) in &filtered {
-                    lines.push(format!("  {} ({} tools)", srv, tools.len()));
+                    lines.push(format!("  {srv} ({} tools)", tools.len()));
                     for tool in tools {
                         lines.push(format!(
                             "    • {} — {}",
@@ -2560,244 +3195,90 @@ fn handle_mcp_command(app: &mut TuiApp, args: &[&str], rt: &tokio::runtime::Runt
                 }
                 lines.push(String::new());
                 lines.push(format!(
-                    "Total: {} tool(s) across {} server(s)",
-                    total,
+                    "Total: {total} tool(s) across {} server(s)",
                     filtered.len()
                 ));
+                lines
+            }
+            super::slash::McpLiveAction::Connect { name } => {
+                let Some(srv) = cfg.mcp_servers.iter().find(|s| s.name == name) else {
+                    return vec![format!("MCP server not found in config: {name}")];
+                };
+                match rt.block_on(registry.connect(srv)) {
+                    Ok(tools) => vec![format!(
+                        "Connected to MCP server '{name}' ({} tools discovered)",
+                        tools.len()
+                    )],
+                    Err(e) => vec![format!("Failed to connect to '{name}': {e}")],
+                }
+            }
+            super::slash::McpLiveAction::Disconnect { name } => {
+                rt.block_on(registry.disconnect(&name));
+                vec![format!("Disconnected from MCP server '{name}'")]
+            }
+        }
+    }
+
+    let mut cfg = app.config.clone();
+    match super::slash::run_mcp_subcommand(args, &mut cfg) {
+        Ok(out) => {
+            let changed = out.changed;
+
+            // Persist config changes first.
+            if changed {
+                match cfg.save() {
+                    Ok(()) => {
+                        app.config = cfg.clone();
+                    }
+                    Err(e) => {
+                        app.set_error(format!("Failed to save config: {e}"));
+                        return Ok(());
+                    }
+                }
+            }
+
+            let mut lines = if let Some(act) = out.live_action {
+                execute_mcp_live_action(rt, &cfg, act)
+            } else {
+                out.lines
+            };
+
+            // Always show something for /mcp actions (even ones that primarily set status).
+            if lines.is_empty() {
+                lines.push("(no output)".to_string());
+            }
+
+            app.messages.push(app::TuiMessage {
+                role: "system".to_string(),
+                content: lines.join("\n"),
+                thinking: None,
+                is_streaming: false,
+                is_error: false,
+            });
+            app.scroll_to_bottom();
+
+            // If the MCP overlay is open, refresh its cached list after mutations or
+            // connection state changes.
+            if app.mode == TuiMode::Mcp {
+                open_mcp_browser(app, rt);
+            }
+        }
+        Err(e) => {
+            app.set_error(&e);
+            let mut help_cfg = app.config.clone();
+            if let Ok(help) = super::slash::run_mcp_subcommand(&["help"], &mut help_cfg) {
                 app.messages.push(app::TuiMessage {
                     role: "system".to_string(),
-                    content: lines.join("\n"),
+                    content: help.lines.join("\n"),
                     thinking: None,
                     is_streaming: false,
                     is_error: false,
                 });
+                app.scroll_to_bottom();
             }
-        }
-        Some("connect") => {
-            if let Some(name) = args.get(1) {
-                let registry = gestura_core::mcp::client::get_mcp_client_registry();
-                let config = AppConfig::load();
-                if let Some(srv) = config.mcp_servers.iter().find(|s| s.name == *name) {
-                    match rt.block_on(async { registry.connect(srv).await }) {
-                        Ok(_) => app.set_status(format!("Connected to MCP server '{}'", name)),
-                        Err(e) => app.set_error(format!("Failed to connect to '{}': {}", name, e)),
-                    }
-                } else {
-                    app.set_error(format!("MCP server '{}' not found in config", name));
-                }
-            } else {
-                app.set_error("Usage: /mcp connect <name>");
-            }
-        }
-        Some("disconnect") => {
-            if let Some(name) = args.get(1) {
-                let registry = gestura_core::mcp::client::get_mcp_client_registry();
-                rt.block_on(async { registry.disconnect(name).await });
-                app.set_status(format!("Disconnected from MCP server '{}'", name));
-            } else {
-                app.set_error("Usage: /mcp disconnect <name>");
-            }
-        }
-        Some("get") => {
-            if let Some(name) = args.get(1) {
-                let config = AppConfig::load();
-                match config.mcp_servers.iter().find(|t| t.name == *name) {
-                    Some(srv) => {
-                        use gestura_core::config::McpTransportType;
-                        let mut lines = vec![
-                            format!("━━━ MCP Server: {} ━━━", srv.name),
-                            String::new(),
-                            format!("  Transport: {}", srv.transport),
-                            format!(
-                                "  Enabled:   {}",
-                                if srv.enabled { "yes" } else { "no" }
-                            ),
-                            format!("  Scope:     {}", srv.scope),
-                            format!("  Timeout:   {}s", srv.timeout_secs),
-                            format!("  Auto-reconnect: {}", srv.auto_reconnect),
-                        ];
-                        match srv.transport {
-                            McpTransportType::Stdio => {
-                                lines.push(format!(
-                                    "  Command:   {}",
-                                    srv.command.as_deref().unwrap_or("(none)")
-                                ));
-                                if !srv.args.is_empty() {
-                                    lines.push(format!("  Args:      {}", srv.args.join(" ")));
-                                }
-                            }
-                            _ => {
-                                lines.push(format!(
-                                    "  URL:       {}",
-                                    srv.url.as_deref().unwrap_or("(none)")
-                                ));
-                            }
-                        }
-                        if !srv.env.is_empty() {
-                            lines.push(String::new());
-                            lines.push("  Environment:".to_string());
-                            for (k, v) in &srv.env {
-                                lines.push(format!("    {}={}", k, v));
-                            }
-                        }
-                        app.messages.push(app::TuiMessage {
-                            role: "system".to_string(),
-                            content: lines.join("\n"),
-                            thinking: None,
-                            is_streaming: false,
-                            is_error: false,
-                        });
-                    }
-                    None => {
-                        app.set_error(format!("MCP server '{}' not found", name));
-                    }
-                }
-            } else {
-                app.set_error("Usage: /mcp get <name>");
-            }
-        }
-        Some("enable") => {
-            if let Some(name) = args.get(1) {
-                let mut config = AppConfig::load();
-                match config.mcp_servers.iter_mut().find(|t| t.name == *name) {
-                    Some(srv) => {
-                        srv.enabled = true;
-                        if let Err(e) = config.save() {
-                            app.set_error(format!("Failed to save config: {}", e));
-                        } else {
-                            app.set_status(format!("Enabled MCP server: {}", name));
-                        }
-                    }
-                    None => {
-                        app.set_error(format!("MCP server '{}' not found", name));
-                    }
-                }
-            } else {
-                app.set_error("Usage: /mcp enable <name>");
-            }
-        }
-        Some("disable") => {
-            if let Some(name) = args.get(1) {
-                let mut config = AppConfig::load();
-                match config.mcp_servers.iter_mut().find(|t| t.name == *name) {
-                    Some(srv) => {
-                        srv.enabled = false;
-                        if let Err(e) = config.save() {
-                            app.set_error(format!("Failed to save config: {}", e));
-                        } else {
-                            app.set_status(format!("Disabled MCP server: {}", name));
-                        }
-                    }
-                    None => {
-                        app.set_error(format!("MCP server '{}' not found", name));
-                    }
-                }
-            } else {
-                app.set_error("Usage: /mcp disable <name>");
-            }
-        }
-        Some("add") => {
-            use gestura_core::config::{McpServerEntry, McpScope, McpTransportType};
-            if args.len() < 3 {
-                app.set_error("Usage: /mcp add <name> <cmd_or_url> [--transport stdio|http|sse] [--scope user|project|local]");
-            } else {
-                let name = args[1].to_string();
-                let command_or_url = args[2].to_string();
-                let mut transport_str = "stdio".to_string();
-                let mut scope_str = "user".to_string();
-                let mut i = 3;
-                while i < args.len() {
-                    match args[i] {
-                        "--transport" | "-t" => {
-                            if let Some(val) = args.get(i + 1) {
-                                transport_str = val.to_string();
-                                i += 1;
-                            }
-                        }
-                        "--scope" | "-s" => {
-                            if let Some(val) = args.get(i + 1) {
-                                scope_str = val.to_string();
-                                i += 1;
-                            }
-                        }
-                        _ => {}
-                    }
-                    i += 1;
-                }
-                let transport_type: McpTransportType = match transport_str.parse() {
-                    Ok(t) => t,
-                    Err(e) => {
-                        app.set_error(e.to_string());
-                        return Ok(());
-                    }
-                };
-                let scope_val: McpScope = match scope_str.parse() {
-                    Ok(s) => s,
-                    Err(e) => {
-                        app.set_error(e.to_string());
-                        return Ok(());
-                    }
-                };
-                let mut config = AppConfig::load();
-                if config.mcp_servers.iter().any(|t| t.name == name) {
-                    app.set_error(format!(
-                        "MCP server '{}' already exists. Use /mcp remove first.",
-                        name
-                    ));
-                } else {
-                    let entry = match transport_type {
-                        McpTransportType::Stdio => McpServerEntry {
-                            name: name.clone(),
-                            transport: transport_type,
-                            enabled: true,
-                            command: Some(command_or_url.clone()),
-                            scope: scope_val,
-                            ..McpServerEntry::default()
-                        },
-                        McpTransportType::Http | McpTransportType::Sse => McpServerEntry {
-                            name: name.clone(),
-                            transport: transport_type,
-                            enabled: true,
-                            url: Some(command_or_url.clone()),
-                            scope: scope_val,
-                            ..McpServerEntry::default()
-                        },
-                    };
-                    config.mcp_servers.push(entry);
-                    if let Err(e) = config.save() {
-                        app.set_error(format!("Failed to save config: {}", e));
-                    } else {
-                        app.set_status(format!(
-                            "Added MCP server: {} ({})",
-                            name, transport_str
-                        ));
-                    }
-                }
-            }
-        }
-        Some("remove") => {
-            if let Some(name) = args.get(1) {
-                let mut config = AppConfig::load();
-                let original_len = config.mcp_servers.len();
-                config.mcp_servers.retain(|t| t.name != *name);
-                if config.mcp_servers.len() == original_len {
-                    app.set_error(format!("MCP server '{}' not found", name));
-                } else if let Err(e) = config.save() {
-                    app.set_error(format!("Failed to save config: {}", e));
-                } else {
-                    app.set_status(format!("Removed MCP server: {}", name));
-                }
-            } else {
-                app.set_error("Usage: /mcp remove <name>");
-            }
-        }
-        Some(other) => {
-            app.set_error(format!(
-                "Unknown /mcp subcommand: '{}'. Try: status, list, tools, get, enable, disable, add, remove, connect, disconnect",
-                other
-            ));
         }
     }
+
     Ok(())
 }
 
@@ -3304,115 +3785,153 @@ fn handle_privacy_command(
 /// - `/memory` or `/memory list` - List memory bank entries
 /// - `/memory save` - Save current conversation to memory bank
 /// - `/memory clear` - Clear the memory bank
+/// - `/memory delete <path>` - Delete a memory bank entry (requires confirmation)
 fn handle_memory_command(
     app: &mut TuiApp,
     args: &[&str],
     rt: &tokio::runtime::Runtime,
 ) -> Result<()> {
-    let subcommand = args.first().map(|s| s.to_lowercase());
+    use super::live_actions::{MemoryExecOutput, execute_memory_live_action};
 
-    match subcommand.as_deref() {
-        None | Some("list") => {
-            if let Some(workspace_dir) = app.session.workspace_dir() {
-                let result =
-                    rt.block_on(gestura_core::memory_bank::list_memory_bank(workspace_dir));
-                match result {
-                    Ok(entries) if !entries.is_empty() => {
-                        let mut lines = vec![
-                            format!("━━━ Memory Bank ({} entries) ━━━", entries.len()),
-                            String::new(),
-                        ];
-                        for entry in &entries {
-                            lines.push(format!(
-                                "  • [{}] {}",
-                                entry.timestamp.format("%Y-%m-%d %H:%M"),
-                                entry.summary
-                            ));
-                        }
-                        app.messages.push(app::TuiMessage {
-                            role: "system".to_string(),
-                            content: lines.join("\n"),
-                            thinking: None,
-                            is_streaming: false,
-                            is_error: false,
-                        });
-                    }
-                    Ok(_) => {
-                        app.set_status("Memory bank is empty. Use '/memory save' to store conversation context.");
-                    }
-                    Err(e) => {
-                        app.set_error(format!("Failed to read memory bank: {e}"));
-                    }
-                }
+    let sub = args
+        .first()
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    // Destructive confirmation UX: prompt via confirm modal, then re-run with --confirmed.
+    if sub == "clear" && !args.contains(&"--confirmed") {
+        app.show_confirm(app::ConfirmAction::ExecuteCommand {
+            title: "Clear Memory Bank?".to_string(),
+            message: "This will permanently delete ALL memory entries.\n\n  [Y] Yes, clear all    [N] No, cancel"
+                .to_string(),
+            command: "/memory clear --confirmed".to_string(),
+        });
+        return Ok(());
+    }
+
+    if sub == "delete" {
+        let mut confirmed = false;
+        let mut path_arg: Option<&str> = None;
+        for a in args.iter().skip(1).copied() {
+            if a == "--confirmed" {
+                confirmed = true;
             } else {
-                app.set_error("No workspace directory set for this session.");
+                path_arg = Some(a);
             }
         }
-        Some("save") => {
-            if let Some(workspace_dir) = app.session.workspace_dir() {
-                let history: Vec<String> = app
-                    .session
-                    .state
-                    .messages
-                    .iter()
-                    .map(|msg| msg.content.clone())
-                    .collect();
-                if history.is_empty() {
-                    app.set_error("No conversation to save.");
-                } else {
-                    use gestura_core::context::ContextManager;
-                    let context_manager = ContextManager::new();
-                    let summary = context_manager.summarize_history(&history);
-                    let content = history.join("\n\n");
 
-                    let entry = gestura_core::memory_bank::MemoryBankEntry {
-                        timestamp: chrono::Utc::now(),
-                        session_id: app.session.id.clone(),
-                        summary: summary.clone(),
-                        content,
-                        file_path: None,
-                    };
+        let Some(path_str) = path_arg else {
+            app.set_error("Usage: /memory delete <path> [--confirmed]");
+            return Ok(());
+        };
 
-                    let result = rt.block_on(gestura_core::memory_bank::save_to_memory_bank(
-                        workspace_dir,
-                        &entry,
-                    ));
-                    match result {
-                        Ok(path) => {
-                            app.set_status(format!("Saved to memory bank: {}", path.display()));
-                        }
-                        Err(e) => {
-                            app.set_error(format!("Failed to save to memory bank: {e}"));
-                        }
-                    }
-                }
-            } else {
-                app.set_error("No workspace directory set for this session.");
-            }
-        }
-        Some("clear") => {
-            if let Some(workspace_dir) = app.session.workspace_dir() {
-                let result =
-                    rt.block_on(gestura_core::memory_bank::clear_memory_bank(workspace_dir));
-                match result {
-                    Ok(count) => {
-                        app.set_status(format!("Cleared {count} memory bank entries."));
-                    }
-                    Err(e) => {
-                        app.set_error(format!("Failed to clear memory bank: {e}"));
-                    }
-                }
-            } else {
-                app.set_error("No workspace directory set for this session.");
-            }
-        }
-        Some(other) => {
-            app.set_error(format!(
-                "Unknown /memory subcommand: {}. Try: list, save, clear",
-                other
-            ));
+        if !confirmed {
+            app.show_confirm(app::ConfirmAction::ExecuteCommand {
+                title: "Delete Memory Entry?".to_string(),
+                message: format!(
+                    "This will permanently delete the memory entry file:\n\n  {path_str}\n\n  [Y] Yes, delete    [N] No, cancel"
+                ),
+                command: format!("/memory delete --confirmed {path_str}"),
+            });
+            return Ok(());
         }
     }
+
+    let Some(workspace_dir) = app.session.workspace_dir().cloned() else {
+        app.set_error("No workspace directory set for this session.");
+        return Ok(());
+    };
+
+    let out = match super::slash::run_memory_subcommand(args, &app.session) {
+        Ok(out) => out,
+        Err(e) => {
+            app.set_error(e);
+            return Ok(());
+        }
+    };
+
+    if let Some(first_line) = out.lines.first() {
+        app.set_status(first_line.clone());
+    }
+
+    let Some(act) = out.live_action else {
+        if !out.lines.is_empty() {
+            app.messages.push(app::TuiMessage {
+                role: "system".to_string(),
+                content: out.lines.join("\n"),
+                thinking: None,
+                is_streaming: false,
+                is_error: false,
+            });
+        }
+        return Ok(());
+    };
+
+    match execute_memory_live_action(rt, &workspace_dir, act) {
+        Ok(MemoryExecOutput::Listed(entries)) => {
+            if entries.is_empty() {
+                app.set_status(
+                    "Memory bank is empty. Use '/memory save' to store conversation context.",
+                );
+            } else {
+                let mut lines = vec![
+                    format!("━━━ Memory Bank ({} entries) ━━━", entries.len()),
+                    String::new(),
+                ];
+                for entry in &entries {
+                    lines.push(format!(
+                        "  • [{}] {}",
+                        entry.timestamp.format("%Y-%m-%d %H:%M"),
+                        entry.summary
+                    ));
+                }
+                app.messages.push(app::TuiMessage {
+                    role: "system".to_string(),
+                    content: lines.join("\n"),
+                    thinking: None,
+                    is_streaming: false,
+                    is_error: false,
+                });
+            }
+        }
+        Ok(MemoryExecOutput::Searched { query, results }) => {
+            let mut lines = vec![
+                format!("━━━ Memory Search: '{query}' ({}) ━━━", results.len()),
+                String::new(),
+            ];
+            for r in &results {
+                lines.push(format!(
+                    "  • [{}] {}",
+                    r.timestamp.format("%Y-%m-%d %H:%M"),
+                    r.summary
+                ));
+            }
+            app.messages.push(app::TuiMessage {
+                role: "system".to_string(),
+                content: lines.join("\n"),
+                thinking: None,
+                is_streaming: false,
+                is_error: false,
+            });
+        }
+        Ok(MemoryExecOutput::Saved(path)) => {
+            app.set_status(format!("Saved to memory bank: {}", path.display()));
+        }
+        Ok(MemoryExecOutput::Cleared(count)) => {
+            app.set_status(format!("Cleared {count} memory bank entries."));
+        }
+        Ok(MemoryExecOutput::Deleted) => {
+            app.set_status("Deleted memory entry".to_string());
+        }
+        Err(e) => {
+            app.set_error(format!("Memory operation failed: {e}"));
+        }
+    }
+
+    if out.changed && app.mode == TuiMode::Memory {
+        open_memory_browser(app, rt);
+    }
+
     Ok(())
 }
 
@@ -3446,36 +3965,75 @@ fn handle_summarize_command(app: &mut TuiApp) -> Result<()> {
     Ok(())
 }
 
-/// Handle `/listen` or `/voice` command - Voice input status.
-fn handle_listen_command(app: &mut TuiApp, rt: &tokio::runtime::Runtime) -> Result<()> {
-    let _ = rt; // available if we need async later
-    let mic_available = gestura_core::is_microphone_available();
-    let is_recording = gestura_core::is_speech_recording();
+fn handle_toggle_recording_action(
+    app: &mut TuiApp,
+    streaming: &Option<StreamingState>,
+    voice_capture: &mut Option<VoiceCaptureState>,
+    rt: &tokio::runtime::Runtime,
+) {
+    if streaming.is_some() {
+        app.set_status("Still streaming… press Esc to cancel before recording".to_string());
+        return;
+    }
 
-    let mut lines = vec!["━━━ Voice Input ━━━".to_string(), String::new()];
-    lines.push(format!(
-        "Microphone: {}",
-        if mic_available {
-            "✓ available"
-        } else {
-            "✗ not available"
+    if app.voice_capture_in_progress {
+        app.set_status("Recording already in progress".to_string());
+        return;
+    }
+
+    if !gestura_core::is_microphone_available() {
+        app.set_error("No microphone available".to_string());
+        return;
+    }
+
+    app.voice_capture_in_progress = true;
+    app.set_status("Listening… speak now (silence stops recording; Esc cancels)".to_string());
+    *voice_capture = Some(spawn_voice_capture(rt));
+}
+
+/// Spawn a non-blocking voice capture (record + transcribe) task.
+fn spawn_voice_capture(rt: &tokio::runtime::Runtime) -> VoiceCaptureState {
+    let (tx, rx) = mpsc::channel::<std::result::Result<String, String>>(1);
+
+    rt.spawn(async move {
+        // Ensure a previous cancellation doesn't immediately abort a new recording.
+        gestura_core::reset_stop_flag();
+
+        let speech_processor = get_speech_processor();
+
+        let (duration, audio_path) = match speech_processor
+            .record_audio_to_file(None)
+            .await
+            .map_err(|e| e.to_string())
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = tx.send(Err(e)).await;
+                return;
+            }
+        };
+
+        if duration < 0.5 {
+            let _ = tokio::fs::remove_file(&audio_path).await;
+            let _ = tx
+                .send(Err("Recording too short - no audio captured".to_string()))
+                .await;
+            return;
         }
-    ));
-    lines.push(format!(
-        "Recording: {}",
-        if is_recording { "active" } else { "idle" }
-    ));
-    lines.push(String::new());
-    lines.push("Voice recording in TUI mode is limited. For full voice input:".to_string());
-    lines.push("  • Use 'gestura listen' from CLI".to_string());
-    lines.push("  • Use the GUI app for integrated voice chat".to_string());
 
-    app.messages.push(app::TuiMessage {
-        role: "system".to_string(),
-        content: lines.join("\n"),
-        thinking: None,
-        is_streaming: false,
-        is_error: false,
+        let res = match speech_processor.transcribe_audio(&audio_path).await {
+            Ok(result) => {
+                let _ = tokio::fs::remove_file(&audio_path).await;
+                Ok(result.text)
+            }
+            Err(e) => Err(format!(
+                "Transcription failed: {} (audio saved to {:?})",
+                e, audio_path
+            )),
+        };
+
+        let _ = tx.send(res).await;
     });
-    Ok(())
+
+    VoiceCaptureState { receiver: rx }
 }

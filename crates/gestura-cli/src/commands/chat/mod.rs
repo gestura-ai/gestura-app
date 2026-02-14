@@ -7,9 +7,10 @@ use gestura_core::{
     CancellationToken, PermissionLevel, RequestSource, SessionToolSettings, SpeechProcessorCoreExt,
     StreamChunk,
     chat_sessions::{
-        ChatSessionStore, FileChatSessionStore, MessageSource, SessionToolSettingsConfigExt,
+        ChatSessionStore, FileChatSessionStore, MessageSource, SessionLlmConfig,
+        SessionPermissionLevel, SessionToolSettingsConfigExt,
     },
-    get_speech_processor,
+    get_speech_processor, llm_overrides,
     tool_confirmation::{TOOL_CONFIRMATIONS, ToolConfirmationDecision},
 };
 use rustyline::DefaultEditor;
@@ -19,7 +20,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 
+mod live_actions;
 mod markdown_ansi;
+mod slash;
 mod tui;
 
 /// Options for the chat command
@@ -31,6 +34,10 @@ pub struct ChatOptions<'a> {
     pub tui: bool,
     pub voice: bool,
     pub system: Option<&'a str>,
+
+    /// If set, overrides the session's tool permission level at startup and
+    /// persists it to the session.
+    pub permission_level_override: Option<SessionPermissionLevel>,
 }
 
 /// Persisted chat message.
@@ -116,6 +123,23 @@ pub(super) fn ensure_session_tool_settings(session: &mut ChatSession, config: &A
 
     session.state.tool_settings = Some(SessionToolSettings::from_global_config(config));
     true
+}
+
+fn apply_permission_level_override(
+    session: &mut ChatSession,
+    override_level: Option<SessionPermissionLevel>,
+) -> bool {
+    let Some(level) = override_level else {
+        return false;
+    };
+
+    let settings = session
+        .state
+        .tool_settings
+        .get_or_insert_with(Default::default);
+    let changed = settings.permission_level != level;
+    settings.permission_level = level;
+    changed
 }
 
 /// Derive the effective tool execution policy for an `AgentRequest`.
@@ -296,15 +320,145 @@ fn get_history_path() -> PathBuf {
         .join("chat_history.txt")
 }
 
-fn model_for_provider(cfg: &AppConfig, provider: &str) -> Option<String> {
-    match provider {
-        "openai" => cfg.llm.openai.as_ref().map(|c| c.model.clone()),
-        "anthropic" => cfg.llm.anthropic.as_ref().map(|c| c.model.clone()),
-        "grok" => cfg.llm.grok.as_ref().map(|c| c.model.clone()),
-        "gemini" => cfg.llm.gemini.as_ref().map(|c| c.model.clone()),
-        "ollama" => cfg.llm.ollama.as_ref().map(|c| c.model.clone()),
-        _ => None,
+const KNOWN_LLM_PROVIDERS: [&str; 5] = ["openai", "anthropic", "grok", "gemini", "ollama"];
+
+fn is_known_llm_provider(provider: &str) -> bool {
+    KNOWN_LLM_PROVIDERS
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case(provider.trim()))
+}
+
+/// Parse a CLI/TUI-style selector string into a session override.
+///
+/// This is intentionally *legacy-aware*:
+/// - `provider:model` => provider+model
+/// - `provider` (if matches known providers) => provider-only
+/// - otherwise => model-only
+fn parse_cli_model_selector_legacy_aware(spec: &str) -> Option<SessionLlmConfig> {
+    let s = spec.trim();
+    if s.is_empty() {
+        return None;
     }
+
+    if s.contains(':') {
+        return llm_overrides::session_llm_config_from_cli_model_arg(s);
+    }
+
+    if is_known_llm_provider(s) {
+        return Some(SessionLlmConfig {
+            provider: Some(s.to_ascii_lowercase()),
+            model: None,
+        });
+    }
+
+    llm_overrides::session_llm_config_from_cli_model_arg(s)
+}
+
+fn basic_mode_resolve_session_llm_override(session: &ChatSession) -> Option<SessionLlmConfig> {
+    if let Some(cfg) = session.state.llm_config.as_ref() {
+        return Some(cfg.clone());
+    }
+
+    session
+        .model
+        .as_deref()
+        .and_then(parse_cli_model_selector_legacy_aware)
+}
+
+fn basic_mode_apply_session_llm_overrides(
+    base_config: &AppConfig,
+    session: &ChatSession,
+) -> (AppConfig, llm_overrides::EffectiveLlmConfig) {
+    let session_llm = basic_mode_resolve_session_llm_override(session);
+    let mut config = base_config.clone();
+    let effective =
+        llm_overrides::apply_cli_session_llm_overrides(&mut config, session_llm.as_ref());
+    (config, effective)
+}
+
+/// Normalize and (optionally) migrate session-scoped LLM selection state.
+///
+/// Returns `true` if the session was modified and should be persisted.
+fn normalize_basic_mode_session_llm_override(
+    config: &AppConfig,
+    session: &mut ChatSession,
+    cli_model_arg: Option<&str>,
+) -> bool {
+    let explicit_cli_arg = cli_model_arg.is_some_and(|s| !s.trim().is_empty());
+
+    let mut session_llm = if let Some(arg) = cli_model_arg.filter(|s| !s.trim().is_empty()) {
+        parse_cli_model_selector_legacy_aware(arg)
+    } else if session.state.llm_config.is_some() {
+        session.state.llm_config.clone()
+    } else {
+        session
+            .model
+            .as_deref()
+            .and_then(parse_cli_model_selector_legacy_aware)
+    };
+
+    let Some(mut session_llm_cfg) = session_llm.take() else {
+        return false;
+    };
+
+    // If this is an explicit CLI request, validate it before persisting.
+    if explicit_cli_arg {
+        let provider_for_validation = session_llm_cfg
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| config.llm.primary.clone());
+
+        if let Some(model) = session_llm_cfg
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            && let Err(msg) = gestura_core::llm_validation::validate_model_for_provider(
+                &provider_for_validation,
+                model,
+            )
+        {
+            println!("{} {msg}", "✗".red());
+            return false;
+        }
+
+        // If provider-only was requested, keep it provider-only until we resolve defaults below.
+        if session_llm_cfg.provider.is_none() {
+            session_llm_cfg.provider = Some(provider_for_validation);
+        }
+    }
+
+    let mut tmp_config = config.clone();
+    let effective =
+        llm_overrides::apply_cli_session_llm_overrides(&mut tmp_config, Some(&session_llm_cfg));
+    if effective.provider.trim().is_empty() || effective.model.trim().is_empty() {
+        return false;
+    }
+
+    let canonical = SessionLlmConfig {
+        provider: Some(effective.provider.clone()),
+        model: Some(effective.model.clone()),
+    };
+    let legacy = format!("{}:{}", effective.provider, effective.model);
+
+    let mut changed = false;
+    let same_canonical = session.state.llm_config.as_ref().is_some_and(|c| {
+        c.provider.as_deref() == canonical.provider.as_deref()
+            && c.model.as_deref() == canonical.model.as_deref()
+    });
+    if !same_canonical {
+        session.state.llm_config = Some(canonical);
+        changed = true;
+    }
+    if session.model.as_deref() != Some(legacy.as_str()) {
+        session.model = Some(legacy);
+        changed = true;
+    }
+
+    changed
 }
 
 pub fn run(opts: ChatOptions<'_>) -> Result<()> {
@@ -327,8 +481,12 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
         session,
         voice,
         system,
+        permission_level_override,
         ..
     } = opts;
+
+    // Voice mode is mutable at runtime (toggled via `/listen`).
+    let mut voice = voice;
 
     // Print compact header (claude-code / codex style)
     println!();
@@ -374,44 +532,28 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
         new_cli_session(model.map(String::from))?
     };
 
-    // Load config and set up provider
+    // Load config.
+    //
+    // IMPORTANT: do not hand-roll provider/model mutation here. We rely on the
+    // canonical core override helpers so provider configs are materialized and
+    // the effective model is never empty.
     let mut config = AppConfig::load();
-    if let Some(m) = model.or(chat_session.model.as_deref())
-        && let Some((provider, model_name)) = m.split_once(':')
-    {
-        config.llm.primary = provider.to_string();
-        match provider {
-            "openai" => {
-                if let Some(ref mut openai) = config.llm.openai {
-                    openai.model = model_name.to_string();
-                }
-            }
-            "anthropic" => {
-                if let Some(ref mut anthropic) = config.llm.anthropic {
-                    anthropic.model = model_name.to_string();
-                }
-            }
-            "grok" => {
-                if let Some(ref mut grok) = config.llm.grok {
-                    grok.model = model_name.to_string();
-                }
-            }
-            "gemini" => {
-                if let Some(ref mut gemini) = config.llm.gemini {
-                    gemini.model = model_name.to_string();
-                }
-            }
-            "ollama" => {
-                if let Some(ref mut ollama) = config.llm.ollama {
-                    ollama.model = model_name.to_string();
-                }
-            }
-            _ => {}
-        }
+
+    // Normalize the session's provider/model override early so:
+    // - `/model` and header display are consistent
+    // - pipeline metadata never ends up with an empty model
+    // - legacy `session.model` strings are migrated to `provider:model`
+    if normalize_basic_mode_session_llm_override(&config, &mut chat_session, model) {
+        save_cli_session(&chat_session)?;
     }
 
     // Ensure persisted sessions have tool settings (migration / defaults).
     if ensure_session_tool_settings(&mut chat_session, &config) {
+        save_cli_session(&chat_session)?;
+    }
+
+    // Apply startup override for session permission level.
+    if apply_permission_level_override(&mut chat_session, permission_level_override) {
         save_cli_session(&chat_session)?;
     }
 
@@ -436,11 +578,12 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
     );
 
     // Session info line
+    let (_, effective) = basic_mode_apply_session_llm_overrides(&config, &chat_session);
     let session_info = format!(
         "session {} · provider {} · model {}",
         &chat_session.id[..8],
-        config.llm.primary,
-        model.unwrap_or("default")
+        effective.provider,
+        effective.model
     );
     let session_padding = inner_width.saturating_sub(session_info.chars().count());
     println!(
@@ -593,7 +736,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 let input = line.trim();
 
                 // In voice mode, empty input triggers voice recording
-                let (input, input_source) = if input.is_empty() && voice {
+                let (mut input, mut input_source) = if input.is_empty() && voice {
                     match record_voice_input(&rt) {
                         Ok(text) => (text, MessageSource::Voice),
                         Err(e) => {
@@ -610,12 +753,10 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 // Add to history
                 let _ = rl.add_history_entry(&input);
 
-                // Handle /exec by stripping the prefix so it goes to the LLM
-                let input = if let Some(rest) = input.strip_prefix("/exec ") {
-                    rest.to_string()
-                } else {
-                    input
-                };
+                // Handle /exec by stripping the prefix so it goes to the LLM.
+                if let Some(rest) = input.strip_prefix("/exec ") {
+                    input = rest.to_string();
+                }
 
                 // Handle commands
                 if input.starts_with('/') {
@@ -641,15 +782,20 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 Ok(text) => {
                                     if !text.is_empty() {
                                         println!("{} {}", "Transcribed:".cyan(), text);
-                                        // Continue to process as regular input
-                                        // (fall through to LLM call below)
+                                        // Treat transcription as the user input (falls through
+                                        // to the LLM call below).
+                                        input = text;
+                                        input_source = MessageSource::Voice;
+                                    } else {
+                                        // No transcription; do not send an empty message.
+                                        continue;
                                     }
                                 }
                                 Err(e) => {
                                     eprintln!("{}: {}", "Voice error".red(), e);
+                                    continue;
                                 }
                             }
-                            continue;
                         }
                         "/help" => {
                             println!();
@@ -691,7 +837,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                             println!(
                                 "{}  {}  {}",
                                 "│".dimmed(),
-                                "/memory [list|save|clear]".green(),
+                                "/memory [list|search|save|clear|delete]".green(),
                                 "Manage memory bank".dimmed()
                             );
                             println!(
@@ -712,14 +858,12 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 "/new".green(),
                                 "Start a fresh chat session".dimmed()
                             );
-                            if voice {
-                                println!(
-                                    "{}  {}             {}",
-                                    "│".dimmed(),
-                                    "/voice".green(),
-                                    "Record voice input via microphone".dimmed()
-                                );
-                            }
+                            println!(
+                                "{}  {}             {}",
+                                "│".dimmed(),
+                                "/voice".green(),
+                                "Record voice input via microphone".dimmed()
+                            );
                             println!(
                                 "{}",
                                 "├─ System ───────────────────────────────────────────────────┤"
@@ -807,7 +951,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 "{}  {}            {}",
                                 "│".dimmed(),
                                 "/listen".green(),
-                                "Voice input status".dimmed()
+                                "Toggle listening mode (Enter on empty prompt to record)".dimmed()
                             );
                             println!(
                                 "{}",
@@ -894,212 +1038,9 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                             println!();
                             continue;
                         }
-                        cmd if cmd.starts_with("/memory") => {
+                        "/memory" => {
                             println!();
-                            // Parse subcommand
-                            let parts: Vec<&str> = cmd.split_whitespace().collect();
-                            let subcommand = parts.get(1).unwrap_or(&"list");
-
-                            match *subcommand {
-                                "list" => {
-                                    // List all memory bank entries
-                                    if let Some(workspace_dir) = chat_session.workspace_dir() {
-                                        let result = tokio::runtime::Runtime::new()
-                                            .unwrap()
-                                            .block_on(gestura_core::memory_bank::list_memory_bank(
-                                                workspace_dir,
-                                            ));
-                                        match result {
-                                            Ok(entries) if !entries.is_empty() => {
-                                                println!(
-                                                    "{} {}",
-                                                    "◆".blue().bold(),
-                                                    format!(
-                                                        "Memory Bank Entries ({} total):",
-                                                        entries.len()
-                                                    )
-                                                    .blue()
-                                                );
-                                                println!();
-                                                for entry in entries {
-                                                    println!(
-                                                        "  {} {} (Session: {})",
-                                                        "•".dimmed(),
-                                                        entry
-                                                            .timestamp
-                                                            .format("%Y-%m-%d %H:%M UTC"),
-                                                        entry.session_id.dimmed()
-                                                    );
-                                                    println!("    {}", entry.summary);
-                                                    if let Some(path) = entry.file_path {
-                                                        println!(
-                                                            "    File: {}",
-                                                            path.display().to_string().dimmed()
-                                                        );
-                                                    }
-                                                    println!();
-                                                }
-                                            }
-                                            Ok(_) => {
-                                                println!(
-                                                    "{} {}",
-                                                    "◆".yellow().bold(),
-                                                    "No memory bank entries found.".yellow()
-                                                );
-                                            }
-                                            Err(e) => {
-                                                println!(
-                                                    "{} {}",
-                                                    "✗".red().bold(),
-                                                    format!("Error listing memory bank: {}", e)
-                                                        .red()
-                                                );
-                                            }
-                                        }
-                                    } else {
-                                        println!(
-                                            "{} {}",
-                                            "✗".red().bold(),
-                                            "No workspace directory configured. Cannot access memory bank.".red()
-                                        );
-                                    }
-                                }
-                                "save" => {
-                                    // Save current context to memory bank
-                                    if let Some(workspace_dir) = chat_session.workspace_dir() {
-                                        let history: Vec<String> = chat_session
-                                            .state
-                                            .messages
-                                            .iter()
-                                            .map(|msg| msg.content.clone())
-                                            .collect();
-
-                                        if history.is_empty() {
-                                            println!(
-                                                "{} {}",
-                                                "◆".yellow().bold(),
-                                                "No conversation history to save.".yellow()
-                                            );
-                                        } else {
-                                            use gestura_core::context::ContextManager;
-                                            let context_manager = ContextManager::new();
-                                            let summary =
-                                                context_manager.summarize_history(&history);
-                                            let content = history.join("\n\n");
-
-                                            let entry =
-                                                gestura_core::memory_bank::MemoryBankEntry {
-                                                    timestamp: chrono::Utc::now(),
-                                                    session_id: chat_session.id.clone(),
-                                                    summary: summary.clone(),
-                                                    content,
-                                                    file_path: None,
-                                                };
-
-                                            let result =
-                                                tokio::runtime::Runtime::new().unwrap().block_on(
-                                                    gestura_core::memory_bank::save_to_memory_bank(
-                                                        workspace_dir,
-                                                        &entry,
-                                                    ),
-                                                );
-                                            match result {
-                                                Ok(path) => {
-                                                    println!(
-                                                        "{} {}",
-                                                        "✓".green().bold(),
-                                                        format!(
-                                                            "Saved {} messages to memory bank",
-                                                            history.len()
-                                                        )
-                                                        .green()
-                                                    );
-                                                    println!("  File: {}", path.display());
-                                                    println!("  Summary: {}", summary.dimmed());
-                                                }
-                                                Err(e) => {
-                                                    println!(
-                                                        "{} {}",
-                                                        "✗".red().bold(),
-                                                        format!(
-                                                            "Error saving to memory bank: {}",
-                                                            e
-                                                        )
-                                                        .red()
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        println!(
-                                            "{} {}",
-                                            "✗".red().bold(),
-                                            "No workspace directory configured. Cannot save to memory bank.".red()
-                                        );
-                                    }
-                                }
-                                "clear" => {
-                                    // Clear all memory bank entries
-                                    if let Some(workspace_dir) = chat_session.workspace_dir() {
-                                        let memory_dir =
-                                            workspace_dir.join(".gestura").join("memory");
-                                        match std::fs::remove_dir_all(&memory_dir) {
-                                            Ok(_) => {
-                                                // Recreate the directory
-                                                let _ = std::fs::create_dir_all(&memory_dir);
-                                                println!(
-                                                    "{} {}",
-                                                    "✓".green().bold(),
-                                                    "Cleared all memory bank entries.".green()
-                                                );
-                                            }
-                                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                                                println!(
-                                                    "{} {}",
-                                                    "◆".yellow().bold(),
-                                                    "Memory bank is already empty.".yellow()
-                                                );
-                                            }
-                                            Err(e) => {
-                                                println!(
-                                                    "{} {}",
-                                                    "✗".red().bold(),
-                                                    format!("Error clearing memory bank: {}", e)
-                                                        .red()
-                                                );
-                                            }
-                                        }
-                                    } else {
-                                        println!(
-                                            "{} {}",
-                                            "✗".red().bold(),
-                                            "No workspace directory configured. Cannot clear memory bank.".red()
-                                        );
-                                    }
-                                }
-                                _ => {
-                                    println!(
-                                        "{} {}",
-                                        "✗".red().bold(),
-                                        format!("Unknown /memory subcommand: '{}'", subcommand)
-                                            .red()
-                                    );
-                                    println!();
-                                    println!("Usage:");
-                                    println!(
-                                        "  {} - Show all memory bank entries",
-                                        "/memory list".green()
-                                    );
-                                    println!(
-                                        "  {} - Save current conversation to memory bank",
-                                        "/memory save".green()
-                                    );
-                                    println!(
-                                        "  {} - Delete all memory bank entries",
-                                        "/memory clear".green()
-                                    );
-                                }
-                            }
+                            basic_mode_memory_command(&args, &chat_session);
                             println!();
                             continue;
                         }
@@ -1198,7 +1139,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                         }
                         "/knowledge" => {
                             println!();
-                            basic_mode_knowledge_command(&args);
+                            basic_mode_knowledge_command(&args, &chat_session);
                             println!();
                             continue;
                         }
@@ -1228,7 +1169,35 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                         }
                         "/listen" => {
                             println!();
-                            basic_mode_listen_command();
+                            // Toggle listening mode for basic CLI.
+                            if !voice {
+                                if !gestura_core::is_microphone_available() {
+                                    println!(
+                                        "{} {}",
+                                        "✗".red(),
+                                        "Microphone not available; cannot enable listening mode"
+                                            .dimmed()
+                                    );
+                                    voice = false;
+                                } else {
+                                    voice = true;
+                                    println!(
+                                        "{} {}",
+                                        "🎤".green(),
+                                        "Listening mode enabled (press Enter on an empty prompt to record)"
+                                            .dimmed()
+                                    );
+                                }
+                            } else {
+                                voice = false;
+                                println!(
+                                    "{} {}",
+                                    "🔇".yellow(),
+                                    "Listening mode disabled".dimmed()
+                                );
+                            }
+
+                            basic_mode_listen_command(voice);
                             println!();
                             continue;
                         }
@@ -1252,11 +1221,161 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                         }
                         "/model" => {
                             println!();
-                            if let Some(new_model) =
+                            if let Some(new_llm) =
                                 basic_mode_model_command(&args, &config, &chat_session)
                             {
-                                chat_session.model = Some(new_model);
+                                // Persist canonical override + legacy hint.
+                                let provider = new_llm.provider.clone().unwrap_or_default();
+                                let model = new_llm.model.clone().unwrap_or_default();
+                                if !provider.trim().is_empty() && !model.trim().is_empty() {
+                                    chat_session.state.llm_config = Some(new_llm);
+                                    chat_session.model = Some(format!("{}:{}", provider, model));
+                                    save_cli_session(&chat_session)?;
+                                }
                             }
+                            println!();
+                            continue;
+                        }
+                        "/hooks" | "/hook" => {
+                            println!();
+                            if args.is_empty() {
+                                basic_mode_hooks_command(&config);
+                            } else {
+                                let mut cfg = config.clone();
+                                match slash::apply_hooks_subcommand(&args, &mut cfg) {
+                                    Ok(outcome) => {
+                                        let changed = outcome.changed();
+                                        for line in outcome.into_lines() {
+                                            println!("{line}");
+                                        }
+                                        if changed {
+                                            if let Err(e) = cfg.save() {
+                                                println!(
+                                                    "{} Failed to save config: {}",
+                                                    "✗".red(),
+                                                    e
+                                                );
+                                            } else {
+                                                config = cfg;
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("{} {}", "✗".red(), e);
+                                        println!();
+                                        if let Ok(outcome) =
+                                            slash::apply_hooks_subcommand(&["help"], &mut cfg)
+                                        {
+                                            for line in outcome.into_lines() {
+                                                println!("{line}");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            println!();
+                            continue;
+                        }
+                        "/permissions" | "/permission" => {
+                            println!();
+                            if args.is_empty() {
+                                basic_mode_permissions_command();
+                            } else {
+                                match slash::run_permissions_subcommand(&args, &mut chat_session) {
+                                    Ok(outcome) => {
+                                        for line in outcome.lines {
+                                            println!("{line}");
+                                        }
+                                        if outcome.changed_permissions {
+                                            println!("{} Permissions updated.", "✓".green());
+                                        }
+
+                                        if outcome.session_changed
+                                            && let Err(e) = save_cli_session(&chat_session)
+                                        {
+                                            println!("{} Failed to save session: {}", "✗".red(), e);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("{} {}", "✗".red(), e);
+                                        println!();
+                                        if let Ok(outcome) = slash::run_permissions_subcommand(
+                                            &["help"],
+                                            &mut chat_session,
+                                        ) {
+                                            for line in outcome.lines {
+                                                println!("{line}");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            println!();
+                            continue;
+                        }
+                        "/tasks" => {
+                            println!();
+                            if args.is_empty() {
+                                basic_mode_tasks_command(&chat_session);
+                            } else {
+                                use gestura_core::tasks::TaskManager;
+
+                                let task_manager = TaskManager::new(
+                                    dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")),
+                                );
+                                match slash::run_tasks_subcommand(
+                                    &args,
+                                    &task_manager,
+                                    &chat_session.id,
+                                ) {
+                                    Ok(out) => {
+                                        for line in out.lines {
+                                            println!("{line}");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("{} {}", "✗".red(), e);
+                                    }
+                                }
+                            }
+                            println!();
+                            continue;
+                        }
+
+                        "/task" => {
+                            println!();
+                            // `/task` is the subcommand-oriented interface, but users often type it
+                            // when they really want the interactive task browser. Treat `/task`
+                            // (no args) as an alias for `/tasks`.
+                            if args.is_empty() {
+                                basic_mode_tasks_command(&chat_session);
+                            } else {
+                                use gestura_core::tasks::TaskManager;
+
+                                let task_manager = TaskManager::new(
+                                    dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")),
+                                );
+                                match slash::run_tasks_subcommand(
+                                    &args,
+                                    &task_manager,
+                                    &chat_session.id,
+                                ) {
+                                    Ok(out) => {
+                                        for line in out.lines {
+                                            println!("{line}");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("{} {}", "✗".red(), e);
+                                    }
+                                }
+                            }
+                            println!();
+                            continue;
+                        }
+                        "/theme" | "/themes" => {
+                            println!();
+                            basic_mode_themes_command();
                             println!();
                             continue;
                         }
@@ -1332,204 +1451,6 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                     continue;
                 }
 
-                // Handle /memory command - manage memory bank without calling LLM
-                if input.trim().starts_with("/memory") {
-                    println!();
-                    // Parse subcommand
-                    let parts: Vec<&str> = input.split_whitespace().collect();
-                    let subcommand = parts.get(1).unwrap_or(&"list");
-
-                    match *subcommand {
-                        "list" => {
-                            // List all memory bank entries
-                            if let Some(workspace_dir) = chat_session.workspace_dir() {
-                                let result = tokio::runtime::Runtime::new().unwrap().block_on(
-                                    gestura_core::memory_bank::list_memory_bank(workspace_dir),
-                                );
-                                match result {
-                                    Ok(entries) if !entries.is_empty() => {
-                                        println!(
-                                            "{} {}",
-                                            "◆".blue().bold(),
-                                            format!(
-                                                "Memory Bank Entries ({} total):",
-                                                entries.len()
-                                            )
-                                            .blue()
-                                        );
-                                        println!();
-                                        for entry in entries {
-                                            println!(
-                                                "  {} {} (Session: {})",
-                                                "•".dimmed(),
-                                                entry.timestamp.format("%Y-%m-%d %H:%M UTC"),
-                                                entry.session_id.dimmed()
-                                            );
-                                            println!("    {}", entry.summary);
-                                            if let Some(path) = entry.file_path {
-                                                println!(
-                                                    "    File: {}",
-                                                    path.display().to_string().dimmed()
-                                                );
-                                            }
-                                            println!();
-                                        }
-                                    }
-                                    Ok(_) => {
-                                        println!(
-                                            "{} {}",
-                                            "◆".yellow().bold(),
-                                            "No memory bank entries found.".yellow()
-                                        );
-                                    }
-                                    Err(e) => {
-                                        println!(
-                                            "{} {}",
-                                            "✗".red().bold(),
-                                            format!("Error listing memory bank: {}", e).red()
-                                        );
-                                    }
-                                }
-                            } else {
-                                println!(
-                                    "{} {}",
-                                    "✗".red().bold(),
-                                    "No workspace directory configured. Cannot access memory bank."
-                                        .red()
-                                );
-                            }
-                        }
-                        "save" => {
-                            // Save current context to memory bank
-                            if let Some(workspace_dir) = chat_session.workspace_dir() {
-                                let history: Vec<String> = chat_session
-                                    .state
-                                    .messages
-                                    .iter()
-                                    .map(|msg| msg.content.clone())
-                                    .collect();
-
-                                if history.is_empty() {
-                                    println!(
-                                        "{} {}",
-                                        "◆".yellow().bold(),
-                                        "No conversation history to save.".yellow()
-                                    );
-                                } else {
-                                    use gestura_core::context::ContextManager;
-                                    let context_manager = ContextManager::new();
-                                    let summary = context_manager.summarize_history(&history);
-                                    let content = history.join("\n\n");
-
-                                    let entry = gestura_core::memory_bank::MemoryBankEntry {
-                                        timestamp: chrono::Utc::now(),
-                                        session_id: chat_session.id.clone(),
-                                        summary: summary.clone(),
-                                        content,
-                                        file_path: None,
-                                    };
-
-                                    let result = tokio::runtime::Runtime::new().unwrap().block_on(
-                                        gestura_core::memory_bank::save_to_memory_bank(
-                                            workspace_dir,
-                                            &entry,
-                                        ),
-                                    );
-                                    match result {
-                                        Ok(path) => {
-                                            println!(
-                                                "{} {}",
-                                                "✓".green().bold(),
-                                                format!(
-                                                    "Saved {} messages to memory bank",
-                                                    history.len()
-                                                )
-                                                .green()
-                                            );
-                                            println!("  File: {}", path.display());
-                                            println!("  Summary: {}", summary.dimmed());
-                                        }
-                                        Err(e) => {
-                                            println!(
-                                                "{} {}",
-                                                "✗".red().bold(),
-                                                format!("Error saving to memory bank: {}", e).red()
-                                            );
-                                        }
-                                    }
-                                }
-                            } else {
-                                println!(
-                                    "{} {}",
-                                    "✗".red().bold(),
-                                    "No workspace directory configured. Cannot save to memory bank.".red()
-                                );
-                            }
-                        }
-                        "clear" => {
-                            // Clear all memory bank entries
-                            if let Some(workspace_dir) = chat_session.workspace_dir() {
-                                let memory_dir = workspace_dir.join(".gestura").join("memory");
-                                match std::fs::remove_dir_all(&memory_dir) {
-                                    Ok(_) => {
-                                        // Recreate the directory
-                                        let _ = std::fs::create_dir_all(&memory_dir);
-                                        println!(
-                                            "{} {}",
-                                            "✓".green().bold(),
-                                            "Cleared all memory bank entries.".green()
-                                        );
-                                    }
-                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                                        println!(
-                                            "{} {}",
-                                            "◆".yellow().bold(),
-                                            "Memory bank is already empty.".yellow()
-                                        );
-                                    }
-                                    Err(e) => {
-                                        println!(
-                                            "{} {}",
-                                            "✗".red().bold(),
-                                            format!("Error clearing memory bank: {}", e).red()
-                                        );
-                                    }
-                                }
-                            } else {
-                                println!(
-                                    "{} {}",
-                                    "✗".red().bold(),
-                                    "No workspace directory configured. Cannot clear memory bank."
-                                        .red()
-                                );
-                            }
-                        }
-                        _ => {
-                            println!(
-                                "{} {}",
-                                "✗".red().bold(),
-                                format!("Unknown /memory subcommand: '{}'", subcommand).red()
-                            );
-                            println!();
-                            println!("Usage:");
-                            println!(
-                                "  {} - Show all memory bank entries",
-                                "/memory list".green()
-                            );
-                            println!(
-                                "  {} - Save current conversation to memory bank",
-                                "/memory save".green()
-                            );
-                            println!(
-                                "  {} - Delete all memory bank entries",
-                                "/memory clear".green()
-                            );
-                        }
-                    }
-                    println!();
-                    continue;
-                }
-
                 // Build conversation history for the AgentPipeline
                 let history: Vec<gestura_core::Message> =
                     chat_session.to_pipeline_messages_limited(10);
@@ -1553,14 +1474,14 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                     request = request.with_system_prompt(sys.clone());
                 }
 
-                // Ensure the agent is aware of the effective environment for this session.
-                // Note: this is informational metadata used by the system prompt.
-                let provider_name = config.llm.primary.clone();
-                let model_name = chat_session
-                    .model
-                    .clone()
-                    .or_else(|| model_for_provider(&config, &provider_name))
-                    .unwrap_or_default();
+                // Compute and apply the effective provider/model for this session.
+                //
+                // IMPORTANT: we apply overrides to the *pipeline config* so the underlying LLM
+                // call matches what `/model` says, and so provider configs are materialized.
+                let (config_for_pipeline, effective) =
+                    basic_mode_apply_session_llm_overrides(&config, &chat_session);
+                let provider_name = effective.provider;
+                let model_name = effective.model;
                 let (permission_level, allowed_tools) = derive_request_policy(&chat_session);
                 request = request
                     .with_session_llm_config(provider_name, model_name)
@@ -1579,7 +1500,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 // tool confirmations against the correct session.
                 let session_id_for_tool_confirm = chat_session.id.clone();
 
-                let config_clone = config.clone();
+                let config_clone = config_for_pipeline;
                 let response: Result<gestura_core::AgentResponse> = rt.block_on(async move {
                     let (tx, mut rx) = mpsc::channel::<StreamChunk>(100);
                     let cancel_token = CancellationToken::new();
@@ -2039,442 +1960,678 @@ fn truncate_output(output: &str, max_len: usize) -> String {
     }
 }
 
-/// Basic mode `/mcp` slash command handler.
-fn basic_mode_mcp_command(args: &[&str]) {
+/// Interactive MCP server form wizard (shared by Add and Edit flows).
+///
+/// When `existing` is `None`, this is a new-server wizard; when `Some`, it
+/// pre-populates every field from the existing entry (name is immutable on
+/// edit).  Returns `Some(entry)` on success, `None` if the user cancels.
+fn mcp_server_form(
+    existing: Option<&gestura_core::config::McpServerEntry>,
+) -> Option<gestura_core::config::McpServerEntry> {
+    use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
     use gestura_core::config::{McpScope, McpServerEntry, McpTransportType};
 
-    let subcommand = args.first().map(|s| s.to_ascii_lowercase());
-    match subcommand.as_deref() {
-        None | Some("status") => {
-            let config = AppConfig::load();
-            println!("{}", "MCP Server Status".bold().cyan());
-            println!("{}", "═".repeat(50));
-            let total = config.mcp_servers.len();
-            let enabled = config.mcp_servers.iter().filter(|s| s.enabled).count();
-            println!(
-                "{}: {} configured ({} enabled)",
-                "Servers".bold(),
-                total,
-                enabled
-            );
-            for server in &config.mcp_servers {
-                let status = if server.enabled {
-                    "✓".green()
+    let theme = ColorfulTheme::default();
+    let is_edit = existing.is_some();
+
+    // ── Name ──────────────────────────────────────────────────
+    let name: String = if let Some(srv) = existing {
+        println!("  Name: {}", srv.name.bold().cyan());
+        srv.name.clone()
+    } else {
+        let n: String = Input::with_theme(&theme)
+            .with_prompt("Server name")
+            .validate_with(|input: &String| -> std::result::Result<(), &str> {
+                if input.trim().is_empty() {
+                    Err("Name cannot be empty")
                 } else {
-                    "○".dimmed()
-                };
-                let endpoint = match server.transport {
-                    McpTransportType::Stdio => {
-                        let cmd = server.command.as_deref().unwrap_or("");
-                        let cmd_args = server.args.join(" ");
-                        format!("{} {}", cmd, cmd_args).trim().to_string()
+                    Ok(())
+                }
+            })
+            .interact_text()
+            .ok()?;
+        if n.trim().is_empty() {
+            return None;
+        }
+        // Check uniqueness
+        let config = AppConfig::load();
+        if config.mcp_servers.iter().any(|s| s.name == n) {
+            println!(
+                "{} Server '{}' already exists. Use {} to modify it.",
+                "✗".red(),
+                n,
+                "Edit".cyan()
+            );
+            return None;
+        }
+        n
+    };
+
+    // ── Transport type ────────────────────────────────────────
+    let transport_labels = [
+        "stdio — Local child process",
+        "http  — Streamable HTTP (recommended for remote)",
+        "sse   — Server-Sent Events (legacy)",
+    ];
+    let transport_default = match existing.map(|s| &s.transport) {
+        Some(McpTransportType::Http) => 1,
+        Some(McpTransportType::Sse) => 2,
+        _ => 0,
+    };
+    let transport_idx = Select::with_theme(&theme)
+        .with_prompt("Transport type")
+        .items(&transport_labels)
+        .default(transport_default)
+        .interact_opt()
+        .ok()
+        .flatten()?;
+    let transport = match transport_idx {
+        1 => McpTransportType::Http,
+        2 => McpTransportType::Sse,
+        _ => McpTransportType::Stdio,
+    };
+
+    // ── Transport-specific fields ─────────────────────────────
+    let (command, args_vec, env_map, url, headers_map) = match transport {
+        McpTransportType::Stdio => {
+            let def_cmd = existing.and_then(|s| s.command.clone()).unwrap_or_default();
+            let cmd: String = Input::with_theme(&theme)
+                .with_prompt("Command (e.g. npx, uvx, docker)")
+                .default(def_cmd)
+                .allow_empty(false)
+                .interact_text()
+                .ok()?;
+
+            let def_args = existing.map(|s| s.args.join("\n")).unwrap_or_default();
+            let args_raw: String = Input::with_theme(&theme)
+                .with_prompt("Arguments (comma-separated, empty to skip)")
+                .default(def_args.replace('\n', ", "))
+                .allow_empty(true)
+                .interact_text()
+                .ok()?;
+            let parsed_args: Vec<String> = args_raw
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            let def_env = existing
+                .map(|s| {
+                    s.env
+                        .iter()
+                        .map(|(k, v)| format!("{}={}", k, v))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            let env_raw: String = Input::with_theme(&theme)
+                .with_prompt("Environment variables (KEY=VALUE comma-separated, empty to skip)")
+                .default(def_env)
+                .allow_empty(true)
+                .interact_text()
+                .ok()?;
+            let mut env = std::collections::HashMap::new();
+            for pair in env_raw.split(',') {
+                let pair = pair.trim();
+                if let Some((k, v)) = pair.split_once('=') {
+                    let k = k.trim().to_string();
+                    let v = v.trim().to_string();
+                    if !k.is_empty() {
+                        env.insert(k, v);
                     }
-                    _ => server.url.clone().unwrap_or_default(),
-                };
-                println!(
-                    "  {} {} [{}] {}",
-                    status,
-                    server.name.cyan(),
-                    format!("{}", server.transport).dimmed(),
-                    endpoint.dimmed()
-                );
+                }
             }
-            // Also show connected servers
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            let registry = gestura_core::get_mcp_client_registry();
-            let connected = rt.block_on(registry.connected_servers());
-            if !connected.is_empty() {
-                println!();
-                println!("{}", "Connected:".bold().yellow());
-                for name in &connected {
-                    println!("  {} {}", "✓".green(), name);
+
+            (
+                Some(cmd),
+                parsed_args,
+                env,
+                None,
+                std::collections::HashMap::new(),
+            )
+        }
+        McpTransportType::Http | McpTransportType::Sse => {
+            let def_url = existing.and_then(|s| s.url.clone()).unwrap_or_default();
+            let url_val: String = Input::with_theme(&theme)
+                .with_prompt("Server URL")
+                .default(def_url)
+                .allow_empty(false)
+                .interact_text()
+                .ok()?;
+
+            let def_headers = existing
+                .map(|s| {
+                    s.headers
+                        .iter()
+                        .map(|(k, v)| format!("{}: {}", k, v))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            let headers_raw: String = Input::with_theme(&theme)
+                .with_prompt("Headers (Key: Value comma-separated, empty to skip)")
+                .default(def_headers)
+                .allow_empty(true)
+                .interact_text()
+                .ok()?;
+            let mut headers = std::collections::HashMap::new();
+            for pair in headers_raw.split(',') {
+                let pair = pair.trim();
+                if let Some((k, v)) = pair.split_once(':') {
+                    let k = k.trim().to_string();
+                    let v = v.trim().to_string();
+                    if !k.is_empty() {
+                        headers.insert(k, v);
+                    }
+                }
+            }
+
+            (
+                None,
+                Vec::new(),
+                std::collections::HashMap::new(),
+                Some(url_val),
+                headers,
+            )
+        }
+    };
+
+    // ── Scope ─────────────────────────────────────────────────
+    let scope_labels = [
+        "user    — Available across all projects",
+        "project — Shared via .mcp.json",
+        "local   — Local override, not committed",
+    ];
+    let scope_default = match existing.map(|s| &s.scope) {
+        Some(McpScope::Project) => 1,
+        Some(McpScope::Local) => 2,
+        _ => 0,
+    };
+    let scope_idx = Select::with_theme(&theme)
+        .with_prompt("Scope")
+        .items(&scope_labels)
+        .default(scope_default)
+        .interact_opt()
+        .ok()
+        .flatten()?;
+    let scope = match scope_idx {
+        1 => McpScope::Project,
+        2 => McpScope::Local,
+        _ => McpScope::User,
+    };
+
+    // ── Timeout ───────────────────────────────────────────────
+    let def_timeout = existing.map(|s| s.timeout_secs).unwrap_or(30);
+    let timeout_str: String = Input::with_theme(&theme)
+        .with_prompt("Timeout (seconds)")
+        .default(def_timeout.to_string())
+        .interact_text()
+        .ok()?;
+    let timeout_secs: u64 = timeout_str.parse().unwrap_or(30);
+
+    // ── Auto-reconnect ────────────────────────────────────────
+    let def_reconnect = existing.map(|s| s.auto_reconnect).unwrap_or(true);
+    let auto_reconnect = Confirm::with_theme(&theme)
+        .with_prompt("Auto-reconnect on failure?")
+        .default(def_reconnect)
+        .interact_opt()
+        .ok()
+        .flatten()?;
+
+    // ── Enabled ───────────────────────────────────────────────
+    let def_enabled = existing.map(|s| s.enabled).unwrap_or(true);
+    let enabled = Confirm::with_theme(&theme)
+        .with_prompt("Enable this server?")
+        .default(def_enabled)
+        .interact_opt()
+        .ok()
+        .flatten()?;
+
+    // ── Confirm ───────────────────────────────────────────────
+    println!();
+    println!("{}", "─── Server Summary ───".dimmed());
+    println!("  Name:           {}", name.cyan());
+    println!("  Transport:      {}", format!("{}", transport).cyan());
+    match transport {
+        McpTransportType::Stdio => {
+            println!(
+                "  Command:        {}",
+                command.as_deref().unwrap_or("(none)")
+            );
+            if !args_vec.is_empty() {
+                println!("  Arguments:      {}", args_vec.join(", "));
+            }
+            if !env_map.is_empty() {
+                println!("  Env vars:       {}", env_map.len());
+            }
+        }
+        _ => {
+            println!("  URL:            {}", url.as_deref().unwrap_or("(none)"));
+            if !headers_map.is_empty() {
+                println!("  Headers:        {}", headers_map.len());
+            }
+        }
+    }
+    println!("  Scope:          {}", scope);
+    println!("  Timeout:        {}s", timeout_secs);
+    println!(
+        "  Auto-reconnect: {}",
+        if auto_reconnect { "yes" } else { "no" }
+    );
+    println!(
+        "  Enabled:        {}",
+        if enabled {
+            "yes".green().to_string()
+        } else {
+            "no".red().to_string()
+        }
+    );
+
+    let confirm = Confirm::with_theme(&theme)
+        .with_prompt(if is_edit {
+            "Save changes?"
+        } else {
+            "Add this server?"
+        })
+        .default(true)
+        .interact_opt()
+        .ok()
+        .flatten()?;
+    if !confirm {
+        println!("{}", "Cancelled.".dimmed());
+        return None;
+    }
+
+    Some(McpServerEntry {
+        name,
+        transport,
+        enabled,
+        command,
+        args: args_vec,
+        env: env_map,
+        url,
+        headers: headers_map,
+        scope,
+        timeout_secs,
+        auto_reconnect,
+    })
+}
+
+/// Basic mode `/mcp` slash command handler.
+fn basic_mode_mcp_command(args: &[&str]) {
+    use dialoguer::{Select, theme::ColorfulTheme};
+    use gestura_core::config::{McpServerEntry, McpTransportType};
+
+    fn build_mcp_args_from_entry(sub: &str, entry: &McpServerEntry, is_edit: bool) -> Vec<String> {
+        let mut out = vec![sub.to_string(), entry.name.clone()];
+
+        // Make edits "exact" (wizard provides full state).
+        if is_edit {
+            out.push("--clear-args".to_string());
+            out.push("--clear-env".to_string());
+            out.push("--clear-headers".to_string());
+        }
+
+        out.push("--transport".to_string());
+        out.push(format!("{}", entry.transport));
+        out.push("--scope".to_string());
+        out.push(format!("{}", entry.scope));
+        out.push("--timeout".to_string());
+        out.push(entry.timeout_secs.to_string());
+
+        if entry.auto_reconnect {
+            out.push("--auto-reconnect".to_string());
+        } else {
+            out.push("--no-auto-reconnect".to_string());
+        }
+
+        if entry.enabled {
+            out.push("--enabled".to_string());
+        } else {
+            out.push("--disabled".to_string());
+        }
+
+        match entry.transport {
+            McpTransportType::Stdio => {
+                if let Some(cmd) = &entry.command {
+                    out.push("--command".to_string());
+                    out.push(cmd.clone());
+                }
+                for a in &entry.args {
+                    out.push("--arg".to_string());
+                    out.push(a.clone());
+                }
+                for (k, v) in &entry.env {
+                    out.push("--env".to_string());
+                    out.push(format!("{k}={v}"));
+                }
+            }
+            McpTransportType::Http | McpTransportType::Sse => {
+                if let Some(url) = &entry.url {
+                    out.push("--url".to_string());
+                    out.push(url.clone());
+                }
+                for (k, v) in &entry.headers {
+                    out.push("--header".to_string());
+                    out.push(format!("{k}: {v}"));
                 }
             }
         }
-        Some("list") => {
-            let config = AppConfig::load();
-            if config.mcp_servers.is_empty() {
-                println!("{}", "No MCP servers configured.".dimmed());
-                println!(
-                    "Add one with: {}",
-                    "/mcp add <name> <command_or_url>".cyan()
-                );
-            } else {
-                println!("{}", "MCP Servers".bold().cyan());
-                println!("{}", "═".repeat(60));
-                println!(
-                    "{:20} {:8} {:8} {}",
-                    "NAME".underline(),
-                    "TYPE".underline(),
-                    "SCOPE".underline(),
-                    "ENDPOINT / COMMAND".underline()
-                );
-                for srv in &config.mcp_servers {
-                    let status = if srv.enabled { "✓" } else { "○" };
-                    let endpoint = match srv.transport {
+
+        out
+    }
+
+    fn execute_mcp_live_action(
+        rt: &tokio::runtime::Runtime,
+        cfg: &AppConfig,
+        act: slash::McpLiveAction,
+    ) -> Vec<String> {
+        let registry = gestura_core::get_mcp_client_registry();
+
+        match act {
+            slash::McpLiveAction::Status => {
+                let connected = rt.block_on(registry.connected_servers());
+
+                let mut lines = vec!["MCP Server Status".to_string(), "═".repeat(50)];
+                lines.push(format!("Servers: {} configured", cfg.mcp_servers.len()));
+                lines.push(format!(
+                    "Enabled: {}",
+                    cfg.mcp_servers.iter().filter(|s| s.enabled).count()
+                ));
+                lines.push(String::new());
+
+                for server in &cfg.mcp_servers {
+                    let status = if server.enabled { "✓" } else { "○" };
+                    let endpoint = match server.transport {
                         McpTransportType::Stdio => {
-                            let cmd = srv.command.as_deref().unwrap_or("");
-                            let cmd_args = srv.args.join(" ");
+                            let cmd = server.command.as_deref().unwrap_or("");
+                            let cmd_args = server.args.join(" ");
                             format!("{} {}", cmd, cmd_args).trim().to_string()
                         }
-                        _ => srv.url.clone().unwrap_or_default(),
+                        _ => server.url.clone().unwrap_or_default(),
                     };
-                    println!(
-                        "{} {:18} {:8} {:8} {}",
-                        status,
-                        srv.name.cyan(),
-                        format!("{}", srv.transport).dimmed(),
-                        format!("{}", srv.scope).dimmed(),
-                        endpoint.dimmed()
-                    );
+                    let conn = if connected.contains(&server.name) {
+                        "●"
+                    } else {
+                        "○"
+                    };
+                    lines.push(format!(
+                        "  {status} {conn} {} [{}] {}",
+                        server.name, server.transport, endpoint
+                    ));
                 }
-                println!();
-                println!("Total: {} server(s)", config.mcp_servers.len());
+
+                if !connected.is_empty() {
+                    lines.push(String::new());
+                    lines.push("Connected:".to_string());
+                    for name in connected {
+                        lines.push(format!("  ✓ {name}"));
+                    }
+                }
+
+                lines
             }
-        }
-        Some("tools") => {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            let registry = gestura_core::get_mcp_client_registry();
-            let server_filter = args.get(1).map(|s| s.to_string());
-            let all = rt.block_on(registry.all_tools());
-            let filtered: Vec<_> = if let Some(ref filter) = server_filter {
-                all.into_iter().filter(|(name, _)| name == filter).collect()
-            } else {
-                all
-            };
-            if filtered.is_empty() {
-                println!(
-                    "{}",
-                    "No MCP tools available. Connect a server first.".dimmed()
-                );
-            } else {
-                println!("{}", "MCP Tools".bold().cyan());
-                println!("{}", "═".repeat(50));
-                let mut total = 0;
-                for (server_name, server_tools) in &filtered {
-                    println!(
-                        "\n{} ({} tools):",
-                        server_name.bold(),
-                        server_tools.len()
-                    );
-                    for tool in server_tools {
+            slash::McpLiveAction::Tools { server } => {
+                let all = rt.block_on(registry.all_tools());
+                let filtered: Vec<_> = if let Some(ref filter) = server {
+                    all.into_iter().filter(|(name, _)| name == filter).collect()
+                } else {
+                    all
+                };
+
+                if filtered.is_empty() {
+                    return vec!["No MCP tools available. Connect a server first.".to_string()];
+                }
+
+                let mut lines = vec!["MCP Tools".to_string(), "═".repeat(50)];
+                let mut total = 0usize;
+                for (srv, tools) in &filtered {
+                    lines.push(String::new());
+                    lines.push(format!("{srv} ({} tools):", tools.len()));
+                    for tool in tools {
                         let desc = tool.description.as_deref().unwrap_or("(no description)");
-                        println!("  {} {} — {}", "•".cyan(), tool.name, desc.dimmed());
+                        lines.push(format!("  • {} — {desc}", tool.name));
                     }
-                    total += server_tools.len();
+                    total += tools.len();
                 }
-                println!();
-                println!(
-                    "Total: {} tool(s) across {} server(s)",
-                    total,
+                lines.push(String::new());
+                lines.push(format!(
+                    "Total: {total} tool(s) across {} server(s)",
                     filtered.len()
-                );
+                ));
+                lines
             }
-        }
-        Some("get") => {
-            if let Some(name) = args.get(1) {
-                let config = AppConfig::load();
-                match config.mcp_servers.iter().find(|t| t.name == *name) {
-                    Some(srv) => {
-                        println!("{}", srv.name.bold().cyan());
-                        println!("{}", "═".repeat(50));
-                        println!(
-                            "  {} {}",
-                            "Transport:".dimmed(),
-                            format!("{}", srv.transport).cyan()
-                        );
-                        println!(
-                            "  {} {}",
-                            "Enabled:".dimmed(),
-                            if srv.enabled {
-                                "yes".green()
-                            } else {
-                                "no".red()
-                            }
-                        );
-                        println!("  {} {}", "Scope:".dimmed(), srv.scope);
-                        println!("  {} {}s", "Timeout:".dimmed(), srv.timeout_secs);
-                        println!(
-                            "  {} {}",
-                            "Auto-reconnect:".dimmed(),
-                            srv.auto_reconnect
-                        );
-                        match srv.transport {
-                            McpTransportType::Stdio => {
-                                println!(
-                                    "  {} {}",
-                                    "Command:".dimmed(),
-                                    srv.command.as_deref().unwrap_or("(none)")
-                                );
-                                if !srv.args.is_empty() {
-                                    println!("  {} {:?}", "Args:".dimmed(), srv.args);
-                                }
-                                if !srv.env.is_empty() {
-                                    println!("  {}", "Env:".dimmed());
-                                    for (k, v) in &srv.env {
-                                        println!("    {}={}", k, v);
-                                    }
-                                }
-                            }
-                            _ => {
-                                println!(
-                                    "  {} {}",
-                                    "URL:".dimmed(),
-                                    srv.url.as_deref().unwrap_or("(none)")
-                                );
-                                if !srv.headers.is_empty() {
-                                    println!("  {}", "Headers:".dimmed());
-                                    for (k, v) in &srv.headers {
-                                        println!("    {}: {}", k, v);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        println!("{} MCP server '{}' not found", "✗".red(), name);
-                    }
-                }
-            } else {
-                println!("{} Usage: /mcp get <name>", "✗".red());
-            }
-        }
-        Some("enable") => {
-            if let Some(name) = args.get(1) {
-                let mut config = AppConfig::load();
-                match config.mcp_servers.iter_mut().find(|t| t.name == *name) {
-                    Some(srv) => {
-                        srv.enabled = true;
-                        if let Err(e) = config.save() {
-                            println!("{} Failed to save config: {}", "✗".red(), e);
-                        } else {
-                            println!("{} Enabled MCP server: {}", "✓".green(), name.cyan());
-                        }
-                    }
-                    None => {
-                        println!("{} MCP server '{}' not found", "✗".red(), name);
-                    }
-                }
-            } else {
-                println!("{} Usage: /mcp enable <name>", "✗".red());
-            }
-        }
-        Some("disable") => {
-            if let Some(name) = args.get(1) {
-                let mut config = AppConfig::load();
-                match config.mcp_servers.iter_mut().find(|t| t.name == *name) {
-                    Some(srv) => {
-                        srv.enabled = false;
-                        if let Err(e) = config.save() {
-                            println!("{} Failed to save config: {}", "✗".red(), e);
-                        } else {
-                            println!("{} Disabled MCP server: {}", "✓".green(), name.cyan());
-                        }
-                    }
-                    None => {
-                        println!("{} MCP server '{}' not found", "✗".red(), name);
-                    }
-                }
-            } else {
-                println!("{} Usage: /mcp disable <name>", "✗".red());
-            }
-        }
-        Some("add") => {
-            // /mcp add <name> <command_or_url> [--transport stdio|http|sse] [--scope user|project|local]
-            if args.len() < 3 {
-                println!("{} Usage: /mcp add <name> <command_or_url> [--transport stdio|http|sse] [--scope user|project|local]", "✗".red());
-                return;
-            }
-            let name = args[1].to_string();
-            let command_or_url = args[2].to_string();
-            let mut transport_str = "stdio".to_string();
-            let mut scope_str = "user".to_string();
+            slash::McpLiveAction::Connect { name } => {
+                let Some(srv) = cfg.mcp_servers.iter().find(|s| s.name == name) else {
+                    return vec![format!("MCP server not found in config: {name}")];
+                };
 
-            // Parse optional flags
-            let mut i = 3;
-            while i < args.len() {
-                match args[i] {
-                    "--transport" | "-t" => {
-                        if let Some(val) = args.get(i + 1) {
-                            transport_str = val.to_string();
-                            i += 1;
+                match rt.block_on(registry.connect(srv)) {
+                    Ok(tools) => {
+                        let mut lines = vec![format!(
+                            "Connected to MCP server: {name} ({} tools discovered)",
+                            tools.len()
+                        )];
+                        for t in &tools {
+                            lines.push(format!("  • {}", t.name));
+                            if let Some(desc) = &t.description {
+                                lines.push(format!("    {desc}"));
+                            }
                         }
+                        lines
                     }
-                    "--scope" | "-s" => {
-                        if let Some(val) = args.get(i + 1) {
-                            scope_str = val.to_string();
-                            i += 1;
-                        }
-                    }
-                    _ => {}
+                    Err(e) => vec![format!("Failed to connect to '{name}': {e}")],
                 }
-                i += 1;
             }
+            slash::McpLiveAction::Disconnect { name } => {
+                rt.block_on(registry.disconnect(&name));
+                vec![format!("Disconnected from MCP server: {name}")]
+            }
+        }
+    }
 
-            let transport_type: McpTransportType = match transport_str.parse() {
-                Ok(t) => t,
-                Err(e) => {
-                    println!("{} {}", "✗".red(), e);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    let run_canonical = |cmd_args: &[&str]| {
+        let mut cfg = AppConfig::load();
+        match slash::run_mcp_subcommand(cmd_args, &mut cfg) {
+            Ok(out) => {
+                if out.changed
+                    && let Err(e) = cfg.save()
+                {
+                    println!("{} Failed to save config: {e}", "✗".red());
                     return;
                 }
-            };
-            let scope_val: McpScope = match scope_str.parse() {
-                Ok(s) => s,
-                Err(e) => {
-                    println!("{} {}", "✗".red(), e);
-                    return;
-                }
-            };
 
-            let mut config = AppConfig::load();
-            if config.mcp_servers.iter().any(|t| t.name == name) {
-                println!(
-                    "{} MCP server '{}' already exists. Use {} first.",
-                    "✗".red(),
-                    name,
-                    "/mcp remove".cyan()
-                );
-                return;
-            }
-
-            let entry = match transport_type {
-                McpTransportType::Stdio => McpServerEntry {
-                    name: name.clone(),
-                    transport: transport_type,
-                    enabled: true,
-                    command: Some(command_or_url.clone()),
-                    scope: scope_val,
-                    ..McpServerEntry::default()
-                },
-                McpTransportType::Http | McpTransportType::Sse => McpServerEntry {
-                    name: name.clone(),
-                    transport: transport_type,
-                    enabled: true,
-                    url: Some(command_or_url.clone()),
-                    scope: scope_val,
-                    ..McpServerEntry::default()
-                },
-            };
-
-            config.mcp_servers.push(entry);
-            if let Err(e) = config.save() {
-                println!("{} Failed to save config: {}", "✗".red(), e);
-            } else {
-                println!(
-                    "{} Added MCP server: {} ({})",
-                    "✓".green(),
-                    name.cyan(),
-                    transport_str
-                );
-            }
-        }
-        Some("remove") => {
-            if let Some(name) = args.get(1) {
-                let mut config = AppConfig::load();
-                let original_len = config.mcp_servers.len();
-                config.mcp_servers.retain(|t| t.name != *name);
-                if config.mcp_servers.len() == original_len {
-                    println!("{} MCP server '{}' not found", "✗".red(), name);
-                } else if let Err(e) = config.save() {
-                    println!("{} Failed to save config: {}", "✗".red(), e);
+                let lines = if let Some(act) = out.live_action {
+                    execute_mcp_live_action(&rt, &cfg, act)
                 } else {
-                    println!("{} Removed MCP server: {}", "✓".green(), name.cyan());
+                    out.lines
+                };
+
+                for l in lines {
+                    println!("{l}");
                 }
-            } else {
-                println!("{} Usage: /mcp remove <name>", "✗".red());
+            }
+            Err(e) => {
+                println!("{} {e}", "✗".red());
             }
         }
-        Some("connect") => {
-            if let Some(name) = args.get(1) {
-                let config = AppConfig::load();
-                if let Some(srv) = config.mcp_servers.iter().find(|s| s.name == *name) {
-                    let rt = tokio::runtime::Runtime::new().unwrap();
-                    let registry = gestura_core::get_mcp_client_registry();
-                    match rt.block_on(registry.connect(srv)) {
-                        Ok(tools) => {
-                            println!(
-                                "{} Connected to MCP server: {} ({} tools discovered)",
-                                "✓".green(),
-                                name.cyan(),
-                                tools.len()
-                            );
-                            for t in &tools {
-                                println!("  {} {}", "•".cyan(), t.name);
-                                if let Some(desc) = &t.description {
-                                    println!("    {}", desc.dimmed());
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            println!(
-                                "{} Failed to connect to '{}': {}",
-                                "✗".red(),
-                                name,
-                                e
-                            );
-                        }
-                    }
+    };
+
+    if !args.is_empty() {
+        // Explicit subcommand mode: delegate to canonical slash handler.
+        run_canonical(args);
+        return;
+    }
+
+    // Interactive MCP browser (mirrors GUI management panel)
+    let registry = gestura_core::get_mcp_client_registry();
+    loop {
+        let config = AppConfig::load();
+        let connected = rt.block_on(registry.connected_servers());
+        let labels: Vec<String> = config
+            .mcp_servers
+            .iter()
+            .map(|srv| {
+                let status = if srv.enabled { "✓" } else { "✗" };
+                let conn = if connected.contains(&srv.name) {
+                    "●"
                 } else {
-                    println!("{} MCP server '{}' not found in config", "✗".red(), name);
-                }
-            } else {
-                println!("{} Usage: /mcp connect <name>", "✗".red());
-            }
-        }
-        Some("disconnect") => {
-            if let Some(name) = args.get(1) {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                let registry = gestura_core::get_mcp_client_registry();
-                rt.block_on(registry.disconnect(name));
-                println!(
-                    "{} Disconnected from MCP server: {}",
-                    "✓".green(),
-                    name.cyan()
-                );
-            } else {
-                println!("{} Usage: /mcp disconnect <name>", "✗".red());
-            }
-        }
-        Some(other) => {
-            println!(
-                "{} Unknown /mcp subcommand: '{}'",
-                "✗".red(),
-                other
-            );
+                    "○"
+                };
+                format!(
+                    "{} {} {:<20} [{}] {}",
+                    status, conn, srv.name, srv.transport, srv.scope
+                )
+            })
+            .collect();
+
+        let mut menu_items: Vec<String> = labels;
+        menu_items.push("+ Add Server".green().bold().to_string());
+        menu_items.push("← Back to chat".to_string());
+
+        println!();
+        let sel = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("MCP Servers")
+            .items(&menu_items)
+            .default(0)
+            .interact_opt();
+
+        let Some(idx) = sel.ok().flatten() else {
+            break;
+        };
+
+        let server_count = config.mcp_servers.len();
+        if idx == server_count {
+            // "+ Add Server"
             println!();
-            println!("Usage:");
-            println!("  {} - Show MCP server status", "/mcp".green());
-            println!("  {} - List configured servers", "/mcp list".green());
-            println!("  {} - List tools from connected servers", "/mcp tools".green());
-            println!(
-                "  {} - Show server details",
-                "/mcp get <name>".green()
-            );
-            println!(
-                "  {} - Add a new MCP server",
-                "/mcp add <name> <cmd_or_url>".green()
-            );
-            println!(
-                "  {} - Remove an MCP server",
-                "/mcp remove <name>".green()
-            );
-            println!(
-                "  {} - Enable an MCP server",
-                "/mcp enable <name>".green()
-            );
-            println!(
-                "  {} - Disable an MCP server",
-                "/mcp disable <name>".green()
-            );
-            println!(
-                "  {} - Connect to an MCP server",
-                "/mcp connect <name>".green()
-            );
-            println!(
-                "  {} - Disconnect from an MCP server",
-                "/mcp disconnect <name>".green()
-            );
+            println!("{}", "Add MCP Server".bold().cyan());
+            println!("{}", "═".repeat(40));
+            if let Some(entry) = mcp_server_form(None) {
+                let args_strings = build_mcp_args_from_entry("add", &entry, false);
+                let args_refs: Vec<&str> = args_strings.iter().map(|s| s.as_str()).collect();
+                run_canonical(&args_refs);
+            }
+            continue;
         }
+        if idx > server_count {
+            break; // "Back to chat"
+        }
+
+        let srv = &config.mcp_servers[idx];
+        // Show detail + action menu for selected server
+        println!();
+        println!("{}", srv.name.bold().cyan());
+        println!("{}", "─".repeat(40));
+        println!("  Transport:      {}", format!("{}", srv.transport).cyan());
+        println!(
+            "  Enabled:        {}",
+            if srv.enabled {
+                "yes".green().to_string()
+            } else {
+                "no".red().to_string()
+            }
+        );
+        println!("  Scope:          {}", srv.scope);
+        match srv.transport {
+            McpTransportType::Stdio => {
+                println!(
+                    "  Command:        {}",
+                    srv.command.as_deref().unwrap_or("(none)")
+                );
+                if !srv.args.is_empty() {
+                    println!("  Arguments:      {}", srv.args.join(", "));
+                }
+                if !srv.env.is_empty() {
+                    println!("  Env vars:");
+                    for (k, v) in &srv.env {
+                        println!("    {}={}", k, v);
+                    }
+                }
+            }
+            _ => {
+                println!(
+                    "  URL:            {}",
+                    srv.url.as_deref().unwrap_or("(none)")
+                );
+                if !srv.headers.is_empty() {
+                    println!("  Headers:");
+                    for (k, v) in &srv.headers {
+                        println!("    {}: {}", k, v);
+                    }
+                }
+            }
+        }
+        println!(
+            "  Connected:      {}",
+            if connected.contains(&srv.name) {
+                "yes".green().to_string()
+            } else {
+                "no".dimmed().to_string()
+            }
+        );
+        println!("  Timeout:        {}s", srv.timeout_secs);
+        println!(
+            "  Auto-reconnect: {}",
+            if srv.auto_reconnect { "yes" } else { "no" }
+        );
+
+        let toggle_label = if srv.enabled {
+            "Disable this server"
+        } else {
+            "Enable this server"
+        };
+        let conn_label = if connected.contains(&srv.name) {
+            "Disconnect"
+        } else {
+            "Connect"
+        };
+
+        let actions = ["Edit", toggle_label, conn_label, "Remove", "← Back to list"];
+        let action = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Action")
+            .items(&actions)
+            .default(0)
+            .interact_opt();
+
+        match action.ok().flatten() {
+            Some(0) => {
+                // Edit
+                let srv_clone = srv.clone();
+                println!();
+                println!("{}", format!("Edit: {}", srv_clone.name).bold().cyan());
+                println!("{}", "═".repeat(40));
+                if let Some(updated) = mcp_server_form(Some(&srv_clone)) {
+                    let args_strings = build_mcp_args_from_entry("edit", &updated, true);
+                    let args_refs: Vec<&str> = args_strings.iter().map(|s| s.as_str()).collect();
+                    run_canonical(&args_refs);
+                }
+            }
+            Some(1) => {
+                // Toggle enable/disable
+                let name = srv.name.clone();
+                let subcmd = if srv.enabled { "disable" } else { "enable" };
+                run_canonical(&[subcmd, &name]);
+            }
+            Some(2) => {
+                // Connect/disconnect
+                let name = srv.name.clone();
+                let subcmd = if connected.contains(&srv.name) {
+                    "disconnect"
+                } else {
+                    "connect"
+                };
+                run_canonical(&[subcmd, &name]);
+            }
+            Some(3) => {
+                // Remove
+                let name = srv.name.clone();
+                run_canonical(&["remove", &name]);
+            }
+            _ => {} // Back to list — loop continues
+        }
+        // Loop continues: config reloaded at top
     }
 }
 
@@ -2533,15 +2690,141 @@ fn basic_mode_a2a_command(args: &[&str]) {
 }
 
 /// Basic mode `/knowledge` slash command handler.
-fn basic_mode_knowledge_command(args: &[&str]) {
+///
+/// Uses [`KnowledgeSettingsManager`] for session-scoped enable/disable persistence.
+fn basic_mode_knowledge_command(args: &[&str], session: &ChatSession) {
+    use dialoguer::{Select, theme::ColorfulTheme};
     use gestura_core::knowledge::{KnowledgeQuery, KnowledgeStore, register_builtin_knowledge};
 
     let subcommand = args.first().map(|s| s.to_ascii_lowercase());
     let store = KnowledgeStore::with_default_dir();
     register_builtin_knowledge(&store);
+    let settings_mgr = gestura_core::knowledge::KnowledgeSettingsManager::new(
+        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
+    );
+    let session_id = &session.id;
+
+    /// Overlay per-session enabled state onto a list of knowledge items.
+    fn apply_session_enabled(
+        items: &mut [gestura_core::knowledge::KnowledgeItem],
+        mgr: &gestura_core::knowledge::KnowledgeSettingsManager,
+        sid: &str,
+    ) {
+        if let Ok(enabled_ids) = mgr.get_enabled_knowledge(sid) {
+            for item in items.iter_mut() {
+                item.enabled = enabled_ids.contains(&item.id);
+            }
+        }
+    }
 
     match subcommand.as_deref() {
-        None | Some("list") => {
+        None => {
+            // Interactive knowledge browser
+            let mut items = store.list();
+            items.sort_by(|a, b| a.name.cmp(&b.name));
+            apply_session_enabled(&mut items, &settings_mgr, session_id);
+            if items.is_empty() {
+                println!("{}", "No knowledge items registered.".dimmed());
+                return;
+            }
+
+            loop {
+                let labels: Vec<String> = items
+                    .iter()
+                    .map(|item| {
+                        let status = if item.enabled { "✓" } else { "✗" };
+                        let desc_short = if item.description.len() > 40 {
+                            format!("{}…", &item.description[..39])
+                        } else {
+                            item.description.clone()
+                        };
+                        format!(
+                            "{} {:<24} [{}] {}",
+                            status, item.name, item.category, desc_short
+                        )
+                    })
+                    .collect();
+
+                let mut menu_items: Vec<String> = labels;
+                menu_items.push("← Back to chat".to_string());
+
+                println!();
+                let sel = Select::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Knowledge Base")
+                    .items(&menu_items)
+                    .default(0)
+                    .interact_opt();
+
+                let Some(idx) = sel.ok().flatten() else {
+                    break;
+                };
+
+                if idx >= items.len() {
+                    break; // "Back to chat"
+                }
+
+                let item = &items[idx];
+                // Show detail
+                println!();
+                println!("{}", item.name.bold().cyan());
+                println!("{}", "─".repeat(40));
+                println!("  Category: {}", item.category.cyan());
+                println!(
+                    "  Enabled:  {}",
+                    if item.enabled {
+                        "yes".green().to_string()
+                    } else {
+                        "no".red().to_string()
+                    }
+                );
+                println!("  Priority: {}", item.priority);
+                println!();
+                println!("  {}", item.description);
+                if !item.triggers.is_empty() {
+                    println!();
+                    println!("  {}", "Triggers:".bold());
+                    for trigger in &item.triggers {
+                        println!("    • {}", trigger);
+                    }
+                }
+                if !item.core_content.is_empty() {
+                    println!();
+                    println!("  {}", "Content Preview:".bold());
+                    for line in item.core_content.lines().take(8) {
+                        println!("    {}", line.dimmed());
+                    }
+                    let total = item.core_content.lines().count();
+                    if total > 8 {
+                        println!("    {}", format!("... ({} more lines)", total - 8).dimmed());
+                    }
+                }
+
+                let toggle_label = if item.enabled {
+                    "Disable this item"
+                } else {
+                    "Enable this item"
+                };
+                let actions = [toggle_label, "← Back to list"];
+                let action = Select::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Action")
+                    .items(&actions)
+                    .default(0)
+                    .interact_opt();
+
+                if let Some(0) = action.ok().flatten() {
+                    let new_enabled = !item.enabled;
+                    let _ = settings_mgr.set_knowledge_enabled(session_id, &item.id, new_enabled);
+                    let label = if new_enabled { "enabled" } else { "disabled" };
+                    println!("{} Knowledge '{}' {}", "✓".green(), item.name.cyan(), label);
+                    // Refresh items list for next iteration
+                    items = store.list();
+                    items.sort_by(|a, b| a.name.cmp(&b.name));
+                    apply_session_enabled(&mut items, &settings_mgr, session_id);
+                }
+                // Loop back to list
+            }
+        }
+        Some("list") => {
             let items = store.list();
             if items.is_empty() {
                 println!("{}", "No knowledge items registered.".dimmed());
@@ -2621,24 +2904,349 @@ fn basic_mode_knowledge_command(args: &[&str]) {
     }
 }
 
+/// Basic mode `/memory` slash command handler — interactive memory bank browser.
+///
+/// When called with no subcommand, shows a dialoguer-based interactive menu.
+/// Also supports explicit subcommands: `list`, `save`, `search <query>`, `clear`, `delete <path>`.
+fn basic_mode_memory_command(args: &[&str], session: &ChatSession) {
+    use dialoguer::{Confirm, Select, theme::ColorfulTheme};
+    use live_actions::{MemoryExecOutput, execute_memory_live_action};
+
+    let subcommand = args.first().map(|s| s.to_ascii_lowercase());
+    let workspace_dir = match session.workspace_dir() {
+        Some(dir) => dir.to_path_buf(),
+        None => {
+            println!(
+                "{} {}",
+                "✗".red().bold(),
+                "No workspace directory configured. Cannot access memory bank.".red()
+            );
+            return;
+        }
+    };
+
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            println!(
+                "{} {}",
+                "✗".red().bold(),
+                format!("Failed to create Tokio runtime: {e}").red()
+            );
+            return;
+        }
+    };
+
+    let print_help = || {
+        if let Ok(out) = slash::run_memory_subcommand(&["help"], session) {
+            for l in out.lines {
+                println!("{l}");
+            }
+        }
+    };
+
+    let run_canonical = |cmd_args: &[&str]| {
+        match slash::run_memory_subcommand(cmd_args, session) {
+            Ok(out) => {
+                let Some(act) = out.live_action else {
+                    for l in out.lines {
+                        println!("{l}");
+                    }
+                    return;
+                };
+
+                // Execute live action using the single runtime for this handler.
+                match execute_memory_live_action(&rt, &workspace_dir, act) {
+                    Ok(MemoryExecOutput::Listed(entries)) => {
+                        if entries.is_empty() {
+                            println!(
+                                "{} {}",
+                                "◆".yellow().bold(),
+                                "No memory bank entries found.".yellow()
+                            );
+                        } else {
+                            println!(
+                                "{} {}",
+                                "◆".blue().bold(),
+                                format!("Memory Bank Entries ({} total):", entries.len()).blue()
+                            );
+                            println!();
+                            for entry in &entries {
+                                println!(
+                                    "  {} {} (Session: {})",
+                                    "•".dimmed(),
+                                    entry.timestamp.format("%Y-%m-%d %H:%M UTC"),
+                                    entry.session_id.dimmed()
+                                );
+                                println!("    {}", entry.summary);
+                                println!();
+                            }
+                        }
+                    }
+                    Ok(MemoryExecOutput::Searched { query, results }) => {
+                        if results.is_empty() {
+                            println!("{}", format!("No results for '{query}'.").dimmed());
+                        } else {
+                            println!(
+                                "{} {}",
+                                "◆".blue().bold(),
+                                format!("Search: '{}' — {} result(s)", query, results.len()).blue()
+                            );
+                            for r in &results {
+                                println!(
+                                    "  {} {} — {}",
+                                    "•".dimmed(),
+                                    r.timestamp.format("%Y-%m-%d %H:%M UTC"),
+                                    r.summary
+                                );
+                            }
+                        }
+                    }
+                    Ok(MemoryExecOutput::Saved(path)) => {
+                        println!(
+                            "{} {}",
+                            "✓".green().bold(),
+                            "Saved conversation to memory bank".green()
+                        );
+                        println!("  File: {}", path.display());
+                    }
+                    Ok(MemoryExecOutput::Cleared(0)) => {
+                        println!(
+                            "{} {}",
+                            "◆".yellow().bold(),
+                            "Memory bank is already empty.".yellow()
+                        );
+                    }
+                    Ok(MemoryExecOutput::Cleared(count)) => {
+                        println!(
+                            "{} {}",
+                            "✓".green().bold(),
+                            format!("Cleared {} memory bank entries.", count).green()
+                        );
+                    }
+                    Ok(MemoryExecOutput::Deleted) => {
+                        println!("{} {}", "✓".green().bold(), "Deleted memory entry".green());
+                    }
+                    Err(e) => {
+                        println!(
+                            "{} {}",
+                            "✗".red().bold(),
+                            format!("Memory operation failed: {e}").red()
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                println!("{} {}", "✗".red().bold(), e.red());
+                print_help();
+            }
+        }
+    };
+
+    let load_entries = || -> Vec<gestura_core::memory_bank::MemoryBankEntry> {
+        let out = slash::run_memory_subcommand(&["list"], session).ok();
+        let Some(out) = out else {
+            return Vec::new();
+        };
+        let Some(act) = out.live_action else {
+            return Vec::new();
+        };
+        match execute_memory_live_action(&rt, &workspace_dir, act) {
+            Ok(MemoryExecOutput::Listed(entries)) => entries,
+            Ok(_) | Err(_) => Vec::new(),
+        }
+    };
+
+    match subcommand.as_deref() {
+        None => {
+            // Interactive browser
+            loop {
+                let entries = load_entries();
+                let count = entries.len();
+
+                // Build menu: entries + action items
+                let mut menu_items: Vec<String> = entries
+                    .iter()
+                    .map(|e| {
+                        let summary_short = if e.summary.len() > 45 {
+                            format!("{}…", &e.summary[..44])
+                        } else {
+                            e.summary.clone()
+                        };
+                        format!(
+                            "  {} {} — {}",
+                            e.timestamp.format("%Y-%m-%d %H:%M"),
+                            e.session_id.chars().take(8).collect::<String>().dimmed(),
+                            summary_short
+                        )
+                    })
+                    .collect();
+
+                menu_items.push(format!("{} Save conversation", "💾"));
+                menu_items.push(format!("{} Search entries", "🔍"));
+                if count > 0 {
+                    menu_items.push(format!("{} Clear all ({} entries)", "🗑", count));
+                }
+                menu_items.push("← Back to chat".to_string());
+
+                println!();
+                let sel = Select::with_theme(&ColorfulTheme::default())
+                    .with_prompt(format!("Memory Bank ({} entries)", count))
+                    .items(&menu_items)
+                    .default(0)
+                    .interact_opt();
+
+                let Some(idx) = sel.ok().flatten() else {
+                    break;
+                };
+
+                if idx < entries.len() {
+                    // Show entry detail
+                    let entry = &entries[idx];
+                    println!();
+                    println!("{}", "Memory Bank Entry".bold().cyan());
+                    println!("{}", "─".repeat(50));
+                    println!(
+                        "  Timestamp:  {}",
+                        entry.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+                    );
+                    println!("  Session:    {}", entry.session_id.cyan());
+                    println!("  Summary:    {}", entry.summary);
+                    if let Some(ref path) = entry.file_path {
+                        println!("  File:       {}", path.display().to_string().dimmed());
+                    }
+                    println!();
+                    println!("  {}", "Content Preview:".bold());
+                    for line in entry.content.lines().take(10) {
+                        println!("    {}", line.dimmed());
+                    }
+                    let total = entry.content.lines().count();
+                    if total > 10 {
+                        println!(
+                            "    {}",
+                            format!("... ({} more lines)", total - 10).dimmed()
+                        );
+                    }
+
+                    // Entry detail actions
+                    let actions = ["← Back to list", "🗑 Delete entry"];
+                    let action = Select::with_theme(&ColorfulTheme::default())
+                        .with_prompt("Action")
+                        .items(&actions)
+                        .default(0)
+                        .interact_opt();
+
+                    if action.ok().flatten() == Some(1) {
+                        let Some(path) = entry.file_path.as_ref() else {
+                            println!(
+                                "{} {}",
+                                "✗".red().bold(),
+                                "This entry has no file path; cannot delete.".red()
+                            );
+                            continue;
+                        };
+
+                        let path_str = path.display().to_string();
+                        let confirmed = Confirm::with_theme(&ColorfulTheme::default())
+                            .with_prompt(format!(
+                                "Delete memory entry file '{}' ? (This is destructive)",
+                                path_str
+                            ))
+                            .default(false)
+                            .interact()
+                            .unwrap_or(false);
+                        if confirmed {
+                            run_canonical(&["delete", "--confirmed", &path_str]);
+                        }
+                    }
+
+                    // Loop back to list
+                    continue;
+                }
+
+                // Action items
+                let action_offset = entries.len();
+                let action_idx = idx - action_offset;
+
+                if action_idx == 0 {
+                    // Save
+                    run_canonical(&["save"]);
+                } else if action_idx == 1 {
+                    // Search
+                    let query: String = dialoguer::Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt("Search query")
+                        .allow_empty(true)
+                        .interact_text()
+                        .unwrap_or_default();
+                    if !query.is_empty() {
+                        run_canonical(&["search", &query, "--limit", "10"]);
+                    }
+                } else if action_idx == 2 && count > 0 {
+                    // Clear
+                    let confirmed = Confirm::with_theme(&ColorfulTheme::default())
+                        .with_prompt(format!("Delete all {} memory entries?", count))
+                        .default(false)
+                        .interact()
+                        .unwrap_or(false);
+                    if confirmed {
+                        run_canonical(&["clear", "--confirmed"]);
+                    }
+                } else {
+                    break; // Back to chat
+                }
+            }
+        }
+        Some("clear") => {
+            // In basic mode, prefer to prompt instead of forcing the user to type --confirmed.
+            let confirmed = args.contains(&"--confirmed")
+                || Confirm::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Clear all memory entries? (This is destructive)")
+                    .default(false)
+                    .interact()
+                    .unwrap_or(false);
+            if confirmed {
+                run_canonical(&["clear", "--confirmed"]);
+            }
+        }
+        Some("delete") => {
+            let has_confirmed = args.contains(&"--confirmed");
+            let path_arg = args.iter().skip(1).find(|a| **a != "--confirmed").copied();
+
+            let Some(path_str) = path_arg else {
+                println!("{} Usage: /memory delete <path>", "✗".red());
+                return;
+            };
+
+            if !has_confirmed {
+                let confirmed = Confirm::with_theme(&ColorfulTheme::default())
+                    .with_prompt(format!(
+                        "Delete memory entry file '{path_str}'? (This is destructive)"
+                    ))
+                    .default(false)
+                    .interact()
+                    .unwrap_or(false);
+                if !confirmed {
+                    return;
+                }
+            }
+
+            run_canonical(&["delete", "--confirmed", path_str]);
+        }
+        Some(_) => {
+            // list/save/search and any other subcommands route through canonical parsing.
+            run_canonical(args);
+        }
+    }
+}
+
 /// Basic mode `/agent` slash command handler.
 fn basic_mode_agent_command(args: &[&str], config: &AppConfig, session: &ChatSession) {
+    use dialoguer::{Select, theme::ColorfulTheme};
+
     let subcommand = args.first().map(|s| s.to_ascii_lowercase());
     match subcommand.as_deref() {
-        None | Some("status") => {
-            println!("{}", "Agent Status".bold().cyan());
-            println!("{}", "═".repeat(50));
-            println!("{}: {}", "Version".bold(), gestura_core::VERSION);
-            println!("{}: {}", "Primary LLM".bold(), config.llm.primary);
-            println!(
-                "{}: {}",
-                "Model".bold(),
-                session.model.as_deref().unwrap_or("(default)")
-            );
-            println!("{}: {}", "Session".bold(), &session.id[..8]);
-            println!("{}: {}", "Messages".bold(), session.message_count());
-            println!();
-            println!("{}", "Provider Status:".bold().yellow());
+        None => {
+            // Interactive agent dashboard
             let has_openai = std::env::var("OPENAI_API_KEY").is_ok()
                 || config
                     .llm
@@ -2651,22 +3259,78 @@ fn basic_mode_agent_command(args: &[&str], config: &AppConfig, session: &ChatSes
                     .anthropic
                     .as_ref()
                     .is_some_and(|a| !a.api_key.is_empty());
-            println!(
-                "  {} OpenAI",
-                if has_openai {
-                    "✓".green()
-                } else {
-                    "○".dimmed()
+
+            let mut rows: Vec<(String, String)> = vec![
+                ("Version".into(), gestura_core::VERSION.to_string()),
+                ("Primary LLM".into(), config.llm.primary.clone()),
+                (
+                    "Model".into(),
+                    session.model.as_deref().unwrap_or("(default)").to_string(),
+                ),
+                ("Session".into(), session.id[..8].to_string()),
+                ("Messages".into(), session.message_count().to_string()),
+                (
+                    "OpenAI".into(),
+                    if has_openai {
+                        "✓ configured"
+                    } else {
+                        "○ not configured"
+                    }
+                    .to_string(),
+                ),
+                (
+                    "Anthropic".into(),
+                    if has_anthropic {
+                        "✓ configured"
+                    } else {
+                        "○ not configured"
+                    }
+                    .to_string(),
+                ),
+            ];
+            if let Some(ref openai) = config.llm.openai {
+                rows.push(("OpenAI model".into(), openai.model.clone()));
+            }
+            if let Some(ref anthropic) = config.llm.anthropic {
+                rows.push(("Anthropic model".into(), anthropic.model.clone()));
+            }
+
+            loop {
+                let labels: Vec<String> = rows
+                    .iter()
+                    .map(|(k, v)| format!("{:<20} {}", k, v))
+                    .collect();
+                let mut items = labels.clone();
+                items.push("← Back to chat".to_string());
+
+                let sel = Select::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Agent Status")
+                    .items(&items)
+                    .default(0)
+                    .interact_opt()
+                    .ok()
+                    .flatten();
+                match sel {
+                    Some(i) if i < rows.len() => {
+                        let (k, v) = &rows[i];
+                        println!("\n  {} = {}\n", k.bold().cyan(), v);
+                    }
+                    _ => break,
                 }
-            );
+            }
+        }
+        Some("status") => {
+            println!("{}", "Agent Status".bold().cyan());
+            println!("{}", "═".repeat(50));
+            println!("{}: {}", "Version".bold(), gestura_core::VERSION);
+            println!("{}: {}", "Primary LLM".bold(), config.llm.primary);
             println!(
-                "  {} Anthropic",
-                if has_anthropic {
-                    "✓".green()
-                } else {
-                    "○".dimmed()
-                }
+                "{}: {}",
+                "Model".bold(),
+                session.model.as_deref().unwrap_or("(default)")
             );
+            println!("{}: {}", "Session".bold(), &session.id[..8]);
+            println!("{}: {}", "Messages".bold(), session.message_count());
         }
         Some("config") => {
             println!("{}", "Agent Configuration".bold().cyan());
@@ -2698,27 +3362,55 @@ fn basic_mode_agent_command(args: &[&str], config: &AppConfig, session: &ChatSes
 
 /// Basic mode `/device` slash command handler.
 fn basic_mode_device_command() {
+    use dialoguer::{Select, theme::ColorfulTheme};
+
     let devices = gestura_core::list_audio_input_devices();
     let mic_available = gestura_core::is_microphone_available();
 
-    println!("{}", "Audio Devices".bold().cyan());
-    println!("{}", "═".repeat(50));
-    println!(
-        "Microphone available: {}",
-        if mic_available {
-            "✓ yes".green()
-        } else {
-            "✗ no".red()
-        }
-    );
-    println!();
     if devices.is_empty() {
+        println!(
+            "Microphone available: {}",
+            if mic_available {
+                "✓ yes".green()
+            } else {
+                "✗ no".red()
+            }
+        );
         println!("{}", "No audio input devices found.".dimmed());
-    } else {
-        println!("{} device(s) detected:", devices.len());
-        for dev in &devices {
-            let marker = if dev.is_default { " (default)" } else { "" };
-            println!("  {} {}{}", "•".cyan(), dev.name, marker);
+        return;
+    }
+
+    loop {
+        let labels: Vec<String> = devices
+            .iter()
+            .map(|d| {
+                let badge = if d.is_default { " ★ (default)" } else { "" };
+                format!("  {}{}", d.name, badge)
+            })
+            .collect();
+        let mut items = labels;
+        items.push("← Back to chat".to_string());
+
+        let sel = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt(format!(
+                "Audio Devices ({}, mic {})",
+                devices.len(),
+                if mic_available { "✓" } else { "✗" }
+            ))
+            .items(&items)
+            .default(0)
+            .interact_opt()
+            .ok()
+            .flatten();
+        match sel {
+            Some(i) if i < devices.len() => {
+                let dev = &devices[i];
+                println!("\n  {}", "Device Details".bold().cyan());
+                println!("  Name:    {}", dev.name);
+                println!("  Default: {}", if dev.is_default { "Yes" } else { "No" });
+                println!("  Type:    Audio Input\n");
+            }
+            _ => break,
         }
     }
 }
@@ -2889,7 +3581,7 @@ fn basic_mode_privacy_command(args: &[&str]) {
 }
 
 /// Basic mode `/listen` slash command handler.
-fn basic_mode_listen_command() {
+fn basic_mode_listen_command(listening_enabled: bool) {
     let mic_available = gestura_core::is_microphone_available();
     let is_recording = gestura_core::is_speech_recording();
 
@@ -2911,11 +3603,26 @@ fn basic_mode_listen_command() {
             "idle".dimmed()
         }
     );
-    println!();
+
     println!(
-        "For full voice input, use {} from CLI.",
-        "gestura listen".cyan()
+        "Listening mode: {}",
+        if listening_enabled {
+            "enabled".green()
+        } else {
+            "disabled".dimmed()
+        }
     );
+    println!();
+
+    if listening_enabled {
+        println!(
+            "{}",
+            "Tip: press Enter on an empty prompt to record. Use /voice for one-shot recording."
+                .dimmed()
+        );
+    } else {
+        println!("{}", "Tip: run /listen to enable voice mode.".dimmed());
+    }
 }
 
 /// Basic mode `/config` slash command handler.
@@ -2967,10 +3674,7 @@ fn basic_mode_config_command(args: &[&str]) {
         }
         Some("set") => {
             if args.len() < 3 {
-                println!(
-                    "{} Usage: /config set <key> <value>",
-                    "✗".red()
-                );
+                println!("{} Usage: /config set <key> <value>", "✗".red());
                 return;
             }
             let key = args[1];
@@ -2988,11 +3692,7 @@ fn basic_mode_config_command(args: &[&str]) {
                     println!("{} {} = {}", "✓".green(), key.cyan(), display_value);
                 }
             } else {
-                println!(
-                    "{} Unknown or read-only config key: {}",
-                    "✗".red(),
-                    key
-                );
+                println!("{} Unknown or read-only config key: {}", "✗".red(), key);
             }
         }
         Some("path") => {
@@ -3149,9 +3849,74 @@ fn basic_mode_set_config_value(config: &mut AppConfig, key: &str, value: &str) -
 
 /// Basic mode `/session` slash command handler.
 fn basic_mode_session_command(args: &[&str], current: &ChatSession) {
+    use dialoguer::{Select, theme::ColorfulTheme};
+
     let subcommand = args.first().map(|s| s.to_ascii_lowercase());
     match subcommand.as_deref() {
-        None | Some("info") => {
+        None => {
+            // Interactive session browser
+            match list_sessions_filtered(SessionFilter::All) {
+                Ok(sessions) if !sessions.is_empty() => loop {
+                    let labels: Vec<String> = sessions
+                        .iter()
+                        .map(|s| {
+                            let marker = if s.id == current.id { "▸" } else { " " };
+                            let model = s.model.as_deref().unwrap_or("default");
+                            format!(
+                                "{} {}  {:>4} msgs  {}  {}",
+                                marker,
+                                &s.id[..s.id.len().min(8)],
+                                s.message_count,
+                                model,
+                                s.last_active
+                                    .with_timezone(&chrono::Local)
+                                    .format("%Y-%m-%d %H:%M")
+                            )
+                        })
+                        .collect();
+                    let mut items = labels;
+                    items.push("← Back to chat".to_string());
+
+                    let sel = Select::with_theme(&ColorfulTheme::default())
+                        .with_prompt("Sessions")
+                        .items(&items)
+                        .default(0)
+                        .interact_opt()
+                        .ok()
+                        .flatten();
+                    match sel {
+                        Some(i) if i < sessions.len() => {
+                            let s = &sessions[i];
+                            let is_current = s.id == current.id;
+                            println!("\n  {}", "Session Details".bold().cyan());
+                            println!("  ID:          {}", s.id);
+                            println!("  Model:       {}", s.model.as_deref().unwrap_or("default"));
+                            println!("  Messages:    {}", s.message_count);
+                            println!(
+                                "  Created:     {}",
+                                s.created_at
+                                    .with_timezone(&chrono::Local)
+                                    .format("%Y-%m-%d %H:%M")
+                            );
+                            println!(
+                                "  Last active: {}",
+                                s.last_active
+                                    .with_timezone(&chrono::Local)
+                                    .format("%Y-%m-%d %H:%M")
+                            );
+                            if is_current {
+                                println!("  (current session)");
+                            }
+                            println!();
+                        }
+                        _ => break,
+                    }
+                },
+                Ok(_) => println!("{}", "No sessions found.".dimmed()),
+                Err(e) => println!("{} Failed to list sessions: {}", "✗".red(), e),
+            }
+        }
+        Some("info") => {
             println!("{}", "Current Session".bold().cyan());
             println!("{}", "═".repeat(50));
             println!("  {} {}", "ID:".dimmed(), current.id);
@@ -3185,8 +3950,8 @@ fn basic_mode_session_command(args: &[&str], current: &ChatSession) {
                         );
                         for info in sessions.iter().take(20) {
                             let active_str = {
-                                let elapsed = chrono::Utc::now()
-                                    .signed_duration_since(info.last_active);
+                                let elapsed =
+                                    chrono::Utc::now().signed_duration_since(info.last_active);
                                 let secs = elapsed.num_seconds();
                                 if secs < 60 {
                                     "just now".to_string()
@@ -3339,10 +4104,7 @@ fn basic_mode_context_command(args: &[&str]) {
             if !analysis.entities.is_empty() {
                 println!("{}", "Extracted Entities".yellow());
                 for entity in &analysis.entities {
-                    println!(
-                        "  → [{:?}]: {}",
-                        entity.entity_type, entity.value
-                    );
+                    println!("  → [{:?}]: {}", entity.entity_type, entity.value);
                 }
                 println!();
             }
@@ -3360,17 +4122,17 @@ fn basic_mode_context_command(args: &[&str]) {
             };
             println!("  Needs Tools: {}", needs_tools);
             println!("  Is Follow-up: {}", is_followup);
-            println!(
-                "  Confidence: {}%",
-                (analysis.confidence * 100.0) as u32
-            );
+            println!("  Confidence: {}%", (analysis.confidence * 100.0) as u32);
         }
         Some("categories") => {
             println!("{}", "Context Categories".bold().cyan());
             println!("{}", "═".repeat(50));
             println!();
             let categories = [
-                (ContextCategory::FileSystem, "File system operations (read, write, edit)"),
+                (
+                    ContextCategory::FileSystem,
+                    "File system operations (read, write, edit)",
+                ),
                 (ContextCategory::Shell, "Shell command execution"),
                 (ContextCategory::Git, "Git version control operations"),
                 (ContextCategory::Code, "Code analysis (symbols, references)"),
@@ -3427,35 +4189,19 @@ fn context_category_icon(cat: gestura_core::context::ContextCategory) -> &'stati
 
 /// Basic mode `/model` slash command handler.
 ///
-/// Returns `Some(new_model)` if the user changed the session model so the
-/// caller can update `chat_session.model`.
+/// Returns a canonical [`SessionLlmConfig`] if the user changed the session model.
 fn basic_mode_model_command(
     args: &[&str],
     config: &AppConfig,
     session: &ChatSession,
-) -> Option<String> {
+) -> Option<SessionLlmConfig> {
     if args.is_empty() {
-        // Show current model info
-        let provider = session
-            .state
-            .llm_config
-            .as_ref()
-            .and_then(|c| c.provider.as_deref())
-            .unwrap_or(&config.llm.primary);
-        let model = session
-            .state
-            .llm_config
-            .as_ref()
-            .and_then(|c| c.model.as_deref())
-            .or_else(|| basic_mode_model_for_provider(config, provider));
+        // Show current effective provider/model info.
+        let (_, effective) = basic_mode_apply_session_llm_overrides(config, session);
         println!("{}", "Active Model".bold().cyan());
         println!("{}", "═".repeat(40));
-        println!("  {} {}", "Provider:".dimmed(), provider);
-        println!(
-            "  {} {}",
-            "Model:".dimmed(),
-            model.unwrap_or("(provider default)")
-        );
+        println!("  {} {}", "Provider:".dimmed(), effective.provider);
+        println!("  {} {}", "Model:".dimmed(), effective.model);
         if let Some(legacy) = session.model.as_deref() {
             println!("  {} {}", "Session hint:".dimmed(), legacy);
         }
@@ -3474,62 +4220,608 @@ fn basic_mode_model_command(
     let spec = args.join(" ");
     let spec = spec.trim();
 
-    // Parse spec — supports `provider:model`, provider-only, or model-only
+    // Parse spec — supports `provider:model`, provider-only, or model-only.
     let (provider, model) = if let Some((p, m)) = spec.split_once(':') {
         let p = p.trim().to_string();
         let m = m.trim().to_string();
-        (p, if m.is_empty() { None } else { Some(m) })
+        if m.is_empty() {
+            (p, None)
+        } else {
+            (p, Some(m))
+        }
+    } else if is_known_llm_provider(spec) {
+        (spec.to_ascii_lowercase(), None)
     } else {
-        match spec.to_ascii_lowercase().as_str() {
-            "openai" | "anthropic" | "grok" | "gemini" | "ollama" => {
-                let p = spec.to_string();
-                let m = basic_mode_model_for_provider(config, &p).map(|s| s.to_string());
-                (p, m)
+        // Model-only — infer provider when possible, else keep current primary.
+        let inferred = gestura_core::llm_validation::infer_provider_from_model_id(spec)
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| config.llm.primary.clone());
+        (inferred, Some(spec.to_string()))
+    };
+
+    let resolved = if let Some(model) = model {
+        if let Err(err) =
+            gestura_core::llm_validation::validate_model_for_provider(&provider, &model)
+        {
+            println!("{} {err}", "✗".red());
+            return None;
+        }
+        SessionLlmConfig {
+            provider: Some(provider.clone()),
+            model: Some(model.clone()),
+        }
+    } else {
+        // Provider-only: resolve the provider's default model via core overrides.
+        let mut tmp = config.clone();
+        let provider_only = SessionLlmConfig {
+            provider: Some(provider.clone()),
+            model: None,
+        };
+        let effective =
+            llm_overrides::apply_cli_session_llm_overrides(&mut tmp, Some(&provider_only));
+        if effective.model.trim().is_empty() {
+            println!(
+                "{} Could not resolve a default model for provider '{provider}'",
+                "✗".red()
+            );
+            return None;
+        }
+        SessionLlmConfig {
+            provider: Some(effective.provider),
+            model: Some(effective.model),
+        }
+    };
+
+    let provider_disp = resolved.provider.as_deref().unwrap_or("");
+    let model_disp = resolved.model.as_deref().unwrap_or("");
+    println!(
+        "{} Model set to {} ({})",
+        "✓".green(),
+        model_disp.cyan(),
+        provider_disp.dimmed()
+    );
+
+    Some(resolved)
+}
+
+/// Basic mode `/hooks` slash command handler — interactive browser.
+fn basic_mode_hooks_command(config: &AppConfig) {
+    use dialoguer::{Select, theme::ColorfulTheme};
+
+    let hooks = &config.hooks;
+    println!(
+        "Hooks: {} | Timeout: {}ms | Max output: {} bytes",
+        if hooks.enabled {
+            "enabled".green().to_string()
+        } else {
+            "disabled".red().to_string()
+        },
+        hooks.timeout_ms,
+        hooks.max_output_bytes
+    );
+
+    if !hooks.allowed_programs.is_empty() {
+        println!(
+            "Allowed programs: {}",
+            hooks.allowed_programs.join(", ").cyan()
+        );
+    }
+
+    if hooks.hooks.is_empty() {
+        println!("{}", "No hooks configured.".dimmed());
+        return;
+    }
+
+    loop {
+        let labels: Vec<String> = hooks
+            .hooks
+            .iter()
+            .map(|h| {
+                format!(
+                    "  {:<20} {:?}  → {} {}",
+                    h.name,
+                    h.event,
+                    h.command.program,
+                    h.command.args.join(" ")
+                )
+            })
+            .collect();
+        let mut items = labels;
+        items.push("← Back to chat".to_string());
+
+        let sel = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt(format!("Hooks ({})", hooks.hooks.len()))
+            .items(&items)
+            .default(0)
+            .interact_opt()
+            .ok()
+            .flatten();
+        match sel {
+            Some(i) if i < hooks.hooks.len() => {
+                let h = &hooks.hooks[i];
+                println!("\n  {}", "Hook Details".bold().cyan());
+                println!("  Name:    {}", h.name);
+                println!("  Event:   {:?}", h.event);
+                println!("  Program: {}", h.command.program);
+                if !h.command.args.is_empty() {
+                    println!("  Args:    {}", h.command.args.join(" "));
+                }
+                println!();
             }
-            _ => {
-                // Model-only — infer provider
-                let inferred = gestura_core::llm_validation::infer_provider_from_model_id(spec)
-                    .map(|p| p.to_string())
-                    .unwrap_or_else(|| config.llm.primary.clone());
-                (inferred, Some(spec.to_string()))
+            _ => break,
+        }
+    }
+}
+
+/// Basic mode `/permissions` slash command handler — interactive browser.
+fn basic_mode_permissions_command() {
+    use dialoguer::{Select, theme::ColorfulTheme};
+    use gestura_core::PermissionManager;
+
+    let manager = PermissionManager::new();
+    let perms = match manager.list() {
+        Ok(p) => p,
+        Err(e) => {
+            println!("{} Failed to load permissions: {}", "✗".red(), e);
+            return;
+        }
+    };
+
+    if perms.is_empty() {
+        println!("{}", "No permissions granted.".dimmed());
+        println!(
+            "Grant permissions with: {}",
+            "/permissions grant <tool> <action>".cyan()
+        );
+        return;
+    }
+
+    loop {
+        let labels: Vec<String> = perms
+            .iter()
+            .map(|p| {
+                let scope_str = match &p.scope {
+                    gestura_core::PermissionScope::Global => "Global".to_string(),
+                    gestura_core::PermissionScope::Path(s) => format!("Path({})", s),
+                    gestura_core::PermissionScope::Command(s) => format!("Cmd({})", s),
+                };
+                let expiry = p
+                    .expires_at
+                    .map(|e| e.format("%Y-%m-%d %H:%M").to_string())
+                    .unwrap_or_else(|| "never".to_string());
+                format!(
+                    "  {}:{} [{}] expires {}",
+                    p.tool, p.action, scope_str, expiry
+                )
+            })
+            .collect();
+        let mut items = labels;
+        items.push("← Back to chat".to_string());
+
+        let sel = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt(format!("Permissions ({})", perms.len()))
+            .items(&items)
+            .default(0)
+            .interact_opt()
+            .ok()
+            .flatten();
+        match sel {
+            Some(i) if i < perms.len() => {
+                let p = &perms[i];
+                println!("\n  {}", "Permission Details".bold().cyan());
+                println!("  Tool:       {}", p.tool);
+                println!("  Action:     {}", p.action);
+                println!("  Scope:      {:?}", p.scope);
+                println!("  Granted at: {}", p.granted_at.format("%Y-%m-%d %H:%M"));
+                println!(
+                    "  Expires:    {}",
+                    p.expires_at
+                        .map(|e| e.format("%Y-%m-%d %H:%M").to_string())
+                        .unwrap_or_else(|| "never".to_string())
+                );
+                println!();
+            }
+            _ => break,
+        }
+    }
+}
+
+/// Basic mode `/tasks` slash command handler — interactive browser.
+fn basic_mode_tasks_command(session: &ChatSession) {
+    use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
+    use gestura_core::tasks::{TaskManager, TaskStatus};
+
+    #[derive(Clone)]
+    struct Entry {
+        id: String,
+        name: String,
+        description: String,
+        status: TaskStatus,
+        parent_id: Option<String>,
+        source: String,
+    }
+
+    fn status_icon(status: TaskStatus) -> &'static str {
+        match status {
+            TaskStatus::NotStarted => "[ ]",
+            TaskStatus::InProgress => "[/]",
+            TaskStatus::Completed => "[x]",
+            TaskStatus::Cancelled => "[-]",
+        }
+    }
+
+    fn next_status(status: TaskStatus) -> &'static str {
+        match status {
+            TaskStatus::NotStarted => "in_progress",
+            TaskStatus::InProgress => "completed",
+            TaskStatus::Completed => "cancelled",
+            TaskStatus::Cancelled => "not_started",
+        }
+    }
+
+    let theme = ColorfulTheme::default();
+    let task_manager = TaskManager::new(dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")));
+
+    let run_canonical = |args: &[&str]| {
+        match slash::run_tasks_subcommand(args, &task_manager, &session.id) {
+            Ok(out) => {
+                for line in out.lines {
+                    println!("{line}");
+                }
+            }
+            Err(e) => {
+                println!("{} {e}", "✗".red());
+                // Print usage to guide recovery.
+                if let Ok(out) = slash::run_tasks_subcommand(&["help"], &task_manager, &session.id)
+                {
+                    for line in out.lines {
+                        println!("{line}");
+                    }
+                }
             }
         }
     };
 
-    // Validate compatibility
-    if let Some(ref m) = model
-        && let Err(err) =
-            gestura_core::llm_validation::validate_model_for_provider(&provider, m)
-    {
-        println!("{} {}", "✗".red(), err);
-        return None;
-    }
-
-    let display_model = model.as_deref().unwrap_or("(provider default)");
-    println!(
-        "{} Model set to {} ({})",
-        "✓".green(),
-        display_model.cyan(),
-        provider.dimmed()
-    );
-
-    // Return spec for caller to set on session
-    let result = if let Some(ref m) = model {
-        format!("{}:{}", provider, m)
-    } else {
-        provider.clone()
+    let prompt_create_name = || -> Option<String> {
+        loop {
+            let input: String = Input::with_theme(&theme)
+                .with_prompt("Task name (single token)")
+                .interact_text()
+                .ok()?;
+            let name = input.trim();
+            if name.is_empty() {
+                println!("{} Name cannot be empty.", "✗".red());
+                continue;
+            }
+            if name.split_whitespace().count() != 1 {
+                println!(
+                    "{} Create requires a single-token name (no spaces).",
+                    "✗".red()
+                );
+                continue;
+            }
+            return Some(name.to_string());
+        }
     };
-    Some(result)
+
+    loop {
+        let hierarchy = match task_manager.get_hierarchy(&session.id) {
+            Ok(h) => h,
+            Err(e) => {
+                println!("{} Failed to load tasks: {}", "✗".red(), e);
+                return;
+            }
+        };
+
+        let current_task_id = task_manager.get_current_task_id(&session.id).ok().flatten();
+
+        // Flatten hierarchy into UI entries (root tasks then subtasks).
+        let mut entries: Vec<Entry> = Vec::new();
+        for (root, subtasks) in &hierarchy {
+            entries.push(Entry {
+                id: root.id.clone(),
+                name: root.name.clone(),
+                description: root.description.clone(),
+                status: root.status,
+                parent_id: None,
+                source: format!("{:?}", root.source),
+            });
+            for sub in subtasks {
+                entries.push(Entry {
+                    id: sub.id.clone(),
+                    name: sub.name.clone(),
+                    description: sub.description.clone(),
+                    status: sub.status,
+                    parent_id: sub.parent_id.clone(),
+                    source: format!("{:?}", sub.source),
+                });
+            }
+        }
+
+        // Main menu: tasks + actions.
+        let mut items: Vec<String> = Vec::new();
+        if entries.is_empty() {
+            items.push("(no tasks yet)".dimmed().to_string());
+        } else {
+            items.extend(entries.iter().map(|e| {
+                let indent = if e.parent_id.is_some() { "    " } else { "  " };
+                let cur = if current_task_id.as_deref() == Some(e.id.as_str()) {
+                    " (current)"
+                } else {
+                    ""
+                };
+                format!(
+                    "{}{} {}{} [{}]",
+                    indent,
+                    status_icon(e.status),
+                    e.name,
+                    cur,
+                    e.source
+                )
+            }));
+        }
+
+        let create_idx = items.len();
+        items.push("＋ Create new task".to_string());
+
+        let clear_current_idx = items.len();
+        if current_task_id.is_some() {
+            items.push("⨯ Clear current task".to_string());
+        }
+
+        items.push("← Back to chat".to_string());
+
+        let sel = Select::with_theme(&theme)
+            .with_prompt("Tasks")
+            .items(&items)
+            .default(0)
+            .interact_opt()
+            .ok()
+            .flatten();
+
+        let Some(sel) = sel else {
+            break;
+        };
+
+        if sel == create_idx {
+            let Some(name) = prompt_create_name() else {
+                continue;
+            };
+            let desc: String = Input::with_theme(&theme)
+                .with_prompt("Description (optional)")
+                .allow_empty(true)
+                .interact_text()
+                .unwrap_or_default();
+
+            let mut args: Vec<String> = vec!["create".to_string(), name];
+            if !desc.trim().is_empty() {
+                args.extend(desc.split_whitespace().map(|s| s.to_string()));
+            }
+            let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            println!();
+            run_canonical(&arg_refs);
+            println!();
+            continue;
+        }
+
+        if current_task_id.is_some() && sel == clear_current_idx {
+            println!();
+            run_canonical(&["current", "clear"]);
+            println!();
+            continue;
+        }
+
+        // Back to chat.
+        if sel >= items.len() - 1 {
+            break;
+        }
+
+        // If there are no tasks, ignore selection.
+        if entries.is_empty() {
+            continue;
+        }
+
+        // Selected a task entry.
+        if sel >= entries.len() {
+            continue;
+        }
+        let entry = entries[sel].clone();
+
+        println!("\n  {}", "Task Details".bold().cyan());
+        println!("  Name:        {}", entry.name);
+        println!("  Status:      {}", status_icon(entry.status));
+        println!("  Source:      {}", entry.source);
+        println!("  ID:          {}", &entry.id[..entry.id.len().min(8)]);
+        if let Some(pid) = entry.parent_id.as_deref() {
+            println!("  Parent:      {}", &pid[..pid.len().min(8)]);
+        }
+        if !entry.description.is_empty() {
+            println!("  Description: {}", entry.description);
+        }
+        if current_task_id.as_deref() == Some(entry.id.as_str()) {
+            println!("  Current:     {}", "yes".green());
+        }
+        println!();
+
+        let actions = [
+            "← Back",
+            "Cycle status",
+            "Set as current",
+            "Edit name",
+            "Edit description",
+            "Create subtask",
+            "Add dependency (blocked by)",
+            "Delete task",
+        ];
+
+        let action = Select::with_theme(&theme)
+            .with_prompt("Action")
+            .items(&actions)
+            .default(0)
+            .interact_opt()
+            .ok()
+            .flatten();
+
+        let Some(action) = action else {
+            continue;
+        };
+
+        match action {
+            0 => {}
+            1 => {
+                println!();
+                run_canonical(&["status", entry.id.as_str(), next_status(entry.status)]);
+                println!();
+            }
+            2 => {
+                println!();
+                run_canonical(&["current", "set", entry.id.as_str()]);
+                println!();
+            }
+            3 => {
+                let new_name: String = Input::with_theme(&theme)
+                    .with_prompt("New name")
+                    .interact_text()
+                    .unwrap_or_default();
+                if new_name.trim().is_empty() {
+                    println!("{} Name cannot be empty.", "✗".red());
+                    continue;
+                }
+                let mut args: Vec<String> =
+                    vec!["update".to_string(), entry.id.clone(), "name".to_string()];
+                args.extend(new_name.split_whitespace().map(|s| s.to_string()));
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                println!();
+                run_canonical(&arg_refs);
+                println!();
+            }
+            4 => {
+                let new_desc: String = Input::with_theme(&theme)
+                    .with_prompt("New description")
+                    .interact_text()
+                    .unwrap_or_default();
+                if new_desc.trim().is_empty() {
+                    println!("{} Description cannot be empty.", "✗".red());
+                    continue;
+                }
+                let mut args: Vec<String> =
+                    vec!["update".to_string(), entry.id.clone(), "desc".to_string()];
+                args.extend(new_desc.split_whitespace().map(|s| s.to_string()));
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                println!();
+                run_canonical(&arg_refs);
+                println!();
+            }
+            5 => {
+                let Some(sub_name) = prompt_create_name() else {
+                    continue;
+                };
+                let sub_desc: String = Input::with_theme(&theme)
+                    .with_prompt("Description (optional)")
+                    .allow_empty(true)
+                    .interact_text()
+                    .unwrap_or_default();
+
+                let mut args: Vec<String> =
+                    vec!["create-sub".to_string(), entry.id.clone(), sub_name];
+                if !sub_desc.trim().is_empty() {
+                    args.extend(sub_desc.split_whitespace().map(|s| s.to_string()));
+                }
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                println!();
+                run_canonical(&arg_refs);
+                println!();
+            }
+            6 => {
+                let tasks = match task_manager.list_tasks(&session.id) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        println!("{} Failed to list tasks: {e}", "✗".red());
+                        continue;
+                    }
+                };
+                let mut candidates: Vec<(String, String)> = tasks
+                    .into_iter()
+                    .filter(|t| t.id != entry.id)
+                    .map(|t| (t.id, t.name))
+                    .collect();
+                if candidates.is_empty() {
+                    println!("{} No other tasks available to depend on.", "ℹ".cyan());
+                    continue;
+                }
+                candidates.sort_by(|a, b| a.1.cmp(&b.1));
+
+                let labels: Vec<String> = candidates
+                    .iter()
+                    .map(|(tid, tname)| format!("  {} ({})", tname, &tid[..tid.len().min(8)]))
+                    .collect();
+                let dep_sel = Select::with_theme(&theme)
+                    .with_prompt("Blocked by")
+                    .items(&labels)
+                    .default(0)
+                    .interact_opt()
+                    .ok()
+                    .flatten();
+                let Some(dep_sel) = dep_sel else {
+                    continue;
+                };
+                let blocked_by_id = candidates[dep_sel].0.clone();
+                println!();
+                run_canonical(&["dep", "add", entry.id.as_str(), blocked_by_id.as_str()]);
+                println!();
+            }
+            7 => {
+                let ok = Confirm::with_theme(&theme)
+                    .with_prompt("Delete this task? This cannot be undone.")
+                    .default(false)
+                    .interact()
+                    .unwrap_or(false);
+                if !ok {
+                    continue;
+                }
+                println!();
+                run_canonical(&["delete", "--confirmed", entry.id.as_str()]);
+                println!();
+            }
+            _ => {}
+        }
+    }
 }
 
-/// Resolve the default model for a provider from config.
-fn basic_mode_model_for_provider<'a>(config: &'a AppConfig, provider: &str) -> Option<&'a str> {
-    match provider {
-        "openai" => config.llm.openai.as_ref().map(|c| c.model.as_str()),
-        "anthropic" => config.llm.anthropic.as_ref().map(|c| c.model.as_str()),
-        "grok" => config.llm.grok.as_ref().map(|c| c.model.as_str()),
-        "gemini" => config.llm.gemini.as_ref().map(|c| c.model.as_str()),
-        "ollama" => config.llm.ollama.as_ref().map(|c| c.model.as_str()),
-        _ => None,
+/// Basic mode `/theme` slash command handler — interactive browser.
+fn basic_mode_themes_command() {
+    use dialoguer::{Select, theme::ColorfulTheme};
+
+    let themes = [
+        "catppuccin-mocha",
+        "light",
+        "high-contrast",
+        "dracula",
+        "gestura",
+        "pro",
+    ];
+
+    loop {
+        let labels: Vec<String> = themes.iter().map(|t| format!("  {}", t)).collect();
+        let mut items = labels;
+        items.push("← Back to chat".to_string());
+
+        let sel = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Themes")
+            .items(&items)
+            .default(0)
+            .interact_opt()
+            .ok()
+            .flatten();
+        match sel {
+            Some(i) if i < themes.len() => {
+                println!(
+                    "\n  {} Theme '{}' selected. Use TUI mode for live theme switching.\n",
+                    "ℹ".cyan(),
+                    themes[i]
+                );
+            }
+            _ => break,
+        }
     }
 }

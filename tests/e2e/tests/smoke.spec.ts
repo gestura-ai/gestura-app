@@ -82,14 +82,17 @@ test.describe('@smoke Gestura App', () => {
     await page.goto('/');
 
     await expect(page.locator('.onboarding-wizard')).toBeVisible();
-    await expect(page.locator('h2:has-text("Welcome to Gestura")')).toBeVisible();
+    // The onboarding wizard starts on the "Configure" step (copy may evolve),
+    // so assert on stable structural elements rather than specific heading text.
+    await expect(page.locator('.onboarding-wizard .step-title')).toHaveText('Configure');
+    await expect(page.locator('.onboarding-wizard button:has-text("Get Started")')).toBeVisible();
   });
 
   test('@smoke onboarding window html renders and advances', async ({ page }) => {
     await page.goto('/onboarding.html');
 
-    await expect(page.locator('#stepName')).toHaveText('Welcome');
-    await expect(page.locator('#stepContent')).toContainText('Welcome to');
+    await expect(page.locator('#stepName')).toHaveText('Configure');
+    await expect(page.locator('#stepContent')).toContainText('Configure your agent');
 
     await page.click('#nextBtn');
 
@@ -99,6 +102,8 @@ test.describe('@smoke Gestura App', () => {
 
   test('@smoke onboarding window grok provider shows API key input', async ({ page }) => {
     await page.goto('/onboarding.html');
+
+    await expect(page.locator('#stepName')).toHaveText('Configure');
 
     // Welcome -> Permissions
     await page.click('#nextBtn');
@@ -116,10 +121,70 @@ test.describe('@smoke Gestura App', () => {
     await page.click('#nextBtn');
     await expect(page.locator('#stepName')).toHaveText('AI Provider');
 
+    // Wait for the step's async hydration (loadLLMConfig) to complete.
+    // The mocked default config sets llm.primary=openai, which should overwrite
+    // the template default (ollama). If we select too early, the in-flight
+    // hydration can race and revert the provider.
+    await expect(page.locator('#llmProvider')).toHaveValue('openai');
+
     await page.selectOption('#llmProvider', 'grok');
-    await expect(page.locator('#llmConfig')).toContainText('Grok');
+    // Ensure change listeners fire reliably across browsers.
+    await page.dispatchEvent('#llmProvider', 'change');
+
+    await expect(page.locator('#llmConfig label[for="apiKey"]')).toContainText('Grok');
     await expect(page.locator('#apiKey')).toBeVisible();
     await expect(page.locator('#apiKey')).toHaveAttribute('placeholder', /xai-/);
+  });
+
+  test('@smoke chat explorer toggles and expands a directory', async ({ page }) => {
+    await page.goto('/chat.html?session_id=e2e-session');
+
+    const explorerPanel = page.locator('#explorerPanel');
+    const explorerOverlay = page.locator('#explorerPanelOverlay');
+    const explorerTree = page.locator('#explorerTree');
+
+    await expect(explorerPanel).not.toHaveClass(/\bopen\b/);
+
+    // Open via quick-access button.
+    await page.click('#quickExplorerBtn');
+    await expect(explorerPanel).toHaveClass(/\bopen\b/);
+    await expect(explorerOverlay).toHaveClass(/\bvisible\b/);
+
+    // Tree should populate from mocked IPC.
+    await expect(explorerTree.locator('.explorer-row')).toHaveCount(3);
+    await expect(explorerTree.locator('.explorer-row', { hasText: 'src' })).toBeVisible();
+
+    // Expand src and expect children to render.
+    await explorerTree.locator('.explorer-row', { hasText: 'src' }).click();
+    await expect(explorerTree.locator('.explorer-row', { hasText: 'main.rs' })).toBeVisible();
+
+    // Git badge should render for a modified file.
+    const mainRow = explorerTree.locator('.explorer-row', { hasText: 'main.rs' });
+    await expect(mainRow.locator('.git-badge.modified')).toHaveCount(1);
+
+    // Toggle closed via hotkey (Ctrl/Cmd + B) using a deterministic dispatched event.
+    await page.evaluate(() => {
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'b',
+          ctrlKey: true,
+          bubbles: true,
+        })
+      );
+    });
+    await expect(explorerPanel).not.toHaveClass(/\bopen\b/);
+
+    // Toggle open again.
+    await page.evaluate(() => {
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'b',
+          ctrlKey: true,
+          bubbles: true,
+        })
+      );
+    });
+    await expect(explorerPanel).toHaveClass(/\bopen\b/);
   });
 });
 

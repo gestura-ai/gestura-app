@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 /// Global permission manager instance
 static PERMISSION_MANAGER: OnceLock<PermissionManager> = OnceLock::new();
 
-fn get_permission_manager() -> &'static PermissionManager {
+pub(crate) fn permission_manager() -> &'static PermissionManager {
     PERMISSION_MANAGER.get_or_init(PermissionManager::new)
 }
 
@@ -53,7 +53,7 @@ fn run_list() -> Result<()> {
     println!("{}", "Permissions".bold().underline());
     println!();
 
-    let perms = get_permission_manager().list()?;
+    let perms = permission_manager().list()?;
 
     if perms.is_empty() {
         println!("{}", "(No permissions granted)".dimmed());
@@ -114,7 +114,7 @@ fn run_grant(permission: &str, scope: Option<&str>) -> Result<()> {
         None => PermissionScope::Global,
     };
 
-    get_permission_manager().grant(tool, action, perm_scope.clone(), None)?;
+    permission_manager().grant(tool, action, perm_scope.clone(), None)?;
 
     let scope_msg = match &perm_scope {
         PermissionScope::Global => String::new(),
@@ -142,7 +142,7 @@ fn run_revoke(permission: &str) -> Result<()> {
     }
 
     let (tool, action) = (parts[0], parts[1]);
-    let count = get_permission_manager().revoke(tool, action)?;
+    let count = permission_manager().revoke(tool, action)?;
 
     if count > 0 {
         println!(
@@ -163,7 +163,7 @@ fn run_revoke(permission: &str) -> Result<()> {
 }
 
 fn run_reset() -> Result<()> {
-    let count = get_permission_manager().reset()?;
+    let count = permission_manager().reset()?;
 
     println!("{} Permissions reset ({} removed)", "✓".green(), count);
     println!();
@@ -197,7 +197,7 @@ fn run_check(action: &str, target: Option<&str>) -> Result<()> {
     };
 
     let target_info = target.map(|t| format!(" on '{}'", t)).unwrap_or_default();
-    let check = get_permission_manager().check(tool, action_name, target)?;
+    let check = permission_manager().check(tool, action_name, target)?;
 
     if check.allowed {
         println!(

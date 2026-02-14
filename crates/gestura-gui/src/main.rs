@@ -236,6 +236,10 @@ async fn main() {
             gestura_gui::api::pick_workspace_directory,
             // Session convenience actions
             gestura_gui::api::open_shell_for_session,
+            // Project explorer (chat left-side file tree)
+            gestura_gui::api::explorer_get_root,
+            gestura_gui::api::explorer_list_dir,
+            gestura_gui::api::explorer_git_status,
             // Shell process control (inline shell console)
             gestura_gui::api::shell_process_stop,
             gestura_gui::api::shell_process_pause,
@@ -272,6 +276,9 @@ async fn main() {
             gestura_gui::api::get_knowledge_item,
             gestura_gui::api::set_knowledge_enabled,
             gestura_gui::api::get_enabled_knowledge,
+            gestura_gui::api::knowledge_default_session_id,
+            gestura_gui::api::upsert_knowledge_item,
+            gestura_gui::api::delete_knowledge_item,
             // Simulator management
             gestura_gui::commands::get_simulators,
             gestura_gui::commands::scan_for_simulators,
@@ -300,6 +307,7 @@ async fn main() {
             gestura_gui::api::update_llm_provider,
             gestura_gui::api::update_audio_device,
             gestura_gui::api::update_ollama_config,
+            gestura_gui::api::update_provider_model,
             // Notification settings
             gestura_gui::api::get_notification_settings,
             gestura_gui::api::update_notification_settings,

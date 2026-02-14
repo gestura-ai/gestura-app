@@ -673,6 +673,12 @@ Set secrets via environment variables or re-enable keychain access (unset GESTUR
             let c = self.llm.openai.get_or_insert_with(Default::default);
             c.api_key = secret;
         }
+        // Belt-and-suspenders: back-fill empty model on pre-existing configs.
+        if let Some(c) = self.llm.openai.as_mut()
+            && c.model.is_empty()
+        {
+            c.model = crate::default_models::DEFAULT_OPENAI_MODEL.to_string();
+        }
 
         // Anthropic
         if let Some(secret) = get_keychain_secret_with_legacy_fallback(
@@ -681,6 +687,11 @@ Set secrets via environment variables or re-enable keychain access (unset GESTUR
         ) {
             let c = self.llm.anthropic.get_or_insert_with(Default::default);
             c.api_key = secret;
+        }
+        if let Some(c) = self.llm.anthropic.as_mut()
+            && c.model.is_empty()
+        {
+            c.model = crate::default_models::DEFAULT_ANTHROPIC_MODEL.to_string();
         }
 
         // Grok
@@ -691,6 +702,11 @@ Set secrets via environment variables or re-enable keychain access (unset GESTUR
             let c = self.llm.grok.get_or_insert_with(Default::default);
             c.api_key = secret;
         }
+        if let Some(c) = self.llm.grok.as_mut()
+            && c.model.is_empty()
+        {
+            c.model = crate::default_models::DEFAULT_GROK_MODEL.to_string();
+        }
 
         // Gemini
         if let Some(secret) = get_keychain_secret_with_legacy_fallback(
@@ -699,6 +715,11 @@ Set secrets via environment variables or re-enable keychain access (unset GESTUR
         ) {
             let c = self.llm.gemini.get_or_insert_with(Default::default);
             c.api_key = secret;
+        }
+        if let Some(c) = self.llm.gemini.as_mut()
+            && c.model.is_empty()
+        {
+            c.model = crate::default_models::DEFAULT_GEMINI_MODEL.to_string();
         }
 
         // Voice OpenAI
@@ -794,6 +815,12 @@ Set secrets via environment variables or re-enable keychain access (unset GESTUR
             let c = self.llm.openai.get_or_insert_with(Default::default);
             c.api_key = secret;
         }
+        // Belt-and-suspenders: back-fill empty model on pre-existing configs.
+        if let Some(c) = self.llm.openai.as_mut()
+            && c.model.is_empty()
+        {
+            c.model = crate::default_models::DEFAULT_OPENAI_MODEL.to_string();
+        }
         if let Some(secret) = get_secret_with_legacy(
             storage.as_ref(),
             "gestura_llm_anthropic_api_key",
@@ -803,6 +830,11 @@ Set secrets via environment variables or re-enable keychain access (unset GESTUR
         {
             let c = self.llm.anthropic.get_or_insert_with(Default::default);
             c.api_key = secret;
+        }
+        if let Some(c) = self.llm.anthropic.as_mut()
+            && c.model.is_empty()
+        {
+            c.model = crate::default_models::DEFAULT_ANTHROPIC_MODEL.to_string();
         }
         if let Some(secret) = get_secret_with_legacy(
             storage.as_ref(),
@@ -814,6 +846,11 @@ Set secrets via environment variables or re-enable keychain access (unset GESTUR
             let c = self.llm.grok.get_or_insert_with(Default::default);
             c.api_key = secret;
         }
+        if let Some(c) = self.llm.grok.as_mut()
+            && c.model.is_empty()
+        {
+            c.model = crate::default_models::DEFAULT_GROK_MODEL.to_string();
+        }
         if let Some(secret) = get_secret_with_legacy(
             storage.as_ref(),
             "gestura_llm_gemini_api_key",
@@ -823,6 +860,11 @@ Set secrets via environment variables or re-enable keychain access (unset GESTUR
         {
             let c = self.llm.gemini.get_or_insert_with(Default::default);
             c.api_key = secret;
+        }
+        if let Some(c) = self.llm.gemini.as_mut()
+            && c.model.is_empty()
+        {
+            c.model = crate::default_models::DEFAULT_GEMINI_MODEL.to_string();
         }
 
         hydrate_with_legacy!(

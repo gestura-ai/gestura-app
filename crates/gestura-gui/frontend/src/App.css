@@ -441,14 +441,17 @@ body {
 
 .consent-item label {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: flex-start;
   gap: 0.5rem;
   cursor: pointer;
 }
 
 .consent-item input[type="checkbox"] {
   width: auto;
-  margin-right: 0.5rem;
+  margin-right: 0.75rem;
+  margin-top: 0.25rem;
+  flex-shrink: 0;
 }
 
 .privacy-note {

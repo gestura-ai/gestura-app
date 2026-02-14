@@ -565,10 +565,10 @@ pub fn add_knowledge_entry(
     category: String,
     tags: Vec<String>,
 ) -> Result<String, String> {
-    use gestura_core::knowledge::{KnowledgeItem, KnowledgeStore};
+    use gestura_core::knowledge::KnowledgeItem;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let store = KnowledgeStore::with_default_dir();
+    let store = get_knowledge_store();
 
     // Generate a unique ID based on timestamp
     let timestamp = SystemTime::now()
@@ -587,7 +587,9 @@ pub fn add_knowledge_entry(
     .with_triggers(tags)
     .with_content(&content);
 
-    store.register(item);
+    store
+        .upsert_user_item(item)
+        .map_err(|e| format!("Failed to persist knowledge entry: {e}"))?;
 
     tracing::info!("Added knowledge entry: {}", id);
     Ok(id)
@@ -596,10 +598,9 @@ pub fn add_knowledge_entry(
 /// List knowledge entries
 #[tauri::command]
 pub fn list_knowledge_entries(category: Option<String>) -> Result<Vec<serde_json::Value>, String> {
-    use gestura_core::knowledge::{KnowledgeQuery, KnowledgeStore, register_builtin_knowledge};
+    use gestura_core::knowledge::KnowledgeQuery;
 
-    let store = KnowledgeStore::with_default_dir();
-    register_builtin_knowledge(&store);
+    let store = get_knowledge_store();
 
     let query = KnowledgeQuery {
         query: String::new(),
@@ -631,10 +632,9 @@ pub fn search_knowledge(
     query: String,
     limit: Option<usize>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    use gestura_core::knowledge::{KnowledgeQuery, KnowledgeStore, register_builtin_knowledge};
+    use gestura_core::knowledge::KnowledgeQuery;
 
-    let store = KnowledgeStore::with_default_dir();
-    register_builtin_knowledge(&store);
+    let store = get_knowledge_store();
 
     let kquery = KnowledgeQuery {
         query,
@@ -1948,6 +1948,7 @@ pub async fn process_chat_message_streaming(
                             session_id: resolved_session_id
                                 .clone()
                                 .unwrap_or_else(|| "unknown".to_string()),
+                            category: None,
                             summary: summary.clone(),
                             content,
                             file_path: None,
@@ -3848,10 +3849,18 @@ pub fn set_session_workspace(session_id: String, workspace_path: String) -> Resu
     if !path.is_dir() {
         return Err(format!("Path is not a directory: {}", workspace_path));
     }
-    crate::window_manager::set_session_workspace(&session_id, path);
+
+    let path = path.canonicalize().map_err(|e| {
+        format!(
+            "Failed to canonicalize workspace path {}: {}",
+            workspace_path, e
+        )
+    })?;
+
+    crate::window_manager::set_session_workspace(&session_id, path.clone());
     tracing::info!(
         session_id = %session_id,
-        workspace = %workspace_path,
+        workspace = %path.display(),
         "Workspace directory updated for session"
     );
     Ok(())
@@ -3881,12 +3890,16 @@ pub async fn pick_workspace_directory(
 
     match rx.await {
         Ok(Some(path)) => {
-            let path_str = path.to_string();
+            let path_buf_original = std::path::PathBuf::from(path.to_string());
+            let path_buf = path_buf_original
+                .canonicalize()
+                .unwrap_or(path_buf_original);
+            let path_str = path_buf.display().to_string();
+
             // Use provided session_id or fall back to active session
             let target_session =
                 session_id.or_else(crate::window_manager::get_active_chat_for_voice);
             if let Some(sid) = target_session {
-                let path_buf = std::path::PathBuf::from(&path_str);
                 crate::window_manager::set_session_workspace(&sid, path_buf);
                 tracing::info!(
                     session_id = %sid,
@@ -3909,6 +3922,172 @@ pub async fn pick_workspace_directory(
 #[tauri::command(rename_all = "snake_case")]
 pub fn open_shell_for_session(session_id: String) -> Result<(), String> {
     crate::window_manager::open_shell_session_for_chat_resume(&session_id)
+}
+
+// ============================================================================
+// Project Explorer Commands (chat left-side file tree)
+// ============================================================================
+
+fn ensure_session_exists(session_id: &str) -> Result<(), String> {
+    crate::window_manager::get_session_state(session_id)
+        .map(|_| ())
+        .ok_or_else(|| format!("Session not found: {}", session_id))
+}
+
+fn ensure_explorer_read_allowed(session_id: &str) -> Result<(), String> {
+    ensure_session_exists(session_id)?;
+    if !crate::window_manager::is_action_allowed(session_id, false) {
+        return Err("Explorer access not allowed by session permission policy".to_string());
+    }
+    Ok(())
+}
+
+fn session_root_dir(session_id: &str) -> Result<std::path::PathBuf, String> {
+    // Primary source of truth: session workspace directory.
+    if let Some(workspace) =
+        crate::window_manager::get_session_state(session_id).and_then(|s| s.workspace_dir)
+    {
+        return Ok(workspace);
+    }
+
+    // If older session state had no workspace recorded, prefer the detected project directory
+    // (so explorer and tool sandbox align), otherwise fall back to a default per-session dir.
+    if let Some(project_dir) = crate::window_manager::get_project_directory() {
+        crate::window_manager::set_session_workspace(session_id, project_dir.clone());
+        return Ok(project_dir);
+    }
+
+    let fallback = crate::window_manager::default_session_workspace_dir(session_id);
+    std::fs::create_dir_all(&fallback).map_err(|e| {
+        format!(
+            "Failed to create default session workspace directory {}: {}",
+            fallback.display(),
+            e
+        )
+    })?;
+    crate::window_manager::set_session_workspace(session_id, fallback.clone());
+    Ok(fallback)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn explorer_get_root(
+    session_id: String,
+) -> Result<crate::explorer::ExplorerRootResponse, String> {
+    ensure_explorer_read_allowed(&session_id)?;
+    let root = session_root_dir(&session_id)?;
+    let is_git_repo = root.join(".git").exists();
+    Ok(crate::explorer::ExplorerRootResponse {
+        root: root.display().to_string(),
+        is_git_repo,
+    })
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn explorer_list_dir(
+    session_id: String,
+    dir_rel: String,
+) -> Result<crate::explorer::ExplorerListDirResponse, String> {
+    ensure_explorer_read_allowed(&session_id)?;
+    let root = session_root_dir(&session_id)?;
+    let root_display = root.display().to_string();
+    let dir_rel_trimmed = dir_rel.trim().to_string();
+
+    let (entries, truncated) = tokio::task::spawn_blocking(move || {
+        crate::explorer::list_dir(&root, &dir_rel_trimmed, 750)
+    })
+    .await
+    .map_err(|e| format!("Failed to list directory: {}", e))?
+    .map_err(|e| e.to_string())?;
+
+    Ok(crate::explorer::ExplorerListDirResponse {
+        root: root_display,
+        dir_rel,
+        entries,
+        truncated,
+    })
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn explorer_git_status(
+    session_id: String,
+) -> Result<crate::explorer::ExplorerGitStatusResponse, String> {
+    ensure_explorer_read_allowed(&session_id)?;
+    let root = session_root_dir(&session_id)?;
+    let root_display = root.display().to_string();
+    let is_git_repo = root.join(".git").exists();
+    if !is_git_repo {
+        return Ok(crate::explorer::ExplorerGitStatusResponse {
+            root: root_display,
+            is_git_repo: false,
+            paths: Default::default(),
+            error: None,
+        });
+    }
+
+    let root_for_git = root.clone();
+    let status = tokio::task::spawn_blocking(move || {
+        let tools = gestura_core::tools::git::GitTools::new(Some(root_for_git));
+        tools.status()
+    })
+    .await
+    .map_err(|e| format!("Failed to run git status: {}", e))?;
+
+    let status = match status {
+        Ok(s) => s,
+        Err(e) => {
+            return Ok(crate::explorer::ExplorerGitStatusResponse {
+                root: root_display,
+                is_git_repo: true,
+                paths: Default::default(),
+                error: Some(e.to_string()),
+            });
+        }
+    };
+
+    use crate::explorer::{ExplorerGitChangeKind, ExplorerGitPathStatus};
+    use gestura_core::tools::git::ChangeStatus;
+    use std::collections::HashMap;
+
+    fn map_kind(status: ChangeStatus) -> ExplorerGitChangeKind {
+        match status {
+            ChangeStatus::Added => ExplorerGitChangeKind::Added,
+            ChangeStatus::Modified => ExplorerGitChangeKind::Modified,
+            ChangeStatus::Deleted => ExplorerGitChangeKind::Deleted,
+            ChangeStatus::Renamed => ExplorerGitChangeKind::Renamed,
+            ChangeStatus::Copied => ExplorerGitChangeKind::Copied,
+            ChangeStatus::Unknown => ExplorerGitChangeKind::Unknown,
+        }
+    }
+
+    let mut paths: HashMap<String, ExplorerGitPathStatus> = HashMap::new();
+
+    for change in status.staged {
+        if let Some(rel) = crate::explorer::normalize_git_change_path(&change.path) {
+            let entry = paths.entry(rel).or_default();
+            entry.staged = Some(map_kind(change.status));
+        }
+    }
+
+    for change in status.unstaged {
+        if let Some(rel) = crate::explorer::normalize_git_change_path(&change.path) {
+            let entry = paths.entry(rel).or_default();
+            entry.unstaged = Some(map_kind(change.status));
+        }
+    }
+
+    for p in status.untracked {
+        if let Some(rel) = crate::explorer::normalize_git_change_path(&p) {
+            let entry = paths.entry(rel).or_default();
+            entry.untracked = true;
+        }
+    }
+
+    Ok(crate::explorer::ExplorerGitStatusResponse {
+        root: root_display,
+        is_git_repo: true,
+        paths,
+        error: None,
+    })
 }
 
 // ============================================================================
@@ -4520,6 +4699,10 @@ fn get_knowledge_store() -> &'static KnowledgeStore {
     KNOWLEDGE_STORE.get_or_init(|| {
         let store = KnowledgeStore::with_default_dir();
         register_builtin_knowledge(&store);
+
+        if let Err(e) = store.load_user_items() {
+            tracing::warn!(error = %e, "Failed to load persisted user knowledge (continuing)");
+        }
         store
     })
 }
@@ -4569,6 +4752,32 @@ pub fn get_enabled_knowledge(session_id: String) -> Result<Vec<String>, String> 
     let settings = get_knowledge_settings();
     settings
         .get_enabled_knowledge(&session_id)
+        .map_err(|e| e.to_string())
+}
+
+/// Get the pseudo-session ID used for default knowledge enablement.
+#[tauri::command]
+pub fn knowledge_default_session_id() -> Result<String, String> {
+    Ok(gestura_core::knowledge::DEFAULT_KNOWLEDGE_SETTINGS_SESSION_ID.to_string())
+}
+
+/// Create or update a user knowledge item (persisted on disk).
+///
+/// Built-in knowledge items cannot be modified via this command.
+#[tauri::command]
+pub fn upsert_knowledge_item(item: KnowledgeItem) -> Result<(), String> {
+    let store = get_knowledge_store();
+    store.upsert_user_item(item).map_err(|e| e.to_string())
+}
+
+/// Delete a user knowledge item (persisted on disk).
+///
+/// Built-in knowledge items cannot be deleted via this command.
+#[tauri::command]
+pub fn delete_knowledge_item(knowledge_id: String) -> Result<(), String> {
+    let store = get_knowledge_store();
+    store
+        .delete_user_item(&knowledge_id)
         .map_err(|e| e.to_string())
 }
 
@@ -4996,6 +5205,10 @@ pub async fn update_whisper_model(model_filename: String) -> Result<(), String> 
 pub async fn update_llm_provider(provider: String) -> Result<(), String> {
     let mut cfg = AppConfig::load_async().await;
     cfg.llm.primary = provider.clone();
+    // Ensure the provider-specific config object exists with a valid default model.
+    // Without this, switching to a cloud provider would leave config.llm.<provider>
+    // as None, causing the session window to show an empty model dropdown.
+    cfg.llm.ensure_provider_config(&provider);
     cfg.save_async().await.map_err(|e| e.to_string())?;
     tracing::info!("LLM provider updated to: {}", provider);
     Ok(())
@@ -5021,6 +5234,56 @@ pub async fn update_ollama_config(base_url: String, model: String) -> Result<(),
     });
     cfg.save_async().await.map_err(|e| e.to_string())?;
     tracing::info!("Ollama config updated: url={}, model={}", base_url, model);
+    Ok(())
+}
+
+/// Update the model for a specific cloud LLM provider (persists to global config).
+///
+/// This is used by onboarding so the user-selected model sticks permanently.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn update_provider_model(provider: String, model: String) -> Result<(), String> {
+    if model.trim().is_empty() {
+        return Err("Model name cannot be empty".to_string());
+    }
+    let mut cfg = AppConfig::load_async().await;
+    // Ensure the provider config block exists before mutating the model.
+    cfg.llm.ensure_provider_config(&provider);
+    match provider.as_str() {
+        "openai" => {
+            if let Some(c) = cfg.llm.openai.as_mut() {
+                c.model = model.clone();
+            }
+        }
+        "anthropic" => {
+            if let Some(c) = cfg.llm.anthropic.as_mut() {
+                c.model = model.clone();
+            }
+        }
+        "grok" => {
+            if let Some(c) = cfg.llm.grok.as_mut() {
+                c.model = model.clone();
+            }
+        }
+        "gemini" => {
+            if let Some(c) = cfg.llm.gemini.as_mut() {
+                c.model = model.clone();
+            }
+        }
+        "ollama" => {
+            if let Some(c) = cfg.llm.ollama.as_mut() {
+                c.model = model.clone();
+            }
+        }
+        other => {
+            return Err(format!("Unknown provider: {other}"));
+        }
+    }
+    cfg.save_async().await.map_err(|e| e.to_string())?;
+    tracing::info!(
+        "Provider model updated: provider={}, model={}",
+        provider,
+        model
+    );
     Ok(())
 }
 

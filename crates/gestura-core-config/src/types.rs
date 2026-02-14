@@ -337,7 +337,52 @@ pub struct LlmSettings {
     pub ollama: Option<OllamaConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+impl LlmSettings {
+    /// Ensure the provider-specific config object for `provider` exists and has a
+    /// non-empty model field. If the config object is missing it is created with
+    /// `Default::default()` (which now includes the correct default model). If the
+    /// config already exists but has an empty model, the model is back-filled.
+    pub fn ensure_provider_config(&mut self, provider: &str) {
+        match provider {
+            "openai" => {
+                let c = self.openai.get_or_insert_with(OpenAiConfig::default);
+                if c.model.is_empty() {
+                    c.model = DEFAULT_OPENAI_MODEL.to_string();
+                }
+            }
+            "anthropic" => {
+                let c = self.anthropic.get_or_insert_with(AnthropicConfig::default);
+                if c.model.is_empty() {
+                    c.model = DEFAULT_ANTHROPIC_MODEL.to_string();
+                }
+            }
+            "grok" => {
+                let c = self.grok.get_or_insert_with(GrokConfig::default);
+                if c.model.is_empty() {
+                    c.model = DEFAULT_GROK_MODEL.to_string();
+                }
+            }
+            "gemini" => {
+                let c = self.gemini.get_or_insert_with(GeminiConfig::default);
+                if c.model.is_empty() {
+                    c.model = DEFAULT_GEMINI_MODEL.to_string();
+                }
+            }
+            "ollama" => {
+                let c = self.ollama.get_or_insert_with(|| OllamaConfig {
+                    base_url: DEFAULT_OLLAMA_BASE_URL.to_string(),
+                    model: DEFAULT_OLLAMA_MODEL.to_string(),
+                });
+                if c.model.is_empty() {
+                    c.model = DEFAULT_OLLAMA_MODEL.to_string();
+                }
+            }
+            _ => {} // unknown provider – nothing to do
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpenAiConfig {
     #[serde(default)]
     pub api_key: String,
@@ -346,11 +391,21 @@ pub struct OpenAiConfig {
     pub model: String,
 }
 
+impl Default for OpenAiConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            base_url: None,
+            model: DEFAULT_OPENAI_MODEL.to_string(),
+        }
+    }
+}
+
 fn default_openai_model() -> String {
     DEFAULT_OPENAI_MODEL.to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AnthropicConfig {
     #[serde(default)]
     pub api_key: String,
@@ -362,11 +417,22 @@ pub struct AnthropicConfig {
     pub thinking_budget_tokens: Option<u32>,
 }
 
+impl Default for AnthropicConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            base_url: None,
+            model: DEFAULT_ANTHROPIC_MODEL.to_string(),
+            thinking_budget_tokens: None,
+        }
+    }
+}
+
 fn default_anthropic_model() -> String {
     DEFAULT_ANTHROPIC_MODEL.to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GrokConfig {
     #[serde(default)]
     pub api_key: String,
@@ -375,17 +441,37 @@ pub struct GrokConfig {
     pub model: String,
 }
 
+impl Default for GrokConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            base_url: None,
+            model: DEFAULT_GROK_MODEL.to_string(),
+        }
+    }
+}
+
 fn default_grok_model() -> String {
     DEFAULT_GROK_MODEL.to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GeminiConfig {
     #[serde(default)]
     pub api_key: String,
     pub base_url: Option<String>,
     #[serde(default = "default_gemini_model")]
     pub model: String,
+}
+
+impl Default for GeminiConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            base_url: None,
+            model: DEFAULT_GEMINI_MODEL.to_string(),
+        }
+    }
 }
 
 fn default_gemini_model() -> String {

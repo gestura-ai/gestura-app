@@ -3,6 +3,7 @@
 //! The listen hotkey is intended to **toggle voice listening**, matching the
 //! exact behavior of the tray menu item "Start Listening" / "Stop Listening".
 
+use std::time::Duration;
 #[allow(unused_imports)]
 use tauri::Manager as _;
 use tauri::{AppHandle, Manager};
@@ -63,9 +64,22 @@ pub fn register_hotkey(app: &AppHandle, hotkey: &str) {
                             }
                         }
 
-                        // IMPORTANT: Do not open any chat window here.
-                        // Hotkey must behave exactly like tray "Start Listening".
-                        crate::tray::toggle_listening_mode(app);
+                        // Prefer routing the hotkey to an active CLI session (if one is running).
+                        // Fall back to the GUI listening toggle if no CLI server responds quickly.
+                        let app_handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let routed = gestura_core::hotkey_ipc::try_send_hotkey_trigger_to_cli(
+                                Duration::from_millis(150),
+                            )
+                            .await
+                            .unwrap_or(false);
+
+                            if !routed {
+                                // IMPORTANT: Do not open any chat window here.
+                                // Hotkey must behave exactly like tray "Start Listening".
+                                crate::tray::toggle_listening_mode(&app_handle);
+                            }
+                        });
                     }
                     ShortcutState::Released => {}
                 }

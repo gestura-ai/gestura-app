@@ -138,16 +138,49 @@
         }
 
         .header {
+            position: relative;
             text-align: center;
-            margin-bottom: 1rem;
+            margin-bottom: 1.5rem;
+            /* Shrink logo by another ~1/3 (147px -> ~98px). */
+            --header-logo-size: 98px;
+            overflow: visible;
         }
 
         .header h1 {
+            position: relative;
+            display: inline-block;
             font-size: 1.75rem;
             margin-bottom: 0.25rem;
+            line-height: 1.15;
+        }
+
+        .header-logo {
+            position: absolute;
+            /*
+	             * Align the SVG to the LEFT edge of the “Welcome to Gestura” title.
+	             * Let it overflow only to the RIGHT + BOTTOM (never above the title),
+	             * so the top of the logo won't get cropped by the viewport.
+	             */
+            left: 0;
+            top: 0;
+            right: auto;
+            bottom: auto;
+            width: var(--header-logo-size);
+            height: var(--header-logo-size);
+            opacity: 1;
+            pointer-events: none;
+            user-select: none;
+            z-index: 0;
+        }
+
+        .header-title {
+            position: relative;
+            z-index: 1;
+            display: inline-block;
         }
 
         .header p {
+            z-index: 1;
             color: var(--text-secondary);
             font-size: 0.9rem;
         }
@@ -455,17 +488,42 @@
             flex: 1;
             min-width: 0;
         }
+
+        /* Consent rows – keep checkbox on the same line as the text.
+	           Do not rely on style="..." attributes since the Tauri webview CSP
+	           may ignore inline styles for dynamically injected step HTML. */
+        label.consent-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.75rem;
+            cursor: pointer;
+        }
+
+        label.consent-row input[type="checkbox"] {
+            flex-shrink: 0;
+            margin-top: 0.25rem;
+        }
+
+        label.consent-row>div {
+            flex: 1;
+            min-width: 0;
+        }
+
+        label.consent-row p {
+            margin: 0.25rem 0 0;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
     </style>
 </head>
 
 <body>
     <div class="onboarding-container">
         <div class="header">
-            <h1><img src="assets/gestura-app.svg" alt="Gestura"
-                    style="width: 140px; height: 140px; vertical-align: middle; margin-right: 8px;">Welcome to <span
-                    class="text-gradient">Gestura</span>
+            <h1>
+                <img class="header-logo" src="assets/gestura-app.svg" alt="" aria-hidden="true">
+                <span class="header-title">Welcome to <span class="text-gradient">Gestura</span></span>
             </h1>
-            <p>Let's get you set up with voice commands and haptic feedback</p>
         </div>
 
         <div class="progress-container">
@@ -474,7 +532,7 @@
             </div>
             <div class="step-indicator">
                 <span id="stepNumber">Step 1 of 9</span>
-                <span id="stepName">Welcome</span>
+                <span id="stepName">Configure</span>
             </div>
         </div>
 
@@ -849,10 +907,10 @@
         const steps = [
             {
                 id: 'welcome',
-                title: 'Welcome',
+                title: 'Configure',
                 content: `
-	                    <h2>Welcome to <span class="text-gradient">Gestura</span></h2>
-                    <p>Gestura is your intelligent voice and gesture assistant. Control your computer with natural speech commands and get tactile feedback through connected hardware.</p>
+	                    <h2>Configure your agent</h2>
+	                    <p>Gestura.app is a privacy-first AI assistant that <strong>listens, speaks, and acts</strong>, helping with research, daily life, and coding. We'll configure the essentials so you can start using your agent right away.</p>
                     <div class="features-grid">
                         <div class="feature-card">
                             <h3><span class="icon-microphone"></span> Voice Processing</h3>
@@ -868,7 +926,7 @@
                         </div>
                         <div class="feature-card">
                             <h3><span class="icon-lock"></span> Privacy First</h3>
-                            <p>Process everything locally - your data stays on your device</p>
+                            <p>Process everything locally and keep your data on your device</p>
                         </div>
                     </div>
                 `
@@ -949,7 +1007,7 @@
                             <option value="ollama" selected>Ollama (Local)</option>
                             <option value="openai">OpenAI</option>
                             <option value="anthropic">Anthropic</option>
-                            <option value="gemini">Gemini (Google)</option>
+	                            <option value="gemini">Gemini (Google)</option>
                             <option value="grok">Grok (xAI)</option>
                         </select>
                     </div>
@@ -981,20 +1039,20 @@
                         <p style="margin: 0.25rem 0 0; font-size: 0.85rem;">With local mode, audio is processed entirely on your device and never sent to any server.</p>
                     </div>
                     <div style="margin: 1rem 0;">
-                        <label style="display: flex; align-items: flex-start; cursor: pointer;">
-                            <input type="checkbox" id="analyticsConsent" style="margin-right: 0.75rem; margin-top: 0.25rem;">
+	                        <label class="consent-row">
+	                            <input type="checkbox" id="analyticsConsent">
                             <div>
                                 <strong>Anonymous Usage Analytics (Optional)</strong>
-                                <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Help improve Gestura by sharing anonymous usage statistics.</p>
+	                                <p>Help improve Gestura by sharing anonymous usage statistics.</p>
                             </div>
                         </label>
                     </div>
                     <div style="margin: 1rem 0;">
-                        <label style="display: flex; align-items: flex-start; cursor: pointer;">
-                            <input type="checkbox" id="crashReports" checked style="margin-right: 0.75rem; margin-top: 0.25rem;">
+	                        <label class="consent-row">
+	                            <input type="checkbox" id="crashReports" checked>
                             <div>
                                 <strong>Crash Reports (Recommended)</strong>
-                                <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Send crash reports to help us fix bugs quickly.</p>
+	                                <p>Send crash reports to help us fix bugs quickly.</p>
                             </div>
                         </label>
                     </div>
@@ -1338,13 +1396,51 @@
             }
 
             if (provider === 'ollama') {
-                const url = document.getElementById('ollamaUrl')?.value || 'http://localhost:11434';
-                const model = document.getElementById('ollamaModel')?.value || 'llama3.2';
-                try {
-                    await invoke('update_ollama_config', { base_url: url, model: model });
-                    console.log('Saved Ollama config:', url, model);
-                } catch (e) {
-                    console.error('Failed to save Ollama config:', e);
+                const url = (document.getElementById('ollamaUrl')?.value || '').trim() || 'http://localhost:11434';
+
+                // Avoid hard-coded model fallbacks. Prefer (1) explicit user selection,
+                // (2) existing persisted config/defaults (which `update_llm_provider`
+                // will have materialized), then (3) first available option in the dropdown.
+                const modelEl = document.getElementById('ollamaModel');
+                let model = (modelEl?.value || '').trim();
+
+                if (!model) {
+                    // Fallback: read the model from persisted config and try to
+                    // resolve it against the dropdown (handles tag-suffix mismatches
+                    // like "llama3.2" vs "llama3.2:latest").
+                    try {
+                        const cfg = await invoke('get_config');
+                        const savedModel = (cfg?.llm?.ollama?.model || '').trim();
+                        if (savedModel && modelEl && modelEl.tagName === 'SELECT') {
+                            const prefix = savedModel.replace(/:latest$/, '');
+                            const match = Array.from(modelEl.options || []).find(o =>
+                                o.value === savedModel ||
+                                o.value === prefix + ':latest' ||
+                                (o.value || '').split(':')[0] === prefix
+                            );
+                            model = match ? match.value : savedModel;
+                        } else {
+                            model = savedModel;
+                        }
+                    } catch (_) {
+                        // Non-fatal: if we can't resolve a model, we won't overwrite config.
+                    }
+                }
+
+                if (!model && modelEl && modelEl.tagName === 'SELECT') {
+                    const firstNonEmpty = Array.from(modelEl.options || []).find(o => (o?.value || '').trim().length > 0);
+                    if (firstNonEmpty) model = (firstNonEmpty.value || '').trim();
+                }
+
+                if (model) {
+                    try {
+                        await invoke('update_ollama_config', { base_url: url, model: model });
+                        console.log('Saved Ollama config:', url, model);
+                    } catch (e) {
+                        console.error('Failed to save Ollama config:', e);
+                    }
+                } else {
+                    console.warn('[Onboarding] Ollama model is empty; skipping update_ollama_config to avoid clobbering saved defaults.');
                 }
             } else if (provider === 'openai' || provider === 'anthropic' || provider === 'gemini' || provider === 'grok') {
                 // Keys never cross the normal config IPC boundary; store secrets in secure storage.
@@ -1359,6 +1455,19 @@
                         console.log(`Stored ${provider} API key in secure storage.`);
                     } catch (e) {
                         console.error('Failed to store API key:', e);
+                    }
+                }
+
+                // Persist the user-selected model to global config so it sticks across
+                // config/chat windows.
+                const modelSelect = document.getElementById('cloudModelSelect');
+                const selectedModel = (modelSelect?.value || '').trim();
+                if (selectedModel) {
+                    try {
+                        await invoke('update_provider_model', { provider, model: selectedModel });
+                        console.log(`Saved ${provider} model: ${selectedModel}`);
+                    } catch (e) {
+                        console.error(`Failed to save ${provider} model:`, e);
                     }
                 }
             }
@@ -1502,11 +1611,37 @@
         async function updateLLMProvider(provider) {
             // Render config UI immediately so the form always reflects the
             // selected provider, even if the backend invoke fails.
-            renderLLMConfig();
+            // NOTE: Skip auto-fetching Ollama models here; if the provider change
+            // is persisted successfully we will re-hydrate (including the saved
+            // Ollama endpoint) and fetch models from the correct URL.
+            renderLLMConfig({ fetchOllamaModels: false });
+            let providerPersisted = false;
             try {
                 await invoke('update_llm_provider', { provider });
+                providerPersisted = true;
             } catch (error) {
                 console.error('Error updating LLM provider:', error);
+            }
+
+            // If we couldn't persist the provider change, still try to fetch Ollama
+            // models for a decent UX when the user selects Ollama.
+            if (!providerPersisted && provider === 'ollama') {
+                try {
+                    await fetchOllamaModels();
+                } catch (_) {
+                    // Non-fatal: fetchOllamaModels already renders a fallback input.
+                }
+            }
+
+            // Re-hydrate from the latest config after changing providers so the
+            // UI reflects persisted defaults (and we avoid saving hard-coded
+            // fallbacks if the user doesn't touch the fields).
+            if (providerPersisted) {
+                try {
+                    await loadLLMConfig();
+                } catch (error) {
+                    console.warn('[Onboarding] loadLLMConfig after provider change failed:', error);
+                }
             }
         }
 
@@ -1596,11 +1731,29 @@
                     showOllamaFallbackInput(container, status, 'Ollama is running but no models found. Pull a model first.');
                     return;
                 }
-                // Build a <select> with the fetched models
-                const currentVal = document.getElementById('ollamaModel')?.value || 'llama3.2';
-                let options = models.map(m => {
+                // Build a <select> with the fetched models.
+                // Keep selection stable across refreshes, using prefix matching
+                // to handle tag suffixes (e.g. "llama3.2" matches "llama3.2:latest").
+                const currentVal = (document.getElementById('ollamaModel')?.value || '').trim();
+                const currentPrefix = currentVal.replace(/:latest$/, '');
+                let matchedName = '';
+                if (currentVal) {
+                    // Try exact match first, then prefix match
+                    const exact = models.find(m => m.name === currentVal);
+                    if (exact) {
+                        matchedName = exact.name;
+                    } else {
+                        const prefixMatch = models.find(m =>
+                            m.name === currentPrefix ||
+                            m.name === currentPrefix + ':latest' ||
+                            (m.name || '').split(':')[0] === currentPrefix
+                        );
+                        if (prefixMatch) matchedName = prefixMatch.name;
+                    }
+                }
+                let options = `<option value=""${matchedName ? '' : ' selected'}>Select a model...</option>` + models.map(m => {
                     const name = m.name || 'unknown';
-                    const selected = name === currentVal ? ' selected' : '';
+                    const selected = name === matchedName ? ' selected' : '';
                     return `<option value="${name}"${selected}>${name}</option>`;
                 }).join('');
                 container.innerHTML = `<select id="ollamaModel" class="onb-input">${options}</select>`;
@@ -1619,7 +1772,7 @@
 
         /// Replace the model dropdown with a text input when Ollama is unreachable.
         function showOllamaFallbackInput(container, status, message) {
-            const currentVal = document.getElementById('ollamaModel')?.value || 'llama3.2';
+            const currentVal = (document.getElementById('ollamaModel')?.value || '').trim();
             container.innerHTML = `<input type="text" id="ollamaModel" class="onb-input" value="${currentVal}" placeholder="e.g., llama3.2, mistral, gemma2">`;
             if (status) {
                 status.style.color = 'var(--warning-color, #f59e0b)';
@@ -1628,7 +1781,90 @@
         }
 
 
-        function renderLLMConfig() {
+        /// Fetch models for a cloud provider and populate the model dropdown.
+        /// Uses the API key from the input field, or falls back to the keychain.
+        async function fetchCloudModels(provider) {
+            const section = document.getElementById('cloudModelSection');
+            const select = document.getElementById('cloudModelSelect');
+            const status = document.getElementById('cloudModelStatus');
+            if (!select) return;
+
+            // Determine the invoke command for this provider.
+            const listCmd = {
+                openai: 'list_openai_models',
+                anthropic: 'list_anthropic_models',
+                grok: 'list_grok_models',
+                gemini: 'list_gemini_models',
+            }[provider];
+            if (!listCmd) return;
+
+            // Get API key from the input (or empty to let the backend try keychain).
+            const apiKeyInput = document.getElementById('apiKey');
+            const apiKey = (apiKeyInput?.value || '').trim();
+
+            // If the user has typed nothing and there's no key in the keychain, hide the section.
+            let hasKeychainKey = false;
+            try {
+                hasKeychainKey = await invoke('has_api_key', { provider });
+            } catch (_) { }
+            if (!apiKey && !hasKeychainKey) {
+                if (section) section.style.display = 'none';
+                select.innerHTML = '<option value="">Enter API key to load models</option>';
+                if (status) status.textContent = '';
+                return;
+            }
+
+            // Show the section with a loading state.
+            if (section) section.style.display = '';
+            select.innerHTML = '<option value="">Loading models…</option>';
+            select.disabled = true;
+            if (status) { status.style.color = 'var(--text-secondary)'; status.textContent = 'Fetching available models…'; }
+
+            // Preserve the currently-selected value so we can restore it after refresh.
+            const currentVal = select.dataset.selectedModel || '';
+
+            try {
+                // Store the API key first if the user typed one, so the backend can use it.
+                if (apiKey) {
+                    try { await invoke('store_api_key', { provider, api_key: apiKey }); } catch (_) { }
+                }
+
+                const models = await invoke(listCmd, { api_key: apiKey });
+                if (!models || models.length === 0) {
+                    select.innerHTML = '<option value="">No models available</option>';
+                    if (status) { status.style.color = 'var(--warning-color, #f59e0b)'; status.textContent = 'No models found for this API key.'; }
+                    select.disabled = true;
+                    return;
+                }
+
+                // Build options from the model list.
+                select.innerHTML = '<option value="">Select a model…</option>';
+                models.forEach(m => {
+                    const id = m.id || m.name || '';
+                    if (!id) return;
+                    const opt = document.createElement('option');
+                    opt.value = id;
+                    opt.textContent = id;
+                    select.appendChild(opt);
+                });
+
+                // Restore previous selection or saved config model.
+                if (currentVal) {
+                    const match = [...select.options].find(o => o.value === currentVal);
+                    if (match) select.value = currentVal;
+                }
+
+                select.disabled = false;
+                if (status) { status.style.color = 'var(--success-color, #22c55e)'; status.textContent = `✓ ${models.length} model${models.length !== 1 ? 's' : ''} available`; }
+            } catch (e) {
+                console.error(`Failed to fetch ${provider} models:`, e);
+                select.innerHTML = '<option value="">Failed to load models</option>';
+                select.disabled = true;
+                if (status) { status.style.color = 'var(--error-color, #ef4444)'; status.textContent = `Error: ${e}`; }
+            }
+        }
+
+        function renderLLMConfig({ fetchOllamaModels: shouldFetchOllamaModels = true } = {}) {
             const container = document.getElementById('llmConfig');
             if (!container) return;
             const provider = document.getElementById('llmProvider')?.value || 'ollama';
@@ -1650,8 +1886,12 @@
                     </div>
                     <p style="font-size:0.8rem;color:var(--text-secondary);margin-top:0.5rem;">Make sure Ollama is running locally with your model pulled.</p>
                 `;
-                // Fetch models asynchronously after the DOM is updated
-                setTimeout(() => void fetchOllamaModels(), 0);
+                // Fetch models asynchronously after the DOM is updated.
+                // Callers can disable this (e.g., when re-hydrating from config
+                // so we fetch from the saved endpoint).
+                if (shouldFetchOllamaModels) {
+                    setTimeout(() => void fetchOllamaModels(), 0);
+                }
             } else if (provider === 'openai' || provider === 'anthropic' || provider === 'gemini' || provider === 'grok') {
                 html = `
                     <div class="config-section">
@@ -1661,6 +1901,13 @@
                             <button id="deleteApiKeyBtn" class="btn btn-small btn-delete-api-key" style="display:none;" title="Delete stored API key">Delete Key</button>
                         </div>
                         <p style="font-size:0.75rem;color:var(--text-secondary);margin-top:0.25rem;">Keys are stored securely in your OS keychain. Leave blank to keep your existing key.</p>
+                    </div>
+                    <div id="cloudModelSection" class="config-section" style="margin-top:0.75rem; display:none;">
+                        <label for="cloudModelSelect">Model</label>
+                        <select id="cloudModelSelect" class="onb-input">
+                            <option value="">Enter API key to load models</option>
+                        </select>
+                        <div id="cloudModelStatus" style="font-size:0.75rem;margin-top:0.25rem;color:var(--text-secondary);"></div>
                     </div>
                 `;
             } else {
@@ -1674,8 +1921,22 @@
             }
 
             // Async placeholder hydration (key existence) without blocking UI render.
+            // Also trigger model fetch for cloud providers (uses keychain key if available).
             if (provider === 'openai' || provider === 'anthropic' || provider === 'gemini' || provider === 'grok') {
                 void hydrateLlmApiKeyPlaceholder(provider);
+
+                // Debounced model fetch when the user types an API key.
+                const apiKeyInput = document.getElementById('apiKey');
+                if (apiKeyInput) {
+                    let _cloudModelTimer = null;
+                    apiKeyInput.addEventListener('input', () => {
+                        clearTimeout(_cloudModelTimer);
+                        _cloudModelTimer = setTimeout(() => void fetchCloudModels(provider), 800);
+                    });
+                }
+
+                // Kick off an initial model fetch (uses keychain key if already stored).
+                setTimeout(() => void fetchCloudModels(provider), 0);
             }
         }
 
@@ -1743,9 +2004,8 @@
                     providerSelect.value = llmPrimary;
                 }
 
-                // Render config UI (this triggers async Ollama model fetch for the
-                // ollama provider).
-                renderLLMConfig();
+                // Render config UI (without auto-fetch for Ollama so we can set URL first).
+                renderLLMConfig({ fetchOllamaModels: false });
 
                 // Populate Ollama fields if applicable.
                 if (llmPrimary === 'ollama' && ollamaConfig) {
@@ -1761,7 +2021,42 @@
                     } catch (_) { /* fallback input already rendered */ }
 
                     const modelEl = document.getElementById('ollamaModel');
-                    if (modelEl && ollamaConfig.model) modelEl.value = ollamaConfig.model;
+                    if (modelEl && ollamaConfig.model) {
+                        // Try exact match first.
+                        modelEl.value = ollamaConfig.model;
+                        // If exact match failed (e.g. config has "llama3.2" but
+                        // Ollama returns "llama3.2:latest"), try a prefix match.
+                        if (!modelEl.value && modelEl.tagName === 'SELECT') {
+                            const prefix = ollamaConfig.model.replace(/:latest$/, '');
+                            const match = Array.from(modelEl.options || []).find(o =>
+                                o.value === prefix ||
+                                o.value === prefix + ':latest' ||
+                                o.value.split(':')[0] === prefix
+                            );
+                            if (match) modelEl.value = match.value;
+                        }
+                        // If still nothing selected and there are real options,
+                        // auto-select the first available model so the user
+                        // doesn't accidentally leave with an empty value.
+                        if (!modelEl.value && modelEl.tagName === 'SELECT') {
+                            const firstReal = Array.from(modelEl.options || []).find(o => (o.value || '').trim().length > 0);
+                            if (firstReal) modelEl.value = firstReal.value;
+                        }
+                    }
+                }
+
+                // Hydrate the cloud-provider model dropdown with the saved model.
+                // renderLLMConfig() already kicked off fetchCloudModels() in the
+                // background; we just need to tell it which value to restore once
+                // the model list arrives.
+                if (llmPrimary === 'openai' || llmPrimary === 'anthropic' || llmPrimary === 'gemini' || llmPrimary === 'grok') {
+                    const savedModel = (config?.llm?.[llmPrimary]?.model || '').trim();
+                    const cloudSelect = document.getElementById('cloudModelSelect');
+                    if (cloudSelect && savedModel) {
+                        // Stash the saved model on the element so fetchCloudModels()
+                        // can restore it after the API call finishes.
+                        cloudSelect.dataset.selectedModel = savedModel;
+                    }
                 }
             } catch (error) {
                 console.error('Error loading LLM config:', error);

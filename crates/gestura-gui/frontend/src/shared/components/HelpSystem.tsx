@@ -149,6 +149,23 @@ Common issues and solutions.
 - Clear telemetry data
 - Restart the application
 
+## Chat / Project Explorer Issues
+**Problem**: Explorer shows "Not a git repository."
+**Solutions**:
+- This is expected for non-git folders; initialize git or open a git repo.
+
+**Problem**: Explorer shows "Git status unavailable."
+**Solutions**:
+- Ensure git is installed and restart the app
+- Confirm the workspace folder is accessible
+
+**Problem**: Explorer fails to list a directory (permission denied)
+**Solutions**:
+- Confirm the folder is readable and grant OS file permissions if prompted
+
+## Workspace Scoping (Security)
+- The Explorer is restricted to the chat session's Project Root and blocks paths outside the workspace.
+
 ## Getting Help
 - Check the system health in the status bar
 - Review telemetry data for errors
@@ -190,6 +207,13 @@ Speed up your workflow with these shortcuts.
 ## Settings Panel
 - **Ctrl+S**: Save settings
 - **Ctrl+R**: Reset to defaults
+
+## Chat Window
+- **Ctrl/Cmd+B**: Toggle Explorer
+- **Ctrl/Cmd+T**: Toggle Tasks
+- **Ctrl/Cmd+S**: Toggle Knowledge/Skills
+- **Ctrl/Cmd+K**: Enhance prompt (in chat input)
+- **Ctrl/Cmd+Z**: Undo enhancement (after enhancing)
     `
   }
 ];

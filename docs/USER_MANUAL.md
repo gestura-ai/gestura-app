@@ -445,6 +445,25 @@ Create complex gesture sequences:
 
 ## Advanced Features
 
+### Chat Window (Agentic Coding)
+
+Gestura includes a dedicated **Chat** window for text-based and voice-assisted workflows. The chat UI can also display a project-scoped file explorer so you can reference your workspace while chatting.
+
+#### Project Explorer Panel
+
+- Open via the **folder** button below the input, or press **Cmd/Ctrl+B**.
+- The explorer is rooted at **Project Root** (the current chat session workspace) and does not allow browsing outside that directory.
+- If the workspace is a git repository, changed files/folders show small status badges; otherwise the panel shows **"Not a git repository."**
+- Use the **Refresh** button in the Explorer header to reload the tree.
+
+#### Chat Window Shortcuts
+
+- **Cmd/Ctrl+B**: Toggle Explorer
+- **Cmd/Ctrl+T**: Toggle Tasks panel
+- **Cmd/Ctrl+S**: Toggle Knowledge/Skills panel
+- **Cmd/Ctrl+K** (in the message box): Enhance prompt
+- **Cmd/Ctrl+Z** (after enhance): Undo enhancement
+
 ### Automation & Scripting
 
 #### Workflow Automation

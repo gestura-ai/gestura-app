@@ -95,6 +95,14 @@ export async function installTauriIpcMock(page: Page): Promise<void> {
     w.__TAURI_INTERNALS__ ??= {};
     const internals = w.__TAURI_INTERNALS__;
 
+    // ---------------------------------------------------------------------
+    // Provide a minimal `window.__TAURI__` surface for legacy/static pages
+    // (e.g. `public/chat.html`) that call `window.__TAURI__.core.invoke(...)`.
+    //
+    // The React app typically uses `@tauri-apps/api`, which goes through
+    // `window.__TAURI_INTERNALS__`, so we support both.
+    // ---------------------------------------------------------------------
+
     // Minimal callback registry (needed for Channel/event plumbing safety).
     let nextCallbackId = 1;
     const callbacks = new Map();
@@ -112,6 +120,29 @@ export async function installTauriIpcMock(page: Page): Promise<void> {
     internals.convertFileSrc = (filePath, protocol = 'asset') => {
       return `${protocol}://localhost/${encodeURIComponent(filePath)}`;
     };
+
+    // Mirror internals under `window.__TAURI__` for pages that use the global.
+    // Keep this very small: only what our static windows reference.
+    w.__TAURI__ ??= {};
+    w.__TAURI__.core ??= {};
+    w.__TAURI__.core.invoke = (cmd, args) => internals.invoke(cmd, args);
+    w.__TAURI__.core.convertFileSrc = (filePath) => internals.convertFileSrc(filePath);
+    w.__TAURI__.event ??= {};
+    w.__TAURI__.event.listen ??= async () => {
+      // Return an unlisten handle.
+      return () => { };
+    };
+    w.__TAURI__.webviewWindow ??= {};
+    w.__TAURI__.webviewWindow.getCurrentWebviewWindow ??= () => {
+      return {
+        label: 'e2e-webview',
+        listen: async () => {
+          return () => { };
+        },
+      };
+    };
+    w.__TAURI__.opener ??= {};
+    w.__TAURI__.opener.openUrl ??= async () => null;
 
     internals.invoke = async (cmd, args) => {
       switch (cmd) {
@@ -133,6 +164,18 @@ export async function installTauriIpcMock(page: Page): Promise<void> {
 
         case 'get_config':
           return loadConfig();
+
+        case 'get_effective_llm_config': {
+          // chat.html expects a tuple: [provider, model]
+          const cfg = loadConfig();
+          const provider = cfg?.llm?.primary || 'openai';
+          const model = cfg?.llm?.[provider]?.model || '';
+          return [provider, model];
+        }
+
+        case 'get_api_key':
+          // For e2e, behave like an empty keychain.
+          return '';
 
         case 'save_config': {
           const cfg = args?.cfg;
@@ -226,6 +269,62 @@ export async function installTauriIpcMock(page: Page): Promise<void> {
           return {
             agents: [{ id: 'agent-e2e-001', name: 'E2E Agent', status: 'active' }],
             count: 1,
+          };
+
+        case 'get_session_history':
+          return [];
+
+        case 'get_session_tool_settings':
+          return {
+            permission_level: 'ReadOnly',
+            enabled_tools: [],
+          };
+
+        case 'init_mcp_servers':
+          return null;
+
+        case 'list_discovered_mcp_tools':
+          return [];
+
+        case 'explorer_get_root':
+          return {
+            root: '/mock/project',
+            is_git_repo: true,
+          };
+
+        case 'explorer_list_dir': {
+          const dirRel = String(args?.dir_rel ?? '');
+
+          if (dirRel === '') {
+            return {
+              truncated: false,
+              entries: [
+                { name: 'src', rel_path: 'src', kind: 'dir' },
+                { name: 'README.md', rel_path: 'README.md', kind: 'file' },
+                { name: 'Cargo.toml', rel_path: 'Cargo.toml', kind: 'file' },
+              ],
+            };
+          }
+
+          if (dirRel === 'src') {
+            return {
+              truncated: false,
+              entries: [
+                { name: 'main.rs', rel_path: 'src/main.rs', kind: 'file' },
+                { name: 'lib.rs', rel_path: 'src/lib.rs', kind: 'file' },
+              ],
+            };
+          }
+
+          return { truncated: false, entries: [] };
+        }
+
+        case 'explorer_git_status':
+          return {
+            paths: {
+              'src/main.rs': { staged: null, unstaged: 'modified', untracked: false },
+              'README.md': { staged: null, unstaged: null, untracked: true },
+            },
           };
 
         case 'list_active_tasks':

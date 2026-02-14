@@ -22,6 +22,13 @@ use thiserror::Error;
 ///     Err(MemoryBankError::Io(e)) => println!("File not found: {}", e),
 ///     Err(MemoryBankError::Parse(msg)) => println!("Invalid format: {}", msg),
 ///     Err(MemoryBankError::DirectoryNotFound(path)) => println!("Directory not found: {}", path.display()),
+///     Err(MemoryBankError::InvalidEntryPath { file_path, memory_dir }) => {
+///         println!(
+///             "Invalid entry path: {} (expected under {})",
+///             file_path.display(),
+///             memory_dir.display()
+///         )
+///     }
 ///     Ok(entry) => println!("Loaded: {}", entry.summary),
 /// }
 /// # Ok(())
@@ -38,6 +45,13 @@ pub enum MemoryBankError {
     /// Memory bank directory not found at the expected location
     #[error("Memory bank directory not found: {0}")]
     DirectoryNotFound(PathBuf),
+
+    /// An entry path was provided that is not within the workspace's memory bank directory
+    #[error("Invalid memory bank entry path: {file_path} (expected under {memory_dir})")]
+    InvalidEntryPath {
+        file_path: PathBuf,
+        memory_dir: PathBuf,
+    },
 }
 
 /// A single entry in the memory bank representing a saved conversation context
@@ -66,6 +80,8 @@ pub struct MemoryBankEntry {
     pub timestamp: DateTime<Utc>,
     /// Session ID that created this entry (used for grouping related conversations)
     pub session_id: String,
+    /// Optional category for grouping/filtering entries (e.g., "project", "personal", "research")
+    pub category: Option<String>,
     /// Brief summary of the conversation (used for search and display)
     pub summary: String,
     /// Full conversation context in markdown format
@@ -74,6 +90,20 @@ pub struct MemoryBankEntry {
     #[serde(skip)]
     pub file_path: Option<PathBuf>,
 }
+
+impl PartialEq for MemoryBankEntry {
+    fn eq(&self, other: &Self) -> bool {
+        // `file_path` is an on-disk detail populated on load and is intentionally
+        // excluded from equality so entries compare based on their semantic content.
+        self.timestamp == other.timestamp
+            && self.session_id == other.session_id
+            && self.category == other.category
+            && self.summary == other.summary
+            && self.content == other.content
+    }
+}
+
+impl Eq for MemoryBankEntry {}
 
 impl MemoryBankEntry {
     /// Create a new memory bank entry with the current timestamp
@@ -99,6 +129,7 @@ impl MemoryBankEntry {
         Self {
             timestamp: Utc::now(),
             session_id,
+            category: None,
             summary,
             content,
             file_path: None,
@@ -113,6 +144,7 @@ impl MemoryBankEntry {
     ///
     /// **Timestamp**: 2026-01-21 14:30:22 UTC
     /// **Session ID**: session-abc123
+    /// **Category**: engineering   # optional
     /// **Summary**: Fixed authentication bug
     ///
     /// ## Context
@@ -120,15 +152,22 @@ impl MemoryBankEntry {
     /// [conversation content here]
     /// ```
     pub fn to_markdown(&self) -> String {
+        let category_line = self
+            .category
+            .as_deref()
+            .map(|c| format!("**Category**: {}\n", c))
+            .unwrap_or_default();
         format!(
             "# Memory Bank Entry\n\n\
              **Timestamp**: {}\n\
              **Session ID**: {}\n\
+             {}\
              **Summary**: {}\n\n\
              ## Context\n\n\
              {}\n",
             self.timestamp.format("%Y-%m-%d %H:%M:%S UTC"),
             self.session_id,
+            category_line,
             self.summary,
             self.content
         )
@@ -156,6 +195,7 @@ impl MemoryBankEntry {
 
         let mut timestamp = None;
         let mut session_id = None;
+        let mut category: Option<String> = None;
         let mut summary = None;
         let mut content_start = None;
 
@@ -174,6 +214,11 @@ impl MemoryBankEntry {
                         .trim()
                         .to_string(),
                 );
+            } else if line.starts_with("**Category**:") {
+                let v = line.trim_start_matches("**Category**:").trim();
+                if !v.is_empty() {
+                    category = Some(v.to_string());
+                }
             } else if line.starts_with("**Summary**:") {
                 summary = Some(line.trim_start_matches("**Summary**:").trim().to_string());
             } else if line.starts_with("## Context") {
@@ -196,6 +241,7 @@ impl MemoryBankEntry {
         Ok(Self {
             timestamp,
             session_id,
+            category,
             summary,
             content,
             file_path,
@@ -431,6 +477,91 @@ pub async fn list_memory_bank(
     Ok(entries)
 }
 
+async fn ensure_memory_bank_dir_exists(workspace_dir: &Path) -> Result<PathBuf, MemoryBankError> {
+    let dir = get_memory_bank_dir(workspace_dir);
+    if tokio::fs::try_exists(&dir).await? {
+        Ok(dir)
+    } else {
+        Err(MemoryBankError::DirectoryNotFound(dir))
+    }
+}
+
+async fn validate_entry_path(
+    workspace_dir: &Path,
+    file_path: &Path,
+) -> Result<PathBuf, MemoryBankError> {
+    let dir = ensure_memory_bank_dir_exists(workspace_dir).await?;
+    let dir_canon = tokio::fs::canonicalize(&dir).await?;
+    let file_canon = tokio::fs::canonicalize(file_path).await?;
+
+    if file_canon.extension().and_then(|s| s.to_str()) != Some("md") {
+        return Err(MemoryBankError::Parse(
+            "Memory bank entries must be markdown (.md) files".to_string(),
+        ));
+    }
+
+    if !file_canon.starts_with(&dir_canon) {
+        return Err(MemoryBankError::InvalidEntryPath {
+            file_path: file_canon,
+            memory_dir: dir_canon,
+        });
+    }
+
+    Ok(file_canon)
+}
+
+async fn atomic_write_file(path: &Path, contents: &str) -> Result<(), std::io::Error> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing file name"))?
+        .to_string_lossy();
+
+    let tmp_path = path.with_file_name(format!(".{file_name}.tmp-{}", std::process::id()));
+    tokio::fs::write(&tmp_path, contents).await?;
+
+    match tokio::fs::rename(&tmp_path, path).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // On some platforms (notably Windows), rename won't overwrite an existing file.
+            // Best-effort fallback: remove destination, then rename again.
+            let _ = tokio::fs::remove_file(path).await;
+            let rename2 = tokio::fs::rename(&tmp_path, path).await;
+            if rename2.is_err() {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+            }
+            rename2.map_err(|_| e)
+        }
+    }
+}
+
+/// Delete a single memory bank entry.
+///
+/// This will validate that the entry path is a markdown file located under
+/// the workspace's `.gestura/memory/` directory.
+pub async fn delete_memory_bank_entry(
+    workspace_dir: &Path,
+    file_path: &Path,
+) -> Result<(), MemoryBankError> {
+    let file_path = validate_entry_path(workspace_dir, file_path).await?;
+    tokio::fs::remove_file(&file_path).await?;
+    Ok(())
+}
+
+/// Update a single memory bank entry in-place.
+///
+/// This will validate that `file_path` is a markdown file located under the
+/// workspace's `.gestura/memory/` directory, then rewrite the file contents.
+pub async fn update_memory_bank_entry(
+    workspace_dir: &Path,
+    file_path: &Path,
+    entry: &MemoryBankEntry,
+) -> Result<(), MemoryBankError> {
+    let file_path = validate_entry_path(workspace_dir, file_path).await?;
+    let markdown = entry.to_markdown();
+    atomic_write_file(&file_path, &markdown).await?;
+    Ok(())
+}
+
 /// Search memory bank entries for relevant content
 ///
 /// Performs a case-insensitive substring search across both the summary and
@@ -480,6 +611,10 @@ pub async fn search_memory_bank(
         .filter(|entry| {
             entry.summary.to_lowercase().contains(&query_lower)
                 || entry.content.to_lowercase().contains(&query_lower)
+                || entry
+                    .category
+                    .as_deref()
+                    .is_some_and(|c| c.to_lowercase().contains(&query_lower))
         })
         .take(limit)
         .collect();
@@ -698,6 +833,102 @@ mod tests {
             0,
             "Should find 0 entries for non-existent term"
         );
+    }
+
+    #[tokio::test]
+    async fn test_category_roundtrip_and_search() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+
+        let mut entry = MemoryBankEntry::new(
+            "session-cat-001".to_string(),
+            "Entry with category".to_string(),
+            "Some content".to_string(),
+        );
+        entry.category = Some("research".to_string());
+
+        let file_path = save_to_memory_bank(workspace_path, &entry).await.unwrap();
+        let loaded = load_from_memory_bank(&file_path).await.unwrap();
+        assert_eq!(loaded.category.as_deref(), Some("research"));
+
+        let results = search_memory_bank(workspace_path, "research", 10)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].session_id, "session-cat-001");
+    }
+
+    #[tokio::test]
+    async fn test_update_and_delete_memory_bank_entry() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+
+        let mut entry = MemoryBankEntry::new(
+            "session-edit-001".to_string(),
+            "Original summary".to_string(),
+            "Original content".to_string(),
+        );
+        entry.category = Some("initial".to_string());
+
+        let file_path = save_to_memory_bank(workspace_path, &entry).await.unwrap();
+
+        // Update
+        let mut updated = load_from_memory_bank(&file_path).await.unwrap();
+        updated.summary = "Updated summary".to_string();
+        updated.content = "Updated content".to_string();
+        updated.category = Some("updated".to_string());
+
+        update_memory_bank_entry(workspace_path, &file_path, &updated)
+            .await
+            .unwrap();
+
+        let reloaded = load_from_memory_bank(&file_path).await.unwrap();
+        assert_eq!(reloaded.summary, "Updated summary");
+        assert_eq!(reloaded.content, "Updated content");
+        assert_eq!(reloaded.category.as_deref(), Some("updated"));
+
+        // Delete
+        delete_memory_bank_entry(workspace_path, &file_path)
+            .await
+            .unwrap();
+        assert!(!file_path.exists());
+
+        let entries = list_memory_bank(workspace_path).await.unwrap();
+        assert_eq!(entries.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_update_rejects_outside_memory_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+
+        // Ensure memory bank dir exists so the error is about path validation.
+        let entry = MemoryBankEntry::new(
+            "session-init".to_string(),
+            "Init".to_string(),
+            "Init".to_string(),
+        );
+        let _ = save_to_memory_bank(workspace_path, &entry).await.unwrap();
+
+        let outside_path = workspace_path.join("not-in-memory.md");
+        tokio::fs::write(&outside_path, "# Not a memory entry")
+            .await
+            .unwrap();
+
+        // We don't actually need a valid loaded entry here; just an entry payload.
+        let entry_payload = MemoryBankEntry::new(
+            "session".to_string(),
+            "Summary".to_string(),
+            "Content".to_string(),
+        );
+
+        let err = update_memory_bank_entry(workspace_path, &outside_path, &entry_payload)
+            .await
+            .unwrap_err();
+        match err {
+            MemoryBankError::InvalidEntryPath { .. } => {}
+            other => panic!("Expected InvalidEntryPath, got: {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -189,12 +189,13 @@ impl Theme {
             header_bg: Color::Black,
             header_fg: Color::White,
             user_msg: Color::Green,
-            assistant_msg: Color::Cyan,
+            // Align assistant message accent to the focused border accent.
+            assistant_msg: Color::LightBlue,
             system_msg: Color::Yellow,
             error_msg: Color::Red,
             streaming: Color::LightCyan,
             border: Color::White,
-            border_focused: Color::LightYellow,
+            border_focused: Color::LightBlue,
             status_bg: Color::Black,
             status_fg: Color::White,
             mode_normal: Color::Cyan,
@@ -248,21 +249,23 @@ impl Theme {
 
     /// Pro / Claude-like theme (Minimalist Dark)
     pub fn pro() -> Self {
+        let accent = Color::Rgb(137, 180, 250);
         Self {
             name: "Pro",
             header_bg: Color::Rgb(20, 20, 20),
             header_fg: Color::Rgb(200, 200, 200),
             user_msg: Color::Rgb(255, 255, 255), // White text for user
-            assistant_msg: Color::Rgb(215, 186, 125), // Soft gold/yellow for AI
+            // Align assistant message accent to the focused border accent.
+            assistant_msg: accent,
             system_msg: Color::Rgb(100, 100, 100),
             error_msg: Color::Rgb(255, 95, 95),
-            streaming: Color::Rgb(215, 186, 125),
+            streaming: accent,
             border: Color::Rgb(60, 60, 60),
-            border_focused: Color::Rgb(100, 100, 100),
+            border_focused: accent,
             status_bg: Color::Rgb(30, 30, 30),
             status_fg: Color::Rgb(150, 150, 150),
             mode_normal: Color::Rgb(100, 100, 100),
-            mode_insert: Color::Rgb(215, 186, 125), // Match AI color
+            mode_insert: accent, // Match assistant accent
             mode_command: Color::Rgb(255, 255, 255),
             tab_active: Color::Rgb(255, 255, 255),
             tab_inactive: Color::Rgb(80, 80, 80),
@@ -342,10 +345,17 @@ impl Theme {
             header_bg: surface,
             header_fg: text,
 
-            // Message role styling: white/primary text for user prompt so it stands out;
-            // muted purple for assistant; muted for system messages.
-            user_msg: text,
-            assistant_msg: secondary,
+            // Message role styling:
+            // - User messages use primary text (white/near-white in dark mode).
+            // - Assistant messages use the focused-border accent (so transcript matches the
+            //   input's focused border).
+            // - System messages use the muted secondary text.
+            user_msg: if is_dark {
+                Color::Rgb(255, 255, 255)
+            } else {
+                text
+            },
+            assistant_msg: accent,
             system_msg: text_secondary,
             error_msg: error,
             streaming: accent,
@@ -437,6 +447,26 @@ pub enum TuiMode {
     Tools,
     /// Capabilities overlay is displayed (reference popup, Esc to close)
     Capabilities,
+    /// MCP browser overlay — interactive list of MCP servers
+    Mcp,
+    /// Knowledge browser overlay — interactive list of knowledge items
+    Knowledge,
+    /// Hooks browser overlay — interactive hooks management
+    Hooks,
+    /// Agent browser overlay — agent status and configuration
+    Agent,
+    /// Memory browser overlay — memory bank management
+    Memory,
+    /// Devices browser overlay — audio device listing
+    Devices,
+    /// Permissions browser overlay — permission management
+    Permissions,
+    /// Sessions browser overlay — session management
+    Sessions,
+    /// Tasks browser overlay — task management
+    Tasks,
+    /// Themes browser overlay — theme selection
+    Themes,
 }
 
 /// Types of confirmation dialogs
@@ -448,6 +478,19 @@ pub enum ConfirmAction {
     ClearMessages,
     /// Confirm starting a new session
     NewSession,
+    /// Generic confirmation that executes a slash command when accepted.
+    ///
+    /// This is used by interactive overlays (e.g., delete actions) to request
+    /// confirmation and then delegate the actual mutation to the canonical
+    /// slash-command handlers.
+    ExecuteCommand {
+        /// Title to display in the dialog.
+        title: String,
+        /// Message body to display in the dialog.
+        message: String,
+        /// Slash command to execute on confirm (e.g. "/memory delete --confirmed ...").
+        command: String,
+    },
 }
 
 /// Pending tool confirmation request that must be resolved by the user.
@@ -503,8 +546,21 @@ pub enum Action {
     EnhancePrompt,
     /// Copy the currently selected message(s) to the system clipboard
     CopySelection,
+    /// Copy a single message's raw markdown content to the system clipboard.
+    ///
+    /// This is used by the per-assistant-message "copy" overlay control in the transcript.
+    CopyMessageRaw(usize),
     /// Resume a previously paused streaming session
     ResumeSession,
+}
+
+/// Clickable region for the transcript "copy" overlay button.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyButtonHit {
+    /// Source message index in `TuiApp.messages`.
+    pub message_index: usize,
+    /// Screen-space rectangle to hit-test mouse clicks.
+    pub rect: ratatui::layout::Rect,
 }
 
 /// Message for TUI display with additional metadata
@@ -564,13 +620,17 @@ pub const COMMANDS: &[(&str, &str)] = &[
     // --- Claude Code parity commands ---
     ("/rewind", "List session checkpoints"),
     ("/rewind <id>", "Restore session to a checkpoint"),
-    ("/tasks", "Show current task list"),
-    ("/hooks", "Show hooks configuration"),
+    ("/tasks", "Open tasks browser (or: /tasks <subcommand>)"),
+    ("/task", "Manage tasks (try: /task help)"),
+    ("/hooks", "Open hooks browser (or: /hooks <subcommand>)"),
     ("/permissions", "List granted tool permissions"),
     ("/permissions audit", "Show permission audit log"),
     ("/context", "Show context manager status"),
     ("/context status", "Show context cache statistics"),
-    ("/context analyze <request>", "Analyze a request (categories, tools, entities)"),
+    (
+        "/context analyze <request>",
+        "Analyze a request (categories, tools, entities)",
+    ),
     ("/context categories", "List all context categories"),
     ("/context clear", "Clear all context caches"),
     // --- CLI command parity (gestura -h) ---
@@ -591,10 +651,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/config", "List configuration settings"),
     ("/config list", "List all configuration settings"),
     ("/config get <key>", "Get a configuration value"),
-    (
-        "/config set <key> <value>",
-        "Set a configuration value",
-    ),
+    ("/config set <key> <value>", "Set a configuration value"),
     ("/config path", "Show configuration file path"),
     ("/config reset", "Reset configuration to defaults"),
     ("/a2a", "Show A2A protocol status"),
@@ -616,7 +673,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/memory save", "Save conversation to memory bank"),
     ("/memory clear", "Clear all memory bank entries"),
     ("/summarize", "Summarize conversation history"),
-    ("/listen", "Record voice input"),
+    (
+        "/listen",
+        "Toggle listening mode (Enter on empty prompt to record)",
+    ),
+    ("/voice", "Record one voice message"),
     ("/exec <prompt>", "Execute a single prompt inline"),
     ("/continue", "Resume a paused session"),
 ];
@@ -643,6 +704,12 @@ pub struct TuiApp {
     pub mode: TuiMode,
     /// Whether we're waiting for a response
     pub is_loading: bool,
+    /// Whether listening mode is enabled.
+    ///
+    /// When enabled, pressing Enter on an empty input triggers voice capture.
+    pub listening_mode: bool,
+    /// Whether a voice capture workflow is currently in progress (recording/transcribing).
+    pub voice_capture_in_progress: bool,
     /// Frame counter for the animated thinking spinner (incremented each render tick while loading).
     pub loading_tick: u64,
     /// Current status message
@@ -677,10 +744,28 @@ pub struct TuiApp {
     pub command_history_pos: Option<usize>,
     /// Pending confirmation action
     pub pending_confirm: Option<ConfirmAction>,
+    /// Mode to restore after dismissing a confirm dialog.
+    pub confirm_return_mode: Option<TuiMode>,
     /// Pending tool confirmation request (scoped allow/deny decision).
     pub pending_tool_confirmation: Option<PendingToolConfirmation>,
     /// Layout areas for mouse click detection (set during render)
     pub layout_areas: LayoutAreas,
+
+    /// Cached per-message copy-button hit targets (recomputed each render pass).
+    ///
+    /// These are rendered as overlays so they are never included in `rendered_line_texts`.
+    pub assistant_copy_buttons: Vec<CopyButtonHit>,
+
+    /// Which assistant message's copy button is currently hovered by the mouse.
+    ///
+    /// This drives the hover-highlight styling for the per-message "copy" control.
+    pub hovered_copy_button: Option<usize>,
+
+    /// Which assistant message's copy button is currently pressed (mouse-down).
+    ///
+    /// This drives the pressed styling (dim while pressed) and ensures we only trigger the copy
+    /// action on mouse-up if the release occurs over the same button.
+    pub pressed_copy_button: Option<usize>,
     /// Current theme
     pub theme: Theme,
     /// Search query
@@ -709,6 +794,42 @@ pub struct TuiApp {
     pub activity_state: ActivityState,
     /// Interactive tools list state (Tools tab).
     pub tools_state: ToolsState,
+    /// Interactive MCP server browser state (overlay).
+    pub mcp_browser_state: McpBrowserState,
+    /// Interactive knowledge browser state (overlay).
+    pub knowledge_browser_state: KnowledgeBrowserState,
+    /// Hooks browser state (overlay).
+    pub hooks_browser_state: GenericBrowserState,
+    /// Hooks browser cached data.
+    pub hooks_browser_data: HooksBrowserData,
+    /// Agent browser state (overlay).
+    pub agent_browser_state: GenericBrowserState,
+    /// Agent browser cached data.
+    pub agent_browser_data: AgentBrowserData,
+    /// Memory browser state (overlay).
+    pub memory_browser_state: GenericBrowserState,
+    /// Memory browser cached entries.
+    pub memory_browser_entries: Vec<MemoryBrowserEntry>,
+    /// Devices browser state (overlay).
+    pub devices_browser_state: GenericBrowserState,
+    /// Devices browser cached entries.
+    pub devices_browser_entries: Vec<DeviceBrowserEntry>,
+    /// Permissions browser state (overlay).
+    pub permissions_browser_state: GenericBrowserState,
+    /// Permissions browser cached entries.
+    pub permissions_browser_entries: Vec<PermissionBrowserEntry>,
+    /// Sessions browser state (overlay).
+    pub sessions_browser_state: GenericBrowserState,
+    /// Sessions browser cached entries.
+    pub sessions_browser_entries: Vec<SessionBrowserEntry>,
+    /// Tasks browser state (overlay).
+    pub tasks_browser_state: GenericBrowserState,
+    /// Tasks browser cached entries.
+    pub tasks_browser_entries: Vec<TaskBrowserEntry>,
+    /// Themes browser state (overlay).
+    pub themes_browser_state: GenericBrowserState,
+    /// Themes browser cached names.
+    pub themes_browser_names: Vec<String>,
     /// Model picker overlay state.
     pub model_picker_state: ModelPickerState,
     /// Cached dynamic model lists per provider (populated on first `/model` open).
@@ -854,6 +975,247 @@ impl ToolsState {
         self.selected_index = index.min(tool_count - 1);
         self.list_state.select(Some(self.selected_index));
     }
+}
+
+/// Cached snapshot of an MCP server for the interactive browser.
+#[derive(Debug, Clone)]
+pub struct McpBrowserEntry {
+    /// The server configuration entry.
+    pub entry: gestura_core::config::McpServerEntry,
+    /// Whether this server is currently connected (resolved at open time).
+    pub connected: bool,
+}
+
+/// State for the interactive MCP server browser overlay.
+#[derive(Debug, Clone, Default)]
+pub struct McpBrowserState {
+    /// Cached list of MCP servers (populated when overlay opens).
+    pub servers: Vec<McpBrowserEntry>,
+    /// Currently selected index in the list.
+    pub selected_index: usize,
+    /// Whether we are viewing the detail pane for the selected server.
+    pub detail_mode: bool,
+    /// Selection state used by ratatui's stateful list widget.
+    pub list_state: ListState,
+}
+
+impl McpBrowserState {
+    /// Move the selection up.
+    pub fn select_prev(&mut self) {
+        let count = self.servers.len();
+        if count == 0 {
+            return;
+        }
+        self.selected_index = if self.selected_index == 0 {
+            count - 1
+        } else {
+            self.selected_index - 1
+        };
+        self.list_state.select(Some(self.selected_index));
+    }
+
+    /// Move the selection down.
+    pub fn select_next(&mut self) {
+        let count = self.servers.len();
+        if count == 0 {
+            return;
+        }
+        self.selected_index = (self.selected_index + 1) % count;
+        self.list_state.select(Some(self.selected_index));
+    }
+}
+
+/// State for the interactive knowledge browser overlay.
+#[derive(Debug, Clone, Default)]
+pub struct KnowledgeBrowserState {
+    /// Cached list of knowledge items (populated when overlay opens).
+    pub items: Vec<gestura_core::knowledge::KnowledgeItem>,
+    /// Currently selected index in the list.
+    pub selected_index: usize,
+    /// Whether we are viewing the detail pane for the selected item.
+    pub detail_mode: bool,
+    /// Selection state used by ratatui's stateful list widget.
+    pub list_state: ListState,
+}
+
+impl KnowledgeBrowserState {
+    /// Move the selection up.
+    pub fn select_prev(&mut self) {
+        let count = self.items.len();
+        if count == 0 {
+            return;
+        }
+        self.selected_index = if self.selected_index == 0 {
+            count - 1
+        } else {
+            self.selected_index - 1
+        };
+        self.list_state.select(Some(self.selected_index));
+    }
+
+    /// Move the selection down.
+    pub fn select_next(&mut self) {
+        let count = self.items.len();
+        if count == 0 {
+            return;
+        }
+        self.selected_index = (self.selected_index + 1) % count;
+        self.list_state.select(Some(self.selected_index));
+    }
+}
+
+/// Generic browser state with a selectable list and detail mode.
+///
+/// Used by Hooks, Agent, Devices, Permissions, Sessions, Tasks, and Themes browsers.
+/// The `items` field is intentionally left out — each browser stores its domain data
+/// alongside this state.
+#[derive(Debug, Clone, Default)]
+pub struct GenericBrowserState {
+    /// Currently selected index in the list.
+    pub selected_index: usize,
+    /// Whether we are viewing the detail pane for the selected item.
+    pub detail_mode: bool,
+    /// Selection state used by ratatui's stateful list widget.
+    pub list_state: ListState,
+    /// Total number of items (set when opening the browser).
+    pub item_count: usize,
+}
+
+impl GenericBrowserState {
+    /// Move the selection up.
+    pub fn select_prev(&mut self) {
+        if self.item_count == 0 {
+            return;
+        }
+        self.selected_index = if self.selected_index == 0 {
+            self.item_count - 1
+        } else {
+            self.selected_index - 1
+        };
+        self.list_state.select(Some(self.selected_index));
+    }
+
+    /// Move the selection down.
+    pub fn select_next(&mut self) {
+        if self.item_count == 0 {
+            return;
+        }
+        self.selected_index = (self.selected_index + 1) % self.item_count;
+        self.list_state.select(Some(self.selected_index));
+    }
+
+    /// Reset the state for a new list of items.
+    pub fn reset(&mut self, count: usize) {
+        self.item_count = count;
+        self.selected_index = 0;
+        self.detail_mode = false;
+        if count > 0 {
+            self.list_state.select(Some(0));
+        } else {
+            self.list_state.select(None);
+        }
+    }
+}
+
+/// Cached hooks data for the hooks browser overlay.
+#[derive(Debug, Clone, Default)]
+pub struct HooksBrowserData {
+    /// Whether hooks are globally enabled.
+    pub enabled: bool,
+    /// Timeout in ms.
+    pub timeout_ms: u64,
+    /// Max output bytes.
+    pub max_output_bytes: usize,
+    /// Allowed programs.
+    pub allowed_programs: Vec<String>,
+    /// Configured hooks (name, event, program, args).
+    pub hooks: Vec<(String, String, String, String)>,
+}
+
+/// Cached agent data for the agent browser overlay.
+#[derive(Debug, Clone, Default)]
+pub struct AgentBrowserData {
+    /// Display rows for the agent dashboard: (label, value).
+    pub rows: Vec<(String, String)>,
+}
+
+/// Cached memory entries for the memory browser overlay.
+#[derive(Debug, Clone)]
+pub struct MemoryBrowserEntry {
+    /// Timestamp string.
+    pub timestamp: String,
+    /// Optional category.
+    pub category: Option<String>,
+    /// Summary.
+    pub summary: String,
+    /// Full content.
+    pub content: String,
+    /// Session ID.
+    pub session_id: String,
+    /// Entry file path (stored as a workspace-relative path string when possible).
+    ///
+    /// This is used for safe delete operations via `/memory delete`.
+    pub file_path: Option<String>,
+}
+
+/// Cached device data for the device browser overlay.
+#[derive(Debug, Clone)]
+pub struct DeviceBrowserEntry {
+    /// Device name.
+    pub name: String,
+    /// Whether this is the default device.
+    pub is_default: bool,
+}
+
+/// Cached permission data for the permissions browser overlay.
+#[derive(Debug, Clone)]
+pub struct PermissionBrowserEntry {
+    /// Tool name.
+    pub tool: String,
+    /// Action name.
+    pub action: String,
+    /// Scope description.
+    pub scope: String,
+    /// Expiry description.
+    pub expires: String,
+}
+
+/// Cached session info for the sessions browser overlay.
+#[derive(Debug, Clone)]
+pub struct SessionBrowserEntry {
+    /// Session ID.
+    pub id: String,
+    /// Model used.
+    pub model: String,
+    /// Message count.
+    pub message_count: usize,
+    /// Created timestamp string.
+    pub created: String,
+    /// Last active timestamp string.
+    pub last_active: String,
+    /// Whether this is the current session.
+    pub is_current: bool,
+}
+
+/// Cached task data for the tasks browser overlay.
+#[derive(Debug, Clone)]
+pub struct TaskBrowserEntry {
+    /// Task ID.
+    pub id: String,
+    /// Task name.
+    pub name: String,
+    /// Task description.
+    pub description: String,
+    /// Status string.
+    pub status: String,
+    /// Status icon ([ ], [/], [x], [-]).
+    pub status_icon: String,
+    /// Parent task ID (for subtasks).
+    pub parent_id: Option<String>,
+    /// Source (User, Agent, Orchestrator).
+    pub source: String,
+    /// Created timestamp string.
+    pub created: String,
 }
 
 /// A model picker option.
@@ -1017,6 +1379,8 @@ impl TuiApp {
             system_prompt,
             mode: TuiMode::Insert, // Start in insert mode for immediate typing
             is_loading: false,
+            listening_mode: false,
+            voice_capture_in_progress: false,
             loading_tick: 0,
             status: "Ready".to_string(),
             error: None,
@@ -1033,8 +1397,12 @@ impl TuiApp {
             command_history: Vec::new(),
             command_history_pos: None,
             pending_confirm: None,
+            confirm_return_mode: None,
             pending_tool_confirmation: None,
             layout_areas: LayoutAreas::default(),
+            assistant_copy_buttons: Vec::new(),
+            hovered_copy_button: None,
+            pressed_copy_button: None,
             theme: initial_theme,
             search_query: String::new(),
             search_matches: Vec::new(),
@@ -1050,6 +1418,24 @@ impl TuiApp {
 
             activity_state: ActivityState::default(),
             tools_state: ToolsState::default(),
+            mcp_browser_state: McpBrowserState::default(),
+            knowledge_browser_state: KnowledgeBrowserState::default(),
+            hooks_browser_state: GenericBrowserState::default(),
+            hooks_browser_data: HooksBrowserData::default(),
+            agent_browser_state: GenericBrowserState::default(),
+            agent_browser_data: AgentBrowserData::default(),
+            memory_browser_state: GenericBrowserState::default(),
+            memory_browser_entries: Vec::new(),
+            devices_browser_state: GenericBrowserState::default(),
+            devices_browser_entries: Vec::new(),
+            permissions_browser_state: GenericBrowserState::default(),
+            permissions_browser_entries: Vec::new(),
+            sessions_browser_state: GenericBrowserState::default(),
+            sessions_browser_entries: Vec::new(),
+            tasks_browser_state: GenericBrowserState::default(),
+            tasks_browser_entries: Vec::new(),
+            themes_browser_state: GenericBrowserState::default(),
+            themes_browser_names: Vec::new(),
             model_picker_state: ModelPickerState::default(),
             cached_model_lists: HashMap::new(),
 
@@ -1124,6 +1510,10 @@ impl TuiApp {
 
     /// Show a confirmation dialog
     pub fn show_confirm(&mut self, action: ConfirmAction) {
+        // Remember where we came from so overlays can return to their previous mode.
+        if self.mode != TuiMode::Confirm {
+            self.confirm_return_mode = Some(self.mode);
+        }
         self.pending_confirm = Some(action);
         self.mode = TuiMode::Confirm;
     }
@@ -1139,12 +1529,12 @@ impl TuiApp {
     /// Cancel the confirmation dialog
     pub fn cancel_confirm(&mut self) {
         self.pending_confirm = None;
-        self.mode = TuiMode::Insert;
+        self.mode = self.confirm_return_mode.take().unwrap_or(TuiMode::Insert);
     }
 
     /// Get the pending confirmation action and clear it
     pub fn take_confirm(&mut self) -> Option<ConfirmAction> {
-        self.mode = TuiMode::Insert;
+        self.mode = self.confirm_return_mode.take().unwrap_or(TuiMode::Insert);
         self.pending_confirm.take()
     }
 
@@ -1405,6 +1795,29 @@ impl TuiApp {
         if role == "user" {
             self.user_scrolled = false;
         }
+        self.pending_scroll_to_bottom = true;
+    }
+
+    /// Add a user message with an explicit source (text vs voice).
+    ///
+    /// This keeps the UI transcript and persisted `ChatSession` in sync.
+    pub fn add_user_message_with_source(
+        &mut self,
+        content: &str,
+        source: gestura_core::chat_sessions::MessageSource,
+    ) {
+        self.messages.push(TuiMessage {
+            role: "user".to_string(),
+            content: content.to_string(),
+            thinking: None,
+            is_streaming: false,
+            is_error: false,
+        });
+
+        self.session.add_user_message(content, source);
+
+        // A user message is a strong signal that the view should follow-tail.
+        self.user_scrolled = false;
         self.pending_scroll_to_bottom = true;
     }
 
@@ -2391,7 +2804,8 @@ mod tests {
         assert_eq!(app.theme.name, "Gestura");
         assert_eq!(app.theme.border_focused, Color::Rgb(52, 211, 153));
         assert_eq!(app.theme.streaming, Color::Rgb(52, 211, 153));
-        assert_eq!(app.theme.user_msg, Color::Rgb(52, 211, 153));
+        // User messages use primary text (white) in dark mode.
+        assert_eq!(app.theme.user_msg, Color::Rgb(255, 255, 255));
     }
 
     // ==================== Command Suggestion Tests ====================

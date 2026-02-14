@@ -51,6 +51,7 @@ pub mod execution_mode;
 pub mod gdpr;
 pub(crate) mod guardrails;
 pub mod hooks;
+pub mod hotkey_ipc;
 pub mod interaction;
 pub mod knowledge;
 pub mod llm_overrides;

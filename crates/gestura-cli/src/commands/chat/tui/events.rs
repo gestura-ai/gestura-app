@@ -98,6 +98,16 @@ fn handle_key_event(app: &mut TuiApp, key: KeyEvent) -> Action {
         TuiMode::Workflows => handle_workflows_mode(app, key),
         TuiMode::Tools => handle_tools_mode(app, key),
         TuiMode::Capabilities => handle_capabilities_mode(app, key),
+        TuiMode::Mcp => handle_mcp_browser_mode(app, key),
+        TuiMode::Knowledge => handle_knowledge_browser_mode(app, key),
+        TuiMode::Hooks => handle_hooks_browser_mode(app, key),
+        TuiMode::Agent => handle_agent_browser_mode(app, key),
+        TuiMode::Memory => handle_memory_browser_mode(app, key),
+        TuiMode::Devices => handle_devices_browser_mode(app, key),
+        TuiMode::Permissions => handle_permissions_browser_mode(app, key),
+        TuiMode::Sessions => handle_sessions_browser_mode(app, key),
+        TuiMode::Tasks => handle_tasks_browser_mode(app, key),
+        TuiMode::Themes => handle_themes_browser_mode(app, key),
     }
 }
 
@@ -271,6 +281,26 @@ fn handle_normal_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         KeyCode::PageDown => Action::PageDown,
         // Copy selected message(s) to clipboard (vim 'y' = yank)
         KeyCode::Char('y') => Action::CopySelection,
+        // Copy the focused assistant message's raw markdown to clipboard.
+        //
+        // This corresponds to the transcript's per-message "copy" overlay control.
+        KeyCode::Char('c') => {
+            // Only meaningful in the Chat transcript tab.
+            if app.active_tab != 0 {
+                return Action::Continue;
+            }
+
+            let line = app.message_list_state.selected().unwrap_or(0);
+            if let Some(&msg_idx) = app.line_to_message_map.get(line)
+                && matches!(
+                    app.messages.get(msg_idx).map(|m| m.role.as_str()),
+                    Some("assistant")
+                )
+            {
+                return Action::CopyMessageRaw(msg_idx);
+            }
+            Action::Continue
+        }
         // Vim motions for cursor in input (when in normal mode)
         KeyCode::Char('h') | KeyCode::Left => {
             app.cursor_left();
@@ -399,8 +429,8 @@ fn apply_selected_command_suggestion_preserving_args(app: &mut TuiApp) {
 
 /// Handle Insert mode keys (typing messages)
 fn handle_insert_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
-    // While streaming, keep the UI responsive. We still allow Esc to cancel the active stream.
-    if app.is_loading && key.code == KeyCode::Esc {
+    // While streaming or recording, keep the UI responsive. We still allow Esc to cancel.
+    if (app.is_loading || app.voice_capture_in_progress) && key.code == KeyCode::Esc {
         return Action::Cancel;
     }
 
@@ -422,6 +452,9 @@ fn handle_insert_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
                 // Prevent accidental send (and input loss via take_input) while a stream is active.
                 app.set_status("Still streaming… press Esc to cancel".to_string());
                 Action::Continue
+            } else if app.voice_capture_in_progress {
+                app.set_status("Recording… press Esc to cancel".to_string());
+                Action::Continue
             } else if !app.input.is_empty() {
                 let input = app.take_input();
                 // Check if it's a command
@@ -430,6 +463,8 @@ fn handle_insert_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
                 } else {
                     Action::SendMessage(input)
                 }
+            } else if app.listening_mode {
+                Action::ToggleRecording
             } else {
                 Action::Continue
             }
@@ -691,6 +726,9 @@ fn handle_confirm_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
                         // Signal to main loop to create new session
                         Action::ExecuteCommand("/new --confirmed".to_string())
                     }
+                    ConfirmAction::ExecuteCommand { command, .. } => {
+                        Action::ExecuteCommand(command)
+                    }
                 }
             } else {
                 app.mode = TuiMode::Insert;
@@ -711,26 +749,73 @@ fn handle_mouse_event(app: &mut TuiApp, mouse: MouseEvent) -> Action {
     let x = mouse.column;
     let y = mouse.row;
 
+    let hit_copy_button = |x: u16, y: u16| {
+        app.assistant_copy_buttons.iter().find_map(|hit| {
+            let within = x >= hit.rect.x
+                && x < hit.rect.x + hit.rect.width
+                && y >= hit.rect.y
+                && y < hit.rect.y + hit.rect.height;
+            within.then_some(hit.message_index)
+        })
+    };
+
     match mouse.kind {
+        MouseEventKind::Moved => {
+            // Hover styling is only relevant for Chat-tab copy controls.
+            if app.active_tab != 0 {
+                app.hovered_copy_button = None;
+                return Action::Continue;
+            }
+
+            app.hovered_copy_button = hit_copy_button(x, y);
+            Action::Continue
+        }
         MouseEventKind::ScrollUp => {
+            // Cancel any in-progress "press" if the user scrolls.
+            app.pressed_copy_button = None;
             match app.mode {
                 TuiMode::Activity => app.activity_state.scroll_up(),
                 TuiMode::ModelPicker => app.model_picker_state.select_prev(),
+                TuiMode::Mcp => app.mcp_browser_state.select_prev(),
+                TuiMode::Knowledge => app.knowledge_browser_state.select_prev(),
+                TuiMode::Hooks => app.hooks_browser_state.select_prev(),
+                TuiMode::Agent => app.agent_browser_state.select_prev(),
+                TuiMode::Memory => app.memory_browser_state.select_prev(),
+                TuiMode::Devices => app.devices_browser_state.select_prev(),
+                TuiMode::Permissions => app.permissions_browser_state.select_prev(),
+                TuiMode::Sessions => app.sessions_browser_state.select_prev(),
+                TuiMode::Tasks => app.tasks_browser_state.select_prev(),
+                TuiMode::Themes => app.themes_browser_state.select_prev(),
                 TuiMode::ToolConfirm => {}
                 _ => app.scroll_up(),
             }
             Action::Continue
         }
         MouseEventKind::ScrollDown => {
+            // Cancel any in-progress "press" if the user scrolls.
+            app.pressed_copy_button = None;
             match app.mode {
                 TuiMode::Activity => app.activity_state.scroll_down(),
                 TuiMode::ModelPicker => app.model_picker_state.select_next(),
+                TuiMode::Mcp => app.mcp_browser_state.select_next(),
+                TuiMode::Knowledge => app.knowledge_browser_state.select_next(),
+                TuiMode::Hooks => app.hooks_browser_state.select_next(),
+                TuiMode::Agent => app.agent_browser_state.select_next(),
+                TuiMode::Memory => app.memory_browser_state.select_next(),
+                TuiMode::Devices => app.devices_browser_state.select_next(),
+                TuiMode::Permissions => app.permissions_browser_state.select_next(),
+                TuiMode::Sessions => app.sessions_browser_state.select_next(),
+                TuiMode::Tasks => app.tasks_browser_state.select_next(),
+                TuiMode::Themes => app.themes_browser_state.select_next(),
                 TuiMode::ToolConfirm => {}
                 _ => app.scroll_down(),
             }
             Action::Continue
         }
         MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+            // Starting a new click cancels any previous press state.
+            app.pressed_copy_button = None;
+
             // Check if click is in tabs area
             if let Some(tabs_area) = app.layout_areas.tabs
                 && y >= tabs_area.y
@@ -751,6 +836,24 @@ fn handle_mouse_event(app: &mut TuiApp, mouse: MouseEvent) -> Action {
                 && y >= msg_area.y
                 && y < msg_area.y + msg_area.height
             {
+                // First: if the user clicked a per-message "copy" overlay control (Chat tab
+                // only), trigger the raw-copy action instead of starting a drag selection.
+                if app.active_tab == 0
+                    && let Some(message_index) = hit_copy_button(x, y)
+                {
+                    // Ensure the overlay doesn't interfere with selection-copy.
+                    app.selection_anchor = None;
+                    app.selection_end = None;
+
+                    // Visual pressed feedback: dim while mouse is held.
+                    app.pressed_copy_button = Some(message_index);
+                    app.hovered_copy_button = Some(message_index);
+                    return Action::Continue;
+                }
+
+                // Clicking elsewhere in the transcript clears hover state.
+                app.hovered_copy_button = None;
+
                 let relative_y = (y - msg_area.y) as usize;
                 let offset = app.message_list_state.offset();
                 let line_index = offset + relative_y;
@@ -774,11 +877,24 @@ fn handle_mouse_event(app: &mut TuiApp, mouse: MouseEvent) -> Action {
                 app.selection_anchor = None;
                 app.selection_end = None;
                 app.user_scrolled = false;
+                app.hovered_copy_button = None;
+                app.pressed_copy_button = None;
             }
 
             Action::Continue
         }
         MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+            // If a copy button is pressed, don't extend selection. Instead, keep hover updated
+            // so releasing over the button still counts as an activation.
+            if app.pressed_copy_button.is_some() {
+                if app.active_tab == 0 {
+                    app.hovered_copy_button = hit_copy_button(x, y);
+                } else {
+                    app.hovered_copy_button = None;
+                }
+                return Action::Continue;
+            }
+
             // Extend selection as the mouse drags
             if let Some(msg_area) = app.layout_areas.messages
                 && y >= msg_area.y
@@ -794,6 +910,24 @@ fn handle_mouse_event(app: &mut TuiApp, mouse: MouseEvent) -> Action {
             Action::Continue
         }
         MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+            // If we were pressing a copy button, trigger on release (not on mouse-down).
+            if let Some(pressed_message_index) = app.pressed_copy_button.take() {
+                // Recompute hover on release in case the terminal doesn't emit `Moved`.
+                if app.active_tab == 0 {
+                    app.hovered_copy_button = hit_copy_button(x, y);
+                } else {
+                    app.hovered_copy_button = None;
+                }
+
+                if app.active_tab == 0 && app.hovered_copy_button == Some(pressed_message_index) {
+                    app.selection_anchor = None;
+                    app.selection_end = None;
+                    return Action::CopyMessageRaw(pressed_message_index);
+                }
+
+                return Action::Continue;
+            }
+
             // Auto-copy to clipboard when the user releases the mouse after a drag
             // selection spanning more than one line.
             if let (Some(anchor), Some(end)) = (app.selection_anchor, app.selection_end)
@@ -1018,6 +1152,208 @@ fn handle_tools_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
     }
 }
 
+/// Handle keys when in MCP browser mode.
+///
+/// The MCP browser has two sub-modes:
+/// - **List mode** (default): ↑/↓ navigate, Enter detail, Space toggle enable/disable, Esc close.
+/// - **Detail mode**: shows server details. Esc returns to list, Space toggles.
+fn handle_mcp_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    if app.mcp_browser_state.detail_mode {
+        match key.code {
+            KeyCode::Esc => {
+                app.mcp_browser_state.detail_mode = false;
+                app.set_status(
+                    "MCP: ↑/↓ navigate  Enter details  n add  Space toggle  c connect  d disconnect  x remove  Esc close",
+                );
+                Action::Continue
+            }
+            KeyCode::Char(' ') => {
+                // Route enable/disable through the canonical slash command path.
+                let idx = app.mcp_browser_state.selected_index;
+                if let Some(entry) = app.mcp_browser_state.servers.get(idx) {
+                    let verb = if entry.entry.enabled {
+                        "disable"
+                    } else {
+                        "enable"
+                    };
+                    return Action::ExecuteCommand(format!("/mcp {verb} {}", entry.entry.name));
+                }
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    } else {
+        match key.code {
+            KeyCode::Esc => {
+                app.mode = TuiMode::Insert;
+                app.set_status("Returned to chat");
+                Action::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.mcp_browser_state.select_next();
+                Action::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.mcp_browser_state.select_prev();
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                // Avoid switching into an empty detail pane when there are no servers.
+                if app.mcp_browser_state.servers.is_empty() {
+                    app.input = "/mcp add ".to_string();
+                    app.cursor_pos = app.input.len();
+                    app.mode = TuiMode::Command;
+                    app.set_status("Add MCP server: /mcp add <name> <cmd_or_url> (then Enter)");
+                    Action::Continue
+                } else {
+                    if let Some(entry) = app
+                        .mcp_browser_state
+                        .servers
+                        .get(app.mcp_browser_state.selected_index)
+                    {
+                        app.set_status(format!(
+                            "MCP: {} — Space toggle, Esc back",
+                            entry.entry.name
+                        ));
+                    }
+                    app.mcp_browser_state.detail_mode = true;
+                    Action::Continue
+                }
+            }
+            KeyCode::Char('n') => {
+                app.input = "/mcp add ".to_string();
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Add MCP server: /mcp add <name> <cmd_or_url> (then Enter)");
+                Action::Continue
+            }
+            KeyCode::Char(' ') => {
+                // Route enable/disable through the canonical slash command path.
+                let idx = app.mcp_browser_state.selected_index;
+                if let Some(entry) = app.mcp_browser_state.servers.get(idx) {
+                    let verb = if entry.entry.enabled {
+                        "disable"
+                    } else {
+                        "enable"
+                    };
+                    return Action::ExecuteCommand(format!("/mcp {verb} {}", entry.entry.name));
+                }
+                Action::Continue
+            }
+            KeyCode::Char('c') => {
+                // Connect to selected server
+                let idx = app.mcp_browser_state.selected_index;
+                if let Some(entry) = app.mcp_browser_state.servers.get(idx) {
+                    let name = entry.entry.name.clone();
+                    return Action::ExecuteCommand(format!("/mcp connect {}", name));
+                }
+                Action::Continue
+            }
+            KeyCode::Char('d') => {
+                // Disconnect from selected server
+                let idx = app.mcp_browser_state.selected_index;
+                if let Some(entry) = app.mcp_browser_state.servers.get(idx) {
+                    let name = entry.entry.name.clone();
+                    return Action::ExecuteCommand(format!("/mcp disconnect {}", name));
+                }
+                Action::Continue
+            }
+            KeyCode::Char('x') => {
+                // Remove selected server
+                let idx = app.mcp_browser_state.selected_index;
+                if let Some(entry) = app.mcp_browser_state.servers.get(idx) {
+                    let name = entry.entry.name.clone();
+                    return Action::ExecuteCommand(format!("/mcp remove {}", name));
+                }
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    }
+}
+
+/// Handle keys when in Knowledge browser mode.
+///
+/// The knowledge browser has two sub-modes:
+/// - **List mode**: ↑/↓ navigate, Enter detail, Space toggle, Esc close.
+/// - **Detail mode**: shows item details. Esc returns to list, Space toggles.
+fn handle_knowledge_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    if app.knowledge_browser_state.detail_mode {
+        match key.code {
+            KeyCode::Esc => {
+                app.knowledge_browser_state.detail_mode = false;
+                app.set_status("Knowledge: ↑/↓ navigate  Enter details  Space toggle  Esc close");
+                Action::Continue
+            }
+            KeyCode::Char(' ') => {
+                toggle_selected_knowledge(app);
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    } else {
+        match key.code {
+            KeyCode::Esc => {
+                app.mode = TuiMode::Insert;
+                app.set_status("Returned to chat");
+                Action::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.knowledge_browser_state.select_next();
+                Action::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.knowledge_browser_state.select_prev();
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                if let Some(item) = app
+                    .knowledge_browser_state
+                    .items
+                    .get(app.knowledge_browser_state.selected_index)
+                {
+                    app.set_status(format!("Knowledge: {} — Space toggle, Esc back", item.name));
+                }
+                app.knowledge_browser_state.detail_mode = true;
+                Action::Continue
+            }
+            KeyCode::Char(' ') => {
+                toggle_selected_knowledge(app);
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    }
+}
+
+/// Toggle the enabled/disabled state of the currently selected knowledge item.
+///
+/// Persists the change via [`KnowledgeSettingsManager`] (session-scoped, on disk)
+/// instead of the in-memory-only [`KnowledgeStore::set_enabled`].
+fn toggle_selected_knowledge(app: &mut TuiApp) {
+    let idx = app.knowledge_browser_state.selected_index;
+    let Some(item) = app.knowledge_browser_state.items.get(idx) else {
+        return;
+    };
+    let id = item.id.clone();
+    let new_enabled = !item.enabled;
+
+    // Persist via KnowledgeSettingsManager (session-scoped, on disk).
+    let session_id = &app.session.id;
+    let settings_mgr = gestura_core::knowledge::KnowledgeSettingsManager::new(
+        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
+    );
+    let _ = settings_mgr.set_knowledge_enabled(session_id, &id, new_enabled);
+
+    // Update cached state.
+    if let Some(item) = app.knowledge_browser_state.items.get_mut(idx) {
+        item.enabled = new_enabled;
+    }
+
+    let label = if new_enabled { "enabled" } else { "disabled" };
+    app.set_status(format!("Knowledge '{}' {}", id, label));
+}
+
 /// Toggle the enabled/disabled state of the currently selected tool in session settings.
 fn toggle_selected_tool(app: &mut TuiApp) {
     let tools = gestura_core::tools::all_tools();
@@ -1052,10 +1388,977 @@ fn toggle_selected_tool(app: &mut TuiApp) {
     app.set_status(format!("Tool '{}' {}", tool_name, label));
 }
 
+/// Handle keyboard events in the Hooks browser overlay.
+fn handle_hooks_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    if app.hooks_browser_state.detail_mode {
+        match key.code {
+            KeyCode::Esc => {
+                app.hooks_browser_state.detail_mode = false;
+                app.set_status(
+                    "Hooks: ↑/↓ navigate  Enter details  Space toggle  n new  e edit  x delete  a allow+  r allow-  t timeout  m max  Esc close",
+                );
+                Action::Continue
+            }
+            KeyCode::Char(' ') => {
+                // Toggle enabled/disabled.
+                app.hooks_browser_state.detail_mode = false;
+                if app.hooks_browser_data.enabled {
+                    Action::ExecuteCommand("/hooks disable".to_string())
+                } else {
+                    Action::ExecuteCommand("/hooks enable".to_string())
+                }
+            }
+            KeyCode::Char('n') => {
+                app.hooks_browser_state.detail_mode = false;
+                app.input = "/hooks create ".to_string();
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status(
+                    "Create hook: /hooks create <name> <event> <program> [args...] (then Enter)",
+                );
+                Action::Continue
+            }
+            KeyCode::Char('e') => {
+                let idx = app.hooks_browser_state.selected_index;
+                let Some((name, event, program, args)) = app.hooks_browser_data.hooks.get(idx)
+                else {
+                    return Action::Continue;
+                };
+
+                let args = args.trim();
+                app.hooks_browser_state.detail_mode = false;
+                app.input = if args.is_empty() {
+                    format!("/hooks update {name} {event} {program} ")
+                } else {
+                    format!("/hooks update {name} {event} {program} {args}")
+                };
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Edit hook: adjust fields and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('x') => {
+                let idx = app.hooks_browser_state.selected_index;
+                let Some((name, event, program, _args)) = app.hooks_browser_data.hooks.get(idx)
+                else {
+                    return Action::Continue;
+                };
+
+                app.hooks_browser_state.detail_mode = false;
+                let name_short: String = name.chars().take(80).collect();
+                app.show_confirm(ConfirmAction::ExecuteCommand {
+                    title: "Delete Hook?".to_string(),
+                    message: format!(
+                        "This will permanently delete the hook:\n\n  {name_short}\n  ({event}) -> {program}\n\n  [Y] Yes, delete    [N] No, cancel"
+                    ),
+                    command: format!("/hooks delete {name}"),
+                });
+                Action::Continue
+            }
+            KeyCode::Char('a') => {
+                let idx = app.hooks_browser_state.selected_index;
+                let program = app
+                    .hooks_browser_data
+                    .hooks
+                    .get(idx)
+                    .map(|(_, _, program, _)| program.as_str())
+                    .unwrap_or("");
+                app.hooks_browser_state.detail_mode = false;
+                app.input = if program.trim().is_empty() {
+                    "/hooks allow add ".to_string()
+                } else {
+                    format!("/hooks allow add {program}")
+                };
+                if !app.input.ends_with(' ') {
+                    app.input.push(' ');
+                }
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Allow program: edit and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('r') => {
+                let idx = app.hooks_browser_state.selected_index;
+                let program = app
+                    .hooks_browser_data
+                    .hooks
+                    .get(idx)
+                    .map(|(_, _, program, _)| program.as_str())
+                    .unwrap_or("");
+                app.hooks_browser_state.detail_mode = false;
+                app.input = if program.trim().is_empty() {
+                    "/hooks allow remove ".to_string()
+                } else {
+                    format!("/hooks allow remove {program}")
+                };
+                if !app.input.ends_with(' ') {
+                    app.input.push(' ');
+                }
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Remove from allowlist: edit and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('t') => {
+                app.hooks_browser_state.detail_mode = false;
+                app.input = format!(
+                    "/hooks set timeout_ms {} ",
+                    app.hooks_browser_data.timeout_ms
+                );
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Set hooks timeout (ms) and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('m') => {
+                app.hooks_browser_state.detail_mode = false;
+                app.input = format!(
+                    "/hooks set max_output_bytes {} ",
+                    app.hooks_browser_data.max_output_bytes
+                );
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Set hooks max output bytes and press Enter");
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    } else {
+        match key.code {
+            KeyCode::Esc => {
+                app.mode = TuiMode::Insert;
+                app.set_status("Returned to chat");
+                Action::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.hooks_browser_state.select_next();
+                Action::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.hooks_browser_state.select_prev();
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                // If there are no hooks, pressing Enter should guide creation instead of
+                // switching to an empty detail pane.
+                if app.hooks_browser_data.hooks.is_empty() {
+                    app.input = "/hooks create ".to_string();
+                    app.cursor_pos = app.input.len();
+                    app.mode = TuiMode::Command;
+                    app.set_status(
+                        "Create hook: /hooks create <name> <event> <program> [args...] (then Enter)",
+                    );
+                    Action::Continue
+                } else {
+                    app.hooks_browser_state.detail_mode = true;
+                    Action::Continue
+                }
+            }
+            KeyCode::Char(' ') => {
+                if app.hooks_browser_data.enabled {
+                    Action::ExecuteCommand("/hooks disable".to_string())
+                } else {
+                    Action::ExecuteCommand("/hooks enable".to_string())
+                }
+            }
+            KeyCode::Char('n') => {
+                app.input = "/hooks create ".to_string();
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status(
+                    "Create hook: /hooks create <name> <event> <program> [args...] (then Enter)",
+                );
+                Action::Continue
+            }
+            KeyCode::Char('e') => {
+                let idx = app.hooks_browser_state.selected_index;
+                let Some((name, event, program, args)) = app.hooks_browser_data.hooks.get(idx)
+                else {
+                    return Action::Continue;
+                };
+
+                let args = args.trim();
+                app.input = if args.is_empty() {
+                    format!("/hooks update {name} {event} {program} ")
+                } else {
+                    format!("/hooks update {name} {event} {program} {args}")
+                };
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Edit hook: adjust fields and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('x') => {
+                let idx = app.hooks_browser_state.selected_index;
+                let Some((name, event, program, _args)) = app.hooks_browser_data.hooks.get(idx)
+                else {
+                    return Action::Continue;
+                };
+
+                let name_short: String = name.chars().take(80).collect();
+                app.show_confirm(ConfirmAction::ExecuteCommand {
+                    title: "Delete Hook?".to_string(),
+                    message: format!(
+                        "This will permanently delete the hook:\n\n  {name_short}\n  ({event}) -> {program}\n\n  [Y] Yes, delete    [N] No, cancel"
+                    ),
+                    command: format!("/hooks delete {name}"),
+                });
+                Action::Continue
+            }
+            KeyCode::Char('a') => {
+                let idx = app.hooks_browser_state.selected_index;
+                let program = app
+                    .hooks_browser_data
+                    .hooks
+                    .get(idx)
+                    .map(|(_, _, program, _)| program.as_str())
+                    .unwrap_or("");
+                app.input = if program.trim().is_empty() {
+                    "/hooks allow add ".to_string()
+                } else {
+                    format!("/hooks allow add {program}")
+                };
+                if !app.input.ends_with(' ') {
+                    app.input.push(' ');
+                }
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Allow program: edit and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('r') => {
+                let idx = app.hooks_browser_state.selected_index;
+                let program = app
+                    .hooks_browser_data
+                    .hooks
+                    .get(idx)
+                    .map(|(_, _, program, _)| program.as_str())
+                    .unwrap_or("");
+                app.input = if program.trim().is_empty() {
+                    "/hooks allow remove ".to_string()
+                } else {
+                    format!("/hooks allow remove {program}")
+                };
+                if !app.input.ends_with(' ') {
+                    app.input.push(' ');
+                }
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Remove from allowlist: edit and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('t') => {
+                app.input = format!(
+                    "/hooks set timeout_ms {} ",
+                    app.hooks_browser_data.timeout_ms
+                );
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Set hooks timeout (ms) and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('m') => {
+                app.input = format!(
+                    "/hooks set max_output_bytes {} ",
+                    app.hooks_browser_data.max_output_bytes
+                );
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Set hooks max output bytes and press Enter");
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    }
+}
+
+/// Handle keyboard events in the Agent browser overlay.
+fn handle_agent_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    if app.agent_browser_state.detail_mode {
+        match key.code {
+            KeyCode::Esc => {
+                app.agent_browser_state.detail_mode = false;
+                app.set_status("Agent: ↑/↓ navigate  Enter details  Esc close");
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    } else {
+        match key.code {
+            KeyCode::Esc => {
+                app.mode = TuiMode::Insert;
+                app.set_status("Returned to chat");
+                Action::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.agent_browser_state.select_next();
+                Action::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.agent_browser_state.select_prev();
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                app.agent_browser_state.detail_mode = true;
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    }
+}
+
+/// Handle keyboard events in the Memory browser overlay.
+fn handle_memory_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    if app.memory_browser_state.detail_mode {
+        match key.code {
+            KeyCode::Esc => {
+                app.memory_browser_state.detail_mode = false;
+                app.set_status("Memory: ↑/↓ navigate  Enter details  s save  x delete  Esc close");
+                Action::Continue
+            }
+            KeyCode::Char('s') => {
+                app.memory_browser_state.detail_mode = false;
+                app.input = "/memory save ".to_string();
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Save memory: add optional flags and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('x') => {
+                let idx = app.memory_browser_state.selected_index;
+                let Some(entry) = app.memory_browser_entries.get(idx) else {
+                    return Action::Continue;
+                };
+                let Some(path) = entry.file_path.as_deref() else {
+                    app.set_status("Cannot delete: missing memory entry file path");
+                    return Action::Continue;
+                };
+
+                // Return to list view after confirmation so we don't try to render a deleted entry.
+                app.memory_browser_state.detail_mode = false;
+
+                let summary: String = entry.summary.chars().take(80).collect();
+                app.show_confirm(ConfirmAction::ExecuteCommand {
+                    title: "Delete Memory Entry?".to_string(),
+                    message: format!(
+                        "This will permanently delete:\n\n  {summary}\n  {path}\n\n  [Y] Yes, delete    [N] No, cancel"
+                    ),
+                    command: format!("/memory delete --confirmed {path}"),
+                });
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    } else {
+        match key.code {
+            KeyCode::Esc => {
+                app.mode = TuiMode::Insert;
+                app.set_status("Returned to chat");
+                Action::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.memory_browser_state.select_next();
+                Action::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.memory_browser_state.select_prev();
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                // Avoid switching into an empty detail pane when there are no entries.
+                if app.memory_browser_entries.is_empty() {
+                    app.input = "/memory save ".to_string();
+                    app.cursor_pos = app.input.len();
+                    app.mode = TuiMode::Command;
+                    app.set_status("Save memory: add optional flags and press Enter");
+                    Action::Continue
+                } else {
+                    app.memory_browser_state.detail_mode = true;
+                    Action::Continue
+                }
+            }
+            KeyCode::Char('s') => {
+                app.input = "/memory save ".to_string();
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Save memory: add optional flags and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('x') => {
+                let idx = app.memory_browser_state.selected_index;
+                let Some(entry) = app.memory_browser_entries.get(idx) else {
+                    return Action::Continue;
+                };
+                let Some(path) = entry.file_path.as_deref() else {
+                    app.set_status("Cannot delete: missing memory entry file path");
+                    return Action::Continue;
+                };
+
+                let summary: String = entry.summary.chars().take(80).collect();
+                app.show_confirm(ConfirmAction::ExecuteCommand {
+                    title: "Delete Memory Entry?".to_string(),
+                    message: format!(
+                        "This will permanently delete:\n\n  {summary}\n  {path}\n\n  [Y] Yes, delete    [N] No, cancel"
+                    ),
+                    command: format!("/memory delete --confirmed {path}"),
+                });
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    }
+}
+
+fn next_task_status_token(current: &str) -> Option<&'static str> {
+    // `TaskBrowserEntry.status` is currently `format!("{:?}", TaskStatus)`.
+    let norm = current
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_")
+        .replace(' ', "");
+
+    match norm.as_str() {
+        "notstarted" | "not_started" => Some("in_progress"),
+        "inprogress" | "in_progress" => Some("completed"),
+        "completed" => Some("cancelled"),
+        "cancelled" | "canceled" => Some("not_started"),
+        _ => None,
+    }
+}
+
+/// Handle keyboard events in the Devices browser overlay.
+fn handle_devices_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    if app.devices_browser_state.detail_mode {
+        match key.code {
+            KeyCode::Esc => {
+                app.devices_browser_state.detail_mode = false;
+                app.set_status("Devices: ↑/↓ navigate  Enter details  Esc close");
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    } else {
+        match key.code {
+            KeyCode::Esc => {
+                app.mode = TuiMode::Insert;
+                app.set_status("Returned to chat");
+                Action::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.devices_browser_state.select_next();
+                Action::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.devices_browser_state.select_prev();
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                app.devices_browser_state.detail_mode = true;
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    }
+}
+
+/// Handle keyboard events in the Permissions browser overlay.
+fn handle_permissions_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    if app.permissions_browser_state.detail_mode {
+        match key.code {
+            KeyCode::Esc => {
+                app.permissions_browser_state.detail_mode = false;
+                app.set_status(
+                    "Permissions: ↑/↓ navigate  Enter details  g grant  x revoke  r reset  l level  Esc close",
+                );
+                Action::Continue
+            }
+            KeyCode::Char('g') => {
+                let idx = app.permissions_browser_state.selected_index;
+                let prefill = app
+                    .permissions_browser_entries
+                    .get(idx)
+                    .map(|entry| format!("/permissions grant {}.{} ", entry.tool, entry.action));
+                app.permissions_browser_state.detail_mode = false;
+                app.input = prefill.unwrap_or_else(|| "/permissions grant ".to_string());
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Grant permission: add optional [scope] and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('x') => {
+                let idx = app.permissions_browser_state.selected_index;
+                if let Some(entry) = app.permissions_browser_entries.get(idx) {
+                    let tool = entry.tool.clone();
+                    let action_str = entry.action.clone();
+                    app.permissions_browser_state.detail_mode = false;
+                    return Action::ExecuteCommand(format!(
+                        "/permissions revoke {} {}",
+                        tool, action_str
+                    ));
+                }
+                Action::Continue
+            }
+            KeyCode::Char('r') => {
+                app.permissions_browser_state.detail_mode = false;
+                app.show_confirm(ConfirmAction::ExecuteCommand {
+                    title: "Reset Permissions?".to_string(),
+                    message: "This will remove ALL granted tool permissions.\n\n  [Y] Yes, reset    [N] No, cancel"
+                        .to_string(),
+                    command: "/permissions reset".to_string(),
+                });
+                Action::Continue
+            }
+            KeyCode::Char('l') => {
+                app.permissions_browser_state.detail_mode = false;
+                app.input = "/permissions level set ".to_string();
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Set permission level: sandbox|restricted|full, then Enter");
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    } else {
+        match key.code {
+            KeyCode::Esc => {
+                app.mode = TuiMode::Insert;
+                app.set_status("Returned to chat");
+                Action::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.permissions_browser_state.select_next();
+                Action::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.permissions_browser_state.select_prev();
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                // Avoid switching into an empty detail pane when there are no permissions.
+                if app.permissions_browser_entries.is_empty() {
+                    app.input = "/permissions grant ".to_string();
+                    app.cursor_pos = app.input.len();
+                    app.mode = TuiMode::Command;
+                    app.set_status("Grant permission: add optional [scope] and press Enter");
+                    Action::Continue
+                } else {
+                    app.permissions_browser_state.detail_mode = true;
+                    Action::Continue
+                }
+            }
+            KeyCode::Char('g') => {
+                let idx = app.permissions_browser_state.selected_index;
+                let prefill = app
+                    .permissions_browser_entries
+                    .get(idx)
+                    .map(|entry| format!("/permissions grant {}.{} ", entry.tool, entry.action));
+                app.input = prefill.unwrap_or_else(|| "/permissions grant ".to_string());
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Grant permission: add optional [scope] and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('x') => {
+                let idx = app.permissions_browser_state.selected_index;
+                if let Some(entry) = app.permissions_browser_entries.get(idx) {
+                    let tool = entry.tool.clone();
+                    let action_str = entry.action.clone();
+                    return Action::ExecuteCommand(format!(
+                        "/permissions revoke {} {}",
+                        tool, action_str
+                    ));
+                }
+                Action::Continue
+            }
+            KeyCode::Char('r') => {
+                app.show_confirm(ConfirmAction::ExecuteCommand {
+                    title: "Reset Permissions?".to_string(),
+                    message: "This will remove ALL granted tool permissions.\n\n  [Y] Yes, reset    [N] No, cancel"
+                        .to_string(),
+                    command: "/permissions reset".to_string(),
+                });
+                Action::Continue
+            }
+            KeyCode::Char('l') => {
+                app.input = "/permissions level set ".to_string();
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Set permission level: sandbox|restricted|full, then Enter");
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    }
+}
+
+/// Handle keyboard events in the Sessions browser overlay.
+fn handle_sessions_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    if app.sessions_browser_state.detail_mode {
+        match key.code {
+            KeyCode::Esc => {
+                app.sessions_browser_state.detail_mode = false;
+                app.set_status(
+                    "Sessions: ↑/↓ navigate  Enter details  l load  x delete  e export  Esc close",
+                );
+                Action::Continue
+            }
+            KeyCode::Char('l') => {
+                let idx = app.sessions_browser_state.selected_index;
+                if let Some(entry) = app.sessions_browser_entries.get(idx) {
+                    if !entry.is_current {
+                        let id = entry.id.clone();
+                        app.sessions_browser_state.detail_mode = false;
+                        app.mode = TuiMode::Insert;
+                        return Action::ExecuteCommand(format!("/session load {}", id));
+                    }
+                    app.set_status("Already in this session");
+                }
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    } else {
+        match key.code {
+            KeyCode::Esc => {
+                app.mode = TuiMode::Insert;
+                app.set_status("Returned to chat");
+                Action::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.sessions_browser_state.select_next();
+                Action::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.sessions_browser_state.select_prev();
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                app.sessions_browser_state.detail_mode = true;
+                Action::Continue
+            }
+            KeyCode::Char('l') => {
+                let idx = app.sessions_browser_state.selected_index;
+                if let Some(entry) = app.sessions_browser_entries.get(idx) {
+                    if !entry.is_current {
+                        let id = entry.id.clone();
+                        app.mode = TuiMode::Insert;
+                        return Action::ExecuteCommand(format!("/session load {}", id));
+                    }
+                    app.set_status("Already in this session");
+                }
+                Action::Continue
+            }
+            KeyCode::Char('x') => {
+                let idx = app.sessions_browser_state.selected_index;
+                if let Some(entry) = app.sessions_browser_entries.get(idx) {
+                    if entry.is_current {
+                        app.set_status("Cannot delete the current session");
+                    } else {
+                        let id = entry.id.clone();
+                        return Action::ExecuteCommand(format!("/session delete {}", id));
+                    }
+                }
+                Action::Continue
+            }
+            KeyCode::Char('e') => {
+                let idx = app.sessions_browser_state.selected_index;
+                if let Some(entry) = app.sessions_browser_entries.get(idx) {
+                    let id = entry.id.clone();
+                    return Action::ExecuteCommand(format!("/session export {}", id));
+                }
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    }
+}
+
+/// Handle keyboard events in the Tasks browser overlay.
+fn handle_tasks_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    let sanitize_one_line = |s: &str, max: usize| -> String {
+        s.replace(['\n', '\r', '\t'], " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(max)
+            .collect()
+    };
+
+    if app.tasks_browser_state.detail_mode {
+        match key.code {
+            KeyCode::Esc => {
+                app.tasks_browser_state.detail_mode = false;
+                app.set_status(
+                    "Tasks: ↑/↓ navigate  Enter details  n new  e name  d desc  s sub  a dep  Space status  c current  u clear  x delete  Esc close",
+                );
+                Action::Continue
+            }
+            KeyCode::Char(' ') => {
+                let idx = app.tasks_browser_state.selected_index;
+                let Some(task) = app.tasks_browser_entries.get(idx) else {
+                    return Action::Continue;
+                };
+                let Some(next) = next_task_status_token(&task.status) else {
+                    app.set_status("Unknown task status; cannot cycle");
+                    return Action::Continue;
+                };
+
+                // Refresh logic will typically return us to list view.
+                app.tasks_browser_state.detail_mode = false;
+                Action::ExecuteCommand(format!("/task status {} {}", task.id, next))
+            }
+            KeyCode::Char('c') => {
+                let idx = app.tasks_browser_state.selected_index;
+                let Some(task) = app.tasks_browser_entries.get(idx) else {
+                    return Action::Continue;
+                };
+                app.tasks_browser_state.detail_mode = false;
+                Action::ExecuteCommand(format!("/task current set {}", task.id))
+            }
+            KeyCode::Char('x') => {
+                let idx = app.tasks_browser_state.selected_index;
+                let Some(task) = app.tasks_browser_entries.get(idx) else {
+                    return Action::Continue;
+                };
+
+                // Return to list view after confirmation so we don't try to render a deleted entry.
+                app.tasks_browser_state.detail_mode = false;
+                let name: String = task.name.chars().take(80).collect();
+                app.show_confirm(ConfirmAction::ExecuteCommand {
+                    title: "Delete Task?".to_string(),
+                    message: format!(
+                        "This will permanently delete:\n\n  {name}\n  {}\n\n  [Y] Yes, delete    [N] No, cancel",
+                        task.id
+                    ),
+                    command: format!("/task delete --confirmed {}", task.id),
+                });
+                Action::Continue
+            }
+            KeyCode::Char('n') => {
+                // Guided flow: prefill a command and switch to command mode.
+                app.tasks_browser_state.detail_mode = false;
+                app.input = "/task create ".to_string();
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Create task: type <name> [description...] and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('e') => {
+                let idx = app.tasks_browser_state.selected_index;
+                let Some(task) = app.tasks_browser_entries.get(idx) else {
+                    return Action::Continue;
+                };
+                let name = sanitize_one_line(&task.name, 120);
+                app.tasks_browser_state.detail_mode = false;
+                app.input = format!("/task update {} name {}", task.id, name);
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Edit task name and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('d') => {
+                let idx = app.tasks_browser_state.selected_index;
+                let Some(task) = app.tasks_browser_entries.get(idx) else {
+                    return Action::Continue;
+                };
+                let desc = sanitize_one_line(&task.description, 200);
+                app.tasks_browser_state.detail_mode = false;
+                app.input = format!("/task update {} desc {}", task.id, desc);
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Edit task description and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('s') => {
+                let idx = app.tasks_browser_state.selected_index;
+                let Some(task) = app.tasks_browser_entries.get(idx) else {
+                    return Action::Continue;
+                };
+                app.tasks_browser_state.detail_mode = false;
+                app.input = format!("/task create-sub {} ", task.id);
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Create subtask: type <name> [description...] and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('a') => {
+                let idx = app.tasks_browser_state.selected_index;
+                let Some(task) = app.tasks_browser_entries.get(idx) else {
+                    return Action::Continue;
+                };
+                app.tasks_browser_state.detail_mode = false;
+                app.input = format!("/task dep add {} ", task.id);
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Add dependency: type <blocked_by_id> and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('u') => {
+                app.tasks_browser_state.detail_mode = false;
+                Action::ExecuteCommand("/task current clear".to_string())
+            }
+            _ => Action::Continue,
+        }
+    } else {
+        match key.code {
+            KeyCode::Esc => {
+                app.mode = TuiMode::Insert;
+                app.set_status("Returned to chat");
+                Action::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.tasks_browser_state.select_next();
+                Action::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.tasks_browser_state.select_prev();
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                // If there are no tasks, pressing Enter should guide creation instead of
+                // switching to an empty detail pane.
+                if app.tasks_browser_entries.is_empty() {
+                    app.input = "/task create ".to_string();
+                    app.cursor_pos = app.input.len();
+                    app.mode = TuiMode::Command;
+                    app.set_status("Create task: type <name> [description...] and press Enter");
+                    Action::Continue
+                } else {
+                    app.tasks_browser_state.detail_mode = true;
+                    Action::Continue
+                }
+            }
+            KeyCode::Char(' ') => {
+                let idx = app.tasks_browser_state.selected_index;
+                let Some(task) = app.tasks_browser_entries.get(idx) else {
+                    return Action::Continue;
+                };
+                let Some(next) = next_task_status_token(&task.status) else {
+                    app.set_status("Unknown task status; cannot cycle");
+                    return Action::Continue;
+                };
+                Action::ExecuteCommand(format!("/task status {} {}", task.id, next))
+            }
+            KeyCode::Char('c') => {
+                let idx = app.tasks_browser_state.selected_index;
+                let Some(task) = app.tasks_browser_entries.get(idx) else {
+                    return Action::Continue;
+                };
+                Action::ExecuteCommand(format!("/task current set {}", task.id))
+            }
+            KeyCode::Char('x') => {
+                let idx = app.tasks_browser_state.selected_index;
+                let Some(task) = app.tasks_browser_entries.get(idx) else {
+                    return Action::Continue;
+                };
+
+                let name: String = task.name.chars().take(80).collect();
+                app.show_confirm(ConfirmAction::ExecuteCommand {
+                    title: "Delete Task?".to_string(),
+                    message: format!(
+                        "This will permanently delete:\n\n  {name}\n  {}\n\n  [Y] Yes, delete    [N] No, cancel",
+                        task.id
+                    ),
+                    command: format!("/task delete --confirmed {}", task.id),
+                });
+                Action::Continue
+            }
+            KeyCode::Char('n') => {
+                app.input = "/task create ".to_string();
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Create task: type <name> [description...] and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('e') => {
+                let idx = app.tasks_browser_state.selected_index;
+                let Some(task) = app.tasks_browser_entries.get(idx) else {
+                    return Action::Continue;
+                };
+                let name = sanitize_one_line(&task.name, 120);
+                app.input = format!("/task update {} name {}", task.id, name);
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Edit task name and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('d') => {
+                let idx = app.tasks_browser_state.selected_index;
+                let Some(task) = app.tasks_browser_entries.get(idx) else {
+                    return Action::Continue;
+                };
+                let desc = sanitize_one_line(&task.description, 200);
+                app.input = format!("/task update {} desc {}", task.id, desc);
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Edit task description and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('s') => {
+                let idx = app.tasks_browser_state.selected_index;
+                let Some(task) = app.tasks_browser_entries.get(idx) else {
+                    return Action::Continue;
+                };
+                app.input = format!("/task create-sub {} ", task.id);
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Create subtask: type <name> [description...] and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('a') => {
+                let idx = app.tasks_browser_state.selected_index;
+                let Some(task) = app.tasks_browser_entries.get(idx) else {
+                    return Action::Continue;
+                };
+                app.input = format!("/task dep add {} ", task.id);
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Add dependency: type <blocked_by_id> and press Enter");
+                Action::Continue
+            }
+            KeyCode::Char('u') => Action::ExecuteCommand("/task current clear".to_string()),
+            _ => Action::Continue,
+        }
+    }
+}
+
+/// Handle keyboard events in the Themes browser overlay.
+fn handle_themes_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Esc => {
+            app.mode = TuiMode::Insert;
+            app.set_status("Returned to chat");
+            Action::Continue
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.themes_browser_state.select_next();
+            Action::Continue
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.themes_browser_state.select_prev();
+            Action::Continue
+        }
+        KeyCode::Enter => {
+            let idx = app.themes_browser_state.selected_index;
+            if let Some(name) = app.themes_browser_names.get(idx) {
+                let name = name.clone();
+                app.set_theme(&name);
+                app.set_status(format!("Theme set to '{}'", name));
+            }
+            Action::Continue
+        }
+        _ => Action::Continue,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::commands::chat::new_cli_session;
+    use ratatui::layout::Rect;
+
+    use super::super::app::CopyButtonHit;
     use gestura_core::AppConfig;
 
     /// Helper to create a test app instance for event handling tests.
@@ -1063,6 +2366,143 @@ mod tests {
         let session = new_cli_session(None).unwrap();
         let config = AppConfig::default();
         TuiApp::new(session, config, None)
+    }
+
+    #[test]
+    fn mouse_move_updates_hovered_copy_button() {
+        let mut app = create_test_app();
+        app.active_tab = 0;
+        app.layout_areas.messages = Some(Rect {
+            x: 0,
+            y: 10,
+            width: 80,
+            height: 20,
+        });
+        app.assistant_copy_buttons = vec![CopyButtonHit {
+            message_index: 42,
+            rect: Rect {
+                x: 70,
+                y: 12,
+                width: 4,
+                height: 1,
+            },
+        }];
+
+        let action = handle_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 71,
+                row: 12,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.hovered_copy_button, Some(42));
+
+        let _ = handle_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 1,
+                row: 1,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        assert_eq!(app.hovered_copy_button, None);
+    }
+
+    #[test]
+    fn mouse_down_and_up_on_copy_button_copies_on_release() {
+        let mut app = create_test_app();
+        app.active_tab = 0;
+        app.layout_areas.messages = Some(Rect {
+            x: 0,
+            y: 10,
+            width: 80,
+            height: 20,
+        });
+        app.assistant_copy_buttons = vec![CopyButtonHit {
+            message_index: 7,
+            rect: Rect {
+                x: 70,
+                y: 12,
+                width: 4,
+                height: 1,
+            },
+        }];
+        app.selection_anchor = Some(0);
+        app.selection_end = Some(0);
+
+        let down = handle_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 71,
+                row: 12,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        assert_eq!(down, Action::Continue);
+        assert_eq!(app.pressed_copy_button, Some(7));
+        assert_eq!(app.selection_anchor, None);
+        assert_eq!(app.selection_end, None);
+
+        let up = handle_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(crossterm::event::MouseButton::Left),
+                column: 71,
+                row: 12,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        assert_eq!(up, Action::CopyMessageRaw(7));
+        assert_eq!(app.pressed_copy_button, None);
+    }
+
+    #[test]
+    fn mouse_release_off_copy_button_does_not_copy() {
+        let mut app = create_test_app();
+        app.active_tab = 0;
+        app.layout_areas.messages = Some(Rect {
+            x: 0,
+            y: 10,
+            width: 80,
+            height: 20,
+        });
+        app.assistant_copy_buttons = vec![CopyButtonHit {
+            message_index: 9,
+            rect: Rect {
+                x: 70,
+                y: 12,
+                width: 4,
+                height: 1,
+            },
+        }];
+
+        let _ = handle_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 71,
+                row: 12,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        assert_eq!(app.pressed_copy_button, Some(9));
+
+        let up = handle_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(crossterm::event::MouseButton::Left),
+                column: 1,
+                row: 1,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        assert_eq!(up, Action::Continue);
+        assert_eq!(app.pressed_copy_button, None);
     }
 
     #[test]
@@ -1157,5 +2597,332 @@ mod tests {
         let action = handle_event(&mut app, Event::Paste("a\n\nb".to_string()));
         assert_eq!(action, Action::Continue);
         assert_eq!(app.search_query, "ab");
+    }
+
+    #[test]
+    fn insert_enter_empty_input_with_listening_mode_triggers_recording() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Insert;
+        app.input.clear();
+        app.listening_mode = true;
+        app.is_loading = false;
+        app.voice_capture_in_progress = false;
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(action, Action::ToggleRecording);
+    }
+
+    #[test]
+    fn insert_enter_while_voice_capture_in_progress_does_not_toggle_recording() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Insert;
+        app.input.clear();
+        app.listening_mode = true;
+        app.is_loading = false;
+        app.voice_capture_in_progress = true;
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.status, "Recording… press Esc to cancel");
+    }
+
+    #[test]
+    fn insert_enter_empty_input_without_listening_mode_is_noop() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Insert;
+        app.input.clear();
+        app.listening_mode = false;
+        app.is_loading = false;
+        app.voice_capture_in_progress = false;
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(action, Action::Continue);
+    }
+
+    #[test]
+    fn confirm_execute_command_returns_action_and_restores_previous_mode() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Memory;
+        app.show_confirm(ConfirmAction::ExecuteCommand {
+            title: "Confirm".to_string(),
+            message: "Delete it?\n\n  [Y] Yes    [N] No".to_string(),
+            command: "/memory delete --confirmed .gestura/memory/entry.md".to_string(),
+        });
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(
+            action,
+            Action::ExecuteCommand(
+                "/memory delete --confirmed .gestura/memory/entry.md".to_string()
+            )
+        );
+        assert_eq!(app.mode, TuiMode::Memory);
+        assert!(app.pending_confirm.is_none());
+    }
+
+    #[test]
+    fn confirm_cancel_restores_previous_mode() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Tasks;
+        app.show_confirm(ConfirmAction::ClearMessages);
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Tasks);
+        assert!(app.pending_confirm.is_none());
+    }
+
+    #[test]
+    fn memory_x_shows_confirm_execute_command() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Memory;
+        app.memory_browser_entries = vec![super::super::app::MemoryBrowserEntry {
+            timestamp: "2026-02-13 12:00".to_string(),
+            category: Some("engineering".to_string()),
+            summary: "A test memory".to_string(),
+            content: "content".to_string(),
+            session_id: "session-123".to_string(),
+            file_path: Some(".gestura/memory/memory_20260213_120000_session-1.md".to_string()),
+        }];
+        app.memory_browser_state
+            .reset(app.memory_browser_entries.len());
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+        );
+
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Confirm);
+        assert_eq!(app.confirm_return_mode, Some(TuiMode::Memory));
+        match app.pending_confirm.as_ref().expect("pending confirm") {
+            ConfirmAction::ExecuteCommand { command, .. } => {
+                assert_eq!(
+                    command,
+                    "/memory delete --confirmed .gestura/memory/memory_20260213_120000_session-1.md"
+                );
+            }
+            other => panic!("unexpected confirm action: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tasks_space_cycles_status_to_in_progress() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Tasks;
+        app.tasks_browser_entries = vec![super::super::app::TaskBrowserEntry {
+            id: "task-abc".to_string(),
+            name: "Test".to_string(),
+            description: "".to_string(),
+            status: "NotStarted".to_string(),
+            status_icon: "[ ]".to_string(),
+            parent_id: None,
+            source: "User".to_string(),
+            created: "2026-02-13 12:00".to_string(),
+        }];
+        app.tasks_browser_state
+            .reset(app.tasks_browser_entries.len());
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
+        );
+
+        assert_eq!(
+            action,
+            Action::ExecuteCommand("/task status task-abc in_progress".to_string())
+        );
+    }
+
+    #[test]
+    fn tasks_x_shows_confirm_execute_command() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Tasks;
+        app.tasks_browser_entries = vec![super::super::app::TaskBrowserEntry {
+            id: "task-abc".to_string(),
+            name: "Test".to_string(),
+            description: "".to_string(),
+            status: "NotStarted".to_string(),
+            status_icon: "[ ]".to_string(),
+            parent_id: None,
+            source: "User".to_string(),
+            created: "2026-02-13 12:00".to_string(),
+        }];
+        app.tasks_browser_state
+            .reset(app.tasks_browser_entries.len());
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+        );
+
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Confirm);
+        assert_eq!(app.confirm_return_mode, Some(TuiMode::Tasks));
+        match app.pending_confirm.as_ref().expect("pending confirm") {
+            ConfirmAction::ExecuteCommand { command, .. } => {
+                assert_eq!(command, "/task delete --confirmed task-abc");
+            }
+            other => panic!("unexpected confirm action: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tasks_n_prefills_create_command() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Tasks;
+        app.tasks_browser_entries = vec![];
+        app.tasks_browser_state.reset(0);
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+        );
+
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Command);
+        assert_eq!(app.input, "/task create ");
+    }
+
+    #[test]
+    fn mcp_enter_on_empty_prefills_add_command() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Mcp;
+        app.mcp_browser_state.servers = vec![];
+        app.mcp_browser_state.detail_mode = false;
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Command);
+        assert_eq!(app.input, "/mcp add ");
+    }
+
+    #[test]
+    fn memory_enter_on_empty_prefills_save_command() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Memory;
+        app.memory_browser_entries = vec![];
+        app.memory_browser_state.reset(0);
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Command);
+        assert_eq!(app.input, "/memory save ");
+    }
+
+    #[test]
+    fn hooks_space_toggles_enabled() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Hooks;
+        app.hooks_browser_data.enabled = false;
+        // Mirror open_hooks_browser behavior: at least 1 item for empty state.
+        app.hooks_browser_state.reset(1);
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
+        );
+
+        assert_eq!(action, Action::ExecuteCommand("/hooks enable".to_string()));
+    }
+
+    #[test]
+    fn hooks_x_shows_confirm_execute_command() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Hooks;
+        app.hooks_browser_data.hooks = vec![(
+            "hook-1".to_string(),
+            "PreTool".to_string(),
+            "echo".to_string(),
+            "hi".to_string(),
+        )];
+        app.hooks_browser_state.reset(1);
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+        );
+
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Confirm);
+        assert_eq!(app.confirm_return_mode, Some(TuiMode::Hooks));
+        match app.pending_confirm.as_ref().expect("pending confirm") {
+            ConfirmAction::ExecuteCommand { command, .. } => {
+                assert_eq!(command, "/hooks delete hook-1");
+            }
+            other => panic!("unexpected confirm action: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn permissions_g_prefills_grant_command() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Permissions;
+        app.permissions_browser_entries = vec![super::super::app::PermissionBrowserEntry {
+            tool: "file".to_string(),
+            action: "read".to_string(),
+            scope: "global".to_string(),
+            expires: "never".to_string(),
+        }];
+        app.permissions_browser_state.reset(1);
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE)),
+        );
+
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Command);
+        assert_eq!(app.input, "/permissions grant file.read ");
+    }
+
+    #[test]
+    fn permissions_r_shows_confirm_execute_command() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Permissions;
+        app.permissions_browser_state.reset(0);
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+        );
+
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Confirm);
+        assert_eq!(app.confirm_return_mode, Some(TuiMode::Permissions));
+        match app.pending_confirm.as_ref().expect("pending confirm") {
+            ConfirmAction::ExecuteCommand { command, .. } => {
+                assert_eq!(command, "/permissions reset");
+            }
+            other => panic!("unexpected confirm action: {other:?}"),
+        }
     }
 }

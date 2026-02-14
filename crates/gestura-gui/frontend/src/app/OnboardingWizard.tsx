@@ -60,10 +60,9 @@ interface OnboardingStepProps {
 
 const WelcomeStep: React.FC<OnboardingStepProps> = ({ onNext }) => (
   <div className="onboarding-step">
-    <h2>Welcome to Gestura</h2>
     <p>
-      Gestura is your intelligent voice and gesture assistant. Let's get you set up
-      with everything you need to start using voice commands and haptic feedback.
+      Gestura.app is a privacy-first AI assistant that <strong>listens, speaks, and acts</strong> — helping with research,
+      daily life, and coding. Let's configure the essentials so you can start using your agent right away.
     </p>
     <div className="features-list">
       <div className="feature">
@@ -399,8 +398,10 @@ const PrivacyConsentStep: React.FC<OnboardingStepProps> = ({ onPrevious, onCompl
               checked={consents.voice}
               onChange={(e) => handleConsentChange('voice', e.target.checked)}
             />
-            <strong>Voice Data Processing</strong>
-            <p>Allow processing of voice recordings for speech-to-text conversion. Data is processed locally by default.</p>
+            <div>
+              <strong>Voice Data Processing</strong>
+              <p>Allow processing of voice recordings for speech-to-text conversion. Data is processed locally by default.</p>
+            </div>
           </label>
         </div>
 
@@ -411,8 +412,10 @@ const PrivacyConsentStep: React.FC<OnboardingStepProps> = ({ onPrevious, onCompl
               checked={consents.device}
               onChange={(e) => handleConsentChange('device', e.target.checked)}
             />
-            <strong>Device Data Collection</strong>
-            <p>Allow collection of device information (battery level, connection status) for optimal performance.</p>
+            <div>
+              <strong>Device Data Collection</strong>
+              <p>Allow collection of device information (battery level, connection status) for optimal performance.</p>
+            </div>
           </label>
         </div>
 
@@ -423,8 +426,10 @@ const PrivacyConsentStep: React.FC<OnboardingStepProps> = ({ onPrevious, onCompl
               checked={consents.usage}
               onChange={(e) => handleConsentChange('usage', e.target.checked)}
             />
-            <strong>Usage Analytics</strong>
-            <p>Allow collection of anonymous usage statistics to improve the application. No personal data is included.</p>
+            <div>
+              <strong>Usage Analytics</strong>
+              <p>Allow collection of anonymous usage statistics to improve the application. No personal data is included.</p>
+            </div>
           </label>
         </div>
       </div>
@@ -502,8 +507,8 @@ const OnboardingWizard: React.FC<{ onComplete: () => void }> = ({ onComplete }) 
   const steps: OnboardingStep[] = [
     {
       id: 'welcome',
-      title: 'Welcome',
-      description: 'Introduction to Gestura',
+      title: 'Configure',
+      description: 'Set up your agent',
       component: WelcomeStep,
       isComplete: false,
     },
