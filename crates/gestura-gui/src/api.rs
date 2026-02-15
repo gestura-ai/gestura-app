@@ -4773,7 +4773,9 @@ pub fn upsert_knowledge_item(item: KnowledgeItem) -> Result<(), String> {
 /// Delete a user knowledge item (persisted on disk).
 ///
 /// Built-in knowledge items cannot be deleted via this command.
-#[tauri::command]
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
 pub fn delete_knowledge_item(knowledge_id: String) -> Result<(), String> {
     let store = get_knowledge_store();
     store
@@ -5225,7 +5227,7 @@ pub async fn update_audio_device(device_name: Option<String>) -> Result<(), Stri
 }
 
 /// Update Ollama configuration (URL and model)
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn update_ollama_config(base_url: String, model: String) -> Result<(), String> {
     let mut cfg = AppConfig::load_async().await;
     cfg.llm.ollama = Some(crate::config::OllamaConfig {
