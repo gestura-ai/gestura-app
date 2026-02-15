@@ -435,26 +435,6 @@
             padding: 10px;
         }
 
-        .explorer-root {
-            padding: 10px 12px;
-            border: 1px solid var(--glass-border);
-            background: var(--bg-glass);
-            border-radius: 12px;
-            margin-bottom: 10px;
-        }
-
-        .explorer-root-title {
-            font-size: 12px;
-            font-weight: 600;
-            margin: 0 0 4px 0;
-        }
-
-        .explorer-root-path {
-            font-size: 11px;
-            color: var(--text-secondary);
-            word-break: break-word;
-        }
-
         .explorer-tree {
             display: flex;
             flex-direction: column;
@@ -3528,10 +3508,6 @@
             </button>
         </div>
         <div class="explorer-panel-content">
-            <div class="explorer-root">
-                <div class="explorer-root-title">Project Root</div>
-                <div class="explorer-root-path" id="explorerRootPath">Loading…</div>
-            </div>
             <div class="explorer-tree" id="explorerTree">
                 <div class="explorer-note">Open the panel to load your project tree.</div>
             </div>
@@ -3758,20 +3734,11 @@
         </div>
         <div class="session-panel-content">
             <div class="session-field">
-                <label>Project Root</label>
-                <div class="session-field-row">
-                    <input type="text" id="sessionProjectRoot" placeholder="Project root..." readonly>
-                </div>
-                <div class="session-info" id="projectRootInfo">Project root is derived from the session workspace</div>
-            </div>
-
-            <div class="session-field">
-                <label>Workspace Directory</label>
+                <label>Working Directory</label>
                 <div class="session-field-row">
                     <input type="text" id="sessionWorkspaceDir" placeholder="Workspace directory..." readonly>
                     <button class="btn-secondary" id="pickWorkspaceBtn">Change...</button>
                 </div>
-                <div class="session-info" id="workspaceDirInfo">Scopes file/shell/git tools and the explorer</div>
             </div>
 
             <div class="session-divider"></div>
@@ -7147,12 +7114,9 @@
         const sessionPanelOverlay = document.getElementById('sessionPanelOverlay');
         const sessionSettingsBtn = document.getElementById('sessionSettingsBtn');
         const sessionPanelClose = document.getElementById('sessionPanelClose');
-        const sessionProjectRoot = document.getElementById('sessionProjectRoot');
         const sessionWorkspaceDir = document.getElementById('sessionWorkspaceDir');
         const pickWorkspaceBtn = document.getElementById('pickWorkspaceBtn');
         const sessionPermission = document.getElementById('sessionPermission');
-        const projectRootInfo = document.getElementById('projectRootInfo');
-        const workspaceDirInfo = document.getElementById('workspaceDirInfo');
 
         pickWorkspaceBtn?.addEventListener('click', async () => {
             if (!sessionId || !window.__TAURI__) {
@@ -7209,7 +7173,6 @@
         const explorerPanelOverlay = document.getElementById('explorerPanelOverlay');
         const explorerPanelClose = document.getElementById('explorerPanelClose');
         const explorerRefreshBtn = document.getElementById('explorerRefreshBtn');
-        const explorerRootPath = document.getElementById('explorerRootPath');
         const explorerTree = document.getElementById('explorerTree');
         const explorerGitInfo = document.getElementById('explorerGitInfo');
 
@@ -7399,7 +7362,7 @@
             if (!explorerState.root) {
                 const note = document.createElement('div');
                 note.className = 'explorer-note';
-                note.textContent = 'Project root not available.';
+                note.textContent = 'Working directory not available.';
                 explorerTree.appendChild(note);
                 return;
             }
@@ -7516,7 +7479,7 @@
                 );
                 explorerState.root = rootResp?.root || null;
                 explorerState.isGitRepo = !!rootResp?.is_git_repo;
-                if (explorerRootPath) explorerRootPath.textContent = explorerState.root || 'Unknown';
+
 
                 if (force) {
                     explorerState.dirCache.clear();
@@ -7531,7 +7494,7 @@
                 renderExplorerTree();
             } catch (e) {
                 console.warn('[Explorer] Failed to load explorer:', e);
-                if (explorerRootPath) explorerRootPath.textContent = 'Failed to detect project root';
+
                 if (explorerTree) {
                     explorerTree.innerHTML = '';
                     const note = document.createElement('div');
@@ -7660,22 +7623,8 @@
                 return;
             }
             try {
-                // The GUI treats "Project Root" and "Workspace Directory" as the same root.
-                let projectRoot = null;
-                let isGitRepo = false;
+                // Load workspace directory for the session.
                 let workspaceDir = null;
-                try {
-                    const rootResp = await withTimeout(
-                        window.__TAURI__.core.invoke('explorer_get_root', { session_id: sessionId }),
-                        8000,
-                        'explorer_get_root(settings)'
-                    );
-                    projectRoot = rootResp?.root || null;
-                    isGitRepo = !!rootResp?.is_git_repo;
-                } catch (e) {
-                    console.warn('[Settings] explorer_get_root failed:', e);
-                }
-
                 try {
                     workspaceDir = await withTimeout(
                         window.__TAURI__.core.invoke('get_session_workspace_by_id', { session_id: sessionId }),
@@ -7686,24 +7635,20 @@
                     console.warn('[Settings] get_session_workspace_by_id failed:', e);
                 }
 
-                if (!workspaceDir) workspaceDir = projectRoot;
-
-                if (sessionProjectRoot) sessionProjectRoot.value = projectRoot || 'Unknown';
-                if (sessionWorkspaceDir) sessionWorkspaceDir.value = workspaceDir || 'Unknown';
-
-                if (projectRootInfo) {
-                    projectRootInfo.textContent = projectRoot
-                        ? `Project root: ${projectRoot}${isGitRepo ? ' (git repo)' : ''}`
-                        : 'Project root not available';
-                }
-                if (workspaceDirInfo) {
-                    workspaceDirInfo.textContent = workspaceDir
-                        ? `Workspace: ${workspaceDir}`
-                        : 'Workspace directory not set';
-                    if (projectRoot && workspaceDir && projectRoot !== workspaceDir) {
-                        workspaceDirInfo.textContent += ' (warning: differs from project root)';
+                if (!workspaceDir) {
+                    try {
+                        const rootResp = await withTimeout(
+                            window.__TAURI__.core.invoke('explorer_get_root', { session_id: sessionId }),
+                            8000,
+                            'explorer_get_root(settings)'
+                        );
+                        workspaceDir = rootResp?.root || null;
+                    } catch (e) {
+                        console.warn('[Settings] explorer_get_root fallback failed:', e);
                     }
                 }
+
+                if (sessionWorkspaceDir) sessionWorkspaceDir.value = workspaceDir || 'Unknown';
 
                 // Load tool settings (permission level and enabled tools) (fixed: use snake_case)
                 const toolSettings = await window.__TAURI__.core.invoke('get_session_tool_settings', { session_id: sessionId });
