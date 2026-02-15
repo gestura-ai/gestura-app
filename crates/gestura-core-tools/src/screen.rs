@@ -399,7 +399,7 @@ impl ScreenTools {
         _display: Option<u32>,
     ) -> Result<ScreenshotResult> {
         // Try xdg-desktop-portal first (Wayland-compatible)
-        if self.try_screenshot_portal(output_path, region).is_ok() {
+        if self.try_screenshot_portal(output_path, region.clone()).is_ok() {
             return self.get_screenshot_result(output_path);
         }
 
