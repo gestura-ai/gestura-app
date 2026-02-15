@@ -290,6 +290,7 @@ impl AppConfigSecurityExt for AppConfig {
         let backup_path = Self::legacy_json_backup_path();
         let had_yaml = yaml_path.exists();
         let had_json = json_path.exists();
+        #[cfg_attr(not(feature = "security"), allow(unused_variables))]
         let used_default_config = !had_yaml && !had_json;
         // Capture the initial state so we can decide whether to perform JSON->YAML
         // migration even if later steps (e.g., secret hydration) create the YAML.
@@ -372,6 +373,7 @@ impl AppConfigSecurityExt for AppConfig {
         let backup_path = Self::legacy_json_backup_path();
         let had_yaml = tokio::fs::try_exists(&yaml_path).await.unwrap_or(false);
         let had_json = tokio::fs::try_exists(&json_path).await.unwrap_or(false);
+        #[cfg_attr(not(feature = "security"), allow(unused_variables))]
         let used_default_config = !had_yaml && !had_json;
         let needs_format_migration = !had_yaml && had_json;
         #[allow(unused_mut)] // config is mutated by hydrate_secrets/migrate_secrets
@@ -1241,6 +1243,7 @@ mod tests {
             Self { key, old }
         }
 
+        #[allow(dead_code)]
         fn unset(key: &'static str) -> Self {
             let old = std::env::var(key).ok();
             // Rust 2024: mutating process-wide environment variables is `unsafe`.
