@@ -48,6 +48,7 @@ pub mod default_models;
 pub mod error;
 pub mod events;
 pub mod execution_mode;
+pub mod explorer;
 pub mod gdpr;
 pub(crate) mod guardrails;
 pub mod hooks;
@@ -142,6 +143,11 @@ pub use events::{
 };
 pub use execution_mode::{
     ExecutionMode, ModeConfig, ModeManager, ToolCategory, ToolExecutionCheck, ToolPermission,
+};
+pub use explorer::{
+    ExplorerEntry, ExplorerEntryKind, ExplorerError, ExplorerGitChangeKind, ExplorerGitPathStatus,
+    ExplorerGitStatusResponse, ExplorerListDirResponse, ExplorerRootResponse, canonical_root,
+    ensure_safe_rel_path, list_dir, normalize_git_change_path, resolve_under_root,
 };
 pub use gdpr::{
     ConsentRecord, ConsentStatus, DataAuditEntry, DataCategory, DataOperation, GdprManager,
