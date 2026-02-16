@@ -122,4 +122,3 @@ pub fn record_agent_receipt_payload(payload: &str) {
         store.pop_front();
     }
 }
-

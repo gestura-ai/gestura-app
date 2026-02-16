@@ -131,4 +131,3 @@ pub fn emit_agent_event_to_window(
 
     Ok(emitted_to)
 }
-

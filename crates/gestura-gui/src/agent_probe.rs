@@ -250,4 +250,3 @@ fn analyze_probe(
         receipt_counts,
     }
 }
-

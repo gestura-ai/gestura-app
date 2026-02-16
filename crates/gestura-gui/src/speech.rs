@@ -251,7 +251,6 @@ impl SpeechProcessor {
         // Note: Steps 4 and 5 (LLM processing and sending AI response) are now handled by the frontend
         // via process_chat_message_streaming when it receives the agent-message event with type: "user"
 
-
         Ok(())
     }
 
@@ -427,7 +426,11 @@ impl SpeechProcessor {
         session_id: &str,
         message: &str,
     ) -> Result<(), String> {
-        tracing::info!("Sending user message to agent {}: '{}'", session_id, message);
+        tracing::info!(
+            "Sending user message to agent {}: '{}'",
+            session_id,
+            message
+        );
 
         // Get the window label for this session to target the specific window
         let window_label = crate::window_manager::get_session_window_label(session_id)
@@ -482,7 +485,11 @@ impl SpeechProcessor {
         session_id: &str,
         response: &str,
     ) -> Result<(), String> {
-        tracing::info!("Sending AI response to agent {}: '{}'", session_id, response);
+        tracing::info!(
+            "Sending AI response to agent {}: '{}'",
+            session_id,
+            response
+        );
 
         // Get the window label for this session to target the specific window
         let window_label = crate::window_manager::get_session_window_label(session_id)

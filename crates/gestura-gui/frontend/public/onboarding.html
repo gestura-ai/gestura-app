@@ -153,11 +153,11 @@
             margin-bottom: 0.25rem;
             line-height: 1.15;
             left: 25px;
-            top: 0;
+            top: auto;
             right: auto;
             bottom: auto;
             z-index: 0;
-            height: 50px;
+            height: 100px;
         }
 
         .header-logo {
@@ -1071,20 +1071,20 @@
                     <h2>Default Agent Permission Level</h2>
                     <p>Choose the default permission level for AI agents. You can change this per-session later.</p>
                     <div style="margin: 1rem 0;">
-                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 1px solid var(--border-color);">
+                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 2px solid var(--accent-primary);">
                             <label>
-                                <input type="radio" name="agentPermLevel" value="sandbox">
+                                <input type="radio" name="agentPermLevel" value="sandbox" checked>
                                 <div>
-                                    <strong><span class="icon-lock"></span> Sandbox (Most Restrictive)</strong>
+                                    <strong><span class="icon-check-circle" style="color: var(--accent-primary);"></span> Sandbox (Recommended)</strong>
                                     <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Read-only access. Agents cannot write files or execute commands.</p>
                                 </div>
                             </label>
                         </div>
-	                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 2px solid var(--accent-primary);">
+	                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 1px solid var(--border-color);">
                             <label>
-                                <input type="radio" name="agentPermLevel" value="restricted" checked>
+                                <input type="radio" name="agentPermLevel" value="restricted">
                                 <div>
-	                                    <strong><span class="icon-check-circle" style="color: var(--accent-primary);"></span> Restricted (Recommended)</strong>
+	                                    <strong><span class="icon-lock"></span> Restricted</strong>
                                     <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Agents ask for confirmation before write operations or shell commands.</p>
                                 </div>
                             </label>
@@ -2091,7 +2091,7 @@
         async function loadAgentPermissionLevel() {
             try {
                 const settings = await invoke('get_global_permission_settings');
-                const level = (settings?.default_level || 'restricted').toLowerCase();
+                const level = (settings?.default_level || 'sandbox').toLowerCase();
                 const radio = document.querySelector(`input[name="agentPermLevel"][value="${level}"]`);
                 if (radio) {
                     radio.checked = true;
