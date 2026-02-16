@@ -1073,6 +1073,14 @@ pub async fn stream_gemini(
     Ok(())
 }
 
+/// Keepalive interval for Ollama streaming while the model is loading.
+///
+/// Ollama may take a long time to load a model into memory (especially large
+/// models). During loading, no streaming data is sent. This interval controls
+/// how often we emit a `Status` keepalive so the caller's idle timer does not
+/// fire prematurely.
+const OLLAMA_KEEPALIVE_INTERVAL_SECS: u64 = 30;
+
 /// Stream a response from Ollama local API
 pub async fn stream_ollama(
     base_url: &str,
@@ -1110,71 +1118,118 @@ pub async fn stream_ollama(
         return Err(AppError::Llm(format!("Ollama HTTP {}: {}", status, body)));
     }
 
+    // Immediately notify the caller that we have a connection. This resets
+    // the caller's idle timer, which is critical because Ollama may spend a
+    // long time loading the model into memory before sending any tokens.
+    let _ = tx
+        .send(StreamChunk::Status {
+            message: format!("Connected to Ollama — loading model '{}'…", model),
+        })
+        .await;
+
     let mut stream = response.bytes_stream();
     let mut parser = ThinkingParser::new();
     let mut line_buffer = String::new();
+    // Track whether we have received any real data (content / tool calls).
+    // While `received_data` is false we send periodic keepalive status
+    // messages so the caller's idle timer does not fire during model loading.
+    let mut received_data = false;
 
-    while let Some(chunk_result) = stream.next().await {
-        if cancel_token.is_cancelled() {
-            let _ = tx.send(StreamChunk::Cancelled).await;
-            return Ok(());
-        }
+    let keepalive_interval = Duration::from_secs(OLLAMA_KEEPALIVE_INTERVAL_SECS);
+    let keepalive_sleep = tokio::time::sleep(keepalive_interval);
+    tokio::pin!(keepalive_sleep);
 
-        match chunk_result {
-            Ok(bytes) => {
-                let text = String::from_utf8_lossy(&bytes);
-                for line in collect_complete_lines(&mut line_buffer, &text) {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-                        // Extract content from message (may arrive before done)
-                        if let Some(content) = json["message"]["content"].as_str()
-                            && !content.is_empty()
-                        {
-                            let chunks = parser.process(content);
-                            for chunk in chunks {
-                                let _ = tx.send(chunk).await;
-                            }
-                        }
+    loop {
+        tokio::select! {
+            maybe_chunk = stream.next() => {
+                let Some(chunk_result) = maybe_chunk else {
+                    // Stream ended
+                    break;
+                };
 
-                        // Handle tool calls (Ollama returns them in the message)
-                        if let Some(tool_calls) = json["message"]["tool_calls"].as_array() {
-                            for call in tool_calls {
-                                let name = call["function"]["name"].as_str().unwrap_or_default();
-                                let args = &call["function"]["arguments"];
+                if cancel_token.is_cancelled() {
+                    let _ = tx.send(StreamChunk::Cancelled).await;
+                    return Ok(());
+                }
 
-                                if !name.is_empty() {
-                                    let id = format!("ollama-tool-{}", uuid::Uuid::new_v4());
-                                    let _ = tx
-                                        .send(StreamChunk::ToolCallStart {
-                                            id,
-                                            name: name.to_string(),
-                                        })
-                                        .await;
+                match chunk_result {
+                    Ok(bytes) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        for line in collect_complete_lines(&mut line_buffer, &text) {
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+                                // Extract content from message (may arrive before done)
+                                if let Some(content) = json["message"]["content"].as_str()
+                                    && !content.is_empty()
+                                {
+                                    received_data = true;
+                                    let chunks = parser.process(content);
+                                    for chunk in chunks {
+                                        let _ = tx.send(chunk).await;
+                                    }
+                                }
 
-                                    let args_str = if args.is_object() || args.is_array() {
-                                        serde_json::to_string(args).unwrap_or_default()
-                                    } else {
-                                        args.as_str().unwrap_or("{}").to_string()
-                                    };
+                                // Handle tool calls (Ollama returns them in the message)
+                                if let Some(tool_calls) = json["message"]["tool_calls"].as_array() {
+                                    for call in tool_calls {
+                                        let name = call["function"]["name"].as_str().unwrap_or_default();
+                                        let args = &call["function"]["arguments"];
 
-                                    let _ = tx.send(StreamChunk::ToolCallArgs(args_str)).await;
-                                    let _ = tx.send(StreamChunk::ToolCallEnd).await;
+                                        if !name.is_empty() {
+                                            received_data = true;
+                                            let id = format!("ollama-tool-{}", uuid::Uuid::new_v4());
+                                            let _ = tx
+                                                .send(StreamChunk::ToolCallStart {
+                                                    id,
+                                                    name: name.to_string(),
+                                                })
+                                                .await;
+
+                                            let args_str = if args.is_object() || args.is_array() {
+                                                serde_json::to_string(args).unwrap_or_default()
+                                            } else {
+                                                args.as_str().unwrap_or("{}").to_string()
+                                            };
+
+                                            let _ = tx.send(StreamChunk::ToolCallArgs(args_str)).await;
+                                            let _ = tx.send(StreamChunk::ToolCallEnd).await;
+                                        }
+                                    }
+                                }
+
+                                // Check if done
+                                if json["done"].as_bool() == Some(true) {
+                                    let _ = tx.send(StreamChunk::Done(None)).await;
+                                    return Ok(());
                                 }
                             }
                         }
-
-                        // Check if done
-                        if json["done"].as_bool() == Some(true) {
-                            let _ = tx.send(StreamChunk::Done(None)).await;
-                            return Ok(());
-                        }
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(StreamChunk::Error(format!("Stream error: {}", e)))
+                            .await;
+                        return Err(AppError::Llm(format!("Stream error: {}", e)));
                     }
                 }
             }
-            Err(e) => {
-                let _ = tx
-                    .send(StreamChunk::Error(format!("Stream error: {}", e)))
-                    .await;
-                return Err(AppError::Llm(format!("Stream error: {}", e)));
+
+            // Keepalive: send periodic status messages while the model is
+            // loading (no real data received yet). This prevents the caller's
+            // idle timer (typically 90 s) from firing during cold starts that
+            // can take several minutes for large models.
+            () = &mut keepalive_sleep, if !received_data => {
+                if cancel_token.is_cancelled() {
+                    let _ = tx.send(StreamChunk::Cancelled).await;
+                    return Ok(());
+                }
+                tracing::debug!("Ollama keepalive: still waiting for model '{}'", model);
+                let _ = tx.send(StreamChunk::Status {
+                    message: format!("Still loading model '{}'…", model),
+                }).await;
+                // Reset the keepalive timer for the next interval.
+                keepalive_sleep
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + keepalive_interval);
             }
         }
     }
