@@ -6,7 +6,6 @@
 //! - Grok (xAI)
 //! - Gemini (Google Generative Language API)
 //! - Ollama (local models)
-//! - Echo (testing only - requires `dev` feature)
 
 pub mod default_models;
 pub mod model_listing;
@@ -189,28 +188,6 @@ impl LlmProvider for UnconfiguredProvider {
             "LLM provider '{}' is not configured. Please configure it in Settings or run 'gestura config edit'.",
             self.provider_name
         )))
-    }
-}
-
-/// A deterministic LLM provider for development/testing.
-///
-/// This provider simply returns the prompt verbatim ("echo"). It is only available
-/// during tests or when the `dev` feature is enabled.
-#[cfg(any(test, feature = "dev"))]
-pub struct EchoProvider;
-
-#[cfg(any(test, feature = "dev"))]
-#[async_trait::async_trait]
-impl LlmProvider for EchoProvider {
-    /// Return the prompt as-is.
-    async fn call(&self, prompt: &str) -> Result<String, AppError> {
-        Ok(prompt.to_string())
-    }
-
-    /// Return the prompt as-is with a zero-cost, "echo" usage marker.
-    async fn call_with_usage(&self, prompt: &str) -> Result<LlmCallResponse, AppError> {
-        let usage = TokenUsage::unknown().with_provider("echo").with_cost(0.0);
-        Ok(LlmCallResponse::new(prompt.to_string(), usage))
     }
 }
 

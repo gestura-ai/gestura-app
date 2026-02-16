@@ -10,7 +10,6 @@ description = "Streaming LLM provider support for Gestura"
 
 [features]
 default = []
-dev = []
 
 [dependencies]
 gestura-core-foundation = { path = "../gestura-core-foundation" }

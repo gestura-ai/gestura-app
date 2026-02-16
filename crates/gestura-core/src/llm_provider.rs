@@ -13,14 +13,6 @@ use crate::config::AppConfig;
 /// will return an error when called. This prevents silent failures.
 pub fn select_provider(config: &AppConfig, _ctx: &AgentContext) -> Box<dyn LlmProvider> {
     match config.llm.primary.as_str() {
-        // NOTE: `EchoProvider` lives in `gestura-core-llm` and is only available when that
-        // crate is built with its `dev` feature. A consuming crate's `cfg(test)` does NOT
-        // propagate into dependencies, so we must not gate this on `cfg(test)` here.
-        #[cfg(feature = "dev")]
-        "echo" => Box::new(EchoProvider),
-        #[cfg(not(feature = "dev"))]
-        "echo" => unconfigured_provider("echo"),
-
         "openai" => {
             if let Some(c) = &config.llm.openai {
                 Box::new(OpenAiProvider {

@@ -4981,11 +4981,6 @@ fn validate_llm_config_with_config(
         );
     }
 
-    // Echo does not require any external configuration and is always valid
-    if llm_primary == "echo" {
-        return stt_validation;
-    }
-
     match llm_primary.as_str() {
         "openai" => {
             if let Some(c) = &config.llm.openai {

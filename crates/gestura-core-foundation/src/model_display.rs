@@ -208,10 +208,7 @@ pub fn format_model_name(provider: &str, model_id: &str) -> String {
 
 /// Check if a provider is local (no cost tracking).
 pub fn is_local_provider(provider: &str) -> bool {
-    matches!(
-        provider.to_lowercase().as_str(),
-        "ollama" | "local" | "echo"
-    )
+    matches!(provider.to_lowercase().as_str(), "ollama" | "local")
 }
 
 /// Convert kebab-case to Title Case.

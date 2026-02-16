@@ -1221,25 +1221,6 @@ fn is_unconfigured_provider_error(err: &AppError) -> bool {
     }
 }
 
-/// Stream using the deterministic "echo" provider.
-///
-/// This provider is intended for dev/test and never performs network I/O.
-#[cfg(any(test, feature = "dev"))]
-async fn stream_echo(
-    prompt: &str,
-    tx: mpsc::Sender<StreamChunk>,
-    cancel_token: CancellationToken,
-) -> Result<(), AppError> {
-    if cancel_token.is_cancelled() {
-        let _ = tx.send(StreamChunk::Cancelled).await;
-        return Ok(());
-    }
-
-    let _ = tx.send(StreamChunk::Text(prompt.to_string())).await;
-    let _ = tx.send(StreamChunk::Done(None)).await;
-    Ok(())
-}
-
 /// Start a streaming LLM request based on config.
 ///
 /// Returns an error if the selected provider is not configured.
@@ -1251,10 +1232,6 @@ pub async fn start_streaming(
     cancel_token: CancellationToken,
 ) -> Result<(), AppError> {
     match config.primary.as_str() {
-        #[cfg(any(test, feature = "dev"))]
-        "echo" => stream_echo(prompt, tx, cancel_token).await,
-        #[cfg(not(any(test, feature = "dev")))]
-        "echo" => stream_unconfigured_error("echo", tx).await,
         "openai" => {
             if let Some(c) = &config.openai {
                 stream_openai(
@@ -1783,42 +1760,5 @@ mod tests {
 
         let result = forward_handle.await.unwrap();
         assert_eq!(result.outcome, AttemptOutcome::FatalError);
-    }
-
-    #[tokio::test]
-    async fn start_streaming_with_fallback_unconfigured_primary_skips_retries_and_uses_fallback() {
-        let cfg = StreamingConfig {
-            primary: "openai".to_string(),
-            openai: None,
-            fallback: Some("echo".to_string()),
-            ..Default::default()
-        };
-
-        let (tx, mut rx) = mpsc::channel(128);
-        let cancel = CancellationToken::new();
-
-        let res = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            start_streaming_with_fallback(&cfg, "hi", None, tx, cancel),
-        )
-        .await;
-        assert!(res.is_ok(), "expected fallback to complete quickly");
-        assert!(res.unwrap().is_ok());
-
-        // Primary emits Status (unconfigured) which is forwarded.
-        match rx.recv().await {
-            Some(StreamChunk::Status { message }) => assert!(message.contains("not configured")),
-            other => panic!("Expected Status chunk, got: {other:?}"),
-        }
-
-        // Fallback echoes the prompt.
-        match rx.recv().await {
-            Some(StreamChunk::Text(t)) => assert_eq!(t, "hi"),
-            other => panic!("Expected Text chunk, got: {other:?}"),
-        }
-        match rx.recv().await {
-            Some(StreamChunk::Done(_)) => {}
-            other => panic!("Expected Done chunk, got: {other:?}"),
-        }
     }
 }

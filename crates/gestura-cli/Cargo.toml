@@ -16,8 +16,7 @@ default = ["voice-local", "security"]
 voice-local = ["gestura-core/voice-local"]
 nats = ["gestura-core/nats"]
 security = ["gestura-core/security"]
-# Development features - enables dev-only code paths
-dev = ["gestura-core/dev"]
+
 
 [dependencies]
 # Shared core library

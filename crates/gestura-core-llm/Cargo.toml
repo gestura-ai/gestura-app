@@ -19,8 +19,6 @@ grok = []
 ollama = []
 gemini = []
 
-# Dev/testing-only provider(s).
-dev = []
 
 [dependencies]
 gestura-core-foundation.workspace = true

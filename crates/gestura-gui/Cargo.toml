@@ -45,8 +45,7 @@ linux-permissions = ["dep:ashpd", "dep:zbus", "gestura-core/linux-permissions"]
 windows-permissions = ["gestura-core/windows-permissions"]
 # Security features (encryption, keychain)
 security = ["dep:ring", "dep:keyring", "gestura-core/security"]
-# Development features - enables dev-only code paths
-dev = ["gestura-core/dev"]
+
 
 [dependencies]
 # Shared core library - provides config, error, llm_provider, mcp, gdpr, etc.

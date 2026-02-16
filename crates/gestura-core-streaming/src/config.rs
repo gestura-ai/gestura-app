@@ -9,9 +9,10 @@ use serde::{Deserialize, Serialize};
 ///
 /// This type captures the minimal subset of application configuration
 /// required by the streaming module: which provider to use and their credentials.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StreamingConfig {
-    /// Primary provider id: "openai" | "anthropic" | "gemini" | "grok" | "ollama" | "echo"
+    /// Primary provider id: "openai" | "anthropic" | "gemini" | "grok" | "ollama"
+    #[serde(default)]
     pub primary: String,
     /// Fallback provider id (optional): used when primary fails
     #[serde(default)]
@@ -26,20 +27,6 @@ pub struct StreamingConfig {
     pub grok: Option<GrokProviderConfig>,
     /// Ollama provider configuration
     pub ollama: Option<OllamaProviderConfig>,
-}
-
-impl Default for StreamingConfig {
-    fn default() -> Self {
-        Self {
-            primary: "echo".to_string(),
-            fallback: None,
-            openai: None,
-            anthropic: None,
-            gemini: None,
-            grok: None,
-            ollama: None,
-        }
-    }
 }
 
 /// OpenAI provider credentials and settings.

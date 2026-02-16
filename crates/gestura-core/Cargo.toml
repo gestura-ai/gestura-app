@@ -22,9 +22,7 @@ macos-permissions = ["dep:objc", "dep:cocoa"]
 linux-permissions = ["dep:ashpd", "dep:zbus"]
 # Windows permissions (stub - Windows prompts on first access, no WinRT APIs needed)
 windows-permissions = []
-# Development/testing features - enables dev-only code paths
-# WARNING: Do NOT enable in production releases
-dev = ["gestura-core-llm/dev", "gestura-core-streaming/dev"]
+
 
 [dependencies]
 # Core dependencies from workspace
