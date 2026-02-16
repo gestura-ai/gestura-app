@@ -4792,14 +4792,8 @@ fn basic_mode_tasks_command(session: &ChatSession) {
 fn basic_mode_themes_command() {
     use dialoguer::{Select, theme::ColorfulTheme};
 
-    let themes = [
-        "catppuccin-mocha",
-        "light",
-        "high-contrast",
-        "dracula",
-        "gestura",
-        "pro",
-    ];
+    // Use the same stable keys as `Theme::available_themes()`.
+    let themes = ["catppuccin", "high-contrast", "dracula", "gestura", "pro"];
 
     loop {
         let labels: Vec<String> = themes.iter().map(|t| format!("  {}", t)).collect();

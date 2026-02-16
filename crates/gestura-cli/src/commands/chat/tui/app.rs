@@ -66,6 +66,91 @@ impl Default for Theme {
     }
 }
 
+/// Best-effort detection of the OS dark/light preference.
+///
+/// Returns `true` when the system appears to be in dark mode (or when detection
+/// fails — dark is the safer default for terminal UIs).
+///
+/// Platform strategies:
+/// - **macOS**: `defaults read -g AppleInterfaceStyle` → "Dark" means dark mode.
+/// - **Linux**: checks `$GTK_THEME` for a `-dark` suffix, then falls back to
+///   `gsettings get org.gnome.desktop.interface color-scheme`.
+/// - **Windows**: reads `AppsUseLightTheme` from the registry via `reg query`.
+fn detect_system_dark_mode() -> bool {
+    detect_system_dark_mode_inner().unwrap_or(true)
+}
+
+fn detect_system_dark_mode_inner() -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        // `defaults read -g AppleInterfaceStyle` prints "Dark" when dark mode is
+        // active and exits with a non-zero status when light mode is active.
+        let output = std::process::Command::new("defaults")
+            .args(["read", "-g", "AppleInterfaceStyle"])
+            .output()
+            .ok()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Some(stdout.trim().eq_ignore_ascii_case("dark"));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // 1. Quick env-var check: many GTK apps export GTK_THEME=Adwaita:dark.
+        if let Ok(gtk) = std::env::var("GTK_THEME") {
+            let lower = gtk.to_ascii_lowercase();
+            if lower.contains("dark") {
+                return Some(true);
+            }
+            if lower.contains("light") {
+                return Some(false);
+            }
+        }
+        // 2. XDG portal / GNOME color-scheme (works inside Flatpak too).
+        if let Ok(output) = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let lower = stdout.trim().to_ascii_lowercase();
+            if lower.contains("dark") {
+                return Some(true);
+            }
+            if lower.contains("light") {
+                return Some(false);
+            }
+        }
+        return Some(true); // default dark on Linux
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Registry: HKCU\...\Personalize\AppsUseLightTheme  (DWORD: 0 = dark, 1 = light)
+        if let Ok(output) = std::process::Command::new("reg")
+            .args([
+                "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                "/v",
+                "AppsUseLightTheme",
+            ])
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // The output contains "0x0" for dark, "0x1" for light.
+            if stdout.contains("0x0") {
+                return Some(true);
+            }
+            if stdout.contains("0x1") {
+                return Some(false);
+            }
+        }
+        return Some(true); // default dark on Windows
+    }
+
+    // Unsupported platform — fall back to dark.
+    #[allow(unreachable_code)]
+    Some(true)
+}
+
 impl Theme {
     /// Select an initial TUI theme based on the configured UI theme mode.
     ///
@@ -91,9 +176,10 @@ impl Theme {
     fn is_dark_theme_mode(theme_mode: &str) -> bool {
         match theme_mode.trim().to_ascii_lowercase().as_str() {
             "light" => false,
-            "dark" | "system" => true,
-            // Default to dark: this matches prior TUI behavior for `system` and keeps
-            // terminals readable when the user provides an unknown value.
+            "dark" => true,
+            "system" => detect_system_dark_mode(),
+            // Default to dark: keeps terminals readable when the user provides an
+            // unknown value.
             _ => true,
         }
     }
@@ -118,167 +204,298 @@ impl Theme {
         }
     }
 
-    /// Catppuccin Mocha theme (default dark theme)
+    /// Catppuccin theme — Mocha (dark) or Latte (light).
+    pub fn catppuccin(is_dark: bool) -> Self {
+        if is_dark {
+            Self {
+                name: "Catppuccin Mocha",
+                header_bg: Color::Rgb(30, 30, 46),
+                header_fg: Color::Rgb(205, 214, 244),
+                user_msg: Color::Rgb(166, 227, 161),
+                assistant_msg: Color::Rgb(137, 180, 250),
+                system_msg: Color::Rgb(249, 226, 175),
+                error_msg: Color::Rgb(243, 139, 168),
+                streaming: Color::Rgb(180, 190, 254),
+                border: Color::Rgb(88, 91, 112),
+                border_focused: Color::Rgb(137, 180, 250),
+                status_bg: Color::Rgb(30, 30, 46),
+                status_fg: Color::Rgb(166, 173, 200),
+                mode_normal: Color::Rgb(137, 180, 250),
+                mode_insert: Color::Rgb(166, 227, 161),
+                mode_command: Color::Rgb(249, 226, 175),
+                tab_active: Color::Rgb(137, 180, 250),
+                tab_inactive: Color::Rgb(88, 91, 112),
+                selection_bg: Color::Rgb(49, 50, 68),
+                code_bg: Color::Rgb(24, 24, 37),
+                code_fg: Color::Rgb(166, 173, 200),
+                code_keyword: Color::Rgb(203, 166, 247),
+                code_string: Color::Rgb(166, 227, 161),
+                code_comment: Color::Rgb(108, 112, 134),
+                code_number: Color::Rgb(250, 179, 135),
+                code_function: Color::Rgb(137, 180, 250),
+                code_lang_label: Color::Rgb(249, 226, 175),
+            }
+        } else {
+            // Catppuccin Latte (official light palette)
+            Self {
+                name: "Catppuccin Latte",
+                header_bg: Color::Rgb(239, 241, 245),    // base
+                header_fg: Color::Rgb(76, 79, 105),      // text
+                user_msg: Color::Rgb(64, 160, 43),       // green
+                assistant_msg: Color::Rgb(30, 102, 245), // blue
+                system_msg: Color::Rgb(223, 142, 29),    // yellow
+                error_msg: Color::Rgb(210, 15, 57),      // red
+                streaming: Color::Rgb(114, 135, 253),    // lavender
+                border: Color::Rgb(172, 176, 190),       // surface2
+                border_focused: Color::Rgb(30, 102, 245),
+                status_bg: Color::Rgb(239, 241, 245),
+                status_fg: Color::Rgb(92, 95, 119), // subtext0
+                mode_normal: Color::Rgb(30, 102, 245),
+                mode_insert: Color::Rgb(64, 160, 43),
+                mode_command: Color::Rgb(223, 142, 29),
+                tab_active: Color::Rgb(30, 102, 245),
+                tab_inactive: Color::Rgb(172, 176, 190),
+                selection_bg: Color::Rgb(220, 224, 232), // surface1
+                code_bg: Color::Rgb(230, 233, 239),      // mantle
+                code_fg: Color::Rgb(76, 79, 105),
+                code_keyword: Color::Rgb(136, 57, 239), // mauve
+                code_string: Color::Rgb(64, 160, 43),
+                code_comment: Color::Rgb(124, 127, 147), // overlay1 (deeper for ≥3:1 on mantle)
+                code_number: Color::Rgb(254, 100, 11),   // peach
+                code_function: Color::Rgb(30, 102, 245),
+                code_lang_label: Color::Rgb(223, 142, 29),
+            }
+        }
+    }
+
+    /// Catppuccin Mocha (dark) — convenience alias.
+    #[allow(dead_code)]
     pub fn catppuccin_mocha() -> Self {
-        Self {
-            name: "Catppuccin Mocha",
-            header_bg: Color::Rgb(30, 30, 46),
-            header_fg: Color::Rgb(205, 214, 244),
-            user_msg: Color::Rgb(166, 227, 161),
-            assistant_msg: Color::Rgb(137, 180, 250),
-            system_msg: Color::Rgb(249, 226, 175),
-            error_msg: Color::Rgb(243, 139, 168),
-            streaming: Color::Rgb(180, 190, 254),
-            border: Color::Rgb(88, 91, 112),
-            border_focused: Color::Rgb(137, 180, 250),
-            status_bg: Color::Rgb(30, 30, 46),
-            status_fg: Color::Rgb(166, 173, 200),
-            mode_normal: Color::Rgb(137, 180, 250),
-            mode_insert: Color::Rgb(166, 227, 161),
-            mode_command: Color::Rgb(249, 226, 175),
-            tab_active: Color::Rgb(137, 180, 250),
-            tab_inactive: Color::Rgb(88, 91, 112),
-            selection_bg: Color::Rgb(49, 50, 68),
-            code_bg: Color::Rgb(24, 24, 37),
-            code_fg: Color::Rgb(166, 173, 200),
-            code_keyword: Color::Rgb(203, 166, 247),
-            code_string: Color::Rgb(166, 227, 161),
-            code_comment: Color::Rgb(108, 112, 134),
-            code_number: Color::Rgb(250, 179, 135),
-            code_function: Color::Rgb(137, 180, 250),
-            code_lang_label: Color::Rgb(249, 226, 175),
-        }
+        Self::catppuccin(true)
     }
 
-    /// Light theme for bright terminals
+    /// Light theme — convenience alias for `catppuccin(false)`.
+    ///
+    /// The standalone "Light" theme is now the Catppuccin Latte palette so that
+    /// every named theme has a coherent identity in both modes.
+    #[allow(dead_code)]
     pub fn light() -> Self {
-        Self {
-            name: "Light",
-            header_bg: Color::Rgb(239, 241, 245),
-            header_fg: Color::Rgb(76, 79, 105),
-            user_msg: Color::Rgb(64, 160, 43),
-            assistant_msg: Color::Rgb(30, 102, 245),
-            system_msg: Color::Rgb(223, 142, 29),
-            error_msg: Color::Rgb(210, 15, 57),
-            streaming: Color::Rgb(114, 135, 253),
-            border: Color::Rgb(172, 176, 190),
-            border_focused: Color::Rgb(30, 102, 245),
-            status_bg: Color::Rgb(239, 241, 245),
-            status_fg: Color::Rgb(92, 95, 119),
-            mode_normal: Color::Rgb(30, 102, 245),
-            mode_insert: Color::Rgb(64, 160, 43),
-            mode_command: Color::Rgb(223, 142, 29),
-            tab_active: Color::Rgb(30, 102, 245),
-            tab_inactive: Color::Rgb(172, 176, 190),
-            selection_bg: Color::Rgb(220, 224, 232),
-            code_bg: Color::Rgb(230, 233, 239),
-            code_fg: Color::Rgb(76, 79, 105),
-            code_keyword: Color::Rgb(136, 57, 239),
-            code_string: Color::Rgb(64, 160, 43),
-            code_comment: Color::Rgb(140, 143, 161),
-            code_number: Color::Rgb(254, 100, 11),
-            code_function: Color::Rgb(30, 102, 245),
-            code_lang_label: Color::Rgb(223, 142, 29),
+        Self::catppuccin(false)
+    }
+
+    /// High contrast theme for accessibility (adapts to light/dark).
+    pub fn high_contrast_for(is_dark: bool) -> Self {
+        if is_dark {
+            Self {
+                name: "High Contrast",
+                header_bg: Color::Black,
+                header_fg: Color::White,
+                user_msg: Color::Green,
+                assistant_msg: Color::LightBlue,
+                system_msg: Color::Yellow,
+                error_msg: Color::Red,
+                streaming: Color::LightCyan,
+                border: Color::White,
+                border_focused: Color::LightBlue,
+                status_bg: Color::Black,
+                status_fg: Color::White,
+                mode_normal: Color::Cyan,
+                mode_insert: Color::Green,
+                mode_command: Color::Yellow,
+                tab_active: Color::LightYellow,
+                tab_inactive: Color::Gray,
+                selection_bg: Color::DarkGray,
+                code_bg: Color::Black,
+                code_fg: Color::White,
+                code_keyword: Color::Magenta,
+                code_string: Color::Green,
+                code_comment: Color::Gray,
+                code_number: Color::Yellow,
+                code_function: Color::Cyan,
+                code_lang_label: Color::Yellow,
+            }
+        } else {
+            Self {
+                name: "High Contrast",
+                header_bg: Color::White,
+                header_fg: Color::Black,
+                user_msg: Color::Rgb(0, 100, 0),      // dark green
+                assistant_msg: Color::Rgb(0, 0, 180), // dark blue
+                system_msg: Color::Rgb(160, 100, 0),  // dark amber
+                error_msg: Color::Rgb(180, 0, 0),     // dark red
+                streaming: Color::Rgb(0, 0, 180),
+                border: Color::Black,
+                border_focused: Color::Rgb(0, 0, 180),
+                status_bg: Color::White,
+                status_fg: Color::Black,
+                mode_normal: Color::Rgb(0, 0, 180),
+                mode_insert: Color::Rgb(0, 100, 0),
+                mode_command: Color::Rgb(160, 100, 0),
+                tab_active: Color::Rgb(0, 0, 180),
+                tab_inactive: Color::Rgb(120, 120, 120),
+                selection_bg: Color::Rgb(210, 210, 210),
+                code_bg: Color::Rgb(245, 245, 245),
+                code_fg: Color::Black,
+                code_keyword: Color::Rgb(140, 0, 140), // dark magenta
+                code_string: Color::Rgb(0, 100, 0),
+                code_comment: Color::Rgb(120, 120, 120),
+                code_number: Color::Rgb(160, 100, 0),
+                code_function: Color::Rgb(0, 120, 120), // dark cyan
+                code_lang_label: Color::Rgb(160, 100, 0),
+            }
         }
     }
 
-    /// High contrast theme for accessibility
+    /// High contrast theme — convenience alias (dark variant).
+    #[allow(dead_code)]
     pub fn high_contrast() -> Self {
-        Self {
-            name: "High Contrast",
-            header_bg: Color::Black,
-            header_fg: Color::White,
-            user_msg: Color::Green,
-            // Align assistant message accent to the focused border accent.
-            assistant_msg: Color::LightBlue,
-            system_msg: Color::Yellow,
-            error_msg: Color::Red,
-            streaming: Color::LightCyan,
-            border: Color::White,
-            border_focused: Color::LightBlue,
-            status_bg: Color::Black,
-            status_fg: Color::White,
-            mode_normal: Color::Cyan,
-            mode_insert: Color::Green,
-            mode_command: Color::Yellow,
-            tab_active: Color::LightYellow,
-            tab_inactive: Color::Gray,
-            selection_bg: Color::DarkGray,
-            code_bg: Color::Black,
-            code_fg: Color::White,
-            code_keyword: Color::Magenta,
-            code_string: Color::Green,
-            code_comment: Color::Gray,
-            code_number: Color::Yellow,
-            code_function: Color::Cyan,
-            code_lang_label: Color::Yellow,
+        Self::high_contrast_for(true)
+    }
+
+    /// Dracula theme (adapts to light/dark).
+    ///
+    /// The light variant uses Dracula's official "Day" palette with softened
+    /// versions of the signature hues on a warm-white background.
+    pub fn dracula_for(is_dark: bool) -> Self {
+        if is_dark {
+            Self {
+                name: "Dracula",
+                header_bg: Color::Rgb(40, 42, 54),
+                header_fg: Color::Rgb(248, 248, 242),
+                user_msg: Color::Rgb(80, 250, 123),
+                assistant_msg: Color::Rgb(139, 233, 253),
+                system_msg: Color::Rgb(241, 250, 140),
+                error_msg: Color::Rgb(255, 85, 85),
+                streaming: Color::Rgb(189, 147, 249),
+                border: Color::Rgb(68, 71, 90),
+                border_focused: Color::Rgb(139, 233, 253),
+                status_bg: Color::Rgb(40, 42, 54),
+                status_fg: Color::Rgb(98, 114, 164),
+                mode_normal: Color::Rgb(139, 233, 253),
+                mode_insert: Color::Rgb(80, 250, 123),
+                mode_command: Color::Rgb(241, 250, 140),
+                tab_active: Color::Rgb(139, 233, 253),
+                tab_inactive: Color::Rgb(68, 71, 90),
+                selection_bg: Color::Rgb(68, 71, 90),
+                code_bg: Color::Rgb(33, 34, 44),
+                code_fg: Color::Rgb(248, 248, 242),
+                code_keyword: Color::Rgb(255, 121, 198),
+                code_string: Color::Rgb(241, 250, 140),
+                code_comment: Color::Rgb(98, 114, 164),
+                code_number: Color::Rgb(189, 147, 249),
+                code_function: Color::Rgb(80, 250, 123),
+                code_lang_label: Color::Rgb(241, 250, 140),
+            }
+        } else {
+            // Dracula "Day" — warm-white bg with deeper Dracula accent hues.
+            Self {
+                name: "Dracula",
+                header_bg: Color::Rgb(248, 248, 242),
+                header_fg: Color::Rgb(40, 42, 54),
+                user_msg: Color::Rgb(18, 140, 60), // deeper green
+                assistant_msg: Color::Rgb(30, 130, 180), // deeper cyan
+                system_msg: Color::Rgb(160, 140, 10), // deepened yellow
+                error_msg: Color::Rgb(210, 50, 50), // deeper red
+                streaming: Color::Rgb(130, 90, 210), // deeper purple
+                border: Color::Rgb(175, 175, 190), // firmer for visibility
+                border_focused: Color::Rgb(30, 130, 180),
+                status_bg: Color::Rgb(248, 248, 242),
+                status_fg: Color::Rgb(80, 95, 145), // deeper for readability
+                mode_normal: Color::Rgb(30, 130, 180),
+                mode_insert: Color::Rgb(18, 140, 60),
+                mode_command: Color::Rgb(160, 140, 10),
+                tab_active: Color::Rgb(30, 130, 180),
+                tab_inactive: Color::Rgb(140, 145, 165), // deeper for readability
+                selection_bg: Color::Rgb(220, 222, 232),
+                code_bg: Color::Rgb(237, 238, 244), // slightly deeper for distinction
+                code_fg: Color::Rgb(40, 42, 54),
+                code_keyword: Color::Rgb(200, 70, 140), // deeper pink
+                code_string: Color::Rgb(160, 140, 10),
+                code_comment: Color::Rgb(105, 115, 150), // deeper for ~3.5:1 contrast on code_bg
+                code_number: Color::Rgb(130, 90, 210),
+                code_function: Color::Rgb(18, 140, 60),
+                code_lang_label: Color::Rgb(140, 125, 10),
+            }
         }
     }
 
-    /// Dracula theme
+    /// Dracula theme — convenience alias (dark variant).
+    #[allow(dead_code)]
     pub fn dracula() -> Self {
-        Self {
-            name: "Dracula",
-            header_bg: Color::Rgb(40, 42, 54),
-            header_fg: Color::Rgb(248, 248, 242),
-            user_msg: Color::Rgb(80, 250, 123),
-            assistant_msg: Color::Rgb(139, 233, 253),
-            system_msg: Color::Rgb(241, 250, 140),
-            error_msg: Color::Rgb(255, 85, 85),
-            streaming: Color::Rgb(189, 147, 249),
-            border: Color::Rgb(68, 71, 90),
-            border_focused: Color::Rgb(139, 233, 253),
-            status_bg: Color::Rgb(40, 42, 54),
-            status_fg: Color::Rgb(98, 114, 164),
-            mode_normal: Color::Rgb(139, 233, 253),
-            mode_insert: Color::Rgb(80, 250, 123),
-            mode_command: Color::Rgb(241, 250, 140),
-            tab_active: Color::Rgb(139, 233, 253),
-            tab_inactive: Color::Rgb(68, 71, 90),
-            selection_bg: Color::Rgb(68, 71, 90),
-            code_bg: Color::Rgb(33, 34, 44),
-            code_fg: Color::Rgb(248, 248, 242),
-            code_keyword: Color::Rgb(255, 121, 198),
-            code_string: Color::Rgb(241, 250, 140),
-            code_comment: Color::Rgb(98, 114, 164),
-            code_number: Color::Rgb(189, 147, 249),
-            code_function: Color::Rgb(80, 250, 123),
-            code_lang_label: Color::Rgb(241, 250, 140),
+        Self::dracula_for(true)
+    }
+
+    /// Pro / Claude-like theme (adapts to light/dark).
+    ///
+    /// Dark: minimalist near-black. Light: clean white with muted accents.
+    pub fn pro_for(is_dark: bool) -> Self {
+        if is_dark {
+            let accent = Color::Rgb(137, 180, 250);
+            Self {
+                name: "Pro",
+                header_bg: Color::Rgb(20, 20, 20),
+                header_fg: Color::Rgb(200, 200, 200),
+                user_msg: Color::Rgb(255, 255, 255),
+                assistant_msg: accent,
+                system_msg: Color::Rgb(100, 100, 100),
+                error_msg: Color::Rgb(255, 95, 95),
+                streaming: accent,
+                border: Color::Rgb(60, 60, 60),
+                border_focused: accent,
+                status_bg: Color::Rgb(30, 30, 30),
+                status_fg: Color::Rgb(150, 150, 150),
+                mode_normal: Color::Rgb(100, 100, 100),
+                mode_insert: accent,
+                mode_command: Color::Rgb(255, 255, 255),
+                tab_active: Color::Rgb(255, 255, 255),
+                tab_inactive: Color::Rgb(80, 80, 80),
+                selection_bg: Color::Rgb(40, 40, 40),
+                code_bg: Color::Rgb(20, 20, 20),
+                code_fg: Color::Rgb(200, 200, 200),
+                code_keyword: Color::Rgb(86, 156, 214),
+                code_string: Color::Rgb(206, 145, 120),
+                code_comment: Color::Rgb(106, 153, 85),
+                code_number: Color::Rgb(181, 206, 168),
+                code_function: Color::Rgb(220, 220, 170),
+                code_lang_label: Color::Rgb(80, 80, 80),
+            }
+        } else {
+            let accent = Color::Rgb(50, 100, 200); // deeper blue for light bg
+            Self {
+                name: "Pro",
+                header_bg: Color::Rgb(252, 252, 252),
+                header_fg: Color::Rgb(50, 50, 50),
+                user_msg: Color::Rgb(30, 30, 30),
+                assistant_msg: accent,
+                system_msg: Color::Rgb(120, 120, 120), // darker for readability
+                error_msg: Color::Rgb(200, 50, 50),
+                streaming: accent,
+                border: Color::Rgb(195, 195, 195), // firmer for visibility
+                border_focused: accent,
+                status_bg: Color::Rgb(248, 248, 248),
+                status_fg: Color::Rgb(110, 110, 110), // slightly deeper
+                mode_normal: Color::Rgb(110, 110, 110),
+                mode_insert: accent,
+                mode_command: Color::Rgb(30, 30, 30),
+                tab_active: Color::Rgb(30, 30, 30),
+                tab_inactive: Color::Rgb(150, 150, 150), // deeper for readability
+                selection_bg: Color::Rgb(225, 230, 242),
+                code_bg: Color::Rgb(240, 240, 242), // clearer separation from white bg
+                code_fg: Color::Rgb(50, 50, 50),
+                code_keyword: Color::Rgb(0, 80, 170), // VS Code Blue (light)
+                code_string: Color::Rgb(163, 21, 21), // VS Code Red-brown
+                code_comment: Color::Rgb(0, 128, 0),  // VS Code Green
+                code_number: Color::Rgb(9, 134, 88),
+                code_function: Color::Rgb(121, 94, 38),
+                code_lang_label: Color::Rgb(120, 120, 120),
+            }
         }
     }
 
-    /// Pro / Claude-like theme (Minimalist Dark)
+    /// Pro theme — convenience alias (dark variant).
+    #[allow(dead_code)]
     pub fn pro() -> Self {
-        let accent = Color::Rgb(137, 180, 250);
-        Self {
-            name: "Pro",
-            header_bg: Color::Rgb(20, 20, 20),
-            header_fg: Color::Rgb(200, 200, 200),
-            user_msg: Color::Rgb(255, 255, 255), // White text for user
-            // Align assistant message accent to the focused border accent.
-            assistant_msg: accent,
-            system_msg: Color::Rgb(100, 100, 100),
-            error_msg: Color::Rgb(255, 95, 95),
-            streaming: accent,
-            border: Color::Rgb(60, 60, 60),
-            border_focused: accent,
-            status_bg: Color::Rgb(30, 30, 30),
-            status_fg: Color::Rgb(150, 150, 150),
-            mode_normal: Color::Rgb(100, 100, 100),
-            mode_insert: accent, // Match assistant accent
-            mode_command: Color::Rgb(255, 255, 255),
-            tab_active: Color::Rgb(255, 255, 255),
-            tab_inactive: Color::Rgb(80, 80, 80),
-            selection_bg: Color::Rgb(40, 40, 40),
-            code_bg: Color::Rgb(20, 20, 20),
-            code_fg: Color::Rgb(200, 200, 200),
-            code_keyword: Color::Rgb(86, 156, 214), // VS Code Blue
-            code_string: Color::Rgb(206, 145, 120), // VS Code Orange
-            code_comment: Color::Rgb(106, 153, 85), // VS Code Green
-            code_number: Color::Rgb(181, 206, 168),
-            code_function: Color::Rgb(220, 220, 170),
-            code_lang_label: Color::Rgb(80, 80, 80),
-        }
+        Self::pro_for(true)
     }
 
     /// Gestura brand theme (blue → purple).
@@ -312,8 +529,8 @@ impl Theme {
         } else {
             (
                 Color::Rgb(255, 255, 255), // --background
-                Color::Rgb(248, 250, 252), // --surface (slate-50)
-                Color::Rgb(226, 232, 240), // --border (slate-200)
+                Color::Rgb(241, 245, 249), // --surface (slate-100, deeper than 50 for visible code/selection bg)
+                Color::Rgb(203, 213, 225), // --border (slate-300, firmer than slate-200)
                 Color::Rgb(30, 41, 59),    // --foreground (slate-800, website light)
                 Color::Rgb(100, 116, 139), // --text-secondary (slate-500)
             )
@@ -389,28 +606,47 @@ impl Theme {
         }
     }
 
-    /// Get theme by name
-    pub fn by_name(name: &str) -> Self {
+    /// Get a theme by name, adapting to the given `theme_mode`.
+    ///
+    /// `theme_mode` follows the same semantics as the config (`system|light|dark`).
+    /// Every named theme produces a coherent palette for both light and dark modes.
+    pub fn by_name_for(name: &str, theme_mode: &str) -> Self {
+        let is_dark = Self::is_dark_theme_mode(theme_mode);
         match name.to_lowercase().as_str() {
-            "light" => Self::light(),
-            "high-contrast" | "highcontrast" | "high_contrast" => Self::high_contrast(),
-            "dracula" => Self::dracula(),
-            "gestura" | "brand" => Self::gestura(),
-            "pro" | "claude" => Self::pro(),
-            _ => Self::catppuccin_mocha(),
+            "catppuccin" | "catppuccin-mocha" | "catppuccin-latte" => Self::catppuccin(is_dark),
+            "light" => Self::catppuccin(false), // explicit light always
+            "high-contrast" | "highcontrast" | "high_contrast" => Self::high_contrast_for(is_dark),
+            "dracula" => Self::dracula_for(is_dark),
+            "gestura" | "brand" => Self::gestura_for(theme_mode, None),
+            "pro" | "claude" => Self::pro_for(is_dark),
+            _ => Self::catppuccin(is_dark),
         }
     }
 
-    /// List available theme names
+    /// Get theme by name (dark variant — backwards-compatible convenience).
+    #[allow(dead_code)]
+    pub fn by_name(name: &str) -> Self {
+        Self::by_name_for(name, "dark")
+    }
+
+    /// Stable theme keys used for cycling and persistence.
+    ///
+    /// These keys are independent of the display name (which may change with
+    /// light/dark mode, e.g. "Catppuccin Mocha" vs "Catppuccin Latte").
     pub fn available_themes() -> &'static [&'static str] {
-        &[
-            "catppuccin-mocha",
-            "light",
-            "high-contrast",
-            "dracula",
-            "gestura",
-            "pro",
-        ]
+        &["catppuccin", "high-contrast", "dracula", "gestura", "pro"]
+    }
+
+    /// Map a display name back to its stable theme key.
+    pub fn theme_key(&self) -> &'static str {
+        match self.name {
+            "Catppuccin Mocha" | "Catppuccin Latte" => "catppuccin",
+            "High Contrast" => "high-contrast",
+            "Dracula" => "dracula",
+            "Gestura" => "gestura",
+            "Pro" => "pro",
+            _ => "catppuccin",
+        }
     }
 }
 
@@ -1485,25 +1721,25 @@ impl TuiApp {
         }
     }
 
-    /// Set the theme by name
+    /// Set the theme by name, respecting the current `theme_mode`.
+    ///
+    /// The Gestura theme additionally forwards the configured accent color.
     pub fn set_theme(&mut self, name: &str) {
         let normalized = name.trim().to_ascii_lowercase();
+        let mode = &self.config.ui.theme_mode;
         if normalized == "gestura" || normalized == "brand" {
-            self.theme =
-                Theme::gestura_for(&self.config.ui.theme_mode, self.config.ui.accent.as_deref());
+            self.theme = Theme::gestura_for(mode, self.config.ui.accent.as_deref());
         } else {
-            self.theme = Theme::by_name(name);
+            self.theme = Theme::by_name_for(name, mode);
         }
         self.set_status(format!("Theme changed to: {}", self.theme.name));
     }
 
-    /// Cycle to the next theme
+    /// Cycle to the next theme (stable key-based).
     pub fn cycle_theme(&mut self) {
         let themes = Theme::available_themes();
-        let current_idx = themes
-            .iter()
-            .position(|&t| t == self.theme.name.to_lowercase().replace(' ', "-"))
-            .unwrap_or(0);
+        let current_key = self.theme.theme_key();
+        let current_idx = themes.iter().position(|&t| t == current_key).unwrap_or(0);
         let next_idx = (current_idx + 1) % themes.len();
         self.set_theme(themes[next_idx]);
     }
@@ -2457,10 +2693,14 @@ mod tests {
     use super::*;
     use crate::commands::chat::new_cli_session;
 
-    /// Helper to create a test app with a mock session
+    /// Helper to create a test app with a mock session.
+    ///
+    /// Uses `theme_mode = "dark"` for deterministic theme resolution (avoids
+    /// OS-dependent system detection in tests).
     fn create_test_app() -> TuiApp {
         let session = new_cli_session(None).unwrap();
-        let config = AppConfig::default();
+        let mut config = AppConfig::default();
+        config.ui.theme_mode = "dark".to_string();
         TuiApp::new(session, config, None)
     }
 
@@ -2738,8 +2978,9 @@ mod tests {
         let initial_theme = app.theme.name;
         assert_eq!(initial_theme, "Gestura");
 
+        // "light" is an explicit-light alias → Catppuccin Latte
         app.set_theme("light");
-        assert_eq!(app.theme.name, "Light");
+        assert_eq!(app.theme.name, "Catppuccin Latte");
 
         app.set_theme("high-contrast");
         assert_eq!(app.theme.name, "High Contrast");
@@ -2750,7 +2991,7 @@ mod tests {
         app.set_theme("gestura");
         assert_eq!(app.theme.name, "Gestura");
 
-        // Invalid theme falls back to catppuccin-mocha (the fallback in by_name)
+        // Invalid theme falls back to catppuccin for the current mode (dark)
         app.set_theme("nonexistent");
         assert_eq!(app.theme.name, "Catppuccin Mocha");
     }
@@ -2759,35 +3000,32 @@ mod tests {
     fn test_theme_cycling() {
         let mut app = create_test_app();
 
-        // Get initial theme name and verify it's the default (Gestura)
+        // Default theme is Gestura (key: "gestura", index 3 in available_themes).
         assert_eq!(app.theme.name, "Gestura");
+        assert_eq!(app.theme.theme_key(), "gestura");
 
-        // Cycle to next theme (Gestura -> Pro)
+        // Cycle order: catppuccin(0) → high-contrast(1) → dracula(2) → gestura(3) → pro(4)
+        // From gestura(3) → pro(4)
         app.cycle_theme();
         assert_eq!(app.theme.name, "Pro");
 
-        // Pro is last, so cycling wraps to the first theme.
+        // pro(4) wraps → catppuccin(0) — dark mode → Catppuccin Mocha
         app.cycle_theme();
-        // After cycling from pro, should wrap to catppuccin-mocha.
         assert_eq!(app.theme.name, "Catppuccin Mocha");
 
-        // Cycle again
-        app.cycle_theme();
-        assert_eq!(app.theme.name, "Light");
-
-        // Cycle again
+        // catppuccin(0) → high-contrast(1)
         app.cycle_theme();
         assert_eq!(app.theme.name, "High Contrast");
 
-        // Cycle again
+        // high-contrast(1) → dracula(2)
         app.cycle_theme();
         assert_eq!(app.theme.name, "Dracula");
 
-        // Cycle again
+        // dracula(2) → gestura(3)
         app.cycle_theme();
         assert_eq!(app.theme.name, "Gestura");
 
-        // Cycle wraps back to Pro
+        // gestura(3) → pro(4)
         app.cycle_theme();
         assert_eq!(app.theme.name, "Pro");
     }
@@ -2806,6 +3044,74 @@ mod tests {
         assert_eq!(app.theme.streaming, Color::Rgb(52, 211, 153));
         // User messages use primary text (white) in dark mode.
         assert_eq!(app.theme.user_msg, Color::Rgb(255, 255, 255));
+    }
+
+    #[test]
+    fn test_detect_system_dark_mode_does_not_panic() {
+        // The function relies on platform-specific commands; verify it returns a
+        // bool without panicking regardless of the environment.
+        let _result: bool = detect_system_dark_mode();
+    }
+
+    #[test]
+    fn test_is_dark_theme_mode_variants() {
+        assert!(!Theme::is_dark_theme_mode("light"));
+        assert!(Theme::is_dark_theme_mode("dark"));
+        // "system" delegates to OS detection — just verify no panic.
+        let _ = Theme::is_dark_theme_mode("system");
+        // Unknown values default to dark.
+        assert!(Theme::is_dark_theme_mode("bogus"));
+        assert!(Theme::is_dark_theme_mode(""));
+    }
+
+    #[test]
+    fn test_by_name_for_light_and_dark() {
+        // Dark mode should give Catppuccin Mocha.
+        let dark = Theme::by_name_for("catppuccin", "dark");
+        assert_eq!(dark.name, "Catppuccin Mocha");
+
+        // Light mode should give Catppuccin Latte.
+        let light = Theme::by_name_for("catppuccin", "light");
+        assert_eq!(light.name, "Catppuccin Latte");
+
+        // Other themes keep same name but adapt palette.
+        let hc_dark = Theme::by_name_for("high-contrast", "dark");
+        let hc_light = Theme::by_name_for("high-contrast", "light");
+        assert_eq!(hc_dark.name, "High Contrast");
+        assert_eq!(hc_light.name, "High Contrast");
+        // Light should have a visibly different background from dark.
+        assert_ne!(hc_dark.header_bg, hc_light.header_bg);
+    }
+
+    #[test]
+    fn test_theme_key_round_trip() {
+        // Every theme produced by by_name_for should map back to its stable key.
+        for key in Theme::available_themes() {
+            let dark = Theme::by_name_for(key, "dark");
+            assert_eq!(dark.theme_key(), *key, "dark round-trip failed for {key}");
+
+            let light = Theme::by_name_for(key, "light");
+            assert_eq!(light.theme_key(), *key, "light round-trip failed for {key}");
+        }
+    }
+
+    #[test]
+    fn test_light_mode_theme_switching() {
+        let session = new_cli_session(None).unwrap();
+        let mut config = AppConfig::default();
+        config.ui.theme_mode = "light".to_string();
+        let mut app = TuiApp::new(session, config, None);
+
+        // Default is Gestura (light variant).
+        assert_eq!(app.theme.name, "Gestura");
+
+        app.set_theme("catppuccin");
+        assert_eq!(app.theme.name, "Catppuccin Latte");
+
+        app.set_theme("pro");
+        assert_eq!(app.theme.name, "Pro");
+        // Pro light should have a near-white header.
+        assert_eq!(app.theme.header_bg, Color::Rgb(252, 252, 252));
     }
 
     // ==================== Command Suggestion Tests ====================
