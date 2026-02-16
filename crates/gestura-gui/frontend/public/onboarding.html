@@ -147,11 +147,17 @@
         }
 
         .header h1 {
-            position: relative;
+            position: absolute;
             display: inline-block;
             font-size: 1.75rem;
             margin-bottom: 0.25rem;
             line-height: 1.15;
+            left: 25px;
+            top: 0;
+            right: auto;
+            bottom: auto;
+            z-index: 0;
+            height: 50px;
         }
 
         .header-logo {
@@ -161,7 +167,7 @@
 	             * Let it overflow only to the RIGHT + BOTTOM (never above the title),
 	             * so the top of the logo won't get cropped by the viewport.
 	             */
-            left: -5px;
+            left: -35px;
             top: -15px;
             right: auto;
             bottom: auto;
@@ -170,7 +176,7 @@
             opacity: 1;
             pointer-events: none;
             user-select: none;
-            z-index: 1;
+            z-index: 0;
         }
 
         .header-title {
