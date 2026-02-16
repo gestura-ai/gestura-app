@@ -23,6 +23,7 @@ path = "src/main.rs"
 tauri-build.workspace = true
 base64.workspace = true
 image.workspace = true
+chrono.workspace = true
 
 [features]
 # Default features for production builds - voice-local is always enabled

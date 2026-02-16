@@ -1185,7 +1185,10 @@ pub async fn download_whisper_model(
     // Hugging Face CDN requires a User-Agent header and may need time for large files
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(1800)) // 30 minute timeout for large models
-        .user_agent("Gestura/0.2.0 (https://gestura.ai)")
+        .user_agent(format!(
+            "Gestura/{} (https://gestura.ai)",
+            env!("CARGO_PKG_VERSION")
+        ))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 

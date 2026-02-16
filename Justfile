@@ -94,6 +94,10 @@ frontend_dir := "crates/gestura-gui/frontend"
 # Legacy alias for compatibility
 app_dir := "crates/gestura-gui"
 
+# Workspace version — single source of truth is [workspace.package] in Cargo.toml.
+# Extracted at recipe-parse time so every recipe can use {{version}}.
+version := `grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'`
+
 # Development Commands
 # ====================
 
@@ -454,8 +458,8 @@ package-macos-signed:
 
 	echo "📦🍎🔐 Creating signed macOS packages (DMG + PKG)..."
 
-	# Get version from frontend package.json
-	VERSION=$(grep -o '"version": "[^"]*"' {{frontend_dir}}/package.json | cut -d'"' -f4)
+	# Version from workspace Cargo.toml (single source of truth)
+	VERSION="{{version}}"
 	echo "📋 Version: ${VERSION}"
 
 	# Paths
@@ -669,7 +673,7 @@ package-linux: build-linux
 # Create Linux AppImage
 create-linux-appimage:
 	@echo "📦🐧 Creating Linux AppImage..."
-	@if [ ! -f "target/x86_64-unknown-linux-gnu/release/bundle/appimage/gestura_0.1.0_amd64.AppImage" ]; then \
+	@if ! ls target/x86_64-unknown-linux-gnu/release/bundle/appimage/gestura_*_amd64.AppImage >/dev/null 2>&1; then \
 		echo "❌ Linux AppImage not found. Run 'just build-linux-appimage' first"; \
 		exit 1; \
 	fi
@@ -679,7 +683,7 @@ create-linux-appimage:
 # Create Linux deb package
 create-linux-deb:
 	@echo "📦🐧 Creating Linux deb package..."
-	@if [ ! -f "target/x86_64-unknown-linux-gnu/release/bundle/deb/gestura_0.1.0_amd64.deb" ]; then \
+	@if ! ls target/x86_64-unknown-linux-gnu/release/bundle/deb/gestura_*_amd64.deb >/dev/null 2>&1; then \
 		echo "❌ Linux deb not found. Run 'just build-linux-deb' first"; \
 		exit 1; \
 	fi
@@ -908,13 +912,13 @@ test-linux-app:
 	@file "target/x86_64-unknown-linux-gnu/release/gestura-gui"
 	@echo ""
 	@echo "📦 Available packages:"
-	@if [ -f "target/x86_64-unknown-linux-gnu/release/bundle/deb/gestura_0.1.0_amd64.deb" ]; then \
+	@if ls target/x86_64-unknown-linux-gnu/release/bundle/deb/gestura_*_amd64.deb >/dev/null 2>&1; then \
 		echo "✅ DEB package:"; \
 		ls -la "target/x86_64-unknown-linux-gnu/release/bundle/deb/"; \
 	else \
 		echo "❌ No DEB package found"; \
 	fi
-	@if [ -f "target/x86_64-unknown-linux-gnu/release/bundle/appimage/gestura_0.1.0_amd64.AppImage" ]; then \
+	@if ls target/x86_64-unknown-linux-gnu/release/bundle/appimage/gestura_*_amd64.AppImage >/dev/null 2>&1; then \
 		echo "✅ AppImage:"; \
 		ls -la "target/x86_64-unknown-linux-gnu/release/bundle/appimage/"; \
 	else \
@@ -946,13 +950,14 @@ create-dmg:
 	    echo "❌ App bundle not found. Run 'just build-macos' or 'just build-macos-signed' first"
 	    exit 1
 	fi
-	echo "Creating Gestura-0.1.0-macos.dmg..."
-	rm -f "Gestura-0.1.0-macos.dmg"
+	DMG_NAME="Gestura-{{version}}-macos.dmg"
+	echo "Creating ${DMG_NAME}..."
+	rm -f "${DMG_NAME}"
 	hdiutil create -volname "Gestura" \
 	    -srcfolder "$APP_PATH" \
-	    -ov -format UDZO "Gestura-0.1.0-macos.dmg"
-	echo "✅ DMG created: Gestura-0.1.0-macos.dmg"
-	ls -lh "Gestura-0.1.0-macos.dmg"
+	    -ov -format UDZO "${DMG_NAME}"
+	echo "✅ DMG created: ${DMG_NAME}"
+	ls -lh "${DMG_NAME}"
 
 # Utility Commands
 # ================
@@ -966,4 +971,80 @@ icons:
 	fi
 	./scripts/generate-icons.sh
 	@echo "✅ Icons generated"
+
+# Versioning Commands
+# ===================
+
+# Set version across the entire workspace (Cargo.toml → tauri.conf.json → package.json)
+set-version new_version:
+	#!/usr/bin/env bash
+	set -euo pipefail
+
+	V="{{new_version}}"
+	if ! [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+		echo "❌ Invalid semver: $V  (expected X.Y.Z or X.Y.Z-pre.N)"
+		exit 1
+	fi
+
+	echo "📋 Setting workspace version to ${V}..."
+
+	# 1) Workspace Cargo.toml (single source of truth)
+	sed -i.bak "s/^version = \".*\"/version = \"${V}\"/" Cargo.toml
+	rm -f Cargo.toml.bak
+	echo "  ✅ Cargo.toml [workspace.package] version = \"${V}\""
+
+	# 2) tauri.conf.json
+	TAURI_CONF="{{gui_dir}}/tauri.conf.json"
+	sed -i.bak "s/\"version\": \".*\"/\"version\": \"${V}\"/" "$TAURI_CONF"
+	rm -f "${TAURI_CONF}.bak"
+	echo "  ✅ tauri.conf.json version = \"${V}\""
+
+	# 3) Frontend package.json (npm handles this nicely)
+	(cd "{{frontend_dir}}" && npm version "${V}" --no-git-tag-version --allow-same-version >/dev/null 2>&1)
+	echo "  ✅ package.json version = \"${V}\""
+
+	echo "🎉 All version sources updated to ${V}"
+
+# Sync tauri.conf.json and package.json to match workspace Cargo.toml version
+sync-versions:
+	#!/usr/bin/env bash
+	set -euo pipefail
+
+	V="{{version}}"
+	echo "🔄 Syncing versions to workspace value: ${V}"
+
+	# tauri.conf.json
+	TAURI_CONF="{{gui_dir}}/tauri.conf.json"
+	sed -i.bak "s/\"version\": \".*\"/\"version\": \"${V}\"/" "$TAURI_CONF"
+	rm -f "${TAURI_CONF}.bak"
+	echo "  ✅ tauri.conf.json → ${V}"
+
+	# Frontend package.json
+	(cd "{{frontend_dir}}" && npm version "${V}" --no-git-tag-version --allow-same-version >/dev/null 2>&1)
+	echo "  ✅ package.json → ${V}"
+
+	echo "🎉 All versions in sync"
+
+# Show current version from all sources
+show-version:
+	#!/usr/bin/env bash
+	set -euo pipefail
+
+	echo "📋 Version sources:"
+
+	CARGO_V="{{version}}"
+	echo "  Cargo.toml (workspace):   ${CARGO_V}"
+
+	TAURI_V=$(python3 -c "import json; print(json.load(open('{{gui_dir}}/tauri.conf.json'))['version'])")
+	echo "  tauri.conf.json:          ${TAURI_V}"
+
+	PKG_V=$(python3 -c "import json; print(json.load(open('{{frontend_dir}}/package.json'))['version'])")
+	echo "  package.json:             ${PKG_V}"
+
+	if [ "$CARGO_V" = "$TAURI_V" ] && [ "$CARGO_V" = "$PKG_V" ]; then
+		echo "  ✅ All versions match"
+	else
+		echo "  ⚠️  Version drift detected! Run 'just sync-versions' to fix."
+		exit 1
+	fi
 

@@ -294,7 +294,10 @@ impl OpenAiWhisperVoice {
         // Create client with reasonable timeout for transcription
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120)) // 2 minute timeout for transcription
-            .user_agent("Gestura/0.2.0 (https://gestura.ai)")
+            .user_agent(format!(
+                "Gestura/{} (https://gestura.ai)",
+                env!("CARGO_PKG_VERSION")
+            ))
             .build()
             .map_err(|e| AppError::Voice(format!("Failed to create HTTP client: {}", e)))?;
 

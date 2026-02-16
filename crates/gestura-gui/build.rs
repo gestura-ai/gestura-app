@@ -13,6 +13,9 @@ fn main() {
         println!("cargo:rustc-env=MACOSX_DEPLOYMENT_TARGET=10.15");
     }
 
+    // Expose build date as a compile-time env var for runtime version reporting.
+    set_build_metadata();
+
     let profile = std::env::var("PROFILE").unwrap_or_default();
 
     // Only ensure icon exists during release builds to prevent dev rebuild loops.
@@ -90,4 +93,14 @@ fn ensure_default_icon() {
             err
         );
     }
+}
+
+/// Expose build metadata as compile-time environment variables.
+///
+/// Sets:
+/// - `GESTURA_BUILD_DATE` — ISO-8601 date (e.g. `2026-02-16`)
+fn set_build_metadata() {
+    use chrono::Utc;
+    let date = Utc::now().format("%Y-%m-%d").to_string();
+    println!("cargo:rustc-env=GESTURA_BUILD_DATE={date}");
 }

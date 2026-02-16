@@ -59,7 +59,10 @@ impl Default for WebSearchConfig {
             brave_key: None,
             max_results: 5,
             timeout_secs: 30,
-            user_agent: "Gestura/0.2.0 (+https://gestura.ai)".to_string(),
+            user_agent: format!(
+                "Gestura/{} (+https://gestura.ai)",
+                env!("CARGO_PKG_VERSION")
+            ),
             extract_content: true,
             max_content_length: 10_000,
             fallback_providers: vec![WebSearchProvider::DuckDuckGo],

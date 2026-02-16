@@ -37,6 +37,12 @@ repo_root() {
   git rev-parse --show-toplevel 2>/dev/null
 }
 
+# workspace_cargo_version prints the version from the workspace Cargo.toml.
+workspace_cargo_version() {
+  local cargo_toml="$1"
+  grep '^version' "$cargo_toml" | head -1 | sed 's/.*"\(.*\)"/\1/'
+}
+
 # tauri_conf_version prints the version from a Tauri config JSON file.
 tauri_conf_version() {
   local conf_path="$1"
@@ -58,7 +64,8 @@ PY
 # Precedence:
 #  1) TAG environment variable (e.g., v0.2.0)
 #  2) Most recent git tag (`git describe --tags --abbrev=0`)
-#  3) crates/gestura-gui/tauri.conf.json "version" prefixed with "v"
+#  3) Workspace Cargo.toml [workspace.package] version prefixed with "v"
+#  4) crates/gestura-gui/tauri.conf.json "version" prefixed with "v"
 #
 # Sets global variables:
 #  - TAG:         e.g. v0.2.0
@@ -69,11 +76,24 @@ resolve_tag() {
   fi
 
   if [ -z "${TAG:-}" ]; then
-    require_cmd python3
     local root
     root="$(repo_root)"
     [ -n "$root" ] || die "Not in a git repository; set TAG=vX.Y.Z"
-    TAG="v$(tauri_conf_version "$root/crates/gestura-gui/tauri.conf.json")"
+
+    # Prefer workspace Cargo.toml (single source of truth)
+    if [ -f "$root/Cargo.toml" ]; then
+      local v
+      v="$(workspace_cargo_version "$root/Cargo.toml")"
+      if [ -n "$v" ] && [ "$v" != "0.0.0" ]; then
+        TAG="v${v}"
+      fi
+    fi
+
+    # Fall back to tauri.conf.json
+    if [ -z "${TAG:-}" ]; then
+      require_cmd python3
+      TAG="v$(tauri_conf_version "$root/crates/gestura-gui/tauri.conf.json")"
+    fi
   fi
 
   VERSION_NUM="${TAG#v}"

@@ -57,35 +57,21 @@ if ! git diff-index --quiet HEAD --; then
     exit 1
 fi
 
-# Update version in Cargo.toml
-print_status "Updating version in Cargo.toml"
-sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
-rm src-tauri/Cargo.toml.bak
-
-# Update version in package.json
-print_status "Updating version in package.json"
-npm version $VERSION --no-git-tag-version
-
-# Update version in tauri.conf.json
-print_status "Updating version in tauri.conf.json"
-sed -i.bak "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
-rm src-tauri/tauri.conf.json.bak
+# Update all version sources via the Just recipe (workspace Cargo.toml → tauri.conf.json → package.json)
+print_status "Updating version across workspace to $VERSION"
+just set-version "$VERSION"
 
 # Run tests
 print_status "Running tests"
-cd src-tauri
-cargo test --quiet
-cd ..
+cargo test --workspace --quiet
 
 # Build frontend
 print_status "Building frontend"
-npm run build
+(cd crates/gestura-gui/frontend && npm run build)
 
 # Build Tauri app for testing
 print_status "Building Tauri app"
-cd src-tauri
-cargo build --release
-cd ..
+cargo build -p gestura-gui --release
 
 # Create changelog entry
 print_status "Creating changelog entry"

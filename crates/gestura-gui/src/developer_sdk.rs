@@ -466,9 +466,9 @@ impl SdkClient {
     /// Get SDK version information
     pub fn get_version(&self) -> SdkVersion {
         SdkVersion {
-            version: "1.0.0".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
             api_version: "v1".to_string(),
-            build_date: "2024-01-01".to_string(),
+            build_date: env!("GESTURA_BUILD_DATE").to_string(),
             features: vec![
                 "Voice Recognition".to_string(),
                 "Gesture Recognition".to_string(),
