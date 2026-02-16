@@ -7,7 +7,7 @@
 //! - Keep GUI/CLI thin (they provide session data + platform-specific secret lookup).
 //! - Ensure provider/model precedence and compatibility checks are consistent.
 
-use crate::chat_sessions::SessionLlmConfig;
+use crate::chat_sessions::{ChatSession, SessionLlmConfig};
 use crate::config::{
     AnthropicConfig, AppConfig, GeminiConfig, GrokConfig, OllamaConfig, OpenAiConfig,
 };
@@ -268,6 +268,173 @@ fn get_model_for_provider(cfg: &AppConfig, provider: &str) -> Option<String> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Provider constants & legacy-aware model selector
+// ---------------------------------------------------------------------------
+
+/// Known LLM provider identifiers.
+///
+/// Used to disambiguate `provider`-only strings from `model`-only strings in
+/// legacy-aware selectors (CLI, TUI, session persistence).
+pub const KNOWN_LLM_PROVIDERS: [&str; 5] = ["openai", "anthropic", "grok", "gemini", "ollama"];
+
+/// Returns `true` when `provider` matches one of the [`KNOWN_LLM_PROVIDERS`]
+/// (case-insensitive comparison).
+pub fn is_known_llm_provider(provider: &str) -> bool {
+    KNOWN_LLM_PROVIDERS
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case(provider.trim()))
+}
+
+/// Parse a legacy-aware selector string into a session override.
+///
+/// Supported formats:
+/// - `"provider:model"` → provider + model
+/// - `"provider"` (if it matches a known provider) → provider-only
+/// - anything else → model-only (delegates to [`session_llm_config_from_cli_model_arg`])
+///
+/// Returns `None` for empty / whitespace-only input.
+pub fn parse_model_selector_legacy_aware(spec: &str) -> Option<SessionLlmConfig> {
+    let s = spec.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    if s.contains(':') {
+        return session_llm_config_from_cli_model_arg(s);
+    }
+
+    if is_known_llm_provider(s) {
+        return Some(SessionLlmConfig {
+            provider: Some(s.to_ascii_lowercase()),
+            model: None,
+        });
+    }
+
+    session_llm_config_from_cli_model_arg(s)
+}
+
+// ---------------------------------------------------------------------------
+// Session-scoped LLM override resolution (shared business logic)
+// ---------------------------------------------------------------------------
+
+/// Resolve the session-scoped LLM override from a [`ChatSession`].
+///
+/// Precedence:
+/// 1. `session.state.llm_config` (canonical persisted override)
+/// 2. Legacy `session.model` (parsed via [`parse_model_selector_legacy_aware`])
+pub fn resolve_session_llm_override(session: &ChatSession) -> Option<SessionLlmConfig> {
+    if let Some(cfg) = session.state.llm_config.as_ref() {
+        return Some(cfg.clone());
+    }
+
+    session
+        .model
+        .as_deref()
+        .and_then(parse_model_selector_legacy_aware)
+}
+
+/// Apply session-scoped LLM overrides (for basic/non-TUI CLI mode) and return
+/// a cloned config together with the effective provider/model.
+///
+/// This resolves the override from the session, clones `base_config`, applies
+/// the override via [`apply_cli_session_llm_overrides`], and returns both.
+pub fn apply_basic_mode_session_llm_overrides(
+    base_config: &AppConfig,
+    session: &ChatSession,
+) -> (AppConfig, EffectiveLlmConfig) {
+    let session_llm = resolve_session_llm_override(session);
+    let mut config = base_config.clone();
+    let effective = apply_cli_session_llm_overrides(&mut config, session_llm.as_ref());
+    (config, effective)
+}
+
+/// Normalize and (optionally) migrate session-scoped LLM selection state.
+///
+/// This is the **core** normalization logic — it performs validation and
+/// canonicalization but **does not** produce any user-facing output. Callers
+/// (CLI, GUI) are responsible for presenting errors.
+///
+/// Returns:
+/// - `Ok(true)` if the session was modified and should be persisted.
+/// - `Ok(false)` if no changes were necessary.
+/// - `Err(msg)` if validation failed (e.g. incompatible provider/model).
+pub fn normalize_session_llm_override(
+    config: &AppConfig,
+    session: &mut ChatSession,
+    cli_model_arg: Option<&str>,
+) -> std::result::Result<bool, String> {
+    let explicit_cli_arg = cli_model_arg.is_some_and(|s| !s.trim().is_empty());
+
+    let mut session_llm = if let Some(arg) = cli_model_arg.filter(|s| !s.trim().is_empty()) {
+        parse_model_selector_legacy_aware(arg)
+    } else if session.state.llm_config.is_some() {
+        session.state.llm_config.clone()
+    } else {
+        session
+            .model
+            .as_deref()
+            .and_then(parse_model_selector_legacy_aware)
+    };
+
+    let Some(mut session_llm_cfg) = session_llm.take() else {
+        return Ok(false);
+    };
+
+    // If this is an explicit CLI request, validate it before persisting.
+    if explicit_cli_arg {
+        let provider_for_validation = session_llm_cfg
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| config.llm.primary.clone());
+
+        if let Some(model) = session_llm_cfg
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            llm_validation::validate_model_for_provider(&provider_for_validation, model)?;
+        }
+
+        // If provider-only was requested, keep it provider-only until we resolve defaults below.
+        if session_llm_cfg.provider.is_none() {
+            session_llm_cfg.provider = Some(provider_for_validation);
+        }
+    }
+
+    let mut tmp_config = config.clone();
+    let effective = apply_cli_session_llm_overrides(&mut tmp_config, Some(&session_llm_cfg));
+    if effective.provider.trim().is_empty() || effective.model.trim().is_empty() {
+        return Ok(false);
+    }
+
+    let canonical = SessionLlmConfig {
+        provider: Some(effective.provider.clone()),
+        model: Some(effective.model.clone()),
+    };
+    let legacy = format!("{}:{}", effective.provider, effective.model);
+
+    let mut changed = false;
+    let same_canonical = session.state.llm_config.as_ref().is_some_and(|c| {
+        c.provider.as_deref() == canonical.provider.as_deref()
+            && c.model.as_deref() == canonical.model.as_deref()
+    });
+    if !same_canonical {
+        session.state.llm_config = Some(canonical);
+        changed = true;
+    }
+    if session.model.as_deref() != Some(legacy.as_str()) {
+        session.model = Some(legacy);
+        changed = true;
+    }
+
+    Ok(changed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,5 +506,42 @@ mod tests {
         assert_eq!(eff.model, "gpt-4o");
         assert_eq!(cfg.llm.primary, "openai");
         assert_eq!(cfg.llm.openai.as_ref().unwrap().model, "gpt-4o");
+    }
+
+    #[test]
+    fn known_llm_providers_recognized() {
+        assert!(is_known_llm_provider("openai"));
+        assert!(is_known_llm_provider("ANTHROPIC"));
+        assert!(is_known_llm_provider("Ollama"));
+        assert!(!is_known_llm_provider("unknown"));
+        assert!(!is_known_llm_provider(""));
+    }
+
+    #[test]
+    fn parse_model_selector_legacy_aware_provider_only() {
+        let cfg = parse_model_selector_legacy_aware("anthropic").unwrap();
+        assert_eq!(cfg.provider.as_deref(), Some("anthropic"));
+        assert_eq!(cfg.model, None);
+    }
+
+    #[test]
+    fn parse_model_selector_legacy_aware_provider_model() {
+        let cfg = parse_model_selector_legacy_aware("openai:gpt-4o").unwrap();
+        assert_eq!(cfg.provider.as_deref(), Some("openai"));
+        assert_eq!(cfg.model.as_deref(), Some("gpt-4o"));
+    }
+
+    #[test]
+    fn parse_model_selector_legacy_aware_model_only() {
+        let cfg = parse_model_selector_legacy_aware("gpt-4o").unwrap();
+        // Falls through to session_llm_config_from_cli_model_arg which treats it as model-only
+        assert_eq!(cfg.provider, None);
+        assert_eq!(cfg.model.as_deref(), Some("gpt-4o"));
+    }
+
+    #[test]
+    fn parse_model_selector_legacy_aware_empty() {
+        assert!(parse_model_selector_legacy_aware("").is_none());
+        assert!(parse_model_selector_legacy_aware("  ").is_none());
     }
 }

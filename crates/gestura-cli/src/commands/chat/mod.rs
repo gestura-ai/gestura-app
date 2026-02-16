@@ -320,147 +320,6 @@ fn get_history_path() -> PathBuf {
         .join("chat_history.txt")
 }
 
-const KNOWN_LLM_PROVIDERS: [&str; 5] = ["openai", "anthropic", "grok", "gemini", "ollama"];
-
-fn is_known_llm_provider(provider: &str) -> bool {
-    KNOWN_LLM_PROVIDERS
-        .iter()
-        .any(|p| p.eq_ignore_ascii_case(provider.trim()))
-}
-
-/// Parse a CLI/TUI-style selector string into a session override.
-///
-/// This is intentionally *legacy-aware*:
-/// - `provider:model` => provider+model
-/// - `provider` (if matches known providers) => provider-only
-/// - otherwise => model-only
-fn parse_cli_model_selector_legacy_aware(spec: &str) -> Option<SessionLlmConfig> {
-    let s = spec.trim();
-    if s.is_empty() {
-        return None;
-    }
-
-    if s.contains(':') {
-        return llm_overrides::session_llm_config_from_cli_model_arg(s);
-    }
-
-    if is_known_llm_provider(s) {
-        return Some(SessionLlmConfig {
-            provider: Some(s.to_ascii_lowercase()),
-            model: None,
-        });
-    }
-
-    llm_overrides::session_llm_config_from_cli_model_arg(s)
-}
-
-fn basic_mode_resolve_session_llm_override(session: &ChatSession) -> Option<SessionLlmConfig> {
-    if let Some(cfg) = session.state.llm_config.as_ref() {
-        return Some(cfg.clone());
-    }
-
-    session
-        .model
-        .as_deref()
-        .and_then(parse_cli_model_selector_legacy_aware)
-}
-
-fn basic_mode_apply_session_llm_overrides(
-    base_config: &AppConfig,
-    session: &ChatSession,
-) -> (AppConfig, llm_overrides::EffectiveLlmConfig) {
-    let session_llm = basic_mode_resolve_session_llm_override(session);
-    let mut config = base_config.clone();
-    let effective =
-        llm_overrides::apply_cli_session_llm_overrides(&mut config, session_llm.as_ref());
-    (config, effective)
-}
-
-/// Normalize and (optionally) migrate session-scoped LLM selection state.
-///
-/// Returns `true` if the session was modified and should be persisted.
-fn normalize_basic_mode_session_llm_override(
-    config: &AppConfig,
-    session: &mut ChatSession,
-    cli_model_arg: Option<&str>,
-) -> bool {
-    let explicit_cli_arg = cli_model_arg.is_some_and(|s| !s.trim().is_empty());
-
-    let mut session_llm = if let Some(arg) = cli_model_arg.filter(|s| !s.trim().is_empty()) {
-        parse_cli_model_selector_legacy_aware(arg)
-    } else if session.state.llm_config.is_some() {
-        session.state.llm_config.clone()
-    } else {
-        session
-            .model
-            .as_deref()
-            .and_then(parse_cli_model_selector_legacy_aware)
-    };
-
-    let Some(mut session_llm_cfg) = session_llm.take() else {
-        return false;
-    };
-
-    // If this is an explicit CLI request, validate it before persisting.
-    if explicit_cli_arg {
-        let provider_for_validation = session_llm_cfg
-            .provider
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| config.llm.primary.clone());
-
-        if let Some(model) = session_llm_cfg
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            && let Err(msg) = gestura_core::llm_validation::validate_model_for_provider(
-                &provider_for_validation,
-                model,
-            )
-        {
-            println!("{} {msg}", "✗".red());
-            return false;
-        }
-
-        // If provider-only was requested, keep it provider-only until we resolve defaults below.
-        if session_llm_cfg.provider.is_none() {
-            session_llm_cfg.provider = Some(provider_for_validation);
-        }
-    }
-
-    let mut tmp_config = config.clone();
-    let effective =
-        llm_overrides::apply_cli_session_llm_overrides(&mut tmp_config, Some(&session_llm_cfg));
-    if effective.provider.trim().is_empty() || effective.model.trim().is_empty() {
-        return false;
-    }
-
-    let canonical = SessionLlmConfig {
-        provider: Some(effective.provider.clone()),
-        model: Some(effective.model.clone()),
-    };
-    let legacy = format!("{}:{}", effective.provider, effective.model);
-
-    let mut changed = false;
-    let same_canonical = session.state.llm_config.as_ref().is_some_and(|c| {
-        c.provider.as_deref() == canonical.provider.as_deref()
-            && c.model.as_deref() == canonical.model.as_deref()
-    });
-    if !same_canonical {
-        session.state.llm_config = Some(canonical);
-        changed = true;
-    }
-    if session.model.as_deref() != Some(legacy.as_str()) {
-        session.model = Some(legacy);
-        changed = true;
-    }
-
-    changed
-}
-
 pub fn run(opts: ChatOptions<'_>) -> Result<()> {
     // If TUI mode is requested, launch the TUI
     if opts.tui {
@@ -543,8 +402,14 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
     // - `/model` and header display are consistent
     // - pipeline metadata never ends up with an empty model
     // - legacy `session.model` strings are migrated to `provider:model`
-    if normalize_basic_mode_session_llm_override(&config, &mut chat_session, model) {
-        save_cli_session(&chat_session)?;
+    match llm_overrides::normalize_session_llm_override(&config, &mut chat_session, model) {
+        Ok(true) => {
+            save_cli_session(&chat_session)?;
+        }
+        Ok(false) => {}
+        Err(msg) => {
+            println!("{} {msg}", "✗".red());
+        }
     }
 
     // Ensure persisted sessions have tool settings (migration / defaults).
@@ -578,7 +443,8 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
     );
 
     // Session info line
-    let (_, effective) = basic_mode_apply_session_llm_overrides(&config, &chat_session);
+    let (_, effective) =
+        llm_overrides::apply_basic_mode_session_llm_overrides(&config, &chat_session);
     let session_info = format!(
         "session {} · provider {} · model {}",
         &chat_session.id[..8],
@@ -1479,7 +1345,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 // IMPORTANT: we apply overrides to the *pipeline config* so the underlying LLM
                 // call matches what `/model` says, and so provider configs are materialized.
                 let (config_for_pipeline, effective) =
-                    basic_mode_apply_session_llm_overrides(&config, &chat_session);
+                    llm_overrides::apply_basic_mode_session_llm_overrides(&config, &chat_session);
                 let provider_name = effective.provider;
                 let model_name = effective.model;
                 let (permission_level, allowed_tools) = derive_request_policy(&chat_session);
@@ -4197,7 +4063,7 @@ fn basic_mode_model_command(
 ) -> Option<SessionLlmConfig> {
     if args.is_empty() {
         // Show current effective provider/model info.
-        let (_, effective) = basic_mode_apply_session_llm_overrides(config, session);
+        let (_, effective) = llm_overrides::apply_basic_mode_session_llm_overrides(config, session);
         println!("{}", "Active Model".bold().cyan());
         println!("{}", "═".repeat(40));
         println!("  {} {}", "Provider:".dimmed(), effective.provider);
@@ -4229,7 +4095,7 @@ fn basic_mode_model_command(
         } else {
             (p, Some(m))
         }
-    } else if is_known_llm_provider(spec) {
+    } else if llm_overrides::is_known_llm_provider(spec) {
         (spec.to_ascii_lowercase(), None)
     } else {
         // Model-only — infer provider when possible, else keep current primary.

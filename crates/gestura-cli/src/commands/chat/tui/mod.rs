@@ -58,58 +58,14 @@ use tokio::sync::mpsc;
 
 use super::{ChatOptions, Result};
 
-const KNOWN_LLM_PROVIDERS: [&str; 5] = ["openai", "anthropic", "grok", "gemini", "ollama"];
-
-fn is_known_llm_provider(provider: &str) -> bool {
-    KNOWN_LLM_PROVIDERS
-        .iter()
-        .any(|p| p.eq_ignore_ascii_case(provider.trim()))
-}
-
-/// Parse a CLI/TUI-style selector string into a session override.
-///
-/// This is intentionally legacy-aware:
-/// - `provider:model` => provider+model
-/// - `provider` (if matches known providers) => provider-only
-/// - otherwise => model-only
-fn parse_cli_model_selector_legacy_aware(
-    spec: &str,
-) -> Option<gestura_core::chat_sessions::SessionLlmConfig> {
-    let s = spec.trim();
-    if s.is_empty() {
-        return None;
-    }
-
-    if s.contains(':') {
-        return gestura_core::llm_overrides::session_llm_config_from_cli_model_arg(s);
-    }
-
-    if is_known_llm_provider(s) {
-        return Some(gestura_core::chat_sessions::SessionLlmConfig {
-            provider: Some(s.to_ascii_lowercase()),
-            model: None,
-        });
-    }
-
-    gestura_core::llm_overrides::session_llm_config_from_cli_model_arg(s)
-}
-
 /// Resolve the session-scoped LLM override for the current TUI session.
 ///
-/// Precedence:
-/// 1) `app.session.state.llm_config` (canonical persisted override)
-/// 2) legacy `app.session.model` (CLI-style selector string)
+/// Thin wrapper around the core implementation that unwraps the session
+/// from the TUI app state.
 fn resolve_session_llm_override(
     app: &TuiApp,
 ) -> Option<gestura_core::chat_sessions::SessionLlmConfig> {
-    if let Some(cfg) = app.session.state.llm_config.as_ref() {
-        return Some(cfg.clone());
-    }
-
-    app.session
-        .model
-        .as_deref()
-        .and_then(parse_cli_model_selector_legacy_aware)
+    gestura_core::llm_overrides::resolve_session_llm_override(&app.session)
 }
 
 /// Return true if the token looks like a CLI flag (e.g. `--confirmed`).
@@ -265,7 +221,7 @@ fn apply_model_selection(app: &mut TuiApp, spec: &str, rt: &tokio::runtime::Runt
                 model: Some(m.to_string()),
             }
         }
-    } else if is_known_llm_provider(spec) {
+    } else if gestura_core::llm_overrides::is_known_llm_provider(spec) {
         gestura_core::chat_sessions::SessionLlmConfig {
             provider: Some(spec.to_ascii_lowercase()),
             model: None,
