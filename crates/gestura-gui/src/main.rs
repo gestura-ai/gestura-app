@@ -174,13 +174,13 @@ async fn main() {
             gestura_gui::api::approve_tool_confirmation,
             gestura_gui::api::resolve_tool_confirmation_decision,
             gestura_gui::api::deny_tool_confirmation,
-            // Chat diagnostics
-            gestura_gui::api::get_chat_event_trace,
-            gestura_gui::api::clear_chat_event_trace,
-            gestura_gui::api::record_chat_receipt,
-            gestura_gui::api::get_chat_receipt_trace,
-            gestura_gui::api::clear_chat_receipt_trace,
-            gestura_gui::api::run_chat_isolation_probe,
+            // Agent diagnostics
+            gestura_gui::api::get_agent_event_trace,
+            gestura_gui::api::clear_agent_event_trace,
+            gestura_gui::api::record_agent_receipt,
+            gestura_gui::api::get_agent_receipt_trace,
+            gestura_gui::api::clear_agent_receipt_trace,
+            gestura_gui::api::run_agent_isolation_probe,
             gestura_gui::api::send_agent_message,
             gestura_gui::api::get_agent_status,
             gestura_gui::api::list_agents,
@@ -225,9 +225,9 @@ async fn main() {
             // Tray diagnostics
             gestura_gui::api::get_tray_diagnostic_info,
             // Session management
-            gestura_gui::api::get_chat_sessions,
-            gestura_gui::api::restore_chat_session,
-            gestura_gui::api::create_chat_session,
+            gestura_gui::api::get_agent_sessions,
+            gestura_gui::api::restore_agent_session,
+            gestura_gui::api::create_agent_session,
             gestura_gui::api::get_session_counts,
             gestura_gui::api::get_session_history,
             gestura_gui::api::get_session_workspace,
@@ -236,7 +236,7 @@ async fn main() {
             gestura_gui::api::pick_workspace_directory,
             // Session convenience actions
             gestura_gui::api::open_shell_for_session,
-            // Project explorer (chat left-side file tree)
+            // Project explorer (agent left-side file tree)
             gestura_gui::api::explorer_get_root,
             gestura_gui::api::explorer_list_dir,
             gestura_gui::api::explorer_git_status,

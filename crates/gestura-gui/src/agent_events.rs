@@ -1,6 +1,6 @@
-//! Chat event emission utilities.
+//! Agent event emission utilities.
 //!
-//! This module centralizes how chat streaming events are emitted so we can:
+//! This module centralizes how agent streaming events are emitted so we can:
 //! - ensure events are *window-scoped* (no accidental global broadcast)
 //! - attach `session_id` for defense-in-depth filtering on the frontend
 //! - record a small in-memory trace for debugging cross-window leakage.
@@ -10,15 +10,15 @@ use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 use tauri::Emitter;
 
-/// Maximum number of chat event trace entries kept in memory.
-const CHAT_EVENT_TRACE_MAX: usize = 500;
+/// Maximum number of agent event trace entries kept in memory.
+const AGENT_EVENT_TRACE_MAX: usize = 500;
 
-/// A single emitted chat event record.
+/// A single emitted agent event record.
 #[derive(Clone, Debug, Serialize)]
-pub struct ChatEventTraceEntry {
+pub struct AgentEventTraceEntry {
     /// Unix epoch milliseconds.
     pub ts_ms: u128,
-    /// Event name (e.g., `chat-stream-chunk`).
+    /// Event name (e.g., `agent-stream-chunk`).
     pub event: String,
     /// Window label that the backend attempted to emit to.
     pub target_window_label: String,
@@ -30,24 +30,24 @@ pub struct ChatEventTraceEntry {
     pub payload_preview: String,
 }
 
-static CHAT_EVENT_TRACE: OnceLock<Mutex<VecDeque<ChatEventTraceEntry>>> = OnceLock::new();
+static AGENT_EVENT_TRACE: OnceLock<Mutex<VecDeque<AgentEventTraceEntry>>> = OnceLock::new();
 
-fn trace_store() -> &'static Mutex<VecDeque<ChatEventTraceEntry>> {
-    CHAT_EVENT_TRACE.get_or_init(|| Mutex::new(VecDeque::new()))
+fn trace_store() -> &'static Mutex<VecDeque<AgentEventTraceEntry>> {
+    AGENT_EVENT_TRACE.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
-/// Clears the in-memory chat event trace.
-pub fn clear_chat_event_trace() {
+/// Clears the in-memory agent event trace.
+pub fn clear_agent_event_trace() {
     let mut store = trace_store().lock().unwrap();
     store.clear();
 }
 
-/// Returns the most recent chat event trace entries.
+/// Returns the most recent agent event trace entries.
 ///
-/// If `max` is `None`, returns up to the most recent `CHAT_EVENT_TRACE_MAX` entries.
-pub fn get_chat_event_trace(max: Option<usize>) -> Vec<ChatEventTraceEntry> {
+/// If `max` is `None`, returns up to the most recent `AGENT_EVENT_TRACE_MAX` entries.
+pub fn get_agent_event_trace(max: Option<usize>) -> Vec<AgentEventTraceEntry> {
     let store = trace_store().lock().unwrap();
-    let take = max.unwrap_or(CHAT_EVENT_TRACE_MAX).min(store.len());
+    let take = max.unwrap_or(AGENT_EVENT_TRACE_MAX).min(store.len());
     store.iter().rev().take(take).cloned().collect::<Vec<_>>()
 }
 
@@ -77,13 +77,13 @@ pub fn attach_session_id(
     }
 }
 
-/// Emit a chat-related event to a specific window label using `emit_to` (window-scoped).
+/// Emit an agent-related event to a specific window label using `emit_to` (window-scoped).
 ///
 /// If emitting to `target_window_label` fails, this falls back to emitting to
 /// `fallback_window_label`.
 ///
 /// Returns the final window label the event was emitted to on success.
-pub fn emit_chat_event_to_window(
+pub fn emit_agent_event_to_window(
     app: &tauri::AppHandle,
     target_window_label: &str,
     fallback_window_label: &str,
@@ -111,7 +111,7 @@ pub fn emit_chat_event_to_window(
     // Note: we truncate by character count to avoid UTF-8 slicing panics.
     let payload_preview = crate::text_utils::truncate_utf8(&payload.to_string(), 240);
 
-    let entry = ChatEventTraceEntry {
+    let entry = AgentEventTraceEntry {
         ts_ms: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
@@ -125,9 +125,10 @@ pub fn emit_chat_event_to_window(
 
     let mut store = trace_store().lock().unwrap();
     store.push_back(entry);
-    while store.len() > CHAT_EVENT_TRACE_MAX {
+    while store.len() > AGENT_EVENT_TRACE_MAX {
         store.pop_front();
     }
 
     Ok(emitted_to)
 }
+

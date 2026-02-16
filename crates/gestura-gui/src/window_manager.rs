@@ -1,5 +1,5 @@
 //! Window and session management for Gestura
-//! Handles chat sessions, window lifecycle, and session restoration
+//! Handles agent sessions, window lifecycle, and session restoration
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ use gestura_core::config::AppConfigSecurityExt;
 
 /// Compute the default per-session workspace directory (`~/.gestura/sessions/{session_id}`).
 ///
-/// This mirrors the workspace convention used when creating new chat sessions.
+/// This mirrors the workspace convention used when creating new agent sessions.
 pub(crate) fn default_session_workspace_dir(session_id: &str) -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -24,7 +24,7 @@ pub(crate) fn default_session_workspace_dir(session_id: &str) -> PathBuf {
         .join(session_id)
 }
 
-/// Return the default core-backed chat session store.
+/// Return the default core-backed agent session store.
 ///
 /// Keeping this as a helper ensures the GUI remains a thin adapter over the
 /// unified persistence implementation in `gestura-core`.
@@ -37,7 +37,7 @@ fn session_store() -> FileChatSessionStore {
 /// The GUI maintains ephemeral window state (`is_open`, `window_label`) and a
 /// derived `message_count` for UI display. Persistence is handled by the core
 /// `ChatSession` type only.
-fn to_core_session(session: &ChatSession) -> gestura_core::chat_sessions::ChatSession {
+fn to_core_session(session: &AgentSession) -> gestura_core::chat_sessions::ChatSession {
     gestura_core::chat_sessions::ChatSession {
         id: session.id.clone(),
         title: session.title.clone(),
@@ -56,9 +56,9 @@ fn to_core_session(session: &ChatSession) -> gestura_core::chat_sessions::ChatSe
 ///
 /// Windows do not survive app restarts, so all loaded sessions are marked as
 /// closed and their `window_label` is cleared.
-fn from_core_session(session: gestura_core::chat_sessions::ChatSession) -> ChatSession {
+fn from_core_session(session: gestura_core::chat_sessions::ChatSession) -> AgentSession {
     let message_count = session.state.messages.len();
-    ChatSession {
+    AgentSession {
         id: session.id,
         title: session.title,
         created_at: session.created_at,
@@ -70,7 +70,7 @@ fn from_core_session(session: gestura_core::chat_sessions::ChatSession) -> ChatS
     }
 }
 
-/// Core-First: the GUI re-exports the unified chat session model from `gestura-core`.
+/// Core-First: the GUI re-exports the unified agent session model from `gestura-core`.
 ///
 /// This keeps the Tauri layer thin while preserving the existing public module paths
 /// (`crate::window_manager::ConversationMessage`, etc.) used by backend commands.
@@ -89,7 +89,7 @@ fn default_session_tool_settings() -> SessionToolSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatSession {
+pub struct AgentSession {
     pub id: String,
     pub title: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -112,7 +112,7 @@ pub struct WindowInfo {
 }
 
 pub struct WindowManager {
-    sessions: Arc<Mutex<HashMap<String, ChatSession>>>,
+    sessions: Arc<Mutex<HashMap<String, AgentSession>>>,
     windows: Arc<Mutex<HashMap<String, WindowInfo>>>,
     app: AppHandle,
 }
@@ -169,7 +169,7 @@ impl WindowManager {
 
         // Sanitize sessions as we load them.
         let mut repaired_any = false;
-        let mut sessions_for_ui: Vec<ChatSession> = Vec::new();
+        let mut sessions_for_ui: Vec<AgentSession> = Vec::new();
         for mut core_session in loaded_core_sessions {
             repaired_any |= gestura_core::chat_sessions::sanitize_session_llm_override(
                 &core_session.id,
@@ -204,7 +204,7 @@ impl WindowManager {
     pub fn save_sessions_to_disk(&self) {
         let store = session_store();
         let sessions = self.sessions.lock().unwrap();
-        let session_list: Vec<ChatSession> = sessions.values().cloned().collect();
+        let session_list: Vec<AgentSession> = sessions.values().cloned().collect();
         drop(sessions);
 
         // If there are no in-memory sessions, remove all persisted sessions.
@@ -239,12 +239,12 @@ impl WindowManager {
         tracing::info!("Saved {} sessions to core store", saved);
     }
 
-    /// Create a new chat session and window
-    pub fn create_chat_session(&self) -> tauri::Result<String> {
+    /// Create a new agent session and window
+    pub fn create_agent_session(&self) -> tauri::Result<String> {
         let session_id = Uuid::new_v4().to_string();
-        let window_label = format!("chat-{}", session_id);
+        let window_label = format!("agent-{}", session_id);
 
-        tracing::info!("Creating new chat session: {}", session_id);
+        tracing::info!("Creating new agent session: {}", session_id);
 
         // Default workspace semantics (GUI): the explorer root, "project root", and sandbox
         // workspace should all refer to the same directory.
@@ -304,9 +304,9 @@ impl WindowManager {
 
         // Create the session with user-friendly title
         let now = chrono::Utc::now();
-        let session = ChatSession {
+        let session = AgentSession {
             id: session_id.clone(),
-            title: format!("Chat {}", now.format("%b %d, %H:%M")),
+            title: format!("Agent {}", now.format("%b %d, %H:%M")),
             created_at: now,
             last_active: now,
             is_open: true,
@@ -322,7 +322,7 @@ impl WindowManager {
         }
 
         // Create the window
-        self.create_chat_window(&session_id, &window_label)?;
+        self.create_agent_window(&session_id, &window_label)?;
 
         // Persist sessions to disk
         self.save_sessions_to_disk();
@@ -334,15 +334,15 @@ impl WindowManager {
         Ok(session_id)
     }
 
-    /// Create a chat window for a session
-    fn create_chat_window(&self, session_id: &str, window_label: &str) -> tauri::Result<()> {
+    /// Create an agent window for a session
+    fn create_agent_window(&self, session_id: &str, window_label: &str) -> tauri::Result<()> {
         // Include the session_id in the URL so the frontend can route events/state
         // correctly per window (avoids cross-window event bleed and enables
         // session-scoped history).
-        let chat_url = format!("chat.html?session_id={}", session_id);
+        let agent_url = format!("agent.html?session_id={}", session_id);
         let window =
-            WebviewWindowBuilder::new(&self.app, window_label, WebviewUrl::App(chat_url.into()))
-                .title("Gestura Chat")
+            WebviewWindowBuilder::new(&self.app, window_label, WebviewUrl::App(agent_url.into()))
+                .title("Gestura Agent")
                 .inner_size(800.0, 600.0)
                 .center()
                 .resizable(true)
@@ -359,7 +359,7 @@ impl WindowManager {
         // Store window info
         let window_info = WindowInfo {
             label: window_label.to_string(),
-            window_type: "chat".to_string(),
+            window_type: "agent".to_string(),
             session_id: Some(session_id.to_string()),
             created_at: chrono::Utc::now(),
             is_visible: true,
@@ -379,7 +379,7 @@ impl WindowManager {
 
         window.on_window_event(move |event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                tracing::info!("Chat window closing: {}", window_label_clone);
+                tracing::info!("Agent window closing: {}", window_label_clone);
 
                 // Mark session as closed but don't delete it
                 if let Ok(mut sessions) = sessions.lock()
@@ -404,7 +404,7 @@ impl WindowManager {
             }
         });
 
-        tracing::info!("Created chat window: {}", window_label);
+        tracing::info!("Created agent window: {}", window_label);
         Ok(())
     }
 
@@ -482,7 +482,7 @@ impl WindowManager {
         Ok(())
     }
 
-    /// Restore a closed chat session or focus an already-open session
+    /// Restore a closed agent session or focus an already-open session
     pub fn restore_session(&self, session_id: &str) -> tauri::Result<()> {
         let session = {
             let sessions = self.sessions.lock().unwrap();
@@ -501,8 +501,8 @@ impl WindowManager {
                 }
             } else {
                 // Session is closed - restore it
-                let window_label = format!("chat-{}", session_id);
-                self.create_chat_window(session_id, &window_label)?;
+                let window_label = format!("agent-{}", session_id);
+                self.create_agent_window(session_id, &window_label)?;
 
                 // Update session
                 session.is_open = true;
@@ -526,26 +526,26 @@ impl WindowManager {
     }
 
     /// Get all sessions (open and closed)
-    pub fn get_sessions(&self) -> Vec<ChatSession> {
+    pub fn get_sessions(&self) -> Vec<AgentSession> {
         let sessions = self.sessions.lock().unwrap();
         sessions.values().cloned().collect()
     }
 
     /// Get active (open) sessions
-    pub fn get_active_sessions(&self) -> Vec<ChatSession> {
+    pub fn get_active_sessions(&self) -> Vec<AgentSession> {
         let sessions = self.sessions.lock().unwrap();
         sessions.values().filter(|s| s.is_open).cloned().collect()
     }
 
     /// Get closed sessions that can be restored
-    pub fn get_closed_sessions(&self) -> Vec<ChatSession> {
+    pub fn get_closed_sessions(&self) -> Vec<AgentSession> {
         let sessions = self.sessions.lock().unwrap();
         sessions.values().filter(|s| !s.is_open).cloned().collect()
     }
 
-    /// Get the focused chat session, if any
-    /// Returns the session ID of the currently focused chat window
-    pub fn get_focused_chat_session(&self) -> Option<String> {
+    /// Get the focused agent session, if any
+    /// Returns the session ID of the currently focused agent window
+    pub fn get_focused_agent_session(&self) -> Option<String> {
         let sessions = self.sessions.lock().unwrap();
 
         // Find active sessions with window labels
@@ -554,16 +554,16 @@ impl WindowManager {
                 && let Some(window) = self.app.get_webview_window(window_label)
                 && window.is_focused().unwrap_or(false)
             {
-                tracing::info!("Found focused chat session: {}", session.id);
+                tracing::info!("Found focused agent session: {}", session.id);
                 return Some(session.id.clone());
             }
         }
 
-        tracing::info!("No focused chat session found");
+        tracing::info!("No focused agent session found");
         None
     }
 
-    /// Get the most recently active open chat session
+    /// Get the most recently active open agent session
     /// Falls back to this if no window is focused
     pub fn get_most_recent_active_session(&self) -> Option<String> {
         let sessions = self.sessions.lock().unwrap();
@@ -621,7 +621,7 @@ impl WindowManager {
     ///
     /// Resolution order:
     /// 1) The internal `windows` registry (most robust)
-    /// 2) Parsing the app's chat label convention: `chat-{session_id}`
+    /// 2) Parsing the app's agent label convention: `agent-{session_id}`
     pub fn get_session_id_for_window_label(&self, window_label: &str) -> Option<String> {
         // Prefer the explicit window registry.
         let from_registry = self
@@ -636,7 +636,7 @@ impl WindowManager {
 
         // Fallback: parse labels generated by this app's naming convention.
         window_label
-            .strip_prefix("chat-")
+            .strip_prefix("agent-")
             .map(|sid| sid.to_string())
     }
 
@@ -748,9 +748,9 @@ pub fn get_window_manager() -> Option<WindowManager> {
 }
 
 /// Convenience functions for tray usage
-pub fn create_new_chat_session() -> tauri::Result<String> {
+pub fn create_new_agent_session() -> tauri::Result<String> {
     if let Some(manager) = get_window_manager() {
-        manager.create_chat_session()
+        manager.create_agent_session()
     } else {
         Err(tauri::Error::FailedToReceiveMessage)
     }
@@ -764,7 +764,7 @@ pub fn open_config_window() -> tauri::Result<()> {
     }
 }
 
-pub fn restore_chat_session(session_id: &str) -> tauri::Result<()> {
+pub fn restore_agent_session(session_id: &str) -> tauri::Result<()> {
     if let Some(manager) = get_window_manager() {
         manager.restore_session(session_id)
     } else {
@@ -772,7 +772,7 @@ pub fn restore_chat_session(session_id: &str) -> tauri::Result<()> {
     }
 }
 
-pub fn get_all_sessions() -> Vec<ChatSession> {
+pub fn get_all_sessions() -> Vec<AgentSession> {
     if let Some(manager) = get_window_manager() {
         manager.get_sessions()
     } else {
@@ -804,21 +804,21 @@ pub fn close_onboarding() -> tauri::Result<()> {
     }
 }
 
-/// Get the focused chat session, if any
-pub fn get_focused_chat_session() -> Option<String> {
-    get_window_manager().and_then(|m| m.get_focused_chat_session())
+/// Get the focused agent session, if any
+pub fn get_focused_agent_session() -> Option<String> {
+    get_window_manager().and_then(|m| m.get_focused_agent_session())
 }
 
-/// Get the most recently active open chat session
+/// Get the most recently active open agent session
 pub fn get_most_recent_active_session() -> Option<String> {
     get_window_manager().and_then(|m| m.get_most_recent_active_session())
 }
 
-/// Get an active chat session to use for voice input
-/// Priority: 1) Focused chat window, 2) Most recently active chat, 3) None (create new)
-pub fn get_active_chat_for_voice() -> Option<String> {
-    // First try to get the focused chat window
-    if let Some(session_id) = get_focused_chat_session() {
+/// Get an active agent session to use for voice input
+/// Priority: 1) Focused agent window, 2) Most recently active agent, 3) None (create new)
+pub fn get_active_agent_for_voice() -> Option<String> {
+    // First try to get the focused agent window
+    if let Some(session_id) = get_focused_agent_session() {
         return Some(session_id);
     }
 
@@ -845,7 +845,7 @@ pub fn get_session_state(session_id: &str) -> Option<SessionState> {
 
 /// Get the workspace directory for the current active session
 pub fn get_active_session_workspace() -> Option<PathBuf> {
-    get_active_chat_for_voice()
+    get_active_agent_for_voice()
         .and_then(|session_id| get_session_state(&session_id))
         .and_then(|state| state.workspace_dir)
 }
@@ -1287,11 +1287,11 @@ pub fn open_shell_session() -> Result<(), crate::shell_session::ShellSessionErro
     spawn_shell(config)
 }
 
-/// Open a shell session for a specific chat session and automatically resume it via the CLI.
+/// Open a shell session for a specific agent session and automatically resume it via the CLI.
 ///
 /// This opens a terminal at the session workspace directory and runs:
 /// `gestura chat --resume --session <session_id>`
-pub fn open_shell_session_for_chat_resume(session_id: &str) -> Result<(), String> {
+pub fn open_shell_session_for_agent_resume(session_id: &str) -> Result<(), String> {
     use crate::shell_session::{ShellSessionConfig, open_shell_session as spawn_shell};
 
     let state = get_session_state(session_id)
@@ -1327,7 +1327,7 @@ pub fn open_shell_session_for_chat_resume(session_id: &str) -> Result<(), String
 
 /// Get the current Gestura project directory.
 ///
-/// This is used as the **project-root** for UI features like the chat file
+/// This is used as the **project-root** for UI features like the agent file
 /// explorer. It searches upward from the current working directory looking for
 /// common project indicators like `.gestura/`, `Cargo.toml`, `package.json`, or
 /// `.git`.

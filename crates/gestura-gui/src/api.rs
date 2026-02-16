@@ -1647,7 +1647,7 @@ pub async fn process_chat_message_streaming(
         .or_else(|| calling_session_id.clone())
         .or_else(|| {
             if matches!(message_source, crate::window_manager::MessageSource::Voice) {
-                crate::window_manager::get_active_chat_for_voice()
+                crate::window_manager::get_active_agent_for_voice()
             } else {
                 None
             }
@@ -1684,8 +1684,8 @@ pub async fn process_chat_message_streaming(
     // attaches `session_id` for frontend filtering.
     let emit = |event: &str, payload: serde_json::Value| {
         let payload =
-            crate::chat_events::attach_session_id(payload, resolved_session_id.as_deref());
-        if let Err(err) = crate::chat_events::emit_chat_event_to_window(
+            crate::agent_events::attach_session_id(payload, resolved_session_id.as_deref());
+        if let Err(err) = crate::agent_events::emit_agent_event_to_window(
             &app,
             &target_window_label,
             &calling_window_label,
@@ -1741,7 +1741,7 @@ pub async fn process_chat_message_streaming(
         }
 
         if let Some(note) = thinking_note {
-            emit("chat-stream-thinking", serde_json::json!(note));
+            emit("agent-stream-thinking", serde_json::json!(note));
             tokio::task::yield_now().await;
         }
 
@@ -1758,11 +1758,11 @@ pub async fn process_chat_message_streaming(
             rest = next;
 
             if !chunk.is_empty() {
-                emit("chat-stream-chunk", serde_json::json!(chunk));
+                emit("agent-stream-chunk", serde_json::json!(chunk));
                 tokio::task::yield_now().await;
             }
         }
-        emit("chat-stream-done", serde_json::json!(null));
+        emit("agent-stream-done", serde_json::json!(null));
         return Ok(());
     }
 
@@ -1781,7 +1781,7 @@ pub async fn process_chat_message_streaming(
         }
 
         if let Some(note) = thinking_note {
-            emit("chat-stream-thinking", serde_json::json!(note));
+            emit("agent-stream-thinking", serde_json::json!(note));
             tokio::task::yield_now().await;
         }
 
@@ -1797,11 +1797,11 @@ pub async fn process_chat_message_streaming(
             rest = next;
 
             if !chunk.is_empty() {
-                emit("chat-stream-chunk", serde_json::json!(chunk));
+                emit("agent-stream-chunk", serde_json::json!(chunk));
                 tokio::task::yield_now().await;
             }
         }
-        emit("chat-stream-done", serde_json::json!(null));
+        emit("agent-stream-done", serde_json::json!(null));
         return Ok(());
     }
 
@@ -1845,7 +1845,7 @@ pub async fn process_chat_message_streaming(
         }
 
         if let Some(note) = thinking_note {
-            emit("chat-stream-thinking", serde_json::json!(note));
+            emit("agent-stream-thinking", serde_json::json!(note));
             tokio::task::yield_now().await;
         }
 
@@ -1861,11 +1861,11 @@ pub async fn process_chat_message_streaming(
             rest = next;
 
             if !chunk.is_empty() {
-                emit("chat-stream-chunk", serde_json::json!(chunk));
+                emit("agent-stream-chunk", serde_json::json!(chunk));
                 tokio::task::yield_now().await;
             }
         }
-        emit("chat-stream-done", serde_json::json!(null));
+        emit("agent-stream-done", serde_json::json!(null));
         return Ok(());
     }
 
@@ -2014,7 +2014,7 @@ pub async fn process_chat_message_streaming(
         }
 
         if let Some(note) = thinking_note {
-            emit("chat-stream-thinking", serde_json::json!(note));
+            emit("agent-stream-thinking", serde_json::json!(note));
             tokio::task::yield_now().await;
         }
 
@@ -2030,11 +2030,11 @@ pub async fn process_chat_message_streaming(
             rest = next;
 
             if !chunk.is_empty() {
-                emit("chat-stream-chunk", serde_json::json!(chunk));
+                emit("agent-stream-chunk", serde_json::json!(chunk));
                 tokio::task::yield_now().await;
             }
         }
-        emit("chat-stream-done", serde_json::json!(null));
+        emit("agent-stream-done", serde_json::json!(null));
         return Ok(());
     }
 
@@ -2263,30 +2263,30 @@ pub async fn process_chat_message_streaming(
                 assistant_thinking
                     .get_or_insert_with(String::new)
                     .push_str(&text);
-                emit("chat-stream-thinking", serde_json::json!(text));
+                emit("agent-stream-thinking", serde_json::json!(text));
             }
             StreamChunk::Status { message } => {
                 let payload = serde_json::json!({ "message": message });
-                emit("chat-stream-status", payload);
+                emit("agent-stream-status", payload);
             }
             StreamChunk::Text(text) => {
                 tracing::debug!("[Stream] Text chunk: {}", &text.chars().take(100).collect::<String>());
                 assistant_text.push_str(&text);
-                emit("chat-stream-chunk", serde_json::json!(text));
+                emit("agent-stream-chunk", serde_json::json!(text));
             }
             StreamChunk::ToolCallStart { id, name } => {
                 current_tool_call = Some((id.clone(), name.clone(), String::new()));
                 let payload = serde_json::json!({ "id": id, "name": name });
-                emit("chat-stream-tool-start", payload);
+                emit("agent-stream-tool-start", payload);
             }
             StreamChunk::ToolCallArgs(args) => {
                 if let Some((_, _, ref mut acc)) = current_tool_call {
                     acc.push_str(&args);
                 }
-                emit("chat-stream-tool-args", serde_json::json!(args));
+                emit("agent-stream-tool-args", serde_json::json!(args));
             }
             StreamChunk::ToolCallEnd => {
-                emit("chat-stream-tool-end", serde_json::json!(null));
+                emit("agent-stream-tool-end", serde_json::json!(null));
             }
             StreamChunk::ToolCallResult {
                 name,
@@ -2315,7 +2315,7 @@ pub async fn process_chat_message_streaming(
                     "output": output,
                     "duration_ms": duration_ms
                 });
-                emit("chat-stream-tool-result", payload);
+                emit("agent-stream-tool-result", payload);
             }
             StreamChunk::RetryAttempt {
                 attempt,
@@ -2329,7 +2329,7 @@ pub async fn process_chat_message_streaming(
                     "delay_ms": delay_ms,
                     "error_message": error_message
                 });
-                emit("chat-stream-retry", payload);
+                emit("agent-stream-retry", payload);
             }
             StreamChunk::ContextCompacted {
                 messages_before,
@@ -2343,7 +2343,7 @@ pub async fn process_chat_message_streaming(
                     "tokens_saved": tokens_saved,
                     "summary": summary
                 });
-                emit("chat-context-compacted", payload);
+                emit("agent-context-compacted", payload);
             }
             StreamChunk::MemoryBankSaved {
                 file_path,
@@ -2357,7 +2357,7 @@ pub async fn process_chat_message_streaming(
                     "summary": summary,
                     "messages_saved": messages_saved
                 });
-                emit("chat-memory-bank-saved", payload);
+                emit("agent-memory-bank-saved", payload);
             }
             StreamChunk::TokenUsageUpdate {
                 estimated,
@@ -2378,7 +2378,7 @@ pub async fn process_chat_message_streaming(
                     "status": status_str,
                     "estimated_cost": estimated_cost
                 });
-                emit("chat-token-usage", payload);
+                emit("agent-token-usage", payload);
             }
             StreamChunk::ConfigRequest {
                 operation,
@@ -2393,7 +2393,7 @@ pub async fn process_chat_message_streaming(
                     "requires_confirmation": requires_confirmation,
                     "session_id": resolved_session_id
                 });
-                emit("chat-config-request", payload);
+                emit("agent-config-request", payload);
             }
             StreamChunk::ToolConfirmationRequired {
                 confirmation_id,
@@ -2412,7 +2412,7 @@ pub async fn process_chat_message_streaming(
                     "category": category,
                     "session_id": resolved_session_id
                 });
-                emit("chat-stream-tool-confirmation", payload);
+                emit("agent-stream-tool-confirmation", payload);
             }
             StreamChunk::ToolBlocked { tool_name, reason } => {
                 let payload = serde_json::json!({
@@ -2420,14 +2420,14 @@ pub async fn process_chat_message_streaming(
                     "reason": reason,
                     "session_id": resolved_session_id
                 });
-                emit("chat-stream-tool-blocked", payload);
+                emit("agent-stream-tool-blocked", payload);
             }
             StreamChunk::AgentLoopIteration { iteration } => {
                 let payload = serde_json::json!({
                     "iteration": iteration,
                     "session_id": resolved_session_id
                 });
-                emit("chat-stream-agent-iteration", payload);
+                emit("agent-stream-agent-iteration", payload);
             }
             StreamChunk::ShellOutput {
                 process_id,
@@ -2440,7 +2440,7 @@ pub async fn process_chat_message_streaming(
                     "data": data,
                     "session_id": resolved_session_id
                 });
-                emit("chat-stream-shell-output", payload);
+                emit("agent-stream-shell-output", payload);
             }
             StreamChunk::ShellLifecycle {
                 process_id,
@@ -2459,14 +2459,14 @@ pub async fn process_chat_message_streaming(
                     "cwd": cwd,
                     "session_id": resolved_session_id
                 });
-                emit("chat-stream-shell-lifecycle", payload);
+                emit("agent-stream-shell-lifecycle", payload);
             }
             StreamChunk::Done(usage) => {
                 saw_terminal = true;
                 // Emit token usage if available
                 if let Some(ref usage) = usage {
                     emit(
-                        "chat-token-usage",
+                        "agent-token-usage",
                     serde_json::to_value(usage).unwrap_or(serde_json::Value::Null),
                     );
 
@@ -2496,7 +2496,7 @@ pub async fn process_chat_message_streaming(
                     let _ = crate::task_integration::mark_task_completed(&app, sid, task_id);
                 }
 
-                emit("chat-stream-done", serde_json::json!(null));
+                emit("agent-stream-done", serde_json::json!(null));
                 break;
             }
             StreamChunk::Cancelled | StreamChunk::Paused => {
@@ -2552,9 +2552,9 @@ pub async fn process_chat_message_streaming(
 
                 // Emit the appropriate frontend event.
                 if is_paused {
-                    emit("chat-stream-paused", serde_json::json!(null));
+                    emit("agent-stream-paused", serde_json::json!(null));
                 } else {
-                    emit("chat-stream-cancelled", serde_json::json!(null));
+                    emit("agent-stream-cancelled", serde_json::json!(null));
                 }
                 break;
             }
@@ -2579,7 +2579,7 @@ pub async fn process_chat_message_streaming(
                     let _ = crate::task_integration::mark_task_cancelled(&app, sid, task_id);
                 }
 
-                emit("chat-stream-error", serde_json::json!(err));
+                emit("agent-stream-error", serde_json::json!(err));
                 break;
             }
                 }
@@ -2591,7 +2591,7 @@ pub async fn process_chat_message_streaming(
                 tracing::error!("Streaming chat timed out (no events for {:?})", idle_timeout);
                 cancel_token.cancel();
                 emit(
-                    "chat-stream-error",
+                    "agent-stream-error",
                     serde_json::json!(format!(
                         "Timed out waiting for agent response (no events for {:?}).",
                         idle_timeout
@@ -2605,7 +2605,7 @@ pub async fn process_chat_message_streaming(
     // If the channel closed without any terminal event, surface that as an error.
     if !saw_terminal {
         emit(
-            "chat-stream-error",
+            "agent-stream-error",
             serde_json::json!("Streaming ended unexpectedly (no terminal event received)"),
         );
     }
@@ -2617,7 +2617,7 @@ pub async fn process_chat_message_streaming(
             if let Err(join_err) = res {
                 tracing::error!("AgentPipeline task join error: {}", join_err);
                 if !saw_terminal {
-                    emit("chat-stream-error", serde_json::json!(format!("Agent task failed: {join_err}")));
+                    emit("agent-stream-error", serde_json::json!(format!("Agent task failed: {join_err}")));
                 }
             }
         }
@@ -2690,8 +2690,8 @@ pub async fn resume_chat_streaming(
     let resolved_session_id: Option<String> = Some(session_id.clone());
     let emit = |event: &str, payload: serde_json::Value| {
         let payload =
-            crate::chat_events::attach_session_id(payload, resolved_session_id.as_deref());
-        if let Err(err) = crate::chat_events::emit_chat_event_to_window(
+            crate::agent_events::attach_session_id(payload, resolved_session_id.as_deref());
+        if let Err(err) = crate::agent_events::emit_agent_event_to_window(
             &app,
             &target_window_label,
             &calling_window_label,
@@ -2699,7 +2699,7 @@ pub async fn resume_chat_streaming(
             &payload,
             resolved_session_id.as_deref(),
         ) {
-            tracing::error!(event = %event, error = %err, "Failed to emit resume chat event");
+            tracing::error!(event = %event, error = %err, "Failed to emit resume agent event");
         }
     };
 
@@ -2767,7 +2767,7 @@ pub async fn resume_chat_streaming(
         }
     });
 
-    emit("chat-stream-resumed", serde_json::json!(null));
+    emit("agent-stream-resumed", serde_json::json!(null));
 
     // Forward chunks — mirrors the loop in process_chat_message_streaming.
     let mut assistant_text = String::new();
@@ -2795,22 +2795,22 @@ pub async fn resume_chat_streaming(
                 match chunk {
                     StreamChunk::Thinking(text) => {
                         assistant_thinking.get_or_insert_with(String::new).push_str(&text);
-                        emit("chat-stream-thinking", serde_json::json!(text));
+                        emit("agent-stream-thinking", serde_json::json!(text));
                     }
                     StreamChunk::Text(text) => {
                         assistant_text.push_str(&text);
-                        emit("chat-stream-chunk", serde_json::json!(text));
+                        emit("agent-stream-chunk", serde_json::json!(text));
                     }
                     StreamChunk::ToolCallStart { id, name } => {
                         current_tool_call = Some((id.clone(), name.clone(), String::new()));
-                        emit("chat-stream-tool-start", serde_json::json!({ "id": id, "name": name }));
+                        emit("agent-stream-tool-start", serde_json::json!({ "id": id, "name": name }));
                     }
                     StreamChunk::ToolCallArgs(args) => {
                         if let Some((_, _, ref mut acc)) = current_tool_call { acc.push_str(&args); }
-                        emit("chat-stream-tool-args", serde_json::json!(args));
+                        emit("agent-stream-tool-args", serde_json::json!(args));
                     }
                     StreamChunk::ToolCallEnd => {
-                        emit("chat-stream-tool-end", serde_json::json!(null));
+                        emit("agent-stream-tool-end", serde_json::json!(null));
                     }
                     StreamChunk::ToolCallResult { name, success, output, duration_ms } => {
                         if let Some((tc_id, tc_name, tc_args)) = current_tool_call.take() {
@@ -2824,7 +2824,7 @@ pub async fn resume_chat_streaming(
                                 duration_ms,
                             });
                         }
-                        emit("chat-stream-tool-result", serde_json::json!({
+                        emit("agent-stream-tool-result", serde_json::json!({
                             "name": name, "success": success, "output": output, "duration_ms": duration_ms
                         }));
                     }
@@ -2835,7 +2835,7 @@ pub async fn resume_chat_streaming(
                         {
                             crate::window_manager::add_assistant_message(sid, &assistant_text, assistant_thinking.clone());
                         }
-                        emit("chat-stream-done", serde_json::json!(null));
+                        emit("agent-stream-done", serde_json::json!(null));
                         break;
                     }
                     StreamChunk::Cancelled | StreamChunk::Paused => {
@@ -2861,7 +2861,7 @@ pub async fn resume_chat_streaming(
                             };
                             crate::window_manager::set_session_paused_execution(sid, Some(paused_state));
                         }
-                        emit("chat-stream-paused", serde_json::json!(null));
+                        emit("agent-stream-paused", serde_json::json!(null));
                         break;
                     }
                     StreamChunk::Error(err) => {
@@ -2870,15 +2870,15 @@ pub async fn resume_chat_streaming(
                         {
                             crate::window_manager::add_assistant_message(sid, &assistant_text, assistant_thinking.clone());
                         }
-                        emit("chat-stream-error", serde_json::json!({ "error": err }));
+                        emit("agent-stream-error", serde_json::json!({ "error": err }));
                         break;
                     }
                     // Forward other informational chunks.
                     StreamChunk::Status { message } => {
-                        emit("chat-stream-status", serde_json::json!({ "message": message }));
+                        emit("agent-stream-status", serde_json::json!({ "message": message }));
                     }
                     StreamChunk::AgentLoopIteration { iteration } => {
-                        emit("chat-stream-agent-iteration", serde_json::json!({ "iteration": iteration }));
+                        emit("agent-stream-agent-iteration", serde_json::json!({ "iteration": iteration }));
                     }
                     _ => {}
                 }
@@ -2956,19 +2956,19 @@ pub fn deny_tool_confirmation(
     )
 }
 
-/// Returns recent chat event emission trace entries.
+/// Returns recent agent event emission trace entries.
 ///
 /// This is a diagnostics-only command used to debug cross-window event leakage.
-/// The trace is an in-memory ring buffer recorded by `crate::chat_events`.
+/// The trace is an in-memory ring buffer recorded by `crate::agent_events`.
 #[tauri::command]
-pub fn get_chat_event_trace(max: Option<usize>) -> Vec<crate::chat_events::ChatEventTraceEntry> {
-    crate::chat_events::get_chat_event_trace(max)
+pub fn get_agent_event_trace(max: Option<usize>) -> Vec<crate::agent_events::AgentEventTraceEntry> {
+    crate::agent_events::get_agent_event_trace(max)
 }
 
-/// Clears the in-memory chat event emission trace.
+/// Clears the in-memory agent event emission trace.
 #[tauri::command]
-pub fn clear_chat_event_trace() -> Result<(), String> {
-    crate::chat_events::clear_chat_event_trace();
+pub fn clear_agent_event_trace() -> Result<(), String> {
+    crate::agent_events::clear_agent_event_trace();
     Ok(())
 }
 
@@ -2983,37 +2983,37 @@ pub fn clear_chat_event_trace() -> Result<(), String> {
 /// - `incomingSessionId` (optional)
 /// - `accept` + `reason` (optional)
 #[tauri::command]
-pub fn record_chat_receipt(payload: String) -> Result<(), String> {
-    crate::chat_receipts::record_chat_receipt_payload(&payload);
+pub fn record_agent_receipt(payload: String) -> Result<(), String> {
+    crate::agent_receipts::record_agent_receipt_payload(&payload);
     Ok(())
 }
 
-/// Returns recent chat receipt trace entries.
+/// Returns recent agent receipt trace entries.
 ///
 /// This is a diagnostics-only command used to debug cross-window event leakage.
 #[tauri::command]
-pub fn get_chat_receipt_trace(
+pub fn get_agent_receipt_trace(
     max: Option<usize>,
-) -> Vec<crate::chat_receipts::ChatReceiptTraceEntry> {
-    crate::chat_receipts::get_chat_receipt_trace(max)
+) -> Vec<crate::agent_receipts::AgentReceiptTraceEntry> {
+    crate::agent_receipts::get_agent_receipt_trace(max)
 }
 
-/// Clears the in-memory chat receipt trace.
+/// Clears the in-memory agent receipt trace.
 #[tauri::command]
-pub fn clear_chat_receipt_trace() -> Result<(), String> {
-    crate::chat_receipts::clear_chat_receipt_trace();
+pub fn clear_agent_receipt_trace() -> Result<(), String> {
+    crate::agent_receipts::clear_agent_receipt_trace();
     Ok(())
 }
 
 /// Run a deterministic cross-window isolation probe.
 ///
-/// This does not call any external LLM providers. It emits a `chat-probe` event to
-/// two open chat windows and returns an analysis based on backend traces.
+/// This does not call any external LLM providers. It emits an `agent-probe` event to
+/// two open agent windows and returns an analysis based on backend traces.
 #[tauri::command]
-pub async fn run_chat_isolation_probe(
+pub async fn run_agent_isolation_probe(
     app: tauri::AppHandle,
-) -> Result<crate::chat_probe::ChatIsolationProbeReport, String> {
-    crate::chat_probe::run_chat_isolation_probe(app).await
+) -> Result<crate::agent_probe::AgentIsolationProbeReport, String> {
+    crate::agent_probe::run_agent_isolation_probe(app).await
 }
 
 /// Internal cancellation implementation shared by `cancel_chat_streaming`.
@@ -3058,12 +3058,12 @@ mod streaming_cancellation_tests {
 
     #[test]
     fn cancel_key_is_window_scoped() {
-        assert_eq!(cancel_key_for_window_label("chat-abc"), "window:chat-abc");
+        assert_eq!(cancel_key_for_window_label("agent-abc"), "window:agent-abc");
     }
 
     #[test]
     fn cancel_internal_cancels_calling_window_when_no_session_id() {
-        let label = "chat-test-cancel-internal";
+        let label = "agent-test-cancel-internal";
         let key = cancel_key_for_window_label(label);
 
         let token = gestura_core::CancellationToken::new();
@@ -3429,8 +3429,8 @@ pub async fn test_open_window(
         }
         "chat" => {
             let session_id =
-                crate::window_manager::create_new_chat_session().map_err(|e| e.to_string())?;
-            Ok(format!("Chat session created: {}", session_id))
+                crate::window_manager::create_new_agent_session().map_err(|e| e.to_string())?;
+            Ok(format!("Agent session created: {}", session_id))
         }
         _ => Err(format!("Unknown window type: {}", window_type)),
     }
@@ -3788,23 +3788,23 @@ pub fn check_system_permissions() -> Result<serde_json::Value, String> {
 // Session History Commands
 // ============================================================================
 
-/// Get all chat sessions (both open and closed)
+/// Get all agent sessions (both open and closed)
 #[tauri::command]
-pub fn get_chat_sessions() -> Result<Vec<crate::window_manager::ChatSession>, String> {
+pub fn get_agent_sessions() -> Result<Vec<crate::window_manager::AgentSession>, String> {
     Ok(crate::window_manager::get_all_sessions())
 }
 
-/// Restore a closed chat session
+/// Restore a closed agent session
 #[tauri::command]
-pub fn restore_chat_session(session_id: String) -> Result<(), String> {
-    crate::window_manager::restore_chat_session(&session_id)
+pub fn restore_agent_session(session_id: String) -> Result<(), String> {
+    crate::window_manager::restore_agent_session(&session_id)
         .map_err(|e| format!("Failed to restore session: {}", e))
 }
 
-/// Create a new chat session
+/// Create a new agent session
 #[tauri::command]
-pub fn create_chat_session() -> Result<String, String> {
-    crate::window_manager::create_new_chat_session()
+pub fn create_agent_session() -> Result<String, String> {
+    crate::window_manager::create_new_agent_session()
         .map_err(|e| format!("Failed to create session: {}", e))
 }
 
@@ -3901,7 +3901,7 @@ pub async fn pick_workspace_directory(
 
             // Use provided session_id or fall back to active session
             let target_session =
-                session_id.or_else(crate::window_manager::get_active_chat_for_voice);
+                session_id.or_else(crate::window_manager::get_active_agent_for_voice);
             if let Some(sid) = target_session {
                 crate::window_manager::set_session_workspace(&sid, path_buf);
                 tracing::info!(
@@ -3919,12 +3919,12 @@ pub async fn pick_workspace_directory(
 
 /// Open a terminal at the session workspace directory and resume the session via the CLI.
 ///
-/// This command is intended for the chat window "Open In Shell" action.
+/// This command is intended for the agent window "Open In Shell" action.
 ///
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
 pub fn open_shell_for_session(session_id: String) -> Result<(), String> {
-    crate::window_manager::open_shell_session_for_chat_resume(&session_id)
+    crate::window_manager::open_shell_session_for_agent_resume(&session_id)
 }
 
 // ============================================================================

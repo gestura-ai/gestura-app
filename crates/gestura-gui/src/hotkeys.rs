@@ -75,7 +75,7 @@ pub fn register_hotkey(app: &AppHandle, hotkey: &str) {
                             .unwrap_or(false);
 
                             if !routed {
-                                // IMPORTANT: Do not open any chat window here.
+                                // IMPORTANT: Do not open any agent window here.
                                 // Hotkey must behave exactly like tray "Start Listening".
                                 crate::tray::toggle_listening_mode(&app_handle);
                             }

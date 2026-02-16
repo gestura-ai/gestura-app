@@ -164,7 +164,7 @@ impl AutomatedTester {
 
         // Test if HTML files exist and are valid
         let html_files = vec![
-            "chat.html",
+            "agent.html",
             "config.html",
             "permissions.html",
             "status.html",

@@ -4035,48 +4035,48 @@
             panel.querySelector('#gestura-debug-clear-backend')?.addEventListener('click', async () => {
                 try {
                     if (!window.__TAURI__) throw new Error('Tauri not available');
-                    await window.__TAURI__.core.invoke('clear_chat_event_trace', {});
+                    await window.__TAURI__.core.invoke('clear_agent_event_trace', {});
                     const out = panel.querySelector('#gestura-debug-backend');
                     if (out) out.textContent = '[cleared]';
                 } catch (e) {
                     const out = panel.querySelector('#gestura-debug-backend');
-                    if (out) out.textContent = `clear_chat_event_trace failed: ${e}`;
+                    if (out) out.textContent = `clear_agent_event_trace failed: ${e}`;
                 }
             });
 
             panel.querySelector('#gestura-debug-fetch-backend')?.addEventListener('click', async () => {
                 try {
                     if (!window.__TAURI__) throw new Error('Tauri not available');
-                    const trace = await window.__TAURI__.core.invoke('get_chat_event_trace', { max: 200 });
+                    const trace = await window.__TAURI__.core.invoke('get_agent_event_trace', { max: 200 });
                     const out = panel.querySelector('#gestura-debug-backend');
                     if (out) out.textContent = JSON.stringify(trace, null, 2);
                 } catch (e) {
                     const out = panel.querySelector('#gestura-debug-backend');
-                    if (out) out.textContent = `get_chat_event_trace failed: ${e}`;
+                    if (out) out.textContent = `get_agent_event_trace failed: ${e}`;
                 }
             });
 
             panel.querySelector('#gestura-debug-clear-backend-receipts')?.addEventListener('click', async () => {
                 try {
                     if (!window.__TAURI__) throw new Error('Tauri not available');
-                    await window.__TAURI__.core.invoke('clear_chat_receipt_trace', {});
+                    await window.__TAURI__.core.invoke('clear_agent_receipt_trace', {});
                     const out = panel.querySelector('#gestura-debug-backend-receipts');
                     if (out) out.textContent = '[cleared]';
                 } catch (e) {
                     const out = panel.querySelector('#gestura-debug-backend-receipts');
-                    if (out) out.textContent = `clear_chat_receipt_trace failed: ${e}`;
+                    if (out) out.textContent = `clear_agent_receipt_trace failed: ${e}`;
                 }
             });
 
             panel.querySelector('#gestura-debug-fetch-backend-receipts')?.addEventListener('click', async () => {
                 try {
                     if (!window.__TAURI__) throw new Error('Tauri not available');
-                    const trace = await window.__TAURI__.core.invoke('get_chat_receipt_trace', { max: 200 });
+                    const trace = await window.__TAURI__.core.invoke('get_agent_receipt_trace', { max: 200 });
                     const out = panel.querySelector('#gestura-debug-backend-receipts');
                     if (out) out.textContent = JSON.stringify(trace, null, 2);
                 } catch (e) {
                     const out = panel.querySelector('#gestura-debug-backend-receipts');
-                    if (out) out.textContent = `get_chat_receipt_trace failed: ${e}`;
+                    if (out) out.textContent = `get_agent_receipt_trace failed: ${e}`;
                 }
             });
 
@@ -4205,11 +4205,21 @@
          * This function does NOT add a user message to the chat UI; callers should
          * render the transcript themselves (so the UI reflects what was heard).
          *
+         * When prompt enhancement is enabled in settings
+         * (`prompt_enhancement.auto_enhance`), the transcript is enhanced via the
+         * LLM before being sent to the agent.  Otherwise (the default), it is
+         * forwarded directly so voice input is never blocked by an extra LLM call.
+         *
          * @param {string} transcript
          */
         async function sendVoiceTranscriptToAgent(transcript) {
-            const enhanced = await enhanceTextForSession(transcript);
-            await processMessage(enhanced);
+            const shouldEnhance = cachedConfig?.prompt_enhancement?.auto_enhance === true;
+            if (shouldEnhance) {
+                const enhanced = await enhanceTextForSession(transcript);
+                await processMessage(enhanced);
+            } else {
+                await processMessage(transcript);
+            }
         }
 
         function setStatus(text, kind = 'ready') {
@@ -5545,7 +5555,7 @@
                 // Invoke Backend
                 const payload = { message: text };
                 if (sessionId) payload.session_id = sessionId;
-                const p = window.__TAURI__.core.invoke('process_chat_message_streaming', payload);
+                const p = window.__TAURI__.core.invoke('process_agent_message_streaming', payload);
                 // Don't await: streaming completion is signaled via events, and awaiting can deadlock UI state.
                 p.catch((err) => {
                     console.error('Send failed:', err);
@@ -5593,7 +5603,7 @@
             const event = window.__TAURI__.event;
             const webview = await resolveCurrentWebviewWindow();
             // Best-effort window label lookup for diagnostics only.
-            const expectedWindowLabel = sessionId ? `chat-${sessionId}` : null;
+            const expectedWindowLabel = sessionId ? `agent-${sessionId}` : null;
             const resolvedWindowLabel = await resolveWindowLabel(webview);
             const listenerMode = (webview && typeof webview.listen === 'function')
                 ? 'webview.listen'
@@ -5699,7 +5709,7 @@
                 };
 
                 // Best-effort fire-and-forget.
-                window.__TAURI__.core.invoke('record_chat_receipt', { payload: JSON.stringify(receipt) }).catch(() => { });
+                window.__TAURI__.core.invoke('record_agent_receipt', { payload: JSON.stringify(receipt) }).catch(() => { });
             }
 
             /**
@@ -5738,17 +5748,17 @@
             }
 
             // 0. Diagnostics probe events (does not affect chat UI state)
-            await listen('chat-probe', (e) => {
+            await listen('agent-probe', (e) => {
                 // Always pass through session isolation logic to record accept/ignore receipts.
-                acceptSessionEvent('chat-probe', e?.payload);
+                acceptSessionEvent('agent-probe', e?.payload);
             });
 
             // 1. Thinking Stream
-            await listen('chat-stream-thinking', (e) => {
-                const res = acceptSessionEvent('chat-stream-thinking', e?.payload);
+            await listen('agent-stream-thinking', (e) => {
+                const res = acceptSessionEvent('agent-stream-thinking', e?.payload);
                 if (!res.accept) return;
                 const chunk = (typeof res.value === 'string') ? res.value : JSON.stringify(res.value);
-                console.log('[DEBUG] chat-stream-thinking received:', chunk?.substring(0, 100));
+                console.log('[DEBUG] agent-stream-thinking received:', chunk?.substring(0, 100));
                 touchStreamActivity();
                 ensureStreamingMessage();
                 const contentDiv = streamingMessageElement.querySelector('.message-content');
@@ -5774,11 +5784,11 @@
             });
 
             // 2. Text Stream
-            await listen('chat-stream-chunk', (e) => {
-                const res = acceptSessionEvent('chat-stream-chunk', e?.payload);
+            await listen('agent-stream-chunk', (e) => {
+                const res = acceptSessionEvent('agent-stream-chunk', e?.payload);
                 if (!res.accept) return;
                 const chunk = (typeof res.value === 'string') ? res.value : JSON.stringify(res.value);
-                console.log('[DEBUG] chat-stream-chunk received:', chunk?.substring(0, 100));
+                console.log('[DEBUG] agent-stream-chunk received:', chunk?.substring(0, 100));
                 touchStreamActivity({ mode: 'normal' });
                 ensureStreamingMessage();
 
@@ -5820,16 +5830,16 @@
             });
 
             // 3. Tool Call Events (aligned with backend)
-            await listen('chat-stream-tool-confirmation', (e) => {
-                const res = acceptSessionEvent('chat-stream-tool-confirmation', e?.payload);
+            await listen('agent-stream-tool-confirmation', (e) => {
+                const res = acceptSessionEvent('agent-stream-tool-confirmation', e?.payload);
                 if (!res.accept) return;
                 touchStreamActivity({ mode: 'waiting_user' });
                 const payload = res.value || {};
                 enqueueToolConfirmation(payload);
             });
 
-            await listen('chat-stream-tool-blocked', (e) => {
-                const res = acceptSessionEvent('chat-stream-tool-blocked', e?.payload);
+            await listen('agent-stream-tool-blocked', (e) => {
+                const res = acceptSessionEvent('agent-stream-tool-blocked', e?.payload);
                 if (!res.accept) return;
                 touchStreamActivity({ mode: 'normal' });
                 const payload = res.value || {};
@@ -5840,8 +5850,8 @@
             });
 
             // 3a-ii. Agent Loop Iteration — marks the start of a new agentic loop pass
-            await listen('chat-stream-agent-iteration', (e) => {
-                const res = acceptSessionEvent('chat-stream-agent-iteration', e?.payload);
+            await listen('agent-stream-agent-iteration', (e) => {
+                const res = acceptSessionEvent('agent-stream-agent-iteration', e?.payload);
                 if (!res.accept) return;
                 touchStreamActivity({ mode: 'normal' });
                 const payload = res.value || {};
@@ -5874,8 +5884,8 @@
                 }
             });
 
-            await listen('chat-stream-tool-start', (e) => {
-                const res = acceptSessionEvent('chat-stream-tool-start', e?.payload);
+            await listen('agent-stream-tool-start', (e) => {
+                const res = acceptSessionEvent('agent-stream-tool-start', e?.payload);
                 if (!res.accept) return;
                 touchStreamActivity({ mode: 'normal' });
                 ensureStreamingMessage();
@@ -5928,8 +5938,8 @@
                 scrollToBottom();
             });
 
-            await listen('chat-stream-tool-args', (e) => {
-                const res = acceptSessionEvent('chat-stream-tool-args', e?.payload);
+            await listen('agent-stream-tool-args', (e) => {
+                const res = acceptSessionEvent('agent-stream-tool-args', e?.payload);
                 if (!res.accept) return;
                 touchStreamActivity({ mode: 'normal' });
                 if (!currentToolArgsEl) return;
@@ -5939,8 +5949,8 @@
                 scrollToBottom();
             });
 
-            await listen('chat-stream-tool-end', (e) => {
-                const res = acceptSessionEvent('chat-stream-tool-end', e?.payload);
+            await listen('agent-stream-tool-end', (e) => {
+                const res = acceptSessionEvent('agent-stream-tool-end', e?.payload);
                 if (!res.accept) return;
                 touchStreamActivity({ mode: 'normal' });
                 // Don't clear currentToolCard yet - wait for tool-result to update it
@@ -5951,8 +5961,8 @@
             });
 
             // 3b. Tool Result Event - shows success/error status and output
-            await listen('chat-stream-tool-result', (e) => {
-                const res = acceptSessionEvent('chat-stream-tool-result', e?.payload);
+            await listen('agent-stream-tool-result', (e) => {
+                const res = acceptSessionEvent('agent-stream-tool-result', e?.payload);
                 if (!res.accept) return;
                 touchStreamActivity({ mode: 'normal' });
                 const payload = res.value || {};
@@ -6178,8 +6188,8 @@
             });
 
             // 3b2. Shell Lifecycle Event - creates/updates inline shell consoles
-            await listen('chat-stream-shell-lifecycle', (e) => {
-                const res = acceptSessionEvent('chat-stream-shell-lifecycle', e?.payload);
+            await listen('agent-stream-shell-lifecycle', (e) => {
+                const res = acceptSessionEvent('agent-stream-shell-lifecycle', e?.payload);
                 if (!res.accept) return;
                 touchStreamActivity({ mode: 'normal' });
                 const payload = res.value || {};
@@ -6212,8 +6222,8 @@
             });
 
             // 3b3. Shell Output Event - streams stdout/stderr into inline shell consoles
-            await listen('chat-stream-shell-output', (e) => {
-                const res = acceptSessionEvent('chat-stream-shell-output', e?.payload);
+            await listen('agent-stream-shell-output', (e) => {
+                const res = acceptSessionEvent('agent-stream-shell-output', e?.payload);
                 if (!res.accept) return;
                 const { process_id, stream, data } = res.value || {};
                 appendShellOutput(process_id, stream, data);
@@ -6221,8 +6231,8 @@
 
 
             // 3c. Retry Attempt Event - shows retry notification
-            await listen('chat-stream-retry', (e) => {
-                const res = acceptSessionEvent('chat-stream-retry', e?.payload);
+            await listen('agent-stream-retry', (e) => {
+                const res = acceptSessionEvent('agent-stream-retry', e?.payload);
                 if (!res.accept) return;
                 touchStreamActivity({ mode: 'normal' });
                 const payload = res.value || {};
@@ -6249,8 +6259,8 @@
             });
 
             // 3c2. Status Event - user-facing streaming status updates
-            await listen('chat-stream-status', (e) => {
-                const res = acceptSessionEvent('chat-stream-status', e?.payload);
+            await listen('agent-stream-status', (e) => {
+                const res = acceptSessionEvent('agent-stream-status', e?.payload);
                 if (!res.accept) return;
                 touchStreamActivity({ mode: 'normal' });
                 const payload = res.value;
@@ -6259,8 +6269,8 @@
             });
 
             // 3d. Context Compaction Event - shows compaction notification
-            await listen('chat-context-compacted', (e) => {
-                const res = acceptSessionEvent('chat-context-compacted', e?.payload);
+            await listen('agent-context-compacted', (e) => {
+                const res = acceptSessionEvent('agent-context-compacted', e?.payload);
                 if (!res.accept) return;
                 touchStreamActivity({ mode: 'normal' });
                 const payload = res.value || {};
@@ -6287,8 +6297,8 @@
             });
 
             // 3e. Config Request Event - agent requests config change
-            await listen('chat-config-request', async (e) => {
-                const res = acceptSessionEvent('chat-config-request', e?.payload);
+            await listen('agent-config-request', async (e) => {
+                const res = acceptSessionEvent('agent-config-request', e?.payload);
                 if (!res.accept) return;
                 touchStreamActivity({ mode: 'normal' });
                 const payload = res.value || {};
@@ -6304,7 +6314,7 @@
                         try {
                             const sid = session_id || sessionId;
                             if (!sid) {
-                                console.warn('[chat] Ignoring chat-config-request: missing session id', { payload });
+                                console.warn('[agent] Ignoring agent-config-request: missing session id', { payload });
                                 return;
                             }
                             if (key === 'provider') {
@@ -6332,7 +6342,7 @@
                     try {
                         const sid = session_id || sessionId;
                         if (!sid) {
-                            console.warn('[chat] Ignoring chat-config-request: missing session id', { payload });
+                            console.warn('[agent] Ignoring agent-config-request: missing session id', { payload });
                             return;
                         }
                         if (key === 'provider') {
@@ -6357,24 +6367,24 @@
             });
 
             // 4. Stream Done
-            await listen('chat-stream-done', (e) => {
-                const res = acceptSessionEvent('chat-stream-done', e?.payload);
+            await listen('agent-stream-done', (e) => {
+                const res = acceptSessionEvent('agent-stream-done', e?.payload);
                 if (!res.accept) return;
                 touchStreamActivity({ mode: 'normal' });
                 finalizeStreamForCurrentRequest({ statusText: 'Ready', statusKind: 'ready', finalTaskStatus: 'Completed' });
             });
 
             // 4b. Stream Cancelled / Error
-            await listen('chat-stream-cancelled', (e) => {
-                const res = acceptSessionEvent('chat-stream-cancelled', e?.payload);
+            await listen('agent-stream-cancelled', (e) => {
+                const res = acceptSessionEvent('agent-stream-cancelled', e?.payload);
                 if (!res.accept) return;
                 touchStreamActivity();
                 addMessage('Cancelled.', 'agent');
                 finalizeStreamForCurrentRequest({ statusText: 'Cancelled', statusKind: 'ready', finalTaskStatus: 'Cancelled' });
             });
 
-            await listen('chat-stream-error', (e) => {
-                const res = acceptSessionEvent('chat-stream-error', e?.payload);
+            await listen('agent-stream-error', (e) => {
+                const res = acceptSessionEvent('agent-stream-error', e?.payload);
                 if (!res.accept) return;
                 touchStreamActivity();
                 const payload = res.value;
@@ -6470,8 +6480,8 @@
             });
 
             // 5. Voice Events
-            await listen('chat-message', async (e) => {
-                // Backend emits chat-message for STT transcriptions (type: "user")
+            await listen('agent-message', async (e) => {
+                // Backend emits agent-message for STT transcriptions (type: "user")
                 // and (optionally) non-streaming assistant responses.
                 const rawPayload = e?.payload;
                 let payload = rawPayload;
@@ -6483,11 +6493,11 @@
                 const incomingSessionId = payload.session_id || payload.sessionId || null;
                 if (sessionId) {
                     if (!incomingSessionId) {
-                        console.warn('[Voice] Ignoring chat-message without session_id in a session-scoped window', { sessionId, payload });
+                        console.warn('[Voice] Ignoring agent-message without session_id in a session-scoped window', { sessionId, payload });
                         return;
                     }
                     if (incomingSessionId !== sessionId) {
-                        console.warn('[Voice] Ignoring chat-message for different session', { sessionId, incomingSessionId });
+                        console.warn('[Voice] Ignoring agent-message for different session', { sessionId, incomingSessionId });
                         return;
                     }
                 }
@@ -6497,7 +6507,8 @@
                 if (!message.trim()) return;
 
                 if (kind === 'user') {
-                    // Display the transcript and auto-send (with prompt enhancement) via streaming.
+                    // Display the transcript and auto-send via streaming.
+                    // Enhancement is only applied when prompt_enhancement.auto_enhance is enabled.
                     if (isProcessing) {
                         queueVoiceTranscript(message);
                         return;
@@ -6506,7 +6517,7 @@
                     await sendVoiceTranscriptToAgent(message);
                 } else {
                     // Avoid duplicating streaming output; keep this as a safe fallback.
-                    console.log('[chat-message] Received non-user chat-message:', payload);
+                    console.log('[agent-message] Received non-user agent-message:', payload);
                 }
             });
 
@@ -7054,7 +7065,7 @@
                     if (!isListening) setStatus('Cancelling...', 'busy');
                     const cancelPayload = {};
                     if (sessionId) cancelPayload.session_id = sessionId;
-                    await window.__TAURI__.core.invoke('cancel_chat_streaming', cancelPayload);
+                    await window.__TAURI__.core.invoke('cancel_agent_streaming', cancelPayload);
                 } catch (e) {
                     console.error('Failed to cancel streaming', e);
                     addMessage(`Cancel failed: ${e}`, 'agent');

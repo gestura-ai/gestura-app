@@ -107,24 +107,24 @@ pub mod window_manager;
 pub mod kv;
 pub mod voice_select;
 
-/// Chat event utilities (window-scoped emission + optional diagnostics trace).
-pub mod chat_events;
+/// Agent event utilities (window-scoped emission + optional diagnostics trace).
+pub mod agent_events;
 
 /// Small shared utilities.
 pub(crate) mod text_utils;
 
 /// Frontend receipt tracing utilities (diagnostics-only).
-pub mod chat_receipts;
+pub mod agent_receipts;
 
-/// Multi-window chat isolation probe utilities (diagnostics-only).
-pub mod chat_probe;
+/// Multi-window agent isolation probe utilities (diagnostics-only).
+pub mod agent_probe;
 
 /// Task integration for bidirectional sync between AgentOrchestrator and TaskManager.
 pub mod task_integration;
 
 pub mod api;
 
-/// Chat window file explorer helpers (secure, workspace-scoped).
+/// Agent window file explorer helpers (secure, workspace-scoped).
 pub mod explorer;
 
 // ============================================================================

@@ -275,17 +275,17 @@
         <button class="refresh-button" onclick="loadStatus()">Refresh Status</button>
 
         <div class="status-card" style="margin-top: 1.25rem;">
-            <div class="status-title">Chat Diagnostics</div>
+            <div class="status-title">Agent Diagnostics</div>
             <div class="status-description">
-                Debug cross-window chat leakage by inspecting: window list, backend emit trace, and backend receipt
+                Debug cross-window agent leakage by inspecting: window list, backend emit trace, and backend receipt
                 trace.
             </div>
             <div class="diag-controls">
-                <button class="diag-button" id="chatDiagFetch">Fetch</button>
-                <button class="diag-button" id="chatDiagProbe">Run probe</button>
-                <button class="diag-button" id="chatDiagClear">Clear traces</button>
+                <button class="diag-button" id="agentDiagFetch">Fetch</button>
+                <button class="diag-button" id="agentDiagProbe">Run probe</button>
+                <button class="diag-button" id="agentDiagClear">Clear traces</button>
             </div>
-            <pre class="diag-pre" id="chatDiagOut">(click Fetch)</pre>
+            <pre class="diag-pre" id="agentDiagOut">(click Fetch)</pre>
         </div>
     </div>
 
@@ -427,18 +427,18 @@
         loadStatus();
 
         /**
-         * Fetch chat-related diagnostics (window list + backend traces).
+         * Fetch agent-related diagnostics (window list + backend traces).
          *
          * This is best-effort and intended for debugging multi-window session isolation.
          */
-        async function fetchChatDiagnostics() {
-            const out = document.getElementById('chatDiagOut');
+        async function fetchAgentDiagnostics() {
+            const out = document.getElementById('agentDiagOut');
             if (!out) return;
             try {
                 const [windows, emitTrace, receiptTrace] = await Promise.all([
                     invoke('get_window_list').catch(() => null),
-                    invoke('get_chat_event_trace', { max: 250 }).catch(() => null),
-                    invoke('get_chat_receipt_trace', { max: 250 }).catch(() => null),
+                    invoke('get_agent_event_trace', { max: 250 }).catch(() => null),
+                    invoke('get_agent_receipt_trace', { max: 250 }).catch(() => null),
                 ]);
 
                 out.textContent = JSON.stringify(
@@ -452,39 +452,39 @@
                     2
                 );
             } catch (e) {
-                out.textContent = `fetchChatDiagnostics failed: ${e}`;
+                out.textContent = `fetchAgentDiagnostics failed: ${e}`;
             }
         }
 
         /**
-         * Clear backend chat traces (emit trace + receipt trace).
+         * Clear backend agent traces (emit trace + receipt trace).
          */
-        async function clearChatDiagnostics() {
-            const out = document.getElementById('chatDiagOut');
+        async function clearAgentDiagnostics() {
+            const out = document.getElementById('agentDiagOut');
             if (!out) return;
             try {
                 await Promise.all([
-                    invoke('clear_chat_event_trace').catch(() => null),
-                    invoke('clear_chat_receipt_trace').catch(() => null),
+                    invoke('clear_agent_event_trace').catch(() => null),
+                    invoke('clear_agent_receipt_trace').catch(() => null),
                 ]);
                 out.textContent = '[cleared]';
             } catch (e) {
-                out.textContent = `clearChatDiagnostics failed: ${e}`;
+                out.textContent = `clearAgentDiagnostics failed: ${e}`;
             }
         }
 
         /**
-         * Run the backend multi-window chat isolation probe.
+         * Run the backend multi-window agent isolation probe.
          *
-         * This emits a `chat-probe` event to two open chat windows and returns
+         * This emits an `agent-probe` event to two open agent windows and returns
          * a correlated trace + analysis (no external LLM calls).
          */
-        async function runChatIsolationProbe() {
-            const out = document.getElementById('chatDiagOut');
+        async function runAgentIsolationProbe() {
+            const out = document.getElementById('agentDiagOut');
             if (!out) return;
             out.textContent = '[running probe...]';
             try {
-                const report = await invoke('run_chat_isolation_probe', {}).catch((e) => {
+                const report = await invoke('run_agent_isolation_probe', {}).catch((e) => {
                     throw new Error(String(e));
                 });
                 out.textContent = JSON.stringify(
@@ -496,14 +496,14 @@
                     2
                 );
             } catch (e) {
-                out.textContent = `runChatIsolationProbe failed: ${e}`;
+                out.textContent = `runAgentIsolationProbe failed: ${e}`;
             }
         }
 
         // Wire diagnostics buttons
-        document.getElementById('chatDiagFetch')?.addEventListener('click', fetchChatDiagnostics);
-        document.getElementById('chatDiagProbe')?.addEventListener('click', runChatIsolationProbe);
-        document.getElementById('chatDiagClear')?.addEventListener('click', clearChatDiagnostics);
+        document.getElementById('agentDiagFetch')?.addEventListener('click', fetchAgentDiagnostics);
+        document.getElementById('agentDiagProbe')?.addEventListener('click', runAgentIsolationProbe);
+        document.getElementById('agentDiagClear')?.addEventListener('click', clearAgentDiagnostics);
 
         // Auto-refresh every 30 seconds
         setInterval(loadStatus, 30000);

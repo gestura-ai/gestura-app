@@ -155,10 +155,10 @@ impl SpeechProcessor {
 
         // Resolve session-scoped voice/STT overrides for the active voice target session.
         //
-        // Voice input is routed to the "active" chat session (focused or most-recent).
+        // Voice input is routed to the "active" agent session (focused or most-recent).
         // If the user selected a per-session STT provider/model in the Providers panel,
         // apply that override here before recording/transcribing.
-        let active_voice_session_id = crate::window_manager::get_active_chat_for_voice();
+        let active_voice_session_id = crate::window_manager::get_active_agent_for_voice();
         let session_voice_config = active_voice_session_id
             .as_deref()
             .and_then(crate::window_manager::get_session_voice_config);
@@ -238,18 +238,19 @@ impl SpeechProcessor {
             return Err("No speech detected in audio".to_string());
         }
 
-        // Step 3: Create chat session with transcription
-        // The frontend will handle the LLM call via streaming when it receives the chat-message event
+        // Step 3: Create agent session with transcription
+        // The frontend will handle the LLM call via streaming when it receives the agent-message event
         let session_id = self
-            .create_chat_with_transcription(app, &transcribed_text)
+            .create_agent_with_transcription(app, &transcribed_text)
             .await?;
         tracing::info!(
-            "Created chat session {} with transcription - frontend will handle LLM streaming",
+            "Created agent session {} with transcription - frontend will handle LLM streaming",
             session_id
         );
 
         // Note: Steps 4 and 5 (LLM processing and sending AI response) are now handled by the frontend
-        // via process_chat_message_streaming when it receives the chat-message event with type: "user"
+        // via process_chat_message_streaming when it receives the agent-message event with type: "user"
+
 
         Ok(())
     }
@@ -347,13 +348,13 @@ impl SpeechProcessor {
         conversation_score > command_score
     }
 
-    /// Route voice input to either system command execution or LLM chat.
+    /// Route voice input to either system command execution or LLM agent.
     /// Direct commands (open, search, volume, etc.) are executed immediately.
-    /// Conversational queries are sent to the chat for LLM processing.
+    /// Conversational queries are sent to the agent for LLM processing.
     pub async fn route_voice_input(&self, app: &AppHandle, text: &str) -> Result<(), String> {
         if self.is_conversation(text) {
-            tracing::info!("Routing voice input to chat: '{}'", text);
-            self.create_chat_with_transcription(app, text).await?;
+            tracing::info!("Routing voice input to agent: '{}'", text);
+            self.create_agent_with_transcription(app, text).await?;
         } else {
             tracing::info!("Routing voice input to system command: '{}'", text);
             self.execute_system_command(text).await?;
@@ -361,32 +362,32 @@ impl SpeechProcessor {
         Ok(())
     }
 
-    async fn create_chat_with_transcription(
+    async fn create_agent_with_transcription(
         &self,
         app: &AppHandle,
         user_text: &str,
     ) -> Result<String, String> {
-        tracing::info!("Setting up chat for transcription: '{}'", user_text);
+        tracing::info!("Setting up agent for transcription: '{}'", user_text);
 
-        // Check if there's an active chat session to use
+        // Check if there's an active agent session to use
         let (session_id, is_new_session) =
-            if let Some(existing_session) = crate::window_manager::get_active_chat_for_voice() {
+            if let Some(existing_session) = crate::window_manager::get_active_agent_for_voice() {
                 tracing::info!(
-                    "Using existing chat session {} for voice input",
+                    "Using existing agent session {} for voice input",
                     existing_session
                 );
                 (existing_session, false)
             } else {
-                // Create a new chat session
-                match crate::window_manager::create_new_chat_session() {
+                // Create a new agent session
+                match crate::window_manager::create_new_agent_session() {
                     Ok(new_session_id) => {
                         tracing::info!(
-                            "Created new chat session {} for voice input",
+                            "Created new agent session {} for voice input",
                             new_session_id
                         );
                         (new_session_id, true)
                     }
-                    Err(e) => return Err(format!("Failed to create chat session: {}", e)),
+                    Err(e) => return Err(format!("Failed to create agent session: {}", e)),
                 }
             };
 
@@ -395,9 +396,9 @@ impl SpeechProcessor {
             // Give the window time to load and set up event listeners
             // The webview needs to initialize JavaScript and set up Tauri event listeners
             // 1.5 seconds should be enough for the window to fully load
-            tracing::info!("Waiting for new chat window to initialize...");
+            tracing::info!("Waiting for new agent window to initialize...");
             tokio::time::sleep(Duration::from_millis(1500)).await;
-            tracing::info!("Chat window should be ready, emitting events");
+            tracing::info!("Agent window should be ready, emitting events");
         }
 
         // Emit voice session start event so the frontend knows to expect messages
@@ -413,20 +414,20 @@ impl SpeechProcessor {
             tracing::info!("Emitted voice-session-started event");
         }
 
-        // Send the transcribed text as a user message to the chat
-        self.send_user_message_to_chat(app, &session_id, user_text)
+        // Send the transcribed text as a user message to the agent
+        self.send_user_message_to_agent(app, &session_id, user_text)
             .await?;
 
         Ok(session_id)
     }
 
-    async fn send_user_message_to_chat(
+    async fn send_user_message_to_agent(
         &self,
         app: &AppHandle,
         session_id: &str,
         message: &str,
     ) -> Result<(), String> {
-        tracing::info!("Sending user message to chat {}: '{}'", session_id, message);
+        tracing::info!("Sending user message to agent {}: '{}'", session_id, message);
 
         // Get the window label for this session to target the specific window
         let window_label = crate::window_manager::get_session_window_label(session_id)
@@ -438,7 +439,7 @@ impl SpeechProcessor {
             session_id
         );
 
-        // Emit a custom event to the specific chat window only
+        // Emit a custom event to the specific agent window only
         let payload = serde_json::json!({
             "session_id": session_id,
             "type": "user",
@@ -446,14 +447,14 @@ impl SpeechProcessor {
             "timestamp": chrono::Utc::now().to_rfc3339()
         });
         tracing::info!(
-            "Emitting chat-message event to window '{}' with payload: {:?}",
+            "Emitting agent-message event to window '{}' with payload: {:?}",
             window_label,
             payload
         );
 
-        if let Err(e) = app.emit_to(&window_label, "chat-message", payload) {
+        if let Err(e) = app.emit_to(&window_label, "agent-message", payload) {
             tracing::error!(
-                "Failed to emit chat-message to window '{}': {}",
+                "Failed to emit agent-message to window '{}': {}",
                 window_label,
                 e
             );
@@ -461,27 +462,27 @@ impl SpeechProcessor {
         }
 
         tracing::info!(
-            "Successfully emitted chat-message event to window '{}'",
+            "Successfully emitted agent-message event to window '{}'",
             window_label
         );
         Ok(())
     }
 
-    /// Send AI response to chat window.
+    /// Send AI response to agent window.
     ///
     /// Note: Currently unused as the frontend handles LLM streaming directly.
-    /// This method is available for backend-driven chat responses:
+    /// This method is available for backend-driven agent responses:
     /// - Voice-only mode without GUI interaction
     /// - Batch processing results
     /// - Fallback when frontend streaming is unavailable
     #[allow(dead_code)]
-    pub async fn send_ai_response_to_chat(
+    pub async fn send_ai_response_to_agent(
         &self,
         app: &AppHandle,
         session_id: &str,
         response: &str,
     ) -> Result<(), String> {
-        tracing::info!("Sending AI response to chat {}: '{}'", session_id, response);
+        tracing::info!("Sending AI response to agent {}: '{}'", session_id, response);
 
         // Get the window label for this session to target the specific window
         let window_label = crate::window_manager::get_session_window_label(session_id)
@@ -492,7 +493,7 @@ impl SpeechProcessor {
 
         if let Err(e) = app.emit_to(
             &window_label,
-            "chat-message",
+            "agent-message",
             serde_json::json!({
                 "session_id": session_id,
                 "type": "assistant",

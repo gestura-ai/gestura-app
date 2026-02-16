@@ -79,7 +79,7 @@ impl Default for ListeningState {
 }
 
 /// Initialize the system tray with comprehensive menu options.
-/// Provides access to chat, configuration, session management, and system controls.
+/// Provides access to agent, configuration, session management, and system controls.
 pub fn init_tray(app: &AppHandle) -> tauri::Result<()> {
     tracing::info!("🔧 Starting system tray initialization...");
 
@@ -226,10 +226,10 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     drop(listening_state);
 
     let listen = MenuItem::with_id(app, "listen", listen_text, true, Option::<&str>::None)?;
-    let new_chat = MenuItem::with_id(
+    let new_agent = MenuItem::with_id(
         app,
-        "new_chat",
-        "New Chat Session",
+        "new_agent",
+        "New Agent Session",
         true,
         Option::<&str>::None,
     )?;
@@ -239,7 +239,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let new_shell = MenuItem::with_id(app, "new_shell", "Open Shell", true, Option::<&str>::None)?;
 
     // "Resume in Shell" opens the active session in a terminal (disabled when no active session)
-    let has_active_session = window_manager::get_active_chat_for_voice().is_some();
+    let has_active_session = window_manager::get_active_agent_for_voice().is_some();
     let resume_shell = MenuItem::with_id(
         app,
         "resume_shell",
@@ -258,10 +258,10 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         Option::<&str>::None,
     )?;
     #[cfg(debug_assertions)]
-    let devtools_last_chat = MenuItem::with_id(
+    let devtools_last_agent = MenuItem::with_id(
         app,
-        "devtools_last_chat",
-        "Open Last Chat DevTools",
+        "devtools_last_agent",
+        "Open Last Agent DevTools",
         true,
         Option::<&str>::None,
     )?;
@@ -281,7 +281,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     // Build menu structure
     menu.append(&listen)?;
     menu.append(&separator1)?;
-    menu.append(&new_chat)?;
+    menu.append(&new_agent)?;
     menu.append(&sessions_menu)?;
     menu.append(&new_shell)?;
     menu.append(&resume_shell)?;
@@ -291,7 +291,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     #[cfg(debug_assertions)]
     {
         menu.append(&devtools_config)?;
-        menu.append(&devtools_last_chat)?;
+        menu.append(&devtools_last_agent)?;
         menu.append(&separator3)?;
     }
     menu.append(&quit)?;
@@ -324,7 +324,7 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
     );
 
     // Use SubmenuBuilder to properly create submenu with items
-    let mut builder = SubmenuBuilder::with_id(app, "sessions", "📋 Chat Sessions");
+    let mut builder = SubmenuBuilder::with_id(app, "sessions", "📋 Agent Sessions");
 
     if active_sessions.is_empty() && closed_sessions.is_empty() {
         let no_sessions = MenuItem::with_id(
@@ -459,9 +459,9 @@ fn open_window_devtools(app: &AppHandle, window_label: &str) {
     }
 }
 
-/// Helper to open DevTools for the most recently active open chat session
+/// Helper to open DevTools for the most recently active open agent session
 #[cfg(debug_assertions)]
-fn open_last_chat_devtools(app: &AppHandle) {
+fn open_last_agent_devtools(app: &AppHandle) {
     let sessions = get_all_sessions();
     let maybe_session = sessions
         .into_iter()
@@ -473,12 +473,12 @@ fn open_last_chat_devtools(app: &AppHandle) {
             open_window_devtools(app, label);
         } else {
             tracing::warn!(
-                "Open chat session '{}' has no associated window label; cannot open DevTools",
+                "Open agent session '{}' has no associated window label; cannot open DevTools",
                 session.id
             );
         }
     } else {
-        tracing::warn!("No open chat sessions available to open DevTools for");
+        tracing::warn!("No open agent sessions available to open DevTools for");
     }
 }
 
@@ -490,9 +490,9 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         "listen" => {
             toggle_listening_mode(app);
         }
-        "new_chat" => {
-            if let Err(e) = window_manager::create_new_chat_session() {
-                tracing::error!("Failed to create chat session: {}", e);
+        "new_agent" => {
+            if let Err(e) = window_manager::create_new_agent_session() {
+                tracing::error!("Failed to create agent session: {}", e);
             }
         }
         "config" => {
@@ -501,14 +501,14 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             }
         }
         "new_shell" => {
-            // Create a new chat session and open it in the shell
+            // Create a new agent session and open it in the shell
             tracing::info!("Creating new shell session from tray menu");
-            match window_manager::create_new_chat_session() {
+            match window_manager::create_new_agent_session() {
                 Ok(session_id) => {
-                    tracing::info!(session_id = %session_id, "New chat session created for shell");
-                    match window_manager::open_shell_session_for_chat_resume(&session_id) {
+                    tracing::info!(session_id = %session_id, "New agent session created for shell");
+                    match window_manager::open_shell_session_for_agent_resume(&session_id) {
                         Ok(()) => {
-                            tracing::info!(session_id = %session_id, "Shell session opened for new chat");
+                            tracing::info!(session_id = %session_id, "Shell session opened for new agent");
                             show_system_notification(
                                 app,
                                 "Shell Session",
@@ -526,7 +526,7 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                     }
                 }
                 Err(e) => {
-                    tracing::error!("Failed to create chat session for shell: {}", e);
+                    tracing::error!("Failed to create agent session for shell: {}", e);
                     show_system_notification(
                         app,
                         "Shell Session Error",
@@ -536,12 +536,12 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             }
         }
         "resume_shell" => {
-            // Resume the active chat session in the shell
+            // Resume the active agent session in the shell
             tracing::info!("Resuming active session in shell from tray menu");
-            if let Some(session_id) = window_manager::get_active_chat_for_voice() {
-                match window_manager::open_shell_session_for_chat_resume(&session_id) {
+            if let Some(session_id) = window_manager::get_active_agent_for_voice() {
+                match window_manager::open_shell_session_for_agent_resume(&session_id) {
                     Ok(()) => {
-                        tracing::info!(session_id = %session_id, "Shell session opened for chat resume");
+                        tracing::info!(session_id = %session_id, "Shell session opened for agent resume");
                         show_system_notification(
                             app,
                             "Shell Session",
@@ -549,7 +549,7 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                         );
                     }
                     Err(e) => {
-                        tracing::error!(session_id = %session_id, error = %e, "Failed to open shell for chat resume");
+                        tracing::error!(session_id = %session_id, error = %e, "Failed to open shell for agent resume");
                         show_system_notification(
                             app,
                             "Shell Session Error",
@@ -577,9 +577,9 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             open_window_devtools(app, "config");
         }
         #[cfg(debug_assertions)]
-        "devtools_last_chat" => {
-            tracing::info!("Opening DevTools for last active chat window from tray menu");
-            open_last_chat_devtools(app);
+        "devtools_last_agent" => {
+            tracing::info!("Opening DevTools for last active agent window from tray menu");
+            open_last_agent_devtools(app);
         }
         "restore_all" => {
             restore_all_sessions();
@@ -590,7 +590,7 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         id if id.starts_with("session_") => {
             // Handle individual session restoration
             let session_id = id.strip_prefix("session_").unwrap();
-            if let Err(e) = window_manager::restore_chat_session(session_id) {
+            if let Err(e) = window_manager::restore_agent_session(session_id) {
                 tracing::error!("Failed to restore session {}: {}", session_id, e);
             }
         }
@@ -610,10 +610,10 @@ fn handle_tray_event(tray: &tauri::tray::TrayIcon, event: TrayIconEvent) {
             button_state: MouseButtonState::Up,
             ..
         } => {
-            // Single left-click: Show menu or create new chat
+            // Single left-click: Show menu or create new agent session
             tracing::info!("Tray single-click detected");
-            if let Err(e) = window_manager::create_new_chat_session() {
-                tracing::error!("Failed to create chat session on click: {}", e);
+            if let Err(e) = window_manager::create_new_agent_session() {
+                tracing::error!("Failed to create agent session on click: {}", e);
             }
         }
         TrayIconEvent::DoubleClick {
@@ -632,14 +632,14 @@ fn handle_tray_event(tray: &tauri::tray::TrayIcon, event: TrayIconEvent) {
 }
 
 /// Start listening with shared validation logic used by both the tray and
-/// chat UI entry points.
+/// agent UI entry points.
 ///
 /// This ensures we always run the same configuration checks (provider
 /// selected, OpenAI key present, local Whisper model available, etc.) before
 /// starting the speech pipeline.
 pub fn start_listening_with_validation(app: &AppHandle) -> Result<(), String> {
     // Validate configuration first so that tray-initiated starts behave the
-    // same way as the chat UI and return user-friendly error messages.
+    // same way as the agent UI and return user-friendly error messages.
     let validation = crate::api::validate_voice_and_llm_config_sync();
     if !validation.is_valid {
         let error_msg = format!(
@@ -972,7 +972,7 @@ fn restore_all_sessions() {
     tracing::info!("Restoring {} closed sessions", closed_sessions.len());
 
     for session in closed_sessions {
-        if let Err(e) = window_manager::restore_chat_session(&session.id) {
+        if let Err(e) = window_manager::restore_agent_session(&session.id) {
             tracing::error!("Failed to restore session {}: {}", session.id, e);
         }
     }

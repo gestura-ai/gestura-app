@@ -1,8 +1,8 @@
-//! Chat receipt tracing utilities.
+//! Agent receipt tracing utilities.
 //!
-//! In debug mode, chat windows can emit a `chat-debug-receipt` event back to the backend.
+//! In debug mode, agent windows can emit an `agent-debug-receipt` event back to the backend.
 //! This module records those receipts in-memory so we can correlate:
-//! - what the backend *attempted* to emit (`chat_events` trace), and
+//! - what the backend *attempted* to emit (`agent_events` trace), and
 //! - what each webview actually *received* (this module).
 //!
 //! This is intentionally best-effort and diagnostics-only.
@@ -12,18 +12,18 @@ use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 
 /// Maximum number of receipt trace entries kept in memory.
-const CHAT_RECEIPT_TRACE_MAX: usize = 1000;
+const AGENT_RECEIPT_TRACE_MAX: usize = 1000;
 
 /// A single "receipt" record emitted from a frontend webview.
 #[derive(Clone, Debug, Serialize)]
-pub struct ChatReceiptTraceEntry {
+pub struct AgentReceiptTraceEntry {
     /// Unix epoch milliseconds.
     pub ts_ms: u128,
     /// Best-effort window label of the receiving webview.
     pub window_label: Option<String>,
     /// Session id of the receiving webview (typically from `?session_id=...`).
     pub session_id: Option<String>,
-    /// Event that was received (e.g., `chat-stream-chunk`).
+    /// Event that was received (e.g., `agent-stream-chunk`).
     pub event_name: String,
     /// Session id embedded in the payload (if present).
     pub incoming_session_id: Option<String>,
@@ -38,7 +38,7 @@ pub struct ChatReceiptTraceEntry {
 }
 
 #[derive(Debug, Deserialize)]
-struct ChatReceiptWire {
+struct AgentReceiptWire {
     #[serde(default, alias = "windowLabel")]
     window_label: Option<String>,
     #[serde(default, alias = "sessionId")]
@@ -55,31 +55,31 @@ struct ChatReceiptWire {
     listener_mode: Option<String>,
 }
 
-static CHAT_RECEIPT_TRACE: OnceLock<Mutex<VecDeque<ChatReceiptTraceEntry>>> = OnceLock::new();
+static AGENT_RECEIPT_TRACE: OnceLock<Mutex<VecDeque<AgentReceiptTraceEntry>>> = OnceLock::new();
 
-fn trace_store() -> &'static Mutex<VecDeque<ChatReceiptTraceEntry>> {
-    CHAT_RECEIPT_TRACE.get_or_init(|| Mutex::new(VecDeque::new()))
+fn trace_store() -> &'static Mutex<VecDeque<AgentReceiptTraceEntry>> {
+    AGENT_RECEIPT_TRACE.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
-/// Clears the in-memory chat receipt trace.
-pub fn clear_chat_receipt_trace() {
+/// Clears the in-memory agent receipt trace.
+pub fn clear_agent_receipt_trace() {
     let mut store = trace_store().lock().unwrap();
     store.clear();
 }
 
-/// Returns the most recent chat receipt trace entries.
+/// Returns the most recent agent receipt trace entries.
 ///
-/// If `max` is `None`, returns up to the most recent `CHAT_RECEIPT_TRACE_MAX` entries.
-pub fn get_chat_receipt_trace(max: Option<usize>) -> Vec<ChatReceiptTraceEntry> {
+/// If `max` is `None`, returns up to the most recent `AGENT_RECEIPT_TRACE_MAX` entries.
+pub fn get_agent_receipt_trace(max: Option<usize>) -> Vec<AgentReceiptTraceEntry> {
     let store = trace_store().lock().unwrap();
-    let take = max.unwrap_or(CHAT_RECEIPT_TRACE_MAX).min(store.len());
+    let take = max.unwrap_or(AGENT_RECEIPT_TRACE_MAX).min(store.len());
     store.iter().rev().take(take).cloned().collect::<Vec<_>>()
 }
 
 /// Records a frontend receipt payload (JSON string) into the in-memory trace.
 ///
-/// The frontend should emit `chat-debug-receipt` with a JSON payload.
-pub fn record_chat_receipt_payload(payload: &str) {
+/// The frontend should emit `agent-debug-receipt` with a JSON payload.
+pub fn record_agent_receipt_payload(payload: &str) {
     let preview = payload.trim();
     // Note: truncate by character count to avoid UTF-8 slicing panics.
     let payload_preview = crate::text_utils::truncate_utf8(preview, 240);
@@ -89,8 +89,8 @@ pub fn record_chat_receipt_payload(payload: &str) {
         .map(|d| d.as_millis())
         .unwrap_or(0);
 
-    let entry = match serde_json::from_str::<ChatReceiptWire>(payload) {
-        Ok(w) => ChatReceiptTraceEntry {
+    let entry = match serde_json::from_str::<AgentReceiptWire>(payload) {
+        Ok(w) => AgentReceiptTraceEntry {
             ts_ms: now_ms,
             window_label: w.window_label,
             session_id: w.session_id,
@@ -103,7 +103,7 @@ pub fn record_chat_receipt_payload(payload: &str) {
             listener_mode: w.listener_mode,
             payload_preview,
         },
-        Err(err) => ChatReceiptTraceEntry {
+        Err(err) => AgentReceiptTraceEntry {
             ts_ms: now_ms,
             window_label: None,
             session_id: None,
@@ -118,7 +118,8 @@ pub fn record_chat_receipt_payload(payload: &str) {
 
     let mut store = trace_store().lock().unwrap();
     store.push_back(entry);
-    while store.len() > CHAT_RECEIPT_TRACE_MAX {
+    while store.len() > AGENT_RECEIPT_TRACE_MAX {
         store.pop_front();
     }
 }
+

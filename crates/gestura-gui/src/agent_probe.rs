@@ -1,7 +1,7 @@
-//! Deterministic diagnostics probe for multi-window chat isolation.
+//! Deterministic diagnostics probe for multi-window agent isolation.
 //!
-//! This module provides a backend-driven probe that emits a `chat-probe` event to
-//! multiple chat windows and correlates backend emission trace entries with
+//! This module provides a backend-driven probe that emits an `agent-probe` event to
+//! multiple agent windows and correlates backend emission trace entries with
 //! frontend receipt trace entries. The intent is to make cross-window leakage
 //! reproducible and debuggable without relying on real LLM calls.
 
@@ -9,9 +9,9 @@ use serde::Serialize;
 use tauri::Manager;
 
 /// The event name used for probe traffic.
-pub const CHAT_PROBE_EVENT: &str = "chat-probe";
+pub const AGENT_PROBE_EVENT: &str = "agent-probe";
 
-/// A selected chat window used by the probe.
+/// A selected agent window used by the probe.
 #[derive(Clone, Debug, Serialize)]
 pub struct ProbeWindow {
     pub label: String,
@@ -30,7 +30,7 @@ pub struct ProbeLeakageFinding {
 
 /// Summary analysis of the probe run.
 #[derive(Clone, Debug, Serialize)]
-pub struct ChatIsolationProbeAnalysis {
+pub struct AgentIsolationProbeAnalysis {
     /// Whether the probe observed the expected isolation behavior.
     pub ok: bool,
     /// Any warnings that may indicate instrumentation gaps.
@@ -52,46 +52,46 @@ pub struct ProbeReceiptCount {
 
 /// Full report returned to the frontend.
 #[derive(Clone, Debug, Serialize)]
-pub struct ChatIsolationProbeReport {
+pub struct AgentIsolationProbeReport {
     pub probe_id: String,
     pub selected_windows: Vec<ProbeWindow>,
-    pub emit_trace: Vec<crate::chat_events::ChatEventTraceEntry>,
-    pub receipt_trace: Vec<crate::chat_receipts::ChatReceiptTraceEntry>,
-    pub analysis: ChatIsolationProbeAnalysis,
+    pub emit_trace: Vec<crate::agent_events::AgentEventTraceEntry>,
+    pub receipt_trace: Vec<crate::agent_receipts::AgentReceiptTraceEntry>,
+    pub analysis: AgentIsolationProbeAnalysis,
 }
 
-/// Run a deterministic multi-window chat isolation probe.
+/// Run a deterministic multi-window agent isolation probe.
 ///
 /// Behavior:
 /// - Clears the backend traces (emit + receipt).
-/// - Selects two chat windows (labels matching `chat-...`).
-/// - Emits `chat-probe` events to each window using window-scoped `emit_to`.
+/// - Selects two agent windows (labels matching `agent-...`).
+/// - Emits `agent-probe` events to each window using window-scoped `emit_to`.
 /// - Waits briefly for frontend receipts to arrive.
 /// - Returns traces and an analysis summary.
-pub async fn run_chat_isolation_probe(
+pub async fn run_agent_isolation_probe(
     app: tauri::AppHandle,
-) -> Result<ChatIsolationProbeReport, String> {
-    crate::chat_events::clear_chat_event_trace();
-    crate::chat_receipts::clear_chat_receipt_trace();
+) -> Result<AgentIsolationProbeReport, String> {
+    crate::agent_events::clear_agent_event_trace();
+    crate::agent_receipts::clear_agent_receipt_trace();
 
-    let mut chat_labels: Vec<String> = app
+    let mut agent_labels: Vec<String> = app
         .webview_windows()
         .keys()
-        .filter(|l| l.starts_with("chat-"))
+        .filter(|l| l.starts_with("agent-"))
         .cloned()
         .collect();
-    chat_labels.sort();
+    agent_labels.sort();
 
-    if chat_labels.len() < 2 {
+    if agent_labels.len() < 2 {
         return Err(
-            "Chat isolation probe requires at least two open chat session windows (labels like chat-{session_id})."
+            "Agent isolation probe requires at least two open agent session windows (labels like agent-{session_id})."
                 .to_string(),
         );
     }
 
     // Deterministically pick the first two.
-    let a_label = chat_labels[0].clone();
-    let b_label = chat_labels[1].clone();
+    let a_label = agent_labels[0].clone();
+    let b_label = agent_labels[1].clone();
 
     let a_session = crate::window_manager::get_session_id_for_window_label(&a_label);
     let b_session = crate::window_manager::get_session_id_for_window_label(&b_label);
@@ -120,14 +120,14 @@ pub async fn run_chat_isolation_probe(
             "probe_id": probe_id,
             "probe_seq": idx + 1,
             "target_window_label": w.label,
-            "note": "chat isolation probe"
+            "note": "agent isolation probe"
         });
-        let payload = crate::chat_events::attach_session_id(payload, w.session_id.as_deref());
-        crate::chat_events::emit_chat_event_to_window(
+        let payload = crate::agent_events::attach_session_id(payload, w.session_id.as_deref());
+        crate::agent_events::emit_agent_event_to_window(
             &app,
             &w.label,
             &w.label,
-            CHAT_PROBE_EVENT,
+            AGENT_PROBE_EVENT,
             &payload,
             w.session_id.as_deref(),
         )?;
@@ -136,11 +136,11 @@ pub async fn run_chat_isolation_probe(
     // Give the frontend a moment to record receipts (invoke is async).
     tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
 
-    let emit_trace = crate::chat_events::get_chat_event_trace(Some(200));
-    let receipt_trace = crate::chat_receipts::get_chat_receipt_trace(Some(400));
+    let emit_trace = crate::agent_events::get_agent_event_trace(Some(200));
+    let receipt_trace = crate::agent_receipts::get_agent_receipt_trace(Some(400));
     let analysis = analyze_probe(&selected_windows, &receipt_trace);
 
-    Ok(ChatIsolationProbeReport {
+    Ok(AgentIsolationProbeReport {
         probe_id,
         selected_windows,
         emit_trace,
@@ -152,22 +152,22 @@ pub async fn run_chat_isolation_probe(
 /// Analyze receipt trace entries for probe-related leakage signals.
 fn analyze_probe(
     selected_windows: &[ProbeWindow],
-    receipt_trace: &[crate::chat_receipts::ChatReceiptTraceEntry],
-) -> ChatIsolationProbeAnalysis {
+    receipt_trace: &[crate::agent_receipts::AgentReceiptTraceEntry],
+) -> AgentIsolationProbeAnalysis {
     let mut warnings = Vec::new();
     let mut leakage = Vec::new();
 
     let targets: std::collections::HashSet<&str> =
         selected_windows.iter().map(|w| w.label.as_str()).collect();
 
-    let probe_receipts: Vec<&crate::chat_receipts::ChatReceiptTraceEntry> = receipt_trace
+    let probe_receipts: Vec<&crate::agent_receipts::AgentReceiptTraceEntry> = receipt_trace
         .iter()
-        .filter(|r| r.event_name == CHAT_PROBE_EVENT)
+        .filter(|r| r.event_name == AGENT_PROBE_EVENT)
         .collect();
 
     if probe_receipts.is_empty() {
         warnings.push(
-            "No probe receipts were recorded. This likely means chat.html is not listening to `chat-probe` or receipt recording is disabled."
+            "No probe receipts were recorded. This likely means agent.html is not listening to `agent-probe` or receipt recording is disabled."
                 .to_string(),
         );
     }
@@ -224,7 +224,7 @@ fn analyze_probe(
         let total = counts.get(&label).map(|t| t.0).unwrap_or(0);
         if total == 0 {
             warnings.push(format!(
-                "No `chat-probe` receipt recorded for window {label}. Listener may not be attached yet, or receipt logging is disabled."
+                "No `agent-probe` receipt recorded for window {label}. Listener may not be attached yet, or receipt logging is disabled."
             ));
         }
     }
@@ -243,10 +243,11 @@ fn analyze_probe(
 
     let ok = leakage.is_empty() && warnings.is_empty();
 
-    ChatIsolationProbeAnalysis {
+    AgentIsolationProbeAnalysis {
         ok,
         warnings,
         leakage,
         receipt_counts,
     }
 }
+
