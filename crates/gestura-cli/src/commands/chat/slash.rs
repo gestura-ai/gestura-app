@@ -9,8 +9,9 @@ use crate::commands::tools::permissions::permission_manager;
 use gestura_core::{
     AppConfig,
     chat_sessions::{ChatSession, SessionPermissionLevel},
-    config::{McpScope, McpServerEntry, McpTransportType},
+    config::{McpScope, McpServerEntry, McpTransportType, infer_transport_from_endpoint},
     context::ContextManager,
+    find_tool,
     hooks::{HookCommandTemplate, HookDefinition, HookEvent},
     memory_bank::MemoryBankEntry,
     tasks::{Task, TaskManager, TaskStatus},
@@ -225,7 +226,7 @@ pub(crate) fn apply_hooks_subcommand(
                         .to_string(),
                 );
             };
-            let event = parse_hook_event(event_str).ok_or_else(|| {
+            let event: HookEvent = event_str.parse().map_err(|_: String| {
                 format!("Unknown hook event '{event_str}'. Try pre_pipeline|post_pipeline|pre_tool|post_tool")
             })?;
             let cmd = HookCommandTemplate {
@@ -306,17 +307,6 @@ fn hooks_usage_lines() -> Vec<String> {
         "  /hooks set max_output_bytes <n>".to_string(),
         "Events: pre_pipeline | post_pipeline | pre_tool | post_tool".to_string(),
     ]
-}
-
-fn parse_hook_event(s: &str) -> Option<HookEvent> {
-    let norm = s.trim().to_ascii_lowercase().replace(['-', ' '], "_");
-    match norm.as_str() {
-        "pre_pipeline" | "prepipeline" => Some(HookEvent::PrePipeline),
-        "post_pipeline" | "postpipeline" => Some(HookEvent::PostPipeline),
-        "pre_tool" | "pretool" => Some(HookEvent::PreTool),
-        "post_tool" | "posttool" => Some(HookEvent::PostTool),
-        _ => None,
-    }
 }
 
 // ===================== /permissions =====================
@@ -489,7 +479,7 @@ pub(crate) fn run_permissions_subcommand(
                         .map(|s| s.permission_level)
                         .unwrap_or_default();
                     Ok(PermissionsOutcome {
-                        lines: vec![format!("Session permission level: {}", format_permission_level(current))],
+                        lines: vec![format!("Session permission level: {current}")],
                         changed_permissions: false,
                         session_changed: false,
                     })
@@ -500,13 +490,13 @@ pub(crate) fn run_permissions_subcommand(
                             "Usage: /permissions level set <sandbox|restricted|full>".to_string(),
                         );
                     };
-                    let level = parse_permission_level(level_str)
-                        .ok_or_else(|| format!("Unknown permission level '{level_str}'"))?;
+                    let level: SessionPermissionLevel = level_str.parse()
+                        .map_err(|_: String| format!("Unknown permission level '{level_str}'"))?;
                     let settings = session.state.tool_settings.get_or_insert_with(Default::default);
                     let changed = settings.permission_level != level;
                     settings.permission_level = level;
                     Ok(PermissionsOutcome {
-                        lines: vec![format!("Set session permission level -> {}", format_permission_level(level))],
+                        lines: vec![format!("Set session permission level -> {level}")],
                         changed_permissions: false,
                         session_changed: changed,
                     })
@@ -566,7 +556,10 @@ fn parse_permission_grant_args(args: &[&str]) -> Result<(String, String, Permiss
         }
     };
 
-    Ok((tool, action, parse_permission_scope(scope_str)))
+    let scope = scope_str
+        .map(|s| s.parse::<PermissionScope>().unwrap())
+        .unwrap_or(PermissionScope::Global);
+    Ok((tool, action, scope))
 }
 
 fn parse_permission_tool_action(args: &[&str]) -> Result<(String, String), String> {
@@ -581,14 +574,6 @@ fn parse_permission_tool_action(args: &[&str]) -> Result<(String, String), Strin
         }
         [tool, action] => Ok(((*tool).to_string(), (*action).to_string())),
         _ => Err("Expected 'tool.action' or '<tool> <action>'".to_string()),
-    }
-}
-
-fn parse_permission_scope(scope: Option<&str>) -> PermissionScope {
-    match scope.map(str::trim).filter(|s| !s.is_empty()) {
-        None => PermissionScope::Global,
-        Some(s) if s.starts_with('/') => PermissionScope::Path(s.to_string()),
-        Some(s) => PermissionScope::Command(s.to_string()),
     }
 }
 
@@ -608,10 +593,10 @@ fn parse_permission_check_args(args: &[&str]) -> Result<(String, String, Option<
             let (tool, action) = parse_permission_tool_action(&[*action])?;
             Ok((tool, action, Some((*target).to_string())))
         }
-        [tool, action] if is_known_tool(tool) => {
+        [tool, action] if find_tool(tool).is_some() => {
             Ok(((*tool).to_string(), (*action).to_string(), None))
         }
-        [tool, action, target, ..] if is_known_tool(tool) => Ok((
+        [tool, action, target, ..] if find_tool(tool).is_some() => Ok((
             (*tool).to_string(),
             (*action).to_string(),
             Some((*target).to_string()),
@@ -624,10 +609,6 @@ fn parse_permission_check_args(args: &[&str]) -> Result<(String, String, Option<
             "Usage: /permissions check <read|write|shell|fetch|tool.action> [target]".to_string(),
         ),
     }
-}
-
-fn is_known_tool(tool: &str) -> bool {
-    matches!(tool, "file" | "shell" | "git" | "web" | "code")
 }
 
 fn map_check_action(action: &str) -> (String, String) {
@@ -651,24 +632,6 @@ fn map_check_action(action: &str) -> (String, String) {
                 ("unknown".to_string(), other.to_string())
             }
         }
-    }
-}
-
-fn parse_permission_level(s: &str) -> Option<SessionPermissionLevel> {
-    let norm = s.trim().to_ascii_lowercase().replace(['-', ' '], "_");
-    match norm.as_str() {
-        "sandbox" => Some(SessionPermissionLevel::Sandbox),
-        "restricted" => Some(SessionPermissionLevel::Restricted),
-        "full" | "full_permissions" | "full-permissions" => Some(SessionPermissionLevel::Full),
-        _ => None,
-    }
-}
-
-fn format_permission_level(level: SessionPermissionLevel) -> &'static str {
-    match level {
-        SessionPermissionLevel::Sandbox => "sandbox",
-        SessionPermissionLevel::Restricted => "restricted",
-        SessionPermissionLevel::Full => "full",
     }
 }
 
@@ -781,8 +744,9 @@ pub(crate) fn run_tasks_subcommand(
                 );
             };
             let task_id = resolve_task_id_spec(manager, session_id, spec)?;
-            let status = parse_task_status(status_str)
-                .ok_or_else(|| format!("Unknown status '{status_str}'"))?;
+            let status: TaskStatus = status_str
+                .parse()
+                .map_err(|_: String| format!("Unknown status '{status_str}'"))?;
             manager
                 .update_task_status(session_id, &task_id, status)
                 .map_err(|e| format!("Failed to update status: {e}"))?;
@@ -952,17 +916,6 @@ fn tasks_usage_lines() -> Vec<String> {
         "  /task dep add <task_id> <blocked_by_id>".to_string(),
         "IDs can be full UUIDs or unique prefixes. Use '.' to refer to current task.".to_string(),
     ]
-}
-
-fn parse_task_status(s: &str) -> Option<TaskStatus> {
-    let norm = s.trim().to_ascii_lowercase().replace('-', "_");
-    match norm.as_str() {
-        "not_started" | "todo" | "new" => Some(TaskStatus::NotStarted),
-        "in_progress" | "doing" | "wip" => Some(TaskStatus::InProgress),
-        "completed" | "done" => Some(TaskStatus::Completed),
-        "cancelled" | "canceled" => Some(TaskStatus::Cancelled),
-        _ => None,
-    }
 }
 
 fn resolve_task_id_spec(
@@ -1360,7 +1313,9 @@ pub(crate) fn run_mcp_subcommand(
             let Some(name) = args.get(1).copied() else {
                 return Err("Usage: /mcp get <name>".to_string());
             };
-            let srv = find_mcp_server(config, name)?;
+            let srv = config
+                .find_mcp_server(name)
+                .ok_or_else(|| format!("MCP server '{name}' not found"))?;
             Ok(McpOutcome {
                 lines: mcp_server_details_lines(srv),
                 changed: false,
@@ -1372,7 +1327,9 @@ pub(crate) fn run_mcp_subcommand(
                 return Err(format!("Usage: /mcp {sub} <name>"));
             };
             let enabled = sub == "enable";
-            let srv = find_mcp_server_mut(config, name)?;
+            let srv = config
+                .find_mcp_server_mut(name)
+                .ok_or_else(|| format!("MCP server '{name}' not found"))?;
             let changed = srv.enabled != enabled;
             srv.enabled = enabled;
             Ok(McpOutcome {
@@ -1450,7 +1407,9 @@ pub(crate) fn run_mcp_subcommand(
             let (pos_endpoint, rest) = split_positional_endpoint(args.get(2..).unwrap_or_default());
             let parsed = McpParsedArgs::parse(rest)?;
 
-            let srv = find_mcp_server_mut(config, name)?;
+            let srv = config
+                .find_mcp_server_mut(name)
+                .ok_or_else(|| format!("MCP server '{name}' not found"))?;
             let before = srv.clone();
             apply_mcp_edit_patch(srv, &parsed, pos_endpoint)?;
             validate_mcp_entry(srv)?;
@@ -1483,7 +1442,9 @@ pub(crate) fn run_mcp_subcommand(
             };
             // Ensure server exists (and surfaces a good error message) even though
             // the actual connect is performed by the caller.
-            let _ = find_mcp_server(config, name)?;
+            let _ = config
+                .find_mcp_server(name)
+                .ok_or_else(|| format!("MCP server '{name}' not found"))?;
             Ok(McpOutcome {
                 lines: vec![format!("Connecting to MCP server: {name}...")],
                 changed: false,
@@ -1624,25 +1585,6 @@ fn mcp_server_details_lines(srv: &McpServerEntry) -> Vec<String> {
     lines
 }
 
-fn find_mcp_server<'a>(config: &'a AppConfig, name: &str) -> Result<&'a McpServerEntry, String> {
-    config
-        .mcp_servers
-        .iter()
-        .find(|s| s.name == name)
-        .ok_or_else(|| format!("MCP server '{name}' not found"))
-}
-
-fn find_mcp_server_mut<'a>(
-    config: &'a mut AppConfig,
-    name: &str,
-) -> Result<&'a mut McpServerEntry, String> {
-    config
-        .mcp_servers
-        .iter_mut()
-        .find(|s| s.name == name)
-        .ok_or_else(|| format!("MCP server '{name}' not found"))
-}
-
 fn split_positional_endpoint<'a>(rest: &'a [&'a str]) -> (Option<String>, &'a [&'a str]) {
     let Some(first) = rest.first().copied() else {
         return (None, rest);
@@ -1651,15 +1593,6 @@ fn split_positional_endpoint<'a>(rest: &'a [&'a str]) -> (Option<String>, &'a [&
         (None, rest)
     } else {
         (Some(first.to_string()), &rest[1..])
-    }
-}
-
-fn infer_transport_from_endpoint(endpoint: Option<&str>) -> Option<McpTransportType> {
-    let ep = endpoint?.trim();
-    if ep.starts_with("http://") || ep.starts_with("https://") {
-        Some(McpTransportType::Http)
-    } else {
-        None
     }
 }
 
@@ -2118,16 +2051,22 @@ mod tests {
     #[test]
     fn hook_event_parsing_accepts_variants() {
         assert_eq!(
-            parse_hook_event("pre_pipeline"),
+            "pre_pipeline".parse::<HookEvent>().ok(),
             Some(HookEvent::PrePipeline)
         );
         assert_eq!(
-            parse_hook_event("pre-pipeline"),
+            "pre-pipeline".parse::<HookEvent>().ok(),
             Some(HookEvent::PrePipeline)
         );
-        assert_eq!(parse_hook_event("PreTool"), Some(HookEvent::PreTool));
-        assert_eq!(parse_hook_event("post tool"), Some(HookEvent::PostTool));
-        assert_eq!(parse_hook_event("nope"), None);
+        assert_eq!(
+            "PreTool".parse::<HookEvent>().ok(),
+            Some(HookEvent::PreTool)
+        );
+        assert_eq!(
+            "post tool".parse::<HookEvent>().ok(),
+            Some(HookEvent::PostTool)
+        );
+        assert_eq!("nope".parse::<HookEvent>().ok(), None);
     }
 
     #[test]
@@ -2166,18 +2105,18 @@ mod tests {
     #[test]
     fn permission_level_parsing_accepts_variants() {
         assert_eq!(
-            parse_permission_level("full-permissions"),
+            "full-permissions".parse::<SessionPermissionLevel>().ok(),
             Some(SessionPermissionLevel::Full)
         );
         assert_eq!(
-            parse_permission_level("restricted"),
+            "restricted".parse::<SessionPermissionLevel>().ok(),
             Some(SessionPermissionLevel::Restricted)
         );
         assert_eq!(
-            parse_permission_level("sandbox"),
+            "sandbox".parse::<SessionPermissionLevel>().ok(),
             Some(SessionPermissionLevel::Sandbox)
         );
-        assert_eq!(parse_permission_level("nope"), None);
+        assert_eq!("nope".parse::<SessionPermissionLevel>().ok(), None);
     }
 
     #[test]

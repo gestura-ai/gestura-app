@@ -22,6 +22,37 @@ pub enum HookEvent {
     PostTool,
 }
 
+impl std::fmt::Display for HookEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PrePipeline => write!(f, "pre_pipeline"),
+            Self::PostPipeline => write!(f, "post_pipeline"),
+            Self::PreTool => write!(f, "pre_tool"),
+            Self::PostTool => write!(f, "post_tool"),
+        }
+    }
+}
+
+impl std::str::FromStr for HookEvent {
+    type Err = String;
+
+    /// Parse a hook event from a string (case-insensitive, accepts hyphens/spaces
+    /// and collapsed forms like `prepipeline`).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let norm = s.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+        match norm.as_str() {
+            "pre_pipeline" | "prepipeline" => Ok(Self::PrePipeline),
+            "post_pipeline" | "postpipeline" => Ok(Self::PostPipeline),
+            "pre_tool" | "pretool" => Ok(Self::PreTool),
+            "post_tool" | "posttool" => Ok(Self::PostTool),
+            _ => Err(format!(
+                "Unknown hook event: '{}'. Expected: pre_pipeline, post_pipeline, pre_tool, post_tool",
+                s
+            )),
+        }
+    }
+}
+
 /// A command template for a hook.
 ///
 /// `program` and each entry in `args` are template-expanded using `{{key}}`

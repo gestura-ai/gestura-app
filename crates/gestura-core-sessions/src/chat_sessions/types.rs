@@ -134,6 +134,34 @@ impl SessionPermissionLevel {
     }
 }
 
+impl std::fmt::Display for SessionPermissionLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sandbox => write!(f, "sandbox"),
+            Self::Restricted => write!(f, "restricted"),
+            Self::Full => write!(f, "full"),
+        }
+    }
+}
+
+impl std::str::FromStr for SessionPermissionLevel {
+    type Err = String;
+
+    /// Parse a permission level (case-insensitive, accepts hyphens/underscores).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let norm = s.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+        match norm.as_str() {
+            "sandbox" => Ok(Self::Sandbox),
+            "restricted" => Ok(Self::Restricted),
+            "full" | "full_permissions" => Ok(Self::Full),
+            _ => Err(format!(
+                "Unknown permission level: '{}'. Expected: sandbox, restricted, full",
+                s
+            )),
+        }
+    }
+}
+
 /// Session-scoped tool availability settings.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionToolSettings {

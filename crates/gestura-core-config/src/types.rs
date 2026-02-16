@@ -21,7 +21,8 @@ use gestura_core_pipeline::types::CompactionStrategy;
 
 // Re-export domain config types for backwards compatibility.
 pub use gestura_core_mcp::config::{
-    McpJsonFile, McpScope, McpServerEntry, McpTool, McpTransportType, import_claude_desktop_servers,
+    McpJsonFile, McpScope, McpServerEntry, McpTool, McpTransportType,
+    import_claude_desktop_servers, infer_transport_from_endpoint,
 };
 pub use gestura_core_tools::config::{WebSearchConfig, WebSearchProvider};
 
@@ -909,6 +910,20 @@ impl AppConfig {
         }
 
         self
+    }
+
+    // -----------------------------------------------------------------------
+    // MCP server helpers
+    // -----------------------------------------------------------------------
+
+    /// Find an MCP server entry by name (immutable).
+    pub fn find_mcp_server(&self, name: &str) -> Option<&McpServerEntry> {
+        self.mcp_servers.iter().find(|s| s.name == name)
+    }
+
+    /// Find an MCP server entry by name (mutable).
+    pub fn find_mcp_server_mut(&mut self, name: &str) -> Option<&mut McpServerEntry> {
+        self.mcp_servers.iter_mut().find(|s| s.name == name)
     }
 }
 

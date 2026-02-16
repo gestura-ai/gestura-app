@@ -106,6 +106,19 @@ impl std::str::FromStr for McpTransportType {
     }
 }
 
+/// Infer the MCP transport type from an endpoint URL.
+///
+/// Returns `Some(McpTransportType::Http)` when the endpoint starts with
+/// `http://` or `https://`, `None` otherwise (e.g. for stdio commands).
+pub fn infer_transport_from_endpoint(endpoint: Option<&str>) -> Option<McpTransportType> {
+    let ep = endpoint?.trim();
+    if ep.starts_with("http://") || ep.starts_with("https://") {
+        Some(McpTransportType::Http)
+    } else {
+        None
+    }
+}
+
 /// Configuration scope for MCP servers.
 ///
 /// Determines where the server configuration is stored and its precedence.

@@ -33,6 +33,36 @@ pub enum PermissionScope {
     Command(String),
 }
 
+impl std::fmt::Display for PermissionScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Global => write!(f, "global"),
+            Self::Path(p) => write!(f, "{}", p),
+            Self::Command(c) => write!(f, "{}", c),
+        }
+    }
+}
+
+impl std::str::FromStr for PermissionScope {
+    type Err = std::convert::Infallible;
+
+    /// Parse a permission scope from a string.
+    ///
+    /// - Empty or `"global"` → [`Global`](PermissionScope::Global)
+    /// - Starts with `/` → [`Path`](PermissionScope::Path)
+    /// - Otherwise → [`Command`](PermissionScope::Command)
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let s = s.trim();
+        if s.is_empty() || s.eq_ignore_ascii_case("global") {
+            Ok(Self::Global)
+        } else if s.starts_with('/') {
+            Ok(Self::Path(s.to_string()))
+        } else {
+            Ok(Self::Command(s.to_string()))
+        }
+    }
+}
+
 /// Permission check result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionCheck {

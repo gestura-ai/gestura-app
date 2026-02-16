@@ -42,6 +42,36 @@ pub enum TaskStatus {
     Cancelled,
 }
 
+impl std::fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotStarted => write!(f, "not_started"),
+            Self::InProgress => write!(f, "in_progress"),
+            Self::Completed => write!(f, "completed"),
+            Self::Cancelled => write!(f, "cancelled"),
+        }
+    }
+}
+
+impl std::str::FromStr for TaskStatus {
+    type Err = String;
+
+    /// Parse a task status (case-insensitive, accepts common aliases).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let norm = s.trim().to_ascii_lowercase().replace('-', "_");
+        match norm.as_str() {
+            "not_started" | "todo" | "new" => Ok(Self::NotStarted),
+            "in_progress" | "doing" | "wip" => Ok(Self::InProgress),
+            "completed" | "done" => Ok(Self::Completed),
+            "cancelled" | "canceled" | "dropped" => Ok(Self::Cancelled),
+            _ => Err(format!(
+                "Unknown task status: '{}'. Expected: not_started, in_progress, completed, cancelled",
+                s
+            )),
+        }
+    }
+}
+
 /// Source of a task (who created it)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TaskSource {
