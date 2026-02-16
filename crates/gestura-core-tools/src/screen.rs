@@ -492,7 +492,7 @@ impl ScreenTools {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
+        let parts: Vec<&str> = stdout.split_whitespace().collect();
 
         if parts.len() >= 2 {
             let width = parts[0].parse().ok();
