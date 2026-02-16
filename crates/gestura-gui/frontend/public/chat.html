@@ -460,18 +460,6 @@
             flex: 0 0 auto;
         }
 
-        .explorer-caret {
-            width: 16px;
-            height: 16px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--text-secondary);
-            opacity: 0.85;
-            flex: 0 0 auto;
-            font-size: 12px;
-        }
-
         .explorer-icon {
             width: 16px;
             height: 16px;
@@ -509,17 +497,36 @@
         }
 
         .git-badge {
-            min-width: 18px;
-            height: 18px;
-            padding: 0 6px;
-            border-radius: 10px;
-            font-size: 11px;
-            line-height: 18px;
-            font-weight: 700;
-            letter-spacing: 0.02em;
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            background: rgba(255, 255, 255, 0.06);
+            /* icon-only: no pill/circle chrome */
+            width: auto;
+            min-width: 0;
+            height: auto;
+            padding: 0;
+            border-radius: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: none;
+            background: transparent;
             color: var(--text-secondary);
+        }
+
+        .git-badge-icon {
+            width: 14px;
+            height: 14px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            /* drives icon ::before 1em sizing */
+        }
+
+        /* Stage classes remain for semantics/tooling, but keep visuals icon-only */
+        .git-badge.stage-staged,
+        .git-badge.stage-unstaged,
+        .git-badge.stage-untracked {
+            background: transparent;
+            border: none;
         }
 
         .git-badge.modified {
@@ -7254,14 +7261,14 @@
         }
 
         function badgeForKind(kind, isUntracked) {
-            if (isUntracked) return { text: 'U', cls: 'untracked', title: 'Untracked' };
+            if (isUntracked) return { icon: 'icon-git-untracked', cls: 'untracked', title: 'Untracked' };
             switch ((kind || '').toLowerCase()) {
-                case 'modified': return { text: 'M', cls: 'modified', title: 'Modified' };
-                case 'added': return { text: 'A', cls: 'added', title: 'Added' };
-                case 'deleted': return { text: 'D', cls: 'deleted', title: 'Deleted' };
-                case 'renamed': return { text: 'R', cls: 'renamed', title: 'Renamed' };
-                case 'copied': return { text: 'C', cls: 'copied', title: 'Copied' };
-                case 'unknown': return { text: '?', cls: 'unknown', title: 'Changed' };
+                case 'modified': return { icon: 'icon-git-modified', cls: 'modified', title: 'Modified' };
+                case 'added': return { icon: 'icon-git-added', cls: 'added', title: 'Added' };
+                case 'deleted': return { icon: 'icon-git-deleted', cls: 'deleted', title: 'Deleted' };
+                case 'renamed': return { icon: 'icon-git-renamed', cls: 'renamed', title: 'Renamed' };
+                case 'copied': return { icon: 'icon-git-copied', cls: 'copied', title: 'Copied' };
+                case 'unknown': return { icon: 'icon-git-unknown', cls: 'unknown', title: 'Changed' };
                 default: return null;
             }
         }
@@ -7271,33 +7278,26 @@
             el.className = 'explorer-git-badges';
             if (!status) return el;
 
+            function appendGitBadge(badge, stageLabel, stageCls) {
+                if (!badge) return;
+                const b = document.createElement('span');
+                b.className = `git-badge ${badge.cls} ${stageCls || ''}`.trim();
+                b.title = stageLabel ? `${stageLabel}: ${badge.title}` : badge.title;
+                const icon = document.createElement('span');
+                icon.className = `git-badge-icon ${badge.icon}`;
+                b.appendChild(icon);
+                el.appendChild(b);
+            }
+
             // Untracked is a strong signal, show it first.
             const u = status?.untracked ? badgeForKind(null, true) : null;
-            if (u) {
-                const b = document.createElement('span');
-                b.className = `git-badge ${u.cls}`;
-                b.textContent = u.text;
-                b.title = u.title;
-                el.appendChild(b);
-            }
+            appendGitBadge(u, null, 'stage-untracked');
 
             const unstaged = badgeForKind(status?.unstaged, false);
-            if (unstaged) {
-                const b = document.createElement('span');
-                b.className = `git-badge ${unstaged.cls}`;
-                b.textContent = unstaged.text;
-                b.title = `Working tree: ${unstaged.title}`;
-                el.appendChild(b);
-            }
+            appendGitBadge(unstaged, 'Working tree', 'stage-unstaged');
 
             const staged = badgeForKind(status?.staged, false);
-            if (staged) {
-                const b = document.createElement('span');
-                b.className = `git-badge ${staged.cls}`;
-                b.textContent = staged.text;
-                b.title = `Staged: ${staged.title}`;
-                el.appendChild(b);
-            }
+            appendGitBadge(staged, 'Staged', 'stage-staged');
 
             return el;
         }
@@ -7321,6 +7321,46 @@
             } finally {
                 explorerState.loadingDirs.delete(key);
             }
+        }
+
+        function explorerFileIconClass(fileName) {
+            const name = (fileName || '').toString();
+            const lower = name.toLowerCase();
+
+            // Special well-known filenames / dotfiles
+            if (lower === 'dockerfile') return 'icon-file-config-02';
+            if (lower === 'makefile') return 'icon-file-config-02';
+            if (lower === '.gitignore' || lower === '.gitattributes' || lower === '.gitmodules') return 'icon-file-config-02';
+            if (lower === '.env' || lower.startsWith('.env.')) return 'icon-file-config-02';
+
+            // Compound extensions first
+            if (lower.endsWith('.d.ts')) return 'icon-file-code-02';
+            if (lower.endsWith('.tar.gz') || lower.endsWith('.tar.bz2') || lower.endsWith('.tar.xz')) return 'icon-file-config-02';
+
+            const parts = lower.split('.').filter(Boolean);
+            const ext = parts.length > 1 ? parts[parts.length - 1] : '';
+            if (!ext) return 'icon-file-02';
+
+            // Data/config formats
+            if (ext === 'json' || ext === 'jsonl') return 'icon-file-json-02';
+            if (ext === 'yaml' || ext === 'yml') return 'icon-file-yaml-02';
+            if (ext === 'toml' || ext === 'ini' || ext === 'cfg' || ext === 'conf' || ext === 'properties') return 'icon-file-config-02';
+
+            // Markup / style
+            if (ext === 'html' || ext === 'htm' || ext === 'xml' || ext === 'svg') return 'icon-file-code-02';
+            if (ext === 'css' || ext === 'scss' || ext === 'sass' || ext === 'less') return 'icon-file-code-02';
+
+            // Code
+            if (ext === 'rs' || ext === 'py' || ext === 'js' || ext === 'jsx' || ext === 'ts' || ext === 'tsx') return 'icon-file-code-02';
+            if (ext === 'go' || ext === 'java' || ext === 'kt' || ext === 'c' || ext === 'h' || ext === 'cpp' || ext === 'hpp' || ext === 'cs' || ext === 'swift') return 'icon-file-code-02';
+
+            // Plain text / docs
+            if (ext === 'txt' || ext === 'md' || ext === 'rst' || ext === 'log') return 'icon-file-text-02';
+
+            // Shell
+            if (ext === 'sh' || ext === 'bash' || ext === 'zsh' || ext === 'fish') return 'icon-terminal';
+
+            return 'icon-file-02';
         }
 
         async function refreshGitStatus() {
@@ -7380,9 +7420,6 @@
                     const indent = document.createElement('div');
                     indent.className = 'explorer-indent';
 
-                    const caret = document.createElement('div');
-                    caret.className = 'explorer-caret';
-
                     const icon = document.createElement('div');
                     icon.className = 'explorer-icon';
                     const iconSpan = document.createElement('span');
@@ -7400,8 +7437,7 @@
 
                     if (isDir) {
                         const expanded = explorerState.expandedDirs.has(relPath);
-                        caret.textContent = expanded ? '▾' : '▸';
-                        iconSpan.className = 'icon-folder';
+                        iconSpan.className = expanded ? 'icon-folder-open' : 'icon-folder';
                         row.title = relPath;
 
                         // Directory aggregated git status
@@ -7421,8 +7457,7 @@
                             }
                         });
                     } else {
-                        caret.textContent = '';
-                        iconSpan.className = 'icon-file-02';
+                        iconSpan.className = explorerFileIconClass(entry?.name);
                         row.title = relPath;
 
                         const st = explorerState.gitPaths?.[relPath];
@@ -7431,7 +7466,6 @@
 
                     icon.appendChild(iconSpan);
                     row.appendChild(indent);
-                    row.appendChild(caret);
                     row.appendChild(icon);
                     row.appendChild(name);
                     row.appendChild(meta);
