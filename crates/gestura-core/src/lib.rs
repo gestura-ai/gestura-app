@@ -67,6 +67,7 @@ pub mod nats_mq;
 pub mod openai_compat;
 pub mod orchestrator;
 pub mod pipeline;
+pub mod platform;
 pub mod plugin_system;
 pub mod prompt_enhancement;
 pub mod recommendations;
@@ -186,6 +187,7 @@ pub use pipeline::{
     AgentPipeline, AgentRequest, AgentResponse, Message, PausedExecutionState, PermissionLevel,
     PipelineConfig, PipelineConfigExt, RequestMetadata, RequestSource, ToolCallRecord, ToolResult,
 };
+pub use platform::detect_system_dark_mode;
 pub use recommendations::{
     PersonalizedRecommendationEngine, Recommendation, RecommendationConfig, RecommendationFeedback,
     RecommendationType, SessionPatterns, UserBehaviorPattern,

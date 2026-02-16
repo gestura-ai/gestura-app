@@ -10,6 +10,7 @@ pub mod execution_mode;
 pub mod interaction;
 pub mod model_display;
 pub mod permissions;
+pub mod platform;
 pub mod secrets;
 pub mod stream_error;
 pub mod stream_health;
