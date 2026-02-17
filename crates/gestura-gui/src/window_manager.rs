@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
-use gestura_core::chat_sessions::{
-    ChatSessionStore, FileChatSessionStore, SessionFilter, SessionToolSettingsConfigExt,
+use gestura_core::agent_sessions::{
+    AgentSessionStore, FileAgentSessionStore, SessionFilter, SessionToolSettingsConfigExt,
 };
 use gestura_core::config::AppConfigSecurityExt;
 
@@ -28,17 +28,17 @@ pub(crate) fn default_session_workspace_dir(session_id: &str) -> PathBuf {
 ///
 /// Keeping this as a helper ensures the GUI remains a thin adapter over the
 /// unified persistence implementation in `gestura-core`.
-fn session_store() -> FileChatSessionStore {
-    FileChatSessionStore::new_default()
+fn session_store() -> FileAgentSessionStore {
+    FileAgentSessionStore::new_default()
 }
 
 /// Convert the GUI session view-model into the persisted core session model.
 ///
 /// The GUI maintains ephemeral window state (`is_open`, `window_label`) and a
 /// derived `message_count` for UI display. Persistence is handled by the core
-/// `ChatSession` type only.
-fn to_core_session(session: &AgentSession) -> gestura_core::chat_sessions::ChatSession {
-    gestura_core::chat_sessions::ChatSession {
+/// `AgentSession` type only.
+fn to_core_session(session: &AgentSession) -> gestura_core::agent_sessions::AgentSession {
+    gestura_core::agent_sessions::AgentSession {
         id: session.id.clone(),
         title: session.title.clone(),
         created_at: session.created_at,
@@ -56,7 +56,7 @@ fn to_core_session(session: &AgentSession) -> gestura_core::chat_sessions::ChatS
 ///
 /// Windows do not survive app restarts, so all loaded sessions are marked as
 /// closed and their `window_label` is cleared.
-fn from_core_session(session: gestura_core::chat_sessions::ChatSession) -> AgentSession {
+fn from_core_session(session: gestura_core::agent_sessions::AgentSession) -> AgentSession {
     let message_count = session.state.messages.len();
     AgentSession {
         id: session.id,
@@ -74,7 +74,7 @@ fn from_core_session(session: gestura_core::chat_sessions::ChatSession) -> Agent
 ///
 /// This keeps the Tauri layer thin while preserving the existing public module paths
 /// (`crate::window_manager::ConversationMessage`, etc.) used by backend commands.
-pub use gestura_core::chat_sessions::{
+pub use gestura_core::agent_sessions::{
     ConversationMessage, MessageSource, SessionLlmConfig, SessionPermissionLevel, SessionState,
     SessionToolCall, SessionToolSettings, SessionVoiceConfig,
 };
@@ -135,7 +135,7 @@ impl WindowManager {
         let store = session_store();
 
         // 1) Prefer loading from the unified core store.
-        let mut loaded_core_sessions: Vec<gestura_core::chat_sessions::ChatSession> = Vec::new();
+        let mut loaded_core_sessions: Vec<gestura_core::agent_sessions::AgentSession> = Vec::new();
         match store.list(SessionFilter::All) {
             Ok(infos) => {
                 for info in infos {
@@ -156,7 +156,7 @@ impl WindowManager {
 
         // 2) If the core store is empty, attempt a one-time migration from the legacy file.
         if loaded_core_sessions.is_empty() {
-            loaded_core_sessions = gestura_core::chat_sessions::migrate_legacy_gui_sessions_to_core(
+            loaded_core_sessions = gestura_core::agent_sessions::migrate_legacy_gui_sessions_to_core(
                 &store,
                 global_llm_provider.as_str(),
             );
@@ -171,7 +171,7 @@ impl WindowManager {
         let mut repaired_any = false;
         let mut sessions_for_ui: Vec<AgentSession> = Vec::new();
         for mut core_session in loaded_core_sessions {
-            repaired_any |= gestura_core::chat_sessions::sanitize_session_llm_override(
+            repaired_any |= gestura_core::agent_sessions::sanitize_session_llm_override(
                 &core_session.id,
                 &mut core_session.state,
                 global_llm_provider.as_str(),
@@ -215,7 +215,7 @@ impl WindowManager {
                 }
             }
             // Best-effort cleanup: also remove legacy file if present.
-            let legacy = gestura_core::chat_sessions::legacy_gui_sessions_file_path();
+            let legacy = gestura_core::agent_sessions::legacy_gui_sessions_file_path();
             if legacy.exists() {
                 let _ = std::fs::remove_file(&legacy);
             }

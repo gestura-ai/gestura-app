@@ -5842,7 +5842,7 @@ pub fn list_session_checkpoints(
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
 pub fn restore_session_checkpoint(checkpoint_id: String) -> Result<serde_json::Value, String> {
-    use gestura_core::chat_sessions::FileChatSessionStore;
+    use gestura_core::agent_sessions::FileAgentSessionStore;
     use gestura_core::checkpoints::{
         CheckpointId, CheckpointManager, CheckpointRetentionPolicy, FileCheckpointStore,
     };
@@ -5856,7 +5856,7 @@ pub fn restore_session_checkpoint(checkpoint_id: String) -> Result<serde_json::V
         FileCheckpointStore::new_default(),
         CheckpointRetentionPolicy::default(),
     );
-    let session_store = FileChatSessionStore::default();
+    let session_store = FileAgentSessionStore::default();
     let task_manager =
         TaskManager::new(dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")));
 
