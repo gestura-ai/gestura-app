@@ -11,7 +11,7 @@ use crate::speech::TranscriptionResult;
 use gestura_core_config::AppConfig;
 use gestura_core_foundation::AppError;
 use gestura_core_foundation::secrets::{SecretKey, SecretProvider};
-use gestura_core_sessions::chat_sessions::SessionVoiceConfig;
+use gestura_core_sessions::agent_sessions::SessionVoiceConfig;
 
 /// Normalize an optional string override by trimming and treating empty/whitespace as `None`.
 fn normalize_override(value: Option<&str>) -> Option<&str> {
