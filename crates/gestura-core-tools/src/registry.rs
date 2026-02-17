@@ -1,7 +1,7 @@
 //! Tool Registry
 //!
 //! Provides an authoritative, deterministic inventory of Gestura's built-in
-//! tools. This is used by interactive chat commands (e.g. `/tools`) and for
+//! tools. This is used by interactive agent commands (e.g. `/tools`) and for
 //! answering common "what tools do you have" questions without relying on an
 //! LLM response.
 //!

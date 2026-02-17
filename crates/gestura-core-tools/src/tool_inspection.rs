@@ -537,7 +537,7 @@ mod tests {
     #[test]
     fn test_tool_inspection_manager_creation() {
         let manager = ToolInspectionManager::new();
-        assert_eq!(manager.current_mode(), ExecutionMode::Chat);
+        assert_eq!(manager.current_mode(), ExecutionMode::Agent);
 
         // Should have built-in tools registered
         let tools = manager.list_tools();
