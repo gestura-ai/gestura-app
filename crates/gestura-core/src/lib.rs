@@ -20,7 +20,7 @@
 //! - `speech` - Speech-to-text processing
 //! - `audio` - Audio capture and processing
 //! - `mcp` - Model Context Protocol integration
-//! - `session` - Chat session management
+//! - `session` - Agent session management
 
 /// Crate version from Cargo.toml
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -37,7 +37,7 @@ pub mod agents;
 pub mod analytics;
 pub mod audio;
 pub mod audio_capture;
-pub mod chat_sessions;
+pub mod agent_sessions;
 pub mod checkpoints;
 pub mod compaction;
 pub mod config;
@@ -111,11 +111,11 @@ pub use audio_capture::{
     AudioCaptureConfig, AudioDeviceInfo, is_microphone_available, list_audio_input_devices,
     record_audio, request_stop_recording, reset_stop_flag,
 };
-pub use chat_sessions::{
-    ChatSession, ChatSessionResult, ChatSessionStore, ConversationMessage, FileChatSessionStore,
-    MessageSource, SessionFilter, SessionInfo, SessionLlmConfig, SessionPermissionLevel,
-    SessionState, SessionToolCall, SessionToolSettings, SessionVoiceConfig,
-    default_chat_sessions_dir,
+pub use agent_sessions::{
+    AgentSession, AgentSessionResult, AgentSessionStore, ConversationMessage,
+    FileAgentSessionStore, MessageSource, SessionFilter, SessionInfo, SessionLlmConfig,
+    SessionPermissionLevel, SessionState, SessionToolCall, SessionToolSettings,
+    SessionVoiceConfig, default_agent_sessions_dir,
 };
 pub use checkpoints::{
     Checkpoint, CheckpointError, CheckpointId, CheckpointManager, CheckpointMetadata,

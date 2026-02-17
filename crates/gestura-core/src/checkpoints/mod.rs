@@ -1,4 +1,4 @@
-//! Checkpoints (snapshots) for chat sessions and related state.
+//! Checkpoints (snapshots) for agent sessions and related state.
 //!
 //! A checkpoint captures enough state to “rewind” a session in a safe, deterministic way.
 //!

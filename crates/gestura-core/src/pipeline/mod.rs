@@ -20,7 +20,7 @@ use std::path::Path;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
-use crate::chat_sessions::FileChatSessionStore;
+use crate::agent_sessions::FileAgentSessionStore;
 use crate::checkpoints::{CheckpointManager, CheckpointRetentionPolicy, FileCheckpointStore};
 use crate::config::AppConfig;
 use crate::context::{ContextManager, RequestAnalyzer};
@@ -187,7 +187,7 @@ impl AgentPipeline {
         let label = format!("before:{}", tool_name);
 
         // Use default stores - these are lightweight to construct
-        let session_store = FileChatSessionStore::new_default();
+        let session_store = FileAgentSessionStore::new_default();
         let checkpoint_store = FileCheckpointStore::new_default();
         let manager =
             CheckpointManager::new(checkpoint_store, CheckpointRetentionPolicy::default());

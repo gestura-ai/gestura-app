@@ -112,9 +112,9 @@ pub enum CheckpointError {
     #[error("checkpoint not found: {0}")]
     NotFound(CheckpointId),
 
-    /// Chat session persistence error while creating or applying a checkpoint.
-    #[error("checkpoint chat session error: {0}")]
-    ChatSession(String),
+    /// Agent session persistence error while creating or applying a checkpoint.
+    #[error("checkpoint agent session error: {0}")]
+    AgentSession(String),
 
     /// Task persistence error while creating or applying a checkpoint.
     #[error("checkpoint task error: {0}")]

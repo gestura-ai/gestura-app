@@ -1,13 +1,13 @@
 //! Session-scoped LLM override resolution helpers.
 //!
 //! This module centralizes the business logic for applying a per-session provider/model
-//! override (see [`crate::chat_sessions::SessionLlmConfig`]) to an in-memory [`crate::config::AppConfig`].
+//! override (see [`crate::agent_sessions::SessionLlmConfig`]) to an in-memory [`crate::config::AppConfig`].
 //!
 //! Goals:
 //! - Keep GUI/CLI thin (they provide session data + platform-specific secret lookup).
 //! - Ensure provider/model precedence and compatibility checks are consistent.
 
-use crate::chat_sessions::{ChatSession, SessionLlmConfig};
+use crate::agent_sessions::{AgentSession, SessionLlmConfig};
 use crate::config::{
     AnthropicConfig, AppConfig, GeminiConfig, GrokConfig, OllamaConfig, OpenAiConfig,
 };
@@ -318,12 +318,12 @@ pub fn parse_model_selector_legacy_aware(spec: &str) -> Option<SessionLlmConfig>
 // Session-scoped LLM override resolution (shared business logic)
 // ---------------------------------------------------------------------------
 
-/// Resolve the session-scoped LLM override from a [`ChatSession`].
+/// Resolve the session-scoped LLM override from an [`AgentSession`].
 ///
 /// Precedence:
 /// 1. `session.state.llm_config` (canonical persisted override)
 /// 2. Legacy `session.model` (parsed via [`parse_model_selector_legacy_aware`])
-pub fn resolve_session_llm_override(session: &ChatSession) -> Option<SessionLlmConfig> {
+pub fn resolve_session_llm_override(session: &AgentSession) -> Option<SessionLlmConfig> {
     if let Some(cfg) = session.state.llm_config.as_ref() {
         return Some(cfg.clone());
     }
@@ -341,7 +341,7 @@ pub fn resolve_session_llm_override(session: &ChatSession) -> Option<SessionLlmC
 /// the override via [`apply_cli_session_llm_overrides`], and returns both.
 pub fn apply_basic_mode_session_llm_overrides(
     base_config: &AppConfig,
-    session: &ChatSession,
+    session: &AgentSession,
 ) -> (AppConfig, EffectiveLlmConfig) {
     let session_llm = resolve_session_llm_override(session);
     let mut config = base_config.clone();
@@ -361,7 +361,7 @@ pub fn apply_basic_mode_session_llm_overrides(
 /// - `Err(msg)` if validation failed (e.g. incompatible provider/model).
 pub fn normalize_session_llm_override(
     config: &AppConfig,
-    session: &mut ChatSession,
+    session: &mut AgentSession,
     cli_model_arg: Option<&str>,
 ) -> std::result::Result<bool, String> {
     let explicit_cli_arg = cli_model_arg.is_some_and(|s| !s.trim().is_empty());

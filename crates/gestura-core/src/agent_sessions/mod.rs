@@ -1,11 +1,11 @@
-//! Chat session model + persistence (facade).
+//! Agent session model + persistence (facade).
 //!
-//! All types and logic live in [`gestura_core_sessions::chat_sessions`].
+//! All types and logic live in [`gestura_core_sessions::agent_sessions`].
 //! This module re-exports everything plus provides config-dependent
 //! extensions that require types from `crate::config`.
 
-// Re-export the entire sessions crate chat_sessions module.
-pub use gestura_core_sessions::chat_sessions::*;
+// Re-export the entire sessions crate agent_sessions module.
+pub use gestura_core_sessions::agent_sessions::*;
 
 use crate::config::{AppConfig, GlobalPermissionLevel, GlobalPermissionSettings};
 use std::path::Path;
@@ -61,7 +61,7 @@ pub fn sanitize_session_llm_override(
     state: &mut SessionState,
     global_llm_provider: &str,
 ) -> bool {
-    gestura_core_sessions::chat_sessions::sanitize_session_llm_override(
+    gestura_core_sessions::agent_sessions::sanitize_session_llm_override(
         session_id,
         state,
         global_llm_provider,
@@ -77,11 +77,11 @@ pub fn sanitize_session_llm_override(
 /// core store.
 ///
 /// This wrapper injects the concrete model-compatibility validator.
-pub fn migrate_legacy_gui_sessions_to_core<S: ChatSessionStore>(
+pub fn migrate_legacy_gui_sessions_to_core<S: AgentSessionStore>(
     store: &S,
     global_llm_provider: &str,
-) -> Vec<ChatSession> {
-    gestura_core_sessions::chat_sessions::migrate_legacy_gui_sessions_to_core(
+) -> Vec<AgentSession> {
+    gestura_core_sessions::agent_sessions::migrate_legacy_gui_sessions_to_core(
         store,
         global_llm_provider,
         crate::llm_validation::is_model_compatible_with_provider,
@@ -91,12 +91,12 @@ pub fn migrate_legacy_gui_sessions_to_core<S: ChatSessionStore>(
 /// One-time migration from a legacy GUI sessions file at a specific path.
 ///
 /// This wrapper injects the concrete model-compatibility validator.
-pub fn migrate_legacy_gui_sessions_to_core_at_path<S: ChatSessionStore>(
+pub fn migrate_legacy_gui_sessions_to_core_at_path<S: AgentSessionStore>(
     store: &S,
     global_llm_provider: &str,
     path: &Path,
-) -> Vec<ChatSession> {
-    gestura_core_sessions::chat_sessions::migrate_legacy_gui_sessions_to_core_at_path(
+) -> Vec<AgentSession> {
+    gestura_core_sessions::agent_sessions::migrate_legacy_gui_sessions_to_core_at_path(
         store,
         global_llm_provider,
         path,

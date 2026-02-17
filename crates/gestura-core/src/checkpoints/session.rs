@@ -1,12 +1,12 @@
 //! Session-specific checkpoint (rewind) helpers.
 //!
 //! This layer builds on the generic [`crate::checkpoints`] storage primitives to
-//! snapshot and restore a chat session together with related state (tasks + a
+//! snapshot and restore an agent session together with related state (tasks + a
 //! **redacted** subset of configuration).
 
 use serde::{Deserialize, Serialize};
 
-use crate::chat_sessions::{ChatSession, ChatSessionStore};
+use crate::agent_sessions::{AgentSession, AgentSessionStore};
 use crate::config::{AppConfig, GlobalPermissionSettings, PipelineSettings};
 use crate::hooks::HooksSettings;
 use crate::tasks::{TaskList, TaskManager};
@@ -84,8 +84,8 @@ pub struct SessionCheckpointPayload {
     /// Payload schema version.
     pub schema_version: u32,
 
-    /// The chat session state (messages, tool calls, session overrides).
-    pub session: ChatSession,
+    /// The agent session state (messages, tool calls, session overrides).
+    pub session: AgentSession,
 
     /// The task list for this session, including the persisted `current_task_id` pointer.
     pub tasks: TaskList,
@@ -119,20 +119,20 @@ impl CheckpointManager {
     /// Create a checkpoint for a specific session.
     ///
     /// This snapshots:
-    /// - chat session state (history + session overrides)
+    /// - agent session state (history + session overrides)
     /// - task list state (including `current_task_id`)
     /// - a redacted subset of global configuration
     pub fn create_session_checkpoint(
         &self,
         session_id: &str,
-        session_store: &dyn ChatSessionStore,
+        session_store: &dyn AgentSessionStore,
         task_manager: &TaskManager,
         config: &AppConfig,
         label: Option<String>,
     ) -> Result<CheckpointMetadata, CheckpointError> {
         let session = session_store
             .load(session_id)
-            .map_err(|e| CheckpointError::ChatSession(e.to_string()))?;
+            .map_err(|e| CheckpointError::AgentSession(e.to_string()))?;
 
         let tasks = task_manager
             .load_task_list(session_id)
@@ -171,14 +171,14 @@ impl CheckpointManager {
     pub fn apply_session_checkpoint(
         &self,
         id: &CheckpointId,
-        session_store: &dyn ChatSessionStore,
+        session_store: &dyn AgentSessionStore,
         task_manager: &TaskManager,
     ) -> Result<SessionCheckpointPayload, CheckpointError> {
         let payload = self.restore_session_checkpoint(id)?;
 
         session_store
             .save(&payload.session)
-            .map_err(|e| CheckpointError::ChatSession(e.to_string()))?;
+            .map_err(|e| CheckpointError::AgentSession(e.to_string()))?;
         task_manager
             .replace_task_list(payload.tasks.clone())
             .map_err(|e| CheckpointError::Tasks(e.to_string()))?;
@@ -203,7 +203,7 @@ impl CheckpointManager {
 mod tests {
     use super::*;
 
-    use crate::chat_sessions::{FileChatSessionStore, MessageSource};
+    use crate::agent_sessions::{FileAgentSessionStore, MessageSource};
     use crate::checkpoints::{CheckpointRetentionPolicy, FileCheckpointStore};
     use tempfile::tempdir;
 
@@ -212,7 +212,7 @@ mod tests {
         let temp = tempdir().unwrap();
 
         let sessions_dir = temp.path().join("sessions");
-        let session_store = FileChatSessionStore::new(sessions_dir);
+        let session_store = FileAgentSessionStore::new(sessions_dir);
 
         let checkpoint_store = FileCheckpointStore::new(temp.path().join("checkpoints"));
         let manager =
@@ -225,7 +225,7 @@ mod tests {
         let workspace_dir = temp.path().join("workspace");
         std::fs::create_dir_all(&workspace_dir).unwrap();
         let mut session =
-            ChatSession::new_with_workspace(workspace_dir, Some("m".to_string())).unwrap();
+            AgentSession::new_with_workspace(workspace_dir, Some("m".to_string())).unwrap();
         session.add_user_message("hello", MessageSource::Text);
         session_store.save(&session).unwrap();
 
@@ -285,7 +285,7 @@ mod tests {
     fn retention_deletes_oldest_files() {
         let temp = tempdir().unwrap();
 
-        let session_store = FileChatSessionStore::new(temp.path().join("sessions"));
+        let session_store = FileAgentSessionStore::new(temp.path().join("sessions"));
         let checkpoint_dir = temp.path().join("checkpoints");
         let checkpoint_store = FileCheckpointStore::new(checkpoint_dir.clone());
         let manager = CheckpointManager::new(
@@ -298,7 +298,7 @@ mod tests {
 
         let workspace_dir = temp.path().join("workspace");
         std::fs::create_dir_all(&workspace_dir).unwrap();
-        let session = ChatSession::new_with_workspace(workspace_dir, None).unwrap();
+        let session = AgentSession::new_with_workspace(workspace_dir, None).unwrap();
         session_store.save(&session).unwrap();
 
         manager
