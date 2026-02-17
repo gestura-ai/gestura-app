@@ -32,7 +32,7 @@ pub use gestura_core_tools::config::{WebSearchConfig, WebSearchProvider};
 
 /// Global permission level for new sessions.
 ///
-/// This determines the default permission level that new chat sessions inherit.
+/// This determines the default permission level that new agent sessions inherit.
 /// Users can override this per-session in the session settings panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum GlobalPermissionLevel {

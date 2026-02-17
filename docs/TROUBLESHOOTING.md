@@ -56,13 +56,13 @@ sudo dpkg -i gestura.deb
 sudo apt-get install -f
 ```
 
-### Chat / Project Explorer Issues
+### Agent / Project Explorer Issues
 
 #### Issue: Explorer shows "Not a git repository."
 **Cause**: The project folder is not a git repository (no `.git` directory), or git metadata is not accessible.
 **Solutions**:
 - If you expected git badges, open a folder that contains a git repo or run `git init` in the project root.
-- If you are in a monorepo, ensure the chat session workspace is inside the repo you expect.
+- If you are in a monorepo, ensure the agent session workspace is inside the repo you expect.
 
 #### Issue: Explorer shows "Git status unavailable."
 **Cause**: Git is not installed / not available on PATH, or the status check failed.
@@ -80,7 +80,7 @@ sudo apt-get install -f
 - Re-open Gestura and select a workspace you have access to.
 
 #### Note: Workspace scoping (security)
-The Explorer is restricted to the chat session's **Project Root**. Paths outside the workspace (including symlinks that would escape the workspace) are rejected for safety.
+The Explorer is restricted to the agent session's **Project Root**. Paths outside the workspace (including symlinks that would escape the workspace) are rejected for safety.
 
 ### Voice Recognition Issues
 
@@ -475,7 +475,7 @@ sqlite3 new_data.db < recovered.sql
 
 #### Support Channels
 - **Email**: support@gestura.app
-- **Live Chat**: Available in app (premium users)
+- **Live Agent**: Available in app (premium users)
 - **Community Forum**: https://community.gestura.app
 - **Discord**: https://discord.gg/gestura
 

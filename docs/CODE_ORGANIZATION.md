@@ -45,7 +45,7 @@ The core crate contains all business logic organized by domain:
 ### Session Management
 | Module | Files | Description |
 |--------|-------|-------------|
-| `chat_sessions/` | `mod.rs`, `types.rs`, `store.rs` | Session persistence |
+| `agent_sessions/` | `mod.rs`, `types.rs`, `store.rs` | Session persistence |
 | `session_manager.rs` | - | Active session lifecycle |
 | `context/` | `mod.rs`, `types.rs`, `manager.rs`, `analyzer.rs`, `cache.rs` | Context window management |
 | `memory_bank/` | `mod.rs` | Long-term memory storage |
@@ -137,7 +137,7 @@ gestura-cli/src/
 ├── tool_registry.rs     # CLI tool registration
 └── commands/
     ├── mod.rs           # Command routing
-    ├── chat/            # Interactive chat TUI
+    ├── agent/            # Interactive agent TUI
     │   ├── mod.rs
     │   └── tui/         # Ratatui TUI implementation
     ├── exec.rs          # One-shot execution
@@ -268,7 +268,7 @@ The Core-First architecture migration was completed in 6 phases:
 | Phase | Description | Status |
 |-------|-------------|--------|
 | Phase 1 | A2A consolidation | ✅ Complete |
-| Phase 2 | Chat session unification | ✅ Complete |
+| Phase 2 | Agent session unification | ✅ Complete |
 | Phase 3 | Permissions + security policy | ✅ Complete |
 | Phase 4 | MCP domain extraction (`gestura-core-mcp`) | ✅ Complete |
 | Phase 5 | GUI subsystems migration | ✅ Complete |

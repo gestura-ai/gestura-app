@@ -439,24 +439,24 @@ Create complex gesture sequences:
 
 #### Support Channels
 - **Email**: support@gestura.app
-- **Live Chat**: Available in app
+- **Live Agent**: Available in app
 - **Phone**: 1-800-GESTURA (premium users)
 - **Remote Assistance**: Screen sharing support
 
 ## Advanced Features
 
-### Chat Window (Agentic Coding)
+### Agent Window (Agentic Coding)
 
-Gestura includes a dedicated **Chat** window for text-based and voice-assisted workflows. The chat UI can also display a project-scoped file explorer so you can reference your workspace while chatting.
+Gestura includes a dedicated **Agent** window for text-based and voice-assisted workflows. The agent UI can also display a project-scoped file explorer so you can reference your workspace while agentting.
 
 #### Project Explorer Panel
 
 - Open via the **folder** button below the input, or press **Cmd/Ctrl+B**.
-- The explorer is rooted at **Project Root** (the current chat session workspace) and does not allow browsing outside that directory.
+- The explorer is rooted at **Project Root** (the current agent session workspace) and does not allow browsing outside that directory.
 - If the workspace is a git repository, changed files/folders show small status badges; otherwise the panel shows **"Not a git repository."**
 - Use the **Refresh** button in the Explorer header to reload the tree.
 
-#### Chat Window Shortcuts
+#### Agent Window Shortcuts
 
 - **Cmd/Ctrl+B**: Toggle Explorer
 - **Cmd/Ctrl+T**: Toggle Tasks panel

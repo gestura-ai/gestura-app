@@ -136,8 +136,8 @@ test.describe('@smoke Gestura App', () => {
     await expect(page.locator('#apiKey')).toHaveAttribute('placeholder', /xai-/);
   });
 
-  test('@smoke chat explorer toggles and expands a directory', async ({ page }) => {
-    await page.goto('/chat.html?session_id=e2e-session');
+  test('@smoke agent explorer toggles and expands a directory', async ({ page }) => {
+    await page.goto('/agent.html?session_id=e2e-session');
 
     const explorerPanel = page.locator('#explorerPanel');
     const explorerOverlay = page.locator('#explorerPanelOverlay');

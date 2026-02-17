@@ -125,7 +125,7 @@ pub enum AgentEvent {
 
 **Execution Modes:**
 - `GooseMode::Auto` - Autonomous tool execution
-- `GooseMode::Chat` - Interactive conversation mode
+- `GooseMode::Agent` - Interactive conversation mode
 
 ---
 

@@ -34,13 +34,13 @@ The bm-agents `docs/SRS_GESTURA_APP.md` describes a **mobile-focused app** with 
 | FR-GESTURA-002 | Voice Processing Pipeline | ✅ Listed | ✅ **COMPLETE** | OpenAI + Local Whisper support |
 | FR-GESTURA-003 | Multi-Provider AI Integration | ✅ Listed | ✅ **COMPLETE** | OpenAI, Anthropic, Grok, Ollama |
 | FR-GESTURA-004 | Configuration Management | ✅ Listed | ✅ **COMPLETE** | Professional settings panel + CLI config |
-| FR-GESTURA-005 | Chat Interface | ✅ Listed | ✅ **COMPLETE** | Markdown rendering, voice integration |
+| FR-GESTURA-005 | Agent Interface | ✅ Listed | ✅ **COMPLETE** | Markdown rendering, voice integration |
 
 ### CLI-Specific Requirements (NOT in bm-agents SRS)
 
 | Req ID | Requirement | bm-agents SRS | Implementation Status | Notes |
 |--------|-------------|---------------|----------------------|-------|
-| FR-CLI-001 | Interactive Chat (`gestura chat`) | ❌ Missing | ✅ **COMPLETE** | TUI with ratatui |
+| FR-CLI-001 | Interactive Agent (`gestura agent`) | ❌ Missing | ✅ **COMPLETE** | TUI with ratatui |
 | FR-CLI-002 | Single Execution (`gestura exec`) | ❌ Missing | ✅ **COMPLETE** | Non-interactive mode |
 | FR-CLI-003 | Voice Input (`gestura listen`) | ❌ Missing | ✅ **COMPLETE** | CLI voice capture |
 | FR-CLI-004 | Config Management (`gestura config`) | ❌ Missing | ✅ **COMPLETE** | Full config commands |
@@ -109,7 +109,7 @@ The bm-agents `docs/SRS_GESTURA_APP.md` describes a **mobile-focused app** with 
 
 | Req ID | Requirement | bm-agents SRS | Implementation Status | Notes |
 |--------|-------------|---------------|----------------------|-------|
-| FR-TUI-001 | Tabbed Interface | ❌ Missing | ✅ **COMPLETE** | Chat, Tools, Settings, Help |
+| FR-TUI-001 | Tabbed Interface | ❌ Missing | ✅ **COMPLETE** | Agent, Tools, Settings, Help |
 | FR-TUI-002 | Stateful Scrolling | ❌ Missing | ✅ **COMPLETE** | ListState with indicators |
 | FR-TUI-003 | Streaming Display | ❌ Missing | ✅ **COMPLETE** | Real-time token display |
 | FR-TUI-004 | Command Palette | ❌ Missing | ✅ **COMPLETE** | / prefix with fuzzy filter |
@@ -126,7 +126,7 @@ The bm-agents `docs/SRS_GESTURA_APP.md` describes a **mobile-focused app** with 
 | FR-TOKEN-001 | Usage Tracking | ❌ Missing | ✅ **COMPLETE** | TokenTracker module |
 | FR-TOKEN-002 | Per-Request Stats | ❌ Missing | ✅ **COMPLETE** | Prompt/completion breakdown |
 | FR-TOKEN-003 | Session Stats | ❌ Missing | ✅ **COMPLETE** | Cumulative tracking |
-| FR-TOKEN-004 | GUI Display | ❌ Missing | ✅ **COMPLETE** | Chat interface integration |
+| FR-TOKEN-004 | GUI Display | ❌ Missing | ✅ **COMPLETE** | Agent interface integration |
 | FR-TOKEN-005 | CLI Display | ❌ Missing | ✅ **COMPLETE** | TUI status bar |
 
 ---

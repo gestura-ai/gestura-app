@@ -72,7 +72,7 @@ Create a new panel similar to `ToolsPanel` and `WorkflowsPanel`:
 - Advanced options (region selector, display selector)
 - Recording controls (start/stop, status indicator, timer)
 - Screenshot gallery (recent captures with thumbnails)
-- Integration with chat (attach screenshot to message, describe screenshot)
+- Integration with agent (attach screenshot to message, describe screenshot)
 
 **UI Layout**:
 ```
@@ -133,7 +133,7 @@ Add interactive controls to existing ToolsPanel for screenshot/recording tools:
 - [ ] Add recording status indicator
 - [ ] Handle permissions (request screen recording permission)
 - [ ] Add error handling and user feedback
-- [ ] Integrate with chat (optional: attach screenshots to messages)
+- [ ] Integrate with agent (optional: attach screenshots to messages)
 - [ ] Add keyboard shortcuts (optional)
 
 ### Testing (TODO)

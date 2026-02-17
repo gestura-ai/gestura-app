@@ -16,9 +16,8 @@
 pub mod registry;
 pub mod schemas;
 
-// Tool implementations live in the `gestura-core-tools` domain crate.
-// We re-export them here to preserve stable public paths like
-// `gestura_core::tools::shell::ShellTools`.
+// Tool implementations from the `gestura-core-tools` domain crate, surfaced
+// through `gestura_core::tools::*`.
 pub use gestura_core_tools::{code, file, git, permissions, policy, screen, shell, web};
 
 pub use code::CodeTools;
@@ -33,8 +32,7 @@ pub use screen::ScreenTools;
 pub use shell::ShellTools;
 pub use web::WebTools;
 
-// Async wrappers live in the `gestura-core-tools` domain crate.
-// We re-export them here to preserve stable `gestura_core::tools::*` paths.
+// Async wrappers from the `gestura-core-tools` domain crate.
 pub use gestura_core_tools::{code_async, file_async, git_async, screen_async, shell_async};
 
 /// Streaming shell execution for real-time output to the frontend.

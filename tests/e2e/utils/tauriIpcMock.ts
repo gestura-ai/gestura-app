@@ -97,7 +97,7 @@ export async function installTauriIpcMock(page: Page): Promise<void> {
 
     // ---------------------------------------------------------------------
     // Provide a minimal `window.__TAURI__` surface for legacy/static pages
-    // (e.g. `public/chat.html`) that call `window.__TAURI__.core.invoke(...)`.
+    // (e.g. `public/agent.html`) that call `window.__TAURI__.core.invoke(...)`.
     //
     // The React app typically uses `@tauri-apps/api`, which goes through
     // `window.__TAURI_INTERNALS__`, so we support both.
@@ -166,7 +166,7 @@ export async function installTauriIpcMock(page: Page): Promise<void> {
           return loadConfig();
 
         case 'get_effective_llm_config': {
-          // chat.html expects a tuple: [provider, model]
+          // agent.html expects a tuple: [provider, model]
           const cfg = loadConfig();
           const provider = cfg?.llm?.primary || 'openai';
           const model = cfg?.llm?.[provider]?.model || '';

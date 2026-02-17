@@ -151,6 +151,7 @@
             display: inline-block;
             font-size: 1.75rem;
             margin-bottom: 0.25rem;
+            padding-bottom: 15px;
             line-height: 1.15;
             left: 25px;
             top: auto;
@@ -1114,8 +1115,8 @@
                             <p>Press Ctrl+Space or click "Start Listening"</p>
                         </div>
                         <div class="feature-card">
-                            <h3><span class="icon-message"></span> Open a Chat</h3>
-                            <p>Click "New Chat" in the tray menu</p>
+                            <h3><span class="icon-message"></span> Open a Agent</h3>
+                            <p>Click "New Agent" in the tray menu</p>
                         </div>
                         <div class="feature-card">
                             <h3><span class="icon-settings"></span> Settings</h3>
@@ -1465,7 +1466,7 @@
                 }
 
                 // Persist the user-selected model to global config so it sticks across
-                // config/chat windows.
+                // config/agent windows.
                 const modelSelect = document.getElementById('cloudModelSelect');
                 const selectedModel = (modelSelect?.value || '').trim();
                 if (selectedModel) {

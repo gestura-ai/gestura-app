@@ -249,7 +249,7 @@ impl SpeechProcessor {
         );
 
         // Note: Steps 4 and 5 (LLM processing and sending AI response) are now handled by the frontend
-        // via process_chat_message_streaming when it receives the agent-message event with type: "user"
+        // via process_agent_message_streaming when it receives the agent-message event with type: "user"
 
         Ok(())
     }

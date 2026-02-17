@@ -21,7 +21,7 @@ import { ONBOARDING_COMPLETED_KEY } from './shared/constants/storageKeys';
 
 function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
-  // The legacy chat UI (React ChatPanel) has been removed.
+  // The legacy agent UI (React AgentPanel) has been removed.
   // Default the main window to voice-related functionality.
   const [activePanel, setActivePanel] = useState('voice');
   const [showOnboarding, setShowOnboarding] = useState(false);

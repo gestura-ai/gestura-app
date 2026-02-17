@@ -1,8 +1,9 @@
-//! Speech processing (facade + integration bridge).
+//! Speech processing integration.
 //!
-//! Pure types and domain logic live in [`gestura_core_audio::speech`].
-//! This module re-exports them and provides integration methods that
-//! depend on core-only types (security, LLM providers).
+//! Speech domain types are defined in `gestura-core-audio` and re-exported
+//! here.  This module adds the [`SpeechProcessorCoreExt`] extension trait
+//! which provides methods that depend on core-only types (secure config
+//! loading, LLM provider selection).
 
 pub use gestura_core_audio::speech::*;
 

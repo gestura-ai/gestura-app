@@ -98,7 +98,7 @@ impl AutomatedTester {
         let test_name = "Window Creation";
         tracing::info!("🔍 Testing: {}", test_name);
 
-        let window_types = vec!["permissions", "config", "chat", "status", "about"];
+        let window_types = vec!["permissions", "config", "agent", "status", "about"];
         let mut successful_windows = 0;
         let mut window_results = HashMap::new();
 

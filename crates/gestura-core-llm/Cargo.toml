@@ -29,4 +29,5 @@ thiserror.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
+chrono.workspace = true
 reqwest.workspace = true

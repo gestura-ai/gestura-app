@@ -13,7 +13,7 @@ fn try_get_api_key_from_keychain(provider: &str) -> String {
 
 /// Apply session-scoped LLM provider/model overrides to an in-memory `AppConfig`.
 ///
-/// This helper keeps all per-session LLM behavior consistent across features (chat,
+/// This helper keeps all per-session LLM behavior consistent across features (agent,
 /// prompt enhancement, etc.). The override precedence and validation rules are
 /// core-owned; this GUI wrapper only:
 ///
@@ -558,7 +558,7 @@ pub async fn remove_mdh_pointer(key: String) -> Result<(), String> {
 
 // Knowledge Management Commands
 
-/// Add a knowledge entry from chat (saved responses)
+/// Add a knowledge entry from agent (saved responses)
 #[tauri::command]
 pub fn add_knowledge_entry(
     content: String,
@@ -729,7 +729,7 @@ pub async fn enhance_prompt(prompt: String, session_id: Option<String>) -> Resul
     };
 
     // Apply session-specific LLM config overrides so the prompt enhancer uses the same
-    // effective provider/model as chat for this session.
+    // effective provider/model as agent for this session.
     let _effective_llm = apply_session_llm_config_overrides(&mut cfg, session_id.as_deref());
 
     tracing::info!(
@@ -1527,11 +1527,11 @@ pub async fn register_consent(
         .map_err(|e| e.to_string())
 }
 
-// Chat and Agent Commands
+// Agent and Agent Commands
 
-/// Process a chat message through the configured LLM provider
+/// Process a agent message through the configured LLM provider
 #[tauri::command]
-pub async fn process_chat_message(
+pub async fn process_agent_message(
     app: tauri::AppHandle,
     message: String,
 ) -> Result<String, String> {
@@ -1540,7 +1540,7 @@ pub async fn process_chat_message(
     let cfg = AppConfig::load_async().await;
 
     tracing::info!(
-        "Processing chat message through core AgentPipeline (provider={} )",
+        "Processing agent message through core AgentPipeline (provider={} )",
         cfg.llm.primary
     );
 
@@ -1567,10 +1567,10 @@ pub async fn process_chat_message(
     response.map_err(|e| format!("LLM error: {}", e))
 }
 
-/// Cancellation key used when a chat stream is not associated with a window label.
+/// Cancellation key used when a agent stream is not associated with a window label.
 ///
-/// Most chat flows are window-scoped (`window:<label>`). This fallback key exists for
-/// legacy/non-session chat surfaces that do not have a stable window label.
+/// Most agent flows are window-scoped (`window:<label>`). This fallback key exists for
+/// legacy/non-session agent surfaces that do not have a stable window label.
 ///
 /// Note: the cancellation token registry lives in `gestura_core::stream_cancellation`.
 const GLOBAL_STREAM_CANCEL_KEY: &str = "__global_stream__";
@@ -1578,14 +1578,14 @@ const GLOBAL_STREAM_CANCEL_KEY: &str = "__global_stream__";
 /// Build the cancellation token key for a particular window label.
 ///
 /// This intentionally scopes cancellation to a single window so concurrent streams
-/// in different chat windows do not cancel each other.
+/// in different agent windows do not cancel each other.
 fn cancel_key_for_window_label(window_label: &str) -> String {
     format!("window:{window_label}")
 }
 
-/// Process a chat message with streaming response
+/// Process a agent message with streaming response
 ///
-/// Emits `chat-stream-chunk` events with partial content and `chat-stream-done` when complete.
+/// Emits `agent-stream-chunk` events with partial content and `agent-stream-done` when complete.
 ///
 /// The optional `source` argument can be used to hint how the message was produced:
 /// - `"voice"` for transcribed speech
@@ -1593,7 +1593,7 @@ fn cancel_key_for_window_label(window_label: &str) -> String {
 ///
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn process_chat_message_streaming(
+pub async fn process_agent_message_streaming(
     webview_window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     message: String,
@@ -1610,7 +1610,7 @@ pub async fn process_chat_message_streaming(
     tracing::debug!(
         global_provider = %cfg.llm.primary,
         session_id = ?session_id,
-        "Starting chat message processing"
+        "Starting agent message processing"
     );
 
     let message_source = match source.as_deref().map(|s| s.trim().to_ascii_lowercase()) {
@@ -1625,12 +1625,12 @@ pub async fn process_chat_message_streaming(
     // --- Secure window/session isolation ---
     //
     // We always emit streaming events to a single target window. We never broadcast
-    // (`app.emit`) because that can leak content across chat windows.
+    // (`app.emit`) because that can leak content across agent windows.
     let calling_window_label = webview_window.label().to_string();
     let calling_session_id =
         crate::window_manager::get_session_id_for_window_label(&calling_window_label);
 
-    // Defense-in-depth: if the caller is a chat window with a known session, do not
+    // Defense-in-depth: if the caller is a agent window with a known session, do not
     // allow it to stream into a different session by passing a mismatched session id.
     match (&calling_session_id, &session_id) {
         (Some(calling_sid), Some(request_sid)) if calling_sid != request_sid => {
@@ -1642,7 +1642,7 @@ pub async fn process_chat_message_streaming(
         _ => {}
     }
 
-    // Resolve session id (typed input: use the calling window; voice: optionally route to active chat).
+    // Resolve session id (typed input: use the calling window; voice: optionally route to active agent).
     let resolved_session_id = session_id
         .or_else(|| calling_session_id.clone())
         .or_else(|| {
@@ -1655,7 +1655,7 @@ pub async fn process_chat_message_streaming(
 
     // Choose the window to receive stream events.
     // - Text: the calling window.
-    // - Voice: the resolved active chat window if available; otherwise the calling window.
+    // - Voice: the resolved active agent window if available; otherwise the calling window.
     let target_window_label =
         if matches!(message_source, crate::window_manager::MessageSource::Voice) {
             resolved_session_id
@@ -1677,7 +1677,7 @@ pub async fn process_chat_message_streaming(
         session_id = ?resolved_session_id,
         effective_provider = %effective_llm.provider,
         effective_model = %effective_llm.model,
-        "Processing chat message with effective session LLM config"
+        "Processing agent message with effective session LLM config"
     );
 
     // Centralized, window-scoped emission (never broadcast): emits via `emit_to` and
@@ -1698,7 +1698,7 @@ pub async fn process_chat_message_streaming(
                 target_window_label = %target_window_label,
                 calling_window_label = %calling_window_label,
                 error = %err,
-                "Failed to emit chat event"
+                "Failed to emit agent event"
             );
         }
     };
@@ -2039,11 +2039,11 @@ pub async fn process_chat_message_streaming(
     }
 
     tracing::info!(
-        "Starting streaming chat through AgentPipeline with LLM provider: {}",
+        "Starting streaming agent through AgentPipeline with LLM provider: {}",
         cfg.llm.primary
     );
 
-    // Create an agent task for this chat processing (if we have a session)
+    // Create an agent task for this agent processing (if we have a session)
     // This makes agent work visible in the task panel
     let agent_task_id: Option<String> = if let Some(ref sid) = resolved_session_id {
         let task_name = {
@@ -2064,7 +2064,7 @@ pub async fn process_chat_message_streaming(
                 tracing::debug!(
                     task_id = %task.id,
                     session_id = %sid,
-                    "Created agent task for chat processing"
+                    "Created agent task for agent processing"
                 );
                 // Mark as in progress immediately
                 let _ = crate::task_integration::mark_task_in_progress(&app, sid, &task.id);
@@ -2073,7 +2073,7 @@ pub async fn process_chat_message_streaming(
             Err(e) => {
                 tracing::warn!(
                     error = %e,
-                    "Failed to create agent task for chat processing"
+                    "Failed to create agent task for agent processing"
                 );
                 None
             }
@@ -2588,7 +2588,7 @@ pub async fn process_chat_message_streaming(
                 // If we haven't received any stream events in a while, treat this as a backend hang.
                 // Ensure the frontend gets an explicit terminal event.
                 saw_terminal = true;
-                tracing::error!("Streaming chat timed out (no events for {:?})", idle_timeout);
+                tracing::error!("Streaming agent timed out (no events for {:?})", idle_timeout);
                 cancel_token.cancel();
                 emit(
                     "agent-stream-error",
@@ -2635,38 +2635,38 @@ pub async fn process_chat_message_streaming(
     Ok(())
 }
 
-/// Cancel an ongoing streaming chat request.
+/// Cancel an ongoing streaming agent request.
 ///
 /// Cancellation is scoped to a single webview window.
 ///
-/// - If `session_id` is provided, we resolve the session's current chat window label and
+/// - If `session_id` is provided, we resolve the session's current agent window label and
 ///   cancel that window's stream.
 /// - If `session_id` is omitted, we cancel the stream for the **calling window**.
 ///
-/// This prevents a cancel action in one chat window from cancelling another window's
+/// This prevents a cancel action in one agent window from cancelling another window's
 /// in-flight stream.
 ///
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
-pub fn cancel_chat_streaming(
+pub fn cancel_agent_streaming(
     webview_window: tauri::WebviewWindow,
     session_id: Option<String>,
 ) -> Result<(), String> {
     let calling_window_label = webview_window.label().to_string();
-    cancel_chat_streaming_internal(Some(calling_window_label), session_id)
+    cancel_agent_streaming_internal(Some(calling_window_label), session_id)
 }
 
-/// Resume a previously paused streaming chat session.
+/// Resume a previously paused streaming agent session.
 ///
 /// Retrieves the `PausedExecutionState` from the session, builds a resume
 /// `AgentRequest`, and kicks off a new streaming pipeline from where the
 /// previous execution left off.
 ///
-/// Emits the same `chat-stream-*` events as `process_chat_message_streaming`.
+/// Emits the same `agent-stream-*` events as `process_agent_message_streaming`.
 ///
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn resume_chat_streaming(
+pub async fn resume_agent_streaming(
     webview_window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     session_id: String,
@@ -2686,7 +2686,7 @@ pub async fn resume_chat_streaming(
     let target_window_label = crate::window_manager::get_session_window_label(&session_id)
         .unwrap_or_else(|| calling_window_label.clone());
 
-    // Window-scoped event emitter (same pattern as process_chat_message_streaming).
+    // Window-scoped event emitter (same pattern as process_agent_message_streaming).
     let resolved_session_id: Option<String> = Some(session_id.clone());
     let emit = |event: &str, payload: serde_json::Value| {
         let payload =
@@ -2769,7 +2769,7 @@ pub async fn resume_chat_streaming(
 
     emit("agent-stream-resumed", serde_json::json!(null));
 
-    // Forward chunks — mirrors the loop in process_chat_message_streaming.
+    // Forward chunks — mirrors the loop in process_agent_message_streaming.
     let mut assistant_text = String::new();
     let mut assistant_thinking: Option<String> = None;
     let mut completed_tool_calls: Vec<gestura_core::ToolCallRecord> = Vec::new();
@@ -2898,7 +2898,7 @@ pub async fn resume_chat_streaming(
 /// Approve a pending tool confirmation request.
 ///
 /// JS↔Rust interop: The frontend calls this when the user clicks "Approve" on a
-/// `chat-stream-tool-confirmation` dialog.
+/// `agent-stream-tool-confirmation` dialog.
 ///
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
@@ -2919,7 +2919,7 @@ pub fn approve_tool_confirmation(
 /// `allow_once`, `allow_session`, `allow_always`, `deny_once`, and `deny_session`.
 ///
 /// JS↔Rust interop: The frontend calls this when the user selects a scoped action in the
-/// `chat-stream-tool-confirmation` dialog.
+/// `agent-stream-tool-confirmation` dialog.
 ///
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
@@ -2941,7 +2941,7 @@ pub fn resolve_tool_confirmation_decision(
 /// Deny a pending tool confirmation request.
 ///
 /// JS↔Rust interop: The frontend calls this when the user clicks "Deny" (or
-/// dismisses) a `chat-stream-tool-confirmation` dialog.
+/// dismisses) a `agent-stream-tool-confirmation` dialog.
 ///
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
@@ -3016,11 +3016,11 @@ pub async fn run_agent_isolation_probe(
     crate::agent_probe::run_agent_isolation_probe(app).await
 }
 
-/// Internal cancellation implementation shared by `cancel_chat_streaming`.
+/// Internal cancellation implementation shared by `cancel_agent_streaming`.
 ///
 /// This helper keeps the key-resolution logic testable without requiring an actual
 /// Tauri [`tauri::WebviewWindow`] instance.
-fn cancel_chat_streaming_internal(
+fn cancel_agent_streaming_internal(
     calling_window_label: Option<String>,
     session_id: Option<String>,
 ) -> Result<(), String> {
@@ -3042,7 +3042,7 @@ fn cancel_chat_streaming_internal(
     };
 
     if gestura_core::stream_cancellation::STREAM_CANCELLATIONS.cancel(&cancel_key) {
-        tracing::info!(cancel_key = %cancel_key, "Streaming chat cancelled");
+        tracing::info!(cancel_key = %cancel_key, "Streaming agent cancelled");
         Ok(())
     } else {
         Err(format!(
@@ -3071,7 +3071,7 @@ mod streaming_cancellation_tests {
         gestura_core::stream_cancellation::STREAM_CANCELLATIONS
             .register(key.clone(), token.clone());
 
-        cancel_chat_streaming_internal(Some(label.to_string()), None)
+        cancel_agent_streaming_internal(Some(label.to_string()), None)
             .expect("expected cancellation to succeed");
 
         assert!(token.is_cancelled(), "token should be cancelled");
@@ -3083,7 +3083,7 @@ mod streaming_cancellation_tests {
 
     #[test]
     fn cancel_internal_requires_context() {
-        let err = cancel_chat_streaming_internal(None, None).expect_err("expected error");
+        let err = cancel_agent_streaming_internal(None, None).expect_err("expected error");
         assert!(err.contains("no session_id") || err.contains("no calling window"));
     }
 }
@@ -3427,7 +3427,7 @@ pub async fn test_open_window(
             crate::window_manager::open_config_window().map_err(|e| e.to_string())?;
             Ok("Config window opened".to_string())
         }
-        "chat" => {
+        "agent" => {
             let session_id =
                 crate::window_manager::create_new_agent_session().map_err(|e| e.to_string())?;
             Ok(format!("Agent session created: {}", session_id))
@@ -3561,7 +3561,7 @@ pub async fn get_window_list(app: tauri::AppHandle) -> Result<Vec<String>, Strin
 
 #[tauri::command]
 pub async fn close_test_windows(app: tauri::AppHandle) -> Result<String, String> {
-    let test_windows = ["permissions", "config", "chat", "status", "about"];
+    let test_windows = ["permissions", "config", "agent", "status", "about"];
     let mut closed_count = 0;
 
     for window_label in test_windows.iter() {
@@ -3928,7 +3928,7 @@ pub fn open_shell_for_session(session_id: String) -> Result<(), String> {
 }
 
 // ============================================================================
-// Project Explorer Commands (chat left-side file tree)
+// Project Explorer Commands (agent left-side file tree)
 // ============================================================================
 
 fn ensure_session_exists(session_id: &str) -> Result<(), String> {
@@ -4160,7 +4160,7 @@ pub async fn shell_process_rerun_info(process_id: String) -> Option<serde_json::
 // Session LLM Config Commands (session-scoped, doesn't modify global config)
 // ============================================================================
 
-/// Get the session-scoped LLM config for a chat session
+/// Get the session-scoped LLM config for a agent session
 /// Returns None if no session-specific override is set (uses global config)
 ///
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
@@ -4214,7 +4214,7 @@ pub fn clear_session_llm_config(session_id: String) -> Result<(), String> {
 // Session Voice/STT Config Commands (session-scoped, doesn't modify globals)
 // =========================================================================
 
-/// Get the session-scoped voice/STT config for a chat session.
+/// Get the session-scoped voice/STT config for a agent session.
 ///
 /// Returns `None` if no session-specific override is set (uses global config).
 ///
@@ -4995,7 +4995,7 @@ fn validate_llm_config_with_config(
                     return llm_error(
                         "LLM_CONFIG_INCOMPLETE",
                         "OpenAI LLM provider is selected but no model is configured.",
-                        "Choose a chat model for OpenAI in Settings → AI Providers.",
+                        "Choose a agent model for OpenAI in Settings → AI Providers.",
                     );
                 }
             } else {
@@ -5117,8 +5117,8 @@ fn validate_llm_config_with_config(
 
 /// Start voice listening with validation shared with the tray logic.
 ///
-/// This command is typically triggered from the chat UI. It delegates to the
-/// tray module so that both chat and tray use the exact same validation and
+/// This command is typically triggered from the agent UI. It delegates to the
+/// tray module so that both agent and tray use the exact same validation and
 /// speech start pipeline.
 #[tauri::command]
 pub async fn start_voice_listening(app: tauri::AppHandle) -> Result<String, String> {

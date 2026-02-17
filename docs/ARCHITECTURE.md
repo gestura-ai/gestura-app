@@ -42,7 +42,7 @@ graph TB
         end
 
         subgraph "Session & State"
-            SESSIONS[Chat Sessions]
+            SESSIONS[Agent Sessions]
             CONFIG[Configuration]
             CONTEXT[Context Manager]
             MEMORY[Memory Bank]
@@ -127,7 +127,7 @@ graph TB
         end
 
         subgraph "Session Management"
-            chat_sessions[chat_sessions/]
+            agent_sessions[agent_sessions/]
             session_manager[session_manager.rs]
             context[context/]
             memory_bank[memory_bank/]
@@ -180,7 +180,7 @@ gestura-cli/src/
 ├── main.rs              # Entry point with clap
 ├── tool_registry.rs     # CLI tool registration
 └── commands/
-    ├── chat/            # Interactive chat TUI
+    ├── agent/            # Interactive agent TUI
     ├── exec.rs          # One-shot execution
     ├── listen.rs        # Voice capture
     ├── session.rs       # Session management
@@ -214,7 +214,7 @@ gestura-gui/src/
 | Module | Description | Key Types |
 |--------|-------------|-----------|
 | `pipeline/` | Agent request/response pipeline | `AgentRequest`, `AgentResponse`, `Pipeline` |
-| `chat_sessions/` | Session persistence | `ChatSession`, `ChatSessionStore`, `FileChatSessionStore` |
+| `agent_sessions/` | Session persistence | `AgentSession`, `AgentSessionStore`, `FileAgentSessionStore` |
 | `tools/` | Tool registry and execution | `ToolRegistry`, `ToolDefinition`, `PermissionManager` |
 | `mcp/` | MCP server implementation | `McpServer`, `McpToolHandler`, `McpResourceHandler` |
 | `a2a/` | Agent-to-Agent protocol | `A2AServer`, `A2AClient`, `AgentProfile` |
@@ -507,7 +507,7 @@ graph TB
 
 ### CLI
 - **Parser**: Clap 4.x with derive
-- **TUI**: Ratatui for interactive chat
+- **TUI**: Ratatui for interactive agent
 - **Completions**: Shell completion generation
 
 ### AI/ML

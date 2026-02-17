@@ -1,7 +1,9 @@
-//! Streaming LLM provider support for Gestura — facade re-exporting from `gestura-core-streaming`.
+//! Streaming LLM provider support for Gestura.
 //!
-//! This module re-exports streaming types and provides `AppConfig`-aware wrapper
-//! functions so that existing consumers continue to work unchanged.
+//! Domain types and provider configs are defined in `gestura-core-streaming` and
+//! re-exported here.  This module adds the core-owned [`streaming_config_from`]
+//! function which bridges [`crate::config::AppConfig`] to a
+//! [`StreamingConfig`].
 
 pub use gestura_core_streaming::streaming::*;
 pub use gestura_core_streaming::{

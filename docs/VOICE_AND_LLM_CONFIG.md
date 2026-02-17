@@ -62,7 +62,7 @@ Uses OpenAI's cloud-based Whisper API.
 ### Session voice overrides (optional)
 
 Gestura can apply a per-session voice/STT override (provider and/or model) when voice input is routed
-to an “active” chat session.
+to an “active” agent session.
 
 **Precedence:**
 

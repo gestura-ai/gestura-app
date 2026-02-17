@@ -1,0 +1,19 @@
+[package]
+name = "gestura-core-agents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+dirs.workspace = true
+async-trait.workspace = true
+

@@ -84,14 +84,14 @@ let result = match name {
 
 ### 4. GUI Image Display (MEDIUM PRIORITY)
 
-**File:** `crates/gestura-gui/frontend/public/chat.html`  
-**Area:** Chat message rendering (tool-result formatting)
+**File:** `crates/gestura-gui/frontend/public/agent.html`  
+**Area:** Agent message rendering (tool-result formatting)
 
-**Current:** The session-based chat UI is implemented in a single-page static HTML file (`chat.html`). Tool results are currently rendered as text/JSON.
+**Current:** The session-based agent UI is implemented in a single-page static HTML file (`agent.html`). Tool results are currently rendered as text/JSON.
 
 **Missing:** Image rendering for screenshot results.
 
-**Impact:** Screenshots are saved but not displayed in chat UI.
+**Impact:** Screenshots are saved but not displayed in agent UI.
 
 ---
 
@@ -388,10 +388,10 @@ enum ScreenToolAction {
 
 ### Phase 3: GUI Integration (For visual feedback)
 
-#### Task 3.1: Add Image Display in session chat UI
-**File:** `crates/gestura-gui/frontend/public/chat.html`
+#### Task 3.1: Add Image Display in session agent UI
+**File:** `crates/gestura-gui/frontend/public/agent.html`
 
-Modify the chat message renderer to detect and render images (e.g., tool results that include screenshot paths/URLs) instead of showing raw JSON:
+Modify the agent message renderer to detect and render images (e.g., tool results that include screenshot paths/URLs) instead of showing raw JSON:
 
 ```typescript
 const renderFormattedContent = (content: string) => {
@@ -487,7 +487,7 @@ Add CSS for screenshot display:
 ```
 
 **Estimated effort:** 2-3 hours
-**Testing:** Take screenshot via LLM, verify image displays in chat
+**Testing:** Take screenshot via LLM, verify image displays in agent
 
 ---
 
@@ -621,8 +621,8 @@ cargo run -p gestura-cli -- mcp tools | grep screenshot
 # Start GUI in dev mode
 cargo tauri dev
 
-# Or use CLI chat
-cargo run -p gestura-cli -- chat
+# Or use CLI agent
+cargo run -p gestura-cli -- agent
 
 # Test prompt
 > "Take a screenshot and save it to /tmp/test.png"
@@ -641,8 +641,8 @@ cargo run -p gestura-cli -- tools screen record-stop <recording_id>
 
 ### Step 5: Add GUI Image Display
 ```bash
-# Edit chat.html (session chat UI)
-code crates/gestura-gui/frontend/public/chat.html
+# Edit agent.html (session agent UI)
+code crates/gestura-gui/frontend/public/agent.html
 
 # Edit App.css
 code crates/gestura-gui/frontend/src/App.css
@@ -725,6 +725,6 @@ cargo tauri dev
 | `crates/gestura-core/src/pipeline/mod.rs` | Tool execution | 2457-2487 | ❌ Missing dispatcher |
 | `crates/gestura-core/src/tools/schemas.rs` | JSON schemas | 39-326 | ❌ Missing schemas |
 | `crates/gestura-cli/src/commands/tools/screen.rs` | CLI commands | N/A | ❌ Not created |
-| `crates/gestura-gui/frontend/public/chat.html` | GUI display | N/A | ❌ No image support |
+| `crates/gestura-gui/frontend/public/agent.html` | GUI display | N/A | ❌ No image support |
 
 

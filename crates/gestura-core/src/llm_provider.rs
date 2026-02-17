@@ -1,7 +1,9 @@
-//! Compatibility facade for LLM providers.
+//! LLM provider selection and integration.
 //!
-//! The implementation lives in `gestura-core-llm`; this module preserves the
-//! stable public path `gestura_core::llm_provider::*`.
+//! Domain types (traits, provider structs) are defined in `gestura-core-llm` and
+//! re-exported here.  This module adds the core-owned [`select_provider`]
+//! function which bridges [`crate::config::AppConfig`] to concrete provider
+//! instances.
 
 pub use gestura_core_llm::*;
 

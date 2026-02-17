@@ -649,7 +649,7 @@ pub async fn stream_openai(
     tx: mpsc::Sender<StreamChunk>,
     cancel_token: CancellationToken,
 ) -> Result<(), AppError> {
-    let url = format!("{}/v1/chat/completions", base_url);
+    let url = format!("{}/v1/agent/completions", base_url);
     let body = build_openai_request_body(model, prompt, tools);
 
     let client = create_streaming_client();
@@ -1090,7 +1090,7 @@ pub async fn stream_ollama(
     tx: mpsc::Sender<StreamChunk>,
     cancel_token: CancellationToken,
 ) -> Result<(), AppError> {
-    let url = format!("{}/api/chat", base_url);
+    let url = format!("{}/api/agent", base_url);
     let mut body = serde_json::json!({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],

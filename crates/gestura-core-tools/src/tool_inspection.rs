@@ -557,10 +557,10 @@ mod tests {
     }
 
     #[test]
-    fn test_inspect_shell_tool_chat_mode() {
+    fn test_inspect_shell_tool_agent_mode() {
         let manager = ToolInspectionManager::new();
 
-        // Shell tools require confirmation in Chat mode
+        // Shell tools require confirmation in Agent mode
         let result = manager.inspect_tool("shell", Some("ls -la")).unwrap();
         assert!(result.allowed);
         assert!(result.requires_confirmation);

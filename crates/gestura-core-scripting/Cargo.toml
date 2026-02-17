@@ -1,0 +1,22 @@
+[package]
+name = "gestura-core-scripting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Scripting engine for Gestura (Lua, Python, JavaScript sandboxed execution)"
+
+[dependencies]
+gestura-core-foundation.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+

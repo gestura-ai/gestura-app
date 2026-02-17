@@ -1,0 +1,16 @@
+[package]
+name = "gestura-core-hooks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Hooks system for Gestura (safe-by-default command templates tied to events)"
+
+[dependencies]
+gestura-core-foundation.workspace = true
+gestura-core-config.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+

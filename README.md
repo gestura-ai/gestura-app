@@ -30,11 +30,11 @@ gestura-app/
 
 ### CLI (gestura-cli)
 - **Modern TUI**: Professional ratatui-based terminal interface
-  - Tabbed views: Chat, Tools, Settings, Help
+  - Tabbed views: Agent, Tools, Settings, Help
   - Streaming responses with real-time token display
   - Vim-style modal editing (optional)
   - Syntax highlighting for code blocks
-- **Commands**: chat, exec, listen, config, model, device, mcp, a2a, session, agent, privacy, health, completion, init, tools
+- **Commands**: agent, exec, listen, config, model, device, mcp, a2a, session, agent, privacy, health, completion, init, tools
 
 ### MCP (Model Context Protocol)
 - **Full 2025-11-25 spec compliance**: lifecycle, prompts, notifications, capabilities
@@ -52,7 +52,7 @@ gestura-app/
 | Module | Description |
 |--------|-------------|
 | `pipeline/` | Agent request/response pipeline |
-| `chat_sessions/` | Session persistence |
+| `agent_sessions/` | Session persistence |
 | `tools/` | Tool registry, permissions, built-in tools |
 | `mcp/` | MCP server (2025-11-25) |
 | `a2a/` | Agent-to-Agent protocol |
@@ -102,7 +102,7 @@ cargo build --workspace
 
 # Run CLI
 cargo run -p gestura-cli -- --help
-cargo run -p gestura-cli -- chat
+cargo run -p gestura-cli -- agent
 
 # Run GUI (Tauri)
 cargo tauri dev

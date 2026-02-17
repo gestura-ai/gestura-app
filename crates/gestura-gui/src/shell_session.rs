@@ -94,7 +94,7 @@ impl ShellSessionConfig {
     /// Set an initial command to run when the terminal opens.
     ///
     /// This is useful for resuming a session automatically (e.g.
-    /// `gestura chat --resume --session <id>`).
+    /// `gestura agent --resume --session <id>`).
     pub fn with_initial_command(mut self, command: impl Into<String>) -> Self {
         self.initial_command = Some(command.into());
         self
@@ -528,13 +528,13 @@ mod tests {
     fn test_build_unix_init_cmd_includes_initial_command() {
         let working_dir = std::env::temp_dir();
         let config = ShellSessionConfig::default().with_initial_command(
-            "gestura chat --resume --session 00000000-0000-0000-0000-000000000000",
+            "gestura agent --resume --session 00000000-0000-0000-0000-000000000000",
         );
 
         let init_cmd = build_unix_init_cmd(&working_dir, &config, true);
         assert!(
             init_cmd
-                .contains("gestura chat --resume --session 00000000-0000-0000-0000-000000000000")
+                .contains("gestura agent --resume --session 00000000-0000-0000-0000-000000000000")
         );
         assert!(init_cmd.contains("exec $SHELL"));
     }

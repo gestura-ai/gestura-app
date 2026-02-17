@@ -1,0 +1,17 @@
+[package]
+name = "gestura-core-retry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Retry strategies and execution for Gestura (exponential backoff, jitter)"
+
+[dependencies]
+gestura-core-foundation.workspace = true
+rand.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+

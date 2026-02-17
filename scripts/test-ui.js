@@ -25,7 +25,7 @@ class UITester {
         const timestamp = new Date().toISOString();
         const logEntry = `[${timestamp}] [${type.toUpperCase()}] ${message}`;
         console.log(logEntry);
-        
+
         this.testResults.push({
             timestamp,
             type,
@@ -35,7 +35,7 @@ class UITester {
 
     async runTest(testName, testFunction) {
         this.log(`Starting test: ${testName}`, 'info');
-        
+
         try {
             await testFunction();
             this.log(`✅ Test passed: ${testName}`, 'success');
@@ -49,7 +49,7 @@ class UITester {
     async testAppLaunch() {
         return new Promise((resolve, reject) => {
             this.log('Testing app launch...', 'info');
-            
+
             const appProcess = spawn('just', ['dev'], {
                 cwd: path.join(__dirname, '..'),
                 stdio: 'pipe'
@@ -69,7 +69,7 @@ class UITester {
                     launched = true;
                     clearTimeout(timeout);
                     this.log('App launched successfully', 'success');
-                    
+
                     // Keep app running for a bit then kill it
                     setTimeout(() => {
                         appProcess.kill();
@@ -95,14 +95,14 @@ class UITester {
     async testBuildProcess() {
         return new Promise((resolve, reject) => {
             this.log('Testing build process...', 'info');
-            
+
             const buildProcess = spawn('just', ['build'], {
                 cwd: path.join(__dirname, '..'),
                 stdio: 'pipe'
             });
 
             let buildOutput = '';
-            
+
             buildProcess.stdout.on('data', (data) => {
                 buildOutput += data.toString();
             });
@@ -114,7 +114,7 @@ class UITester {
             buildProcess.on('close', (code) => {
                 if (code === 0) {
                     this.log('Build completed successfully', 'success');
-                    
+
                     // Check for warnings
                     if (buildOutput.includes('warning:')) {
                         const warnings = buildOutput.match(/warning:.*/g) || [];
@@ -125,7 +125,7 @@ class UITester {
                     } else {
                         this.log('Build completed with zero warnings', 'success');
                     }
-                    
+
                     resolve();
                 } else {
                     reject(new Error(`Build failed with exit code ${code}`));
@@ -140,7 +140,7 @@ class UITester {
 
     async validateHTMLFiles() {
         const htmlFiles = [
-            'src/chat.html',
+            'src/agent.html',
             'src/config.html',
             'src/permissions.html',
             'src/status.html',
@@ -150,13 +150,13 @@ class UITester {
 
         for (const file of htmlFiles) {
             const filePath = path.join(__dirname, '..', file);
-            
+
             if (!fs.existsSync(filePath)) {
                 throw new Error(`HTML file not found: ${file}`);
             }
 
             const content = fs.readFileSync(filePath, 'utf8');
-            
+
             // Basic HTML validation
             if (!content.includes('<!DOCTYPE html>')) {
                 throw new Error(`Invalid HTML structure in ${file}: Missing DOCTYPE`);
@@ -201,7 +201,7 @@ class UITester {
 
     async runAllTests() {
         this.log('🚀 Starting Gestura UI Test Suite', 'info');
-        
+
         const tests = [
             ['HTML File Validation', () => this.validateHTMLFiles()],
             ['Build Process Test', () => this.testBuildProcess()],
@@ -217,9 +217,9 @@ class UITester {
         }
 
         this.log(`\n📊 Test Summary: ${passedTests}/${totalTests} tests passed`, 'info');
-        
+
         const report = await this.generateReport();
-        
+
         if (passedTests === totalTests) {
             this.log('🎉 All tests passed!', 'success');
             process.exit(0);
@@ -233,9 +233,9 @@ class UITester {
 // CLI interface
 if (import.meta.url === `file://${process.argv[1]}`) {
     const tester = new UITester();
-    
+
     const command = process.argv[2];
-    
+
     switch (command) {
         case 'build':
             tester.runTest('Build Test', () => tester.testBuildProcess());

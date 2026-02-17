@@ -4,7 +4,7 @@
   NOTE:
   The React UI uses class names like `.app`, `.header`, `.main`, `.sidebar`, `.content`, `.btn`.
 	Those base layout/styles originally lived in legacy static HTML prototypes (since removed).
-  Without them, the Tauri webview can render an incomplete layout where the chat input appears
+  Without them, the Tauri webview can render an incomplete layout where the agent input appears
   to overlap header controls.
 */
 
@@ -716,7 +716,7 @@ kbd {
   height: 2rem;
 }
 
-/* Workspace directory display in chat header */
+/* Workspace directory display in agent header */
 .workspace-display {
   font-size: 0.75rem;
   color: var(--text-secondary);
@@ -763,7 +763,7 @@ kbd {
   }
 }
 
-/* Token usage display in chat header */
+/* Token usage display in agent header */
 .token-display {
   font-size: 0.75rem;
   color: var(--text-secondary);
@@ -778,7 +778,7 @@ kbd {
   font-weight: 500;
 }
 
-.chat-messages {
+.agent-messages {
   flex: 1;
   overflow-y: auto;
   padding: 1rem;
@@ -787,7 +787,7 @@ kbd {
   gap: 1rem;
 }
 
-.chat-empty {
+.agent-empty {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -797,38 +797,38 @@ kbd {
   text-align: center;
 }
 
-.chat-empty .hint {
+.agent-empty .hint {
   font-size: 0.9rem;
   margin-top: 0.5rem;
 }
 
-.chat-empty code {
+.agent-empty code {
   background: var(--surface);
   padding: 0.2rem 0.4rem;
   border-radius: 3px;
   font-family: monospace;
 }
 
-.chat-message {
+.agent-message {
   padding: 0.75rem 1rem;
   border-radius: 8px;
   max-width: 85%;
 }
 
-.chat-message.user {
+.agent-message.user {
   background: var(--accent);
   color: var(--accent-text, #fff);
   align-self: flex-end;
   margin-left: auto;
 }
 
-.chat-message.assistant {
+.agent-message.assistant {
   background: var(--surface);
   border: 1px solid var(--border);
   align-self: flex-start;
 }
 
-.chat-message.system {
+.agent-message.system {
   background: var(--warning-bg, #fff3cd);
   border: 1px solid var(--warning-border, #ffc107);
   align-self: center;
@@ -965,7 +965,7 @@ kbd {
   margin: 0.25rem 0;
 }
 
-/* Markdown headings in chat */
+/* Markdown headings in agent */
 .message-content h1,
 .message-content h2,
 .message-content h3,
@@ -1038,7 +1038,7 @@ kbd {
   margin-bottom: 0;
 }
 
-.chat-input {
+.agent-input {
   width: 100%;
   padding: 0.75rem;
   border: 1px solid var(--border);
@@ -1051,13 +1051,13 @@ kbd {
   margin-bottom: 0.5rem;
 }
 
-.chat-input:focus {
+.agent-input:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(var(--accent-rgb, 99, 102, 241), 0.2);
 }
 
-.chat-input:disabled {
+.agent-input:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
@@ -1071,8 +1071,8 @@ kbd {
   background: var(--error-hover, #dc2626);
 }
 
-/* Chat header with model selector */
-.chat-header-left {
+/* Agent header with model selector */
+.agent-header-left {
   display: flex;
   align-items: center;
   gap: 1rem;
@@ -1093,19 +1093,19 @@ kbd {
   border-color: var(--accent);
 }
 
-/* Chat input row with voice button */
-.chat-input-row {
+/* Agent input row with voice button */
+.agent-input-row {
   display: flex;
   gap: 0.5rem;
   margin-bottom: 0.5rem;
 }
 
-.chat-input-row .chat-input {
+.agent-input-row .agent-input {
   flex: 1;
   margin-bottom: 0;
 }
 
-.chat-input-actions {
+.agent-input-actions {
   display: flex;
   justify-content: flex-end;
   align-items: center;
@@ -1192,7 +1192,7 @@ kbd {
   transition: opacity 0.2s;
 }
 
-.chat-message:hover .message-actions {
+.agent-message:hover .message-actions {
   opacity: 1;
 }
 
@@ -1263,8 +1263,8 @@ kbd {
   white-space: nowrap;
 }
 
-/* Fix chat input container z-index */
-.chat-input-container {
+/* Fix agent input container z-index */
+.agent-input-container {
   padding: 1rem;
   border-top: 1px solid var(--border);
   background: var(--surface);

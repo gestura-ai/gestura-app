@@ -39,7 +39,7 @@
 ### 1.1 Purpose
 Gestura provides seamless voice and gesture control capabilities for macOS, Windows, and Linux systems through two complementary interfaces:
 
-1. **Gestura Desktop (GUI)**: A Tauri-based desktop application with system tray integration, providing a visual interface for voice commands, AI chat, and device management.
+1. **Gestura Desktop (GUI)**: A Tauri-based desktop application with system tray integration, providing a visual interface for voice commands, AI agent, and device management.
 
 2. **Gestura CLI**: A command-line interface providing feature parity with the GUI, enabling terminal-based workflows, automation, scripting, and headless operation.
 
@@ -47,8 +47,8 @@ Both interfaces share a common Rust core library, ensuring consistent behavior a
 
 ### 1.2 Scope
 This component covers:
-- **GUI Mode**: System tray-based voice activation, chat windows, configuration UI, onboarding
-- **CLI Mode**: Terminal-based voice commands, interactive chat, configuration management, scripting
+- **GUI Mode**: System tray-based voice activation, agent windows, configuration UI, onboarding
+- **CLI Mode**: Terminal-based voice commands, interactive agent, configuration management, scripting
 - Multi-provider speech-to-text processing (OpenAI Whisper, Local Whisper)
 - AI-powered conversation and command processing (OpenAI GPT, Anthropic Claude, Grok, Ollama)
 - Haptic device integration and management
@@ -92,7 +92,7 @@ The CLI design is informed by industry-leading AI coding assistants:
 
 ### 2.1 Component Role
 Gestura serves as the primary desktop client in the Gestura ecosystem, providing:
-- **GUI Mode**: Visual interface for voice command activation, chat, and configuration
+- **GUI Mode**: Visual interface for voice command activation, agent, and configuration
 - **CLI Mode**: Terminal-based interface for scripting, automation, and headless operation
 - Integration hub for multiple AI providers and speech services
 - Device management for haptic feedback devices
@@ -118,7 +118,7 @@ Gestura serves as the primary desktop client in the Gestura ecosystem, providing
 | Feature | Description |
 |---------|-------------|
 | System Tray Integration | Unobtrusive presence with comprehensive menu system |
-| Chat Windows | Visual conversation interface with markdown rendering |
+| Agent Windows | Visual conversation interface with markdown rendering |
 | Configuration UI | Professional settings panel with organized sections |
 | Onboarding Flow | Guided first-time setup with permission requests |
 | Device Management UI | Visual interface for haptic device pairing |
@@ -127,7 +127,7 @@ Gestura serves as the primary desktop client in the Gestura ecosystem, providing
 #### 2.2.3 CLI-Specific Features
 | Feature | Description |
 |---------|-------------|
-| Interactive Mode | TUI-based chat interface with real-time streaming |
+| Interactive Mode | TUI-based agent interface with real-time streaming |
 | Non-Interactive Mode | Single-command execution for scripting |
 | Config File Support | YAML/TOML configuration with environment variable overrides |
 | Shell Completions | Bash, Zsh, Fish, PowerShell completion scripts |
@@ -182,7 +182,7 @@ Integration Points:
   - Single-click opens quick actions menu
   - Menu displays "Start Listening" / "Stop Listening" based on state
   - Light/dark mode icon variants based on system appearance
-  - Menu items: Start/Stop Listening, Open Chat, Settings, Quit
+  - Menu items: Start/Stop Listening, Open Agent, Settings, Quit
 - **Priority**: Critical
 - **Business Impact**: Primary user interface for application access and control
 - **CLI Equivalent**: `gestura listen` command
@@ -192,31 +192,31 @@ Integration Points:
 - **Input**: Audio input from system microphone
 - **Output**: Transcribed text, AI responses, visual state indicators
 - **Behavior**:
-  - Capture audio when listening mode activated (tray or chat button)
-  - Visual recording indicator in chat window
+  - Capture audio when listening mode activated (tray or agent button)
+  - Visual recording indicator in agent window
   - Process speech through configured STT provider (OpenAI or Local Whisper)
   - Route text to appropriate AI provider
   - Display AI responses with markdown rendering
   - Emit `listening-state-changed` events for UI synchronization
 - **Priority**: Critical
 - **Business Impact**: Core value proposition of voice-controlled computing
-- **CLI Equivalent**: `gestura listen`, `gestura chat --voice`
+- **CLI Equivalent**: `gestura listen`, `gestura agent --voice`
 
-#### FR-GUI-003: Chat Window Interface
+#### FR-GUI-003: Agent Window Interface
 **Requirement**: Conversational interface for AI interactions with voice integration
 - **Input**: Text input, voice transcriptions, AI responses
-- **Output**: Chat messages, conversation history, session management
+- **Output**: Agent messages, conversation history, session management
 - **Behavior**:
-  - Create new chat sessions from voice input or text
+  - Create new agent sessions from voice input or text
   - Display transcribed speech as user messages
   - Show AI responses with markdown formatting
   - Voice recording button with state synchronization to tray
   - Session persistence and restoration
-  - Multiple concurrent chat windows
+  - Multiple concurrent agent windows
   - **Tool/Capabilities Introspection**: Respond to `/tools`, `/capabilities`, or natural language questions about available tools and system configuration with deterministic, accurate responses (see FR-GUI-010)
 - **Priority**: High
 - **Business Impact**: User engagement and conversation continuity
-- **CLI Equivalent**: `gestura chat` (interactive mode)
+- **CLI Equivalent**: `gestura agent` (interactive mode)
 
 #### FR-GUI-004: Configuration Settings Panel
 **Requirement**: Professional configuration interface with organized settings management
@@ -280,7 +280,7 @@ Integration Points:
 - **CLI Equivalent**: `gestura mcp` subcommands
 
 #### FR-GUI-INT-003: Tool Registry & Capabilities Introspection
-**Requirement**: In-chat introspection of available tools and system capabilities
+**Requirement**: In-agent introspection of available tools and system capabilities
 - **Input**: Natural language questions or slash commands (`/tools`, `/capabilities`)
 - **Output**: Deterministic, formatted responses listing tools and configuration
 - **Behavior**:
@@ -315,7 +315,7 @@ The CLI follows a subcommand architecture inspired by OpenAI Codex, with the fol
 gestura [OPTIONS] <COMMAND>
 
 Commands:
-  chat        Interactive AI chat session
+  agent        Interactive AI agent session
   exec        Execute a single prompt (non-interactive)
   listen      Voice input mode
   config      Configuration management
@@ -339,13 +339,13 @@ Global Options:
 
 ### 4.2 Core CLI Commands
 
-#### FR-CLI-001: Interactive Chat (`gestura chat`)
-**Requirement**: Interactive TUI-based chat interface
+#### FR-CLI-001: Interactive Agent (`gestura agent`)
+**Requirement**: Interactive TUI-based agent interface
 - **Input**: User text input, optional voice input
 - **Output**: AI responses with streaming, conversation history
 - **Behavior**:
   ```
-  gestura chat [OPTIONS]
+  gestura agent [OPTIONS]
 
   Options:
     --model <MODEL>         LLM model to use (e.g., gpt-4, claude-3, llama3)
@@ -357,7 +357,7 @@ Global Options:
   ```
 - **Priority**: Critical
 - **Business Impact**: Primary CLI interaction mode
-- **GUI Equivalent**: Chat window
+- **GUI Equivalent**: Agent window
 
 #### FR-CLI-002: Single Execution (`gestura exec`)
 **Requirement**: Execute a single prompt and exit (non-interactive)
@@ -408,7 +408,7 @@ Global Options:
   ```
 - **Priority**: Critical
 - **Business Impact**: Core voice functionality in CLI
-- **GUI Equivalent**: System tray "Start Listening", chat voice button
+- **GUI Equivalent**: System tray "Start Listening", agent voice button
 
 #### FR-CLI-004: Configuration Management (`gestura config`)
 **Requirement**: View and modify application configuration
@@ -552,7 +552,7 @@ Global Options:
   Subcommands:
     list                    List all sessions
     show <ID>               Display session content
-    resume <ID>             Resume a session (alias: gestura chat --session <ID>)
+    resume <ID>             Resume a session (alias: gestura agent --session <ID>)
     fork <ID>               Fork a session into new conversation
     delete <ID>             Delete a session
     export <ID> <FILE>      Export session to file
@@ -570,7 +570,7 @@ Global Options:
   ```
 - **Priority**: High
 - **Business Impact**: Conversation continuity
-- **GUI Equivalent**: Session restoration in chat
+- **GUI Equivalent**: Session restoration in agent
 
 ### 4.7 Agent Commands
 
@@ -592,7 +592,7 @@ Global Options:
   ```
 - **Priority**: Medium
 - **Business Impact**: Agent functionality access
-- **GUI Equivalent**: Agent integration in chat
+- **GUI Equivalent**: Agent integration in agent
 
 ### 4.8 Utility Commands
 
@@ -769,8 +769,8 @@ The following requirements define built-in system tools that enable Gestura to p
     search <PATTERN> [DIR]  Search for pattern in files (ripgrep-style)
     list [DIR]              List files in directory
     tree [DIR]              Show directory tree structure
-    add <PATH>              Add file to current chat context
-    drop <PATH>             Remove file from chat context
+    add <PATH>              Add file to current agent context
+    drop <PATH>             Remove file from agent context
     context                 Show files currently in context
 
   Options:
@@ -787,11 +787,11 @@ The following requirements define built-in system tools that enable Gestura to p
   ```
 - **Priority**: Critical
 - **Business Impact**: Core agentic capability - enables AI to understand and modify codebases
-- **GUI Equivalent**: File browser integration in chat
+- **GUI Equivalent**: File browser integration in agent
 - **Security**: Requires explicit user permission; sandboxed to allowed directories
 
 #### FR-TOOLS-002: Shell Command Execution (`gestura tools shell`)
-**Requirement**: Execute shell commands with output capture and optional chat integration
+**Requirement**: Execute shell commands with output capture and optional agent integration
 - **Input**: Shell commands, execution options
 - **Output**: Command output (stdout/stderr), exit codes
 - **Behavior**:
@@ -803,27 +803,27 @@ The following requirements define built-in system tools that enable Gestura to p
     gestura !<COMMAND>      Inline shell execution (interactive mode)
 
   Options:
-    --capture               Capture output for chat context
+    --capture               Capture output for agent context
     --timeout <SECS>        Command timeout (default: 300)
     --cwd <DIR>             Working directory
     --env <KEY=VALUE>       Set environment variable
     --no-confirm            Skip confirmation for dangerous commands
-    --on-fail <ACTION>      Action on non-zero exit: ignore, warn, error, add-to-chat
+    --on-fail <ACTION>      Action on non-zero exit: ignore, warn, error, add-to-agent
 
   Subcommands:
     run <COMMAND>           Execute command
-    test <COMMAND>          Run command, add output to chat only on failure
+    test <COMMAND>          Run command, add output to agent only on failure
     history                 Show command execution history
     last                    Show last command output
 
   Examples:
     gestura tools shell cargo build
-    gestura run "npm test" --on-fail add-to-chat
+    gestura run "npm test" --on-fail add-to-agent
     gestura tools shell test "cargo clippy" --capture
   ```
 - **Priority**: Critical
 - **Business Impact**: Enables build, test, and automation workflows
-- **GUI Equivalent**: Terminal integration in chat
+- **GUI Equivalent**: Terminal integration in agent
 - **Security**: Dangerous commands require confirmation; configurable allowlist/blocklist
 
 #### FR-TOOLS-003: Git Integration (`gestura tools git`)
@@ -866,7 +866,7 @@ The following requirements define built-in system tools that enable Gestura to p
   ```
 - **Priority**: High
 - **Business Impact**: Seamless version control integration for development workflows
-- **GUI Equivalent**: Git status panel in chat
+- **GUI Equivalent**: Git status panel in agent
 - **Security**: Destructive operations (force push, reset) require explicit confirmation
 
 #### FR-TOOLS-004: Code Analysis & Search (`gestura tools code`)
@@ -905,7 +905,7 @@ The following requirements define built-in system tools that enable Gestura to p
 - **Dependencies**: tree-sitter for parsing, ripgrep for search
 
 #### FR-TOOLS-005: Web Content Integration (`gestura tools web`)
-**Requirement**: Fetch web content and convert to markdown for chat context
+**Requirement**: Fetch web content and convert to markdown for agent context
 - **Input**: URLs, fetch options
 - **Output**: Markdown-formatted content
 - **Behavior**:
@@ -922,7 +922,7 @@ The following requirements define built-in system tools that enable Gestura to p
     --timeout <SECS>        Request timeout (default: 30)
     --user-agent <UA>       Custom user agent
     --no-images             Strip images from output
-    --add-to-context        Add result to chat context
+    --add-to-context        Add result to agent context
 
   Examples:
     gestura tools web fetch https://docs.rs/tokio
@@ -931,7 +931,7 @@ The following requirements define built-in system tools that enable Gestura to p
   ```
 - **Priority**: Medium
 - **Business Impact**: Enables documentation lookup and research workflows
-- **GUI Equivalent**: Link preview in chat
+- **GUI Equivalent**: Link preview in agent
 - **Dependencies**: reqwest for HTTP, scraper for HTML parsing
 
 #### FR-TOOLS-006: Tool Permission Management (`gestura tools permissions`)
@@ -1044,7 +1044,7 @@ The following requirements define built-in system tools that enable Gestura to p
   ```
 - **Priority**: High
 - **Business Impact**: User discoverability of available capabilities
-- **GUI Equivalent**: `/tools` command in chat, natural language questions
+- **GUI Equivalent**: `/tools` command in agent, natural language questions
 
 #### FR-TOOLS-009: Capabilities Introspection (`gestura capabilities`)
 **Requirement**: Display comprehensive system status including dynamic configuration
@@ -1090,7 +1090,7 @@ The following requirements define built-in system tools that enable Gestura to p
   ```
 - **Priority**: High
 - **Business Impact**: Full system transparency for troubleshooting and configuration verification
-- **GUI Equivalent**: `/capabilities` command in chat, "what can you do?" natural language questions
+- **GUI Equivalent**: `/capabilities` command in agent, "what can you do?" natural language questions
 - **Implementation**: `gestura_core::tools::render_capabilities()` function
 
 #### FR-TOOLS-010: Introspection Heuristics
@@ -1117,9 +1117,9 @@ The following requirements define built-in system tools that enable Gestura to p
 - **Output**: Stream of `StreamChunk` events (Text, Done, Cancelled, Error)
 - **Behavior**:
   - Support streaming for all LLM providers: OpenAI, Anthropic Claude, Grok, Ollama
-  - Emit `chat-stream-chunk` events containing partial text as tokens arrive
-  - Emit `chat-stream-done` event when response is complete
-  - Emit `chat-stream-cancelled` event on user cancellation
+  - Emit `agent-stream-chunk` events containing partial text as tokens arrive
+  - Emit `agent-stream-done` event when response is complete
+  - Emit `agent-stream-cancelled` event on user cancellation
   - Emit error events with descriptive messages on failure
   - Default 5-minute timeout (`STREAMING_TIMEOUT_SECS = 300`)
 - **Priority**: Critical
@@ -1328,7 +1328,7 @@ The following requirements define built-in system tools that enable Gestura to p
 │  │      GUI (Tauri v2)         │    │      CLI (clap + ratatui)   │         │
 │  ├─────────────────────────────┤    ├─────────────────────────────┤         │
 │  │  • System Tray              │    │  • Subcommand Parser        │         │
-│  │  • Chat Windows             │    │  • Interactive TUI          │         │
+│  │  • Agent Windows             │    │  • Interactive TUI          │         │
 │  │  • Settings Panel           │    │  • Non-Interactive Mode     │         │
 │  │  • Onboarding Flow          │    │  • Shell Completions        │         │
 │  │  • Device Management UI     │    │  • Progress Indicators      │         │
@@ -1391,7 +1391,7 @@ gestura-app/
 │   │       ├── main.rs           # Entry point with clap
 │   │       ├── commands/         # Subcommand implementations
 │   │       │   ├── mod.rs
-│   │       │   ├── chat.rs
+│   │       │   ├── agent.rs
 │   │       │   ├── exec.rs
 │   │       │   ├── listen.rs
 │   │       │   ├── config.rs
@@ -1402,7 +1402,7 @@ gestura-app/
 │   │       │   └── ...
 │   │       └── tui/              # Terminal UI components
 │   │           ├── mod.rs
-│   │           ├── chat.rs
+│   │           ├── agent.rs
 │   │           └── progress.rs
 │   │
 │   └── gestura-gui/              # GUI binary crate (current src-tauri)
@@ -1446,11 +1446,11 @@ pub struct LlmSettings {
 }
 
 // Session Management (for resume/fork functionality)
-pub struct ChatSession {
+pub struct AgentSession {
     pub id: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    pub messages: Vec<ChatMessage>,
+    pub messages: Vec<AgentMessage>,
     pub model: String,
     pub provider: String,
     pub working_directory: Option<PathBuf>,
@@ -1528,7 +1528,7 @@ Environment variables override config file values with prefix `GESTURA_`:
 ```
 User Voice Input → Audio Capture → Speech-to-Text Provider →
 Text Processing → AI Provider → Response Generation →
-Chat Window Display → Haptic Feedback (optional)
+Agent Window Display → Haptic Feedback (optional)
 ```
 
 **CLI Interactive Mode:**
@@ -1756,7 +1756,7 @@ USAGE:
     gestura [OPTIONS] <COMMAND>
 
 COMMANDS:
-    chat        Interactive AI chat session
+    agent        Interactive AI agent session
     exec        Execute a single prompt (non-interactive)
     listen      Voice input mode
     config      Configuration management
@@ -1789,7 +1789,7 @@ ENVIRONMENT VARIABLES:
     GROK_API_KEY              Grok API key
 
 EXAMPLES:
-    gestura chat                          # Start interactive chat
+    gestura agent                          # Start interactive agent
     gestura listen --transcribe-only      # Voice to text only
     gestura exec "Explain this code"      # Single prompt
     echo "Summarize" | gestura exec       # Pipe input
@@ -1802,15 +1802,15 @@ EXAMPLES:
 | Feature | GUI | CLI | Notes |
 |---------|-----|-----|-------|
 | Voice Input | ✅ | ✅ | `gestura listen` |
-| AI Chat | ✅ | ✅ | `gestura chat` |
+| AI Agent | ✅ | ✅ | `gestura agent` |
 | Single Prompt | ❌ | ✅ | `gestura exec` (CLI-only) |
 | Configuration | ✅ | ✅ | Settings panel / `gestura config` |
 | Whisper Models | ✅ | ✅ | `gestura model whisper` |
 | LLM Testing | ✅ | ✅ | `gestura model test` |
 | Device Management | ✅ | ✅ | `gestura device` |
 | MCP Tools | ✅ | ✅ | `gestura mcp` |
-| Tool Registry | ✅ | ✅ | `/tools` in chat / `gestura tools list` |
-| Capabilities Introspection | ✅ | ✅ | `/capabilities` in chat / `gestura capabilities` |
+| Tool Registry | ✅ | ✅ | `/tools` in agent / `gestura tools list` |
+| Capabilities Introspection | ✅ | ✅ | `/capabilities` in agent / `gestura capabilities` |
 | Streaming Responses | ✅ | ✅ | Real-time token-by-token LLM responses |
 | Stream Cancellation | ✅ | ✅ | Cancel in-progress streaming requests |
 | Subagent Orchestration | ✅ | ❌ | GUI-only (agent spawning & task delegation) |

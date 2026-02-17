@@ -22,6 +22,19 @@ members = [
     "crates/gestura-core-config",
     "crates/gestura-core-audio",
     "crates/gestura-core-security",
+    "crates/gestura-core-memory-bank",
+    "crates/gestura-core-a2a",
+    "crates/gestura-core-explorer",
+    "crates/gestura-core-knowledge",
+    "crates/gestura-core-nats",
+    "crates/gestura-core-ipc",
+    "crates/gestura-core-analytics",
+    "crates/gestura-core-hooks",
+    "crates/gestura-core-scripting",
+    "crates/gestura-core-plugins",
+    "crates/gestura-core-retry",
+    "crates/gestura-core-agents",
+    "crates/gestura-core-context",
 ]
 
 # Default members for `cargo build` without specifying a package
@@ -143,7 +156,7 @@ gestura-core-tasks = { path = "crates/gestura-core-tasks" }
 # Domain crate: streaming LLM provider support.
 gestura-core-streaming = { path = "crates/gestura-core-streaming" }
 
-# Domain crate: session management (chat sessions, auth, workspaces).
+# Domain crate: session management (agent sessions, auth, workspaces).
 gestura-core-sessions = { path = "crates/gestura-core-sessions" }
 
 # Domain crate: configuration types, loading, validation, and file watching.
@@ -154,6 +167,45 @@ gestura-core-audio = { path = "crates/gestura-core-audio" }
 
 # Domain crate: encryption, keychain, sandboxing, GDPR compliance.
 gestura-core-security = { path = "crates/gestura-core-security" }
+
+# Domain crate: persistent memory bank (conversation history).
+gestura-core-memory-bank = { path = "crates/gestura-core-memory-bank" }
+
+# Domain crate: A2A (Agent-to-Agent) protocol.
+gestura-core-a2a = { path = "crates/gestura-core-a2a" }
+
+# Domain crate: file system explorer utility.
+gestura-core-explorer = { path = "crates/gestura-core-explorer" }
+
+# Domain crate: knowledge base and built-in expertise.
+gestura-core-knowledge = { path = "crates/gestura-core-knowledge" }
+
+# Domain crate: NATS messaging queue.
+gestura-core-nats = { path = "crates/gestura-core-nats" }
+
+# Domain crate: IPC (hotkey inter-process communication).
+gestura-core-ipc = { path = "crates/gestura-core-ipc" }
+
+# Domain crate: usage analytics and recommendations.
+gestura-core-analytics = { path = "crates/gestura-core-analytics" }
+
+# Domain crate: hooks system (safe-by-default command templates tied to events).
+gestura-core-hooks = { path = "crates/gestura-core-hooks" }
+
+# Domain crate: scripting engine (Lua, Python, JavaScript sandboxed execution).
+gestura-core-scripting = { path = "crates/gestura-core-scripting" }
+
+# Domain crate: plugin system (discovery, lifecycle, sandboxed execution).
+gestura-core-plugins = { path = "crates/gestura-core-plugins" }
+
+# Domain crate: retry strategies (exponential backoff, jitter).
+gestura-core-retry = { path = "crates/gestura-core-retry" }
+
+# Domain crate: agent lifecycle management (spawning, task delegation, orchestration types).
+gestura-core-agents = { path = "crates/gestura-core-agents" }
+
+# Domain crate: smart context management (analysis, caching, resolution).
+gestura-core-context = { path = "crates/gestura-core-context" }
 
 [profile.dev]
 opt-level = 0

@@ -17,10 +17,10 @@ A comprehensive refactoring to consolidate all business logic in `gestura-core`,
 - CLI uses core token functions via re-exports
 - **GUI a2a.rs**: 1,092 → 7 lines (99.4% reduction)
 
-#### Phase 2: Chat Session Unification
-- New `gestura-core/src/chat_sessions/` module with `types.rs` and `store.rs`
-- Unified session types: `ChatSession`, `ChatMessage`, `MessageRole`
-- Shared `ChatSessionStore` for file-based persistence
+#### Phase 2: Agent Session Unification
+- New `gestura-core/src/agent_sessions/` module with `types.rs` and `store.rs`
+- Unified session types: `AgentSession`, `AgentMessage`, `MessageRole`
+- Shared `AgentSessionStore` for file-based persistence
 - Both CLI and GUI use identical session management
 
 #### Phase 3: Permissions + Security Policy
@@ -60,7 +60,7 @@ A comprehensive refactoring to consolidate all business logic in `gestura-core`,
 
 ### Added
 
-#### Chat Markdown Improvements
+#### Agent Markdown Improvements
 - **GFM-style tables**: Proper table rendering with borders and alignment
 - **Task lists**: GitHub-style `- [ ]` and `- [x]` checkbox rendering
 - **Better emphasis**: Proper bold, italic, and strikethrough handling
@@ -71,7 +71,7 @@ A comprehensive refactoring to consolidate all business logic in `gestura-core`,
 
 #### Modern TUI Implementation
 - **Advanced TUI Architecture**: Complete ratatui-based terminal UI with professional features
-  - Tabbed interface (Chat, Tools, Settings, Help) with keyboard/mouse navigation
+  - Tabbed interface (Agent, Tools, Settings, Help) with keyboard/mouse navigation
   - Stateful scrollable message list with visual scroll indicators
   - Real-time streaming response display with cancellation support (Escape key)
   - Enhanced input field with full cursor control and multi-line support (Shift+Enter)
@@ -102,11 +102,11 @@ A comprehensive refactoring to consolidate all business logic in `gestura-core`,
 #### Token Tracking
 - **TokenTracker Module**: Real-time tracking of prompt, completion, and total tokens
 - **Usage Statistics**: Per-request and session-wide token accounting
-- **GUI Integration**: Token display in chat interface with usage breakdown
+- **GUI Integration**: Token display in agent interface with usage breakdown
 - **CLI Integration**: Token counts in TUI status bar and streaming responses
 
 #### Infrastructure
-- **gestura-cli**: Full-featured CLI binary with all commands (chat, exec, listen, config, model, device, mcp, session, agent, privacy, health, completion, init, tools)
+- **gestura-cli**: Full-featured CLI binary with all commands (agent, exec, listen, config, model, device, mcp, session, agent, privacy, health, completion, init, tools)
 - **gestura-core**: Shared library crate with all business logic (config, error, llm_provider, mcp, gdpr, session_manager, telemetry, audio_capture, speech, tools)
 - **Universal macOS binary**: CLI and GUI both build as universal binaries (Intel + Apple Silicon)
 - **PKG installer**: macOS installer that places Gestura.app in /Applications and gestura CLI in /usr/local/bin
@@ -162,7 +162,7 @@ A comprehensive refactoring to consolidate all business logic in `gestura-core`,
 - Complete speech-to-text-to-AI workflow implementation
 - Professional configuration interface with organized settings
 - System permissions monitoring and status display
-- Chat interface for AI interactions with voice integration
+- Agent interface for AI interactions with voice integration
 - Multi-provider AI integration with fallback support
 
 ### Planned

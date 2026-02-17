@@ -149,7 +149,7 @@ Common issues and solutions.
 - Clear telemetry data
 - Restart the application
 
-## Chat / Project Explorer Issues
+## Agent / Project Explorer Issues
 **Problem**: Explorer shows "Not a git repository."
 **Solutions**:
 - This is expected for non-git folders; initialize git or open a git repo.
@@ -164,7 +164,7 @@ Common issues and solutions.
 - Confirm the folder is readable and grant OS file permissions if prompted
 
 ## Workspace Scoping (Security)
-- The Explorer is restricted to the chat session's Project Root and blocks paths outside the workspace.
+- The Explorer is restricted to the agent session's Project Root and blocks paths outside the workspace.
 
 ## Getting Help
 - Check the system health in the status bar
@@ -208,11 +208,11 @@ Speed up your workflow with these shortcuts.
 - **Ctrl+S**: Save settings
 - **Ctrl+R**: Reset to defaults
 
-## Chat Window
+## Agent Window
 - **Ctrl/Cmd+B**: Toggle Explorer
 - **Ctrl/Cmd+T**: Toggle Tasks
 - **Ctrl/Cmd+S**: Toggle Knowledge/Skills
-- **Ctrl/Cmd+K**: Enhance prompt (in chat input)
+- **Ctrl/Cmd+K**: Enhance prompt (in agent input)
 - **Ctrl/Cmd+Z**: Undo enhancement (after enhancing)
     `
   }

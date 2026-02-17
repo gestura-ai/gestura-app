@@ -117,7 +117,7 @@ pub fn run(action: &PrivacyAction) -> Result<()> {
             println!(
                 "  {} {}",
                 "•".cyan(),
-                "Chat sessions and conversation history".bold()
+                "Agent sessions and conversation history".bold()
             );
             println!("    Stored indefinitely until manually deleted");
             println!();

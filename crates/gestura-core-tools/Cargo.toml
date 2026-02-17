@@ -21,6 +21,7 @@ regex.workspace = true
 urlencoding.workspace = true
 
 gestura-core-foundation.workspace = true
+lazy_static.workspace = true
 
 # Tools-specific utilities (kept version-pinned to match existing gestura-core usage)
 scraper = "0.25.0"

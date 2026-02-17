@@ -11,7 +11,7 @@ use std::collections::HashSet;
 pub enum ExecutionMode {
     /// Agent mode - interactive conversation with confirmation for dangerous operations
     #[default]
-    #[serde(alias = "Chat")]
+    #[serde(alias = "Agent")]
     Agent,
     /// Auto mode - autonomous tool execution without confirmation
     Auto,
@@ -68,7 +68,7 @@ impl std::str::FromStr for ExecutionMode {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "agent" | "chat" | "interactive" => Ok(Self::Agent),
+            "agent" | "interactive" => Ok(Self::Agent),
             "auto" | "autonomous" => Ok(Self::Auto),
             "restricted" | "safe" | "limited" => Ok(Self::Restricted),
             _ => Err(format!("Unknown execution mode: {}", s)),
@@ -352,11 +352,6 @@ mod tests {
     fn test_execution_mode_from_str() {
         assert_eq!(
             "agent".parse::<ExecutionMode>().unwrap(),
-            ExecutionMode::Agent
-        );
-        // "chat" is kept as an alias for backward compatibility
-        assert_eq!(
-            "chat".parse::<ExecutionMode>().unwrap(),
             ExecutionMode::Agent
         );
         assert_eq!(

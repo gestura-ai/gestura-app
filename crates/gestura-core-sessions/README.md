@@ -1,10 +1,10 @@
 # gestura-core-sessions
 
-Chat session persistence, session management, and workspace tracking for Gestura.
+Agent session persistence, session management, and workspace tracking for Gestura.
 
 ## What belongs here
 
-- Chat session CRUD (create, read, update, delete, list)
+- Agent session CRUD (create, read, update, delete, list)
 - Session message store and legacy migration
 - Session manager (active session tracking)
 - Session workspace detection and management
@@ -14,7 +14,7 @@ Keep GUI/CLI session display concerns out of this crate; those belong in present
 
 ## Modules
 
-- `chat_sessions`      Session CRUD, store, types, and legacy migration
+- `agent_sessions`      Session CRUD, store, types, and legacy migration
 - `session_manager`    Active session tracking and lifecycle
 - `session_workspace`  Workspace detection for session context
 
@@ -22,7 +22,7 @@ Keep GUI/CLI session display concerns out of this crate; those belong in present
 
 Most code should import through the facade:
 
-- `gestura_core::chat_sessions::*`
+- `gestura_core::agent_sessions::*`
 - `gestura_core::session_manager::*`
 - `gestura_core::session_workspace::*`
 

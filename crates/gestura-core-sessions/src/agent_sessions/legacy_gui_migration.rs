@@ -274,7 +274,7 @@ mod tests {
                 created_at: Utc::now(),
                 last_active: Utc::now(),
                 is_open: true,
-                window_label: Some("chat-abc".to_string()),
+                window_label: Some("agent-abc".to_string()),
                 message_count: 123,
                 state: SessionState::default(),
             }],

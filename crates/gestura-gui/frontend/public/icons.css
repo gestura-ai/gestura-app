@@ -138,7 +138,7 @@
   mask-position: center;
 }
 
-/* Message/Chat icon */
+/* Message/Agent icon */
 .icon-message::before {
   content: '';
   display: inline-block;

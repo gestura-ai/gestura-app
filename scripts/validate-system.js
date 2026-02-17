@@ -28,37 +28,37 @@ class SystemValidator {
             error: '\x1b[31m',
             header: '\x1b[35m'
         };
-        
+
         const color = colorMap[type] || '\x1b[0m';
         const reset = '\x1b[0m';
-        
+
         console.log(`${color}[${timestamp}] ${message}${reset}`);
-        
+
         this.results.push({ timestamp, type, message, data });
     }
 
     async validateSystem() {
         this.log('🚀 COMPREHENSIVE SYSTEM VALIDATION STARTING', 'header');
-        this.log('=' .repeat(60), 'header');
+        this.log('='.repeat(60), 'header');
 
         try {
             // 1. Build validation
             await this.validateBuild();
-            
+
             // 2. HTML file validation
             await this.validateHTMLFiles();
-            
+
             // 3. Tray functionality validation
             await this.validateTrayFunctionality();
-            
+
             // 4. Session management validation
             await this.validateSessionManagement();
-            
+
             // 5. Generate final report
             await this.generateFinalReport();
-            
+
             this.log('✅ SYSTEM VALIDATION COMPLETED SUCCESSFULLY', 'success');
-            
+
         } catch (error) {
             this.log(`❌ SYSTEM VALIDATION FAILED: ${error.message}`, 'error');
             throw error;
@@ -67,7 +67,7 @@ class SystemValidator {
 
     async validateBuild() {
         this.log('🔨 Validating build system...', 'info');
-        
+
         return new Promise((resolve, reject) => {
             const buildProcess = spawn('just', ['build'], {
                 cwd: path.join(__dirname, '..'),
@@ -76,7 +76,7 @@ class SystemValidator {
 
             let output = '';
             let errors = '';
-            
+
             buildProcess.stdout.on('data', (data) => {
                 output += data.toString();
             });
@@ -100,22 +100,22 @@ class SystemValidator {
 
     async validateHTMLFiles() {
         this.log('📄 Validating HTML files...', 'info');
-        
-        const files = ['chat.html', 'config.html'];
+
+        const files = ['agent.html', 'config.html'];
         const results = {};
-        
+
         for (const file of files) {
             try {
                 const url = `http://localhost:1420/${file}`;
                 const response = await fetch(url);
-                
+
                 results[file] = {
                     status: response.status,
                     ok: response.ok,
                     contentType: response.headers.get('content-type'),
                     size: response.headers.get('content-length')
                 };
-                
+
                 if (response.ok) {
                     this.log(`✅ ${file}: ${response.status} OK`, 'success');
                 } else {
@@ -126,16 +126,16 @@ class SystemValidator {
                 results[file] = { error: error.message };
             }
         }
-        
+
         return results;
     }
 
     async validateTrayFunctionality() {
         this.log('🖱️ Validating tray functionality...', 'info');
-        
+
         // Check if app is running by testing if HTML files are accessible
         try {
-            const response = await fetch('http://localhost:1420/chat.html');
+            const response = await fetch('http://localhost:1420/agent.html');
             if (response.ok) {
                 this.log('✅ App is running (HTML files accessible)', 'success');
             } else {
@@ -144,14 +144,14 @@ class SystemValidator {
         } catch (error) {
             this.log('❌ Cannot connect to app', 'error');
         }
-        
+
         this.log('📋 Tray functionality checklist:', 'info');
         this.log('  1. ✓ Tray icon should be visible in system tray', 'info');
-        this.log('  2. ✓ Single-click should open new chat session', 'info');
-        this.log('  3. ✓ Double-click should open new chat session', 'info');
+        this.log('  2. ✓ Single-click should open new agent session', 'info');
+        this.log('  3. ✓ Double-click should open new agent session', 'info');
         this.log('  4. ✓ Right-click should show context menu:', 'info');
-        this.log('     - 💬 New Chat Session', 'info');
-        this.log('     - 📋 Chat Sessions (submenu)', 'info');
+        this.log('     - 💬 New Agent Session', 'info');
+        this.log('     - 📋 Agent Sessions (submenu)', 'info');
         this.log('     - ⚙️ Configuration', 'info');
         this.log('     - ❌ Exit Gestura', 'info');
         this.log('  5. ✓ Exit should close all windows and quit app', 'info');
@@ -159,9 +159,9 @@ class SystemValidator {
 
     async validateSessionManagement() {
         this.log('📋 Validating session management...', 'info');
-        
+
         this.log('Session management features:', 'info');
-        this.log('  ✓ New chat sessions create unique windows', 'info');
+        this.log('  ✓ New agent sessions create unique windows', 'info');
         this.log('  ✓ Closed sessions are preserved (not deleted)', 'info');
         this.log('  ✓ Sessions can be restored from menu', 'info');
         this.log('  ✓ Multiple concurrent sessions supported', 'info');
@@ -171,7 +171,7 @@ class SystemValidator {
 
     async generateFinalReport() {
         this.log('📊 Generating final validation report...', 'info');
-        
+
         const summary = {
             timestamp: new Date().toISOString(),
             totalChecks: this.results.length,
@@ -180,40 +180,40 @@ class SystemValidator {
             errors: this.results.filter(r => r.type === 'error').length,
             results: this.results
         };
-        
+
         // Save detailed report
         const reportPath = path.join(__dirname, '..', 'test-reports', `system-validation-${Date.now()}.json`);
         fs.writeFileSync(reportPath, JSON.stringify(summary, null, 2));
-        
+
         this.log(`📄 Detailed report saved: ${reportPath}`, 'info');
-        
+
         // Print summary
-        this.log('=' .repeat(60), 'header');
+        this.log('='.repeat(60), 'header');
         this.log('📊 VALIDATION SUMMARY', 'header');
-        this.log('=' .repeat(60), 'header');
+        this.log('='.repeat(60), 'header');
         this.log(`Total Checks: ${summary.totalChecks}`, 'info');
         this.log(`✅ Successful: ${summary.successful}`, 'success');
         this.log(`⚠️ Warnings: ${summary.warnings}`, 'warning');
         this.log(`❌ Errors: ${summary.errors}`, summary.errors > 0 ? 'error' : 'info');
-        
+
         if (summary.errors === 0) {
             this.log('🎉 ALL SYSTEMS OPERATIONAL!', 'success');
             this.log('', 'info');
             this.log('🚀 READY FOR TESTING:', 'header');
             this.log('1. Look for Gestura icon in system tray', 'info');
-            this.log('2. Single-click → New chat session', 'info');
+            this.log('2. Single-click → New agent session', 'info');
             this.log('3. Right-click → Context menu', 'info');
             this.log('4. Test menu options:', 'info');
-            this.log('   - New Chat Session', 'info');
+            this.log('   - New Agent Session', 'info');
             this.log('   - Configuration', 'info');
-            this.log('   - Chat Sessions (when available)', 'info');
+            this.log('   - Agent Sessions (when available)', 'info');
             this.log('   - Exit Gestura', 'info');
             this.log('', 'info');
             this.log('✨ The system tray application is fully functional!', 'success');
         } else {
             this.log('⚠️ Some issues detected - check detailed report', 'warning');
         }
-        
+
         return summary;
     }
 }
@@ -221,7 +221,7 @@ class SystemValidator {
 // Run validation if called directly
 if (import.meta.url === `file://${process.argv[1]}`) {
     const validator = new SystemValidator();
-    
+
     validator.validateSystem()
         .then(() => {
             process.exit(0);

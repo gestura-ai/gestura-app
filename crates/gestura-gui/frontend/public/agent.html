@@ -8,7 +8,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <title>Gestura Chat</title>
+    <title>Gestura Agent</title>
     <link rel="stylesheet" href="icons.css">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -186,11 +186,11 @@
         }
 
         /*
-			 * Header chat icon
+			 * Header agent icon
 			 *
 			 * We normally render icons via `icons.css` using CSS `mask-image`.
 			 * Some WebView builds can fail to render masked data-URI icons reliably.
-			 * For the chat header icon specifically, use a deterministic inline SVG.
+			 * For the agent header icon specifically, use a deterministic inline SVG.
 			 */
         .header-title .icon-message {
             display: inline-flex;
@@ -1592,8 +1592,8 @@
             font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
         }
 
-        /* Chat Area */
-        .chat-container {
+        /* Agent Area */
+        .agent-container {
             flex: 1;
             /* Critical in flex layouts so header/input never overlap messages */
             min-height: 0;
@@ -1601,16 +1601,16 @@
             padding: 20px 20px;
             overflow-y: auto;
             scroll-behavior: smooth;
-            /* Enable text selection across the entire chat area (WKWebView) */
+            /* Enable text selection across the entire agent area (WKWebView) */
             -webkit-user-select: text;
             user-select: text;
         }
 
-        .chat-container::-webkit-scrollbar {
+        .agent-container::-webkit-scrollbar {
             width: 6px;
         }
 
-        .chat-container::-webkit-scrollbar-thumb {
+        .agent-container::-webkit-scrollbar-thumb {
             background-color: var(--text-secondary);
             border-radius: 3px;
             opacity: 0.3;
@@ -3643,7 +3643,7 @@
         <div class="session-panel-content">
             <div class="knowledge-info">
                 Enable session skills (knowledge packs). Enabled items will be included in the agent's context for this
-                chat.
+                agent.
             </div>
             <div class="knowledge-toolbar">
                 <input class="knowledge-search" id="knowledgeSearch" type="text" placeholder="Search skills…"
@@ -3772,8 +3772,8 @@
         </div>
     </div>
 
-    <!-- Chat Stream -->
-    <div class="chat-container" id="messages">
+    <!-- Agent Stream -->
+    <div class="agent-container" id="messages">
         <!-- Scroll-to-bottom button (shown when user scrolls up) -->
         <button class="scroll-to-bottom-btn" id="scrollToBottomBtn" title="Scroll to bottom">↓</button>
     </div>
@@ -3931,7 +3931,7 @@
          * - showing the current webview label + session id
          * - showing whether we are listening with `webview.listen` or `event.listen`
          * - displaying a local ring buffer of accepted/ignored events
-         * - fetching the backend chat event trace (emit_to target/fallback)
+         * - fetching the backend agent event trace (emit_to target/fallback)
          */
         const LOCAL_EVENT_TRACE_MAX = 200;
         const localEventTrace = [];
@@ -4202,7 +4202,7 @@
 
         /**
          * Send a voice transcript to the agent streaming pipeline.
-         * This function does NOT add a user message to the chat UI; callers should
+         * This function does NOT add a user message to the agent UI; callers should
          * render the transcript themselves (so the UI reflects what was heard).
          *
          * When prompt enhancement is enabled in settings
@@ -4313,10 +4313,10 @@
         }
 
         /**
-         * Best-effort update of a played task's status after a chat run finishes.
+         * Best-effort update of a played task's status after a agent run finishes.
          *
-         * This is frontend-driven because the backend chat pipeline does not know which
-         * Tasks-panel item a free-form chat message corresponds to.
+         * This is frontend-driven because the backend agent pipeline does not know which
+         * Tasks-panel item a free-form agent message corresponds to.
          *
          * @param {string | null | undefined} taskId
          * @param {'Completed'|'Cancelled'} status
@@ -4820,7 +4820,7 @@
         // --- Message Handling ---
 
         /**
-         * Add a chat message to the UI.
+         * Add a agent message to the UI.
          * @param {string} content
          * @param {'user'|'agent'|'tool'} type
          * @param {boolean} [isHtml=false]
@@ -4864,7 +4864,7 @@
         }
 
         /**
-         * Scroll the chat container to the bottom.
+         * Scroll the agent container to the bottom.
          * @param {boolean} [force=false] - If true, always scroll (e.g. user sent a message).
          *   Otherwise, only scroll if the user hasn't manually scrolled up.
          */
@@ -5747,7 +5747,7 @@
                 return { accept, value, incomingSessionId, reason };
             }
 
-            // 0. Diagnostics probe events (does not affect chat UI state)
+            // 0. Diagnostics probe events (does not affect agent UI state)
             await listen('agent-probe', (e) => {
                 // Always pass through session isolation logic to record accept/ignore receipts.
                 acceptSessionEvent('agent-probe', e?.payload);
@@ -6069,11 +6069,11 @@
                                 };
                             }
 
-                            // Scroll chat to bottom after image loads
+                            // Scroll agent to bottom after image loads
                             img.onload = function () {
-                                const chatContainer = document.getElementById('chatMessages');
-                                if (chatContainer) {
-                                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                                const agentContainer = document.getElementById('agentMessages');
+                                if (agentContainer) {
+                                    agentContainer.scrollTop = agentContainer.scrollHeight;
                                 }
                             };
 
@@ -6164,7 +6164,7 @@
                                 // Get the tool args from the card
                                 const argsEl = targetCard.querySelector('.tool-args');
                                 const argsText = argsEl ? argsEl.textContent : '';
-                                // Send a retry message to the chat
+                                // Send a retry message to the agent
                                 const retryMessage = `Please retry the ${name} tool operation${argsText ? ' with the same arguments' : ''}`;
                                 messageInput.value = retryMessage;
                                 sendMessage();
@@ -8290,7 +8290,7 @@
 
         addTaskBtn?.addEventListener('click', () => {
             if (!sessionId) {
-                showToast('No active session. Please start a chat first.', 'error');
+                showToast('No active session. Please start a agent first.', 'error');
                 return;
             }
             showTaskCreateForm();
@@ -8303,7 +8303,7 @@
             console.log('[Task Create] sessionId:', sessionId);
 
             if (!sessionId) {
-                showToast('No active session. Please start a chat first.', 'error');
+                showToast('No active session. Please start a agent first.', 'error');
                 console.error('[Task Create] No sessionId available');
                 return;
             }
@@ -9235,7 +9235,7 @@
         // Initialize
         initHeaderControls();
         setupEvents().catch((err) => {
-            console.error('[chat] setupEvents failed', err);
+            console.error('[agent] setupEvents failed', err);
             showToast(`setupEvents failed: ${err}`, 'error');
         });
         loadSessionSettings(); // Load session settings on page load

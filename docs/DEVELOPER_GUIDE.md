@@ -96,7 +96,7 @@ cargo build --workspace --release
 cargo tauri dev
 
 # CLI only
-cargo run -p gestura-cli -- chat
+cargo run -p gestura-cli -- agent
 ```
 
 ## Core-First Architecture
@@ -113,7 +113,7 @@ cargo run -p gestura-cli -- chat
 | Category | Modules | Description |
 |----------|---------|-------------|
 | AI & Pipeline | `pipeline/`, `llm_provider.rs`, `persona.rs` | Agent execution |
-| Sessions | `chat_sessions/`, `session_manager.rs`, `context/` | State management |
+| Sessions | `agent_sessions/`, `session_manager.rs`, `context/` | State management |
 | Tools | `tools/`, `tool_confirmation.rs` | Tool registry |
 | Protocols | `mcp/`, `a2a/`, `nats_mq/` | Communication |
 | Security | `security/`, `sandbox/`, `gdpr.rs` | Safety & privacy |
@@ -423,7 +423,7 @@ cargo test test_session_persistence
 ### Writing Tests
 
 ```rust
-// crates/gestura-core/src/chat_sessions/mod.rs
+// crates/gestura-core/src/agent_sessions/mod.rs
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,7 +432,7 @@ mod tests {
     async fn test_session_persistence() {
         let store = SessionStore::new_temp().unwrap();
 
-        let session = ChatSession::new("test-session");
+        let session = AgentSession::new("test-session");
         store.save(&session).await.unwrap();
 
         let loaded = store.load("test-session").await.unwrap();
@@ -441,7 +441,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_message_append() {
-        let mut session = ChatSession::new("test");
+        let mut session = AgentSession::new("test");
 
         session.add_message(Message {
             role: Role::User,

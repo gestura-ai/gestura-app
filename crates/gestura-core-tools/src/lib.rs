@@ -24,6 +24,7 @@ pub mod registry;
 pub mod schemas;
 pub mod screen;
 pub mod shell;
+pub mod tool_confirmation;
 pub mod tool_inspection;
 pub mod web;
 

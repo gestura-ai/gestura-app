@@ -156,10 +156,11 @@ impl WindowManager {
 
         // 2) If the core store is empty, attempt a one-time migration from the legacy file.
         if loaded_core_sessions.is_empty() {
-            loaded_core_sessions = gestura_core::agent_sessions::migrate_legacy_gui_sessions_to_core(
-                &store,
-                global_llm_provider.as_str(),
-            );
+            loaded_core_sessions =
+                gestura_core::agent_sessions::migrate_legacy_gui_sessions_to_core(
+                    &store,
+                    global_llm_provider.as_str(),
+                );
         }
 
         if loaded_core_sessions.is_empty() {
@@ -1290,7 +1291,7 @@ pub fn open_shell_session() -> Result<(), crate::shell_session::ShellSessionErro
 /// Open a shell session for a specific agent session and automatically resume it via the CLI.
 ///
 /// This opens a terminal at the session workspace directory and runs:
-/// `gestura chat --resume --session <session_id>`
+/// `gestura agent --resume --session <session_id>`
 pub fn open_shell_session_for_agent_resume(session_id: &str) -> Result<(), String> {
     use crate::shell_session::{ShellSessionConfig, open_shell_session as spawn_shell};
 
@@ -1320,7 +1321,7 @@ pub fn open_shell_session_for_agent_resume(session_id: &str) -> Result<(), Strin
     let config = ShellSessionConfig::default()
         .with_env("GESTURA_SHELL", "1")
         .with_working_directory(workspace_dir)
-        .with_initial_command(format!("gestura chat --resume --session {}", session_id));
+        .with_initial_command(format!("gestura agent --resume --session {}", session_id));
 
     spawn_shell(config).map_err(|e| format!("Failed to open shell session: {}", e))
 }

@@ -78,11 +78,21 @@ pub struct AgentPipeline {
 }
 
 impl AgentPipeline {
+    /// Build a [`ContextManager`] pre-wired with the built-in tool registry.
+    fn build_context_manager() -> ContextManager {
+        ContextManager::new().with_tool_provider(Box::new(|| {
+            crate::tools::registry::all_tools()
+                .iter()
+                .map(|t| (t.name.to_string(), t.summary.to_string()))
+                .collect()
+        }))
+    }
+
     /// Create a new pipeline with default configuration
     pub fn new(config: AppConfig) -> Self {
         Self {
             config,
-            context_manager: ContextManager::new(),
+            context_manager: Self::build_context_manager(),
             analyzer: RequestAnalyzer::new(),
             pipeline_config: PipelineConfig::default(),
             permission_manager: PermissionManager::new(),
@@ -95,7 +105,7 @@ impl AgentPipeline {
     pub fn with_config(config: AppConfig, pipeline_config: PipelineConfig) -> Self {
         Self {
             config,
-            context_manager: ContextManager::new(),
+            context_manager: Self::build_context_manager(),
             analyzer: RequestAnalyzer::new(),
             pipeline_config,
             permission_manager: PermissionManager::new(),
@@ -241,7 +251,7 @@ impl AgentPipeline {
 
         Self {
             config,
-            context_manager: ContextManager::new(),
+            context_manager: Self::build_context_manager(),
             analyzer: RequestAnalyzer::new(),
             pipeline_config,
             permission_manager: PermissionManager::new(),

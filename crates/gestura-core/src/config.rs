@@ -1,8 +1,10 @@
-//! Configuration management for Gestura
+//! Configuration management for Gestura.
 //!
-//! Type definitions and pure helpers live in [`gestura_core_config`].
-//! This module re-exports them and adds security-dependent methods
-//! via the [`AppConfigSecurityExt`] extension trait.
+//! Core config types (struct definitions, pure helpers) are defined in the
+//! `gestura-core-config` domain crate and re-exported here.  This module
+//! extends them with security-dependent methods via the
+//! [`AppConfigSecurityExt`] extension trait, JSON→YAML migration, and
+//! keychain integration.
 //!
 //! ## Backward compatibility
 //!
@@ -19,8 +21,7 @@
 //!
 //! See [`crate::config_env`] for environment variable documentation.
 
-// Re-export everything from the config domain crate so that
-// `gestura_core::config::AppConfig` (and all sibling types) keep working.
+// All config types from the domain crate are part of this module's public API.
 pub use gestura_core_config::*;
 
 use std::fs;

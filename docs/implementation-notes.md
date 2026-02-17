@@ -19,10 +19,10 @@ This document captures key architectural decisions, design patterns, and impleme
 The system tools requirements (FR-TOOLS-001 through FR-TOOLS-007) were informed by analysis of three industry-leading AI coding assistants:
 
 #### Aider (Python)
-- **Key Features**: In-chat commands (`/add`, `/drop`, `/run`, `/git`, `/undo`, `/voice`)
-- **Design Pattern**: Slash commands for tool invocation within chat context
+- **Key Features**: In-agent commands (`/add`, `/drop`, `/run`, `/git`, `/undo`, `/voice`)
+- **Design Pattern**: Slash commands for tool invocation within agent context
 - **Notable**: Voice-to-code integration, automatic git commits, repository mapping
-- **Reference**: https://aider.chat/docs/usage/commands.html
+- **Reference**: https://aider.agent/docs/usage/commands.html
 
 #### OpenAI Codex (Rust)
 - **Key Features**: IDE extension, CLI, web interface; MCP support; skills system
@@ -43,11 +43,11 @@ Based on research, system tools are organized into six categories:
 1. **File Operations** (FR-TOOLS-001)
    - Read, write, edit files
    - Search with ripgrep-style patterns
-   - Context management (add/drop files from chat)
+   - Context management (add/drop files from agent)
 
 2. **Shell Execution** (FR-TOOLS-002)
    - Run arbitrary commands with output capture
-   - Test commands (add output to chat on failure)
+   - Test commands (add output to agent on failure)
    - Command history and replay
 
 3. **Git Integration** (FR-TOOLS-003)
@@ -134,7 +134,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Chat(ChatArgs),
+    Agent(AgentArgs),
     Exec(ExecArgs),
     Tools(ToolsArgs),
     // ...
@@ -143,7 +143,7 @@ enum Commands {
 
 ### 3.2 Interactive Mode
 
-Using `ratatui` for terminal UI in chat mode:
+Using `ratatui` for terminal UI in agent mode:
 - Split pane layout (input/output)
 - Syntax highlighting for code blocks
 - Progress indicators for long operations
@@ -352,7 +352,7 @@ When the assistant invokes a tool:
 ## 7. References
 
 - [SRS Document](./SRS-gestura-app.md) - Full requirements specification
-- [Aider Commands](https://aider.chat/docs/usage/commands.html)
+- [Aider Commands](https://aider.agent/docs/usage/commands.html)
 - [Codex Documentation](https://developers.openai.com/codex)
 - [Claude Code Docs](https://code.claude.com/docs)
 

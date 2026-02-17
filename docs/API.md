@@ -28,18 +28,18 @@ let request = AgentRequest::new("Analyze this code");
 let response = pipeline.process(request).await?;
 ```
 
-### Chat Sessions API
+### Agent Sessions API
 
-Manage persistent chat sessions:
+Manage persistent agent sessions:
 
 ```rust
-use gestura_core::chat_sessions::{ChatSession, ChatSessionStore, FileChatSessionStore};
+use gestura_core::agent_sessions::{AgentSession, AgentSessionStore, FileAgentSessionStore};
 
 // Create a session store
-let store = FileChatSessionStore::new(Path::new("~/.gestura/sessions"))?;
+let store = FileAgentSessionStore::new(Path::new("~/.gestura/sessions"))?;
 
 // Create a new session
-let session = ChatSession::new("project-chat")?;
+let session = AgentSession::new("project-agent")?;
 store.save(&session).await?;
 
 // List sessions
@@ -250,17 +250,17 @@ MCP uses JSON-RPC 2.0 over STDIO for communication:
 
 The `gestura-cli` provides command-line access to all features.
 
-### Chat Commands
+### Agent Commands
 
 ```bash
-# Start interactive chat
-gestura chat
+# Start interactive agent
+gestura agent
 
 # One-shot execution
 gestura exec "Explain this code"
 
 # Continue a session
-gestura chat --session <session-id>
+gestura agent --session <session-id>
 ```
 
 ### Session Management
@@ -335,17 +335,17 @@ The GUI exposes Tauri commands for frontend-backend communication:
 ### Session Commands
 
 ```typescript
-// List chat sessions
-await invoke('list_chat_sessions');
+// List agent sessions
+await invoke('list_agent_sessions');
 
 // Create new session
-await invoke('create_chat_session', { name: 'My Chat' });
+await invoke('create_agent_session', { name: 'My Agent' });
 
 // Load session
-await invoke('load_chat_session', { sessionId: 'uuid' });
+await invoke('load_agent_session', { sessionId: 'uuid' });
 
 // Delete session
-await invoke('delete_chat_session', { sessionId: 'uuid' });
+await invoke('delete_agent_session', { sessionId: 'uuid' });
 ```
 
 ### Agent Commands
@@ -445,15 +445,15 @@ pub struct AgentResponse {
 ### Session Types
 
 ```rust
-pub struct ChatSession {
+pub struct AgentSession {
     pub id: String,
     pub name: String,
-    pub messages: Vec<ChatMessage>,
+    pub messages: Vec<AgentMessage>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-pub struct ChatMessage {
+pub struct AgentMessage {
     pub role: Role,
     pub content: String,
     pub tool_calls: Option<Vec<ToolCall>>,

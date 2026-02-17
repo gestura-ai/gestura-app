@@ -165,11 +165,11 @@ async fn main() {
             gestura_gui::api::delete_user_data,
             gestura_gui::api::get_user_consents,
             gestura_gui::api::register_consent,
-            // Chat and agent commands
-            gestura_gui::api::process_chat_message,
-            gestura_gui::api::process_chat_message_streaming,
-            gestura_gui::api::cancel_chat_streaming,
-            gestura_gui::api::resume_chat_streaming,
+            // Agent and agent commands
+            gestura_gui::api::process_agent_message,
+            gestura_gui::api::process_agent_message_streaming,
+            gestura_gui::api::cancel_agent_streaming,
+            gestura_gui::api::resume_agent_streaming,
             // Tool confirmation (Restricted mode pause/resume)
             gestura_gui::api::approve_tool_confirmation,
             gestura_gui::api::resolve_tool_confirmation_decision,

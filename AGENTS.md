@@ -41,7 +41,7 @@ gestura-app/
 | Category | Modules | Description |
 |----------|---------|-------------|
 | AI & Pipeline | `pipeline/`, `llm_provider.rs` (facade), `persona.rs` | Agent execution |
-| Sessions | `chat_sessions/`, `session_manager.rs`, `context/` | State management |
+| Sessions | `agent_sessions/`, `session_manager.rs`, `context/` | State management |
 | Tools (facade) | `tools/`, `tool_confirmation.rs`, `tool_inspection.rs` | Public re-exports + core-owned adapters/entrypoints |
 | Protocols | `mcp/` (facade), `a2a/`, `nats_mq/` | MCP 2025-11-25 (impl in `gestura-core-mcp`), A2A, NATS |
 | Security | `security/`, `sandbox/`, `gdpr.rs` | Encryption, sandboxing |
@@ -101,7 +101,7 @@ cargo test --workspace --all-features
 cargo tauri dev
 
 # CLI only
-cargo run -p gestura-cli -- chat
+cargo run -p gestura-cli -- agent
 
 # Quick validation
 just validate-quick
@@ -133,8 +133,8 @@ Stable import paths: `crates/gestura-core/src/tools/` (facade)
 ### CLI Commands
 
 ```bash
-# Chat & Sessions
-gestura chat                    # Interactive chat
+# Agent & Sessions
+gestura agent                    # Interactive agent
 gestura session list            # List sessions
 gestura session export <id>     # Export session
 

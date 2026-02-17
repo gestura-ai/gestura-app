@@ -128,7 +128,7 @@ pub fn default_system_prompt(meta: &RequestMetadata) -> String {
 
     // UX affordances
     s.push_str(
-        "If the user asks what tools you can use, list the tools provided via the structured tool definitions (CLI chat may also support `/tools`).\n",
+        "If the user asks what tools you can use, list the tools provided via the structured tool definitions (CLI agent may also support `/tools`).\n",
     );
 
     s

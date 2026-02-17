@@ -29,75 +29,217 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const NAME: &str = env!("CARGO_PKG_NAME");
 
 // ============================================================================
-// Core Modules
+// Core Modules (file-backed — business logic + domain-crate integration)
 // ============================================================================
 
-pub mod a2a;
-pub mod agents;
-pub mod analytics;
-pub mod audio;
-pub mod audio_capture;
 pub mod agent_sessions;
+pub mod agents {
+    pub use gestura_core_agents::*;
+}
 pub mod checkpoints;
 pub mod compaction;
 pub mod config;
-pub mod config_env;
-
-pub mod context;
-pub mod default_models;
-pub mod error;
-pub mod events;
-pub mod execution_mode;
-pub mod explorer;
-pub mod gdpr;
+pub mod context {
+    pub use gestura_core_context::*;
+}
 pub(crate) mod guardrails;
-pub mod hooks;
-pub mod hotkey_ipc;
-pub mod interaction;
-pub mod knowledge;
 pub mod llm_overrides;
 pub mod llm_provider;
 pub mod llm_validation;
-pub mod mcp;
-pub mod memory_bank;
-pub mod model_display;
-pub mod model_listing;
-pub mod nats_mq;
 /// OpenAI(-compatible) API compatibility helpers (e.g., parameter support quirks).
 pub mod openai_compat;
 pub mod orchestrator;
 pub mod pipeline;
-pub mod platform;
-pub mod plugin_system;
 pub mod prompt_enhancement;
-pub mod recommendations;
-pub mod retry;
-pub mod sandbox;
-pub mod scripting;
-pub mod secrets;
-pub mod security;
-pub mod session_manager;
-pub mod session_workspace;
 pub mod speech;
-pub mod stream_cancellation;
-pub mod stream_error;
-pub mod stream_health;
-pub mod stream_reconnect;
 pub mod streaming;
-pub mod stt_provider;
-pub mod tasks;
-pub mod telemetry;
-pub mod token_tracker;
-pub mod tool_confirmation;
-pub mod tool_inspection;
+pub mod token_tracker {
+    pub use gestura_core_llm::token_tracker::*;
+}
 pub mod tools;
-pub mod workflows;
+
+// ============================================================================
+// Inline Modules (domain-crate types surfaced through gestura-core)
+// ============================================================================
+
+// -- gestura-core-foundation --
+pub mod error {
+    pub use gestura_core_foundation::error::*;
+}
+pub mod events {
+    pub use gestura_core_foundation::events::*;
+}
+pub mod execution_mode {
+    pub use gestura_core_foundation::execution_mode::*;
+}
+pub mod interaction {
+    pub use gestura_core_foundation::interaction::*;
+}
+pub mod model_display {
+    pub use gestura_core_foundation::model_display::*;
+}
+pub mod platform {
+    pub use gestura_core_foundation::platform::*;
+}
+pub mod stream_error {
+    pub use gestura_core_foundation::stream_error::*;
+}
+pub mod stream_health {
+    pub use gestura_core_foundation::stream_health::*;
+}
+pub mod stream_reconnect {
+    pub use gestura_core_foundation::stream_reconnect::*;
+}
+pub mod telemetry {
+    pub use gestura_core_foundation::telemetry::*;
+}
+
+// -- gestura-core-llm --
+pub mod default_models {
+    pub use gestura_core_llm::default_models::*;
+}
+pub mod model_listing {
+    pub use gestura_core_llm::model_listing::*;
+}
+
+// -- gestura-core-mcp --
+pub mod mcp {
+    pub use gestura_core_mcp::*;
+}
+
+// -- gestura-core-sessions --
+pub mod session_manager {
+    pub use gestura_core_sessions::session_manager::*;
+}
+pub mod session_workspace {
+    pub use gestura_core_sessions::session_workspace::*;
+}
+
+// -- gestura-core-streaming --
+pub mod stream_cancellation {
+    pub use gestura_core_streaming::cancellation::*;
+}
+
+// -- gestura-core-tasks --
+pub mod tasks {
+    pub use gestura_core_tasks::tasks::*;
+}
+pub mod workflows {
+    pub use gestura_core_tasks::workflows::*;
+}
+
+// -- gestura-core-security --
+pub mod security {
+    pub use gestura_core_security::*;
+}
+pub mod gdpr {
+    pub use gestura_core_security::gdpr::*;
+}
+pub mod sandbox {
+    pub use gestura_core_security::sandbox::*;
+}
+
+// -- gestura-core-audio --
+pub mod audio {
+    pub use gestura_core_audio::noise_cancellation::*;
+}
+pub mod audio_capture {
+    pub use gestura_core_audio::audio_capture::*;
+}
+pub mod stt_provider {
+    pub use gestura_core_audio::stt_provider::*;
+}
+
+// -- gestura-core-tools --
+pub mod tool_inspection {
+    pub use gestura_core_tools::tool_inspection::*;
+}
+
+// -- gestura-core-config --
+pub mod config_env {
+    pub use gestura_core_config::config_env::*;
+}
+
+// -- gestura-core-foundation + gestura-core-security --
+pub mod secrets {
+    pub use gestura_core_foundation::secrets::*;
+    pub use gestura_core_security::secrets::SecureStorageSecretProvider;
+}
+
+// -- gestura-core-memory-bank --
+pub mod memory_bank {
+    pub use gestura_core_memory_bank::*;
+}
+
+// -- gestura-core-a2a --
+pub mod a2a {
+    pub use gestura_core_a2a::*;
+}
+
+// -- gestura-core-explorer --
+pub mod explorer {
+    pub use gestura_core_explorer::*;
+}
+
+// -- gestura-core-knowledge --
+pub mod knowledge {
+    pub use gestura_core_knowledge::*;
+}
+
+// -- gestura-core-nats --
+pub mod nats_mq {
+    pub use gestura_core_nats::*;
+}
+
+// -- gestura-core-ipc --
+pub mod hotkey_ipc {
+    pub use gestura_core_ipc::*;
+}
+
+// -- gestura-core-analytics --
+pub mod analytics {
+    pub use gestura_core_analytics::analytics::*;
+}
+pub mod recommendations {
+    pub use gestura_core_analytics::recommendations::*;
+}
+
+// -- gestura-core-hooks --
+pub mod hooks {
+    pub use gestura_core_hooks::*;
+}
+
+// -- gestura-core-scripting --
+pub mod scripting {
+    pub use gestura_core_scripting::*;
+}
+
+// -- gestura-core-plugins --
+pub mod plugin_system {
+    pub use gestura_core_plugins::*;
+}
+
+// -- gestura-core-retry --
+pub mod retry {
+    pub use gestura_core_retry::*;
+}
+
+// -- tool_confirmation (merged into gestura-core-tools) --
+pub mod tool_confirmation {
+    pub use gestura_core_tools::tool_confirmation::*;
+}
 
 // Re-export common types for convenience
 pub use a2a::{
     A2AClient, A2AError, A2AMessage, A2ARequest, A2AResponse, A2AServer, A2ATask, AgentCard,
     AgentCardRegistry, AgentProfile, Artifact, AuthenticationInfo, MessagePart, OAuth2Config,
     ProfileStore, Skill, create_gestura_agent_card, is_token_well_formed,
+};
+pub use agent_sessions::{
+    AgentSession, AgentSessionResult, AgentSessionStore, ConversationMessage,
+    FileAgentSessionStore, MessageSource, SessionFilter, SessionInfo, SessionLlmConfig,
+    SessionPermissionLevel, SessionState, SessionToolCall, SessionToolSettings, SessionVoiceConfig,
+    default_agent_sessions_dir,
 };
 pub use analytics::{
     AnalyticsConfig, AnalyticsInsights, ErrorAnalysis, EventType, PerformanceMetrics, PrivacyMode,
@@ -110,12 +252,6 @@ pub use audio::{
 pub use audio_capture::{
     AudioCaptureConfig, AudioDeviceInfo, is_microphone_available, list_audio_input_devices,
     record_audio, request_stop_recording, reset_stop_flag,
-};
-pub use agent_sessions::{
-    AgentSession, AgentSessionResult, AgentSessionStore, ConversationMessage,
-    FileAgentSessionStore, MessageSource, SessionFilter, SessionInfo, SessionLlmConfig,
-    SessionPermissionLevel, SessionState, SessionToolCall, SessionToolSettings,
-    SessionVoiceConfig, default_agent_sessions_dir,
 };
 pub use checkpoints::{
     Checkpoint, CheckpointError, CheckpointId, CheckpointManager, CheckpointMetadata,

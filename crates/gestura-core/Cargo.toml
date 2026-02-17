@@ -11,7 +11,7 @@ default = ["voice-local"]
 # Local voice via whisper.cpp bindings
 voice-local = ["dep:whisper-rs", "gestura-core-audio/voice-local"]
 # NATS messaging integration
-nats = ["dep:async-nats"]
+nats = ["gestura-core-nats/nats"]
 # JSON-LD processing for MDH
 json-ld = ["dep:json-ld"]
 # Security features (encryption, keychain)
@@ -52,6 +52,19 @@ gestura-core-streaming.workspace = true
 gestura-core-sessions.workspace = true
 gestura-core-config.workspace = true
 gestura-core-security.workspace = true
+gestura-core-memory-bank.workspace = true
+gestura-core-a2a.workspace = true
+gestura-core-explorer.workspace = true
+gestura-core-knowledge.workspace = true
+gestura-core-nats.workspace = true
+gestura-core-ipc.workspace = true
+gestura-core-analytics.workspace = true
+gestura-core-hooks.workspace = true
+gestura-core-scripting.workspace = true
+gestura-core-plugins.workspace = true
+gestura-core-retry.workspace = true
+gestura-core-agents.workspace = true
+gestura-core-context.workspace = true
 
 # Audio processing
 cpal.workspace = true
@@ -69,8 +82,6 @@ json-ld = { version = "0.16", optional = true }
 # Security (optional — keyring direct usage in config bridge)
 keyring = { workspace = true, optional = true }
 
-# NATS messaging (optional)
-async-nats = { version = "0.42", optional = true }
 
 # macOS specific (optional)
 objc = { version = "0.2", optional = true }

@@ -1,10 +1,11 @@
-//! Agent session model + persistence (facade).
+//! Agent session model + persistence.
 //!
-//! All types and logic live in [`gestura_core_sessions::agent_sessions`].
-//! This module re-exports everything plus provides config-dependent
-//! extensions that require types from `crate::config`.
+//! Session types and storage logic are defined in `gestura-core-sessions` and
+//! re-exported here.  This module adds config-dependent extensions
+//! ([`SessionToolSettingsConfigExt`]) and migration wrappers that depend on
+//! [`crate::config::AppConfig`].
 
-// Re-export the entire sessions crate agent_sessions module.
+// Session types from the domain crate are part of this module's public API.
 pub use gestura_core_sessions::agent_sessions::*;
 
 use crate::config::{AppConfig, GlobalPermissionLevel, GlobalPermissionSettings};
