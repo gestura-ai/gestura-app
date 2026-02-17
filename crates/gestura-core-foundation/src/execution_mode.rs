@@ -1,6 +1,6 @@
 //! Execution mode support for agent pipeline
 //!
-//! This module provides Auto vs Chat mode switching, mode-specific tool permissions,
+//! This module provides Auto vs Agent mode switching, mode-specific tool permissions,
 //! and mode persistence per session. Based on Block Goose architecture patterns.
 
 use serde::{Deserialize, Serialize};
@@ -9,9 +9,10 @@ use std::collections::HashSet;
 /// Execution mode for the agent
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum ExecutionMode {
-    /// Chat mode - interactive conversation with confirmation for dangerous operations
+    /// Agent mode - interactive conversation with confirmation for dangerous operations
     #[default]
-    Chat,
+    #[serde(alias = "Chat")]
+    Agent,
     /// Auto mode - autonomous tool execution without confirmation
     Auto,
     /// Restricted mode - limited tool access for safety
@@ -22,7 +23,7 @@ impl ExecutionMode {
     /// Get a human-readable description of the mode
     pub fn description(&self) -> &'static str {
         match self {
-            Self::Chat => "Interactive chat with tool confirmation",
+            Self::Agent => "Interactive agent with tool confirmation",
             Self::Auto => "Autonomous execution without confirmation",
             Self::Restricted => "Limited tool access for safety",
         }
@@ -31,7 +32,7 @@ impl ExecutionMode {
     /// Get the short name for UI display
     pub fn short_name(&self) -> &'static str {
         match self {
-            Self::Chat => "Chat",
+            Self::Agent => "Agent",
             Self::Auto => "Auto",
             Self::Restricted => "Restricted",
         }
@@ -40,7 +41,7 @@ impl ExecutionMode {
     /// Check if this mode requires confirmation for tool execution
     pub fn requires_confirmation(&self) -> bool {
         match self {
-            Self::Chat => true,
+            Self::Agent => true,
             Self::Auto => false,
             Self::Restricted => true,
         }
@@ -49,7 +50,7 @@ impl ExecutionMode {
     /// Check if this mode allows autonomous tool execution
     pub fn allows_autonomous_execution(&self) -> bool {
         match self {
-            Self::Chat => false,
+            Self::Agent => false,
             Self::Auto => true,
             Self::Restricted => false,
         }
@@ -67,7 +68,7 @@ impl std::str::FromStr for ExecutionMode {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "chat" | "interactive" => Ok(Self::Chat),
+            "agent" | "chat" | "interactive" => Ok(Self::Agent),
             "auto" | "autonomous" => Ok(Self::Auto),
             "restricted" | "safe" | "limited" => Ok(Self::Restricted),
             _ => Err(format!("Unknown execution mode: {}", s)),
@@ -112,27 +113,27 @@ impl ToolCategory {
 
             // Write operations
             (Self::Write, ExecutionMode::Auto) => ToolPermission::Allowed,
-            (Self::Write, ExecutionMode::Chat) => ToolPermission::RequiresConfirmation,
+            (Self::Write, ExecutionMode::Agent) => ToolPermission::RequiresConfirmation,
             (Self::Write, ExecutionMode::Restricted) => ToolPermission::Blocked,
 
             // Shell operations
             (Self::Shell, ExecutionMode::Auto) => ToolPermission::Allowed,
-            (Self::Shell, ExecutionMode::Chat) => ToolPermission::RequiresConfirmation,
+            (Self::Shell, ExecutionMode::Agent) => ToolPermission::RequiresConfirmation,
             (Self::Shell, ExecutionMode::Restricted) => ToolPermission::Blocked,
 
             // Network operations
             (Self::Network, ExecutionMode::Auto) => ToolPermission::Allowed,
-            (Self::Network, ExecutionMode::Chat) => ToolPermission::Allowed,
+            (Self::Network, ExecutionMode::Agent) => ToolPermission::Allowed,
             (Self::Network, ExecutionMode::Restricted) => ToolPermission::RequiresConfirmation,
 
             // System operations
             (Self::System, ExecutionMode::Auto) => ToolPermission::RequiresConfirmation,
-            (Self::System, ExecutionMode::Chat) => ToolPermission::RequiresConfirmation,
+            (Self::System, ExecutionMode::Agent) => ToolPermission::RequiresConfirmation,
             (Self::System, ExecutionMode::Restricted) => ToolPermission::Blocked,
 
             // Git operations
             (Self::Git, ExecutionMode::Auto) => ToolPermission::Allowed,
-            (Self::Git, ExecutionMode::Chat) => ToolPermission::RequiresConfirmation,
+            (Self::Git, ExecutionMode::Agent) => ToolPermission::RequiresConfirmation,
             (Self::Git, ExecutionMode::Restricted) => ToolPermission::Blocked,
         }
     }
@@ -147,14 +148,14 @@ pub struct ModeConfig {
     pub tool_overrides: std::collections::HashMap<String, ToolPermission>,
     /// Whether to persist mode across sessions
     pub persist_mode: bool,
-    /// Auto-switch to Chat mode after errors
+    /// Auto-switch to Agent mode after errors
     pub auto_fallback_on_error: bool,
 }
 
 impl Default for ModeConfig {
     fn default() -> Self {
         Self {
-            mode: ExecutionMode::Chat,
+            mode: ExecutionMode::Agent,
             tool_overrides: std::collections::HashMap::new(),
             persist_mode: true,
             auto_fallback_on_error: true,
@@ -342,7 +343,7 @@ mod tests {
     #[test]
     fn test_execution_mode_defaults() {
         let mode = ExecutionMode::default();
-        assert_eq!(mode, ExecutionMode::Chat);
+        assert_eq!(mode, ExecutionMode::Agent);
         assert!(mode.requires_confirmation());
         assert!(!mode.allows_autonomous_execution());
     }
@@ -350,8 +351,13 @@ mod tests {
     #[test]
     fn test_execution_mode_from_str() {
         assert_eq!(
+            "agent".parse::<ExecutionMode>().unwrap(),
+            ExecutionMode::Agent
+        );
+        // "chat" is kept as an alias for backward compatibility
+        assert_eq!(
             "chat".parse::<ExecutionMode>().unwrap(),
-            ExecutionMode::Chat
+            ExecutionMode::Agent
         );
         assert_eq!(
             "auto".parse::<ExecutionMode>().unwrap(),
@@ -368,7 +374,7 @@ mod tests {
     fn test_tool_category_permissions() {
         // Read-only is always allowed
         assert_eq!(
-            ToolCategory::ReadOnly.default_permission(ExecutionMode::Chat),
+            ToolCategory::ReadOnly.default_permission(ExecutionMode::Agent),
             ToolPermission::Allowed
         );
         assert_eq!(
@@ -376,9 +382,9 @@ mod tests {
             ToolPermission::Allowed
         );
 
-        // Shell requires confirmation in Chat mode
+        // Shell requires confirmation in Agent mode
         assert_eq!(
-            ToolCategory::Shell.default_permission(ExecutionMode::Chat),
+            ToolCategory::Shell.default_permission(ExecutionMode::Agent),
             ToolPermission::RequiresConfirmation
         );
 
@@ -391,7 +397,7 @@ mod tests {
 
     #[test]
     fn test_mode_config_overrides() {
-        let mut config = ModeConfig::with_mode(ExecutionMode::Chat);
+        let mut config = ModeConfig::with_mode(ExecutionMode::Agent);
 
         // Default: shell requires confirmation
         assert_eq!(
@@ -411,7 +417,7 @@ mod tests {
     fn test_mode_manager_confirmation() {
         let mut manager = ModeManager::new();
 
-        // Shell requires confirmation in Chat mode
+        // Shell requires confirmation in Agent mode
         let check = manager.can_execute_tool("run_shell", ToolCategory::Shell);
         assert!(check.requires_confirmation());
 
