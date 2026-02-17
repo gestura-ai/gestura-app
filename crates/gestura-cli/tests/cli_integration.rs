@@ -61,7 +61,7 @@ fn test_help() {
         .assert()
         .success()
         .stdout(predicate::str::contains("voice-first AI assistant"))
-        .stdout(predicate::str::contains("chat"))
+        .stdout(predicate::str::contains("agent"))
         .stdout(predicate::str::contains("exec"))
         .stdout(predicate::str::contains("listen"))
         .stdout(predicate::str::contains("config"))
@@ -140,7 +140,7 @@ fn test_privacy_policy() {
 
 #[test]
 fn test_agent_list() {
-    gestura().args(["agent", "list"]).assert().success();
+    gestura().args(["agent-info", "list"]).assert().success();
 }
 
 #[test]
@@ -254,13 +254,13 @@ fn test_exec_empty_command() {
 }
 
 #[test]
-fn test_chat_help() {
-    // Chat subcommand help should work
+fn test_agent_help() {
+    // Agent subcommand help should work
     gestura()
-        .args(["chat", "--help"])
+        .args(["agent", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("chat"));
+        .stdout(predicate::str::contains("agent"));
 }
 
 // ==================== Tools Permissions Command Tests ====================
