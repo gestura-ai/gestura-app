@@ -1,4 +1,4 @@
-//! Core chat session data types.
+//! Core agent session data types.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -86,7 +86,7 @@ pub struct SessionLlmConfig {
 /// Session-scoped Voice/STT configuration override.
 ///
 /// The GUI/CLI may allow users to override speech-to-text settings for a single
-/// chat session without changing the global `AppConfig.voice` defaults.
+/// agent session without changing the global `AppConfig.voice` defaults.
 ///
 /// ## Field interpretation
 /// - `provider`: STT provider id (currently `"local"`, `"openai"`, or `"none"`).
@@ -278,9 +278,9 @@ impl SessionState {
     }
 }
 
-/// A persisted chat session.
+/// A persisted agent session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatSession {
+pub struct AgentSession {
     /// Unique session id.
     pub id: String,
     /// Human-friendly title.
@@ -297,7 +297,7 @@ pub struct ChatSession {
     pub state: SessionState,
 }
 
-impl ChatSession {
+impl AgentSession {
     /// Create a new session with an auto-generated sandbox workspace.
     pub fn new_sandbox(model: Option<String>) -> Result<Self, gestura_core_foundation::AppError> {
         let id = uuid::Uuid::new_v4().to_string();
@@ -305,7 +305,7 @@ impl ChatSession {
             .map_err(|e| gestura_core_foundation::AppError::Session(e.to_string()))?;
 
         Ok(Self {
-            title: "New Chat".to_string(),
+            title: "New Session".to_string(),
             created_at: Utc::now(),
             last_active: Utc::now(),
             model,
@@ -325,7 +325,7 @@ impl ChatSession {
                 .map_err(|e| gestura_core_foundation::AppError::Session(e.to_string()))?;
 
         Ok(Self {
-            title: "New Chat".to_string(),
+            title: "New Session".to_string(),
             created_at: Utc::now(),
             last_active: Utc::now(),
             model,
@@ -338,17 +338,17 @@ impl ChatSession {
     pub fn add_user_message(&mut self, content: &str, source: MessageSource) {
         self.state.add_user_message(content, source);
         self.last_active = Utc::now();
-        if self.title == "New Chat" {
+        if self.title == "New Session" {
             self.title = content
                 .lines()
                 .next()
-                .unwrap_or("New Chat")
+                .unwrap_or("New Session")
                 .trim()
                 .chars()
                 .take(80)
                 .collect();
             if self.title.is_empty() {
-                self.title = "New Chat".to_string();
+                self.title = "New Session".to_string();
             }
         }
     }

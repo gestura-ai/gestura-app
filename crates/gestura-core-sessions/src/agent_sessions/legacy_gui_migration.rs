@@ -4,8 +4,8 @@
 //! `~/.gestura/gui_sessions.json`.
 //!
 //! As part of the Core-First migration, session persistence is unified under
-//! [`super::FileChatSessionStore`], which stores one JSON file per session in
-//! `~/.gestura/chat_sessions/`.
+//! [`super::FileAgentSessionStore`], which stores one JSON file per session in
+//! `~/.gestura/agent_sessions/`.
 //!
 //! This module keeps the **business logic** for:
 //! - locating the legacy file
@@ -16,7 +16,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use super::{ChatSession, ChatSessionStore, SessionState};
+use super::{AgentSession, AgentSessionStore, SessionState};
 
 /// Returns the Gestura data directory (`~/.gestura/`).
 fn gestura_data_dir() -> PathBuf {
@@ -78,11 +78,11 @@ pub fn sanitize_session_llm_override(
 /// [`migrate_legacy_gui_sessions_to_core_at_path`].
 ///
 /// Returns the migrated core sessions if migration succeeded (even partially).
-pub fn migrate_legacy_gui_sessions_to_core<S: ChatSessionStore>(
+pub fn migrate_legacy_gui_sessions_to_core<S: AgentSessionStore>(
     store: &S,
     global_llm_provider: &str,
     is_model_compatible: impl Fn(&str, &str) -> bool,
-) -> Vec<ChatSession> {
+) -> Vec<AgentSession> {
     migrate_legacy_gui_sessions_to_core_at_path(
         store,
         global_llm_provider,
@@ -94,12 +94,12 @@ pub fn migrate_legacy_gui_sessions_to_core<S: ChatSessionStore>(
 /// One-time migration from a legacy GUI sessions file into the unified core store.
 ///
 /// Returns the migrated core sessions if migration succeeded (even partially).
-pub fn migrate_legacy_gui_sessions_to_core_at_path<S: ChatSessionStore>(
+pub fn migrate_legacy_gui_sessions_to_core_at_path<S: AgentSessionStore>(
     store: &S,
     global_llm_provider: &str,
     path: &Path,
     is_model_compatible: &dyn Fn(&str, &str) -> bool,
-) -> Vec<ChatSession> {
+) -> Vec<AgentSession> {
     if !path.exists() {
         return Vec::new();
     }
@@ -127,7 +127,7 @@ pub fn migrate_legacy_gui_sessions_to_core_at_path<S: ChatSessionStore>(
                         .llm_config
                         .as_ref()
                         .and_then(|cfg| cfg.model.clone());
-                    let core_session = ChatSession {
+                    let core_session = AgentSession {
                         id: session.id,
                         title: session.title,
                         created_at: session.created_at,
@@ -179,16 +179,16 @@ pub fn migrate_legacy_gui_sessions_to_core_at_path<S: ChatSessionStore>(
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct LegacyPersistedSessions {
-    sessions: Vec<LegacyGuiChatSession>,
+    sessions: Vec<LegacyGuiAgentSession>,
     version: u32,
 }
 
 /// Legacy GUI session view-model as persisted historically by the desktop app.
 ///
-/// Note: only used for reading the legacy file; new persistence uses core [`ChatSession`].
+/// Note: only used for reading the legacy file; new persistence uses core [`AgentSession`].
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
-struct LegacyGuiChatSession {
+struct LegacyGuiAgentSession {
     id: String,
     title: String,
     created_at: DateTime<Utc>,
@@ -203,7 +203,7 @@ struct LegacyGuiChatSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat_sessions::FileChatSessionStore;
+    use crate::agent_sessions::FileAgentSessionStore;
 
     /// Stub validation function for tests.
     fn always_incompatible(_provider: &str, _model: &str) -> bool {
@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn sanitize_clears_incompatible_model_override_and_prunes_empty_container() {
         let mut state = SessionState {
-            llm_config: Some(crate::chat_sessions::SessionLlmConfig {
+            llm_config: Some(crate::agent_sessions::SessionLlmConfig {
                 provider: Some("openai".to_string()),
                 model: Some("claude-3-5-sonnet-20241022".to_string()),
             }),
@@ -235,7 +235,7 @@ mod tests {
         assert_eq!(state.llm_config.as_ref().unwrap().model, None);
 
         // Now clear provider too; container should be pruned.
-        state.llm_config = Some(crate::chat_sessions::SessionLlmConfig {
+        state.llm_config = Some(crate::agent_sessions::SessionLlmConfig {
             provider: None,
             model: Some("gpt-4o".to_string()),
         });
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn migrate_returns_empty_when_legacy_file_missing() {
         let temp = tempfile::tempdir().unwrap();
-        let store = FileChatSessionStore::new(temp.path().join("store"));
+        let store = FileAgentSessionStore::new(temp.path().join("store"));
         let missing = temp.path().join("gui_sessions.json");
 
         let migrated = migrate_legacy_gui_sessions_to_core_at_path(
@@ -264,11 +264,11 @@ mod tests {
     fn migrate_saves_sessions_and_removes_legacy_file() {
         let temp = tempfile::tempdir().unwrap();
         let store_dir = temp.path().join("store");
-        let store = FileChatSessionStore::new(store_dir);
+        let store = FileAgentSessionStore::new(store_dir);
         let legacy_path = temp.path().join("gui_sessions.json");
 
         let legacy = LegacyPersistedSessions {
-            sessions: vec![LegacyGuiChatSession {
+            sessions: vec![LegacyGuiAgentSession {
                 id: "abc".to_string(),
                 title: "Hello".to_string(),
                 created_at: Utc::now(),

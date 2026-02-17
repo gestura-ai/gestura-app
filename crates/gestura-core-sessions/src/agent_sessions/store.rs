@@ -1,4 +1,4 @@
-//! File-backed chat session store.
+//! File-backed agent session store.
 
 use chrono::{Datelike, Local, NaiveDate};
 use std::fs;
@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 
 use gestura_core_foundation::AppError;
 
-use super::types::ChatSession;
+use super::types::AgentSession;
 
-/// Result type for chat session store operations.
-pub type ChatSessionResult<T> = Result<T, AppError>;
+/// Result type for agent session store operations.
+pub type AgentSessionResult<T> = Result<T, AppError>;
 
 /// Filter for listing sessions.
 #[derive(Debug, Clone, Default)]
@@ -49,25 +49,25 @@ pub struct SessionInfo {
     pub model: Option<String>,
 }
 
-/// A storage abstraction for chat sessions.
-pub trait ChatSessionStore {
+/// A storage abstraction for agent sessions.
+pub trait AgentSessionStore {
     /// Save a session.
-    fn save(&self, session: &ChatSession) -> ChatSessionResult<()>;
+    fn save(&self, session: &AgentSession) -> AgentSessionResult<()>;
 
     /// Load a session by id.
-    fn load(&self, id: &str) -> ChatSessionResult<ChatSession>;
+    fn load(&self, id: &str) -> AgentSessionResult<AgentSession>;
 
     /// Delete a session by id.
-    fn delete(&self, id: &str) -> ChatSessionResult<bool>;
+    fn delete(&self, id: &str) -> AgentSessionResult<bool>;
 
     /// List sessions matching a filter.
-    fn list(&self, filter: SessionFilter) -> ChatSessionResult<Vec<SessionInfo>>;
+    fn list(&self, filter: SessionFilter) -> AgentSessionResult<Vec<SessionInfo>>;
 
     /// Load the most recently active session.
-    fn load_last(&self) -> ChatSessionResult<Option<ChatSession>>;
+    fn load_last(&self) -> AgentSessionResult<Option<AgentSession>>;
 
     /// Find a session id by prefix (used for CLI convenience).
-    fn find_by_prefix(&self, prefix: &str) -> ChatSessionResult<Option<String>>;
+    fn find_by_prefix(&self, prefix: &str) -> AgentSessionResult<Option<String>>;
 }
 
 /// Returns the Gestura data directory (`~/.gestura/`).
@@ -80,21 +80,21 @@ fn gestura_data_dir() -> PathBuf {
         .join(".gestura")
 }
 
-/// Default directory for persisted chat sessions.
+/// Default directory for persisted agent sessions.
 ///
 /// This is intentionally **separate** from `session_workspace::get_sessions_base_dir()`
 /// to keep persistence outside sandbox workspaces.
-pub fn default_chat_sessions_dir() -> PathBuf {
-    gestura_data_dir().join("chat_sessions")
+pub fn default_agent_sessions_dir() -> PathBuf {
+    gestura_data_dir().join("agent_sessions")
 }
 
 /// File-backed session store (one JSON file per session).
 #[derive(Debug, Clone)]
-pub struct FileChatSessionStore {
+pub struct FileAgentSessionStore {
     dir: PathBuf,
 }
 
-impl FileChatSessionStore {
+impl FileAgentSessionStore {
     /// Create a store rooted at a custom directory.
     pub fn new(dir: PathBuf) -> Self {
         Self { dir }
@@ -102,15 +102,15 @@ impl FileChatSessionStore {
 
     /// Create a store using the default directory.
     pub fn new_default() -> Self {
-        Self::new(default_chat_sessions_dir())
+        Self::new(default_agent_sessions_dir())
     }
 
-    fn ensure_dir(&self) -> ChatSessionResult<()> {
+    fn ensure_dir(&self) -> AgentSessionResult<()> {
         fs::create_dir_all(&self.dir)?;
         Ok(())
     }
 
-    fn validate_session_id(&self, id: &str) -> ChatSessionResult<()> {
+    fn validate_session_id(&self, id: &str) -> AgentSessionResult<()> {
         if id.is_empty() {
             return Err(AppError::InvalidInput("session id is empty".to_string()));
         }
@@ -123,12 +123,12 @@ impl FileChatSessionStore {
         Ok(())
     }
 
-    fn path_for(&self, id: &str) -> ChatSessionResult<PathBuf> {
+    fn path_for(&self, id: &str) -> AgentSessionResult<PathBuf> {
         self.validate_session_id(id)?;
         Ok(self.dir.join(format!("{id}.json")))
     }
 
-    fn matches_filter(&self, session: &ChatSession, filter: &SessionFilter) -> bool {
+    fn matches_filter(&self, session: &AgentSession, filter: &SessionFilter) -> bool {
         match filter {
             SessionFilter::All => true,
             SessionFilter::Today => {
@@ -164,20 +164,20 @@ impl FileChatSessionStore {
         }
     }
 
-    fn load_from_path(&self, path: &Path) -> ChatSessionResult<ChatSession> {
+    fn load_from_path(&self, path: &Path) -> AgentSessionResult<AgentSession> {
         let json = fs::read_to_string(path)?;
         Ok(serde_json::from_str(&json)?)
     }
 }
 
-impl Default for FileChatSessionStore {
+impl Default for FileAgentSessionStore {
     fn default() -> Self {
         Self::new_default()
     }
 }
 
-impl ChatSessionStore for FileChatSessionStore {
-    fn save(&self, session: &ChatSession) -> ChatSessionResult<()> {
+impl AgentSessionStore for FileAgentSessionStore {
+    fn save(&self, session: &AgentSession) -> AgentSessionResult<()> {
         self.ensure_dir()?;
         let path = self.path_for(&session.id)?;
         let json = serde_json::to_string_pretty(session)?;
@@ -185,7 +185,7 @@ impl ChatSessionStore for FileChatSessionStore {
         Ok(())
     }
 
-    fn load(&self, id: &str) -> ChatSessionResult<ChatSession> {
+    fn load(&self, id: &str) -> AgentSessionResult<AgentSession> {
         let path = self.path_for(id)?;
         if !path.exists() {
             return Err(AppError::NotFound(format!("session '{id}' not found")));
@@ -193,7 +193,7 @@ impl ChatSessionStore for FileChatSessionStore {
         self.load_from_path(&path)
     }
 
-    fn delete(&self, id: &str) -> ChatSessionResult<bool> {
+    fn delete(&self, id: &str) -> AgentSessionResult<bool> {
         let path = self.path_for(id)?;
         if path.exists() {
             fs::remove_file(path)?;
@@ -203,7 +203,7 @@ impl ChatSessionStore for FileChatSessionStore {
         }
     }
 
-    fn list(&self, filter: SessionFilter) -> ChatSessionResult<Vec<SessionInfo>> {
+    fn list(&self, filter: SessionFilter) -> AgentSessionResult<Vec<SessionInfo>> {
         if !self.dir.exists() {
             return Ok(Vec::new());
         }
@@ -238,7 +238,7 @@ impl ChatSessionStore for FileChatSessionStore {
         Ok(sessions)
     }
 
-    fn load_last(&self) -> ChatSessionResult<Option<ChatSession>> {
+    fn load_last(&self) -> AgentSessionResult<Option<AgentSession>> {
         let infos = self.list(SessionFilter::All)?;
         if let Some(info) = infos.first() {
             return Ok(Some(self.load(&info.id)?));
@@ -246,7 +246,7 @@ impl ChatSessionStore for FileChatSessionStore {
         Ok(None)
     }
 
-    fn find_by_prefix(&self, prefix: &str) -> ChatSessionResult<Option<String>> {
+    fn find_by_prefix(&self, prefix: &str) -> AgentSessionResult<Option<String>> {
         let infos = self.list(SessionFilter::All)?;
         for info in infos {
             if info.id.starts_with(prefix) {
@@ -260,19 +260,20 @@ impl ChatSessionStore for FileChatSessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat_sessions::MessageSource;
+    use crate::agent_sessions::MessageSource;
     use tempfile::tempdir;
 
     #[test]
     fn roundtrip_save_load() {
         let temp = tempdir().unwrap();
-        let store = FileChatSessionStore::new(temp.path().to_path_buf());
+        let store = FileAgentSessionStore::new(temp.path().to_path_buf());
 
         let workspace_dir = temp.path().join("workspace");
         std::fs::create_dir_all(&workspace_dir).unwrap();
 
         let mut session =
-            ChatSession::new_with_workspace(workspace_dir, Some("test-model".to_string())).unwrap();
+            AgentSession::new_with_workspace(workspace_dir, Some("test-model".to_string()))
+                .unwrap();
         session.add_user_message("hello", MessageSource::Text);
         store.save(&session).unwrap();
 
@@ -285,11 +286,11 @@ mod tests {
     #[test]
     fn list_and_find_by_prefix() {
         let temp = tempdir().unwrap();
-        let store = FileChatSessionStore::new(temp.path().to_path_buf());
+        let store = FileAgentSessionStore::new(temp.path().to_path_buf());
 
         let workspace_dir = temp.path().join("workspace2");
         std::fs::create_dir_all(&workspace_dir).unwrap();
-        let session = ChatSession::new_with_workspace(workspace_dir, None).unwrap();
+        let session = AgentSession::new_with_workspace(workspace_dir, None).unwrap();
         store.save(&session).unwrap();
 
         let infos = store.list(SessionFilter::All).unwrap();

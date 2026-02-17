@@ -1,6 +1,6 @@
-//! Chat session model + persistence.
+//! Agent session model + persistence.
 //!
-//! This module provides a **single** shared chat-session representation used by
+//! This module provides a **single** shared agent-session representation used by
 //! both the CLI and GUI layers.
 
 mod legacy_gui_migration;
