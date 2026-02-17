@@ -163,7 +163,7 @@ pub fn run() -> Result<()> {
 
     println!();
     println!("{}", "Get started:".bold());
-    println!("  {} - Interactive chat", "gestura chat".cyan());
+    println!("  {} - Interactive agent", "gestura agent".cyan());
     println!("  {} - Voice input", "gestura listen".cyan());
     println!(
         "  {} - Single prompt",

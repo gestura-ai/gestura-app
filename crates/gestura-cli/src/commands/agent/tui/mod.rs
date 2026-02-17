@@ -1,4 +1,4 @@
-//! Modern TUI for the chat command
+//! Modern TUI for the agent command
 //!
 //! This module provides a sophisticated terminal user interface with:
 //! - Fixed window layout (header, content, input, status)
@@ -51,12 +51,12 @@ use crossterm::{
 };
 use gestura_core::{
     AgentPipeline, AgentRequest, AppConfig, AppConfigSecurityExt, CancellationToken, RequestSource,
-    SpeechProcessorCoreExt, StreamChunk, chat_sessions::MessageSource, get_speech_processor,
+    SpeechProcessorCoreExt, StreamChunk, agent_sessions::MessageSource, get_speech_processor,
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 
-use super::{ChatOptions, Result};
+use super::{AgentOptions, Result};
 
 /// Resolve the session-scoped LLM override for the current TUI session.
 ///
@@ -64,7 +64,7 @@ use super::{ChatOptions, Result};
 /// from the TUI app state.
 fn resolve_session_llm_override(
     app: &TuiApp,
-) -> Option<gestura_core::chat_sessions::SessionLlmConfig> {
+) -> Option<gestura_core::agent_sessions::SessionLlmConfig> {
     gestura_core::llm_overrides::resolve_session_llm_override(&app.session)
 }
 
@@ -143,7 +143,7 @@ fn open_model_picker(app: &mut TuiApp, rt: &tokio::runtime::Runtime) {
 
         if models.is_empty() {
             // Fallback: always show at least the provider default model by using core overrides.
-            let provider_only = gestura_core::chat_sessions::SessionLlmConfig {
+            let provider_only = gestura_core::agent_sessions::SessionLlmConfig {
                 provider: Some(provider.to_string()),
                 model: None,
             };
@@ -211,18 +211,18 @@ fn apply_model_selection(app: &mut TuiApp, spec: &str, rt: &tokio::runtime::Runt
         let p = p.trim().to_string();
         let m = m.trim();
         if m.is_empty() {
-            gestura_core::chat_sessions::SessionLlmConfig {
+            gestura_core::agent_sessions::SessionLlmConfig {
                 provider: Some(p),
                 model: None,
             }
         } else {
-            gestura_core::chat_sessions::SessionLlmConfig {
+            gestura_core::agent_sessions::SessionLlmConfig {
                 provider: Some(p),
                 model: Some(m.to_string()),
             }
         }
     } else if gestura_core::llm_overrides::is_known_llm_provider(spec) {
-        gestura_core::chat_sessions::SessionLlmConfig {
+        gestura_core::agent_sessions::SessionLlmConfig {
             provider: Some(spec.to_ascii_lowercase()),
             model: None,
         }
@@ -241,7 +241,7 @@ fn apply_model_selection(app: &mut TuiApp, spec: &str, rt: &tokio::runtime::Runt
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| app.config.llm.primary.clone());
 
-        gestura_core::chat_sessions::SessionLlmConfig {
+        gestura_core::agent_sessions::SessionLlmConfig {
             provider: Some(inferred.unwrap_or(current_provider)),
             model: Some(spec.to_string()),
         }
@@ -285,7 +285,7 @@ fn apply_model_selection(app: &mut TuiApp, spec: &str, rt: &tokio::runtime::Runt
         return Ok(());
     }
 
-    app.session.state.llm_config = Some(gestura_core::chat_sessions::SessionLlmConfig {
+    app.session.state.llm_config = Some(gestura_core::agent_sessions::SessionLlmConfig {
         provider: Some(effective.provider.clone()),
         model: Some(effective.model.clone()),
     });
@@ -414,8 +414,8 @@ fn format_token_usage_line(
     )
 }
 
-/// Run the TUI chat interface
-pub fn run_tui(opts: ChatOptions<'_>) -> Result<()> {
+/// Run the TUI agent interface
+pub fn run_tui(opts: AgentOptions<'_>) -> Result<()> {
     // Load or create session
     let mut session = if opts.resume {
         if let Some(id) = opts.session {
@@ -847,7 +847,7 @@ fn run_main_loop(
                             app.set_error(&error_msg);
                             push_activity_error(app, format!("❌ {}", error_msg));
 
-                            // Push critical error as visible message in chat
+                            // Push critical error as visible message in agent
                             // (connection failures, API quota exceeded, etc.)
                             app.push_error_message(format!("⚠️ {}", error_msg));
 
@@ -1378,7 +1378,7 @@ fn start_resume_streaming(
         }
     };
 
-    // Show resume indicator in chat
+    // Show resume indicator in agent
     app.add_message("system", "⏵ Resuming paused session…");
     app.is_loading = true;
     app.loading_tick = 0;
@@ -2007,7 +2007,7 @@ fn handle_command(
         "/settings" => {
             app.active_tab = 3; // Switch to settings tab
             app.mode = TuiMode::Settings;
-            app.set_status("Settings: ↑/↓ to navigate, Enter to edit, Esc to return to chat");
+            app.set_status("Settings: ↑/↓ to navigate, Enter to edit, Esc to return to agent");
         }
         "/capabilities" => {
             app.capabilities_text = gestura_core::tools::render_capabilities(&app.config);
@@ -2546,7 +2546,7 @@ fn handle_workflow_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
             load_workflows(app);
             app.active_tab = 1; // Switch to workflows tab
             app.mode = TuiMode::Workflows;
-            app.set_status("Workflows: ↑/↓ to navigate, Enter to run, Esc to return to chat");
+            app.set_status("Workflows: ↑/↓ to navigate, Enter to run, Esc to return to agent");
         }
         Some("run") => {
             if let Some(name) = args.get(1) {
@@ -2554,7 +2554,7 @@ fn handle_workflow_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
                 match manager.load_workflow(name) {
                     Ok(workflow) => {
                         app.set_status(format!("Running workflow: {}", workflow.name));
-                        app.active_tab = 0; // Switch to chat
+                        app.active_tab = 0; // Switch to agent
 
                         // Inject workflow content as user input
                         // User can review and press Enter to send
@@ -2744,7 +2744,7 @@ fn truncate_output_tui(output: &str, max_len: usize) -> String {
 /// - `/rewind` or `/rewind list` - List session checkpoints
 /// - `/rewind <id>` - Restore session to checkpoint with that id prefix
 fn handle_rewind_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
-    use gestura_core::chat_sessions::FileChatSessionStore;
+    use gestura_core::agent_sessions::FileAgentSessionStore;
     use gestura_core::checkpoints::{
         CheckpointManager, CheckpointRetentionPolicy, FileCheckpointStore,
     };
@@ -2804,7 +2804,7 @@ fn handle_rewind_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
                 }
                 1 => {
                     let cp_id = found[0].id;
-                    let session_store = FileChatSessionStore::default();
+                    let session_store = FileAgentSessionStore::default();
                     let task_manager = TaskManager::new(
                         dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
                     );
@@ -3706,7 +3706,7 @@ fn handle_privacy_command(
                 "Gestura respects user privacy and GDPR compliance:".to_string(),
                 String::new(),
                 "• Voice recordings: Temporary only, deleted after transcription".to_string(),
-                "• Chat sessions: Stored locally in workspace".to_string(),
+                "• Agent sessions: Stored locally in workspace".to_string(),
                 "• API keys: Stored in local config file only".to_string(),
                 "• Memory bank: Stored locally in .gestura/memory/".to_string(),
                 "• No data is sent to third parties except configured LLM providers".to_string(),

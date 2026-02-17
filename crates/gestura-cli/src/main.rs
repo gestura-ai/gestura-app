@@ -39,8 +39,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Interactive AI chat session
-    Chat {
+    /// Interactive AI agent session
+    Agent {
         /// Model to use (e.g., gpt-4o, claude-3-5-sonnet)
         #[arg(short, long)]
         model: Option<String>,
@@ -77,7 +77,7 @@ enum Commands {
                 "sandbox_permissions"
             ]
         )]
-        permission_level: Option<ChatPermissionLevelArg>,
+        permission_level: Option<AgentPermissionLevelArg>,
 
         /// Convenience alias for `--permission-level full`.
         #[arg(long, conflicts_with_all = ["permission_level", "restricted_permissions", "sandbox_permissions"]) ]
@@ -166,7 +166,8 @@ enum Commands {
     },
 
     /// Agent interaction
-    Agent {
+    #[command(name = "agent-info")]
+    AgentInfo {
         #[command(subcommand)]
         action: AgentAction,
     },
@@ -202,18 +203,18 @@ enum Commands {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum ChatPermissionLevelArg {
+enum AgentPermissionLevelArg {
     Sandbox,
     Restricted,
     Full,
 }
 
-impl ChatPermissionLevelArg {
-    fn to_session(self) -> gestura_core::chat_sessions::SessionPermissionLevel {
+impl AgentPermissionLevelArg {
+    fn to_session(self) -> gestura_core::agent_sessions::SessionPermissionLevel {
         match self {
-            Self::Sandbox => gestura_core::chat_sessions::SessionPermissionLevel::Sandbox,
-            Self::Restricted => gestura_core::chat_sessions::SessionPermissionLevel::Restricted,
-            Self::Full => gestura_core::chat_sessions::SessionPermissionLevel::Full,
+            Self::Sandbox => gestura_core::agent_sessions::SessionPermissionLevel::Sandbox,
+            Self::Restricted => gestura_core::agent_sessions::SessionPermissionLevel::Restricted,
+            Self::Full => gestura_core::agent_sessions::SessionPermissionLevel::Full,
         }
     }
 }
@@ -604,12 +605,12 @@ enum FileToolAction {
         #[arg(short, long)]
         depth: Option<usize>,
     },
-    /// Add files to chat context
+    /// Add files to agent context
     Add {
         /// Files to add
         paths: Vec<std::path::PathBuf>,
     },
-    /// Remove files from chat context
+    /// Remove files from agent context
     Drop {
         /// Files to remove
         paths: Vec<std::path::PathBuf>,
@@ -876,12 +877,12 @@ fn main() {
     }
 
     // The TUI uses an alternate screen; any writes to stdout/stderr from tracing can corrupt the
-    // layout. When running `chat` in TUI mode, we default tracing output to a sink.
-    let is_tui_chat = matches!(&cli.command, Some(Commands::Chat { basic, .. }) if !*basic);
+    // layout. When running `agent` in TUI mode, we default tracing output to a sink.
+    let is_tui_agent = matches!(&cli.command, Some(Commands::Agent { basic, .. }) if !*basic);
 
     // Initialize logging
     if cli.verbose {
-        if is_tui_chat {
+        if is_tui_agent {
             tracing_subscriber::fmt()
                 .with_max_level(tracing::Level::DEBUG)
                 .with_writer(std::io::sink)
@@ -892,7 +893,7 @@ fn main() {
                 .init();
         }
     } else if !cli.quiet {
-        if is_tui_chat {
+        if is_tui_agent {
             tracing_subscriber::fmt()
                 .with_max_level(tracing::Level::INFO)
                 .with_target(false)
@@ -908,7 +909,7 @@ fn main() {
 
     // Handle commands
     let result = match &cli.command {
-        Some(Commands::Chat {
+        Some(Commands::Agent {
             model,
             resume,
             session,
@@ -919,7 +920,7 @@ fn main() {
             full_permissions,
             restricted_permissions,
             sandbox_permissions,
-        }) => commands::chat::run(commands::chat::ChatOptions {
+        }) => commands::agent::run(commands::agent::AgentOptions {
             model: model.as_deref(),
             resume: *resume,
             session: session.as_deref(),
@@ -928,11 +929,11 @@ fn main() {
             system: system.as_deref(),
             permission_level_override: permission_level.map(|p| p.to_session()).or(
                 if *full_permissions {
-                    Some(gestura_core::chat_sessions::SessionPermissionLevel::Full)
+                    Some(gestura_core::agent_sessions::SessionPermissionLevel::Full)
                 } else if *restricted_permissions {
-                    Some(gestura_core::chat_sessions::SessionPermissionLevel::Restricted)
+                    Some(gestura_core::agent_sessions::SessionPermissionLevel::Restricted)
                 } else if *sandbox_permissions {
-                    Some(gestura_core::chat_sessions::SessionPermissionLevel::Sandbox)
+                    Some(gestura_core::agent_sessions::SessionPermissionLevel::Sandbox)
                 } else {
                     None
                 },
@@ -966,24 +967,24 @@ fn main() {
             commands::context::run(ctx_action)
         }
         Some(Commands::Session { action }) => commands::session::run(action),
-        Some(Commands::Agent { action }) => {
+        Some(Commands::AgentInfo { action }) => {
             let subcommand = match action {
-                AgentAction::Status => commands::agent::AgentSubcommand::Status,
-                AgentAction::Send { message } => commands::agent::AgentSubcommand::Send {
+                AgentAction::Status => commands::agent_info::AgentSubcommand::Status,
+                AgentAction::Send { message } => commands::agent_info::AgentSubcommand::Send {
                     message: message.clone(),
                 },
-                AgentAction::List => commands::agent::AgentSubcommand::List,
-                AgentAction::Enable { agent } => commands::agent::AgentSubcommand::Enable {
+                AgentAction::List => commands::agent_info::AgentSubcommand::List,
+                AgentAction::Enable { agent } => commands::agent_info::AgentSubcommand::Enable {
                     agent: agent.clone(),
                 },
-                AgentAction::Disable { agent } => commands::agent::AgentSubcommand::Disable {
+                AgentAction::Disable { agent } => commands::agent_info::AgentSubcommand::Disable {
                     agent: agent.clone(),
                 },
-                AgentAction::Config { agent } => commands::agent::AgentSubcommand::Config {
+                AgentAction::Config { agent } => commands::agent_info::AgentSubcommand::Config {
                     agent: agent.clone(),
                 },
             };
-            commands::agent::run(subcommand)
+            commands::agent_info::run(subcommand)
         }
         Some(Commands::Tools { action }) => {
             use commands::tools::*;
@@ -1260,8 +1261,8 @@ fn main() {
                 }
             }
 
-            // Default to interactive TUI chat if no command specified
-            commands::chat::run(commands::chat::ChatOptions {
+            // Default to interactive TUI agent if no command specified
+            commands::agent::run(commands::agent::AgentOptions {
                 tui: true,
                 ..Default::default()
             })

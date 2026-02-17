@@ -285,7 +285,7 @@ fn handle_normal_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         //
         // This corresponds to the transcript's per-message "copy" overlay control.
         KeyCode::Char('c') => {
-            // Only meaningful in the Chat transcript tab.
+            // Only meaningful in the Agent transcript tab.
             if app.active_tab != 0 {
                 return Action::Continue;
             }
@@ -761,7 +761,7 @@ fn handle_mouse_event(app: &mut TuiApp, mouse: MouseEvent) -> Action {
 
     match mouse.kind {
         MouseEventKind::Moved => {
-            // Hover styling is only relevant for Chat-tab copy controls.
+            // Hover styling is only relevant for Agent-tab copy controls.
             if app.active_tab != 0 {
                 app.hovered_copy_button = None;
                 return Action::Continue;
@@ -836,7 +836,7 @@ fn handle_mouse_event(app: &mut TuiApp, mouse: MouseEvent) -> Action {
                 && y >= msg_area.y
                 && y < msg_area.y + msg_area.height
             {
-                // First: if the user clicked a per-message "copy" overlay control (Chat tab
+                // First: if the user clicked a per-message "copy" overlay control (Agent tab
                 // only), trigger the raw-copy action instead of starting a drag selection.
                 if app.active_tab == 0
                     && let Some(message_index) = hit_copy_button(x, y)
@@ -985,11 +985,11 @@ fn handle_search_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
 fn handle_settings_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
     use super::app::SettingsField;
 
-    // Escape returns to chat
+    // Escape returns to agent
     if key.code == KeyCode::Esc && !app.settings_state.is_editing {
-        app.active_tab = 0; // Return to chat tab
+        app.active_tab = 0; // Return to agent tab
         app.mode = TuiMode::Insert;
-        app.set_status("Returned to chat");
+        app.set_status("Returned to agent");
         return Action::Continue;
     }
 
@@ -1076,9 +1076,9 @@ fn handle_settings_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
 fn handle_workflows_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Esc => {
-            app.active_tab = 0; // Return to chat tab
+            app.active_tab = 0; // Return to agent tab
             app.mode = TuiMode::Insert;
-            app.set_status("Returned to chat");
+            app.set_status("Returned to agent");
             Action::Continue
         }
         KeyCode::Down | KeyCode::Char('j') => Action::ScrollDown,
@@ -1096,7 +1096,7 @@ fn handle_workflows_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
 /// Handle keys when in Tools mode.
 ///
 /// The tools view has two sub-modes:
-/// - **List mode** (default): ↑/↓ to navigate, Enter to open detail, Space to toggle enable/disable, Esc to return to chat.
+/// - **List mode** (default): ↑/↓ to navigate, Enter to open detail, Space to toggle enable/disable, Esc to return to agent.
 /// - **Detail mode**: shows a detail pane for the selected tool. Esc returns to the list.
 fn handle_tools_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
     let tool_count = gestura_core::tools::all_tools().len();
@@ -1119,9 +1119,9 @@ fn handle_tools_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         // List sub-mode.
         match key.code {
             KeyCode::Esc => {
-                app.active_tab = 0; // Return to chat tab
+                app.active_tab = 0; // Return to agent tab
                 app.mode = TuiMode::Insert;
-                app.set_status("Returned to chat");
+                app.set_status("Returned to agent");
                 Action::Continue
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -1186,7 +1186,7 @@ fn handle_mcp_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
                 app.mode = TuiMode::Insert;
-                app.set_status("Returned to chat");
+                app.set_status("Returned to agent");
                 Action::Continue
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -1295,7 +1295,7 @@ fn handle_knowledge_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
                 app.mode = TuiMode::Insert;
-                app.set_status("Returned to chat");
+                app.set_status("Returned to agent");
                 Action::Continue
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -1527,7 +1527,7 @@ fn handle_hooks_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
                 app.mode = TuiMode::Insert;
-                app.set_status("Returned to chat");
+                app.set_status("Returned to agent");
                 Action::Continue
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -1687,7 +1687,7 @@ fn handle_agent_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
                 app.mode = TuiMode::Insert;
-                app.set_status("Returned to chat");
+                app.set_status("Returned to agent");
                 Action::Continue
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -1753,7 +1753,7 @@ fn handle_memory_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
                 app.mode = TuiMode::Insert;
-                app.set_status("Returned to chat");
+                app.set_status("Returned to agent");
                 Action::Continue
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -1841,7 +1841,7 @@ fn handle_devices_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
                 app.mode = TuiMode::Insert;
-                app.set_status("Returned to chat");
+                app.set_status("Returned to agent");
                 Action::Continue
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -1922,7 +1922,7 @@ fn handle_permissions_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
                 app.mode = TuiMode::Insert;
-                app.set_status("Returned to chat");
+                app.set_status("Returned to agent");
                 Action::Continue
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -2021,7 +2021,7 @@ fn handle_sessions_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
                 app.mode = TuiMode::Insert;
-                app.set_status("Returned to chat");
+                app.set_status("Returned to agent");
                 Action::Continue
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -2204,7 +2204,7 @@ fn handle_tasks_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
                 app.mode = TuiMode::Insert;
-                app.set_status("Returned to chat");
+                app.set_status("Returned to agent");
                 Action::Continue
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -2328,7 +2328,7 @@ fn handle_themes_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Esc => {
             app.mode = TuiMode::Insert;
-            app.set_status("Returned to chat");
+            app.set_status("Returned to agent");
             Action::Continue
         }
         KeyCode::Down | KeyCode::Char('j') => {
@@ -2355,7 +2355,7 @@ fn handle_themes_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::chat::new_cli_session;
+    use crate::commands::agent::new_cli_session;
     use ratatui::layout::Rect;
 
     use super::super::app::CopyButtonHit;

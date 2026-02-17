@@ -4,7 +4,7 @@
 
 pub mod a2a;
 pub mod agent;
-pub mod chat;
+pub mod agent_info;
 pub mod completion;
 pub mod config;
 pub mod context;

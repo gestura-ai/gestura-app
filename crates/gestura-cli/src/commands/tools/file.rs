@@ -275,7 +275,7 @@ fn run_add(paths: &[PathBuf]) -> Result<()> {
     println!();
     println!(
         "{}",
-        "Files added to chat context. Use /context in chat to view.".dimmed()
+        "Files added to agent context. Use /context in agent to view.".dimmed()
     );
     Ok(())
 }

@@ -7,12 +7,12 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use gestura_core::AppConfig;
-use gestura_core::chat_sessions::MessageSource;
+use gestura_core::agent_sessions::MessageSource;
 use gestura_core::platform::detect_system_dark_mode;
 use ratatui::style::Color;
 use ratatui::widgets::ListState;
 
-use super::super::{ChatMessage, ChatSession};
+use super::super::{AgentMessage, AgentSession};
 
 /// Theme configuration for the TUI
 #[derive(Debug, Clone)]
@@ -725,8 +725,8 @@ pub struct TuiMessage {
     pub is_error: bool,
 }
 
-impl From<&ChatMessage> for TuiMessage {
-    fn from(msg: &ChatMessage) -> Self {
+impl From<&AgentMessage> for TuiMessage {
+    fn from(msg: &AgentMessage) -> Self {
         Self {
             role: msg.role.clone(),
             content: msg.content.clone(),
@@ -840,14 +840,14 @@ pub struct TuiApp {
     pub input: String,
     /// Cursor position within input
     pub cursor_pos: usize,
-    /// Chat messages
+    /// Agent messages
     pub messages: Vec<TuiMessage>,
     /// Message list state for scrolling
     pub message_list_state: ListState,
     /// Whether user has manually scrolled (disables auto-scroll)
     pub user_scrolled: bool,
-    /// Chat session for persistence
-    pub session: ChatSession,
+    /// Agent session for persistence
+    pub session: AgentSession,
     /// Application configuration
     pub config: AppConfig,
     /// Optional system prompt
@@ -870,7 +870,7 @@ pub struct TuiApp {
     pub error: Option<String>,
     /// Timestamp when the error was set (for auto-dismiss)
     pub error_timestamp: Option<std::time::Instant>,
-    /// Count of visible error messages in chat (limit 2)
+    /// Count of visible error messages in session (limit 2)
     pub error_message_count: usize,
     /// If true, skip saving the session when the TUI exits.
     ///
@@ -942,7 +942,7 @@ pub struct TuiApp {
     /// Scroll offset for the capabilities overlay.
     pub capabilities_scroll: usize,
 
-    /// Agent activity state (tool-call transcript, separate from chat transcript).
+    /// Agent activity state (tool-call transcript, separate from agent transcript).
     pub activity_state: ActivityState,
     /// Interactive tools list state (Tools tab).
     pub tools_state: ToolsState,
@@ -1501,7 +1501,7 @@ pub struct LayoutAreas {
 
 impl TuiApp {
     /// Create a new TUI application
-    pub fn new(session: ChatSession, config: AppConfig, system_prompt: Option<String>) -> Self {
+    pub fn new(session: AgentSession, config: AppConfig, system_prompt: Option<String>) -> Self {
         let messages: Vec<TuiMessage> = session
             .state
             .messages
@@ -1540,7 +1540,7 @@ impl TuiApp {
             error_message_count: 0,
             skip_save_on_exit: false,
             active_tab: 0,
-            tabs: vec!["Chat", "Workflows", "Tools", "Settings", "Help"],
+            tabs: vec!["Agent", "Workflows", "Tools", "Settings", "Help"],
             workflows: Vec::new(),
             settings_state: SettingsState::default(),
             command_suggestions: Vec::new(),
@@ -1915,7 +1915,7 @@ impl TuiApp {
         provider
     }
 
-    /// Add a message to the chat
+    /// Add a message to the agent transcript
     pub fn add_message(&mut self, role: &str, content: &str) {
         self.messages.push(TuiMessage {
             role: role.to_string(),
@@ -1930,7 +1930,7 @@ impl TuiApp {
             "assistant" => self.session.add_assistant_message(content, None),
             other => {
                 // Best-effort persistence for uncommon roles.
-                self.session.state.messages.push(ChatMessage {
+                self.session.state.messages.push(AgentMessage {
                     role: other.to_string(),
                     content: content.to_string(),
                     tool_call_id: None,
@@ -1952,11 +1952,11 @@ impl TuiApp {
 
     /// Add a user message with an explicit source (text vs voice).
     ///
-    /// This keeps the UI transcript and persisted `ChatSession` in sync.
+    /// This keeps the UI transcript and persisted `AgentSession` in sync.
     pub fn add_user_message_with_source(
         &mut self,
         content: &str,
-        source: gestura_core::chat_sessions::MessageSource,
+        source: gestura_core::agent_sessions::MessageSource,
     ) {
         self.messages.push(TuiMessage {
             role: "user".to_string(),
@@ -2010,9 +2010,9 @@ impl TuiApp {
 
     /// Push a non-persisted system error message into the UI.
     ///
-    /// This does not write into the persisted `ChatSession` history.
+    /// This does not write into the persisted `AgentSession` history.
     /// Limited to 2 visible error messages in the session to avoid clutter.
-    /// Critical errors (connection failures, API quota exceeded) are shown as chat messages.
+    /// Critical errors (connection failures, API quota exceeded) are shown as agent messages.
     pub fn push_error_message(&mut self, content: impl Into<String>) {
         const MAX_ERROR_MESSAGES: usize = 2;
 
@@ -2063,7 +2063,7 @@ impl TuiApp {
                     .session
                     .add_user_message(&last.content, MessageSource::Text),
                 other => {
-                    self.session.state.messages.push(ChatMessage {
+                    self.session.state.messages.push(AgentMessage {
                         role: other.to_string(),
                         content: last.content.clone(),
                         tool_call_id: None,
@@ -2607,7 +2607,7 @@ impl TuiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::chat::new_cli_session;
+    use crate::commands::agent::new_cli_session;
 
     /// Helper to create a test app with a mock session.
     ///
@@ -3113,7 +3113,7 @@ mod tests {
     fn test_tab_navigation() {
         let mut app = create_test_app();
 
-        // 5 tabs: Chat, Workflows, Tools, Settings, Help (indices 0-4)
+        // 5 tabs: Agent, Workflows, Tools, Settings, Help (indices 0-4)
         assert_eq!(app.tabs.len(), 5);
         assert_eq!(app.active_tab, 0);
 

@@ -1,6 +1,6 @@
 //! Session management command
 //!
-//! Manages chat sessions (conversation history) stored locally.
+//! Manages agent sessions (conversation history) stored locally.
 
 use super::Result;
 use crate::SessionAction;
@@ -45,7 +45,7 @@ fn list_session_files() -> Vec<(String, std::time::SystemTime)> {
 pub fn run(action: &SessionAction) -> Result<()> {
     match action {
         SessionAction::List { limit } => {
-            println!("{}", "Chat Sessions".bold());
+            println!("{}", "Agent Sessions".bold());
             println!();
 
             let sessions = list_session_files();
@@ -53,7 +53,7 @@ pub fn run(action: &SessionAction) -> Result<()> {
             if sessions.is_empty() {
                 println!("  {}", "(no sessions found)".dimmed());
                 println!();
-                println!("Start a new session with: {}", "gestura chat".cyan());
+                println!("Start a new session with: {}", "gestura agent".cyan());
             } else {
                 let display_count = (*limit).min(sessions.len());
                 println!(
@@ -111,10 +111,10 @@ pub fn run(action: &SessionAction) -> Result<()> {
 
             println!("Resuming session: {}", session_id.cyan());
             println!();
-            println!("{}", "To resume in chat mode, run:".dimmed());
+            println!("{}", "To resume in agent mode, run:".dimmed());
             println!(
                 "  {}",
-                format!("gestura chat --resume --session {}", session_id).cyan()
+                format!("gestura agent --resume --session {}", session_id).cyan()
             );
         }
         SessionAction::Fork { session } => {

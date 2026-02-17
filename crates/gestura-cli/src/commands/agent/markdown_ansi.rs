@@ -1,6 +1,6 @@
 //! Render a small Markdown subset to ANSI-styled terminal text.
 //!
-//! This is used for non-TUI output (e.g. `gestura chat --basic`) so tool/capability
+//! This is used for non-TUI output (e.g. `gestura agent --basic`) so tool/capability
 //! summaries emitted by `gestura-core` don't show raw Markdown markers.
 
 use console::style;

@@ -865,7 +865,7 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     app.assistant_copy_buttons.clear();
 
     if app.messages.is_empty() {
-        render_empty_chat_view(app, frame, area);
+        render_empty_agent_view(app, frame, area);
         return;
     }
 
@@ -1215,7 +1215,7 @@ fn render_messages(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
 ///
 /// This keeps the main transcript window visually "empty" (no heavy chrome)
 /// while still guiding first-time users toward the key commands.
-fn render_empty_chat_view(app: &TuiApp, frame: &mut Frame, area: Rect) {
+fn render_empty_agent_view(app: &TuiApp, frame: &mut Frame, area: Rect) {
     let model_label = effective_model_label(app);
 
     let title_line = if app.theme.name == "Gestura" {
@@ -1266,7 +1266,7 @@ fn render_empty_chat_view(app: &TuiApp, frame: &mut Frame, area: Rect) {
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "type to chat (insert mode) • press / to run a command",
+            "type a message (insert mode) • press / to run a command",
             Style::default()
                 .fg(app.theme.status_fg)
                 .add_modifier(Modifier::DIM),
@@ -2438,7 +2438,7 @@ fn render_memory_browser_overlay(app: &mut TuiApp, frame: &mut Frame, area: Rect
 fn render_memory_list(app: &mut TuiApp, frame: &mut Frame, area: Rect) {
     if app.memory_browser_entries.is_empty() {
         let msg = Paragraph::new(
-			"\n  Memory bank is empty.\n\n  Press 's' or Enter to save memory from this chat.\n  Or type: /memory save",
+			"\n  Memory bank is empty.\n\n  Press 's' or Enter to save memory from this session.\n  Or type: /memory save",
         )
         .style(Style::default().fg(app.theme.status_fg))
         .block(

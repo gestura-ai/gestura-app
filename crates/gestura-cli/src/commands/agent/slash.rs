@@ -1,4 +1,4 @@
-//! Shared slash-command helpers for chat (basic + TUI).
+//! Shared slash-command helpers for agent (basic + TUI).
 //!
 //! This module intentionally stays dependency-free (no shell quoting, etc.).
 
@@ -8,7 +8,7 @@ use crate::commands::tools::permissions::permission_manager;
 
 use gestura_core::{
     AppConfig,
-    chat_sessions::{ChatSession, SessionPermissionLevel},
+    agent_sessions::{AgentSession, SessionPermissionLevel},
     config::{McpScope, McpServerEntry, McpTransportType, infer_transport_from_endpoint},
     context::ContextManager,
     find_tool,
@@ -319,7 +319,7 @@ pub(crate) struct PermissionsOutcome {
 
 pub(crate) fn run_permissions_subcommand(
     args: &[&str],
-    session: &mut ChatSession,
+    session: &mut AgentSession,
 ) -> std::result::Result<PermissionsOutcome, String> {
     let sub = args
         .first()
@@ -1052,7 +1052,7 @@ pub(crate) enum MemoryLiveAction {
 
 pub(crate) fn run_memory_subcommand(
     args: &[&str],
-    session: &ChatSession,
+    session: &AgentSession,
 ) -> std::result::Result<MemoryOutcome, String> {
     let sub = args
         .first()
@@ -1891,16 +1891,16 @@ fn validate_mcp_entry(entry: &McpServerEntry) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gestura_core::chat_sessions::MessageSource;
+    use gestura_core::agent_sessions::MessageSource;
     use uuid::Uuid;
 
-    fn new_test_session() -> ChatSession {
+    fn new_test_session() -> AgentSession {
         let base = std::env::temp_dir()
             .join("gestura-slash-tests")
             .join(Uuid::new_v4().to_string());
         std::fs::create_dir_all(&base).unwrap();
 
-        ChatSession::new_with_workspace(base, None).unwrap()
+        AgentSession::new_with_workspace(base, None).unwrap()
     }
 
     #[test]

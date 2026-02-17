@@ -124,7 +124,7 @@ fn run_status() -> Result<()> {
     println!();
     println!("{}", "Capabilities:".dimmed());
     println!(
-        "  • Text chat: {}",
+        "  • Text agent: {}",
         if provider_configured {
             "✓".green()
         } else {
@@ -181,7 +181,7 @@ fn run_list() -> Result<()> {
 
     // Built-in agents
     println!("{}", "Built-in Agents:".dimmed());
-    println!("  {} - General purpose chat agent", "chat".cyan());
+    println!("  {} - General purpose agent", "agent".cyan());
     println!("  {} - Voice command processing", "voice".cyan());
     println!("  {} - Code assistance and analysis", "code".cyan());
     println!("  {} - System command execution", "exec".cyan());
@@ -219,7 +219,7 @@ fn run_config(agent: &str) -> Result<()> {
     println!();
 
     match agent {
-        "chat" | "voice" | "code" | "exec" => {
+        "agent" | "voice" | "code" | "exec" => {
             println!("  Provider: {}", config.llm.primary.cyan());
             if let Some(ref openai) = config.llm.openai
                 && config.llm.primary == "openai"

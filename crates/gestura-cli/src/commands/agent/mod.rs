@@ -1,4 +1,4 @@
-//! Interactive chat command
+//! Interactive agent command
 
 use super::Result;
 use colored::Colorize;
@@ -6,8 +6,8 @@ use gestura_core::{
     AgentPipeline, AgentRequest, AppConfig, AppConfigSecurityExt, AudioCaptureConfig,
     CancellationToken, PermissionLevel, RequestSource, SessionToolSettings, SpeechProcessorCoreExt,
     StreamChunk,
-    chat_sessions::{
-        ChatSessionStore, FileChatSessionStore, MessageSource, SessionLlmConfig,
+    agent_sessions::{
+        AgentSessionStore, FileAgentSessionStore, MessageSource, SessionLlmConfig,
         SessionPermissionLevel, SessionToolSettingsConfigExt,
     },
     get_speech_processor, llm_overrides,
@@ -25,9 +25,9 @@ mod markdown_ansi;
 mod slash;
 mod tui;
 
-/// Options for the chat command
+/// Options for the agent command
 #[derive(Debug, Default)]
-pub struct ChatOptions<'a> {
+pub struct AgentOptions<'a> {
     pub model: Option<&'a str>,
     pub resume: bool,
     pub session: Option<&'a str>,
@@ -40,27 +40,27 @@ pub struct ChatOptions<'a> {
     pub permission_level_override: Option<SessionPermissionLevel>,
 }
 
-/// Persisted chat message.
+/// Persisted agent message.
 ///
 /// This is a re-export of the canonical message type from `gestura-core`, so the
 /// CLI (including the TUI) does not maintain a divergent persistence model.
-pub use gestura_core::chat_sessions::ConversationMessage as ChatMessage;
+pub use gestura_core::agent_sessions::ConversationMessage as AgentMessage;
 
-/// Persisted chat session.
+/// Persisted agent session.
 ///
 /// The CLI uses the canonical core session type; all persistence is performed
-/// via the core-backed `FileChatSessionStore`.
-pub use gestura_core::chat_sessions::ChatSession;
+/// via the core-backed `FileAgentSessionStore`.
+pub use gestura_core::agent_sessions::AgentSession;
 
 /// Session listing filter options.
-pub use gestura_core::chat_sessions::SessionFilter;
+pub use gestura_core::agent_sessions::SessionFilter;
 
 /// Session metadata returned by `list_sessions*`.
-pub use gestura_core::chat_sessions::SessionInfo;
+pub use gestura_core::agent_sessions::SessionInfo;
 
 /// Return the CLI session store (file-backed, one JSON file per session).
-fn session_store() -> FileChatSessionStore {
-    FileChatSessionStore::new_default()
+fn session_store() -> FileAgentSessionStore {
+    FileAgentSessionStore::new_default()
 }
 
 /// Create a new CLI session.
@@ -68,12 +68,12 @@ fn session_store() -> FileChatSessionStore {
 /// The CLI prefers using the current working directory as the session workspace
 /// (so file/shell tools operate in the user's project), but falls back to a
 /// sandbox workspace if the CWD cannot be determined.
-fn new_cli_session(model: Option<String>) -> Result<ChatSession> {
+fn new_cli_session(model: Option<String>) -> Result<AgentSession> {
     match std::env::current_dir() {
-        Ok(cwd) => ChatSession::new_with_workspace(cwd, model)
+        Ok(cwd) => AgentSession::new_with_workspace(cwd, model)
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>),
         Err(_) => {
-            ChatSession::new_sandbox(model).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+            AgentSession::new_sandbox(model).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
         }
     }
 }
@@ -112,11 +112,11 @@ fn prompt_tool_confirmation_decision() -> ToolConfirmationDecision {
 
 /// Ensure the session has tool settings configured.
 ///
-/// The unified session model stores tool settings inside `ChatSession.state.tool_settings`.
+/// The unified session model stores tool settings inside `AgentSession.state.tool_settings`.
 /// Older sessions (or shells that didn't initialize settings) may have this field missing.
 ///
 /// Returns `true` if the session was updated.
-pub(super) fn ensure_session_tool_settings(session: &mut ChatSession, config: &AppConfig) -> bool {
+pub(super) fn ensure_session_tool_settings(session: &mut AgentSession, config: &AppConfig) -> bool {
     if session.state.tool_settings.is_some() {
         return false;
     }
@@ -126,7 +126,7 @@ pub(super) fn ensure_session_tool_settings(session: &mut ChatSession, config: &A
 }
 
 fn apply_permission_level_override(
-    session: &mut ChatSession,
+    session: &mut AgentSession,
     override_level: Option<SessionPermissionLevel>,
 ) -> bool {
     let Some(level) = override_level else {
@@ -146,7 +146,7 @@ fn apply_permission_level_override(
 ///
 /// - `PermissionLevel` is used for runtime gating (sandbox/restricted/full)
 /// - `allowed_tools` is used for tool visibility to the LLM (empty = all tools)
-pub(super) fn derive_request_policy(session: &ChatSession) -> (PermissionLevel, Vec<String>) {
+pub(super) fn derive_request_policy(session: &AgentSession) -> (PermissionLevel, Vec<String>) {
     let Some(settings) = session.state.tool_settings.as_ref() else {
         // Backstop for legacy sessions: preserve existing CLI behavior.
         return (PermissionLevel::Restricted, Vec::new());
@@ -166,21 +166,21 @@ pub(super) fn derive_request_policy(session: &ChatSession) -> (PermissionLevel, 
 }
 
 /// Persist a session to disk.
-fn save_cli_session(session: &ChatSession) -> Result<()> {
+fn save_cli_session(session: &AgentSession) -> Result<()> {
     session_store()
         .save(session)
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
 }
 
 /// Load a session by ID.
-fn load_cli_session(id: &str) -> Result<ChatSession> {
+fn load_cli_session(id: &str) -> Result<AgentSession> {
     session_store()
         .load(id)
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
 }
 
 /// Load the most recently active session, if any.
-fn load_last_cli_session() -> Result<Option<ChatSession>> {
+fn load_last_cli_session() -> Result<Option<AgentSession>> {
     session_store()
         .load_last()
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
@@ -194,7 +194,7 @@ fn delete_cli_session(id: &str) -> Result<bool> {
 }
 
 /// Export a session to a specific file.
-fn export_cli_session(session: &ChatSession, path: &Path) -> Result<()> {
+fn export_cli_session(session: &AgentSession, path: &Path) -> Result<()> {
     let json = session
         .to_pretty_json()
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
@@ -208,7 +208,7 @@ fn export_cli_session(session: &ChatSession, path: &Path) -> Result<()> {
 /// - `<name>`             → show detail for a specific tool
 /// - `enable <name>`      → enable a tool
 /// - `disable <name>`     → disable a tool
-fn basic_mode_tools_command(args: &[&str], session: &mut ChatSession) {
+fn basic_mode_tools_command(args: &[&str], session: &mut AgentSession) {
     let tools = gestura_core::tools::all_tools();
     let enabled_map = session
         .state
@@ -317,10 +317,10 @@ fn get_history_path() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("gestura")
-        .join("chat_history.txt")
+        .join("agent_history.txt")
 }
 
-pub fn run(opts: ChatOptions<'_>) -> Result<()> {
+pub fn run(opts: AgentOptions<'_>) -> Result<()> {
     // If TUI mode is requested, launch the TUI
     if opts.tui {
         return tui::run_tui(opts);
@@ -333,8 +333,8 @@ pub fn run(opts: ChatOptions<'_>) -> Result<()> {
     run_basic_mode(opts)
 }
 
-fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
-    let ChatOptions {
+fn run_basic_mode(opts: AgentOptions<'_>) -> Result<()> {
+    let AgentOptions {
         model,
         resume,
         session,
@@ -360,7 +360,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
     }
 
     // Load or create session
-    let mut chat_session = if resume {
+    let mut agent_session = if resume {
         if let Some(id) = session {
             match load_cli_session(id) {
                 Ok(s) => {
@@ -381,7 +381,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 None => {
                     println!(
                         "{}",
-                        "No previous session found, starting new chat.".yellow()
+                        "No previous session found, starting new session.".yellow()
                     );
                     new_cli_session(model.map(String::from))?
                 }
@@ -402,9 +402,9 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
     // - `/model` and header display are consistent
     // - pipeline metadata never ends up with an empty model
     // - legacy `session.model` strings are migrated to `provider:model`
-    match llm_overrides::normalize_session_llm_override(&config, &mut chat_session, model) {
+    match llm_overrides::normalize_session_llm_override(&config, &mut agent_session, model) {
         Ok(true) => {
-            save_cli_session(&chat_session)?;
+            save_cli_session(&agent_session)?;
         }
         Ok(false) => {}
         Err(msg) => {
@@ -413,13 +413,13 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
     }
 
     // Ensure persisted sessions have tool settings (migration / defaults).
-    if ensure_session_tool_settings(&mut chat_session, &config) {
-        save_cli_session(&chat_session)?;
+    if ensure_session_tool_settings(&mut agent_session, &config) {
+        save_cli_session(&agent_session)?;
     }
 
     // Apply startup override for session permission level.
-    if apply_permission_level_override(&mut chat_session, permission_level_override) {
-        save_cli_session(&chat_session)?;
+    if apply_permission_level_override(&mut agent_session, permission_level_override) {
+        save_cli_session(&agent_session)?;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -444,10 +444,10 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
 
     // Session info line
     let (_, effective) =
-        llm_overrides::apply_basic_mode_session_llm_overrides(&config, &chat_session);
+        llm_overrides::apply_basic_mode_session_llm_overrides(&config, &agent_session);
     let session_info = format!(
         "session {} · provider {} · model {}",
-        &chat_session.id[..8],
+        &agent_session.id[..8],
         effective.provider,
         effective.model
     );
@@ -461,7 +461,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
     );
 
     // Workspace directory line
-    if let Some(workspace) = chat_session.workspace_dir() {
+    if let Some(workspace) = agent_session.workspace_dir() {
         let workspace_display = workspace.display().to_string();
         let workspace_line = format!("workspace: {}", workspace_display);
         let truncated_line = if workspace_line.chars().count() > inner_width {
@@ -522,8 +522,8 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
     // ─────────────────────────────────────────────────────────────────────────
     // HISTORY: Show previous messages if resuming session
     // ─────────────────────────────────────────────────────────────────────────
-    if chat_session.message_count() != 0 {
-        let history_header = format!("┌─ History ({} messages) ", chat_session.message_count());
+    if agent_session.message_count() != 0 {
+        let history_header = format!("┌─ History ({} messages) ", agent_session.message_count());
         let history_padding = inner_width.saturating_sub(history_header.len()) + 3;
         println!(
             "{}{}",
@@ -531,7 +531,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
             "─".repeat(history_padding).dimmed()
         );
 
-        for msg in &chat_session.state.messages {
+        for msg in &agent_session.state.messages {
             let prefix = if msg.role == "user" {
                 "│ >"
             } else {
@@ -588,7 +588,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
     // Create tokio runtime for async LLM calls
     let rt = tokio::runtime::Runtime::new()?;
 
-    // Main chat loop
+    // Main agent loop
     loop {
         // Minimal prompt (claude-code style: just ">")
         let prompt = if voice {
@@ -631,7 +631,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                     let args: Vec<&str> = parts.collect();
                     match cmd.to_ascii_lowercase().as_str() {
                         "/exit" | "/quit" | "/q" => {
-                            save_cli_session(&chat_session)?;
+                            save_cli_session(&agent_session)?;
                             println!();
                             println!(
                                 "{} {} {}",
@@ -722,7 +722,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 "{}  {}               {}",
                                 "│".dimmed(),
                                 "/new".green(),
-                                "Start a fresh chat session".dimmed()
+                                "Start a fresh session".dimmed()
                             );
                             println!(
                                 "{}  {}             {}",
@@ -852,14 +852,14 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                         }
                         "/tools" => {
                             println!();
-                            basic_mode_tools_command(&args, &mut chat_session);
+                            basic_mode_tools_command(&args, &mut agent_session);
                             println!();
                             continue;
                         }
                         "/summarize" => {
                             println!();
                             // Get conversation history
-                            let history: Vec<String> = chat_session
+                            let history: Vec<String> = agent_session
                                 .state
                                 .messages
                                 .iter()
@@ -892,7 +892,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 );
 
                                 // Add summary to session
-                                chat_session.add_assistant_message(
+                                agent_session.add_assistant_message(
                                     &format!(
                                         "## Conversation Summary\n\n{}\n\n---\n\n*Summarized {} messages*",
                                         summary,
@@ -906,7 +906,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                         }
                         "/memory" => {
                             println!();
-                            basic_mode_memory_command(&args, &chat_session);
+                            basic_mode_memory_command(&args, &agent_session);
                             println!();
                             continue;
                         }
@@ -915,18 +915,18 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                             continue;
                         }
                         "/save" => {
-                            save_cli_session(&chat_session)?;
+                            save_cli_session(&agent_session)?;
                             println!("{} Session saved", "✓".green());
                             continue;
                         }
                         "/history" => {
-                            let user_msgs = chat_session
+                            let user_msgs = agent_session
                                 .state
                                 .messages
                                 .iter()
                                 .filter(|m| m.role == "user")
                                 .count();
-                            let asst_msgs = chat_session
+                            let asst_msgs = agent_session
                                 .state
                                 .messages
                                 .iter()
@@ -942,13 +942,13 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 "{}  {} {}",
                                 "│".dimmed(),
                                 "Session ID:".dimmed(),
-                                chat_session.id
+                                agent_session.id
                             );
                             println!(
                                 "{}  {} {}",
                                 "│".dimmed(),
                                 "Total Messages:".dimmed(),
-                                chat_session.message_count()
+                                agent_session.message_count()
                             );
                             println!(
                                 "{}  {} {}",
@@ -962,7 +962,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 "AI Responses:".dimmed(),
                                 asst_msgs
                             );
-                            if let Some(workspace) = chat_session.workspace_dir() {
+                            if let Some(workspace) = agent_session.workspace_dir() {
                                 println!(
                                     "{}  {} {}",
                                     "│".dimmed(),
@@ -979,14 +979,14 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                             continue;
                         }
                         "/new" => {
-                            save_cli_session(&chat_session)?;
-                            chat_session = new_cli_session(model.map(String::from))?;
+                            save_cli_session(&agent_session)?;
+                            agent_session = new_cli_session(model.map(String::from))?;
                             println!();
                             println!(
                                 "{} {} {}",
                                 "✓".green(),
                                 "New session started:".dimmed(),
-                                chat_session.id
+                                agent_session.id
                             );
                             println!();
                             continue;
@@ -1005,13 +1005,13 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                         }
                         "/knowledge" => {
                             println!();
-                            basic_mode_knowledge_command(&args, &chat_session);
+                            basic_mode_knowledge_command(&args, &agent_session);
                             println!();
                             continue;
                         }
                         "/agent" => {
                             println!();
-                            basic_mode_agent_command(&args, &config, &chat_session);
+                            basic_mode_agent_command(&args, &config, &agent_session);
                             println!();
                             continue;
                         }
@@ -1075,7 +1075,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                         }
                         "/session" | "/sessions" => {
                             println!();
-                            basic_mode_session_command(&args, &chat_session);
+                            basic_mode_session_command(&args, &agent_session);
                             println!();
                             continue;
                         }
@@ -1088,15 +1088,15 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                         "/model" => {
                             println!();
                             if let Some(new_llm) =
-                                basic_mode_model_command(&args, &config, &chat_session)
+                                basic_mode_model_command(&args, &config, &agent_session)
                             {
                                 // Persist canonical override + legacy hint.
                                 let provider = new_llm.provider.clone().unwrap_or_default();
                                 let model = new_llm.model.clone().unwrap_or_default();
                                 if !provider.trim().is_empty() && !model.trim().is_empty() {
-                                    chat_session.state.llm_config = Some(new_llm);
-                                    chat_session.model = Some(format!("{}:{}", provider, model));
-                                    save_cli_session(&chat_session)?;
+                                    agent_session.state.llm_config = Some(new_llm);
+                                    agent_session.model = Some(format!("{}:{}", provider, model));
+                                    save_cli_session(&agent_session)?;
                                 }
                             }
                             println!();
@@ -1147,7 +1147,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                             if args.is_empty() {
                                 basic_mode_permissions_command();
                             } else {
-                                match slash::run_permissions_subcommand(&args, &mut chat_session) {
+                                match slash::run_permissions_subcommand(&args, &mut agent_session) {
                                     Ok(outcome) => {
                                         for line in outcome.lines {
                                             println!("{line}");
@@ -1157,7 +1157,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                         }
 
                                         if outcome.session_changed
-                                            && let Err(e) = save_cli_session(&chat_session)
+                                            && let Err(e) = save_cli_session(&agent_session)
                                         {
                                             println!("{} Failed to save session: {}", "✗".red(), e);
                                         }
@@ -1167,7 +1167,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                         println!();
                                         if let Ok(outcome) = slash::run_permissions_subcommand(
                                             &["help"],
-                                            &mut chat_session,
+                                            &mut agent_session,
                                         ) {
                                             for line in outcome.lines {
                                                 println!("{line}");
@@ -1182,7 +1182,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                         "/tasks" => {
                             println!();
                             if args.is_empty() {
-                                basic_mode_tasks_command(&chat_session);
+                                basic_mode_tasks_command(&agent_session);
                             } else {
                                 use gestura_core::tasks::TaskManager;
 
@@ -1192,7 +1192,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 match slash::run_tasks_subcommand(
                                     &args,
                                     &task_manager,
-                                    &chat_session.id,
+                                    &agent_session.id,
                                 ) {
                                     Ok(out) => {
                                         for line in out.lines {
@@ -1214,7 +1214,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                             // when they really want the interactive task browser. Treat `/task`
                             // (no args) as an alias for `/tasks`.
                             if args.is_empty() {
-                                basic_mode_tasks_command(&chat_session);
+                                basic_mode_tasks_command(&agent_session);
                             } else {
                                 use gestura_core::tasks::TaskManager;
 
@@ -1224,7 +1224,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                                 match slash::run_tasks_subcommand(
                                     &args,
                                     &task_manager,
-                                    &chat_session.id,
+                                    &agent_session.id,
                                 ) {
                                     Ok(out) => {
                                         for line in out.lines {
@@ -1260,13 +1260,13 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 }
 
                 // Add user message to session
-                chat_session.add_user_message(&input, input_source);
+                agent_session.add_user_message(&input, input_source);
 
                 // Handle explicit /tools command only (not natural language questions)
                 if input.trim().starts_with("/tools") {
                     let parts: Vec<&str> = input.split_whitespace().collect();
                     println!();
-                    basic_mode_tools_command(&parts[1..], &mut chat_session);
+                    basic_mode_tools_command(&parts[1..], &mut agent_session);
                     println!();
                     continue;
                 }
@@ -1275,7 +1275,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 if input.trim().starts_with("/summarize") {
                     println!();
                     // Get conversation history
-                    let history: Vec<String> = chat_session
+                    let history: Vec<String> = agent_session
                         .state
                         .messages
                         .iter()
@@ -1304,7 +1304,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                         );
 
                         // Add summary to session
-                        chat_session.add_assistant_message(
+                        agent_session.add_assistant_message(
                             &format!(
                                 "## Conversation Summary\n\n{}\n\n---\n\n*Summarized {} messages*",
                                 summary,
@@ -1319,7 +1319,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
 
                 // Build conversation history for the AgentPipeline
                 let history: Vec<gestura_core::Message> =
-                    chat_session.to_pipeline_messages_limited(10);
+                    agent_session.to_pipeline_messages_limited(10);
 
                 // ─────────────────────────────────────────────────────────────
                 // AI RESPONSE: Show thinking indicator then response
@@ -1331,7 +1331,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                     .with_history(history);
 
                 // Set workspace directory for sandboxed operations
-                if let Some(workspace) = chat_session.workspace_dir() {
+                if let Some(workspace) = agent_session.workspace_dir() {
                     request = request.with_workspace(workspace.clone());
                 }
 
@@ -1345,10 +1345,10 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 // IMPORTANT: we apply overrides to the *pipeline config* so the underlying LLM
                 // call matches what `/model` says, and so provider configs are materialized.
                 let (config_for_pipeline, effective) =
-                    llm_overrides::apply_basic_mode_session_llm_overrides(&config, &chat_session);
+                    llm_overrides::apply_basic_mode_session_llm_overrides(&config, &agent_session);
                 let provider_name = effective.provider;
                 let model_name = effective.model;
-                let (permission_level, allowed_tools) = derive_request_policy(&chat_session);
+                let (permission_level, allowed_tools) = derive_request_policy(&agent_session);
                 request = request
                     .with_session_llm_config(provider_name, model_name)
                     .with_permission_level(permission_level);
@@ -1364,7 +1364,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
 
                 // Clone the session id into the async streaming scope so we can resolve
                 // tool confirmations against the correct session.
-                let session_id_for_tool_confirm = chat_session.id.clone();
+                let session_id_for_tool_confirm = agent_session.id.clone();
 
                 let config_clone = config_for_pipeline;
                 let response: Result<gestura_core::AgentResponse> = rt.block_on(async move {
@@ -1649,7 +1649,7 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                             );
                         }
 
-                        chat_session.add_assistant_message(
+                        agent_session.add_assistant_message(
                             &agent_response.content,
                             agent_response.thinking,
                         );
@@ -1662,8 +1662,8 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                 println!();
 
                 // Auto-save periodically
-                if chat_session.message_count() % 5 == 0 {
-                    let _ = save_cli_session(&chat_session);
+                if agent_session.message_count() % 5 == 0 {
+                    let _ = save_cli_session(&agent_session);
                 }
             }
             Err(ReadlineError::Interrupted) => {
@@ -1683,20 +1683,20 @@ fn run_basic_mode(opts: ChatOptions<'_>) -> Result<()> {
                     "{} {} {}{}",
                     "│".dimmed(),
                     "Session ID:".dimmed(),
-                    chat_session.id,
+                    agent_session.id,
                     " ".repeat(24) + "│"
                 );
                 println!(
                     "{}",
                     "╰─────────────────────────────────────────────────────────────╯".dimmed()
                 );
-                save_cli_session(&chat_session)?;
+                save_cli_session(&agent_session)?;
                 break;
             }
             Err(ReadlineError::Eof) => {
                 println!();
                 println!("{} {}", "✓".green(), "Session saved. Goodbye!".dimmed());
-                save_cli_session(&chat_session)?;
+                save_cli_session(&agent_session)?;
                 break;
             }
             Err(err) => {
@@ -2355,7 +2355,7 @@ fn basic_mode_mcp_command(args: &[&str]) {
 
         let mut menu_items: Vec<String> = labels;
         menu_items.push("+ Add Server".green().bold().to_string());
-        menu_items.push("← Back to chat".to_string());
+        menu_items.push("← Back to agent".to_string());
 
         println!();
         let sel = Select::with_theme(&ColorfulTheme::default())
@@ -2382,7 +2382,7 @@ fn basic_mode_mcp_command(args: &[&str]) {
             continue;
         }
         if idx > server_count {
-            break; // "Back to chat"
+            break; // "Back to agent"
         }
 
         let srv = &config.mcp_servers[idx];
@@ -2558,7 +2558,7 @@ fn basic_mode_a2a_command(args: &[&str]) {
 /// Basic mode `/knowledge` slash command handler.
 ///
 /// Uses [`KnowledgeSettingsManager`] for session-scoped enable/disable persistence.
-fn basic_mode_knowledge_command(args: &[&str], session: &ChatSession) {
+fn basic_mode_knowledge_command(args: &[&str], session: &AgentSession) {
     use dialoguer::{Select, theme::ColorfulTheme};
     use gestura_core::knowledge::{KnowledgeQuery, KnowledgeStore, register_builtin_knowledge};
 
@@ -2612,7 +2612,7 @@ fn basic_mode_knowledge_command(args: &[&str], session: &ChatSession) {
                     .collect();
 
                 let mut menu_items: Vec<String> = labels;
-                menu_items.push("← Back to chat".to_string());
+                menu_items.push("← Back to agent".to_string());
 
                 println!();
                 let sel = Select::with_theme(&ColorfulTheme::default())
@@ -2626,7 +2626,7 @@ fn basic_mode_knowledge_command(args: &[&str], session: &ChatSession) {
                 };
 
                 if idx >= items.len() {
-                    break; // "Back to chat"
+                    break; // "Back to agent"
                 }
 
                 let item = &items[idx];
@@ -2774,7 +2774,7 @@ fn basic_mode_knowledge_command(args: &[&str], session: &ChatSession) {
 ///
 /// When called with no subcommand, shows a dialoguer-based interactive menu.
 /// Also supports explicit subcommands: `list`, `save`, `search <query>`, `clear`, `delete <path>`.
-fn basic_mode_memory_command(args: &[&str], session: &ChatSession) {
+fn basic_mode_memory_command(args: &[&str], session: &AgentSession) {
     use dialoguer::{Confirm, Select, theme::ColorfulTheme};
     use live_actions::{MemoryExecOutput, execute_memory_live_action};
 
@@ -2953,7 +2953,7 @@ fn basic_mode_memory_command(args: &[&str], session: &ChatSession) {
                 if count > 0 {
                     menu_items.push(format!("{} Clear all ({} entries)", "🗑", count));
                 }
-                menu_items.push("← Back to chat".to_string());
+                menu_items.push("← Back to agent".to_string());
 
                 println!();
                 let sel = Select::with_theme(&ColorfulTheme::default())
@@ -3058,7 +3058,7 @@ fn basic_mode_memory_command(args: &[&str], session: &ChatSession) {
                         run_canonical(&["clear", "--confirmed"]);
                     }
                 } else {
-                    break; // Back to chat
+                    break; // Back to agent
                 }
             }
         }
@@ -3106,7 +3106,7 @@ fn basic_mode_memory_command(args: &[&str], session: &ChatSession) {
 }
 
 /// Basic mode `/agent` slash command handler.
-fn basic_mode_agent_command(args: &[&str], config: &AppConfig, session: &ChatSession) {
+fn basic_mode_agent_command(args: &[&str], config: &AppConfig, session: &AgentSession) {
     use dialoguer::{Select, theme::ColorfulTheme};
 
     let subcommand = args.first().map(|s| s.to_ascii_lowercase());
@@ -3167,7 +3167,7 @@ fn basic_mode_agent_command(args: &[&str], config: &AppConfig, session: &ChatSes
                     .map(|(k, v)| format!("{:<20} {}", k, v))
                     .collect();
                 let mut items = labels.clone();
-                items.push("← Back to chat".to_string());
+                items.push("← Back to agent".to_string());
 
                 let sel = Select::with_theme(&ColorfulTheme::default())
                     .with_prompt("Agent Status")
@@ -3255,7 +3255,7 @@ fn basic_mode_device_command() {
             })
             .collect();
         let mut items = labels;
-        items.push("← Back to chat".to_string());
+        items.push("← Back to agent".to_string());
 
         let sel = Select::with_theme(&ColorfulTheme::default())
             .with_prompt(format!(
@@ -3404,7 +3404,7 @@ fn basic_mode_privacy_command(args: &[&str]) {
                 "•".cyan()
             );
             println!(
-                "  {} Chat sessions: Stored locally in workspace",
+                "  {} Agent sessions: Stored locally in workspace",
                 "•".cyan()
             );
             println!(
@@ -3714,7 +3714,7 @@ fn basic_mode_set_config_value(config: &mut AppConfig, key: &str, value: &str) -
 }
 
 /// Basic mode `/session` slash command handler.
-fn basic_mode_session_command(args: &[&str], current: &ChatSession) {
+fn basic_mode_session_command(args: &[&str], current: &AgentSession) {
     use dialoguer::{Select, theme::ColorfulTheme};
 
     let subcommand = args.first().map(|s| s.to_ascii_lowercase());
@@ -3741,7 +3741,7 @@ fn basic_mode_session_command(args: &[&str], current: &ChatSession) {
                         })
                         .collect();
                     let mut items = labels;
-                    items.push("← Back to chat".to_string());
+                    items.push("← Back to agent".to_string());
 
                     let sel = Select::with_theme(&ColorfulTheme::default())
                         .with_prompt("Sessions")
@@ -3801,12 +3801,12 @@ fn basic_mode_session_command(args: &[&str], current: &ChatSession) {
         }
         Some("list") => {
             let store = session_store();
-            match store.list(gestura_core::chat_sessions::SessionFilter::All) {
+            match store.list(gestura_core::agent_sessions::SessionFilter::All) {
                 Ok(sessions) => {
                     if sessions.is_empty() {
                         println!("{}", "No sessions found.".dimmed());
                     } else {
-                        println!("{}", "Chat Sessions".bold().cyan());
+                        println!("{}", "Agent Sessions".bold().cyan());
                         println!("{}", "═".repeat(60));
                         println!(
                             "{:38} {:6} {}",
@@ -4059,7 +4059,7 @@ fn context_category_icon(cat: gestura_core::context::ContextCategory) -> &'stati
 fn basic_mode_model_command(
     args: &[&str],
     config: &AppConfig,
-    session: &ChatSession,
+    session: &AgentSession,
 ) -> Option<SessionLlmConfig> {
     if args.is_empty() {
         // Show current effective provider/model info.
@@ -4193,7 +4193,7 @@ fn basic_mode_hooks_command(config: &AppConfig) {
             })
             .collect();
         let mut items = labels;
-        items.push("← Back to chat".to_string());
+        items.push("← Back to agent".to_string());
 
         let sel = Select::with_theme(&ColorfulTheme::default())
             .with_prompt(format!("Hooks ({})", hooks.hooks.len()))
@@ -4262,7 +4262,7 @@ fn basic_mode_permissions_command() {
             })
             .collect();
         let mut items = labels;
-        items.push("← Back to chat".to_string());
+        items.push("← Back to agent".to_string());
 
         let sel = Select::with_theme(&ColorfulTheme::default())
             .with_prompt(format!("Permissions ({})", perms.len()))
@@ -4293,7 +4293,7 @@ fn basic_mode_permissions_command() {
 }
 
 /// Basic mode `/tasks` slash command handler — interactive browser.
-fn basic_mode_tasks_command(session: &ChatSession) {
+fn basic_mode_tasks_command(session: &AgentSession) {
     use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
     use gestura_core::tasks::{TaskManager, TaskStatus};
 
@@ -4435,7 +4435,7 @@ fn basic_mode_tasks_command(session: &ChatSession) {
             items.push("⨯ Clear current task".to_string());
         }
 
-        items.push("← Back to chat".to_string());
+        items.push("← Back to agent".to_string());
 
         let sel = Select::with_theme(&theme)
             .with_prompt("Tasks")
@@ -4477,7 +4477,7 @@ fn basic_mode_tasks_command(session: &ChatSession) {
             continue;
         }
 
-        // Back to chat.
+        // Back to agent.
         if sel >= items.len() - 1 {
             break;
         }
@@ -4664,7 +4664,7 @@ fn basic_mode_themes_command() {
     loop {
         let labels: Vec<String> = themes.iter().map(|t| format!("  {}", t)).collect();
         let mut items = labels;
-        items.push("← Back to chat".to_string());
+        items.push("← Back to agent".to_string());
 
         let sel = Select::with_theme(&ColorfulTheme::default())
             .with_prompt("Themes")
