@@ -617,8 +617,8 @@ fn collect_complete_lines(buffer: &mut String, incoming: &str) -> Vec<String> {
     out
 }
 
-/// Stream a response from OpenAI-compatible API
-fn build_openai_chat_body(
+/// Build the JSON request body for an OpenAI-compatible API call.
+fn build_openai_request_body(
     model: &str,
     prompt: &str,
     tools: Option<&[serde_json::Value]>,
@@ -650,7 +650,7 @@ pub async fn stream_openai(
     cancel_token: CancellationToken,
 ) -> Result<(), AppError> {
     let url = format!("{}/v1/chat/completions", base_url);
-    let body = build_openai_chat_body(model, prompt, tools);
+    let body = build_openai_request_body(model, prompt, tools);
 
     let client = create_streaming_client();
     let response = client
@@ -1643,7 +1643,7 @@ mod tests {
             }
         })];
 
-        let body = build_openai_chat_body("gpt-test", "hi", Some(&tools));
+        let body = build_openai_request_body("gpt-test", "hi", Some(&tools));
         assert!(body.get("tools").is_some());
         assert_eq!(
             body.get("tool_choice").and_then(|v| v.as_str()),
@@ -1653,14 +1653,14 @@ mod tests {
 
     #[test]
     fn openai_body_omits_tools_when_none() {
-        let body = build_openai_chat_body("gpt-test", "hi", None);
+        let body = build_openai_request_body("gpt-test", "hi", None);
         assert!(body.get("tools").is_none());
         assert!(body.get("tool_choice").is_none());
     }
 
     #[test]
     fn openai_body_omits_temperature() {
-        let body = build_openai_chat_body("gpt-test", "hi", None);
+        let body = build_openai_request_body("gpt-test", "hi", None);
         assert!(body.get("temperature").is_none());
     }
 

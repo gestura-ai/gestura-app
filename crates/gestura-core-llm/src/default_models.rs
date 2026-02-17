@@ -17,7 +17,7 @@
 // OpenAI Models
 // ============================================================================
 
-/// Default OpenAI model for chat/completion tasks.
+/// Default OpenAI model for agent/completion tasks.
 ///
 /// GPT-4o provides the best balance of capability, speed, and cost as of 2025.
 pub const DEFAULT_OPENAI_MODEL: &str = "gpt-4o";
@@ -32,7 +32,7 @@ pub const DEFAULT_OPENAI_STT_MODEL: &str = "gpt-4o-transcribe";
 // Anthropic Models
 // ============================================================================
 
-/// Default Anthropic model for chat/completion tasks.
+/// Default Anthropic model for agent/completion tasks.
 ///
 /// Claude Sonnet 4 (2025-05-14) is the latest and most capable model.
 pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
@@ -41,7 +41,7 @@ pub const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-4-20250514";
 // Grok Models (xAI)
 // ============================================================================
 
-/// Default Grok model for chat/completion tasks.
+/// Default Grok model for agent/completion tasks.
 ///
 /// Grok-3 is the latest stable model from xAI.
 pub const DEFAULT_GROK_MODEL: &str = "grok-3";
@@ -50,7 +50,7 @@ pub const DEFAULT_GROK_MODEL: &str = "grok-3";
 // Google Gemini Models
 // ============================================================================
 
-/// Default Gemini model for chat/completion tasks.
+/// Default Gemini model for agent/completion tasks.
 ///
 /// Gemini 2.0 Flash provides the best balance of speed and capability.
 pub const DEFAULT_GEMINI_MODEL: &str = "gemini-2.0-flash";

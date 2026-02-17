@@ -114,12 +114,12 @@ async fn list_openai(
             arr.iter()
                 .filter_map(|m| {
                     let id = m.get("id")?.as_str()?;
-                    let is_chat = (id.starts_with("gpt-") && !id.contains("instruct"))
+                    let is_agent_capable = (id.starts_with("gpt-") && !id.contains("instruct"))
                         || id.starts_with("o1-")
                         || id.starts_with("o3-")
                         || id.starts_with("o4-")
                         || id.starts_with("o5-");
-                    if !is_chat {
+                    if !is_agent_capable {
                         return None;
                     }
                     Some(ModelInfo {

@@ -192,7 +192,7 @@ impl LlmProvider for UnconfiguredProvider {
 }
 
 #[cfg(feature = "openai")]
-/// HTTP-based OpenAI chat completion provider
+/// HTTP-based OpenAI completion provider
 pub struct OpenAiProvider {
     pub api_key: String,
     pub base_url: String,
