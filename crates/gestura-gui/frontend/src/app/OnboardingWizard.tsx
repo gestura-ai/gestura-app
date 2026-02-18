@@ -61,24 +61,24 @@ interface OnboardingStepProps {
 const WelcomeStep: React.FC<OnboardingStepProps> = ({ onNext }) => (
   <div className="onboarding-step">
     <p>
-      Gestura.app is a privacy-first AI assistant that <strong>listens, speaks, and acts</strong>, helping with research,
+      Gestura is a privacy-first AI assistant that <strong>listens, speaks, and acts</strong>, helping with research,
       daily life, and coding. Let's configure the essentials so you can start using your agent right away.
     </p>
     <div className="features-list">
       <div className="feature">
-        <h3>🎤 Voice Processing</h3>
+        <h3>Voice Processing</h3>
         <p>Convert speech to text with local or cloud-based models</p>
       </div>
       <div className="feature">
-        <h3>💍 Haptic Harmony Ring</h3>
+        <h3>Haptic Harmony Ring</h3>
         <p>Connect your ring for gesture control and haptic feedback</p>
       </div>
       <div className="feature">
-        <h3>🤖 AI Agents</h3>
+        <h3>AI Agents</h3>
         <p>Spawn and manage AI agents for various tasks</p>
       </div>
       <div className="feature">
-        <h3>🔒 Privacy First</h3>
+        <h3>Privacy First</h3>
         <p>Your data stays local with optional cloud features</p>
       </div>
     </div>

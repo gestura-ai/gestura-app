@@ -147,18 +147,16 @@
         }
 
         .header h1 {
-            position: absolute;
+            position: relative;
             display: inline-block;
             font-size: 1.75rem;
-            margin-bottom: 0.25rem;
-            padding-bottom: 15px;
+            margin-bottom: 0.05rem;
             line-height: 1.15;
             left: 25px;
             top: auto;
             right: auto;
             bottom: auto;
             z-index: 0;
-            height: 100px;
         }
 
         .header-logo {
@@ -479,6 +477,10 @@
         }
 
         /* Radio option cards – keep radio circle on the same line as the text */
+        .option-card {
+            position: relative;
+        }
+
         .option-card label {
             display: flex;
             align-items: flex-start;
@@ -486,9 +488,44 @@
             gap: 0.75rem;
         }
 
-        .option-card label input[type="radio"] {
-            flex-shrink: 0;
+        /*
+         * Custom radio indicator.
+         * Rationale: some WebView/Safari setups can render native radio states with
+         * very low contrast (or ignore accent-color). We render our own circle/dot
+         * driven by JS (data-checked="true") so the default selection is obvious.
+         */
+        .option-card label::before {
+            content: '';
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            border-radius: 999px;
+            border: 2px solid var(--border-color);
+            box-sizing: border-box;
             margin-top: 0.2rem;
+            background: transparent;
+            flex-shrink: 0;
+        }
+
+        .option-card[data-checked="true"] label::before,
+        .option-card:has(input[type="radio"]:checked) label::before {
+            border-color: var(--accent-primary);
+            background: radial-gradient(circle at center, var(--accent-primary) 0 45%, transparent 46%);
+        }
+
+        .option-card label input[type="radio"] {
+            /* Keep semantic input in the DOM but hide native glyph (we draw our own above). */
+            position: absolute;
+            opacity: 0;
+            width: 1px;
+            height: 1px;
+            pointer-events: none;
+        }
+
+        .option-card label:focus-within {
+            outline: none;
+            box-shadow: 0 0 0 4px var(--focus-ring);
+            border-radius: 6px;
         }
 
         .option-card label>div {
@@ -1253,12 +1290,19 @@
             // the step template (CSP nonces override 'unsafe-inline').
             hydrateStepListeners(step.id);
 
+            // Sync selection visuals immediately based on template defaults (checked attrs)
+            // so the UI never flashes an “unselected” state while async config loads.
+            syncOptionCardBordersForRadioGroup('voiceMode');
+            syncOptionCardBordersForRadioGroup('agentPermLevel');
+
             // Step-specific initialization (async where needed)
             // Do not allow a failed Tauri call to break navigation/rendering.
             if (step.id === 'permissions') {
                 try { await renderPermissions(); } catch (e) { console.error('[Onboarding] renderPermissions failed:', e); }
             }
             if (step.id === 'voice') {
+                // Hydrate the checked state from config (and enforce sane defaults)
+                try { await loadVoiceMode(); } catch (e) { console.error('[Onboarding] loadVoiceMode failed:', e); }
                 try { await loadMicrophoneDevices(); } catch (e) { console.error('[Onboarding] loadMicrophoneDevices failed:', e); }
             }
             if (step.id === 'voice-model') {
@@ -1602,9 +1646,46 @@
         async function updateVoiceMode(mode) {
             try {
                 await invoke('update_voice_provider', { provider: mode });
+                syncOptionCardBordersForRadioGroup('voiceMode');
             } catch (error) {
                 console.error('Error updating voice mode:', error);
             }
+        }
+
+        function normalizeVoiceProvider(raw) {
+            const v = String(raw || '').toLowerCase();
+            return v === 'openai' ? 'openai' : 'local';
+        }
+
+        function syncOptionCardBordersForRadioGroup(groupName) {
+            document.querySelectorAll(`input[name="${groupName}"]`).forEach(radio => {
+                const card = radio.closest('.option-card');
+                if (!card) return;
+                card.dataset.checked = radio.checked ? 'true' : 'false';
+                card.style.border = radio.checked
+                    ? '2px solid var(--accent-primary)'
+                    : '1px solid var(--border-color)';
+            });
+        }
+
+        async function loadVoiceMode() {
+            // Ensure a default is always selected even if config load fails.
+            let provider = 'local';
+            try {
+                const config = await invoke('get_config');
+                provider = normalizeVoiceProvider(config?.voice?.provider ?? config?.voice?.voice_provider);
+            } catch (error) {
+                console.warn('[Onboarding] get_config failed; defaulting voiceMode to local:', error);
+            }
+            const radio = document.querySelector(`input[name="voiceMode"][value="${provider}"]`);
+            if (radio) radio.checked = true;
+            // If nothing matched, force local.
+            const anyChecked = !!document.querySelector('input[name="voiceMode"]:checked');
+            if (!anyChecked) {
+                const local = document.querySelector('input[name="voiceMode"][value="local"]');
+                if (local) local.checked = true;
+            }
+            syncOptionCardBordersForRadioGroup('voiceMode');
         }
 
         async function updateWhisperModel(model) {
@@ -2072,42 +2153,52 @@
         }
 
         async function updateAgentPermissionLevel(level) {
+            // Remember the user's choice for this onboarding session so if they
+            // navigate back to this step we don't reset to the template default.
+            window.__onboardingAgentPermLevel = level;
+
+            // Ensure the semantic radio state is correct, then sync our custom visuals.
+            // (WKWebView + hidden native radios means our UI depends on this sync.)
+            const radio = document.querySelector(`input[name="agentPermLevel"][value="${level}"]`);
+            if (radio) radio.checked = true;
+            syncOptionCardBordersForRadioGroup('agentPermLevel');
             try {
                 await invoke('set_default_permission_level', { level });
                 console.log('[Onboarding] Set default agent permission level:', level);
-                // Update visual selection state
-                document.querySelectorAll('input[name="agentPermLevel"]').forEach(radio => {
-                    const card = radio.closest('.option-card');
-                    if (card) {
-                        card.style.border = radio.value === level
-                            ? '2px solid var(--accent-primary)'
-                            : '1px solid var(--border-color)';
-                    }
-                });
             } catch (error) {
                 console.error('[Onboarding] Error setting agent permission level:', error);
+                // Keep UI consistent with the selected radio even if persistence fails.
+            } finally {
+                syncOptionCardBordersForRadioGroup('agentPermLevel');
             }
         }
 
         async function loadAgentPermissionLevel() {
+            // UX policy: always default onboarding to Sandbox (Recommended).
+            // We ignore any previously persisted global default here.
             try {
-                const settings = await invoke('get_global_permission_settings');
-                const level = (settings?.default_level || 'sandbox').toLowerCase();
+                let level = (window.__onboardingAgentPermLevel || 'sandbox').toLowerCase();
+                if (!['sandbox', 'restricted', 'full'].includes(level)) level = 'sandbox';
+
                 const radio = document.querySelector(`input[name="agentPermLevel"][value="${level}"]`);
-                if (radio) {
-                    radio.checked = true;
-                    // Update visual borders
-                    document.querySelectorAll('input[name="agentPermLevel"]').forEach(r => {
-                        const card = r.closest('.option-card');
-                        if (card) {
-                            card.style.border = r.value === level
-                                ? '2px solid var(--accent-primary)'
-                                : '1px solid var(--border-color)';
-                        }
-                    });
+                if (radio) radio.checked = true;
+                syncOptionCardBordersForRadioGroup('agentPermLevel');
+
+                // Persist the default so continuing without interaction still uses Sandbox.
+                // If the user changes it, updateAgentPermissionLevel() will persist their choice.
+                if (!window.__onboardingAgentPermLevel && level === 'sandbox') {
+                    try {
+                        await invoke('set_default_permission_level', { level: 'sandbox' });
+                    } catch (e) {
+                        console.warn('[Onboarding] Failed to persist sandbox default permission level:', e);
+                    }
                 }
             } catch (error) {
                 console.error('[Onboarding] Error loading agent permission level:', error);
+                // Fallback: enforce Sandbox so a default is always visible.
+                const fallback = document.querySelector('input[name="agentPermLevel"][value="sandbox"]');
+                if (fallback) fallback.checked = true;
+                syncOptionCardBordersForRadioGroup('agentPermLevel');
             }
         }
 

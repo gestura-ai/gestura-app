@@ -245,7 +245,10 @@ impl LlmProvider for OpenAiProvider {
         prompt: &str,
         tools: Option<&[serde_json::Value]>,
     ) -> Result<LlmCallResponse, AppError> {
-        let url = format!("{}/v1/agent/completions", self.base_url);
+        let url = format!(
+            "{}/v1/chat/completions",
+            self.base_url.trim_end_matches('/')
+        );
         // NOTE: We intentionally omit `temperature`.
         // Some OpenAI(-compatible) models only support the default value and will
         // return HTTP 400 if a non-default temperature is provided.
@@ -565,7 +568,10 @@ impl LlmProvider for GrokProvider {
         prompt: &str,
         tools: Option<&[serde_json::Value]>,
     ) -> Result<LlmCallResponse, AppError> {
-        let url = format!("{}/v1/agent/completions", self.base_url);
+        let url = format!(
+            "{}/v1/chat/completions",
+            self.base_url.trim_end_matches('/')
+        );
         // Grok is OpenAI-compatible, so uses the same tool schema format.
         let mut body = serde_json::json!({
             "model": self.model,
@@ -821,7 +827,7 @@ impl LlmProvider for OllamaProvider {
         prompt: &str,
         tools: Option<&[serde_json::Value]>,
     ) -> Result<LlmCallResponse, AppError> {
-        let url = format!("{}/api/agent", self.base_url);
+        let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
         // Ollama uses OpenAI-compatible tool schema format.
         let mut body = serde_json::json!({
             "model": self.model,

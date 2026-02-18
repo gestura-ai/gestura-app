@@ -291,7 +291,8 @@
 
         @media (max-width: 480px) {
             .header {
-                padding: 10px 12px;
+                /* Keep safe-area inset on small widths too (prevents header touching the macOS titlebar/status-bar region) */
+                padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px 12px;
             }
 
             .header-title {
