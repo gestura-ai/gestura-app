@@ -71,9 +71,18 @@ impl AgentPipeline {
                     "user" => prompt.push_str(&format!("User: {}\n", msg.content)),
                     "assistant" => prompt.push_str(&format!("Assistant: {}\n", msg.content)),
                     "tool" => {
-                        // Truncate tool results to prevent token explosion
+                        // Truncate tool results to prevent token explosion.
                         let truncated_content = self.truncate_tool_result(&msg.content);
-                        prompt.push_str(&format!("Tool result: {}\n", truncated_content));
+                        // G8: Use a structured "Tool[<id>]:" prefix so the LLM can
+                        // correlate results back to specific tool calls.  When a
+                        // tool_call_id is available we embed it; otherwise we fall
+                        // back to the generic "Tool" label.
+                        let label = msg
+                            .tool_call_id
+                            .as_deref()
+                            .map(|id| format!("Tool[{id}]"))
+                            .unwrap_or_else(|| "Tool".to_string());
+                        prompt.push_str(&format!("{label}: {truncated_content}\n"));
                     }
                     _ => prompt.push_str(&format!("{}: {}\n", msg.role, msg.content)),
                 }

@@ -3024,14 +3024,27 @@ fn cancel_agent_streaming_internal(
     calling_window_label: Option<String>,
     session_id: Option<String>,
 ) -> Result<(), String> {
-    let cancel_key = if let Some(sid) = session_id {
-        let label = crate::window_manager::get_session_window_label(&sid).ok_or_else(|| {
-            format!(
-                "Cannot cancel stream: no window label found for session {}",
-                sid
-            )
-        })?;
-        cancel_key_for_window_label(&label)
+    let cancel_key = if let Some(ref sid) = session_id {
+        match crate::window_manager::get_session_window_label(sid) {
+            Some(label) => cancel_key_for_window_label(&label),
+            None => {
+                // Session not found in window manager (e.g., loaded from disk before the window
+                // was fully re-attached). Fall back to the calling window so that cancellation
+                // still works for the active streaming request in that window.
+                tracing::warn!(
+                    session_id = %sid,
+                    "get_session_window_label returned None; falling back to calling window label for cancel"
+                );
+                if let Some(label) = calling_window_label {
+                    cancel_key_for_window_label(&label)
+                } else {
+                    return Err(format!(
+                        "Cannot cancel stream: no window label found for session {} and no calling window context",
+                        sid
+                    ));
+                }
+            }
+        }
     } else if let Some(label) = calling_window_label {
         cancel_key_for_window_label(&label)
     } else {
@@ -4090,6 +4103,331 @@ pub async fn explorer_git_status(
         is_git_repo: true,
         paths,
         error: None,
+    })
+}
+
+// ============================================================================
+// Editor File Commands (read / write / create / delete / rename / diff)
+// ============================================================================
+
+fn ensure_editor_write_allowed(session_id: &str) -> Result<(), String> {
+    ensure_session_exists(session_id)?;
+    if !crate::window_manager::is_action_allowed(session_id, true) {
+        return Err("Editor write access not allowed by session permission policy".to_string());
+    }
+    Ok(())
+}
+
+/// Resolve `rel_path` against the session root, returning an error on path
+/// traversal attempts (any component that would escape the root).
+fn resolve_safe_path(root: &std::path::Path, rel_path: &str) -> Result<std::path::PathBuf, String> {
+    // Strip leading slashes / backslashes to treat it as relative.
+    let stripped = rel_path.trim_start_matches(['/', '\\']);
+    let candidate = root.join(stripped);
+    // Canonicalize-free traversal check: the resolved path must start with root.
+    let canonical = candidate
+        .components()
+        .fold(std::path::PathBuf::new(), |mut acc, c| {
+            match c {
+                std::path::Component::ParentDir => {
+                    acc.pop();
+                }
+                std::path::Component::CurDir => {}
+                other => acc.push(other),
+            }
+            acc
+        });
+    if !canonical.starts_with(root) {
+        return Err(format!(
+            "Path traversal detected: '{}' escapes workspace root",
+            rel_path
+        ));
+    }
+    Ok(canonical)
+}
+
+/// Detect language from file extension for syntax highlighting.
+fn detect_language(path: &std::path::Path) -> String {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "rs" => "rust",
+        "js" | "mjs" | "cjs" => "javascript",
+        "ts" | "mts" | "cts" => "typescript",
+        "tsx" => "tsx",
+        "jsx" => "jsx",
+        "py" => "python",
+        "css" | "scss" | "sass" | "less" => "css",
+        "html" | "htm" => "html",
+        "json" | "jsonc" => "json",
+        "md" | "mdx" => "markdown",
+        "toml" => "toml",
+        "yaml" | "yml" => "yaml",
+        "sh" | "bash" | "zsh" => "shell",
+        "sql" => "sql",
+        "go" => "go",
+        "java" => "java",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "cxx" | "hpp" => "cpp",
+        "swift" => "swift",
+        "kt" | "kts" => "kotlin",
+        "rb" => "ruby",
+        "lua" => "lua",
+        "xml" | "svg" => "xml",
+        _ => "text",
+    }
+    .to_string()
+}
+
+/// Detect whether a file is text, image, or binary.
+fn detect_file_kind(path: &std::path::Path) -> &'static str {
+    let img_exts = [
+        "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "svg",
+    ];
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if img_exts.contains(&ext.as_str()) {
+        return "image";
+    }
+    "text" // binary detection happens at read time via content sniffing
+}
+
+#[derive(serde::Serialize)]
+pub struct EditorReadFileResponse {
+    rel_path: String,
+    content: String,
+    language: String,
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data_url: Option<String>,
+}
+
+/// Read a file for display in the integrated editor.
+/// Returns content, detected language, and kind (text / image / binary).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn editor_read_file(
+    session_id: String,
+    rel_path: String,
+) -> Result<EditorReadFileResponse, String> {
+    ensure_explorer_read_allowed(&session_id)?;
+    let root = session_root_dir(&session_id)?;
+    let full = resolve_safe_path(&root, &rel_path)?;
+    let language = detect_language(&full);
+    let file_kind = detect_file_kind(&full);
+
+    if file_kind == "image" {
+        // Read as bytes and encode to base64 data URL.
+        let bytes = tokio::fs::read(&full)
+            .await
+            .map_err(|e| format!("Failed to read image '{}': {}", rel_path, e))?;
+        let ext = full
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("png")
+            .to_lowercase();
+        let mime = match ext.as_str() {
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "bmp" => "image/bmp",
+            "ico" => "image/x-icon",
+            "tiff" => "image/tiff",
+            "svg" => "image/svg+xml",
+            _ => "image/png",
+        };
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let data_url = format!("data:{};base64,{}", mime, b64);
+        return Ok(EditorReadFileResponse {
+            rel_path,
+            content: String::new(),
+            language,
+            kind: "image".to_string(),
+            data_url: Some(data_url),
+        });
+    }
+
+    // Read as UTF-8; if that fails assume binary.
+    let raw = tokio::fs::read(&full)
+        .await
+        .map_err(|e| format!("Failed to read file '{}': {}", rel_path, e))?;
+
+    match String::from_utf8(raw) {
+        Ok(content) => Ok(EditorReadFileResponse {
+            rel_path,
+            content,
+            language,
+            kind: "text".to_string(),
+            data_url: None,
+        }),
+        Err(_) => Ok(EditorReadFileResponse {
+            rel_path,
+            content: String::new(),
+            language,
+            kind: "binary".to_string(),
+            data_url: None,
+        }),
+    }
+}
+
+/// Write (save) the editor content for a file to disk.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn editor_write_file(
+    session_id: String,
+    rel_path: String,
+    content: String,
+) -> Result<(), String> {
+    ensure_editor_write_allowed(&session_id)?;
+    let root = session_root_dir(&session_id)?;
+    let full = resolve_safe_path(&root, &rel_path)?;
+    // Ensure parent directory exists.
+    if let Some(parent) = full.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("Failed to create directories for '{}': {}", rel_path, e))?;
+    }
+    tokio::fs::write(&full, content.as_bytes())
+        .await
+        .map_err(|e| format!("Failed to write file '{}': {}", rel_path, e))
+}
+
+/// Create a new file or directory at the given relative path.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn editor_create_file(
+    session_id: String,
+    rel_path: String,
+    is_dir: bool,
+) -> Result<(), String> {
+    ensure_editor_write_allowed(&session_id)?;
+    let root = session_root_dir(&session_id)?;
+    let full = resolve_safe_path(&root, &rel_path)?;
+    if is_dir {
+        tokio::fs::create_dir_all(&full)
+            .await
+            .map_err(|e| format!("Failed to create directory '{}': {}", rel_path, e))
+    } else {
+        if let Some(parent) = full.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create parent dirs for '{}': {}", rel_path, e))?;
+        }
+        // Create the file only if it doesn't already exist.
+        tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&full)
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("Failed to create file '{}': {}", rel_path, e))
+    }
+}
+
+/// Delete a file or directory (recursive for directories).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn editor_delete_file(session_id: String, rel_path: String) -> Result<(), String> {
+    ensure_editor_write_allowed(&session_id)?;
+    let root = session_root_dir(&session_id)?;
+    let full = resolve_safe_path(&root, &rel_path)?;
+    let meta = tokio::fs::metadata(&full)
+        .await
+        .map_err(|e| format!("Failed to stat '{}': {}", rel_path, e))?;
+    if meta.is_dir() {
+        tokio::fs::remove_dir_all(&full)
+            .await
+            .map_err(|e| format!("Failed to delete directory '{}': {}", rel_path, e))
+    } else {
+        tokio::fs::remove_file(&full)
+            .await
+            .map_err(|e| format!("Failed to delete file '{}': {}", rel_path, e))
+    }
+}
+
+/// Rename or move a file / directory within the workspace.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn editor_rename_file(
+    session_id: String,
+    old_rel_path: String,
+    new_rel_path: String,
+) -> Result<(), String> {
+    ensure_editor_write_allowed(&session_id)?;
+    let root = session_root_dir(&session_id)?;
+    let old_full = resolve_safe_path(&root, &old_rel_path)?;
+    let new_full = resolve_safe_path(&root, &new_rel_path)?;
+    if let Some(parent) = new_full.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("Failed to create parent dirs for '{}': {}", new_rel_path, e))?;
+    }
+    tokio::fs::rename(&old_full, &new_full).await.map_err(|e| {
+        format!(
+            "Failed to rename '{}' → '{}': {}",
+            old_rel_path, new_rel_path, e
+        )
+    })
+}
+
+#[derive(serde::Serialize)]
+pub struct EditorGitDiffResponse {
+    rel_path: String,
+    original: String,
+    modified: String,
+    has_diff: bool,
+}
+
+/// Return the git diff (HEAD version vs. working tree) for a single file.
+/// Returns `has_diff: false` when the file is unchanged or the workspace is not
+/// a git repository.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn editor_git_diff(
+    session_id: String,
+    rel_path: String,
+) -> Result<EditorGitDiffResponse, String> {
+    ensure_explorer_read_allowed(&session_id)?;
+    let root = session_root_dir(&session_id)?;
+    let full = resolve_safe_path(&root, &rel_path)?;
+
+    // Must be a git repo.
+    if !root.join(".git").exists() {
+        return Ok(EditorGitDiffResponse {
+            rel_path,
+            original: String::new(),
+            modified: String::new(),
+            has_diff: false,
+        });
+    }
+
+    let root_clone = root.clone();
+    let rel_clone = rel_path.clone();
+    let (original, _) = tokio::task::spawn_blocking(move || -> Result<(String, String), String> {
+        // Use git show HEAD:<rel_path> to get the committed version.
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root_clone)
+            .arg("show")
+            .arg(format!("HEAD:{}", rel_clone))
+            .output()
+            .map_err(|e| format!("Failed to run git show: {}", e))?;
+        let original = if output.status.success() {
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        } else {
+            // File is new (not committed yet); original is empty.
+            String::new()
+        };
+        Ok((original, String::new()))
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))??;
+
+    // Read current working-tree content.
+    let modified = tokio::fs::read_to_string(&full).await.unwrap_or_default();
+
+    let has_diff = original != modified;
+    Ok(EditorGitDiffResponse {
+        rel_path,
+        original,
+        modified,
+        has_diff,
     })
 }
 

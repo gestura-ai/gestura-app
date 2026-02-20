@@ -1,0 +1,51 @@
+/* ─── EditorPane ─────────────────────────────────────────────────────────────── */
+
+.editor-pane {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* CodeMirror text editor */
+.editor-pane--text {
+  /* CodeMirror mounts its own .cm-editor root here */
+}
+
+.editor-pane--text .cm-editor {
+  height: 100%;
+  font-feature-settings: 'liga' 1, 'calt' 1;
+}
+
+.editor-pane--text .cm-scroller {
+  overflow: auto;
+}
+
+/* Image preview */
+.editor-pane--image {
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-glass);
+  padding: 24px;
+}
+
+.editor-image-preview {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: var(--shadow-md);
+}
+
+/* Binary fallback */
+.editor-pane--binary {
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+  gap: 8px;
+  background: var(--bg-glass);
+}
+

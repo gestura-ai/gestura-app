@@ -306,6 +306,11 @@ pub struct PipelineConfig {
     /// Strategy to use when auto-compaction is triggered
     /// Default: CompactionStrategy::Summarize
     pub compaction_strategy: CompactionStrategy,
+    /// Maximum characters to include from a single tool result in the
+    /// continuation prompt.  Results larger than this are truncated with an
+    /// indicator so the LLM knows content was omitted.
+    /// Default: 8000 (up from the previous hard-coded 2000)
+    pub tool_result_max_chars: usize,
 }
 
 impl Default for PipelineConfig {
@@ -322,6 +327,7 @@ impl Default for PipelineConfig {
             log_token_usage: true,       // Log token usage for debugging
             auto_compact_threshold: 0.8, // Auto-compact at 80% of token limit
             compaction_strategy: CompactionStrategy::Summarize, // Default to summarization
+            tool_result_max_chars: 8_000, // 8k chars keeps file reads useful without token explosion
         }
     }
 }

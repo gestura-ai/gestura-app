@@ -11,7 +11,7 @@
 use crate::tools::PermissionManager;
 use crate::{AgentPipeline, AgentRequest, AppConfig, RequestSource};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::{Mutex, RwLock, mpsc};
 
 // Re-export shared task types for convenience and adapter compatibility.
@@ -269,7 +269,10 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
         .with_allowed_tools(task.required_tools.clone());
 
     // Execute via unified pipeline.
-    let pipeline = AgentPipeline::with_provider_optimized_config(config.clone());
+    let pipeline = AgentPipeline::with_provider_optimized_config(config.clone()).with_knowledge(
+        orchestrator_knowledge_store(),
+        orchestrator_knowledge_settings(),
+    );
     let result = pipeline.process_blocking(request).await;
 
     match result {
@@ -340,6 +343,34 @@ impl OrchestratorAgentManager for crate::agents::AgentManager {
     async fn update_activity(&self, id: &str) {
         crate::agents::AgentManager::update_activity(self, id).await;
     }
+}
+
+// ── Knowledge store (G6) ────────────────────────────────────────────────────
+// Module-level singletons so subagent pipelines are always wired with the
+// built-in knowledge base, mirroring the pattern in `gestura-gui/src/api.rs`.
+
+/// Global knowledge store for orchestrator pipelines.
+static ORCHESTRATOR_KNOWLEDGE_STORE: OnceLock<crate::KnowledgeStore> = OnceLock::new();
+
+/// Global knowledge settings manager for orchestrator pipelines.
+static ORCHESTRATOR_KNOWLEDGE_SETTINGS: OnceLock<crate::KnowledgeSettingsManager> = OnceLock::new();
+
+fn orchestrator_knowledge_store() -> &'static crate::KnowledgeStore {
+    ORCHESTRATOR_KNOWLEDGE_STORE.get_or_init(|| {
+        let store = crate::KnowledgeStore::with_default_dir();
+        crate::register_builtin_knowledge(&store);
+        if let Err(e) = store.load_user_items() {
+            tracing::warn!(error = %e, "Failed to load persisted user knowledge (continuing)");
+        }
+        store
+    })
+}
+
+fn orchestrator_knowledge_settings() -> &'static crate::KnowledgeSettingsManager {
+    ORCHESTRATOR_KNOWLEDGE_SETTINGS.get_or_init(|| {
+        let base_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        crate::KnowledgeSettingsManager::new(base_dir)
+    })
 }
 
 #[cfg(test)]

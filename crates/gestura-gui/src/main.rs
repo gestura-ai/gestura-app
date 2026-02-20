@@ -240,6 +240,13 @@ async fn main() {
             gestura_gui::api::explorer_get_root,
             gestura_gui::api::explorer_list_dir,
             gestura_gui::api::explorer_git_status,
+            // Integrated file editor (agent_v2 React window)
+            gestura_gui::api::editor_read_file,
+            gestura_gui::api::editor_write_file,
+            gestura_gui::api::editor_create_file,
+            gestura_gui::api::editor_delete_file,
+            gestura_gui::api::editor_rename_file,
+            gestura_gui::api::editor_git_diff,
             // Shell process control (inline shell console)
             gestura_gui::api::shell_process_stop,
             gestura_gui::api::shell_process_pause,

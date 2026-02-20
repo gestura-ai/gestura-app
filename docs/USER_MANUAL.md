@@ -447,22 +447,57 @@ Create complex gesture sequences:
 
 ### Agent Window (Agentic Coding)
 
-Gestura includes a dedicated **Agent** window for text-based and voice-assisted workflows. The agent UI can also display a project-scoped file explorer so you can reference your workspace while agentting.
+Gestura includes a dedicated **Agent** window for text-based and voice-assisted coding workflows. The window supports two modes:
+
+- **Message-only mode** — compact chat panel; ideal for quick questions and voice commands.
+- **Editor mode** — full three-panel layout with file explorer, multi-tab code editor, and chat panel side by side.
+
+Press **Cmd/Ctrl+E** to toggle between the two modes.
+
+#### Three-Panel Layout (Editor Mode)
+
+| Panel | Width | Description |
+|-------|-------|-------------|
+| **Explorer** (left) | 240 px | Project file tree rooted at the session workspace |
+| **Editor** (center) | flex | Multi-tab CodeMirror 6 editor |
+| **Chat** (right) | 340 px | Agent conversation and voice input |
 
 #### Project Explorer Panel
 
-- Open via the **folder** button below the input, or press **Cmd/Ctrl+B**.
+- Toggle with **Cmd/Ctrl+B** while in editor mode.
 - The explorer is rooted at **Project Root** (the current agent session workspace) and does not allow browsing outside that directory.
-- If the workspace is a git repository, changed files/folders show small status badges; otherwise the panel shows **"Not a git repository."**
+- If the workspace is a git repository, changed files/folders show small color-coded status badges (M = modified, A = added, D = deleted, ? = untracked); otherwise the panel shows **"Not a git repository."**
+- **Double-click** a file to open it in a new editor tab.
+- **Right-click** a file or folder for a context menu: New File, New Folder, Rename, Delete.
 - Use the **Refresh** button in the Explorer header to reload the tree.
+
+#### Multi-Tab Code Editor
+
+- Opens files from the Explorer or when the agent references a file path.
+- The **tab bar** shows the file name with a **●** dirty indicator when there are unsaved changes.
+- Click the **×** on a tab to close it; you will be prompted to confirm if the file has unsaved changes.
+- Drag tabs left/right to reorder them.
+- Supports syntax highlighting for TypeScript, TSX, JavaScript, JSX, Rust, Python, CSS/SCSS/Less, HTML, JSON, Markdown, and more.
+- Adapts to the current **light / dark theme** automatically.
+- Image files (`.png`, `.jpg`, `.gif`, `.webp`, `.svg`) are rendered inline.
+- Binary files show a hex summary.
+
+#### Git Diff View
+
+- Press **Cmd/Ctrl+Shift+D** to toggle a side-by-side diff for the active tab.
+- The diff shows the **HEAD** (committed) version on the left and the **working-tree** version on the right with highlighted change chunks.
+- Only available inside a git repository.
 
 #### Agent Window Shortcuts
 
-- **Cmd/Ctrl+B**: Toggle Explorer
-- **Cmd/Ctrl+T**: Toggle Tasks panel
-- **Cmd/Ctrl+S**: Toggle Knowledge/Skills panel
-- **Cmd/Ctrl+K** (in the message box): Enhance prompt
-- **Cmd/Ctrl+Z** (after enhance): Undo enhancement
+| Shortcut | Action |
+|----------|--------|
+| **Cmd/Ctrl+E** | Toggle editor mode / message-only mode |
+| **Cmd/Ctrl+B** | Toggle Explorer panel (editor mode only) |
+| **Cmd/Ctrl+S** | Save the active editor tab |
+| **Cmd/Ctrl+Shift+D** | Toggle git diff view for the active tab |
+| **Cmd/Ctrl+K** (message box) | Enhance prompt with AI suggestions |
+| **Cmd/Ctrl+Z** (after enhance) | Undo prompt enhancement |
 
 ### Automation & Scripting
 

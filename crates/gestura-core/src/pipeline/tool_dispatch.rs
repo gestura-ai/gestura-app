@@ -1516,21 +1516,31 @@ impl AgentPipeline {
         }
     }
 
-    /// Limits results to 2000 characters max with truncation indicator
+    /// Limits a tool result to `pipeline_config.tool_result_max_chars` with a
+    /// truncation indicator so the LLM knows content was omitted.
     pub(super) fn truncate_tool_result(&self, result: &str) -> String {
-        const MAX_TOOL_RESULT_CHARS: usize = 2000;
+        let max_chars = self.pipeline_config.tool_result_max_chars;
 
-        if result.len() <= MAX_TOOL_RESULT_CHARS {
+        if result.len() <= max_chars {
             result.to_string()
         } else {
-            let truncated = &result[..MAX_TOOL_RESULT_CHARS];
-            let remaining = result.len() - MAX_TOOL_RESULT_CHARS;
+            // Snap back to the nearest valid char boundary so we never split a
+            // multi-byte UTF-8 sequence.
+            let boundary = result
+                .char_indices()
+                .map(|(i, _)| i)
+                .take_while(|&i| i <= max_chars)
+                .last()
+                .unwrap_or(max_chars);
+            let truncated = &result[..boundary];
+            let remaining = result.len() - boundary;
 
             if self.pipeline_config.log_token_usage {
                 tracing::debug!(
                     original_length = result.len(),
-                    truncated_length = MAX_TOOL_RESULT_CHARS,
+                    truncated_length = boundary,
                     remaining_chars = remaining,
+                    max_chars = max_chars,
                     "Truncating tool result to prevent token explosion"
                 );
             }

@@ -1341,7 +1341,10 @@ fn start_streaming_message(
     let cancel_token_clone = cancel_token.clone();
     // Spawn streaming task using AgentPipeline
     rt.spawn(async move {
-        let pipeline = AgentPipeline::with_provider_optimized_config(config);
+        let pipeline = AgentPipeline::with_provider_optimized_config(config).with_knowledge(
+            super::get_knowledge_store(),
+            super::get_knowledge_settings(),
+        );
         if let Err(e) = pipeline
             .process_streaming(request, tx.clone(), cancel_token_clone)
             .await
@@ -1424,7 +1427,10 @@ fn start_resume_streaming(
     let cancel_token = CancellationToken::new();
     let cancel_token_clone = cancel_token.clone();
     rt.spawn(async move {
-        let pipeline = AgentPipeline::with_provider_optimized_config(config);
+        let pipeline = AgentPipeline::with_provider_optimized_config(config).with_knowledge(
+            super::get_knowledge_store(),
+            super::get_knowledge_settings(),
+        );
         if let Err(e) = pipeline
             .process_streaming(request, tx.clone(), cancel_token_clone)
             .await

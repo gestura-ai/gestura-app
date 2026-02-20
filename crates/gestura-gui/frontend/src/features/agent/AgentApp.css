@@ -1,0 +1,275 @@
+/* ─── Fonts ─────────────────────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ─── CSS token definitions (matching agent.html) ──────────────────────────── */
+:root {
+  --bg-base: #fbfbfd;
+  --bg-editor-base: #f4f4f5;
+  --bg-glass: rgba(255, 255, 255, 0.7);
+  --bg-glass-strong: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(0, 0, 0, 0.05);
+  --text-primary: #1d1d1f;
+  --text-secondary: #86868b;
+  --accent-primary: rgb(37, 99, 235);
+  --accent-primary-rgb: 37, 99, 235;
+  --accent-secondary: rgb(147, 51, 234);
+  --accent-secondary-rgb: 147, 51, 234;
+  --gradient-primary: linear-gradient(to right, rgb(37, 99, 235), rgb(147, 51, 234));
+  --gradient-secondary: linear-gradient(to right, rgb(96, 165, 250), rgb(192, 132, 252));
+  --brand-gradient: var(--gradient-primary);
+  --brand-gradient-diagonal: linear-gradient(135deg, rgb(37, 99, 235), rgb(147, 51, 234));
+  --accent-glow: rgba(var(--accent-primary-rgb), 0.3);
+  --user-bubble: rgb(37, 99, 235);
+  --user-text: #ffffff;
+  --agent-bubble: rgba(0, 0, 0, 0.04);
+  --agent-text: #1d1d1f;
+  --warning: #ff9f0a;
+  --success: #34c759;
+  --error: #ff3b30;
+  --tool-bg: rgba(52, 199, 89, 0.1);
+  --tool-border: rgba(52, 199, 89, 0.3);
+  --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --blur: blur(20px);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-base: #000000;
+    --bg-editor-base: #0a0a0a;
+    --bg-glass: rgba(28, 28, 30, 0.6);
+    --bg-glass-strong: rgba(44, 44, 46, 0.8);
+    --glass-border: rgba(255, 255, 255, 0.1);
+    --text-primary: #f5f5f7;
+    --text-secondary: #86868b;
+    --accent-primary: rgb(96, 165, 250);
+    --accent-primary-rgb: 96, 165, 250;
+    --accent-secondary: rgb(192, 132, 252);
+    --accent-secondary-rgb: 192, 132, 252;
+    --brand-gradient: var(--gradient-secondary);
+    --brand-gradient-diagonal: linear-gradient(135deg, rgb(96, 165, 250), rgb(192, 132, 252));
+    --accent-glow: rgba(var(--accent-primary-rgb), 0.3);
+    --user-bubble: rgb(96, 165, 250);
+    --user-text: #ffffff;
+    --agent-bubble: rgba(255, 255, 255, 0.08);
+    --agent-text: #f5f5f7;
+    --tool-bg: rgba(48, 209, 88, 0.15);
+    --tool-border: rgba(48, 209, 88, 0.3);
+    --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.5);
+  }
+}
+
+html[data-theme="light"] {
+  --bg-base: #fbfbfd;
+  --bg-editor-base: #f4f4f5;
+  --bg-glass: rgba(255, 255, 255, 0.7);
+  --bg-glass-strong: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(0, 0, 0, 0.05);
+  --text-primary: #1d1d1f;
+  --text-secondary: #86868b;
+  --accent-primary: rgb(37, 99, 235);
+  --accent-primary-rgb: 37, 99, 235;
+  --accent-secondary: rgb(147, 51, 234);
+  --accent-secondary-rgb: 147, 51, 234;
+  --brand-gradient: var(--gradient-primary);
+  --brand-gradient-diagonal: linear-gradient(135deg, rgb(37, 99, 235), rgb(147, 51, 234));
+  --accent-glow: rgba(var(--accent-primary-rgb), 0.3);
+  --user-bubble: rgb(37, 99, 235);
+  --user-text: #ffffff;
+  --agent-bubble: rgba(0, 0, 0, 0.04);
+  --agent-text: #1d1d1f;
+  --tool-bg: rgba(52, 199, 89, 0.1);
+  --tool-border: rgba(52, 199, 89, 0.3);
+  --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+html[data-theme="dark"] {
+  --bg-base: #000000;
+  --bg-editor-base: #0a0a0a;
+  --bg-glass: rgba(28, 28, 30, 0.6);
+  --bg-glass-strong: rgba(44, 44, 46, 0.8);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --text-primary: #f5f5f7;
+  --text-secondary: #86868b;
+  --accent-primary: rgb(96, 165, 250);
+  --accent-primary-rgb: 96, 165, 250;
+  --accent-secondary: rgb(192, 132, 252);
+  --accent-secondary-rgb: 192, 132, 252;
+  --brand-gradient: var(--gradient-secondary);
+  --brand-gradient-diagonal: linear-gradient(135deg, rgb(96, 165, 250), rgb(192, 132, 252));
+  --accent-glow: rgba(var(--accent-primary-rgb), 0.3);
+  --user-bubble: rgb(96, 165, 250);
+  --user-text: #ffffff;
+  --agent-bubble: rgba(255, 255, 255, 0.08);
+  --agent-text: #f5f5f7;
+  --tool-bg: rgba(48, 209, 88, 0.15);
+  --tool-border: rgba(48, 209, 88, 0.3);
+  --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+/* ─── Reset / base ───────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  letter-spacing: -0.01em;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ─── Root app container ─────────────────────────────────────────────────── */
+.agent-app {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  width: 100%;
+  overflow: hidden;
+}
+
+/* ─── Message-only mode: single chat column (matches agent.html body) ──── */
+.agent-app--message-only {
+  flex-direction: column;
+}
+
+.agent-app--message-only .agent-panel--chat {
+  flex: 1 1 auto;
+  width: 100%;
+}
+
+/* ─── Editor mode: three-panel row layout ───────────────────────────────── */
+.agent-app--editor .agent-panel--explorer {
+  flex: 0 0 240px;
+  width: 240px;
+  min-width: 160px;
+  max-width: 400px;
+  border-right: 1px solid var(--glass-border);
+  overflow: hidden;
+  transition: width 200ms ease, flex-basis 200ms ease, min-width 200ms ease, opacity 200ms ease;
+}
+
+.agent-app--editor:not(.agent-app--explorer-open) .agent-panel--explorer {
+  flex-basis: 0;
+  width: 0;
+  min-width: 0;
+  border-right: none;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.agent-app--editor .agent-panel--editor {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--glass-border);
+  background: var(--bg-editor-base);
+}
+
+.agent-app--editor .agent-panel--chat {
+  flex: 0 0 340px;
+  width: 340px;
+  min-width: 260px;
+  max-width: 480px;
+  overflow: hidden;
+  transition: width 200ms ease, flex-basis 200ms ease, min-width 200ms ease, opacity 200ms ease;
+}
+
+.agent-app--editor:not(.agent-app--chat-open) .agent-panel--chat {
+  flex-basis: 0;
+  width: 0;
+  min-width: 0;
+  border-left: none;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ─── Panel Toggles ──────────────────────────────────────────────────────── */
+
+.panel-toggle-container {
+  position: relative;
+  width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  z-index: 50;
+}
+
+.panel-toggle-btn {
+  position: absolute;
+  width: 14px;
+  height: 36px;
+  background: var(--bg-glass-strong);
+  border: 1px solid var(--glass-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: all 0.2s ease;
+  backdrop-filter: var(--blur);
+}
+
+.panel-toggle-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-glass);
+}
+
+.panel-toggle-left {
+  left: 0;
+  border-radius: 0 6px 6px 0;
+  border-left: none;
+}
+
+.panel-toggle-right {
+  right: 0;
+  border-radius: 6px 0 0 6px;
+  border-right: none;
+}
+
+/* ─── Generic panel ──────────────────────────────────────────────────────── */
+.agent-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-base);
+  overflow: hidden;
+}
+
+/* ─── Placeholder (EPICs 3-7 not yet implemented) ────────────────────────── */
+.agent-panel__placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+  gap: 8px;
+  opacity: 0.6;
+  user-select: none;
+}

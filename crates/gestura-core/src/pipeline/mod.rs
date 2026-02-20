@@ -329,6 +329,20 @@ impl AgentPipeline {
             request
         };
 
+        // G1+G5: Auto-detect workspace_dir from the process working directory when
+        // the caller did not supply one.  This ensures guardrails (AGENTS.md) and
+        // the memory bank are always available in a standard project checkout.
+        let mut request = request;
+        if request.metadata.workspace_dir.is_none()
+            && let Ok(cwd) = std::env::current_dir()
+        {
+            tracing::debug!(
+                cwd = %cwd.display(),
+                "workspace_dir not set; defaulting to CWD"
+            );
+            request.metadata.workspace_dir = Some(cwd);
+        }
+
         // 0b. Ensure configured MCP servers are connected (lazy, idempotent).
         self.ensure_mcp_servers_connected().await;
 
@@ -396,36 +410,21 @@ impl AgentPipeline {
         }
 
         // 3. Resolve context
-        let mut resolved_context =
-            self.context_manager
-                .resolve_context(&request.input, &analysis, &request.history);
+        let mut resolved_context = self.context_manager.resolve_context(
+            &request.input,
+            &analysis,
+            &request.history,
+            request.metadata.workspace_dir.as_deref(),
+        );
 
-        // 3.1. Search memory bank for relevant context (if workspace available)
-        if let Some(workspace_dir) = &request.metadata.workspace_dir
-            && let Some(memory_context) = self
-                .search_and_load_memory_bank(workspace_dir, &request.input, 3)
-                .await
-        {
-            // Add memory bank context to knowledge field
-            resolved_context.knowledge.push(memory_context.clone());
-
-            tracing::debug!(
-                memory_context_len = memory_context.len(),
-                "Added memory bank context to request"
-            );
-        }
-
-        // 3.2. Load enabled knowledge items for this session
-        if let Some(knowledge_context) =
-            self.load_enabled_knowledge(request.metadata.session_id.as_deref())
-        {
-            resolved_context.knowledge.push(knowledge_context.clone());
-
-            tracing::debug!(
-                knowledge_context_len = knowledge_context.len(),
-                "Added enabled knowledge to request"
-            );
-        }
+        // 3.1+3.2. Enrich context with memory bank and enabled knowledge items.
+        self.enrich_resolved_context(
+            &mut resolved_context,
+            request.metadata.workspace_dir.as_deref(),
+            &request.input,
+            request.metadata.session_id.as_deref(),
+        )
+        .await;
 
         // 3.5. Check for auto-compaction before building prompt
         // Build a preview prompt to estimate tokens
@@ -441,10 +440,21 @@ impl AgentPipeline {
             // Emit compaction notification to user
             let _ = tx.send(compaction_chunk).await;
 
-            // Re-resolve context after compaction
-            resolved_context =
-                self.context_manager
-                    .resolve_context(&request.input, &analysis, &request.history);
+            // Re-resolve context after compaction and re-enrich (G4: enrichment
+            // must run again so memory bank + knowledge survive compaction).
+            resolved_context = self.context_manager.resolve_context(
+                &request.input,
+                &analysis,
+                &request.history,
+                request.metadata.workspace_dir.as_deref(),
+            );
+            self.enrich_resolved_context(
+                &mut resolved_context,
+                request.metadata.workspace_dir.as_deref(),
+                &request.input,
+                request.metadata.session_id.as_deref(),
+            )
+            .await;
         }
 
         // 4. Build the optimized prompt with token limit checking
@@ -821,6 +831,20 @@ impl AgentPipeline {
 
     /// Process a request without streaming (blocking)
     pub async fn process_blocking(&self, request: AgentRequest) -> Result<AgentResponse, AppError> {
+        // G1+G5: Auto-detect workspace_dir from the process working directory when
+        // the caller did not supply one.  This ensures guardrails (AGENTS.md) and
+        // the memory bank are always available in a standard project checkout.
+        let mut request = request;
+        if request.metadata.workspace_dir.is_none()
+            && let Ok(cwd) = std::env::current_dir()
+        {
+            tracing::debug!(
+                cwd = %cwd.display(),
+                "workspace_dir not set; defaulting to CWD (blocking path)"
+            );
+            request.metadata.workspace_dir = Some(cwd);
+        }
+
         // 1. Analyze the request
         let analysis = self.analyzer.analyze(&request.input);
 
@@ -837,36 +861,21 @@ impl AgentPipeline {
         };
 
         // 3. Resolve context
-        let mut resolved_context =
-            self.context_manager
-                .resolve_context(&request.input, &analysis, &request.history);
+        let mut resolved_context = self.context_manager.resolve_context(
+            &request.input,
+            &analysis,
+            &request.history,
+            request.metadata.workspace_dir.as_deref(),
+        );
 
-        // 3.1. Search memory bank for relevant context (if workspace available)
-        if let Some(workspace_dir) = &request.metadata.workspace_dir
-            && let Some(memory_context) = self
-                .search_and_load_memory_bank(workspace_dir, &request.input, 3)
-                .await
-        {
-            // Add memory bank context to knowledge field
-            resolved_context.knowledge.push(memory_context.clone());
-
-            tracing::debug!(
-                memory_context_len = memory_context.len(),
-                "Added memory bank context to request"
-            );
-        }
-
-        // 3.2. Load enabled knowledge items for this session
-        if let Some(knowledge_context) =
-            self.load_enabled_knowledge(request.metadata.session_id.as_deref())
-        {
-            resolved_context.knowledge.push(knowledge_context.clone());
-
-            tracing::debug!(
-                knowledge_context_len = knowledge_context.len(),
-                "Added enabled knowledge to request"
-            );
-        }
+        // 3.1+3.2. Enrich context with memory bank and enabled knowledge items.
+        self.enrich_resolved_context(
+            &mut resolved_context,
+            request.metadata.workspace_dir.as_deref(),
+            &request.input,
+            request.metadata.session_id.as_deref(),
+        )
+        .await;
 
         // 3.5. Check for auto-compaction before building prompt
         // Build a preview prompt to estimate tokens
@@ -908,10 +917,21 @@ impl AgentPipeline {
                 _ => {}
             }
 
-            // Re-resolve context after compaction
-            resolved_context =
-                self.context_manager
-                    .resolve_context(&request.input, &analysis, &request.history);
+            // Re-resolve context after compaction and re-enrich (G4: enrichment
+            // must run again so memory bank + knowledge survive compaction).
+            resolved_context = self.context_manager.resolve_context(
+                &request.input,
+                &analysis,
+                &request.history,
+                request.metadata.workspace_dir.as_deref(),
+            );
+            self.enrich_resolved_context(
+                &mut resolved_context,
+                request.metadata.workspace_dir.as_deref(),
+                &request.input,
+                request.metadata.session_id.as_deref(),
+            )
+            .await;
         }
 
         // 4. Build prompt with token limit checking
@@ -1198,6 +1218,42 @@ impl AgentPipeline {
             _ => {
                 analysis.categories.insert(ContextCategory::Tools);
             }
+        }
+    }
+
+    /// Enrich a resolved context with memory bank entries and enabled knowledge items.
+    ///
+    /// G4: Extracted into a shared helper so it is called both on the initial resolve
+    /// *and* after any auto-compaction re-resolve, ensuring memory bank and knowledge
+    /// survive context compaction on both the streaming and blocking code paths.
+    async fn enrich_resolved_context(
+        &self,
+        resolved_context: &mut crate::context::ResolvedContext,
+        workspace_dir: Option<&std::path::Path>,
+        query: &str,
+        session_id: Option<&str>,
+    ) {
+        // 3.1 Memory bank — only available when workspace_dir is known.
+        if let Some(workspace_dir) = workspace_dir
+            && let Some(memory_context) = self
+                .search_and_load_memory_bank(workspace_dir, query, 3)
+                .await
+        {
+            tracing::debug!(
+                memory_context_len = memory_context.len(),
+                "Added memory bank context to request"
+            );
+            resolved_context.knowledge.push(memory_context);
+        }
+
+        // 3.2 Knowledge items — only available when the pipeline was wired with
+        //     `with_knowledge()` *and* the session has items enabled.
+        if let Some(knowledge_context) = self.load_enabled_knowledge(session_id) {
+            tracing::debug!(
+                knowledge_context_len = knowledge_context.len(),
+                "Added enabled knowledge to request"
+            );
+            resolved_context.knowledge.push(knowledge_context);
         }
     }
 }

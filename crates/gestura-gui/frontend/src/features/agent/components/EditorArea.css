@@ -1,0 +1,44 @@
+/* ─── EditorArea ─────────────────────────────────────────────────────────────── */
+
+.editor-area {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-base);
+}
+
+/* The actual pane that holds EditorPane or DiffPane */
+.editor-area__pane {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Empty state when no tabs are open */
+.editor-area__empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  font-size: 14px;
+  opacity: 0.6;
+}
+
+/* Diff loading spinner */
+.editor-area__diff-loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+  opacity: 0.7;
+}
+

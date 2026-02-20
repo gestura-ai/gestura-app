@@ -6,7 +6,7 @@
 use crate::AppConfigSecurityExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::{JoinHandle, JoinSet};
@@ -137,7 +137,11 @@ impl AgentManager {
                                 // This GUI agent event handler does not execute tools; it only
                                 // requests a single model response.
                                 let cfg = load_agent_event_config().await;
-                                let pipeline = AgentPipeline::with_provider_optimized_config(cfg);
+                                let pipeline = AgentPipeline::with_provider_optimized_config(cfg)
+                                    .with_knowledge(
+                                        get_gui_knowledge_store(),
+                                        get_gui_knowledge_settings(),
+                                    );
                                 let request = AgentRequest::new(prompt)
                                     .with_streaming(false)
                                     .with_source(RequestSource::GuiText)
@@ -277,6 +281,34 @@ impl gestura_core::orchestrator::OrchestratorAgentManager for AgentManager {
     async fn update_activity(&self, id: &str) {
         AgentManager::update_activity(self, id).await;
     }
+}
+
+// ── Knowledge store (G6) ────────────────────────────────────────────────────
+// Module-level singletons for the GUI agents module.  The api.rs module has its
+// own parallel singletons; these are separate to avoid circular dependencies.
+
+/// Global knowledge store for GUI agent-event pipelines.
+static GUI_KNOWLEDGE_STORE: OnceLock<gestura_core::KnowledgeStore> = OnceLock::new();
+
+/// Global knowledge settings manager for GUI agent-event pipelines.
+static GUI_KNOWLEDGE_SETTINGS: OnceLock<gestura_core::KnowledgeSettingsManager> = OnceLock::new();
+
+fn get_gui_knowledge_store() -> &'static gestura_core::KnowledgeStore {
+    GUI_KNOWLEDGE_STORE.get_or_init(|| {
+        let store = gestura_core::KnowledgeStore::with_default_dir();
+        gestura_core::register_builtin_knowledge(&store);
+        if let Err(e) = store.load_user_items() {
+            tracing::warn!(error = %e, "Failed to load persisted user knowledge (continuing)");
+        }
+        store
+    })
+}
+
+fn get_gui_knowledge_settings() -> &'static gestura_core::KnowledgeSettingsManager {
+    GUI_KNOWLEDGE_SETTINGS.get_or_init(|| {
+        let base_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        gestura_core::KnowledgeSettingsManager::new(base_dir)
+    })
 }
 
 #[cfg(test)]

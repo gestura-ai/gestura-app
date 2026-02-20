@@ -9,6 +9,7 @@ use gestura_core_foundation::context::{
 };
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 
@@ -119,17 +120,18 @@ impl ContextManager {
         _request: &str,
         analysis: &RequestAnalysis,
         history: &[M],
+        workspace_dir: Option<&Path>,
     ) -> ResolvedContext
     where
         M: AsRef<str>,
     {
-        self.resolve_for_analysis_with_history(analysis, history)
+        self.resolve_for_analysis_with_history(analysis, history, workspace_dir)
     }
 
     /// Simple resolve without history
-    pub fn resolve_simple(&self, request: &str) -> ResolvedContext {
+    pub fn resolve_simple(&self, request: &str, workspace_dir: Option<&Path>) -> ResolvedContext {
         let analysis = self.analyze(request);
-        self.resolve_for_analysis(&analysis)
+        self.resolve_for_analysis(&analysis, workspace_dir)
     }
 
     /// Resolve context for a pre-analyzed request with history
@@ -137,13 +139,23 @@ impl ContextManager {
         &self,
         analysis: &RequestAnalysis,
         history: &[M],
+        workspace_dir: Option<&Path>,
     ) -> ResolvedContext
     where
         M: AsRef<str>,
     {
-        // Check cache first
+        // G3: Use a fingerprint-based cache key that includes entity values so
+        // different file/entity requests get distinct cache entries.
         let cache_key = self.cache_key_for(analysis);
-        if let Some(cached) = self.context_cache.get(&cache_key) {
+        if let Some(mut cached) = self.context_cache.get(&cache_key) {
+            // G3: History changes every turn — always recompute it even on a
+            // cache hit so the LLM sees the correct conversation summary.
+            let fresh_summary = self.summarize_history(history);
+            cached.history_summary = if fresh_summary.is_empty() {
+                None
+            } else {
+                Some(fresh_summary)
+            };
             return cached;
         }
 
@@ -164,7 +176,9 @@ impl ContextManager {
             if entity.entity_type != EntityType::FilePath {
                 continue;
             }
-            if let Some(file_ctx) = self.load_file_context_with_validation(&entity.value) {
+            if let Some(file_ctx) =
+                self.load_file_context_with_validation(&entity.value, workspace_dir)
+            {
                 context.estimated_tokens += estimate_tokens(&file_ctx.content);
                 context.files.push(file_ctx);
             }
@@ -276,9 +290,13 @@ impl ContextManager {
     }
 
     /// Resolve context for a pre-analyzed request (no history)
-    pub fn resolve_for_analysis(&self, analysis: &RequestAnalysis) -> ResolvedContext {
+    pub fn resolve_for_analysis(
+        &self,
+        analysis: &RequestAnalysis,
+        workspace_dir: Option<&Path>,
+    ) -> ResolvedContext {
         let empty: Vec<String> = Vec::new();
-        self.resolve_for_analysis_with_history(analysis, &empty)
+        self.resolve_for_analysis_with_history(analysis, &empty, workspace_dir)
     }
 
     /// Get tools relevant to the given categories
@@ -317,9 +335,17 @@ impl ContextManager {
     }
 
     /// Load file context with mtime-based cache invalidation (LOW-2)
-    fn load_file_context_with_validation(&self, path: &str) -> Option<FileContext> {
+    fn load_file_context_with_validation(
+        &self,
+        path: &str,
+        workspace_dir: Option<&Path>,
+    ) -> Option<FileContext> {
+        let actual_path = workspace_dir
+            .map(|w| w.join(path))
+            .unwrap_or_else(|| std::path::PathBuf::from(path));
+
         // Check if file exists and get metadata
-        let metadata = std::fs::metadata(path).ok()?;
+        let metadata = std::fs::metadata(&actual_path).ok()?;
         let mtime = metadata.modified().ok()?;
         let size = metadata.len();
 
@@ -338,7 +364,7 @@ impl ContextManager {
         }
 
         // Cache miss or invalidated - reload file
-        let ctx = self.load_file_context(path)?;
+        let ctx = self.load_file_context(path, workspace_dir)?;
 
         // Update metadata cache
         if let Ok(mut meta_cache) = self.file_meta_cache.write() {
@@ -349,14 +375,18 @@ impl ContextManager {
     }
 
     /// Load file context (with caching)
-    fn load_file_context(&self, path: &str) -> Option<FileContext> {
+    fn load_file_context(&self, path: &str, workspace_dir: Option<&Path>) -> Option<FileContext> {
         // Check cache
         if let Some(cached) = self.file_cache.get(path) {
             return Some(cached);
         }
 
+        let actual_path = workspace_dir
+            .map(|w| w.join(path))
+            .unwrap_or_else(|| std::path::PathBuf::from(path));
+
         // Try to read file
-        match std::fs::read_to_string(path) {
+        match std::fs::read_to_string(&actual_path) {
             Ok(content) => {
                 let lines: Vec<&str> = content.lines().collect();
                 let total_lines = lines.len();
@@ -391,15 +421,13 @@ impl ContextManager {
             .sum()
     }
 
-    /// Generate cache key for analysis
+    /// Generate cache key for analysis.
+    ///
+    /// G3: Uses `compute_request_hash` which hashes categories + sorted entity
+    /// values + needs_tools — distinct file/entity requests no longer collide.
     fn cache_key_for(&self, analysis: &RequestAnalysis) -> String {
-        let mut cats: Vec<_> = analysis
-            .categories
-            .iter()
-            .map(|c| format!("{:?}", c))
-            .collect();
-        cats.sort();
-        format!("ctx:{}:{}", cats.join(","), analysis.needs_tools)
+        let hash = self.compute_request_hash(analysis);
+        format!("ctx:{:016x}", hash)
     }
 
     /// Get cache statistics
@@ -548,7 +576,7 @@ mod tests {
     #[test]
     fn test_resolve_context_general() {
         let manager = ContextManager::new();
-        let context = manager.resolve_simple("What is Rust?");
+        let context = manager.resolve_simple("What is Rust?", None);
 
         assert!(context.categories.contains(&ContextCategory::General));
         assert!(context.tools.is_empty());
@@ -563,7 +591,7 @@ mod tests {
                 ("git".to_string(), "Git operations".to_string()),
             ]
         }));
-        let context = manager.resolve_simple("List files in the current directory");
+        let context = manager.resolve_simple("List files in the current directory", None);
 
         assert!(context.categories.contains(&ContextCategory::FileSystem));
         assert!(!context.tools.is_empty());
@@ -572,7 +600,7 @@ mod tests {
     #[test]
     fn test_resolve_context_without_provider() {
         let manager = ContextManager::new();
-        let context = manager.resolve_simple("List files in the current directory");
+        let context = manager.resolve_simple("List files in the current directory", None);
 
         assert!(context.categories.contains(&ContextCategory::FileSystem));
         // Without a tool provider, tools should be empty
@@ -583,10 +611,33 @@ mod tests {
     fn test_cache_stats() {
         let manager = ContextManager::new();
         // Make some calls to populate cache
-        let _ = manager.resolve_simple("Read a file");
-        let _ = manager.resolve_simple("Git status");
+        let _ = manager.resolve_simple("Read a file", None);
+        let _ = manager.resolve_simple("Git status", None);
 
         let stats = manager.cache_stats();
         assert!(stats.context_cache.size > 0);
+    }
+
+    #[test]
+    fn test_workspace_dir_resolution() {
+        use std::io::Write;
+
+        let temp_dir = std::env::temp_dir().join("gestura_test_workspace");
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let file_path = temp_dir.join("test_file.txt");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        writeln!(file, "hello workspace").unwrap();
+
+        let manager = ContextManager::new();
+        let req = "Read the file test_file.txt".to_string();
+
+        let ctx = manager.resolve_simple(&req, Some(&temp_dir));
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        assert!(ctx.categories.contains(&ContextCategory::FileSystem));
+        assert!(!ctx.files.is_empty());
+        assert_eq!(ctx.files[0].content.trim(), "hello workspace");
     }
 }

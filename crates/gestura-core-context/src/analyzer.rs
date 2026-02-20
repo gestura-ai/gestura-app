@@ -137,10 +137,57 @@ const CATEGORY_PATTERNS: &[CategoryPattern] = &[
 ];
 
 /// Compiled regex for file path extraction.
-/// Matches paths like: src/main.rs, ./config.yaml, ~/Documents/file.txt
+/// Matches paths like: src/main.rs, ./config.yaml, ~/Documents/file.txt, allowing trailing punctuation
 static FILE_PATH_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:^|[\s\(\[])([./~]?(?:[\w-]+/)*[\w.-]+\.[a-zA-Z0-9]+)(?:[\s\)\]]|$)")
+    Regex::new(r"(?:^|[\s\(\[])([./~]?(?:[\w-]+/)*[\w.-]+\.[a-zA-Z0-9]+)(?:[\s\)\].,;:!?]|$)")
         .expect("Invalid file path regex")
+});
+
+/// Well-known project root files that must be detected by name alone even when
+/// no explicit path prefix (`./`, `../`, `/`) is present in the request.
+const WELL_KNOWN_FILES: &[&str] = &[
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".cursorrules",
+    "README.md",
+    "README.rst",
+    "README.txt",
+    "CONTRIBUTING.md",
+    "CHANGELOG.md",
+    "Cargo.toml",
+    "Cargo.lock",
+    "package.json",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    ".gitignore",
+    ".env",
+    ".env.example",
+    "Makefile",
+    "Justfile",
+    "justfile",
+    "Dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "go.mod",
+    "go.sum",
+    "pyproject.toml",
+    "requirements.txt",
+    "tsconfig.json",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "eslint.config.js",
+    ".eslintrc.json",
+];
+
+/// Compiled regex for bare filenames (e.g. `AGENTS.md`, `config.yaml`) that
+/// lack an explicit path prefix but carry a file extension.  Anchored on
+/// word-like boundaries so we don't misfire inside URLs or longer paths.
+static BARE_FILENAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?:^|[\s\(\[,;'"\`])([A-Za-z][A-Za-z0-9_.-]*\.[a-zA-Z0-9]+)(?:[\s\)\].,;:!?'"\`]|$)"#,
+    )
+    .expect("Invalid bare filename regex")
 });
 
 /// Compiled regex for URL extraction.
@@ -305,6 +352,64 @@ impl RequestAnalyzer {
 
                 analysis.entities.push(ExtractedEntity {
                     entity_type,
+                    value: value.to_string(),
+                    start,
+                    end,
+                });
+                analysis.categories.insert(ContextCategory::FileSystem);
+                extracted_ranges.push((start, end));
+            }
+        }
+
+        // G2: Detect well-known project root files by name alone (case-insensitive).
+        // This ensures files like AGENTS.md, Cargo.toml, README.md are captured even
+        // when the user doesn't include an explicit path prefix like `./`.
+        let lower = request.to_lowercase();
+        for &well_known in WELL_KNOWN_FILES {
+            let needle = well_known.to_lowercase();
+            if lower.contains(&needle) {
+                // Only add if not already captured by FILE_PATH_REGEX.
+                let already_extracted = analysis
+                    .entities
+                    .iter()
+                    .any(|e| e.value.to_lowercase().ends_with(&needle));
+                if !already_extracted {
+                    // Find the byte offset in the original (case-preserved) text.
+                    let start = lower.find(&needle).unwrap_or(0);
+                    let end = start + well_known.len();
+                    analysis.entities.push(ExtractedEntity {
+                        entity_type: EntityType::FilePath,
+                        value: well_known.to_string(),
+                        start,
+                        end,
+                    });
+                    analysis.categories.insert(ContextCategory::FileSystem);
+                    extracted_ranges.push((start, end));
+                }
+            }
+        }
+
+        // G2: Detect any other bare filenames (e.g. `config.yaml`, `schema.json`)
+        // that FILE_PATH_REGEX missed because they lack a path separator.
+        for cap in BARE_FILENAME_REGEX.captures_iter(request) {
+            if let Some(m) = cap.get(1) {
+                let start = m.start();
+                let end = m.end();
+                let value = m.as_str();
+
+                if Self::overlaps_any(&extracted_ranges, start, end) {
+                    continue;
+                }
+
+                // Skip single-component names without extensions that look like
+                // plain words (e.g. "it", "Go", "Rust"), keeping only names that
+                // have an extension after the first dot.
+                if !value.contains('.') {
+                    continue;
+                }
+
+                analysis.entities.push(ExtractedEntity {
+                    entity_type: EntityType::FilePath,
                     value: value.to_string(),
                     start,
                     end,

@@ -18,6 +18,7 @@ use rustyline::error::ReadlineError;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tokio::sync::mpsc;
 
 mod live_actions;
@@ -1373,7 +1374,8 @@ fn run_basic_mode(opts: AgentOptions<'_>) -> Result<()> {
                     let cancel_for_task = cancel_token.clone();
 
                     let stream_task = tokio::spawn(async move {
-                        let pipeline = AgentPipeline::with_provider_optimized_config(config_clone);
+                        let pipeline = AgentPipeline::with_provider_optimized_config(config_clone)
+                            .with_knowledge(get_knowledge_store(), get_knowledge_settings());
                         pipeline
                             .process_streaming(request, tx, cancel_for_task)
                             .await
@@ -4684,4 +4686,35 @@ fn basic_mode_themes_command() {
             _ => break,
         }
     }
+}
+
+// ── Knowledge store (G6) ────────────────────────────────────────────────────
+// Module-level singletons so the pipeline can always be wired with knowledge,
+// regardless of which code path constructs it.  The TUI sub-module accesses
+// these via `super::get_knowledge_store()` / `super::get_knowledge_settings()`.
+
+/// Global knowledge store for all CLI agent pipelines.
+static KNOWLEDGE_STORE: OnceLock<gestura_core::KnowledgeStore> = OnceLock::new();
+
+/// Global knowledge settings manager for all CLI agent pipelines.
+static KNOWLEDGE_SETTINGS: OnceLock<gestura_core::KnowledgeSettingsManager> = OnceLock::new();
+
+/// Get or initialize the module-level knowledge store.
+pub(super) fn get_knowledge_store() -> &'static gestura_core::KnowledgeStore {
+    KNOWLEDGE_STORE.get_or_init(|| {
+        let store = gestura_core::KnowledgeStore::with_default_dir();
+        gestura_core::register_builtin_knowledge(&store);
+        if let Err(e) = store.load_user_items() {
+            tracing::warn!(error = %e, "Failed to load persisted user knowledge (continuing)");
+        }
+        store
+    })
+}
+
+/// Get or initialize the module-level knowledge settings manager.
+pub(super) fn get_knowledge_settings() -> &'static gestura_core::KnowledgeSettingsManager {
+    KNOWLEDGE_SETTINGS.get_or_init(|| {
+        let base_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        gestura_core::KnowledgeSettingsManager::new(base_dir)
+    })
 }

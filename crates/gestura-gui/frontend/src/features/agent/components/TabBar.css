@@ -1,0 +1,118 @@
+/* ─── Tab Bar ────────────────────────────────────────────────────────────────── */
+
+.tab-bar {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  gap: 1px;
+  padding: 0 4px;
+  background: var(--bg-glass);
+  border-bottom: 1px solid var(--glass-border);
+  flex-shrink: 0;
+  height: 36px;
+  scrollbar-width: none;
+}
+
+.tab-bar::-webkit-scrollbar {
+  display: none;
+}
+
+/* ─── Individual tab ─────────────────────────────────────────────────────────── */
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 8px 0 10px;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 180px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  transition: background 0.12s, color 0.12s;
+  user-select: none;
+  position: relative;
+}
+
+.tab:hover {
+  background: var(--agent-bubble);
+  color: var(--text-primary);
+}
+
+.tab--active {
+  background: var(--bg-base);
+  border-color: var(--glass-border);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.tab--drag-target {
+  border-color: var(--accent-primary);
+  background: rgba(var(--accent-primary-rgb, 37, 99, 235), 0.08);
+}
+
+/* ─── Tab label ──────────────────────────────────────────────────────────────── */
+
+.tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ─── Dirty indicator ────────────────────────────────────────────────────────── */
+
+.tab-dirty-dot {
+  font-size: 8px;
+  color: var(--accent-primary);
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+/* ─── Close button ───────────────────────────────────────────────────────────── */
+
+.tab-close {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-secondary);
+  padding: 0 2px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+
+.tab:hover .tab-close,
+.tab--active .tab-close {
+  opacity: 1;
+}
+
+.tab-close:hover {
+  background: rgba(255, 59, 48, 0.12);
+  color: var(--error);
+}
+
+/* ─── When tab has dirty dot, hide close; show on hover ─────────────────────── */
+
+.tab--dirty .tab-close {
+  opacity: 0;
+}
+
+.tab--dirty:hover .tab-close {
+  opacity: 1;
+}
+
+.tab--dirty:hover .tab-dirty-dot {
+  display: none;
+}
+

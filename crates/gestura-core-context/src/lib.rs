@@ -46,15 +46,15 @@ mod tests {
         let manager = ContextManager::new();
 
         // Test file-related request
-        let ctx = manager.resolve_simple("Read src/lib.rs and show its contents");
+        let ctx = manager.resolve_simple("Read src/lib.rs and show its contents", None);
         assert!(ctx.categories.contains(&ContextCategory::FileSystem));
 
         // Test git request
-        let ctx = manager.resolve_simple("Show me the git log");
+        let ctx = manager.resolve_simple("Show me the git log", None);
         assert!(ctx.categories.contains(&ContextCategory::Git));
 
         // Test general conversation
-        let ctx = manager.resolve_simple("Hello, how are you?");
+        let ctx = manager.resolve_simple("Hello, how are you?", None);
         assert!(ctx.categories.contains(&ContextCategory::General));
         assert!(ctx.tools.is_empty());
     }
@@ -64,10 +64,10 @@ mod tests {
         let manager = ContextManager::new();
 
         // First call
-        let ctx1 = manager.resolve_simple("Run a shell command");
+        let ctx1 = manager.resolve_simple("Run a shell command", None);
 
         // Second call should be cached
-        let ctx2 = manager.resolve_simple("Execute a terminal command");
+        let ctx2 = manager.resolve_simple("Execute a terminal command", None);
 
         // Both should have shell category
         assert!(ctx1.categories.contains(&ContextCategory::Shell));
@@ -102,7 +102,7 @@ mod tests {
                 ("git".to_string(), "Git operations".to_string()),
             ]
         }));
-        let context = manager.resolve_simple("List files in the current directory");
+        let context = manager.resolve_simple("List files in the current directory", None);
 
         assert!(context.categories.contains(&ContextCategory::FileSystem));
         assert!(!context.tools.is_empty());

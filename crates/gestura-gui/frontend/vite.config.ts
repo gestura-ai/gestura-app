@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { resolve } from 'path';
 
 export default defineConfig({
   plugins: [react()],
@@ -29,5 +30,14 @@ export default defineConfig({
     target: process.env.TAURI_ENV_PLATFORM == 'windows' ? 'chrome105' : 'safari13',
     minify: !process.env.TAURI_ENV_DEBUG ? 'esbuild' : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    rollupOptions: {
+      input: {
+        // Main settings/voice window
+        main: resolve(__dirname, 'index.html'),
+        // Agent window v2 (React/Vite). window_manager.rs now points here.
+        // public/agent.html is dead code — delete it once v2 is confirmed stable.
+        agent_v2: resolve(__dirname, 'agent_v2.html'),
+      },
+    },
   },
 });

@@ -1,0 +1,58 @@
+/* ─── DiffPane ───────────────────────────────────────────────────────────────── */
+
+.diff-pane {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  height: 100%;
+}
+
+/* MergeView root */
+.diff-pane .cm-mergeView {
+  height: 100%;
+  display: flex;
+}
+
+.diff-pane .cm-mergeViewEditor {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Gutter showing chunk indicators */
+.diff-pane .cm-mergeViewGutter {
+  width: 24px;
+  background: var(--bg-glass);
+  border-left: 1px solid var(--glass-border);
+  border-right: 1px solid var(--glass-border);
+}
+
+/* Highlighted change chunks */
+.diff-pane .cm-deletedChunk {
+  background: rgba(239, 68, 68, 0.12) !important;
+}
+
+.diff-pane .cm-insertedChunk {
+  background: rgba(34, 197, 94, 0.12) !important;
+}
+
+.diff-pane .cm-deletedLine {
+  background: rgba(239, 68, 68, 0.08) !important;
+  text-decoration: none;
+}
+
+.diff-pane .cm-insertedLine {
+  background: rgba(34, 197, 94, 0.08) !important;
+}
+
+/* Diff chunk inline markers */
+.diff-pane .cm-deletedText {
+  background: rgba(239, 68, 68, 0.3);
+  border-radius: 2px;
+}
+
+.diff-pane .cm-insertedText {
+  background: rgba(34, 197, 94, 0.3);
+  border-radius: 2px;
+}
+

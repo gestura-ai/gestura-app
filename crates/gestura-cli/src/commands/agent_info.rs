@@ -11,6 +11,7 @@
 use super::Result;
 use colored::Colorize;
 use gestura_core::{AgentPipeline, AgentRequest, AppConfig, AppConfigSecurityExt, RequestSource};
+use std::sync::OnceLock;
 
 /// Agent subcommand options
 pub enum AgentSubcommand {
@@ -159,7 +160,8 @@ fn run_send(message: &str) -> Result<()> {
 
     let response = rt.block_on(async {
         let config = AppConfig::load();
-        let pipeline = AgentPipeline::with_provider_optimized_config(config);
+        let pipeline = AgentPipeline::with_provider_optimized_config(config)
+            .with_knowledge(get_knowledge_store(), get_knowledge_settings());
         let request = AgentRequest::new(message)
             .with_streaming(false)
             .with_source(RequestSource::CliBasic)
@@ -252,4 +254,30 @@ fn check_ollama_reachable(config: &AppConfig) -> bool {
         Err(_) => return false,
     };
     rt.block_on(gestura_core::check_ollama_connectivity(base_url))
+}
+
+// ── Knowledge store (G6) ────────────────────────────────────────────────────
+
+/// Global knowledge store for agent-info pipelines.
+static KNOWLEDGE_STORE: OnceLock<gestura_core::KnowledgeStore> = OnceLock::new();
+
+/// Global knowledge settings manager for agent-info pipelines.
+static KNOWLEDGE_SETTINGS: OnceLock<gestura_core::KnowledgeSettingsManager> = OnceLock::new();
+
+fn get_knowledge_store() -> &'static gestura_core::KnowledgeStore {
+    KNOWLEDGE_STORE.get_or_init(|| {
+        let store = gestura_core::KnowledgeStore::with_default_dir();
+        gestura_core::register_builtin_knowledge(&store);
+        if let Err(e) = store.load_user_items() {
+            tracing::warn!(error = %e, "Failed to load persisted user knowledge (continuing)");
+        }
+        store
+    })
+}
+
+fn get_knowledge_settings() -> &'static gestura_core::KnowledgeSettingsManager {
+    KNOWLEDGE_SETTINGS.get_or_init(|| {
+        let base_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        gestura_core::KnowledgeSettingsManager::new(base_dir)
+    })
 }

@@ -340,7 +340,7 @@ impl WindowManager {
         // Include the session_id in the URL so the frontend can route events/state
         // correctly per window (avoids cross-window event bleed and enables
         // session-scoped history).
-        let agent_url = format!("agent.html?session_id={}", session_id);
+        let agent_url = format!("agent_v2.html?session_id={}", session_id);
         let window =
             WebviewWindowBuilder::new(&self.app, window_label, WebviewUrl::App(agent_url.into()))
                 .title("Gestura Agent")
