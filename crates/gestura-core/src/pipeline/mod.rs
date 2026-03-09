@@ -15,10 +15,13 @@ mod agent_loop;
 mod compaction;
 mod prompt;
 mod tool_dispatch;
+mod tool_router;
 pub mod types;
+
 use std::path::Path;
 use std::time::Instant;
 use tokio::sync::mpsc;
+pub use tool_router::{RoutingResult, ToolRouter, build_tool_router};
 
 use crate::agent_sessions::FileAgentSessionStore;
 use crate::checkpoints::{CheckpointManager, CheckpointRetentionPolicy, FileCheckpointStore};
@@ -75,6 +78,8 @@ pub struct AgentPipeline {
     knowledge_store: Option<&'static KnowledgeStore>,
     /// Knowledge settings manager for session-scoped activation
     knowledge_settings: Option<&'static KnowledgeSettingsManager>,
+    /// Optional pre-flight LLM tool router (None when strategy is Keyword).
+    tool_router: Option<Box<dyn tool_router::ToolRouter>>,
 }
 
 impl AgentPipeline {
@@ -83,26 +88,16 @@ impl AgentPipeline {
         ContextManager::new().with_tool_provider(Box::new(|| {
             crate::tools::registry::all_tools()
                 .iter()
-                .map(|t| (t.name.to_string(), t.summary.to_string()))
+                .map(|t| (t.name.to_string(), t.description.to_string()))
                 .collect()
         }))
     }
 
     /// Create a new pipeline with default configuration
     pub fn new(config: AppConfig) -> Self {
-        Self {
-            config,
-            context_manager: Self::build_context_manager(),
-            analyzer: RequestAnalyzer::new(),
-            pipeline_config: PipelineConfig::default(),
-            permission_manager: PermissionManager::new(),
-            knowledge_store: None,
-            knowledge_settings: None,
-        }
-    }
-
-    /// Create a pipeline with custom configuration
-    pub fn with_config(config: AppConfig, pipeline_config: PipelineConfig) -> Self {
+        let pipeline_config = PipelineConfig::default();
+        let arc_config = std::sync::Arc::new(config.clone());
+        let tool_router = build_tool_router(&pipeline_config.tool_routing_strategy, arc_config);
         Self {
             config,
             context_manager: Self::build_context_manager(),
@@ -111,6 +106,23 @@ impl AgentPipeline {
             permission_manager: PermissionManager::new(),
             knowledge_store: None,
             knowledge_settings: None,
+            tool_router,
+        }
+    }
+
+    /// Create a pipeline with custom configuration
+    pub fn with_config(config: AppConfig, pipeline_config: PipelineConfig) -> Self {
+        let arc_config = std::sync::Arc::new(config.clone());
+        let tool_router = build_tool_router(&pipeline_config.tool_routing_strategy, arc_config);
+        Self {
+            config,
+            context_manager: Self::build_context_manager(),
+            analyzer: RequestAnalyzer::new(),
+            pipeline_config,
+            permission_manager: PermissionManager::new(),
+            knowledge_store: None,
+            knowledge_settings: None,
+            tool_router,
         }
     }
 
@@ -190,6 +202,89 @@ impl AgentPipeline {
         }
     }
 
+    /// Streaming-friendly MCP preflight.
+    ///
+    /// This emits periodic `StreamChunk::Status` updates while connecting so the
+    /// GUI never hits its "no events" idle timeout during slow/hung MCP servers.
+    async fn ensure_mcp_servers_connected_streaming(
+        &self,
+        tx: &mpsc::Sender<StreamChunk>,
+        cancel_token: &CancellationToken,
+    ) {
+        use tokio::time::{Duration, MissedTickBehavior};
+
+        let registry = crate::mcp::get_mcp_client_registry();
+        let connected = registry.connected_servers().await;
+
+        for entry in &self.config.mcp_servers {
+            if cancel_token.is_cancelled() {
+                return;
+            }
+            if !entry.enabled || connected.contains(&entry.name) {
+                continue;
+            }
+
+            let base_msg = format!("Connecting to MCP server '{}'…", entry.name);
+            let _ = tx
+                .send(StreamChunk::Status {
+                    message: base_msg.clone(),
+                })
+                .await;
+
+            // Keepalive status while we await connect(). This prevents the GUI's
+            // 90s "no events" timeout even when a server has a long timeout.
+            let mut tick = tokio::time::interval(Duration::from_secs(20));
+            tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+            let connect_fut = registry.connect(entry);
+            tokio::pin!(connect_fut);
+
+            let result = loop {
+                if cancel_token.is_cancelled() {
+                    return;
+                }
+
+                tokio::select! {
+                    res = &mut connect_fut => break res,
+                    _ = tick.tick() => {
+                        let _ = tx.send(StreamChunk::Status { message: base_msg.clone() }).await;
+                    }
+                }
+            };
+
+            match result {
+                Ok(tools) => {
+                    tracing::info!(
+                        server = %entry.name,
+                        tool_count = tools.len(),
+                        "MCP server connected"
+                    );
+                    let _ = tx
+                        .send(StreamChunk::Status {
+                            message: format!(
+                                "MCP server '{}' connected ({})",
+                                entry.name,
+                                tools.len()
+                            ),
+                        })
+                        .await;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        server = %entry.name,
+                        error = %e,
+                        "Failed to connect MCP server (skipping)"
+                    );
+                    let _ = tx
+                        .send(StreamChunk::Status {
+                            message: format!("MCP server '{}' unavailable (skipping)", entry.name),
+                        })
+                        .await;
+                }
+            }
+        }
+    }
+
     /// Create a checkpoint before a write tool execution.
     ///
     /// This is a best-effort operation: failures are logged but do not block tool execution.
@@ -249,6 +344,8 @@ impl AgentPipeline {
             "Created pipeline with provider-optimized configuration and user settings"
         );
 
+        let arc_config = std::sync::Arc::new(config.clone());
+        let tool_router = build_tool_router(&pipeline_config.tool_routing_strategy, arc_config);
         Self {
             config,
             context_manager: Self::build_context_manager(),
@@ -257,6 +354,7 @@ impl AgentPipeline {
             permission_manager: PermissionManager::new(),
             knowledge_store: None,
             knowledge_settings: None,
+            tool_router,
         }
     }
 
@@ -343,9 +441,6 @@ impl AgentPipeline {
             request.metadata.workspace_dir = Some(cwd);
         }
 
-        // 0b. Ensure configured MCP servers are connected (lazy, idempotent).
-        self.ensure_mcp_servers_connected().await;
-
         // 1. Analyze the request
         let mut analysis = self.analyzer.analyze(&request.input);
 
@@ -360,6 +455,25 @@ impl AgentPipeline {
             analysis.confidence
         );
 
+        // 1b. Pre-flight LLM tool routing (only when strategy != Keyword).
+        // The router merges its selection into analysis.suggested_tools, which
+        // get_tools_for_analysis() checks before the category map.
+        if let Some(router) = &self.tool_router
+            && analysis.needs_tools
+        {
+            let all: Vec<&'static ToolDefinition> = all_tools().iter().collect();
+            let routing = router
+                .route(&request.input, &all, analysis.confidence)
+                .await;
+            if routing.has_selection() {
+                tracing::debug!(
+                    tools = ?routing.suggested_tools,
+                    "Pre-flight LLM router selected tools (streaming)"
+                );
+                analysis.suggested_tools = routing.suggested_tools;
+            }
+        }
+
         // 2. Filter tools based on categories (and allowed_tools if specified)
         let tools_enabled_for_request = request.metadata.tools_enabled.unwrap_or(true);
 
@@ -371,6 +485,25 @@ impl AgentPipeline {
         } else {
             Vec::new()
         };
+
+        // Decide whether MCP tool *schemas* should be included for this request.
+        //
+        // We only want to touch MCP (connect, enumerate tools) when it is actually
+        // relevant/allowed. Otherwise, slow/hung MCP servers can starve the streaming
+        // UI of events and trip the GUI's idle timeout.
+        let include_mcp_tool_schemas = self.pipeline_config.enable_tools
+            && tools_enabled_for_request
+            && analysis.needs_tools
+            && (
+                // The built-in MCP tool is part of the filtered tool set.
+                relevant_tools.iter().any(|t| t.name == "mcp")
+                    // Or the request explicitly whitelists MCP tools by name.
+                    || request
+                        .metadata
+                        .allowed_tools
+                        .iter()
+                        .any(|t| t == "mcp" || t.starts_with("mcp__"))
+            );
         tracing::debug!(
             "Relevant tools: {:?}",
             relevant_tools.iter().map(|t| t.name).collect::<Vec<_>>()
@@ -407,6 +540,13 @@ impl AgentPipeline {
                 .await?
         {
             return Ok(resp);
+        }
+
+        // 2b. If MCP tools are relevant for this request, pre-connect MCP servers with
+        // streaming keepalive status so we never silently block before the first LLM chunk.
+        if include_mcp_tool_schemas {
+            self.ensure_mcp_servers_connected_streaming(&tx, &cancel_token)
+                .await;
         }
 
         // 3. Resolve context
@@ -491,6 +631,7 @@ impl AgentPipeline {
             .execute_agentic_loop_streaming(
                 prompt,
                 relevant_tools,
+                include_mcp_tool_schemas,
                 resolved_context,
                 tx,
                 cancel_token,
@@ -846,7 +987,24 @@ impl AgentPipeline {
         }
 
         // 1. Analyze the request
-        let analysis = self.analyzer.analyze(&request.input);
+        let mut analysis = self.analyzer.analyze(&request.input);
+
+        // 1b. Pre-flight LLM tool routing (only when strategy != Keyword).
+        if let Some(router) = &self.tool_router
+            && analysis.needs_tools
+        {
+            let all: Vec<&'static ToolDefinition> = all_tools().iter().collect();
+            let routing = router
+                .route(&request.input, &all, analysis.confidence)
+                .await;
+            if routing.has_selection() {
+                tracing::debug!(
+                    tools = ?routing.suggested_tools,
+                    "Pre-flight LLM router selected tools (blocking)"
+                );
+                analysis.suggested_tools = routing.suggested_tools;
+            }
+        }
 
         // 2. Filter tools (and allowed_tools if specified)
         let tools_enabled_for_request = request.metadata.tools_enabled.unwrap_or(true);
@@ -859,6 +1017,21 @@ impl AgentPipeline {
         } else {
             Vec::new()
         };
+
+        let include_mcp_tool_schemas = self.pipeline_config.enable_tools
+            && tools_enabled_for_request
+            && analysis.needs_tools
+            && (relevant_tools.iter().any(|t| t.name == "mcp")
+                || request
+                    .metadata
+                    .allowed_tools
+                    .iter()
+                    .any(|t| t == "mcp" || t.starts_with("mcp__")));
+
+        // Blocking mode: connect MCP servers only when MCP is relevant/allowed.
+        if include_mcp_tool_schemas {
+            self.ensure_mcp_servers_connected().await;
+        }
 
         // 3. Resolve context
         let mut resolved_context = self.context_manager.resolve_context(
@@ -1000,6 +1173,7 @@ impl AgentPipeline {
             .execute_agentic_loop_blocking(
                 prompt,
                 relevant_tools,
+                include_mcp_tool_schemas,
                 resolved_context,
                 workspace.as_ref(),
             )
@@ -1052,6 +1226,27 @@ impl AgentPipeline {
             return tools;
         }
 
+        // If the pre-flight LLM router already chose tools, use that selection
+        // directly (skipping the category map entirely for this request).
+        if !analysis.suggested_tools.is_empty() {
+            let resolved: Vec<_> = analysis
+                .suggested_tools
+                .iter()
+                .filter_map(|name| crate::tools::registry::find_tool(name))
+                .collect();
+
+            if !resolved.is_empty() {
+                if self.pipeline_config.log_token_usage {
+                    tracing::debug!(
+                        suggested = ?analysis.suggested_tools,
+                        resolved_tools = ?resolved.iter().map(|t| t.name).collect::<Vec<_>>(),
+                        "Using LLM router tool selection"
+                    );
+                }
+                return resolved;
+            }
+        }
+
         // Otherwise, filter by category (legacy behavior when no session tool settings exist)
         for category in &analysis.categories {
             match category {
@@ -1084,17 +1279,57 @@ impl AgentPipeline {
                         tools.push(t);
                     }
                 }
-                _ => {}
+                ContextCategory::Screen => {
+                    if let Some(t) = crate::tools::registry::find_tool("screenshot") {
+                        tools.push(t);
+                    }
+                    if let Some(t) = crate::tools::registry::find_tool("screen_record") {
+                        tools.push(t);
+                    }
+                }
+                ContextCategory::Agent => {
+                    if let Some(t) = crate::tools::registry::find_tool("a2a") {
+                        tools.push(t);
+                    }
+                }
+                ContextCategory::Mcp => {
+                    if let Some(t) = crate::tools::registry::find_tool("mcp") {
+                        tools.push(t);
+                    }
+                }
+                ContextCategory::A2a => {
+                    if let Some(t) = crate::tools::registry::find_tool("a2a") {
+                        tools.push(t);
+                    }
+                }
+                ContextCategory::Task => {
+                    if let Some(t) = crate::tools::registry::find_tool("task") {
+                        tools.push(t);
+                    }
+                }
+                ContextCategory::Tools => {
+                    if let Some(t) = crate::tools::registry::find_tool("permissions") {
+                        tools.push(t);
+                    }
+                }
+                ContextCategory::Voice
+                | ContextCategory::Config
+                | ContextCategory::Session
+                | ContextCategory::General => {}
             }
         }
 
-        // If no specific tools found but tools are needed, include all
-        if tools.is_empty() && analysis.needs_tools {
+        // If no specific tools found, or confidence is too low to trust the category match,
+        // fall back to all tools so the LLM can make the correct selection itself.
+        // confidence < 0.2 means only a single weak keyword fired — not reliable enough to
+        // narrow the tool set, and risks silently excluding the right tool.
+        if analysis.needs_tools && (tools.is_empty() || analysis.confidence < 0.2) {
             tools = all_tools().iter().collect();
 
             if self.pipeline_config.log_token_usage {
                 tracing::debug!(
-                    "No category-specific tools matched, including all tools as fallback"
+                    confidence = analysis.confidence,
+                    "Using all-tools fallback (no category match or confidence too low)"
                 );
             }
         }

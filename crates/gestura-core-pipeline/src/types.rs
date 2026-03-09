@@ -13,6 +13,49 @@ use gestura_core_llm::TokenUsage;
 
 pub use gestura_core_foundation::permissions::PermissionLevel;
 
+/// Strategy for selecting which tools to include for an LLM request.
+///
+/// The routing strategy controls the trade-off between latency and accuracy
+/// when deciding which built-in tools to expose to the model for a given request.
+///
+/// The default is [`ToolRoutingStrategy::Keyword`], which preserves existing
+/// behavior with zero additional latency.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolRoutingStrategy {
+    /// Keyword-only routing using the `RequestAnalyzer` (default).
+    ///
+    /// Fast (<1 ms), deterministic, and zero additional network cost.
+    /// Relies on `CATEGORY_PATTERNS` in `gestura-core-context` to map
+    /// keywords → categories → tools.
+    Keyword,
+    /// Always run a pre-flight LLM call to select tools.
+    ///
+    /// Most accurate — the model reads full tool descriptions and picks
+    /// the right set. Adds one extra round-trip (~200–500 ms) on every
+    /// request regardless of keyword confidence.
+    Llm,
+    /// Run the LLM router only when keyword confidence falls below the
+    /// given threshold; otherwise use keyword routing.
+    ///
+    /// **Recommended for production.** Zero latency overhead on
+    /// well-recognized requests; semantic routing kicks in for ambiguous
+    /// or novel inputs.
+    ///
+    /// A `confidence_threshold` of `0.3` is a good starting point.
+    Hybrid {
+        /// Keyword-confidence value below which the LLM router is invoked.
+        /// Range: 0.0–1.0. Requests with confidence ≥ this value bypass the LLM.
+        confidence_threshold: f32,
+    },
+}
+
+impl Default for ToolRoutingStrategy {
+    fn default() -> Self {
+        Self::Keyword
+    }
+}
+
 /// Strategy for handling context window overflow during auto-compaction.
 ///
 /// Different strategies provide different trade-offs between preserving context,
@@ -311,6 +354,15 @@ pub struct PipelineConfig {
     /// indicator so the LLM knows content was omitted.
     /// Default: 8000 (up from the previous hard-coded 2000)
     pub tool_result_max_chars: usize,
+    /// Strategy for selecting tools to expose to the LLM for each request.
+    ///
+    /// - [`ToolRoutingStrategy::Keyword`] (default): uses the keyword-based
+    ///   `RequestAnalyzer` — fast, deterministic, zero extra latency.
+    /// - [`ToolRoutingStrategy::Llm`]: always fires a pre-flight LLM call to
+    ///   semantically select tools — highest accuracy, one extra round-trip.
+    /// - [`ToolRoutingStrategy::Hybrid`]: uses keywords when confidence is high;
+    ///   falls back to LLM routing when confidence is below the threshold.
+    pub tool_routing_strategy: ToolRoutingStrategy,
 }
 
 impl Default for PipelineConfig {
@@ -328,6 +380,14 @@ impl Default for PipelineConfig {
             auto_compact_threshold: 0.8, // Auto-compact at 80% of token limit
             compaction_strategy: CompactionStrategy::Summarize, // Default to summarization
             tool_result_max_chars: 8_000, // 8k chars keeps file reads useful without token explosion
+            // Hybrid: use keyword routing when confidence is high enough, fall back to a
+            // pre-flight LLM call when keyword scoring is inconclusive (< 0.3).  This fixes
+            // natural-language requests that don't contain exact keyword matches (e.g.
+            // "locate the llm.txt for Gestura.ai") while preserving zero-latency keyword
+            // routing for well-recognised patterns.
+            tool_routing_strategy: ToolRoutingStrategy::Hybrid {
+                confidence_threshold: 0.3,
+            },
         }
     }
 }

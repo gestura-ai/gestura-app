@@ -18,7 +18,9 @@ pub mod schemas;
 
 // Tool implementations from the `gestura-core-tools` domain crate, surfaced
 // through `gestura_core::tools::*`.
-pub use gestura_core_tools::{code, file, git, permissions, policy, screen, shell, web};
+pub use gestura_core_tools::{
+    code, file, git, mcp_manager, permissions, policy, screen, shell, web,
+};
 
 pub use code::CodeTools;
 pub use file::FileTools;

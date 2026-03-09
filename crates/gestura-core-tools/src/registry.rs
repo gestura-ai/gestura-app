@@ -15,8 +15,18 @@
 pub struct ToolDefinition {
     /// Tool name as referenced by users.
     pub name: &'static str,
-    /// Short summary of what the tool does.
+    /// Short summary of what the tool does (one-liner, shown in tool lists).
     pub summary: &'static str,
+    /// Rich LLM-facing description used in routing prompts and provider tool schemas.
+    ///
+    /// Should be 2-4 sentences explaining *when* to use this tool, *what* it does,
+    /// and any important caveats. More expressive than `summary`.
+    pub description: &'static str,
+    /// Keywords for semantic tool matching during pre-flight routing.
+    ///
+    /// These are lower-case tokens that strongly correlate with a user request
+    /// that should trigger this tool. Used by keyword and hybrid routers.
+    pub keywords: &'static [&'static str],
     /// Human-readable list of inputs / parameters.
     pub inputs: &'static [&'static str],
     /// Human-readable list of side effects / security implications.
@@ -27,10 +37,37 @@ pub struct ToolDefinition {
 
 /// Return the set of built-in tools.
 pub fn all_tools() -> &'static [ToolDefinition] {
-    static TOOLS: [ToolDefinition; 12] = [
+    static TOOLS: [ToolDefinition; 13] = [
         ToolDefinition {
             name: "file",
             summary: "Read/write/list files and directories (workspace & sandbox-aware)",
+            description: "Read, write, edit, list, search, and navigate files and directories in \
+                the workspace. Use this tool whenever the user wants to open, create, modify, \
+                delete, or inspect file or directory contents. Workspace-sandboxed to prevent \
+                accidental access outside the project root.",
+            keywords: &[
+                "file",
+                "read",
+                "write",
+                "edit",
+                "create",
+                "delete",
+                "save",
+                "directory",
+                "folder",
+                "path",
+                "list",
+                "search",
+                "content",
+                "text",
+                "document",
+                "open",
+                "load",
+                "cat",
+                "find",
+                "ls",
+                "tree",
+            ],
             inputs: &[
                 "path",
                 "operation (read/write/list)",
@@ -46,6 +83,15 @@ pub fn all_tools() -> &'static [ToolDefinition] {
         ToolDefinition {
             name: "shell",
             summary: "Run shell commands in a controlled environment",
+            description: "Execute shell commands, scripts, and programs in a controlled \
+                environment. Use this tool to run build systems (cargo, npm, make), run tests, \
+                lint code, install packages, or perform any other command-line operation. \
+                Runs in the workspace directory by default.",
+            keywords: &[
+                "shell", "run", "execute", "command", "terminal", "bash", "script", "process",
+                "npm", "cargo", "make", "build", "test", "lint", "install", "start", "stop",
+                "restart", "deploy", "compile", "launch",
+            ],
             inputs: &["command", "cwd", "env"],
             side_effects: &[
                 "Executes local processes",
@@ -59,6 +105,32 @@ pub fn all_tools() -> &'static [ToolDefinition] {
         ToolDefinition {
             name: "git",
             summary: "Git status/diff/log operations for code workflows",
+            description: "Interact with Git repositories: show status, view diffs, read commit \
+                history, manage branches, stage and commit changes, stash, and resolve conflicts. \
+                Use this tool whenever the user asks about code changes, version history, \
+                branches, or anything related to source control.",
+            keywords: &[
+                "git",
+                "commit",
+                "branch",
+                "diff",
+                "status",
+                "log",
+                "merge",
+                "push",
+                "pull",
+                "repository",
+                "version",
+                "history",
+                "staged",
+                "stash",
+                "rebase",
+                "checkout",
+                "blame",
+                "conflict",
+                "tag",
+                "remote",
+            ],
             inputs: &[
                 "repository path",
                 "operation (status/diff/log/etc)",
@@ -75,14 +147,128 @@ pub fn all_tools() -> &'static [ToolDefinition] {
         },
         ToolDefinition {
             name: "code",
-            summary: "Code analysis helpers (search, summarize, inspect)",
-            inputs: &["query", "paths", "options"],
-            side_effects: &["Reads local code"],
-            examples: &["gestura tools code search -- query=\"update_notification_settings\""],
+            summary: "Industry-grade code intelligence: glob search, grep, batch read/edit, \
+                symbol extraction, references, definitions, outlines, stats, repo map, \
+                dependency analysis, lint, and test runner",
+            description: "Full-featured code intelligence tool complementary to Cursor, \
+                Claude Code, and Aider. Use it to navigate, search, analyze, and edit \
+                large codebases efficiently.\n\n\
+                OPERATIONS:\n\
+                • glob        — find files by pattern (e.g. **/*.rs, src/**/*.ts)\n\
+                • grep        — regex search in file contents with context lines and file-glob filtering\n\
+                • batch_read  — read many files in a single call; ideal for multi-file context gathering\n\
+                • batch_edit  — apply multiple str-replace edits atomically across files\n\
+                • outline     — structured symbol outline (functions, structs, enums, impls) for a file\n\
+                • symbols     — extract all top-level symbols from a file\n\
+                • references  — find every reference to a named symbol across the codebase\n\
+                • definition  — jump to the first definition of a symbol\n\
+                • map         — repository structure map: file types, counts, and key files\n\
+                • stats       — line and language statistics for a directory\n\
+                • deps        — parse Cargo.toml dependency groups\n\
+                • lint        — run cargo clippy (optionally auto-fix)\n\
+                • test        — run cargo test with an optional filter\n\n\
+                WORKFLOW GUIDANCE:\n\
+                1. Start with 'map' or 'stats' to understand the codebase structure.\n\
+                2. Use 'glob' to discover relevant files by pattern before reading them.\n\
+                3. Use 'grep' with context_lines to locate logic without reading whole files.\n\
+                4. Use 'batch_read' to pull in multiple related files at once.\n\
+                5. Use 'outline' or 'symbols' to understand a file's API surface quickly.\n\
+                6. Use 'references' + 'definition' for precise symbol navigation.\n\
+                7. Use 'batch_edit' for multi-file refactors; each edit is a str-replace.\n\
+                8. After changes run 'lint' then 'test' to verify correctness.",
+            keywords: &[
+                "code",
+                "glob",
+                "grep",
+                "search",
+                "find",
+                "batch",
+                "read",
+                "edit",
+                "refactor",
+                "symbol",
+                "function",
+                "struct",
+                "enum",
+                "trait",
+                "impl",
+                "reference",
+                "definition",
+                "outline",
+                "map",
+                "stats",
+                "lines",
+                "dependency",
+                "cargo",
+                "clippy",
+                "lint",
+                "test",
+                "codebase",
+                "architecture",
+                "module",
+                "import",
+                "class",
+                "method",
+                "navigate",
+            ],
+            inputs: &[
+                "operation",
+                "path",
+                "pattern",
+                "symbol",
+                "paths",
+                "edits",
+                "options",
+            ],
+            side_effects: &[
+                "Reads local code files",
+                "batch_edit writes to local files",
+                "lint and test execute cargo subprocesses",
+            ],
+            examples: &[
+                "Find all Rust files: {operation:glob, pattern:**/*.rs, path:.}",
+                "Grep for a function: {operation:grep, pattern:fn handle_request, file_glob:*.rs, context_lines:3}",
+                "Read multiple files: {operation:batch_read, paths:[src/main.rs, src/lib.rs]}",
+                "Batch edit refactor: {operation:batch_edit, edits:[{path:src/lib.rs, old_str:old_name, new_str:new_name}]}",
+                "Outline a file: {operation:outline, path:crates/my-crate/src/lib.rs}",
+                "Find references: {operation:references, symbol:MyStruct, path:.}",
+                "Jump to definition: {operation:definition, symbol:execute_tool, path:.}",
+                "Repo map: {operation:map, path:., max_depth:3}",
+                "Code stats: {operation:stats, path:.}",
+                "Cargo deps: {operation:deps, path:.}",
+                "Run clippy: {operation:lint, path:.}",
+                "Run tests: {operation:test, path:., filter:my_test_name}",
+            ],
         },
         ToolDefinition {
             name: "web",
             summary: "Fetch web pages and summarize content",
+            description: "Fetch and read content from web pages, converting HTML to readable \
+                text. Use this tool when the user provides a URL or asks to retrieve information \
+                from a specific website, read documentation, check a webpage, or download content \
+                from the internet. Handles redirects and extracts main body text.",
+            keywords: &[
+                "web",
+                "fetch",
+                "url",
+                "page",
+                "website",
+                "http",
+                "https",
+                "browse",
+                "download",
+                "documentation",
+                "internet",
+                "online",
+                "link",
+                "site",
+                "visit",
+                "open",
+                "retrieve",
+                "get",
+                "html",
+                "content",
+            ],
             inputs: &["url", "options"],
             side_effects: &["Performs network requests"],
             examples: &["gestura tools web fetch https://example.com"],
@@ -90,6 +276,30 @@ pub fn all_tools() -> &'static [ToolDefinition] {
         ToolDefinition {
             name: "web_search",
             summary: "Search the web using configurable providers (Local/SerpAPI/DuckDuckGo/Brave)",
+            description: "Search the internet using configurable search providers (DuckDuckGo, \
+                Brave, SerpAPI). Use this tool when the user wants to find information online, \
+                look up a topic, research a question, find recent news or events, or discover \
+                relevant web resources. Returns ranked result snippets with URLs.",
+            keywords: &[
+                "search",
+                "google",
+                "find",
+                "lookup",
+                "query",
+                "results",
+                "internet",
+                "online",
+                "discover",
+                "research",
+                "news",
+                "information",
+                "duckduckgo",
+                "brave",
+                "look up",
+                "what is",
+                "how to",
+                "latest",
+            ],
             inputs: &["query", "max_results", "provider (optional)"],
             side_effects: &["Performs network requests", "May use API quotas"],
             examples: &[
@@ -100,6 +310,25 @@ pub fn all_tools() -> &'static [ToolDefinition] {
         ToolDefinition {
             name: "a2a",
             summary: "Agent-to-Agent protocol for delegating tasks to remote agents",
+            description: "Delegate tasks to remote AI agents using the Agent-to-Agent (A2A) \
+                protocol. Use this tool when the user wants to offload a subtask to a specialized \
+                remote agent, discover what remote agents are available, or orchestrate multi-agent \
+                workflows where different agents collaborate on a larger goal.",
+            keywords: &[
+                "agent",
+                "a2a",
+                "delegate",
+                "remote",
+                "orchestrate",
+                "multi-agent",
+                "protocol",
+                "worker",
+                "supervisor",
+                "task",
+                "handoff",
+                "subagent",
+                "collaborate",
+            ],
             inputs: &["agent_url", "task_message", "auth_token (optional)"],
             side_effects: &[
                 "Performs network requests",
@@ -113,6 +342,25 @@ pub fn all_tools() -> &'static [ToolDefinition] {
         ToolDefinition {
             name: "permissions",
             summary: "Check/request OS-level permissions (platform-specific)",
+            description: "Check and request OS-level permissions such as microphone access, \
+                accessibility, screen recording, and camera. Use this tool when a feature \
+                requires a system permission that may not yet be granted, or when the user \
+                asks what permissions the app has or needs.",
+            keywords: &[
+                "permission",
+                "permissions",
+                "microphone",
+                "accessibility",
+                "access",
+                "privacy",
+                "camera",
+                "system",
+                "grant",
+                "request",
+                "check",
+                "screen recording",
+                "allow",
+            ],
             inputs: &["permission kind (microphone, accessibility, etc.)"],
             side_effects: &["May prompt the OS", "May open system settings"],
             examples: &[
@@ -122,17 +370,104 @@ pub fn all_tools() -> &'static [ToolDefinition] {
         },
         ToolDefinition {
             name: "mcp",
-            summary: "Model Context Protocol tools from connected MCP servers",
-            inputs: &["server_name", "tool_name", "arguments"],
-            side_effects: &["Depends on the specific MCP tool being invoked"],
+            summary: "Search, evaluate, install, enable, disable, and manage MCP servers from the official registry",
+            description: "Discover and manage Model Context Protocol (MCP) servers from the official \
+                registry at registry.modelcontextprotocol.io. Use this tool when the user wants to \
+                find new MCP servers by keyword, evaluate a specific server's capabilities and \
+                requirements, install a server into .mcp.json, enable or disable configured servers, \
+                list installed servers, or remove a server. Always start with operation=search to \
+                find candidates, then operation=evaluate to review details, then operation=install \
+                to add the server — the tool provides LLM workflow guidance at each step.",
+            keywords: &[
+                "mcp",
+                "install",
+                "search",
+                "discover",
+                "registry",
+                "manage",
+                "configure",
+                "browse",
+                "npm",
+                "npx",
+                "enable",
+                "disable",
+                "remove",
+                "server",
+                "protocol",
+                "extension",
+                "plugin",
+                "external",
+                "connect",
+                "capability",
+                "model context",
+                "integration",
+                "list",
+                "add",
+                "setup",
+                "pypi",
+                "docker",
+                "oci",
+                "stdio",
+                "http",
+                "tool",
+            ],
+            inputs: &[
+                "operation (search/evaluate/install/enable/disable/list/remove/info)",
+                "query (for search)",
+                "limit (for search, default 20)",
+                "server_id (for evaluate/install/info)",
+                "name (local alias for install/enable/disable/remove)",
+                "scope (project|user, default project)",
+                "transport (stdio|http, for install override)",
+                "command (for install stdio override)",
+                "args (array, for install stdio override)",
+                "url (for install http override)",
+                "env (object, env vars for install)",
+            ],
+            side_effects: &[
+                "search/evaluate/info: network request to registry.modelcontextprotocol.io",
+                "install/enable/disable/remove: modifies .mcp.json on disk",
+            ],
             examples: &[
-                "gestura tools mcp list",
-                "gestura tools mcp call filesystem read_file --path ./README.md",
+                "{\"operation\":\"search\",\"query\":\"filesystem\"}",
+                "{\"operation\":\"search\",\"query\":\"github\",\"limit\":10}",
+                "{\"operation\":\"evaluate\",\"server_id\":\"io.github.modelcontextprotocol/server-filesystem\"}",
+                "{\"operation\":\"install\",\"server_id\":\"io.github.modelcontextprotocol/server-filesystem\",\"name\":\"filesystem\",\"scope\":\"project\"}",
+                "{\"operation\":\"install\",\"server_id\":\"io.github.exa/exa\",\"env\":{\"EXA_API_KEY\":\"<key>\"}}",
+                "{\"operation\":\"list\",\"scope\":\"project\"}",
+                "{\"operation\":\"enable\",\"name\":\"filesystem\"}",
+                "{\"operation\":\"disable\",\"name\":\"filesystem\"}",
+                "{\"operation\":\"remove\",\"name\":\"filesystem\",\"scope\":\"project\"}",
+                "{\"operation\":\"info\",\"server_id\":\"io.github.modelcontextprotocol/server-github\"}",
             ],
         },
         ToolDefinition {
             name: "task",
             summary: "Manage tasks for the current session: create, update status, list, organize hierarchies",
+            description: "Create, update, list, and organize tasks and work items for the \
+                current session. Use this tool when the user wants to track progress on work, \
+                create a to-do list, mark items as done, build subtask hierarchies, or manage \
+                any kind of structured checklist or work breakdown.",
+            keywords: &[
+                "task",
+                "todo",
+                "work",
+                "track",
+                "checklist",
+                "reminder",
+                "subtask",
+                "status",
+                "create",
+                "list",
+                "progress",
+                "organize",
+                "mark",
+                "done",
+                "complete",
+                "in progress",
+                "workflow",
+                "breakdown",
+            ],
             inputs: &[
                 "operation (create/update_status/update/delete/list/get_hierarchy)",
                 "task_id (for update/delete)",
@@ -155,6 +490,27 @@ pub fn all_tools() -> &'static [ToolDefinition] {
         ToolDefinition {
             name: "screenshot",
             summary: "Capture screenshots of the screen or specific regions",
+            description: "Capture screenshots of the full screen, a specific display, or a \
+                defined region. Use this tool when the user wants to take a picture of their \
+                screen, capture a UI state, snap a region, or save a visual record. Returns \
+                a file path or inline base64 image. Requires screen recording permission.",
+            keywords: &[
+                "screenshot",
+                "capture",
+                "screen",
+                "image",
+                "photo",
+                "snap",
+                "grab",
+                "display",
+                "picture",
+                "png",
+                "jpg",
+                "snapshot",
+                "screengrab",
+                "take a picture",
+                "show me",
+            ],
             inputs: &[
                 "output_format (optional: png/jpg)",
                 "output_path (optional; default artifact path)",
@@ -177,6 +533,27 @@ pub fn all_tools() -> &'static [ToolDefinition] {
         ToolDefinition {
             name: "screen_record",
             summary: "Record screen video with start/stop controls",
+            description: "Record the screen as a video file (MP4 or MOV). Start a recording \
+                session with optional region and display selection, then stop it to produce a \
+                file. Use this tool when the user wants to create a screencast, demonstrate \
+                a workflow, record a tutorial, or capture video of any on-screen activity.",
+            keywords: &[
+                "record",
+                "recording",
+                "video",
+                "screen",
+                "capture",
+                "screencast",
+                "demonstration",
+                "demo",
+                "tutorial",
+                "mp4",
+                "mov",
+                "film",
+                "show",
+                "create a video",
+                "make a video",
+            ],
             inputs: &[
                 "operation (start/stop)",
                 "output_format (optional for start: mp4/mov)",
@@ -196,6 +573,41 @@ pub fn all_tools() -> &'static [ToolDefinition] {
                 "{\"operation\":\"start\"}",
                 "{\"operation\":\"start\",\"output_format\":\"mov\"}",
                 "{\"operation\":\"stop\",\"recording_id\":\"<recording_id>\"}",
+            ],
+        },
+        ToolDefinition {
+            name: "gui_control",
+            summary: "Drive the application GUI for self-demonstrations",
+            description: "Control the Gestura application GUI programmatically: toggle view \
+                modes, open or close the file explorer, navigate to the chat panel, or open \
+                configuration screens. Use this tool when the agent needs to demonstrate its \
+                own interface or navigate UI panels as part of a self-demonstration workflow.",
+            keywords: &[
+                "gui",
+                "interface",
+                "view",
+                "mode",
+                "explorer",
+                "editor",
+                "chat",
+                "navigate",
+                "toggle",
+                "window",
+                "ui",
+                "panel",
+                "open",
+                "close",
+                "config",
+                "settings",
+            ],
+            inputs: &[
+                "action (toggle_view_mode/open_explorer/close_explorer/open_chat/close_chat/navigate_config)",
+                "target (optional argument depending on action)",
+            ],
+            side_effects: &["Changes the physical view in the user's GUI"],
+            examples: &[
+                "{\"action\":\"toggle_view_mode\"}",
+                "{\"action\":\"open_explorer\"}",
             ],
         },
     ];

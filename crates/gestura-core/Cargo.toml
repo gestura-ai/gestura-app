@@ -104,6 +104,8 @@ urlencoding.workspace = true
 notify.workspace = true
 serde_yaml.workspace = true
 gestura-core-audio.workspace = true
+dashmap = "6.1.0"
+blake3 = "1.8.3"
 
 [target.'cfg(unix)'.dependencies]
 # Unix signal handling (for screen recording on Unix platforms)

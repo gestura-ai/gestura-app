@@ -1104,12 +1104,16 @@ mod tests {
         assert_eq!(c.hotkey_listen, "Ctrl+Space");
         assert_eq!(c.grace_period_secs, 30);
         assert_eq!(c.llm.primary, "anthropic");
-        assert_eq!(c.llm.fallback, Some("ollama".to_string()));
-        // Ollama should have sensible defaults so it works when selected
-        assert!(c.llm.ollama.is_some());
-        let ollama = c.llm.ollama.unwrap();
-        assert_eq!(ollama.base_url, "http://localhost:11434");
-        assert_eq!(ollama.model, "llama3.2");
+        // Clean-config: no pre-populated fallback or provider blocks in defaults;
+        // optional fields are None until the user explicitly configures them.
+        assert_eq!(c.llm.fallback, None);
+        assert!(c.llm.ollama.is_none());
+        assert!(c.llm.openai.is_none());
+        assert!(c.llm.anthropic.is_none());
+        // OllamaConfig::default() still has sensible values for when it IS selected.
+        let ollama_defaults = OllamaConfig::default();
+        assert_eq!(ollama_defaults.base_url, "http://localhost:11434");
+        assert_eq!(ollama_defaults.model, "llama3.2");
     }
 
     #[test]

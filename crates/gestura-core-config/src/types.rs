@@ -15,7 +15,7 @@ use crate::hooks_types::HooksSettings;
 pub use gestura_core_foundation::error::{AppError, Result};
 use gestura_core_llm::default_models::{
     DEFAULT_ANTHROPIC_MODEL, DEFAULT_GEMINI_MODEL, DEFAULT_GROK_MODEL, DEFAULT_OLLAMA_BASE_URL,
-    DEFAULT_OLLAMA_MODEL, DEFAULT_OPENAI_MODEL, DEFAULT_OPENAI_STT_MODEL,
+    DEFAULT_OLLAMA_MODEL, DEFAULT_OPENAI_MODEL,
 };
 use gestura_core_pipeline::types::CompactionStrategy;
 
@@ -25,6 +25,52 @@ pub use gestura_core_mcp::config::{
     import_claude_desktop_servers, infer_transport_from_endpoint,
 };
 pub use gestura_core_tools::config::{WebSearchConfig, WebSearchProvider};
+
+// ---------------------------------------------------------------------------
+// Serde helper predicates — used by `skip_serializing_if`
+// ---------------------------------------------------------------------------
+
+/// Returns `true` when `val` equals its `Default` value.
+///
+/// Used with `#[serde(skip_serializing_if = "is_default")]` so that struct
+/// fields whose value is the default are omitted from the serialized YAML,
+/// keeping config files minimal and human-readable.
+fn is_default<T: Default + PartialEq>(val: &T) -> bool {
+    val == &T::default()
+}
+
+fn is_default_hotkey_listen(v: &String) -> bool {
+    v == "Ctrl+Space"
+}
+
+fn is_default_grace_period_secs(v: &u32) -> bool {
+    *v == 30
+}
+
+fn is_default_nats_url(v: &String) -> bool {
+    v == "nats://127.0.0.1:4223"
+}
+
+fn is_default_ui_theme_mode(v: &String) -> bool {
+    v == "system"
+}
+
+// Default-value provider fns required by `#[serde(default = "...")]`
+fn default_hotkey_listen() -> String {
+    "Ctrl+Space".to_string()
+}
+
+fn default_grace_period_secs() -> u32 {
+    30
+}
+
+fn default_nats_url() -> String {
+    "nats://127.0.0.1:4223".to_string()
+}
+
+fn default_ui_theme_mode() -> String {
+    "system".to_string()
+}
 
 // ---------------------------------------------------------------------------
 // Permission types
@@ -194,44 +240,65 @@ impl PromptEnhancementSettings {
 // ---------------------------------------------------------------------------
 
 /// Application configuration persisted to a YAML file.
+///
+/// Only fields that differ from their defaults are written to disk.  All
+/// other fields fall back to `Default::default()` at load time, keeping the
+/// YAML file minimal and human-readable.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppConfig {
     /// Global hotkey to toggle the app or trigger recording.
+    #[serde(
+        default = "default_hotkey_listen",
+        skip_serializing_if = "is_default_hotkey_listen"
+    )]
     pub hotkey_listen: String,
     /// Grace period in seconds for agent shutdown.
+    #[serde(
+        default = "default_grace_period_secs",
+        skip_serializing_if = "is_default_grace_period_secs"
+    )]
     pub grace_period_secs: u32,
     /// LLM configuration and provider selection.
+    #[serde(default)]
     pub llm: LlmSettings,
     /// Voice/STT configuration.
+    #[serde(default)]
     pub voice: VoiceSettings,
     /// MCP server configuration (full spec, Claude Code compatible).
-    #[serde(default, alias = "mcp_tools")]
+    #[serde(default, alias = "mcp_tools", skip_serializing_if = "Vec::is_empty")]
     pub mcp_servers: Vec<McpServerEntry>,
     /// MDH pointer mappings
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub mdh_pointers: HashMap<String, String>,
     /// UI preferences (theme, accent)
+    #[serde(default, skip_serializing_if = "is_default")]
     pub ui: UiSettings,
     /// NATS URL for embedded MQ connectivity.
+    #[serde(
+        default = "default_nats_url",
+        skip_serializing_if = "is_default_nats_url"
+    )]
     pub nats_url: String,
     /// Developer and simulator settings
+    #[serde(default, skip_serializing_if = "is_default")]
     pub developer: DeveloperSettings,
     /// Notification settings for response completion and feedback
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub notifications: NotificationSettings,
     /// Web search configuration
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub web_search: WebSearchConfig,
     /// Global permission settings for tool execution
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub permissions: GlobalPermissionSettings,
     /// Pipeline and context management settings
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub pipeline: PipelineSettings,
     /// Prompt enhancement settings
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub prompt_enhancement: PromptEnhancementSettings,
     /// Hooks configuration.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
     pub hooks: HooksSettings,
 }
 
@@ -271,8 +338,22 @@ impl Default for NotificationSettings {
 /// UI preferences including theme mode and accent color.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UiSettings {
+    #[serde(
+        default = "default_ui_theme_mode",
+        skip_serializing_if = "is_default_ui_theme_mode"
+    )]
     pub theme_mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accent: Option<String>,
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        Self {
+            theme_mode: default_ui_theme_mode(),
+            accent: None,
+        }
+    }
 }
 
 /// Developer and simulator settings
@@ -325,17 +406,37 @@ impl Default for DeveloperSettings {
 
 /// LLM settings grouping provider-specific configs
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct LlmSettings {
     /// Primary provider id: "openai" | "anthropic" | "gemini" | "grok" | "ollama"
     pub primary: String,
     /// Fallback provider id (optional): used when primary fails
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai: Option<OpenAiConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anthropic: Option<AnthropicConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gemini: Option<GeminiConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grok: Option<GrokConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ollama: Option<OllamaConfig>,
+}
+
+impl Default for LlmSettings {
+    fn default() -> Self {
+        Self {
+            primary: "anthropic".to_string(),
+            fallback: None,
+            openai: None,
+            anthropic: None,
+            gemini: None,
+            grok: None,
+            ollama: None,
+        }
+    }
 }
 
 impl LlmSettings {
@@ -385,10 +486,15 @@ impl LlmSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpenAiConfig {
-    #[serde(default)]
+    /// Stored in the system keychain; never written to the config file.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub api_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
-    #[serde(default = "default_openai_model")]
+    #[serde(
+        default = "default_openai_model",
+        skip_serializing_if = "is_default_openai_model"
+    )]
     pub model: String,
 }
 
@@ -406,15 +512,24 @@ fn default_openai_model() -> String {
     DEFAULT_OPENAI_MODEL.to_string()
 }
 
+fn is_default_openai_model(v: &String) -> bool {
+    v == DEFAULT_OPENAI_MODEL
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AnthropicConfig {
-    #[serde(default)]
+    /// Stored in the system keychain; never written to the config file.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub api_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
-    #[serde(default = "default_anthropic_model")]
+    #[serde(
+        default = "default_anthropic_model",
+        skip_serializing_if = "is_default_anthropic_model"
+    )]
     pub model: String,
     /// Optional: enable Anthropic "extended thinking" streaming.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_budget_tokens: Option<u32>,
 }
 
@@ -433,12 +548,21 @@ fn default_anthropic_model() -> String {
     DEFAULT_ANTHROPIC_MODEL.to_string()
 }
 
+fn is_default_anthropic_model(v: &String) -> bool {
+    v == DEFAULT_ANTHROPIC_MODEL
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GrokConfig {
-    #[serde(default)]
+    /// Stored in the system keychain; never written to the config file.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub api_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
-    #[serde(default = "default_grok_model")]
+    #[serde(
+        default = "default_grok_model",
+        skip_serializing_if = "is_default_grok_model"
+    )]
     pub model: String,
 }
 
@@ -456,12 +580,21 @@ fn default_grok_model() -> String {
     DEFAULT_GROK_MODEL.to_string()
 }
 
+fn is_default_grok_model(v: &String) -> bool {
+    v == DEFAULT_GROK_MODEL
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GeminiConfig {
-    #[serde(default)]
+    /// Stored in the system keychain; never written to the config file.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub api_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
-    #[serde(default = "default_gemini_model")]
+    #[serde(
+        default = "default_gemini_model",
+        skip_serializing_if = "is_default_gemini_model"
+    )]
     pub model: String,
 }
 
@@ -479,28 +612,85 @@ fn default_gemini_model() -> String {
     DEFAULT_GEMINI_MODEL.to_string()
 }
 
+fn is_default_gemini_model(v: &String) -> bool {
+    v == DEFAULT_GEMINI_MODEL
+}
+
+fn default_ollama_base_url() -> String {
+    DEFAULT_OLLAMA_BASE_URL.to_string()
+}
+
+fn is_default_ollama_base_url(v: &String) -> bool {
+    v == DEFAULT_OLLAMA_BASE_URL
+}
+
+fn default_ollama_model() -> String {
+    DEFAULT_OLLAMA_MODEL.to_string()
+}
+
+fn is_default_ollama_model(v: &String) -> bool {
+    v == DEFAULT_OLLAMA_MODEL
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OllamaConfig {
+    #[serde(
+        default = "default_ollama_base_url",
+        skip_serializing_if = "is_default_ollama_base_url"
+    )]
     pub base_url: String,
+    #[serde(
+        default = "default_ollama_model",
+        skip_serializing_if = "is_default_ollama_model"
+    )]
     pub model: String,
 }
 
-/// Voice settings; default uses OpenAI Whisper API if api_key present
+impl Default for OllamaConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_ollama_base_url(),
+            model: default_ollama_model(),
+        }
+    }
+}
+
+/// Voice settings; default uses local Whisper
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct VoiceSettings {
     /// Preferred provider: "local" | "openai" | "none"
     pub provider: String,
     /// Optional input wav file path used for testing transcription
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_path: Option<String>,
     /// Local whisper.cpp model path (.bin)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_model_path: Option<String>,
     /// OpenAI Whisper API settings (optional)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_model: Option<String>,
     /// Selected audio input device name (None = use system default)
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_device: Option<String>,
+}
+
+impl Default for VoiceSettings {
+    fn default() -> Self {
+        Self {
+            provider: "local".to_string(),
+            input_path: None,
+            local_model_path: None,
+            openai_api_key: None,
+            openai_base_url: None,
+            openai_model: None,
+            audio_device: None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -510,36 +700,14 @@ pub struct VoiceSettings {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            hotkey_listen: "Ctrl+Space".to_string(),
-            grace_period_secs: 30,
-            llm: LlmSettings {
-                primary: "anthropic".into(),
-                fallback: Some("ollama".into()),
-                openai: None,
-                anthropic: None,
-                gemini: None,
-                grok: None,
-                ollama: Some(OllamaConfig {
-                    base_url: DEFAULT_OLLAMA_BASE_URL.into(),
-                    model: DEFAULT_OLLAMA_MODEL.into(),
-                }),
-            },
-            voice: VoiceSettings {
-                provider: "local".into(),
-                input_path: None,
-                local_model_path: None,
-                openai_api_key: None,
-                openai_base_url: None,
-                openai_model: Some(DEFAULT_OPENAI_STT_MODEL.into()),
-                audio_device: None,
-            },
+            hotkey_listen: default_hotkey_listen(),
+            grace_period_secs: default_grace_period_secs(),
+            llm: LlmSettings::default(),
+            voice: VoiceSettings::default(),
             mcp_servers: vec![],
             mdh_pointers: Default::default(),
-            ui: UiSettings {
-                theme_mode: "system".into(),
-                accent: None,
-            },
-            nats_url: "nats://127.0.0.1:4223".to_string(),
+            ui: UiSettings::default(),
+            nats_url: default_nats_url(),
             developer: DeveloperSettings::default(),
             notifications: NotificationSettings::default(),
             web_search: WebSearchConfig::default(),

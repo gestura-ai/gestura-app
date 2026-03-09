@@ -10,6 +10,7 @@ impl AgentPipeline {
         &self,
         initial_prompt: String,
         tools: Vec<&'static ToolDefinition>,
+        include_mcp_tool_schemas: bool,
         context: crate::context::ResolvedContext,
         tx: mpsc::Sender<StreamChunk>,
         cancel_token: CancellationToken,
@@ -30,23 +31,37 @@ impl AgentPipeline {
         let mut current_prompt = initial_prompt;
 
         // Build provider-specific tool schemas once for this request.
+        //
+        // IMPORTANT: MCP tool schemas are only included when the pipeline has decided
+        // they are relevant/allowed for this request. This prevents unrelated MCP
+        // servers from delaying or destabilizing requests that only need built-in tools.
         let tool_schemas = if tools.is_empty() {
-            // Even with no built-in tools, MCP tools may be available.
-            let mcp_tools = crate::mcp::get_mcp_client_registry().all_tools().await;
-            if mcp_tools.is_empty() {
-                None
+            if include_mcp_tool_schemas {
+                let mcp_tools = crate::mcp::get_mcp_client_registry().all_tools().await;
+                if mcp_tools.is_empty() {
+                    None
+                } else {
+                    Some(crate::tools::schemas::build_mcp_tool_schemas(&mcp_tools))
+                }
             } else {
-                Some(crate::tools::schemas::build_mcp_tool_schemas(&mcp_tools))
+                None
             }
         } else {
             let mut schemas = crate::tools::schemas::build_provider_tool_schemas(&tools);
-            // Merge in any MCP tool schemas.
-            let mcp_tools = crate::mcp::get_mcp_client_registry().all_tools().await;
-            if !mcp_tools.is_empty() {
-                schemas.merge(crate::tools::schemas::build_mcp_tool_schemas(&mcp_tools));
+            if include_mcp_tool_schemas {
+                let mcp_tools = crate::mcp::get_mcp_client_registry().all_tools().await;
+                if !mcp_tools.is_empty() {
+                    schemas.merge(crate::tools::schemas::build_mcp_tool_schemas(&mcp_tools));
+                }
             }
             Some(schemas)
         };
+
+        tracing::debug!(
+            builtin_tool_count = tools.len(),
+            has_schemas = tool_schemas.is_some(),
+            "[AgentLoop] Tool schemas initialized"
+        );
 
         // Agentic loop - continue until no more tool calls or max iterations
         for iteration in 0..self.pipeline_config.max_iterations {
@@ -56,6 +71,13 @@ impl AgentPipeline {
             }
 
             response.iterations = iteration + 1;
+
+            tracing::debug!(
+                iteration = iteration,
+                permission_level = ?permission_level,
+                max_iterations = self.pipeline_config.max_iterations,
+                "[AgentLoop] Starting iteration"
+            );
 
             // Emit iteration boundary marker so UIs can delineate the agentic loop.
             // iteration 0 = initial LLM call; iteration 1+ = continuation after tool results.
@@ -96,6 +118,11 @@ impl AgentPipeline {
                 }
             });
 
+            tracing::debug!(
+                iteration = iteration,
+                "[AgentLoop] Streaming task spawned; consuming inner chunks"
+            );
+
             // Collect chunks and forward to caller
             let mut iteration_content = String::new();
             let mut pending_tool_call: Option<PendingToolCall> = None;
@@ -122,9 +149,14 @@ impl AgentPipeline {
                         let _ = tx.send(chunk).await;
                     }
                     StreamChunk::ToolCallStart { id, name } => {
+                        tracing::debug!(tool = %name, id = %id, "[AgentLoop] ToolCallStart received");
                         // Defensive: if the provider starts a new tool call without ending the
                         // previous one, finalize the previous call so we don't drop it.
                         if let Some(pending) = pending_tool_call.take() {
+                            tracing::debug!(
+                                tool = %pending.name,
+                                "[AgentLoop] Defensive finalize of previous pending tool call"
+                            );
                             self.finalize_pending_tool_call(
                                 pending,
                                 FinalizePendingToolCallCtx {
@@ -155,7 +187,19 @@ impl AgentPipeline {
                         let _ = tx.send(chunk).await;
                     }
                     StreamChunk::ToolCallEnd => {
+                        // Forward ToolCallEnd to the frontend FIRST so the UI can transition
+                        // the tool card from "running" → "executing" before we actually run
+                        // the tool. This preserves the correct visual ordering:
+                        //   ToolCallStart → ToolCallArgs → ToolCallEnd → ToolCallResult
+                        let _ = tx.send(chunk).await;
                         if let Some(pending) = pending_tool_call.take() {
+                            let tool_name_log = pending.name.clone();
+                            let args_len_log = pending.arguments.len();
+                            tracing::debug!(
+                                tool = %tool_name_log,
+                                args_len = args_len_log,
+                                "[AgentLoop] ToolCallEnd: calling finalize_pending_tool_call"
+                            );
                             self.finalize_pending_tool_call(
                                 pending,
                                 FinalizePendingToolCallCtx {
@@ -169,8 +213,15 @@ impl AgentPipeline {
                                 },
                             )
                             .await;
+                            tracing::debug!(
+                                tool = %tool_name_log,
+                                "[AgentLoop] finalize_pending_tool_call returned"
+                            );
+                        } else {
+                            tracing::warn!(
+                                "[AgentLoop] ToolCallEnd received but no pending tool call — may indicate a provider bug"
+                            );
                         }
-                        let _ = tx.send(chunk).await;
                     }
                     StreamChunk::ToolCallResult { .. } => {
                         // Forward tool result to frontend (already emitted by finalize_pending_tool_call)
@@ -218,10 +269,19 @@ impl AgentPipeline {
                         let _ = tx.send(chunk).await;
                     }
                     StreamChunk::Done(usage) => {
+                        tracing::debug!(
+                            iteration = iteration,
+                            tool_calls_so_far = tool_calls_in_iteration.len(),
+                            "[AgentLoop] Done chunk received from inner stream"
+                        );
                         // Some providers (or buggy intermediaries) may terminate the stream
                         // without emitting a ToolCallEnd. If we have a pending tool call, treat
                         // stream completion as an implicit end and execute it.
                         if let Some(pending) = pending_tool_call.take() {
+                            tracing::debug!(
+                                tool = %pending.name,
+                                "[AgentLoop] Done received with pending tool call — implicit ToolCallEnd"
+                            );
                             self.finalize_pending_tool_call(
                                 pending,
                                 FinalizePendingToolCallCtx {
@@ -246,23 +306,42 @@ impl AgentPipeline {
                         }
                     }
                     StreamChunk::Error(e) => {
+                        tracing::error!(error = %e, iteration = iteration, "[AgentLoop] Error chunk received from inner stream");
                         let _ = tx.send(StreamChunk::Error(e.clone())).await;
                         return Err(AppError::Llm(e.clone()));
                     }
                     StreamChunk::Cancelled => {
+                        tracing::debug!(
+                            iteration = iteration,
+                            "[AgentLoop] Cancelled chunk — aborting loop"
+                        );
                         let _ = tx.send(chunk).await;
                         return Ok(response);
                     }
                     StreamChunk::Paused => {
+                        tracing::debug!(
+                            iteration = iteration,
+                            "[AgentLoop] Paused chunk — suspending loop"
+                        );
                         let _ = tx.send(chunk).await;
                         return Ok(response);
                     }
                 }
             }
 
+            tracing::debug!(
+                iteration = iteration,
+                tool_calls_count = tool_calls_in_iteration.len(),
+                "[AgentLoop] Inner stream channel closed (while-recv loop exited)"
+            );
+
             // If the inner stream ended unexpectedly (no Done/Error/Cancelled), but we have a
             // pending tool call, execute it so the agent loop can continue.
             if let Some(pending) = pending_tool_call.take() {
+                tracing::warn!(
+                    tool = %pending.name,
+                    "[AgentLoop] Channel closed with pending tool call — unexpected; executing anyway"
+                );
                 self.finalize_pending_tool_call(
                     pending,
                     FinalizePendingToolCallCtx {
@@ -281,8 +360,18 @@ impl AgentPipeline {
             // Wait for stream task
             let _ = stream_handle.await;
 
+            tracing::debug!(
+                iteration = iteration,
+                tool_calls_count = tool_calls_in_iteration.len(),
+                "[AgentLoop] Stream task joined"
+            );
+
             // If no tool calls, we're done
             if tool_calls_in_iteration.is_empty() {
+                tracing::debug!(
+                    iteration = iteration,
+                    "[AgentLoop] No tool calls in iteration — breaking loop"
+                );
                 break;
             }
 
@@ -308,6 +397,7 @@ impl AgentPipeline {
         &self,
         initial_prompt: String,
         tools: Vec<&'static ToolDefinition>,
+        include_mcp_tool_schemas: bool,
         context: crate::context::ResolvedContext,
         workspace: Option<&SessionWorkspace>,
     ) -> Result<AgentResponse, AppError> {
@@ -326,18 +416,25 @@ impl AgentPipeline {
         }
 
         // Build provider-specific tool schemas so the model knows about available tools.
+        // MCP schemas are only included when relevant/allowed.
         let tool_schemas = if tools.is_empty() {
-            let mcp_tools = crate::mcp::get_mcp_client_registry().all_tools().await;
-            if mcp_tools.is_empty() {
-                None
+            if include_mcp_tool_schemas {
+                let mcp_tools = crate::mcp::get_mcp_client_registry().all_tools().await;
+                if mcp_tools.is_empty() {
+                    None
+                } else {
+                    Some(crate::tools::schemas::build_mcp_tool_schemas(&mcp_tools))
+                }
             } else {
-                Some(crate::tools::schemas::build_mcp_tool_schemas(&mcp_tools))
+                None
             }
         } else {
             let mut schemas = crate::tools::schemas::build_provider_tool_schemas(&tools);
-            let mcp_tools = crate::mcp::get_mcp_client_registry().all_tools().await;
-            if !mcp_tools.is_empty() {
-                schemas.merge(crate::tools::schemas::build_mcp_tool_schemas(&mcp_tools));
+            if include_mcp_tool_schemas {
+                let mcp_tools = crate::mcp::get_mcp_client_registry().all_tools().await;
+                if !mcp_tools.is_empty() {
+                    schemas.merge(crate::tools::schemas::build_mcp_tool_schemas(&mcp_tools));
+                }
             }
             Some(schemas)
         };

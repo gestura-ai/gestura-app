@@ -74,6 +74,23 @@ pub fn default_system_prompt(meta: &RequestMetadata) -> String {
         "- When you create tasks to track work, update their status throughout: mark 'in_progress' when starting and 'completed' when finished.\n\n",
     );
 
+    // Tool-selection guidance for web vs. local operations
+    s.push_str("Tool selection guidance:\n");
+    s.push_str(
+        "- When a request mentions a domain name (e.g. `gestura.ai`, `example.com`) or a URL, \
+         prefer the `web` tool to fetch content or `web_search` to search — BEFORE attempting \
+         local file or code operations.\n",
+    );
+    s.push_str(
+        "- A filename paired with a domain (e.g. `llm.txt for gestura.ai` or \
+         `robots.txt from example.com`) means fetch that path from the website: \
+         construct `https://<domain>/<filename>` and use the `web` tool.\n",
+    );
+    s.push_str(
+        "- Only fall back to local file or code tools when there is no domain or URL in the \
+         request, or after confirming the web resource does not exist.\n\n",
+    );
+
     // Streaming + thinking (used by the UI when available)
     s.push_str("Streaming + thinking:\n");
     s.push_str(

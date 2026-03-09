@@ -41,10 +41,31 @@ impl AgentPipeline {
             response,
             tx,
         } = ctx;
+        tracing::debug!(
+            tool = %pending.name,
+            args_len = pending.arguments.len(),
+            permission_level = ?permission_level,
+            "[ToolDispatch] finalize_pending_tool_call entry"
+        );
+
         let policy = crate::tools::policy::evaluate_tool_call(
             permission_level,
             &pending.name,
             &pending.arguments,
+        );
+
+        let policy_label = match &policy.decision {
+            crate::tools::policy::ToolCallDecision::Allowed => "Allowed",
+            crate::tools::policy::ToolCallDecision::Blocked { .. } => "Blocked",
+            crate::tools::policy::ToolCallDecision::RequiresConfirmation(_) => {
+                "RequiresConfirmation"
+            }
+        };
+        tracing::debug!(
+            tool = %pending.name,
+            decision = policy_label,
+            is_write = policy.is_write_operation,
+            "[ToolDispatch] Policy decision"
         );
 
         if let crate::tools::policy::ToolCallDecision::Blocked { reason } = &policy.decision {
@@ -293,10 +314,21 @@ impl AgentPipeline {
         }
 
         // Execute the tool with workspace sandboxing
+        tracing::debug!(
+            tool = %pending.name,
+            workspace_root = ?workspace.map(|w| w.root().display().to_string()),
+            "[ToolDispatch] Calling execute_tool"
+        );
         let result = self
             .execute_tool(&pending.name, &pending.arguments, workspace, Some(tx))
             .await;
         let duration_ms = pending.start_time.elapsed().as_millis() as u64;
+        tracing::debug!(
+            tool = %pending.name,
+            success = matches!(result, ToolResult::Success(_)),
+            duration_ms = duration_ms,
+            "[ToolDispatch] execute_tool completed"
+        );
 
         // Emit structured tool result for frontend display
         let (success, output) = match &result {
@@ -370,6 +402,8 @@ impl AgentPipeline {
             "screenshot" | "screen_record" => {
                 self.execute_screen_tool(name, arguments, workspace).await
             }
+            "gui_control" => self.execute_gui_tool(arguments).await,
+            "mcp" => self.execute_mcp_manager_tool(arguments).await,
             _ if name.starts_with("mcp__") => self.execute_mcp_tool(name, arguments).await,
             _ => ToolResult::Skipped(format!("Unknown tool: {}", name)),
         };
@@ -429,6 +463,39 @@ impl AgentPipeline {
                 }
             }
             Err(e) => ToolResult::Error(format!("MCP tool call failed: {e}")),
+        }
+    }
+
+    /// Execute the built-in MCP manager tool (search/evaluate/install/enable/disable/list/remove).
+    ///
+    /// Distinct from `execute_mcp_tool` which invokes tools on *connected* MCP servers via the
+    /// `mcp__<server>__<tool>` naming convention. This method handles the `"mcp"` tool name which
+    /// routes to the MCP manager — a registry-backed workflow tool for discovering, installing,
+    /// and managing MCP server configurations in `.mcp.json`.
+    async fn execute_mcp_manager_tool(&self, arguments: &str) -> ToolResult {
+        use gestura_core_tools::mcp_manager;
+
+        match serde_json::from_str::<serde_json::Value>(arguments) {
+            Ok(args) => match mcp_manager::handle(&args).await {
+                Ok(output) => match serde_json::to_string_pretty(&output) {
+                    Ok(s) => ToolResult::Success(s),
+                    Err(e) => ToolResult::Error(format!("Serialize error: {e}")),
+                },
+                Err(e) => ToolResult::Error(e.to_string()),
+            },
+            Err(e) => ToolResult::Error(format!("Invalid arguments: {e}")),
+        }
+    }
+
+    /// Execute GUI control tool
+    async fn execute_gui_tool(&self, arguments: &str) -> ToolResult {
+        use gestura_core_tools::gui::{GuiControlRequest, execute_gui_control};
+        match serde_json::from_str::<GuiControlRequest>(arguments) {
+            Ok(req) => match execute_gui_control(req).await {
+                Ok(resp) => ToolResult::Success(resp.message),
+                Err(e) => ToolResult::Error(e.to_string()),
+            },
+            Err(e) => ToolResult::Error(format!("Invalid arguments: {}", e)),
         }
     }
 
@@ -545,8 +612,158 @@ impl AgentPipeline {
                     raw_path.to_string()
                 };
 
+                // Optional extra parameters used by specific operations.
+                let symbol = args.get("symbol").and_then(|v| v.as_str()).unwrap_or("");
+                let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+                let max_depth =
+                    args.get("max_depth").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
+                let max_results = args
+                    .get("max_results")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(100) as usize;
+                let context_lines = args
+                    .get("context_lines")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(2) as usize;
+                let case_sensitive = args
+                    .get("case_sensitive")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let file_glob: Option<String> = args
+                    .get("file_glob")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let fix = args.get("fix").and_then(|v| v.as_bool()).unwrap_or(false);
+                let filter: Option<String> = args
+                    .get("filter")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                // Collect paths for batch operations.
+                let batch_paths: Vec<String> = args
+                    .get("paths")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                // Collect edits for batch_edit.
+                let batch_edits: Vec<crate::tools::code::EditOp> = args
+                    .get("edits")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| {
+                                serde_json::from_value::<crate::tools::code::EditOp>(v.clone()).ok()
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
                 match operation {
                     "stats" => match code_async::stats_dir(&resolved_path).await {
+                        Ok(s) => ToolResult::Success(s),
+                        Err(e) => ToolResult::Error(e.to_string()),
+                    },
+                    "map" => match code_async::map(&resolved_path, max_depth).await {
+                        Ok(s) => ToolResult::Success(s),
+                        Err(e) => ToolResult::Error(e.to_string()),
+                    },
+                    "symbols" => match code_async::symbols(&resolved_path).await {
+                        Ok(s) => ToolResult::Success(s),
+                        Err(e) => ToolResult::Error(e.to_string()),
+                    },
+                    "references" => {
+                        if symbol.is_empty() {
+                            return ToolResult::Error(
+                                "Missing required parameter: symbol".to_string(),
+                            );
+                        }
+                        match code_async::references(symbol, &resolved_path).await {
+                            Ok(s) => ToolResult::Success(s),
+                            Err(e) => ToolResult::Error(e.to_string()),
+                        }
+                    }
+                    "definition" => {
+                        if symbol.is_empty() {
+                            return ToolResult::Error(
+                                "Missing required parameter: symbol".to_string(),
+                            );
+                        }
+                        match code_async::definition(symbol, &resolved_path).await {
+                            Ok(s) => ToolResult::Success(s),
+                            Err(e) => ToolResult::Error(e.to_string()),
+                        }
+                    }
+                    "deps" => match code_async::deps(&resolved_path).await {
+                        Ok(s) => ToolResult::Success(s),
+                        Err(e) => ToolResult::Error(e.to_string()),
+                    },
+                    "lint" => match code_async::lint(&resolved_path, fix).await {
+                        Ok(s) => ToolResult::Success(s),
+                        Err(e) => ToolResult::Error(e.to_string()),
+                    },
+                    "test" => match code_async::test(&resolved_path, filter).await {
+                        Ok(s) => ToolResult::Success(s),
+                        Err(e) => ToolResult::Error(e.to_string()),
+                    },
+                    "glob" => {
+                        if pattern.is_empty() {
+                            return ToolResult::Error(
+                                "Missing required parameter: pattern".to_string(),
+                            );
+                        }
+                        match code_async::glob_search(pattern, &resolved_path, max_results).await {
+                            Ok(s) => ToolResult::Success(s),
+                            Err(e) => ToolResult::Error(e.to_string()),
+                        }
+                    }
+                    "grep" => {
+                        if pattern.is_empty() {
+                            return ToolResult::Error(
+                                "Missing required parameter: pattern".to_string(),
+                            );
+                        }
+                        match code_async::grep(
+                            pattern,
+                            &resolved_path,
+                            file_glob,
+                            context_lines,
+                            case_sensitive,
+                            max_results,
+                        )
+                        .await
+                        {
+                            Ok(s) => ToolResult::Success(s),
+                            Err(e) => ToolResult::Error(e.to_string()),
+                        }
+                    }
+                    "batch_read" => {
+                        if batch_paths.is_empty() {
+                            return ToolResult::Error(
+                                "Missing required parameter: paths".to_string(),
+                            );
+                        }
+                        match code_async::batch_read(batch_paths).await {
+                            Ok(s) => ToolResult::Success(s),
+                            Err(e) => ToolResult::Error(e.to_string()),
+                        }
+                    }
+                    "batch_edit" => {
+                        if batch_edits.is_empty() {
+                            return ToolResult::Error(
+                                "Missing required parameter: edits".to_string(),
+                            );
+                        }
+                        match code_async::batch_edit(batch_edits).await {
+                            Ok(s) => ToolResult::Success(s),
+                            Err(e) => ToolResult::Error(e.to_string()),
+                        }
+                    }
+                    "outline" => match code_async::outline(&resolved_path).await {
                         Ok(s) => ToolResult::Success(s),
                         Err(e) => ToolResult::Error(e.to_string()),
                     },
@@ -957,17 +1174,10 @@ impl AgentPipeline {
         arguments: &str,
         workspace: Option<&SessionWorkspace>,
     ) -> ToolResult {
-        use crate::{TaskManager, TaskStatus};
-        use std::sync::OnceLock;
+        use crate::TaskStatus;
 
-        // Global task manager instance
-        static TASK_MANAGER: OnceLock<TaskManager> = OnceLock::new();
-
-        // Get or initialize the global task manager
-        let manager = TASK_MANAGER.get_or_init(|| {
-            let base_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-            TaskManager::new(base_dir)
-        });
+        // Use the process-wide shared TaskManager so all subsystems share one cache.
+        let manager = crate::get_global_task_manager();
 
         // Get session_id from workspace
         let session_id = match workspace {

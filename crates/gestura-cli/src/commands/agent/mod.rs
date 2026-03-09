@@ -2122,6 +2122,7 @@ fn mcp_server_form(
         scope,
         timeout_secs,
         auto_reconnect,
+        session_default_enabled: true,
     })
 }
 
@@ -4012,6 +4013,11 @@ fn basic_mode_context_command(args: &[&str]) {
                 (ContextCategory::Agent, "Agent orchestration"),
                 (ContextCategory::Mcp, "MCP protocol operations"),
                 (ContextCategory::A2a, "A2A protocol operations"),
+                (ContextCategory::Task, "Task management for current session"),
+                (
+                    ContextCategory::Screen,
+                    "Screen capture and recording (screenshot, screen_record)",
+                ),
                 (ContextCategory::General, "General conversation (no tools)"),
             ];
             for (cat, desc) in categories {
@@ -4051,6 +4057,8 @@ fn context_category_icon(cat: gestura_core::context::ContextCategory) -> &'stati
         ContextCategory::Agent => "🤖",
         ContextCategory::Mcp => "🔌",
         ContextCategory::A2a => "🔗",
+        ContextCategory::Task => "✅",
+        ContextCategory::Screen => "🎥",
         ContextCategory::General => "💬",
     }
 }

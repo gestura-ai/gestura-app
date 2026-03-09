@@ -18,6 +18,8 @@ pub mod config;
 pub mod code;
 pub mod file;
 pub mod git;
+pub mod gui;
+pub mod mcp_manager;
 pub mod permissions;
 pub mod policy;
 pub mod registry;

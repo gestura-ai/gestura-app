@@ -6,9 +6,90 @@
 use crate::error::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
+
+// ============================================================================
+// Bundled ffmpeg resolver
+// ============================================================================
+
+/// Resolve the path to the ffmpeg binary to use for screen recording.
+///
+/// Resolution order (first match wins):
+/// 1. `GESTURA_FFMPEG_PATH` environment variable — allows the host app or tests
+///    to point at a specific binary.
+/// 2. Bundled sidecar placed next to the running executable by the Tauri
+///    installer (named `ffmpeg-<target-triple>[.exe]`).
+/// 3. `ffmpeg` on the system `PATH` (original behaviour — requires the user to
+///    have ffmpeg installed).
+fn ffmpeg_binary() -> OsString {
+    // 1. Explicit override via env var.
+    if let Ok(path) = std::env::var("GESTURA_FFMPEG_PATH")
+        && !path.is_empty()
+    {
+        return path.into();
+    }
+
+    // 2. Bundled sidecar next to the running executable.
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        for name in bundled_ffmpeg_names() {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                tracing::debug!("Using bundled ffmpeg sidecar: {:?}", candidate);
+                return candidate.into_os_string();
+            }
+        }
+    }
+
+    // 3. System ffmpeg fallback.
+    tracing::debug!(
+        "No bundled ffmpeg found; falling back to system ffmpeg. \
+         Install ffmpeg or set GESTURA_FFMPEG_PATH to enable screen recording."
+    );
+    OsString::from("ffmpeg")
+}
+
+/// Platform-specific candidate sidecar filenames (Tauri externalBin naming).
+///
+/// Tauri appends the target triple to the base name supplied in
+/// `bundle.externalBin`, so the staged binary must be named
+/// `ffmpeg-<triple>[.exe]`.  We probe the most-common triples for each
+/// platform so that both architecture-specific and universal builds work.
+fn bundled_ffmpeg_names() -> &'static [&'static str] {
+    #[cfg(target_os = "macos")]
+    {
+        &[
+            "ffmpeg-universal-apple-darwin",
+            "ffmpeg-aarch64-apple-darwin",
+            "ffmpeg-x86_64-apple-darwin",
+        ]
+    }
+    #[cfg(target_os = "linux")]
+    {
+        &[
+            "ffmpeg-x86_64-unknown-linux-gnu",
+            "ffmpeg-aarch64-unknown-linux-gnu",
+            "ffmpeg-x86_64-unknown-linux-musl",
+        ]
+    }
+    #[cfg(target_os = "windows")]
+    {
+        &[
+            "ffmpeg-x86_64-pc-windows-msvc.exe",
+            "ffmpeg-i686-pc-windows-msvc.exe",
+            "ffmpeg-x86_64-pc-windows-gnu.exe",
+            "ffmpeg.exe",
+        ]
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        &[]
+    }
+}
 
 #[cfg(unix)]
 use nix::sys::signal::{Signal, kill};
@@ -295,8 +376,8 @@ impl ScreenTools {
         region: Option<CaptureRegion>,
         _display: Option<u32>,
     ) -> Result<RecordingStartResult> {
-        // Use ffmpeg for screen recording on macOS
-        let mut cmd = Command::new("ffmpeg");
+        // Use ffmpeg for screen recording on macOS (bundled sidecar preferred)
+        let mut cmd = Command::new(ffmpeg_binary());
         cmd.arg("-f").arg("avfoundation");
 
         // Input device (screen capture)
@@ -523,8 +604,8 @@ impl ScreenTools {
             c.arg(output_path);
             c
         } else {
-            // X11 fallback using ffmpeg
-            let mut c = Command::new("ffmpeg");
+            // X11 fallback using bundled/system ffmpeg
+            let mut c = Command::new(ffmpeg_binary());
             c.arg("-f").arg("x11grab");
             c.arg("-i").arg(":0.0");
 
@@ -702,8 +783,8 @@ impl ScreenTools {
         _region: Option<CaptureRegion>,
         _display: Option<u32>,
     ) -> Result<RecordingStartResult> {
-        // Use ffmpeg for Windows screen recording
-        let mut cmd = Command::new("ffmpeg");
+        // Use bundled/system ffmpeg for Windows screen recording
+        let mut cmd = Command::new(ffmpeg_binary());
         cmd.arg("-f").arg("gdigrab");
         cmd.arg("-i").arg("desktop");
         cmd.arg("-c:v").arg("libx264");
@@ -713,7 +794,8 @@ impl ScreenTools {
 
         let child = cmd.spawn().map_err(|e| {
             AppError::Io(std::io::Error::other(format!(
-                "Failed to start ffmpeg (install ffmpeg for screen recording): {}",
+                "Failed to start ffmpeg for screen recording (bundled binary not found and \
+                 ffmpeg is not on PATH — set GESTURA_FFMPEG_PATH if needed): {}",
                 e
             )))
         })?;

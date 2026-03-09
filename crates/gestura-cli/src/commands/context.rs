@@ -168,6 +168,11 @@ fn list_categories() -> Result<(), Box<dyn std::error::Error>> {
         (ContextCategory::Agent, "Agent orchestration"),
         (ContextCategory::Mcp, "MCP protocol operations"),
         (ContextCategory::A2a, "A2A protocol operations"),
+        (ContextCategory::Task, "Task management for current session"),
+        (
+            ContextCategory::Screen,
+            "Screen capture and recording (screenshot, screen_record)",
+        ),
         (ContextCategory::General, "General conversation (no tools)"),
     ];
 
@@ -201,6 +206,8 @@ fn category_icon(cat: ContextCategory) -> &'static str {
         ContextCategory::Agent => "🤖",
         ContextCategory::Mcp => "🔌",
         ContextCategory::A2a => "🔗",
+        ContextCategory::Task => "✅",
+        ContextCategory::Screen => "🎥",
         ContextCategory::General => "💬",
     }
 }

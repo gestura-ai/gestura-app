@@ -69,6 +69,8 @@ const CATEGORY_PATTERNS: &[CategoryPattern] = &[
         keywords: &[
             "search", "web", "google", "url", "fetch", "download", "http", "api", "lookup",
             "browse", "website", "page", "online", "internet",
+            // Natural-language synonyms for "retrieve from the web"
+            "locate", "retrieve", "navigate", "domain", "link",
         ],
         phrases: &[
             "search for",
@@ -81,6 +83,13 @@ const CATEGORY_PATTERNS: &[CategoryPattern] = &[
             "check the",
             "go to",
             "open the",
+            // Additional natural-language patterns
+            "locate the",
+            "retrieve the",
+            "retrieve from",
+            "navigate to",
+            "from the web",
+            "on the site",
         ],
         category: ContextCategory::Web,
     },
@@ -133,6 +142,44 @@ const CATEGORY_PATTERNS: &[CategoryPattern] = &[
         ],
         phrases: &["send to agent", "agent profile", "a2a protocol"],
         category: ContextCategory::A2a,
+    },
+    CategoryPattern {
+        keywords: &["task", "todo", "track", "checklist", "reminder"],
+        phrases: &[
+            "add a task",
+            "create a task",
+            "task list",
+            "my tasks",
+            "mark as done",
+            "complete this task",
+        ],
+        category: ContextCategory::Task,
+    },
+    CategoryPattern {
+        keywords: &[
+            "screenshot",
+            "screen_record",
+            "record",
+            "video",
+            "capture",
+            "recording",
+            "screencast",
+            "screengrab",
+        ],
+        phrases: &[
+            "take a screenshot",
+            "record the screen",
+            "record yourself",
+            "create a video",
+            "make a video",
+            "screen capture",
+            "screen recording",
+            "record a video",
+            "capture the screen",
+            "video of yourself",
+            "video of the screen",
+        ],
+        category: ContextCategory::Screen,
     },
 ];
 
@@ -195,6 +242,18 @@ static BARE_FILENAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static URL_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"https?://[\w.-]+(?:/[\w./?%&=-]*)?").expect("Invalid URL regex"));
 
+/// Compiled regex for bare domain names without a URL scheme (e.g. `Gestura.ai`, `example.com`).
+/// Only matches well-known TLDs to avoid false-positives with file extensions like `.txt` or `.rs`.
+/// Uses a `(label\.)+TLD` structure so the TLD alternation is always anchored to the final
+/// dot-separated component — preventing greedy intermediate groups from consuming the TLD.
+/// Runs before `BARE_FILENAME_REGEX` so domains are classified as URLs, not file paths.
+static BARE_DOMAIN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?:^|[\s\(\[,;'`])((?:[A-Za-z0-9][A-Za-z0-9-]*\.)+(?:com|org|net|io|ai|dev|co|app|tech|edu|gov|info|biz|online|site|web|so|me|tv|us|uk|ca|de|fr|au|jp|cn))(?:[/\s,;:!?\)\]'`]|$)"
+    )
+    .expect("Invalid bare domain regex")
+});
+
 /// Compiled regex for git branch extraction.
 /// Matches common branch naming patterns: main, master, develop, feature/*, bugfix/*, release/*
 static GIT_BRANCH_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -232,6 +291,12 @@ impl RequestAnalyzer {
         for tool in ["git_status", "git_log", "git_diff", "git_branch"] {
             tool_categories.insert(tool.to_string(), ContextCategory::Git);
         }
+        // Screen tools
+        for tool in ["screenshot", "screen_record"] {
+            tool_categories.insert(tool.to_string(), ContextCategory::Screen);
+        }
+        // Task tools
+        tool_categories.insert("task".to_string(), ContextCategory::Task);
 
         Self {
             tool_categories,
@@ -327,7 +392,35 @@ impl RequestAnalyzer {
                     end,
                 });
                 analysis.categories.insert(ContextCategory::Web);
+                // A fully-qualified URL is a strong, unambiguous web signal — boost confidence
+                // so the pipeline's tool-selection logic doesn't fall back to all-tools even
+                // when no Web keywords appeared in the request text.
+                analysis.confidence += 0.4;
                 extracted_ranges.push((start, end));
+            }
+        }
+
+        // Detect bare domain names (e.g. `Gestura.ai`, `example.com`) BEFORE the file-path
+        // passes so domains are classified as URLs/Web entities and not as file paths.
+        // FILE_PATH_REGEX would otherwise capture `Gestura.ai` as a bare `word.ext` filename.
+        for cap in BARE_DOMAIN_REGEX.captures_iter(request) {
+            if let Some(m) = cap.get(1) {
+                let start = m.start();
+                let end = m.end();
+                if !Self::overlaps_any(&extracted_ranges, start, end) {
+                    analysis.entities.push(ExtractedEntity {
+                        entity_type: EntityType::Url,
+                        value: m.as_str().to_string(),
+                        start,
+                        end,
+                    });
+                    analysis.categories.insert(ContextCategory::Web);
+                    // A bare domain is a clear web intent signal — boost confidence so that
+                    // requests like "locate llm.txt for Gestura.ai" (zero keyword hits) still
+                    // clear the 0.2 threshold and route to web tools rather than all-tools.
+                    analysis.confidence += 0.3;
+                    extracted_ranges.push((start, end));
+                }
             }
         }
 
@@ -338,7 +431,7 @@ impl RequestAnalyzer {
                 let end = m.end();
                 let value = m.as_str();
 
-                // Skip if already extracted (e.g., as part of a URL)
+                // Skip if already extracted (e.g., as part of a URL or domain)
                 if Self::overlaps_any(&extracted_ranges, start, end) {
                     continue;
                 }
@@ -550,6 +643,94 @@ mod tests {
         let analysis = analyzer.analyze("browse to the documentation website");
 
         assert!(analysis.categories.contains(&ContextCategory::Web));
+        assert!(analysis.needs_tools);
+    }
+
+    #[test]
+    fn test_bare_domain_detection() {
+        let analyzer = RequestAnalyzer::new();
+        // "Gestura.ai" (no http:// prefix) should still trigger Web category and
+        // push confidence above the 0.2 all-tools fallback threshold.
+        let analysis = analyzer.analyze("please find llm.txt from Gestura.ai");
+
+        assert!(
+            analysis.categories.contains(&ContextCategory::Web),
+            "Expected Web category for bare domain Gestura.ai, got: {:?}",
+            analysis.categories
+        );
+        assert!(analysis.needs_tools);
+        assert!(
+            analysis
+                .entities
+                .iter()
+                .any(|e| e.entity_type == EntityType::Url
+                    && e.value.to_lowercase().contains("gestura")),
+            "Expected Gestura.ai to be extracted as a URL entity"
+        );
+        assert!(
+            analysis.confidence >= 0.2,
+            "Bare domain detection should boost confidence above the 0.2 fallback threshold, got {}",
+            analysis.confidence
+        );
+    }
+
+    /// Regression test for the exact query that triggered the bug: the agent was
+    /// using `code` (glob/grep) instead of `web`/`web_search` because "locate" was
+    /// not in any keyword pattern, entity extraction never updated confidence, and
+    /// the all-tools fallback fired and let the LLM pick `code` for what looked like
+    /// a local file search.
+    #[test]
+    fn test_locate_web_resource_regression() {
+        let analyzer = RequestAnalyzer::new();
+        let analysis = analyzer.analyze("please locate the llm.txt for Gestura.ai");
+
+        assert!(
+            analysis.categories.contains(&ContextCategory::Web),
+            "Expected Web category — 'locate' keyword + bare domain should both fire, got: {:?}",
+            analysis.categories
+        );
+        assert!(analysis.needs_tools, "Request requires tools");
+        assert!(
+            analysis.confidence >= 0.2,
+            "Confidence must clear 0.2 so category-based routing is used instead of all-tools \
+             fallback; got {}",
+            analysis.confidence
+        );
+        assert!(
+            analysis
+                .entities
+                .iter()
+                .any(|e| e.entity_type == EntityType::Url
+                    && e.value.to_lowercase().contains("gestura")),
+            "Gestura.ai should be extracted as a URL entity"
+        );
+    }
+
+    #[test]
+    fn test_screen_record_detection() {
+        let analyzer = RequestAnalyzer::new();
+        let analysis = analyzer.analyze(
+            "I want you to create a video of yourself requesting the creation of a hello.txt",
+        );
+
+        assert!(
+            analysis.categories.contains(&ContextCategory::Screen),
+            "Expected Screen category for video/recording request, got: {:?}",
+            analysis.categories
+        );
+        assert!(analysis.needs_tools);
+    }
+
+    #[test]
+    fn test_screenshot_detection() {
+        let analyzer = RequestAnalyzer::new();
+        let analysis = analyzer.analyze("take a screenshot of the current window");
+
+        assert!(
+            analysis.categories.contains(&ContextCategory::Screen),
+            "Expected Screen category for screenshot request, got: {:?}",
+            analysis.categories
+        );
         assert!(analysis.needs_tools);
     }
 }

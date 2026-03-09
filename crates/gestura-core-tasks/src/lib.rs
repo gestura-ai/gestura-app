@@ -6,3 +6,5 @@
 
 pub mod tasks;
 pub mod workflows;
+
+pub use tasks::get_global_task_manager;

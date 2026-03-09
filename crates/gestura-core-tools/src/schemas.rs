@@ -38,7 +38,7 @@ pub fn build_provider_tool_schemas(tools: &[&'static ToolDefinition]) -> Provide
     let mut out = ProviderToolSchemas::default();
 
     for tool in tools {
-        if let Some((openai, anthropic, gemini)) = schema_for_tool(tool.name, tool.summary) {
+        if let Some((openai, anthropic, gemini)) = schema_for_tool(tool.name, tool.description) {
             out.openai.push(openai);
             out.anthropic.push(anthropic);
             out.gemini.push(gemini);
@@ -180,11 +180,94 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "operation": {"type": "string", "enum": ["stats"]},
-                    "path": {"type": "string", "description": "Directory to analyze (optional, default '.')"}
+                    "operation": {
+                        "type": "string",
+                        "enum": [
+                            "stats", "map", "symbols", "references", "definition",
+                            "deps", "lint", "test", "glob", "grep",
+                            "batch_read", "batch_edit", "outline"
+                        ],
+                        "description": "Code operation to perform:\n\
+                            • stats        — line/language counts for a directory\n\
+                            • map          — repository structure map (file types, key files)\n\
+                            • symbols      — extract top-level symbols from a file\n\
+                            • references   — find all references to a symbol (requires: symbol)\n\
+                            • definition   — find the first definition of a symbol (requires: symbol)\n\
+                            • deps         — list Cargo.toml dependencies\n\
+                            • lint         — run cargo clippy (optional: fix=true)\n\
+                            • test         — run cargo test (optional: filter)\n\
+                            • glob         — find files matching a glob pattern (requires: pattern)\n\
+                            • grep         — regex search in file contents (requires: pattern)\n\
+                            • batch_read   — read multiple files at once (requires: paths)\n\
+                            • batch_edit   — apply multiple str-replace edits (requires: edits)\n\
+                            • outline      — structured symbol outline of a file"
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Root directory or file path (default '.'). Used by stats, map, symbols, references, definition, deps, lint, test, glob, grep, outline."
+                    },
+                    "symbol": {
+                        "type": "string",
+                        "description": "Symbol name to search for. REQUIRED for: references, definition."
+                    },
+                    "pattern": {
+                        "type": "string",
+                        "description": "Glob pattern (for glob) or regex pattern (for grep). REQUIRED for: glob, grep."
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Maximum directory depth for map (default 4).",
+                        "default": 4
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of results for glob and grep (default 100).",
+                        "default": 100
+                    },
+                    "file_glob": {
+                        "type": "string",
+                        "description": "Optional glob to filter which files are searched by grep (e.g. '*.rs')."
+                    },
+                    "context_lines": {
+                        "type": "integer",
+                        "description": "Number of context lines before and after each grep match (default 2).",
+                        "default": 2
+                    },
+                    "case_sensitive": {
+                        "type": "boolean",
+                        "description": "Whether grep is case-sensitive (default false).",
+                        "default": false
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of file paths to read. REQUIRED for: batch_read."
+                    },
+                    "edits": {
+                        "type": "array",
+                        "description": "List of str-replace edit operations. REQUIRED for: batch_edit.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path":    {"type": "string", "description": "File to edit."},
+                                "old_str": {"type": "string", "description": "Exact string to find."},
+                                "new_str": {"type": "string", "description": "Replacement string."}
+                            },
+                            "required": ["path", "old_str", "new_str"]
+                        }
+                    },
+                    "fix": {
+                        "type": "boolean",
+                        "description": "Pass --fix to cargo clippy (lint operation only, default false).",
+                        "default": false
+                    },
+                    "filter": {
+                        "type": "string",
+                        "description": "Test name filter for cargo test (test operation only)."
+                    }
                 },
                 "required": ["operation"],
-                "additionalProperties": true
+                "additionalProperties": false
             }),
         ),
         "task" | "tasks" => (
@@ -327,8 +410,88 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                 "additionalProperties": false
             }),
         ),
+        "gui_control" => (
+            summary,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["toggle_view_mode", "open_explorer", "close_explorer", "open_chat", "close_chat", "navigate_config"],
+                        "description": "The GUI action to perform"
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Optional target argument for the action (if applicable)"
+                    }
+                },
+                "required": ["action"],
+                "additionalProperties": false
+            }),
+        ),
+        "mcp" => (
+            summary,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "operation": {
+                        "type": "string",
+                        "enum": ["search", "evaluate", "install", "enable", "disable", "list", "remove", "info"],
+                        "description": "The MCP manager operation to perform. Use 'search' to find servers in the registry, 'evaluate'/'info' to inspect a server's details and install requirements, 'install' to add a server to .mcp.json, 'enable'/'disable' to toggle a configured server, 'list' to see all configured servers, 'remove' to delete an entry."
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Search keyword for operation=search (searches server names in the registry)"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results to return for operation=search (default 20, max 50)",
+                        "default": 20
+                    },
+                    "server_id": {
+                        "type": "string",
+                        "description": "Registry server identifier (e.g. 'io.github.modelcontextprotocol/server-filesystem') for evaluate, install, and info operations"
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Local alias for the server in .mcp.json (for install, enable, disable, remove). Defaults to last path segment of server_id."
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["project", "user"],
+                        "description": "Config scope: 'project' writes .mcp.json in the current directory, 'user' writes to ~/.mcp.json. Default: project.",
+                        "default": "project"
+                    },
+                    "transport": {
+                        "type": "string",
+                        "enum": ["stdio", "http"],
+                        "description": "Override the auto-detected transport type for install"
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Override the launch command for stdio install (e.g. 'npx', 'uvx', 'docker')"
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Override the command args array for stdio install"
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Override the remote URL for http install"
+                    },
+                    "env": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                        "description": "Environment variables to embed in the .mcp.json entry (e.g. API keys). Use for install."
+                    }
+                },
+                "required": ["operation"],
+                "additionalProperties": false
+            }),
+        ),
         // Not yet supported in the runtime tool executor.
-        "a2a" | "permissions" | "mcp" => return None,
+        "a2a" | "permissions" => return None,
         _ => return None,
     };
 

@@ -898,6 +898,26 @@ impl TaskManager {
     }
 }
 
+/// Process-wide global [`TaskManager`] instance.
+///
+/// All subsystems — Tauri commands, orchestrator observer, and the agent tool
+/// pipeline — **must** use this single instance so they share one in-memory
+/// cache and avoid stale-read bugs caused by independent `OnceLock` statics.
+static GLOBAL_TASK_MANAGER: std::sync::OnceLock<TaskManager> = std::sync::OnceLock::new();
+
+/// Returns the process-wide shared [`TaskManager`].
+///
+/// Initializes with `~/.gestura/tasks/` on first call; subsequent calls return
+/// the same instance.  Callers must **not** create their own `OnceLock<TaskManager>`
+/// statics — doing so produces independent in-memory caches that cause stale
+/// reads when a different subsystem writes tasks to disk.
+pub fn get_global_task_manager() -> &'static TaskManager {
+    GLOBAL_TASK_MANAGER.get_or_init(|| {
+        let base_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        TaskManager::new(base_dir)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1196,3 +1196,148 @@ fn test_pipeline_config_user_max_context_tokens_is_clamped_to_provider_default()
         "User max_context_tokens should clamp to provider default"
     );
 }
+
+// ---------------------------------------------------------------------------
+// RoutingResult API
+// ---------------------------------------------------------------------------
+
+#[test]
+fn routing_result_fallthrough_has_no_selection() {
+    let r = RoutingResult::fallthrough();
+    assert!(
+        !r.has_selection(),
+        "fallthrough should not have a selection"
+    );
+    assert!(r.suggested_tools.is_empty());
+    assert_eq!(r.confidence, 0.0);
+}
+
+#[test]
+fn routing_result_with_tools_has_selection() {
+    let r = RoutingResult {
+        suggested_tools: vec!["file".to_string(), "web".to_string()],
+        confidence: 1.0,
+    };
+    assert!(r.has_selection());
+    assert_eq!(r.suggested_tools.len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// build_tool_router factory
+// ---------------------------------------------------------------------------
+
+#[test]
+fn build_tool_router_keyword_returns_none() {
+    let cfg = std::sync::Arc::new(AppConfig::default());
+    let router = build_tool_router(&ToolRoutingStrategy::Keyword, cfg);
+    assert!(
+        router.is_none(),
+        "Keyword strategy should produce no router object (zero overhead)"
+    );
+}
+
+#[test]
+fn build_tool_router_llm_returns_some() {
+    let cfg = std::sync::Arc::new(AppConfig::default());
+    let router = build_tool_router(&ToolRoutingStrategy::Llm, cfg);
+    assert!(router.is_some(), "Llm strategy should return a router");
+}
+
+#[test]
+fn build_tool_router_hybrid_returns_some() {
+    let cfg = std::sync::Arc::new(AppConfig::default());
+    let router = build_tool_router(
+        &ToolRoutingStrategy::Hybrid {
+            confidence_threshold: 0.3,
+        },
+        cfg,
+    );
+    assert!(router.is_some(), "Hybrid strategy should return a router");
+}
+
+// ---------------------------------------------------------------------------
+// PipelineConfig default routing strategy
+// ---------------------------------------------------------------------------
+
+/// The default routing strategy was changed from `Keyword` to `Hybrid` so that
+/// natural-language requests that do not contain exact keyword matches (e.g.
+/// "locate the llm.txt for Gestura.ai") fall back to a pre-flight LLM call
+/// instead of the all-tools fallback.  The threshold of 0.3 means keyword
+/// routing is still used when confidence is high, preserving zero-latency
+/// routing for well-recognised patterns.
+#[test]
+fn pipeline_config_default_uses_hybrid_routing() {
+    let config = PipelineConfig::default();
+    assert!(
+        matches!(
+            config.tool_routing_strategy,
+            ToolRoutingStrategy::Hybrid {
+                confidence_threshold
+            } if (confidence_threshold - 0.3_f32).abs() < f32::EPSILON
+        ),
+        "Default routing strategy must be Hybrid {{ confidence_threshold: 0.3 }}, got: {:?}",
+        config.tool_routing_strategy
+    );
+}
+
+// ---------------------------------------------------------------------------
+// HybridToolRouter threshold gating (async — no LLM call needed for above-threshold path)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn hybrid_router_above_threshold_returns_fallthrough() {
+    use crate::tools::registry::all_tools;
+
+    let cfg = std::sync::Arc::new(AppConfig::default());
+    let threshold = 0.3_f32;
+    let router = super::tool_router::HybridToolRouter::new(cfg, threshold);
+
+    let tools: Vec<&'static crate::tools::registry::ToolDefinition> = all_tools().iter().collect();
+
+    // keyword_confidence = 0.5 is ABOVE threshold of 0.3 → must fallthrough
+    // without calling the LLM (no provider configured in test environment).
+    let result = router.route("fetch gestura.ai", &tools, 0.5).await;
+    assert!(
+        !result.has_selection(),
+        "Above-threshold confidence should produce a fallthrough, not an LLM selection"
+    );
+}
+
+#[tokio::test]
+async fn hybrid_router_at_threshold_returns_fallthrough() {
+    use crate::tools::registry::all_tools;
+
+    let cfg = std::sync::Arc::new(AppConfig::default());
+    let threshold = 0.3_f32;
+    let router = super::tool_router::HybridToolRouter::new(cfg, threshold);
+
+    let tools: Vec<&'static crate::tools::registry::ToolDefinition> = all_tools().iter().collect();
+
+    // keyword_confidence == threshold → also a fallthrough (>= check).
+    let result = router.route("some request", &tools, 0.3).await;
+    assert!(
+        !result.has_selection(),
+        "At-threshold confidence should also fallthrough"
+    );
+}
+
+#[tokio::test]
+async fn hybrid_router_below_threshold_falls_back_gracefully() {
+    use crate::tools::registry::all_tools;
+
+    let cfg = std::sync::Arc::new(AppConfig::default());
+    let threshold = 0.3_f32;
+    let router = super::tool_router::HybridToolRouter::new(cfg, threshold);
+
+    let tools: Vec<&'static crate::tools::registry::ToolDefinition> = all_tools().iter().collect();
+
+    // keyword_confidence = 0.1 is BELOW threshold → would invoke LLM.
+    // Without a real provider, the LLM call fails and the router falls
+    // through gracefully (returns fallthrough, does not panic).
+    let result = router
+        .route("please find llm.txt from gestura.ai", &tools, 0.1)
+        .await;
+    // The result is either a valid selection (if somehow a provider is
+    // available) or a graceful fallthrough.  Either way, no panic.
+    let _ = result.has_selection(); // just assert it doesn't panic
+}

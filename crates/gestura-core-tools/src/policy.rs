@@ -172,8 +172,30 @@ pub fn is_write_operation(tool_name: &str, arguments: &str) -> bool {
             }
         }
 
-        // Web and code tools are read-only.
-        "web" | "web_search" | "code" => false,
+        // Web tools are always read-only (fetch / search).
+        "web" | "web_search" => false,
+
+        // Code tool: most operations are read-only analysis, but batch_edit writes to disk
+        // and lint/test spawn subprocesses that can modify state (fix, test output artifacts).
+        "code" => {
+            if let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) {
+                let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("");
+                matches!(op, "batch_edit" | "lint" | "test")
+            } else {
+                false
+            }
+        }
+
+        // MCP manager: read operations (search/evaluate/info/list) are safe;
+        // write operations (install/enable/disable/remove) modify .mcp.json on disk.
+        "mcp" => {
+            if let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) {
+                let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("");
+                matches!(op, "install" | "enable" | "disable" | "remove")
+            } else {
+                false
+            }
+        }
 
         // Unknown tools are considered read-only by default.
         _ => false,
@@ -315,5 +337,144 @@ mod tests {
 
         assert!(is_action_allowed(PermissionLevel::Full, true));
         assert!(!requires_confirmation(PermissionLevel::Full, true));
+    }
+
+    // ── Code tool policy ──────────────────────────────────────────────────────
+
+    #[test]
+    fn code_batch_edit_is_write_operation() {
+        let args = serde_json::json!({"operation": "batch_edit", "edits": []}).to_string();
+        assert!(is_write_operation("code", &args));
+    }
+
+    #[test]
+    fn code_batch_edit_blocked_in_sandbox() {
+        let args = serde_json::json!({"operation": "batch_edit", "edits": []}).to_string();
+        let eval = evaluate_tool_call(PermissionLevel::Sandbox, "code", &args);
+        assert!(eval.is_write_operation);
+        assert!(matches!(eval.decision, ToolCallDecision::Blocked { .. }));
+    }
+
+    #[test]
+    fn code_batch_edit_requires_confirmation_in_restricted() {
+        let args = serde_json::json!({"operation": "batch_edit", "edits": []}).to_string();
+        let eval = evaluate_tool_call(PermissionLevel::Restricted, "code", &args);
+        assert!(eval.is_write_operation);
+        assert!(matches!(
+            eval.decision,
+            ToolCallDecision::RequiresConfirmation(_)
+        ));
+    }
+
+    #[test]
+    fn code_lint_is_write_operation() {
+        let args = serde_json::json!({"operation": "lint", "path": "."}).to_string();
+        assert!(is_write_operation("code", &args));
+    }
+
+    #[test]
+    fn code_test_is_write_operation() {
+        let args = serde_json::json!({"operation": "test", "path": "."}).to_string();
+        assert!(is_write_operation("code", &args));
+    }
+
+    #[test]
+    fn code_glob_is_read_only() {
+        let args = serde_json::json!({"operation": "glob", "pattern": "**/*.rs"}).to_string();
+        assert!(!is_write_operation("code", &args));
+    }
+
+    #[test]
+    fn code_grep_is_read_only_in_sandbox() {
+        let args =
+            serde_json::json!({"operation": "grep", "pattern": "fn main", "path": "."}).to_string();
+        let eval = evaluate_tool_call(PermissionLevel::Sandbox, "code", &args);
+        assert!(!eval.is_write_operation);
+        assert_eq!(eval.decision, ToolCallDecision::Allowed);
+    }
+
+    #[test]
+    fn code_symbols_is_read_only() {
+        let args = serde_json::json!({"operation": "symbols", "path": "src/main.rs"}).to_string();
+        assert!(!is_write_operation("code", &args));
+    }
+
+    // ── MCP manager tool policy ───────────────────────────────────────────────
+
+    #[test]
+    fn mcp_install_is_write_operation() {
+        let args =
+            serde_json::json!({"operation": "install", "server_id": "io.github.test/server"})
+                .to_string();
+        assert!(is_write_operation("mcp", &args));
+    }
+
+    #[test]
+    fn mcp_install_blocked_in_sandbox() {
+        let args =
+            serde_json::json!({"operation": "install", "server_id": "io.github.test/server"})
+                .to_string();
+        let eval = evaluate_tool_call(PermissionLevel::Sandbox, "mcp", &args);
+        assert!(eval.is_write_operation);
+        assert!(matches!(eval.decision, ToolCallDecision::Blocked { .. }));
+    }
+
+    #[test]
+    fn mcp_install_requires_confirmation_in_restricted() {
+        let args =
+            serde_json::json!({"operation": "install", "server_id": "io.github.test/server"})
+                .to_string();
+        let eval = evaluate_tool_call(PermissionLevel::Restricted, "mcp", &args);
+        assert!(eval.is_write_operation);
+        assert!(matches!(
+            eval.decision,
+            ToolCallDecision::RequiresConfirmation(_)
+        ));
+    }
+
+    #[test]
+    fn mcp_enable_is_write_operation() {
+        let args = serde_json::json!({"operation": "enable", "name": "my-server"}).to_string();
+        assert!(is_write_operation("mcp", &args));
+    }
+
+    #[test]
+    fn mcp_disable_is_write_operation() {
+        let args = serde_json::json!({"operation": "disable", "name": "my-server"}).to_string();
+        assert!(is_write_operation("mcp", &args));
+    }
+
+    #[test]
+    fn mcp_remove_is_write_operation() {
+        let args = serde_json::json!({"operation": "remove", "name": "my-server"}).to_string();
+        assert!(is_write_operation("mcp", &args));
+    }
+
+    #[test]
+    fn mcp_search_is_read_only() {
+        let args = serde_json::json!({"operation": "search", "query": "filesystem"}).to_string();
+        assert!(!is_write_operation("mcp", &args));
+    }
+
+    #[test]
+    fn mcp_search_allowed_in_sandbox() {
+        let args = serde_json::json!({"operation": "search", "query": "filesystem"}).to_string();
+        let eval = evaluate_tool_call(PermissionLevel::Sandbox, "mcp", &args);
+        assert!(!eval.is_write_operation);
+        assert_eq!(eval.decision, ToolCallDecision::Allowed);
+    }
+
+    #[test]
+    fn mcp_evaluate_is_read_only() {
+        let args =
+            serde_json::json!({"operation": "evaluate", "server_id": "io.github.test/server"})
+                .to_string();
+        assert!(!is_write_operation("mcp", &args));
+    }
+
+    #[test]
+    fn mcp_list_is_read_only() {
+        let args = serde_json::json!({"operation": "list"}).to_string();
+        assert!(!is_write_operation("mcp", &args));
     }
 }

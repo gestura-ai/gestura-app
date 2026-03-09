@@ -140,6 +140,78 @@ pub struct TestResult {
     pub output: Option<String>,
 }
 
+/// A single file match returned by a glob search.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlobMatch {
+    /// Absolute path to the matched file.
+    pub path: PathBuf,
+    /// Path relative to the search root, using forward slashes.
+    pub relative_path: String,
+}
+
+/// A single line match returned by a grep search, with optional surrounding context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrepMatch {
+    /// File the match was found in.
+    pub path: PathBuf,
+    /// 1-based line number of the matching line.
+    pub line: usize,
+    /// The matching line content.
+    pub content: String,
+    /// Lines before the match: `(1-based line number, line content)`.
+    pub context_before: Vec<(usize, String)>,
+    /// Lines after the match: `(1-based line number, line content)`.
+    pub context_after: Vec<(usize, String)>,
+}
+
+/// A single entry in a [`CodeTools::batch_read`] response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchReadEntry {
+    /// The path that was requested.
+    pub path: String,
+    /// File content, or `None` if the read failed.
+    pub content: Option<String>,
+    /// Number of lines in the file (0 on error).
+    pub line_count: usize,
+    /// Error message if the read failed.
+    pub error: Option<String>,
+}
+
+/// A single str-replace edit operation for [`CodeTools::batch_edit`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditOp {
+    /// Path of the file to edit.
+    pub path: String,
+    /// Exact string to find.
+    pub old_str: String,
+    /// Replacement string.
+    pub new_str: String,
+}
+
+/// Result of applying a single [`EditOp`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditOpResult {
+    /// The path that was edited.
+    pub path: String,
+    /// Whether the operation succeeded.
+    pub success: bool,
+    /// Number of replacements made (0 when `success` is false).
+    pub replacements: usize,
+    /// Error message when `success` is false.
+    pub error: Option<String>,
+}
+
+/// A lightweight symbol entry for file outlines.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutlineNode {
+    pub name: String,
+    pub kind: SymbolKind,
+    /// 1-based line number.
+    pub line: usize,
+    /// 1-based column.
+    pub column: usize,
+}
+
 /// Code analysis service
 pub struct CodeTools {
     /// Working directory for relative path resolution.
@@ -479,6 +551,167 @@ impl CodeTools {
         })
     }
 
+    /// Find all files whose paths (relative to `root`) match the glob `pattern`.
+    ///
+    /// Supports `**` (any path depth), `*` (any filename chars), `?` (one char).
+    /// Hidden directories and common build directories (`target`, `node_modules`) are skipped.
+    pub fn glob_search(
+        &self,
+        pattern: &str,
+        root: &Path,
+        max_results: usize,
+    ) -> Result<Vec<GlobMatch>> {
+        let root = self.resolve_path(root);
+        let regex_str = glob_to_regex_string(pattern);
+        let re = Regex::new(&regex_str).map_err(|e| {
+            AppError::InvalidInput(format!("Invalid glob pattern '{pattern}': {e}"))
+        })?;
+        let mut out = Vec::new();
+        Self::walk_for_glob(&root, &root, &re, max_results, &mut out)?;
+        Ok(out)
+    }
+
+    /// Search file contents under `root` for lines matching the regex `pattern`.
+    ///
+    /// - `file_glob`: optional glob to restrict which files are searched (e.g. `*.rs`)
+    /// - `context_lines`: number of context lines to include before and after each match
+    /// - `case_sensitive`: whether the match is case-sensitive
+    /// - `max_matches`: maximum number of [`GrepMatch`] entries to return
+    pub fn grep(
+        &self,
+        pattern: &str,
+        root: &Path,
+        file_glob: Option<&str>,
+        context_lines: usize,
+        case_sensitive: bool,
+        max_matches: usize,
+    ) -> Result<Vec<GrepMatch>> {
+        let root = self.resolve_path(root);
+        let pattern_str = if case_sensitive {
+            pattern.to_string()
+        } else {
+            format!("(?i){pattern}")
+        };
+        let re = Regex::new(&pattern_str).map_err(|e| {
+            AppError::InvalidInput(format!("Invalid grep pattern '{pattern}': {e}"))
+        })?;
+        let file_re: Option<Regex> =
+            match file_glob {
+                Some(g) => {
+                    let s = glob_to_regex_string(g);
+                    Some(Regex::new(&s).map_err(|e| {
+                        AppError::InvalidInput(format!("Invalid file glob '{g}': {e}"))
+                    })?)
+                }
+                None => None,
+            };
+        let mut out = Vec::new();
+        Self::walk_for_grep(
+            &root,
+            &re,
+            file_re.as_ref(),
+            context_lines,
+            max_matches,
+            &mut out,
+        )?;
+        Ok(out)
+    }
+
+    /// Read multiple files in one call.
+    ///
+    /// Each path is resolved through the configured `work_dir`. Failures are
+    /// captured per-entry rather than aborting the batch.
+    pub fn batch_read(&self, paths: &[&str]) -> Vec<BatchReadEntry> {
+        paths
+            .iter()
+            .map(|p| {
+                let resolved = self.resolve_path(Path::new(p));
+                match fs::read_to_string(&resolved) {
+                    Ok(content) => {
+                        let line_count = content.lines().count();
+                        BatchReadEntry {
+                            path: p.to_string(),
+                            content: Some(content),
+                            line_count,
+                            error: None,
+                        }
+                    }
+                    Err(e) => BatchReadEntry {
+                        path: p.to_string(),
+                        content: None,
+                        line_count: 0,
+                        error: Some(e.to_string()),
+                    },
+                }
+            })
+            .collect()
+    }
+
+    /// Apply multiple str-replace edits across files in one call.
+    ///
+    /// Each [`EditOp`] replaces all occurrences of `old_str` with `new_str` in
+    /// the target file.  Failures are captured per-entry rather than aborting
+    /// the batch, so callers must inspect [`EditOpResult::success`] for each entry.
+    pub fn batch_edit(&self, edits: &[EditOp]) -> Vec<EditOpResult> {
+        edits
+            .iter()
+            .map(|op| {
+                let resolved = self.resolve_path(Path::new(&op.path));
+                match fs::read_to_string(&resolved) {
+                    Ok(content) => {
+                        let replacements = content.matches(op.old_str.as_str()).count();
+                        if replacements == 0 {
+                            return EditOpResult {
+                                path: op.path.clone(),
+                                success: false,
+                                replacements: 0,
+                                error: Some(format!("old_str not found in '{}'", op.path)),
+                            };
+                        }
+                        let new_content = content.replace(op.old_str.as_str(), op.new_str.as_str());
+                        match fs::write(&resolved, new_content) {
+                            Ok(()) => EditOpResult {
+                                path: op.path.clone(),
+                                success: true,
+                                replacements,
+                                error: None,
+                            },
+                            Err(e) => EditOpResult {
+                                path: op.path.clone(),
+                                success: false,
+                                replacements: 0,
+                                error: Some(e.to_string()),
+                            },
+                        }
+                    }
+                    Err(e) => EditOpResult {
+                        path: op.path.clone(),
+                        success: false,
+                        replacements: 0,
+                        error: Some(e.to_string()),
+                    },
+                }
+            })
+            .collect()
+    }
+
+    /// Return a structured outline of all top-level symbols in `path`.
+    ///
+    /// This is a lightweight wrapper around [`Self::symbols`] that strips the
+    /// absolute path from each entry so the result is presentation-friendly.
+    pub fn outline(&self, path: &Path) -> Result<Vec<OutlineNode>> {
+        let syms = self.symbols(path)?;
+        Ok(syms
+            .into_iter()
+            .map(|s| OutlineNode {
+                name: s.name,
+                kind: s.kind,
+                line: s.line,
+                column: s.column,
+            })
+            .collect())
+    }
+
     fn collect_stats(&self, path: &Path, stats: &mut CodeStats) -> Result<()> {
         if path.is_file() {
             self.analyze_file(path, stats)?;
@@ -611,6 +844,116 @@ impl CodeTools {
         Ok(None)
     }
 
+    /// Recursive traversal helper for [`Self::glob_search`].
+    fn walk_for_glob(
+        root: &Path,
+        current: &Path,
+        re: &Regex,
+        limit: usize,
+        out: &mut Vec<GlobMatch>,
+    ) -> Result<()> {
+        if out.len() >= limit {
+            return Ok(());
+        }
+        if current.is_file() {
+            let rel = current.strip_prefix(root).unwrap_or(current);
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            if re.is_match(&rel_str) {
+                out.push(GlobMatch {
+                    path: current.to_path_buf(),
+                    relative_path: rel_str,
+                });
+            }
+        } else if current.is_dir() {
+            let mut entries: Vec<_> = fs::read_dir(current)?.filter_map(|e| e.ok()).collect();
+            entries.sort_by_key(|e| e.file_name());
+            for entry in entries {
+                if out.len() >= limit {
+                    break;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                if Self::should_skip_name(&name) {
+                    continue;
+                }
+                Self::walk_for_glob(root, &entry.path(), re, limit, out)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Recursive traversal helper for [`Self::grep`].
+    fn walk_for_grep(
+        path: &Path,
+        re: &Regex,
+        file_re: Option<&Regex>,
+        context_lines: usize,
+        limit: usize,
+        out: &mut Vec<GrepMatch>,
+    ) -> Result<()> {
+        if out.len() >= limit {
+            return Ok(());
+        }
+        if path.is_file() {
+            // Filter by file name glob when one is provided.
+            if let Some(fre) = file_re {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if !fre.is_match(&name) {
+                    return Ok(());
+                }
+            }
+            if let Ok(content) = fs::read_to_string(path) {
+                let lines: Vec<&str> = content.lines().collect();
+                for (idx, line) in lines.iter().enumerate() {
+                    if out.len() >= limit {
+                        break;
+                    }
+                    if re.is_match(line) {
+                        let ctx_before = (0..context_lines)
+                            .filter_map(|d| {
+                                let li = idx.checked_sub(context_lines - d)?;
+                                Some((li + 1, lines[li].to_string()))
+                            })
+                            .collect();
+                        let ctx_after = (1..=context_lines)
+                            .filter_map(|d| {
+                                let li = idx + d;
+                                if li < lines.len() {
+                                    Some((li + 1, lines[li].to_string()))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        out.push(GrepMatch {
+                            path: path.to_path_buf(),
+                            line: idx + 1,
+                            content: line.to_string(),
+                            context_before: ctx_before,
+                            context_after: ctx_after,
+                        });
+                    }
+                }
+            }
+        } else if path.is_dir() {
+            let mut entries: Vec<_> = fs::read_dir(path)?.filter_map(|e| e.ok()).collect();
+            entries.sort_by_key(|e| e.file_name());
+            for entry in entries {
+                if out.len() >= limit {
+                    break;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                if Self::should_skip_name(&name) {
+                    continue;
+                }
+                Self::walk_for_grep(&entry.path(), re, file_re, context_lines, limit, out)?;
+            }
+        }
+        Ok(())
+    }
+
     fn analyze_file(&self, path: &Path, stats: &mut CodeStats) -> Result<()> {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let lang = match ext {
@@ -658,6 +1001,53 @@ impl CodeTools {
         }
         Ok(())
     }
+}
+
+/// Convert a glob pattern to a regex string suitable for [`Regex::new`].
+///
+/// Supported glob metacharacters:
+/// - `**` followed by `/` — match zero or more path segments (`(?:[^/]+/)* `)
+/// - `**` at end — match anything (`.*`)
+/// - `*`  — match any sequence of non-separator characters (`[^/]*`)
+/// - `?`  — match any single non-separator character (`[^/]`)
+///
+/// All other regex metacharacters in the pattern are escaped.
+fn glob_to_regex_string(pattern: &str) -> String {
+    let mut result = String::from("^");
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '*' if i + 1 < chars.len() && chars[i + 1] == '*' => {
+                if i + 2 < chars.len() && chars[i + 2] == '/' {
+                    // **/ — zero or more directory segments
+                    result.push_str("(?:[^/]+/)*");
+                    i += 3;
+                } else {
+                    // ** at end or without trailing slash — match anything
+                    result.push_str(".*");
+                    i += 2;
+                }
+            }
+            '*' => {
+                result.push_str("[^/]*");
+                i += 1;
+            }
+            '?' => {
+                result.push_str("[^/]");
+                i += 1;
+            }
+            c => {
+                if ".+^${}()|[]\\".contains(c) {
+                    result.push('\\');
+                }
+                result.push(c);
+                i += 1;
+            }
+        }
+    }
+    result.push('$');
+    result
 }
 
 fn symbol_patterns() -> &'static Vec<(SymbolKind, Regex)> {

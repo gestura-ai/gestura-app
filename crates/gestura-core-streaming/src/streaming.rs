@@ -1073,12 +1073,16 @@ pub async fn stream_gemini(
     Ok(())
 }
 
-/// Keepalive interval for Ollama streaming while the model is loading.
+/// Keepalive interval for Ollama streaming.
 ///
 /// Ollama may take a long time to load a model into memory (especially large
-/// models). During loading, no streaming data is sent. This interval controls
-/// how often we emit a `Status` keepalive so the caller's idle timer does not
-/// fire prematurely.
+/// models). Additionally, when a model decides to make a tool call, the entire
+/// tool call JSON only appears in the final `done:true` NDJSON line — no
+/// individual tokens are streamed during that deliberation phase. Both of these
+/// situations produce silence on the wire that can trigger the caller's idle
+/// timer. We send periodic `Status` keepalive chunks throughout the **entire**
+/// stream lifetime (not only during model loading) to prevent premature
+/// timeouts.
 const OLLAMA_KEEPALIVE_INTERVAL_SECS: u64 = 30;
 
 /// Stream a response from Ollama local API
@@ -1104,12 +1108,49 @@ pub async fn stream_ollama(
         body["tools"] = serde_json::Value::Array(tools.to_vec());
     }
 
+    tracing::debug!(
+        model = model,
+        url = %url,
+        tools_count = tools.map(|t| t.len()).unwrap_or(0),
+        has_tools = tools.map(|t| !t.is_empty()).unwrap_or(false),
+        "[Ollama] Starting stream request"
+    );
+
     let client = create_streaming_client();
-    let response = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
+
+    // Pre-connection keepalive: Ollama must load the model into VRAM before it
+    // can start streaming. For large models (e.g. 20B+) this can take 100–200s,
+    // which exceeds the GUI's 90s idle timer. We spawn a background task that
+    // sends a Status chunk every 30s while reqwest's .send().await is blocking,
+    // so the idle timer keeps getting reset during the model-loading phase.
+    let pre_conn_tx = tx.clone();
+    let pre_conn_model = model.to_string();
+    let pre_conn_handle = tokio::spawn({
+        let interval = Duration::from_secs(OLLAMA_KEEPALIVE_INTERVAL_SECS);
+        async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                tracing::debug!(
+                    model = %pre_conn_model,
+                    "[Ollama] Pre-connection keepalive: model still loading"
+                );
+                let _ = pre_conn_tx
+                    .send(StreamChunk::Status {
+                        message: format!("Loading model '{pre_conn_model}'…"),
+                    })
+                    .await;
+            }
+        }
+    });
+
+    let send_result = client.post(&url).json(&body).send().await;
+
+    // Abort the pre-connection keepalive now that we have a response (or error).
+    // abort() is instant; the subsequent await just confirms the task has stopped.
+    pre_conn_handle.abort();
+    let _ = pre_conn_handle.await;
+
+    let response = send_result
         .map_err(|e| AppError::Llm(format!("Ollama streaming request failed: {}", e)))?;
 
     if !response.status().is_success() {
@@ -1126,14 +1167,14 @@ pub async fn stream_ollama(
             message: format!("Connected to Ollama — loading model '{}'…", model),
         })
         .await;
+    tracing::debug!(
+        model = model,
+        "[Ollama] HTTP connection established; 'Connected' status sent"
+    );
 
     let mut stream = response.bytes_stream();
     let mut parser = ThinkingParser::new();
     let mut line_buffer = String::new();
-    // Track whether we have received any real data (content / tool calls).
-    // While `received_data` is false we send periodic keepalive status
-    // messages so the caller's idle timer does not fire during model loading.
-    let mut received_data = false;
 
     let keepalive_interval = Duration::from_secs(OLLAMA_KEEPALIVE_INTERVAL_SECS);
     let keepalive_sleep = tokio::time::sleep(keepalive_interval);
@@ -1157,11 +1198,17 @@ pub async fn stream_ollama(
                         let text = String::from_utf8_lossy(&bytes);
                         for line in collect_complete_lines(&mut line_buffer, &text) {
                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+                                tracing::trace!(
+                                    done = json["done"].as_bool().unwrap_or(false),
+                                    has_content = json["message"]["content"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
+                                    has_tool_calls = json["message"]["tool_calls"].is_array(),
+                                    "[Ollama] NDJSON line parsed"
+                                );
+
                                 // Extract content from message (may arrive before done)
                                 if let Some(content) = json["message"]["content"].as_str()
                                     && !content.is_empty()
                                 {
-                                    received_data = true;
                                     let chunks = parser.process(content);
                                     for chunk in chunks {
                                         let _ = tx.send(chunk).await;
@@ -1170,12 +1217,20 @@ pub async fn stream_ollama(
 
                                 // Handle tool calls (Ollama returns them in the message)
                                 if let Some(tool_calls) = json["message"]["tool_calls"].as_array() {
+                                    tracing::debug!(
+                                        model = model,
+                                        count = tool_calls.len(),
+                                        "[Ollama] Tool calls found in NDJSON line"
+                                    );
                                     for call in tool_calls {
                                         let name = call["function"]["name"].as_str().unwrap_or_default();
                                         let args = &call["function"]["arguments"];
 
                                         if !name.is_empty() {
-                                            received_data = true;
+                                            tracing::debug!(
+                                                tool = name,
+                                                "[Ollama] Emitting ToolCallStart/Args/End"
+                                            );
                                             let id = format!("ollama-tool-{}", uuid::Uuid::new_v4());
                                             let _ = tx
                                                 .send(StreamChunk::ToolCallStart {
@@ -1192,12 +1247,14 @@ pub async fn stream_ollama(
 
                                             let _ = tx.send(StreamChunk::ToolCallArgs(args_str)).await;
                                             let _ = tx.send(StreamChunk::ToolCallEnd).await;
+                                            tracing::debug!(tool = name, "[Ollama] ToolCallEnd emitted");
                                         }
                                     }
                                 }
 
                                 // Check if done
                                 if json["done"].as_bool() == Some(true) {
+                                    tracing::debug!(model = model, "[Ollama] done=true — sending Done chunk");
                                     let _ = tx.send(StreamChunk::Done(None)).await;
                                     return Ok(());
                                 }
@@ -1213,19 +1270,29 @@ pub async fn stream_ollama(
                 }
             }
 
-            // Keepalive: send periodic status messages while the model is
-            // loading (no real data received yet). This prevents the caller's
-            // idle timer (typically 90 s) from firing during cold starts that
-            // can take several minutes for large models.
-            () = &mut keepalive_sleep, if !received_data => {
+            // Keepalive: send periodic status messages throughout the entire
+            // stream. This prevents the caller's idle timer (typically 90 s)
+            // from firing during two distinct silent phases:
+            //   1. Cold starts — Ollama loads large models into memory before
+            //      sending any tokens.
+            //   2. Tool-call generation — Ollama only sends a tool call in the
+            //      final `done:true` NDJSON line. The model deliberates in
+            //      silence before that line arrives, which can easily exceed
+            //      90 s on a local large model.
+            () = &mut keepalive_sleep => {
                 if cancel_token.is_cancelled() {
                     let _ = tx.send(StreamChunk::Cancelled).await;
                     return Ok(());
                 }
-                tracing::debug!("Ollama keepalive: still waiting for model '{}'", model);
-                let _ = tx.send(StreamChunk::Status {
-                    message: format!("Still loading model '{}'…", model),
+                tracing::debug!(model = model, "[Ollama] Keepalive firing — sending Status chunk");
+                let keepalive_send = tx.send(StreamChunk::Status {
+                    message: format!("Working… (model '{}')", model),
                 }).await;
+                tracing::debug!(
+                    model = model,
+                    send_ok = keepalive_send.is_ok(),
+                    "[Ollama] Keepalive Status sent"
+                );
                 // Reset the keepalive timer for the next interval.
                 keepalive_sleep
                     .as_mut()

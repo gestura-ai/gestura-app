@@ -36,6 +36,10 @@ pub enum ContextCategory {
     Mcp,
     /// A2A protocol operations
     A2a,
+    /// Task management for current session
+    Task,
+    /// Screen capture and recording (screenshot, screen_record)
+    Screen,
     /// General conversation (no specific tools)
     General,
 }
