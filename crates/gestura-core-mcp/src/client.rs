@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tokio::sync::RwLock;
 
 /// JSON-RPC request envelope used by the MCP client.
@@ -55,6 +56,8 @@ pub struct McpClient {
     transport: McpTransport,
     /// Monotonically increasing request ID.
     next_id: AtomicU64,
+    /// Per-RPC timeout used for both HTTP and stdio transports.
+    rpc_timeout: Duration,
     /// Tools discovered from this server.
     tools: RwLock<Vec<Tool>>,
 }
@@ -70,8 +73,27 @@ enum McpTransport {
     },
     /// Stdio transport — owns a child process handle.
     Stdio {
-        child: Arc<RwLock<tokio::process::Child>>,
+        conn: Arc<tokio::sync::Mutex<StdioConnection>>,
     },
+}
+
+/// Persistent stdio connection state for a single MCP server.
+///
+/// We keep a single `BufReader` for stdout across requests. Re-creating and
+/// dropping a `BufReader` per RPC can discard buffered bytes and lead to
+/// seemingly-random hangs on subsequent requests.
+#[derive(Debug)]
+struct StdioConnection {
+    child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    stdout: tokio::io::BufReader<tokio::process::ChildStdout>,
+}
+
+impl Drop for StdioConnection {
+    fn drop(&mut self) {
+        // Best-effort cleanup.
+        let _ = self.child.start_kill();
+    }
 }
 
 /// Global registry of active MCP client connections, keyed by server name.
@@ -167,6 +189,8 @@ impl McpClient {
     pub async fn connect(entry: &McpServerEntry) -> Result<Self> {
         use crate::config::McpTransportType;
 
+        let rpc_timeout = Duration::from_secs(entry.timeout_secs.max(1));
+
         let transport = match entry.transport {
             McpTransportType::Http | McpTransportType::Sse => {
                 let url = entry.url.clone().ok_or_else(|| {
@@ -179,7 +203,7 @@ impl McpClient {
                     url,
                     headers: entry.headers.clone(),
                     client: reqwest::Client::builder()
-                        .timeout(std::time::Duration::from_secs(entry.timeout_secs))
+                        .timeout(rpc_timeout)
                         .build()
                         .map_err(|e| {
                             AppError::Io(std::io::Error::other(format!(
@@ -203,14 +227,34 @@ impl McpClient {
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::null());
 
-                let child = cmd.spawn().map_err(|e| {
+                let mut child = cmd.spawn().map_err(|e| {
                     AppError::Io(std::io::Error::other(format!(
                         "Failed to spawn MCP server '{}' ({}): {e}",
                         entry.name, command
                     )))
                 })?;
+
+                let stdin = child.stdin.take().ok_or_else(|| {
+                    AppError::Io(std::io::Error::other(format!(
+                        "MCP server '{}': stdin not available",
+                        entry.name
+                    )))
+                })?;
+                let stdout = child.stdout.take().ok_or_else(|| {
+                    AppError::Io(std::io::Error::other(format!(
+                        "MCP server '{}': stdout not available",
+                        entry.name
+                    )))
+                })?;
+
+                let conn = StdioConnection {
+                    child,
+                    stdin,
+                    stdout: tokio::io::BufReader::new(stdout),
+                };
+
                 McpTransport::Stdio {
-                    child: Arc::new(RwLock::new(child)),
+                    conn: Arc::new(tokio::sync::Mutex::new(conn)),
                 }
             }
         };
@@ -219,6 +263,7 @@ impl McpClient {
             name: entry.name.clone(),
             transport,
             next_id: AtomicU64::new(1),
+            rpc_timeout,
             tools: RwLock::new(Vec::new()),
         };
 
@@ -283,7 +328,7 @@ impl McpClient {
                     )))
                 })?
             }
-            McpTransport::Stdio { child } => self.stdio_rpc(child, &request).await?,
+            McpTransport::Stdio { conn } => self.stdio_rpc(conn, &request, method).await?,
         };
 
         if let Some(err) = response_value.error {
@@ -304,37 +349,41 @@ impl McpClient {
     /// Send/receive a single JSON-RPC message over a child process stdio.
     async fn stdio_rpc(
         &self,
-        child: &Arc<RwLock<tokio::process::Child>>,
+        conn: &Arc<tokio::sync::Mutex<StdioConnection>>,
         request: &JsonRpcClientRequest,
+        method: &str,
     ) -> Result<JsonRpcClientResponse> {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
-        let mut guard = child.write().await;
+        let mut conn = conn.lock().await;
 
-        let stdin = guard.stdin.as_mut().ok_or_else(|| {
-            AppError::Io(std::io::Error::other(format!(
-                "MCP server '{}': stdin not available",
-                self.name
-            )))
-        })?;
         let mut line = serde_json::to_string(request).map_err(|e| {
             AppError::Io(std::io::Error::other(format!(
                 "Failed to serialize JSON-RPC request: {e}"
             )))
         })?;
         line.push('\n');
-        stdin.write_all(line.as_bytes()).await?;
-        stdin.flush().await?;
+        conn.stdin.write_all(line.as_bytes()).await?;
+        conn.stdin.flush().await?;
 
-        let stdout = guard.stdout.as_mut().ok_or_else(|| {
-            AppError::Io(std::io::Error::other(format!(
-                "MCP server '{}': stdout not available",
-                self.name
-            )))
-        })?;
-        let mut reader = BufReader::new(stdout);
         let mut buf = String::new();
-        reader.read_line(&mut buf).await?;
+        let read = tokio::time::timeout(self.rpc_timeout, conn.stdout.read_line(&mut buf))
+            .await
+            .map_err(|_| {
+                AppError::Io(std::io::Error::other(format!(
+                    "MCP server '{}': RPC '{}' timed out after {}s",
+                    self.name,
+                    method,
+                    self.rpc_timeout.as_secs()
+                )))
+            })??;
+
+        if read == 0 {
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "MCP server '{}': EOF while waiting for RPC '{}' response",
+                self.name, method
+            ))));
+        }
 
         serde_json::from_str(&buf).map_err(|e| {
             AppError::Io(std::io::Error::other(format!(
@@ -376,15 +425,13 @@ impl McpClient {
                 // Fire-and-forget — ignore errors.
                 let _ = req.send().await;
             }
-            McpTransport::Stdio { child } => {
+            McpTransport::Stdio { conn } => {
                 use tokio::io::AsyncWriteExt;
-                let mut guard = child.write().await;
-                if let Some(stdin) = guard.stdin.as_mut() {
-                    let mut line = serde_json::to_string(&notif).unwrap_or_default();
-                    line.push('\n');
-                    let _ = stdin.write_all(line.as_bytes()).await;
-                    let _ = stdin.flush().await;
-                }
+                let mut conn = conn.lock().await;
+                let mut line = serde_json::to_string(&notif).unwrap_or_default();
+                line.push('\n');
+                let _ = conn.stdin.write_all(line.as_bytes()).await;
+                let _ = conn.stdin.flush().await;
             }
         }
 

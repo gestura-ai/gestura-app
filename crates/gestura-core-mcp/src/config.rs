@@ -223,6 +223,13 @@ pub struct McpServerEntry {
     /// Auto-reconnect on failure.
     #[serde(default = "default_true")]
     pub auto_reconnect: bool,
+
+    // -- session behavior --
+    /// Whether tools from this server are enabled by default when a new session
+    /// is created.  Individual session overrides (stored in
+    /// `SessionToolSettings::enabled_tools`) take precedence.
+    #[serde(default = "default_true")]
+    pub session_default_enabled: bool,
 }
 
 impl Default for McpServerEntry {
@@ -239,6 +246,7 @@ impl Default for McpServerEntry {
             scope: McpScope::default(),
             timeout_secs: 30,
             auto_reconnect: true,
+            session_default_enabled: true,
         }
     }
 }

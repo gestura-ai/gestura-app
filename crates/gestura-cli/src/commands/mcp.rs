@@ -13,7 +13,10 @@ use gestura_core::AppConfig;
 use gestura_core::AppConfigSecurityExt;
 use gestura_core::config::{McpScope, McpServerEntry, McpTransportType};
 use gestura_core::mcp::client::get_mcp_client_registry;
-use gestura_core::mcp::{PROTOCOL_VERSION, PromptRegistry, SessionManager};
+use gestura_core::mcp::{
+    PROTOCOL_VERSION, PromptRegistry, ProvisionResult, ProvisionStatus, SessionManager,
+    provision_mcp_server,
+};
 use std::collections::HashMap;
 
 pub fn run(action: &McpAction) -> Result<()> {
@@ -129,6 +132,8 @@ pub fn run(action: &McpAction) -> Result<()> {
                 },
             };
 
+            // Clone entry before moving it into the config vec so we can provision below.
+            let entry_for_provision = entry.clone();
             config.mcp_servers.push(entry);
 
             if let Err(e) = config.save() {
@@ -142,6 +147,9 @@ pub fn run(action: &McpAction) -> Result<()> {
                 name.cyan(),
                 transport
             );
+
+            // Run provisioning (runtime check + package pre-install) for stdio servers.
+            print_provision_result(provision_entry(&entry_for_provision));
         }
 
         // ── add-json ────────────────────────────────────────────────────
@@ -159,6 +167,8 @@ pub fn run(action: &McpAction) -> Result<()> {
             });
             entry.name = name.clone();
 
+            // Clone before move for provisioning below.
+            let entry_for_provision = entry.clone();
             config.mcp_servers.push(entry);
 
             if let Err(e) = config.save() {
@@ -171,6 +181,9 @@ pub fn run(action: &McpAction) -> Result<()> {
                 "✓".green(),
                 name.cyan()
             );
+
+            // Run provisioning (runtime check + package pre-install) for stdio servers.
+            print_provision_result(provision_entry(&entry_for_provision));
         }
 
         // ── get ─────────────────────────────────────────────────────────
@@ -610,4 +623,31 @@ fn show_mcp_capabilities() {
         "Elicitation:".dimmed(),
         "○ Not implemented".yellow()
     );
+}
+
+// ── Provisioning helpers ──────────────────────────────────────────────────────
+
+/// Synchronously run [`provision_mcp_server`] for `entry` using a local tokio
+/// runtime.  Returns a [`ProvisionResult`].
+fn provision_entry(entry: &McpServerEntry) -> ProvisionResult {
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    rt.block_on(provision_mcp_server(entry))
+}
+
+/// Print the provision result to stdout / stderr with coloured icons.
+fn print_provision_result(result: ProvisionResult) {
+    match result.status {
+        ProvisionStatus::Ready => {
+            println!("{} {}", "✓".green(), result.message);
+        }
+        ProvisionStatus::Skipped => {
+            println!("{} {}", "ℹ".cyan(), result.message);
+        }
+        ProvisionStatus::RuntimeMissing => {
+            eprintln!("{} {}", "⚠".yellow(), result.message);
+        }
+        ProvisionStatus::FetchFailed => {
+            eprintln!("{} {}", "✗".red(), result.message);
+        }
+    }
 }

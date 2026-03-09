@@ -11,6 +11,8 @@ pub mod integrator;
 pub mod lifecycle;
 pub mod notifications;
 pub mod prompts;
+pub mod provision;
+pub mod registry;
 pub mod server;
 pub mod types;
 
@@ -36,6 +38,11 @@ pub use notifications::{
     ProgressTracker, create_notification_channel,
 };
 pub use prompts::{PromptRegistry, RegisteredPrompt};
+pub use provision::{ProvisionResult, ProvisionStatus, provision_mcp_server};
+pub use registry::{
+    PopularMcpServer, RegistryBrowseEntry, RegistryBrowsePage, browse_mcp_registry,
+    list_popular_mcp_servers, normalize_mcp_server_name,
+};
 pub use server::{
     JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpRequestContext, McpResourceHandler,
     McpServer, McpToolHandler,
