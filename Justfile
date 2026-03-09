@@ -178,6 +178,49 @@ build-macos:
 	cd {{frontend_dir}} && npm run build
 	cd {{gui_dir}} && cargo tauri build --features voice-local
 
+# Download and stage ffmpeg sidecars for a macOS universal build.
+#
+# Tauri's `--target universal-apple-darwin` build internally compiles two
+# separate cargo invocations (aarch64 + x86_64) and each one validates that
+# its arch-specific externalBin entry exists on disk.  We must therefore stage:
+#   binaries/ffmpeg-aarch64-apple-darwin
+#   binaries/ffmpeg-x86_64-apple-darwin
+#   binaries/ffmpeg-universal-apple-darwin  (lipo'd; for completeness)
+#
+# Sources (signed, statically-linked macOS binaries):
+#   arm64  — https://ffmpeg.martin-riedl.de (snapshot; Apple Silicon)
+#   x86_64 — https://ffmpeg.martin-riedl.de (release;  Intel)
+#
+# Set GESTURA_FFMPEG_SKIP_DOWNLOAD=1 to skip when pre-staged binaries exist
+# (useful for CI layer caching).
+stage-ffmpeg-macos:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    GUI_DIR="crates/gestura-gui"
+    DST_DIR="${GUI_DIR}/binaries"
+    ARM64_DST="${DST_DIR}/ffmpeg-aarch64-apple-darwin"
+    X86_DST="${DST_DIR}/ffmpeg-x86_64-apple-darwin"
+    UNIV_DST="${DST_DIR}/ffmpeg-universal-apple-darwin"
+    if [ "${GESTURA_FFMPEG_SKIP_DOWNLOAD:-0}" = "1" ] \
+         && [ -f "${ARM64_DST}" ] && [ -f "${X86_DST}" ]; then
+        echo "⏭️  Skipping ffmpeg download — pre-staged binaries found"
+        exit 0
+    fi
+    echo "📥 Downloading static ffmpeg for macOS (arm64 + x86_64)..."
+    mkdir -p "${DST_DIR}"
+    TMP="$(mktemp -d)"
+    trap 'rm -rf "${TMP}"' EXIT
+    ARM64_URL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip"
+    X86_64_URL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip"
+    curl -fsSL -L "${ARM64_URL}"  -o "${TMP}/ffmpeg-arm64.zip"  --retry 3
+    curl -fsSL -L "${X86_64_URL}" -o "${TMP}/ffmpeg-x86_64.zip" --retry 3
+    unzip -q "${TMP}/ffmpeg-arm64.zip"  -d "${TMP}/arm64"
+    unzip -q "${TMP}/ffmpeg-x86_64.zip" -d "${TMP}/x86_64"
+    cp "${TMP}/arm64/ffmpeg"  "${ARM64_DST}" && chmod +x "${ARM64_DST}"
+    cp "${TMP}/x86_64/ffmpeg" "${X86_DST}"   && chmod +x "${X86_DST}"
+    lipo -create "${ARM64_DST}" "${X86_DST}" -output "${UNIV_DST}" && chmod +x "${UNIV_DST}"
+    echo "✅ ffmpeg staged: aarch64, x86_64, universal"
+
 # Build and sign macOS app bundle (for local development)
 # This uses certificates already installed in your Keychain.
 # For CI/CD, use the GitHub Actions workflow which imports certificates.
@@ -244,6 +287,15 @@ build-macos-signed:
 	  {{gui_dir}}/binaries/gestura-x86_64-apple-darwin \
 	  {{gui_dir}}/binaries/gestura-universal-apple-darwin
 	@echo "✅ Universal CLI binary created"
+	# 2c. Stage the ffmpeg sidecar for Tauri `bundle.externalBin`.
+	#
+	# Tauri's universal build compiles two separate cargo invocations (aarch64
+	# + x86_64).  Each one validates that its per-arch externalBin entry exists,
+	# so we must stage both:
+	#   - binaries/ffmpeg-aarch64-apple-darwin
+	#   - binaries/ffmpeg-x86_64-apple-darwin
+	#   - binaries/ffmpeg-universal-apple-darwin  (lipo'd; for completeness)
+	just stage-ffmpeg-macos
 	# 3. Build the macOS app bundle without letting Tauri perform notarization
 	#    We *unset* APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID for this command so
 	#    Tauri only builds & (optionally) signs. Our standalone script then

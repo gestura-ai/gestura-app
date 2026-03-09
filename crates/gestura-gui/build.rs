@@ -27,14 +27,19 @@ fn main() {
     tauri_build::build()
 }
 
-/// In debug/test builds, set an inline `TAURI_CONFIG` override when the user
-/// did not explicitly set one.
+/// Set `TAURI_CONFIG` overrides so builds succeed regardless of whether the
+/// ffmpeg sidecar has been staged on disk.
 ///
-/// `TAURI_CONFIG` is parsed as **inline JSON** by Tauri (it is not a config
-/// file path). We use it to remove `bundle.externalBin` in non-release builds
-/// so workspace builds can succeed without packaging artifacts.
+/// - **Debug / test builds**: strip *all* `externalBin` entries so the build
+///   never requires packaged sidecars.
+/// - **Release builds**: keep the gestura CLI sidecar but silently drop the
+///   ffmpeg entry when `binaries/ffmpeg-<TARGET>` does not exist.  The runtime
+///   resolver in `screen.rs` falls back to system ffmpeg automatically.
+///
+/// `TAURI_CONFIG` is parsed as **inline JSON** by Tauri (it is not a file path).
 fn maybe_set_dev_tauri_config(profile: &str) {
     if profile == "release" {
+        maybe_exclude_missing_ffmpeg_release();
         return;
     }
 
@@ -54,6 +59,51 @@ fn maybe_set_dev_tauri_config(profile: &str) {
     // we only set this variable once before invoking `tauri_build::build()`.
     unsafe {
         std::env::set_var("TAURI_CONFIG", DEV_TAURI_CONFIG_OVERRIDE_JSON);
+    }
+}
+
+/// For release builds, check whether the ffmpeg sidecar has been staged for
+/// the current `TARGET` triple.  If it is absent, emit a warning and override
+/// `TAURI_CONFIG` to remove ffmpeg from `bundle.externalBin` so the build
+/// still succeeds.  The gestura CLI sidecar is always kept.
+///
+/// When the ffmpeg binary IS present (i.e. the packaging script has run), this
+/// function returns without touching `TAURI_CONFIG` and `tauri.conf.json` is
+/// used verbatim — so ffmpeg gets bundled into the installer as intended.
+fn maybe_exclude_missing_ffmpeg_release() {
+    // Respect an explicit caller override.
+    if std::env::var_os("TAURI_CONFIG").is_some() {
+        return;
+    }
+
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let ext = if target.contains("windows") {
+        ".exe"
+    } else {
+        ""
+    };
+    let ffmpeg_path = format!("binaries/ffmpeg-{target}{ext}");
+
+    if std::path::Path::new(&ffmpeg_path).exists() {
+        // Binary is staged — use tauri.conf.json as-is.
+        return;
+    }
+
+    println!(
+        "cargo:warning=ffmpeg sidecar not staged at '{ffmpeg_path}'; \
+         excluding from installer bundle. Run scripts/package-mac.sh \
+         (or the equivalent for your platform) to stage a bundled ffmpeg, \
+         or set GESTURA_FFMPEG_PATH at runtime to point to a local binary."
+    );
+
+    // Keep gestura in externalBin but remove ffmpeg so the build succeeds.
+    // SAFETY: build scripts run in a controlled, single-process context;
+    // we only mutate the environment once before tauri_build::build().
+    unsafe {
+        std::env::set_var(
+            "TAURI_CONFIG",
+            r#"{"bundle":{"externalBin":["binaries/gestura"]}}"#,
+        );
     }
 }
 

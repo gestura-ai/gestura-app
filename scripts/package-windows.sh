@@ -103,6 +103,56 @@ stage_cli() {
   log_info "Staged CLI for bundling: ${dst}"
 }
 
+# stage_ffmpeg downloads a static Windows ffmpeg build (BtbN/FFmpeg-Builds) and
+# stages it as the Tauri externalBin sidecar (binaries/ffmpeg-<triple>.exe).
+#
+# Set GESTURA_FFMPEG_SKIP_DOWNLOAD=1 to skip when a pre-staged binary exists.
+stage_ffmpeg() {
+  local dst_dir="${GUI_DIR}/binaries"
+  local dst="${dst_dir}/ffmpeg-${TARGET_TRIPLE}.exe"
+
+  if [ "${GESTURA_FFMPEG_SKIP_DOWNLOAD:-0}" = "1" ] && [ -f "$dst" ]; then
+    log_info "Skipping ffmpeg download — pre-staged binary found at ${dst}"
+    return 0
+  fi
+
+  require_cmd curl
+  require_cmd unzip
+
+  mkdir -p "$dst_dir"
+
+  # BtbN provides static "essentials" Windows builds (~30 MB) at a stable URL.
+  local FFMPEG_TAG="${GESTURA_FFMPEG_VERSION:-latest}"
+  # Map Rust triples to BtbN arch labels.
+  local btbn_arch
+  case "$TARGET_TRIPLE" in
+    x86_64-*)  btbn_arch="win64" ;;
+    i686-*)    btbn_arch="win32" ;;
+    aarch64-*) btbn_arch="arm64" ;;
+    *) die "No BtbN ffmpeg build known for triple: ${TARGET_TRIPLE}" ;;
+  esac
+
+  local url="https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_TAG}/ffmpeg-${FFMPEG_TAG}-${btbn_arch}-static.zip"
+
+  log_info "Downloading static ffmpeg (${btbn_arch}) from BtbN/FFmpeg-Builds …"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  curl -fsSL "$url" -L -o "${tmp}/ffmpeg.zip" --retry 3
+  unzip -q "${tmp}/ffmpeg.zip" -d "${tmp}/extracted"
+
+  # The zip contains a top-level directory; ffmpeg.exe is in its bin/ sub-dir.
+  local ffmpeg_bin
+  ffmpeg_bin="$(find "${tmp}/extracted" -name 'ffmpeg.exe' | head -1)"
+  [ -n "$ffmpeg_bin" ] || die "ffmpeg.exe not found after extraction"
+
+  cp "$ffmpeg_bin" "$dst"
+
+  log_info "Staged bundled ffmpeg sidecar: ${dst}"
+}
+
 # build_gui runs the Tauri bundler.
 build_gui() {
   log_info "Building GUI bundles via cargo tauri"
@@ -147,6 +197,7 @@ main() {
   check_prerequisites
   build_frontend
   stage_cli
+  stage_ffmpeg
   build_gui
   collect_artifacts
 }

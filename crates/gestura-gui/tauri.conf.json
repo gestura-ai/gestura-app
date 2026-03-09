@@ -36,7 +36,8 @@
     "category": "Productivity",
     "copyright": "Copyright © 2025 Gestura AI LLC. All rights reserved.",
     "externalBin": [
-      "binaries/gestura"
+      "binaries/gestura",
+      "binaries/ffmpeg"
     ],
     "icon": [
       "icons/32x32.png",

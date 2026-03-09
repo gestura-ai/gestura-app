@@ -103,6 +103,54 @@ stage_cli() {
   log_info "Staged CLI for bundling: ${dst}"
 }
 
+# stage_ffmpeg downloads a static Linux ffmpeg build from johnvansickle.com and
+# stages it as the Tauri externalBin sidecar (binaries/ffmpeg-<triple>).
+#
+# Set GESTURA_FFMPEG_SKIP_DOWNLOAD=1 to skip when a pre-staged binary exists.
+stage_ffmpeg() {
+  local dst_dir="${GUI_DIR}/binaries"
+  local dst="${dst_dir}/ffmpeg-${TARGET_TRIPLE}"
+
+  if [ "${GESTURA_FFMPEG_SKIP_DOWNLOAD:-0}" = "1" ] && [ -f "$dst" ]; then
+    log_info "Skipping ffmpeg download — pre-staged binary found at ${dst}"
+    return 0
+  fi
+
+  require_cmd curl
+  require_cmd tar
+  require_cmd xz
+
+  mkdir -p "$dst_dir"
+
+  # Map Rust triples to johnvansickle.com arch labels.
+  local jv_arch
+  case "$TARGET_TRIPLE" in
+    x86_64-*)  jv_arch="amd64" ;;
+    aarch64-*) jv_arch="arm64" ;;
+    armv7-*)   jv_arch="armhf" ;;
+    *) die "No johnvansickle ffmpeg build known for triple: ${TARGET_TRIPLE}" ;;
+  esac
+
+  local FFMPEG_RELEASE="${GESTURA_FFMPEG_VERSION:-release}"
+  local url="https://johnvansickle.com/ffmpeg/releases/ffmpeg-${FFMPEG_RELEASE}-${jv_arch}-static.tar.xz"
+
+  log_info "Downloading static ffmpeg (${jv_arch}) from johnvansickle.com …"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  curl -fsSL "$url" -o "${tmp}/ffmpeg.tar.xz" --retry 3
+  tar -xJf "${tmp}/ffmpeg.tar.xz" -C "$tmp" --wildcards "*/ffmpeg" --strip-components=1
+
+  [ -f "${tmp}/ffmpeg" ] || die "ffmpeg binary not found after extraction"
+
+  cp "${tmp}/ffmpeg" "$dst"
+  chmod +x "$dst"
+
+  log_info "Staged bundled ffmpeg sidecar: ${dst}"
+}
+
 # build_gui runs the Tauri bundler.
 build_gui() {
   log_info "Building GUI bundles via cargo tauri (${TARGET_TRIPLE})"
@@ -154,6 +202,7 @@ main() {
   check_prerequisites
   build_frontend
   stage_cli
+  stage_ffmpeg
   build_gui
   collect_artifacts
 }

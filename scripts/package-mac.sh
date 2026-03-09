@@ -91,6 +91,75 @@ build_frontend() {
   (cd "$FRONTEND_DIR" && npm ci && npm run build)
 }
 
+# stage_ffmpeg downloads static ffmpeg builds and stages them as Tauri
+# externalBin sidecars under three names:
+#
+#   binaries/ffmpeg-aarch64-apple-darwin   — used by the arm64 cargo build slice
+#   binaries/ffmpeg-x86_64-apple-darwin    — used by the x86_64 cargo build slice
+#   binaries/ffmpeg-universal-apple-darwin — lipo'd universal (for completeness)
+#
+# Sources (both signed & statically linked):
+#   arm64  — https://ffmpeg.martin-riedl.de (snapshot; Apple Silicon)
+#   x86_64 — https://ffmpeg.martin-riedl.de (release;  Intel)
+#
+# When `cargo tauri build --target universal-apple-darwin` runs it internally
+# compiles two separate cargo build invocations (aarch64 + x86_64).  Each build
+# script checks for `binaries/ffmpeg-<that-arch>-apple-darwin`, so both
+# per-arch names must be present — not just the universal one.
+#
+# Set GESTURA_FFMPEG_SKIP_DOWNLOAD=1 to skip when pre-staged binaries exist.
+stage_ffmpeg() {
+  local dst_dir="${GUI_DIR}/binaries"
+  local dst_arm64="${dst_dir}/ffmpeg-${TARGET_AARCH64}"
+  local dst_x86_64="${dst_dir}/ffmpeg-${TARGET_X86_64}"
+  local dst_universal="${dst_dir}/ffmpeg-${TARGET_UNIVERSAL}"
+
+  if [ "${GESTURA_FFMPEG_SKIP_DOWNLOAD:-0}" = "1" ] \
+       && [ -f "$dst_arm64" ] && [ -f "$dst_x86_64" ]; then
+    log_info "Skipping ffmpeg download — pre-staged binaries found"
+    return 0
+  fi
+
+  require_cmd curl
+  require_cmd unzip
+  require_cmd lipo
+
+  mkdir -p "$dst_dir"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # martin-riedl.de provides signed, statically-linked macOS ffmpeg for both
+  # architectures via stable redirect URLs.
+  local ARM64_URL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/snapshot/ffmpeg.zip"
+  local X86_64_URL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip"
+
+  log_info "Downloading static ffmpeg for macOS arm64 (martin-riedl.de) …"
+  curl -fsSL -L "$ARM64_URL" \
+       -o "${tmp}/ffmpeg-arm64.zip" \
+       --retry 3
+
+  log_info "Downloading static ffmpeg for macOS x86_64 (martin-riedl.de) …"
+  curl -fsSL -L "$X86_64_URL" \
+       -o "${tmp}/ffmpeg-x86_64.zip" \
+       --retry 3
+
+  unzip -q "${tmp}/ffmpeg-arm64.zip"  -d "${tmp}/arm64"
+  unzip -q "${tmp}/ffmpeg-x86_64.zip" -d "${tmp}/x86_64"
+
+  # Stage per-arch sidecars (required by Tauri's universal build slices).
+  cp "${tmp}/arm64/ffmpeg"  "$dst_arm64"
+  cp "${tmp}/x86_64/ffmpeg" "$dst_x86_64"
+  chmod +x "$dst_arm64" "$dst_x86_64"
+
+  # Lipo a universal binary for completeness / future use.
+  lipo -create "$dst_arm64" "$dst_x86_64" -output "$dst_universal"
+  chmod +x "$dst_universal"
+
+  log_info "Staged ffmpeg sidecars: aarch64, x86_64, universal"
+}
+
 # build_cli_universal builds the CLI for both macOS arch targets and produces a
 # universal binary at target/universal-apple-darwin/release/gestura.
 build_cli_universal() {
@@ -192,6 +261,7 @@ main() {
   build_frontend
   build_cli_universal
   stage_cli
+  stage_ffmpeg
   build_gui
 
   local out_dir
