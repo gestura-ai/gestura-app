@@ -35,24 +35,31 @@ export interface EditorTab {
 // ─── Explorer types ───────────────────────────────────────────────────────────
 
 /** Mirrors the Rust ExplorerGitChangeKind enum. */
-export type GitChangeKind =
-  | 'Added'
-  | 'Modified'
-  | 'Deleted'
-  | 'Renamed'
-  | 'Copied'
-  | 'Untracked'
-  | 'Ignored'
-  | 'Conflicted'
-  | 'Unmodified';
+export type ExplorerGitChangeKind =
+  | 'added'
+  | 'modified'
+  | 'deleted'
+  | 'renamed'
+  | 'copied'
+  | 'untracked'
+  | 'unknown';
+
+/** Combined staged/unstaged/untracked status for a single path (matches Rust). */
+export interface ExplorerGitPathStatus {
+  staged?: ExplorerGitChangeKind | null;
+  unstaged?: ExplorerGitChangeKind | null;
+  untracked: boolean;
+}
 
 /** A single file-system entry from explorer_list_dir. */
 export interface ExplorerEntry {
   name: string;
   rel_path: string;
-  is_dir: boolean;
+  /** Mirrors Rust ExplorerEntryKind: "file" | "dir" */
+  kind: 'file' | 'dir';
+  is_symlink: boolean;
   size?: number;
-  git_status?: GitChangeKind | null;
+  git_status?: ExplorerGitPathStatus | null;
 }
 
 /** Response from explorer_get_root. */
@@ -73,7 +80,7 @@ export interface ExplorerListDirResponse {
 export interface ExplorerGitStatusResponse {
   root: string;
   is_git_repo: boolean;
-  paths: Record<string, GitChangeKind>;
+  paths: Record<string, ExplorerGitPathStatus>;
   error?: string | null;
 }
 

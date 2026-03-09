@@ -9,20 +9,17 @@
 //! - Handles task completion/failure events
 //! - Emits Tauri events for real-time UI updates
 
-use gestura_core::{Task, TaskManager, TaskSource, TaskStatus};
+use gestura_core::{Task, TaskSource, TaskStatus};
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
 use tauri::{AppHandle, Emitter};
 
-/// Global TaskManager instance for integration
-static TASK_MANAGER: OnceLock<TaskManager> = OnceLock::new();
-
-/// Get or initialize the global task manager
-pub fn get_task_manager() -> &'static TaskManager {
-    TASK_MANAGER.get_or_init(|| {
-        let base_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        TaskManager::new(base_dir)
-    })
+/// Returns the process-wide shared [`gestura_core::TaskManager`].
+///
+/// Delegates to the canonical singleton in `gestura-core-tasks` so that the
+/// orchestrator observer, the agent tool pipeline, and the Tauri command
+/// handlers all share one in-memory cache — preventing stale reads in the UI.
+pub fn get_task_manager() -> &'static gestura_core::TaskManager {
+    gestura_core::get_global_task_manager()
 }
 
 /// Event payload for task events

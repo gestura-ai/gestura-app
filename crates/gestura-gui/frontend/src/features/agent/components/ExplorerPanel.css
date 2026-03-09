@@ -146,9 +146,40 @@
   gap: 4px;
 }
 
+.git-badge-icon {
+  width: 12px;
+  height: 12px;
+  display: inline-block;
+}
+
+/* Mirror the legacy agent.html badge classes (added/modified/deleted/etc). */
+.git-badge.added,
+.git-badge.untracked {
+  color: var(--success);
+}
+
+.git-badge.modified,
+.git-badge.renamed,
+.git-badge.copied {
+  color: var(--warning);
+}
+
+.git-badge.deleted {
+  color: var(--error);
+}
+
+.git-badge.unknown {
+  color: var(--text-secondary);
+  opacity: 0.85;
+}
+
 /* ─── Git status colors ──────────────────────────────────────────────────────── */
 
 .git-added {
+  color: var(--success);
+}
+
+.git-untracked {
   color: var(--success);
 }
 
@@ -184,6 +215,7 @@
 
 /* ─── Rename / Create inline input ──────────────────────────────────────────── */
 
+/* Floating overlay used for New File / New Folder creation input */
 .explorer-rename-overlay {
   position: absolute;
   bottom: 8px;
@@ -203,6 +235,23 @@
   color: var(--text-primary);
   outline: none;
   box-shadow: var(--shadow-sm);
+}
+
+/* Inline rename input — replaces the explorer-name div inside the tree row */
+.explorer-rename-inline {
+  flex: 1;
+  min-width: 0;
+  padding: 1px 4px;
+  font-size: 13px;
+  font-family: inherit;
+  background: var(--bg-glass-strong);
+  border: 1px solid var(--accent-primary);
+  border-radius: 4px;
+  color: var(--text-primary);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(var(--accent-primary-rgb), 0.18);
+  height: 20px;
+  line-height: 1;
 }
 
 /* ─── Context menu ────────────────────────────────────────────────────────────── */
@@ -246,4 +295,101 @@
   height: 1px;
   background: var(--glass-border);
   margin: 3px 0;
+}
+
+/* ─── Delete confirmation dialog ─────────────────────────────────────────────── */
+
+.explorer-delete-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 400;
+  animation: explorer-overlay-in 100ms ease both;
+}
+
+@keyframes explorer-overlay-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+.explorer-delete-dialog {
+  background: var(--bg-glass-strong);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  padding: 20px 24px;
+  max-width: 320px;
+  width: 90%;
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  animation: explorer-dialog-in 120ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes explorer-dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.explorer-delete-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 6px;
+  word-break: break-all;
+}
+
+.explorer-delete-body {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 0 0 18px;
+  line-height: 1.5;
+}
+
+.explorer-delete-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.explorer-delete-actions button {
+  padding: 6px 14px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--glass-border);
+  cursor: pointer;
+  background: var(--bg-glass);
+  color: var(--text-primary);
+  transition: background 0.1s;
+  font-family: inherit;
+}
+
+.explorer-delete-actions button:hover {
+  background: var(--agent-bubble);
+}
+
+.explorer-delete-actions button.ctx-delete {
+  background: var(--error);
+  color: #fff;
+  border-color: transparent;
+}
+
+.explorer-delete-actions button.ctx-delete:hover {
+  opacity: 0.85;
+  background: var(--error);
 }

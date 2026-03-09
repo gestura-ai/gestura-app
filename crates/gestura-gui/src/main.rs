@@ -92,8 +92,17 @@ async fn main() {
         });
     }
 
-    // Initialize logging
-    tracing_subscriber::fmt::init();
+    // Initialize logging: default to debug for gestura crates in dev builds; respect RUST_LOG if set.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        if cfg!(debug_assertions) {
+            tracing_subscriber::EnvFilter::new(
+                "gestura_gui=debug,gestura_core=debug,gestura_core_streaming=debug,gestura_core_tools=debug,info",
+            )
+        } else {
+            tracing_subscriber::EnvFilter::new("info")
+        }
+    });
+    tracing_subscriber::fmt().with_env_filter(filter).init();
     tracing::info!("Starting Gestura app");
 
     // Build Tauri
@@ -111,6 +120,9 @@ async fn main() {
             gestura_gui::api::list_mcp_tools,
             gestura_gui::api::add_mcp_tool,
             gestura_gui::api::remove_mcp_tool,
+            gestura_gui::api::list_popular_mcp_servers,
+            gestura_gui::api::browse_mcp_registry_servers,
+            gestura_gui::api::provision_mcp_server,
             // MCP Discovery Manager commands
             gestura_gui::api::init_mcp_servers,
             gestura_gui::api::list_discovered_mcp_tools,
@@ -236,6 +248,7 @@ async fn main() {
             gestura_gui::api::pick_workspace_directory,
             // Session convenience actions
             gestura_gui::api::open_shell_for_session,
+            gestura_gui::api::check_cli_installed,
             // Project explorer (agent left-side file tree)
             gestura_gui::api::explorer_get_root,
             gestura_gui::api::explorer_list_dir,

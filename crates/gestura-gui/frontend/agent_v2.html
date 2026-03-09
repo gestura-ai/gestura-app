@@ -7,6 +7,82 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="stylesheet" href="/icons.css" />
   <title>Gestura Agent</title>
+
+  <!--
+    Critical inline CSS — applied synchronously before any JS runs.
+    Prevents the white/blank flash by matching the exact bg tokens from
+    AgentApp.css for both light and dark system colour schemes.
+    The .agent-app starts invisible (opacity:0) and fades in only once React
+    has applied the theme and called window.show().
+  -->
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
+
+    html {
+      height: 100%;
+      /* light-mode bg — matches --bg-base in AgentApp.css :root */
+      background: #fbfbfd;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      html {
+        /* dark-mode bg — matches --bg-base in AgentApp.css dark override */
+        background: #000000;
+      }
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      height: 100vh;
+      overflow: hidden;
+      background: inherit;
+    }
+
+    #root {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /*
+      Keep the app invisible until React marks it ready.
+      The .app-ready class triggers the fade-in defined in AgentApp.css.
+    */
+    .agent-app {
+      opacity: 0;
+    }
+  </style>
+
+  <!--
+    Synchronous theme-init script — runs before any React code.
+    Reads the OS colour-scheme preference and stamps data-theme on <html>
+    so that the html[data-theme="dark"] CSS selectors in AgentApp.css
+    activate immediately, preventing a flash of the wrong colour scheme
+    when the user has explicitly chosen dark or light mode.
+  -->
+  <script>
+    (function () {
+      try {
+        var stored = null;
+        try { stored = localStorage.getItem('gestura-theme'); } catch (_) { }
+        var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var theme = (stored === 'dark' || stored === 'light')
+          ? stored
+          : (prefersDark ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+        /* Keep html bg in sync with the resolved theme so there is no mismatch
+           between the inline CSS media-query bg and the data-theme token. */
+        document.documentElement.style.background =
+          theme === 'dark' ? '#000000' : '#fbfbfd';
+      } catch (_) { }
+    })();
+  </script>
 </head>
 
 <body>

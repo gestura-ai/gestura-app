@@ -9,7 +9,14 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 use uuid::Uuid;
+
+/// Cached result of the CLI presence check.
+///
+/// Populated on first access via [`is_cli_installed_cached`]. Subsequent calls
+/// return immediately without spawning any child processes.
+static CLI_INSTALLED_CACHE: OnceLock<bool> = OnceLock::new();
 
 /// Result type for shell session operations
 pub type ShellResult<T> = Result<T, ShellSessionError>;
@@ -147,9 +154,31 @@ fn find_gestura_cli() -> Option<PathBuf> {
     None
 }
 
-/// Check if the Gestura CLI is installed and accessible
+/// Check if the Gestura CLI is installed and accessible.
+///
+/// This performs a live check every call. Prefer [`is_cli_installed_cached`] in
+/// code paths that run frequently (e.g. tray menu rebuilds).
 pub fn is_cli_installed() -> bool {
     find_gestura_cli().is_some()
+}
+
+/// Check if the Gestura CLI is installed, using a process-lifetime cache.
+///
+/// The first call performs the filesystem / PATH probe and stores the result in
+/// a [`OnceLock`]. All subsequent calls return the cached value instantly with
+/// no I/O or process spawning.
+///
+/// Use this at startup and in the tray / UI to decide whether to surface
+/// CLI-dependent features.
+pub fn is_cli_installed_cached() -> bool {
+    *CLI_INSTALLED_CACHE.get_or_init(|| {
+        let result = is_cli_installed();
+        tracing::info!(
+            cli_installed = result,
+            "Gestura CLI presence check (cached for process lifetime)"
+        );
+        result
+    })
 }
 
 /// Open a shell session in the platform's default terminal

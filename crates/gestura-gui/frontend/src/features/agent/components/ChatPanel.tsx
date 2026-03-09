@@ -28,9 +28,11 @@ export interface ChatPanelProps {
   onToggleEditor?: () => void;
   /** Current view mode — drives the quick access bar icon swap. */
   viewMode?: 'message-only' | 'editor';
+  /** Optional inline style — used by parent for dynamic width (resizable panel). */
+  style?: React.CSSProperties;
 }
 
-export const ChatPanel: React.FC<ChatPanelProps> = ({ sessionId, onToggleEditor, viewMode }) => {
+export const ChatPanel: React.FC<ChatPanelProps> = ({ sessionId, onToggleEditor, viewMode, style }) => {
   const {
     messages, streamingMessage, isProcessing, isListening, status,
     pendingConfirmation, tasks, knowledgeItems, toolSettings,
@@ -107,7 +109,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ sessionId, onToggleEditor,
         status.kind === 'error' ? ' error' : '';
 
   return (
-    <div className="agent-panel agent-panel--chat">
+    <div className="agent-panel agent-panel--chat" style={style}>
       {/* Header */}
       <div className="header">
         <div className="header-title">

@@ -13,7 +13,7 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTabState } from '../hooks/useTabState';
-import { editorReadFile, editorWriteFile, editorGitDiff } from '../../../services/tauri/editor';
+import { editorReadFile, editorWriteFile, editorGitDiff, editorRenameFile } from '../../../services/tauri/editor';
 import { languageFromPath } from '../utils/language';
 import type { EditorLanguage } from '../utils/language';
 import { TabBar } from './TabBar';
@@ -43,6 +43,7 @@ export const EditorArea: React.FC<EditorAreaProps> = ({ sessionId, isDark }) => 
     toggleDiffView,
     reorderTabs,
     updateScrollOffset,
+    renameTab,
   } = useTabState();
 
   // ── Open a file by rel path ─────────────────────────────────────────────────
@@ -67,6 +68,20 @@ export const EditorArea: React.FC<EditorAreaProps> = ({ sessionId, isDark }) => 
       console.warn('[EditorArea] failed to read file:', relPath, err);
     }
   }, [tabs, sessionId, openTab, activateTab]);
+
+  // ── Rename a tab (renames on disk + updates tab state) ─────────────────────
+  const handleRenameTab = useCallback(async (tabId: string, newLabel: string) => {
+    const tab = tabs.find((t) => t.id === tabId);
+    if (!tab) return;
+    const dir = tab.relPath.split('/').slice(0, -1).join('/');
+    const newRelPath = dir ? `${dir}/${newLabel}` : newLabel;
+    try {
+      await editorRenameFile(sessionId, tab.relPath, newRelPath);
+      renameTab(tabId, newLabel, newRelPath);
+    } catch (err) {
+      console.warn('[EditorArea] rename failed:', tab.relPath, '->', newRelPath, err);
+    }
+  }, [tabs, sessionId, renameTab]);
 
   // ── Save a tab ──────────────────────────────────────────────────────────────
   const handleSave = useCallback(async (tabId: string) => {
@@ -174,6 +189,7 @@ export const EditorArea: React.FC<EditorAreaProps> = ({ sessionId, isDark }) => 
           onActivate={activateTab}
           onClose={closeTab}
           onReorder={reorderTabs}
+          onRenameTab={handleRenameTab}
         />
         <div className="editor-area__pane">
           {activeTab ? (

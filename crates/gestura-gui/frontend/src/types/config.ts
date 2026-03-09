@@ -101,6 +101,8 @@ export interface McpServerEntry {
   timeout_secs: number;
   /** Auto-reconnect on failure. */
   auto_reconnect: boolean;
+  /** Whether tools from this server are enabled by default for new sessions. */
+  session_default_enabled?: boolean;
 }
 
 /** @deprecated Use McpServerEntry instead. Kept for backward compat. */

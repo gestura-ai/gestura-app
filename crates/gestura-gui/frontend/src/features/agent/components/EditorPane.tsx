@@ -11,7 +11,7 @@
  * - Undo / redo via browser native shortcuts
  */
 import React, { useEffect, useRef } from 'react';
-import { EditorState } from '@codemirror/state';
+import { EditorState, Transaction } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldGutter } from '@codemirror/language';
@@ -30,7 +30,7 @@ import './EditorPane.css';
 // ─── theme ────────────────────────────────────────────────────────────────────
 
 const lightTheme = EditorView.theme({
-  '&': { background: 'var(--bg-base)', color: 'var(--text-primary)', height: '100%' },
+  '&': { background: 'var(--bg-editor-base)', color: 'var(--text-primary)', height: '100%' },
   '.cm-content': { fontFamily: "'JetBrains Mono','Fira Code',monospace", fontSize: '13px', lineHeight: '1.6' },
   '.cm-gutters': { background: 'var(--bg-glass)', borderRight: '1px solid var(--glass-border)', color: 'var(--text-secondary)' },
   '.cm-activeLineGutter': { background: 'rgba(var(--accent-primary-rgb,37,99,235),0.08)' },
@@ -42,7 +42,7 @@ const lightTheme = EditorView.theme({
 }, { dark: false });
 
 const darkTheme = EditorView.theme({
-  '&': { background: 'var(--bg-base)', color: 'var(--text-primary)', height: '100%' },
+  '&': { background: 'var(--bg-editor-base)', color: 'var(--text-primary)', height: '100%' },
   '.cm-content': { fontFamily: "'JetBrains Mono','Fira Code',monospace", fontSize: '13px', lineHeight: '1.6' },
   '.cm-gutters': { background: 'rgba(28,28,30,0.6)', borderRight: '1px solid var(--glass-border)', color: 'var(--text-secondary)' },
   '.cm-activeLineGutter': { background: 'rgba(var(--accent-primary-rgb,96,165,250),0.1)' },
@@ -92,6 +92,7 @@ export const EditorPane: React.FC<EditorPaneProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const isExternalSyncRef = useRef(false);
 
   // Stable callback refs — so the editor effect never needs to re-run just
   // because the parent re-renders and passes new function references.
@@ -114,7 +115,7 @@ export const EditorPane: React.FC<EditorPaneProps> = ({
     }]);
 
     const updateListener = EditorView.updateListener.of((update) => {
-      if (update.docChanged) {
+      if (update.docChanged && !isExternalSyncRef.current) {
         onContentChangeRef.current(tab.id, update.state.doc.toString());
       }
       if (update.geometryChanged || update.docChanged) {
@@ -167,8 +168,22 @@ export const EditorPane: React.FC<EditorPaneProps> = ({
     if (!view) return;
     const current = view.state.doc.toString();
     if (current !== tab.content) {
-      view.dispatch({
-        changes: { from: 0, to: current.length, insert: tab.content },
+      const prevScrollTop = view.scrollDOM.scrollTop;
+      isExternalSyncRef.current = true;
+      try {
+        view.dispatch({
+          changes: { from: 0, to: current.length, insert: tab.content },
+          annotations: Transaction.addToHistory.of(false),
+        });
+      } finally {
+        isExternalSyncRef.current = false;
+      }
+
+      // Best-effort preserve scroll position when the agent refreshes an open file.
+      requestAnimationFrame(() => {
+        const v = viewRef.current;
+        if (!v) return;
+        v.scrollDOM.scrollTop = prevScrollTop;
       });
     }
   }, [tab.content]);

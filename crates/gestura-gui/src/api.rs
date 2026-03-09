@@ -283,6 +283,58 @@ pub async fn remove_mcp_tool(name: String) -> Result<(), String> {
     cfg.save_async().await.map_err(|e| e.to_string())
 }
 
+// =========================================================================
+// Popular MCP Servers (no required configuration) — delegates to core
+// =========================================================================
+
+/// List 20 popular, open-source MCP servers that can be added without
+/// additional configuration.
+///
+/// All business logic lives in `gestura_core::mcp::registry`. This command
+/// is a thin Tauri IPC wrapper.
+#[tauri::command]
+pub async fn list_popular_mcp_servers() -> Result<Vec<gestura_core::mcp::PopularMcpServer>, String>
+{
+    gestura_core::mcp::list_popular_mcp_servers(20)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Browse the MCP Registry with optional full-text search and cursor-based pagination.
+///
+/// Returns up to 20 servers per page.  Pass `cursor` from a previous response's
+/// `next_cursor` field to advance to the next page.  Each entry in the result
+/// carries a `quick_add` field when the server is zero-config eligible so the
+/// frontend can render a "Quick Add" button selectively.
+#[tauri::command]
+pub async fn browse_mcp_registry_servers(
+    query: Option<String>,
+    cursor: Option<String>,
+) -> Result<gestura_core::mcp::RegistryBrowsePage, String> {
+    gestura_core::mcp::browse_mcp_registry(query, cursor, 20)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Verify runtime availability and pre-install/fetch the package for a
+/// newly-added MCP server.
+///
+/// Called immediately after [`add_mcp_tool`] so the user gets instant feedback
+/// about whether Node/npx or uv/uvx is present and whether the package
+/// downloaded successfully.  HTTP/SSE remote servers return `Skipped` because
+/// they require no local installation.
+///
+/// # Errors
+/// This command never returns `Err`; all outcomes are expressed through
+/// [`gestura_core::mcp::ProvisionStatus`] so the frontend can distinguish
+/// `ready`, `runtime_missing`, `fetch_failed`, and `skipped`.
+#[tauri::command]
+pub async fn provision_mcp_server(
+    server: crate::config::McpServerEntry,
+) -> Result<gestura_core::mcp::ProvisionResult, String> {
+    Ok(gestura_core::mcp::provision_mcp_server(&server).await)
+}
+
 // ============================================================================
 // MCP Discovery Manager - Dynamic Tool Provisioning
 // ============================================================================
@@ -2245,10 +2297,17 @@ pub async fn process_agent_message_streaming(
     let idle_timer = tokio::time::sleep(idle_timeout);
     tokio::pin!(idle_timer);
 
+    tracing::debug!(
+        session_id = ?resolved_session_id,
+        idle_timeout_secs = idle_timeout_normal.as_secs(),
+        "[StreamLoop] Starting streaming event loop"
+    );
+
     loop {
         tokio::select! {
             maybe_chunk = rx.recv() => {
                 let Some(chunk) = maybe_chunk else {
+                    tracing::debug!("[StreamLoop] Channel closed (sender dropped) — exiting loop");
                     break;
                 };
                 // Update idle timeout based on what we just received.
@@ -2257,6 +2316,35 @@ pub async fn process_agent_message_streaming(
                     _ => idle_timeout_normal,
                 };
                 idle_timer.as_mut().reset(Instant::now() + idle_timeout);
+                // Log every chunk kind so we can trace where the pipeline stalls.
+                let chunk_kind = match &chunk {
+                    StreamChunk::Text(_) => "Text",
+                    StreamChunk::Thinking(_) => "Thinking",
+                    StreamChunk::Status { .. } => "Status",
+                    StreamChunk::ToolCallStart { .. } => "ToolCallStart",
+                    StreamChunk::ToolCallArgs(_) => "ToolCallArgs",
+                    StreamChunk::ToolCallEnd => "ToolCallEnd",
+                    StreamChunk::ToolCallResult { .. } => "ToolCallResult",
+                    StreamChunk::Done(_) => "Done",
+                    StreamChunk::Error(_) => "Error",
+                    StreamChunk::Cancelled => "Cancelled",
+                    StreamChunk::Paused => "Paused",
+                    StreamChunk::AgentLoopIteration { .. } => "AgentLoopIteration",
+                    StreamChunk::RetryAttempt { .. } => "RetryAttempt",
+                    StreamChunk::ContextCompacted { .. } => "ContextCompacted",
+                    StreamChunk::MemoryBankSaved { .. } => "MemoryBankSaved",
+                    StreamChunk::TokenUsageUpdate { .. } => "TokenUsageUpdate",
+                    StreamChunk::ConfigRequest { .. } => "ConfigRequest",
+                    StreamChunk::ToolConfirmationRequired { .. } => "ToolConfirmationRequired",
+                    StreamChunk::ToolBlocked { .. } => "ToolBlocked",
+                    StreamChunk::ShellOutput { .. } => "ShellOutput",
+                    StreamChunk::ShellLifecycle { .. } => "ShellLifecycle",
+                };
+                tracing::debug!(
+                    chunk = chunk_kind,
+                    timeout_secs = idle_timeout.as_secs(),
+                    "[StreamLoop] Chunk received → idle timer reset"
+                );
                 match chunk {
             StreamChunk::Thinking(text) => {
                 tracing::debug!("[Stream] Thinking chunk: {}", &text.chars().take(100).collect::<String>());
@@ -2266,7 +2354,7 @@ pub async fn process_agent_message_streaming(
                 emit("agent-stream-thinking", serde_json::json!(text));
             }
             StreamChunk::Status { message } => {
-                let payload = serde_json::json!({ "message": message });
+                let payload = serde_json::json!({ "text": message, "kind": "busy" });
                 emit("agent-stream-status", payload);
             }
             StreamChunk::Text(text) => {
@@ -2275,6 +2363,7 @@ pub async fn process_agent_message_streaming(
                 emit("agent-stream-chunk", serde_json::json!(text));
             }
             StreamChunk::ToolCallStart { id, name } => {
+                tracing::debug!(tool = %name, id = %id, "[StreamLoop] ToolCallStart");
                 current_tool_call = Some((id.clone(), name.clone(), String::new()));
                 let payload = serde_json::json!({ "id": id, "name": name });
                 emit("agent-stream-tool-start", payload);
@@ -2286,6 +2375,7 @@ pub async fn process_agent_message_streaming(
                 emit("agent-stream-tool-args", serde_json::json!(args));
             }
             StreamChunk::ToolCallEnd => {
+                tracing::debug!("[StreamLoop] ToolCallEnd");
                 emit("agent-stream-tool-end", serde_json::json!(null));
             }
             StreamChunk::ToolCallResult {
@@ -2327,7 +2417,7 @@ pub async fn process_agent_message_streaming(
                     "attempt": attempt,
                     "max_attempts": max_attempts,
                     "delay_ms": delay_ms,
-                    "error_message": error_message
+                    "reason": error_message
                 });
                 emit("agent-stream-retry", payload);
             }
@@ -2870,12 +2960,12 @@ pub async fn resume_agent_streaming(
                         {
                             crate::window_manager::add_assistant_message(sid, &assistant_text, assistant_thinking.clone());
                         }
-                        emit("agent-stream-error", serde_json::json!({ "error": err }));
+                        emit("agent-stream-error", serde_json::json!(err));
                         break;
                     }
                     // Forward other informational chunks.
                     StreamChunk::Status { message } => {
-                        emit("agent-stream-status", serde_json::json!({ "message": message }));
+                        emit("agent-stream-status", serde_json::json!({ "text": message, "kind": "busy" }));
                     }
                     StreamChunk::AgentLoopIteration { iteration } => {
                         emit("agent-stream-agent-iteration", serde_json::json!({ "iteration": iteration }));
@@ -3940,6 +4030,16 @@ pub fn open_shell_for_session(session_id: String) -> Result<(), String> {
     crate::window_manager::open_shell_session_for_agent_resume(&session_id)
 }
 
+/// Check whether the Gestura CLI binary is installed and accessible on this machine.
+///
+/// The result is cached for the lifetime of the process (computed once at first
+/// call). The frontend uses this to conditionally show CLI-dependent UI
+/// controls (e.g. "Open in Terminal" quick-link and "Agent Shell" tray item).
+#[tauri::command]
+pub fn check_cli_installed() -> bool {
+    crate::shell_session::is_cli_installed_cached()
+}
+
 // ============================================================================
 // Project Explorer Commands (agent left-side file tree)
 // ============================================================================
@@ -4692,19 +4792,17 @@ pub fn session_requires_confirmation(session_id: String, is_write_operation: boo
 // Task Management Commands
 // ============================================================================
 
-use gestura_core::{Task, TaskManager, TaskStatus};
+use gestura_core::{Task, TaskStatus};
 use std::sync::OnceLock;
 
-/// Global task manager instance
-static TASK_MANAGER: OnceLock<TaskManager> = OnceLock::new();
-
-/// Get or initialize the global task manager
-fn get_task_manager() -> &'static TaskManager {
-    TASK_MANAGER.get_or_init(|| {
-        // Use the user's home directory for task storage
-        let base_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        TaskManager::new(base_dir)
-    })
+/// Returns the process-wide shared [`gestura_core::TaskManager`].
+///
+/// Delegates to `task_integration`, which in turn delegates to the canonical
+/// singleton in `gestura-core-tasks`.  All subsystems share one instance and
+/// therefore one in-memory cache, so the UI always sees the latest tasks
+/// regardless of which subsystem created them.
+fn get_task_manager() -> &'static gestura_core::TaskManager {
+    crate::task_integration::get_task_manager()
 }
 
 /// Create a new task.
@@ -5489,13 +5587,23 @@ pub fn stop_voice_listening(app: tauri::AppHandle) -> Result<String, String> {
     Ok("Voice listening stopped".to_string())
 }
 
-/// Complete the onboarding process and mark it as done
+/// Complete the onboarding process and mark it as done.
+///
+/// Saves the current configuration to disk (which acts as the canonical
+/// "onboarding completed" marker — `AppConfig::is_first_run()` returns `false`
+/// once the file exists) and emits an `"onboarding-complete"` event so the
+/// system tray can rebuild its menu and re-enable the gated items
+/// ("New Agent Session" and "Start Listening").
 #[tauri::command]
-pub async fn complete_onboarding() -> Result<(), String> {
+pub async fn complete_onboarding(app: tauri::AppHandle) -> Result<(), String> {
     tracing::info!("Onboarding completed by user");
-    // Save a default config to mark first run as complete
+    // Save the config to disk — this is the canonical "onboarding done" marker.
     let config = AppConfig::load_async().await;
     config.save_async().await.map_err(|e| e.to_string())?;
+    // Notify the system tray (and any other listeners) that onboarding has
+    // finished so they can re-evaluate is_app_configured() and update their state.
+    let _ = app.emit("onboarding-complete", ());
+    tracing::info!("Emitted onboarding-complete event");
     Ok(())
 }
 

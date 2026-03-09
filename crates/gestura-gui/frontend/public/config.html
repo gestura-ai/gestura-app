@@ -787,6 +787,43 @@
             color: rgb(var(--danger-rgb));
         }
 
+        .status.warning {
+            background: rgba(200, 130, 0, 0.12);
+            border: 1px solid rgba(200, 130, 0, 0.30);
+            color: rgb(180, 110, 0);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .status.warning {
+                color: rgb(230, 170, 60);
+            }
+        }
+
+        .status.provisioning {
+            background: rgba(var(--accent-rgb, 79, 172, 254), 0.1);
+            border: 1px solid rgba(var(--accent-rgb, 79, 172, 254), 0.25);
+            color: var(--text-secondary);
+            display: flex !important;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .provision-spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid currentColor;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            flex-shrink: 0;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
         .help-text {
             font-size: 0.85rem;
             color: var(--text-secondary);
@@ -3187,6 +3224,50 @@
                         </div>
                     </div>
 
+                    <!-- Popular Servers subsection (open-source, no configuration required) -->
+                    <div class="subsection" id="popularMcpSubsection">
+                        <div class="subsection-title"
+                            style="display:flex;justify-content:space-between;align-items:center;">
+                            <span>
+                                <span class="icon icon-plug"></span>Browse Registry
+                                <span id="popularMcpCount" class="mcp-badge"
+                                    style="font-size:0.75rem;margin-left:0.4rem;display:none;"></span>
+                            </span>
+                            <button type="button" class="button secondary" id="btnTogglePopularMcp"
+                                style="padding:0.3rem 0.8rem;font-size:0.85rem;">&#9658; Browse</button>
+                        </div>
+                        <div id="popularMcpPanel" style="display:none;">
+                            <div style="font-size:0.85rem;color:var(--text-muted,#888);margin-bottom:0.8rem;">
+                                Search and browse the official MCP Registry. Servers with a
+                                <strong>Quick Add</strong> button can be added with one click (no configuration
+                                required).
+                            </div>
+                            <!-- Search bar -->
+                            <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem;align-items:center;">
+                                <input type="search" id="mcpRegistrySearch" placeholder="Search servers…"
+                                    autocomplete="off" spellcheck="false"
+                                    style="flex:1;padding:0.4rem 0.7rem;border-radius:6px;border:1px solid var(--border,#ccc);background:var(--input-bg,#fff);color:var(--text,#111);font-size:0.9rem;" />
+                                <button type="button" class="button secondary" id="btnClearMcpSearch"
+                                    style="padding:0.35rem 0.7rem;font-size:0.85rem;display:none;"
+                                    title="Clear search">&#x2715;</button>
+                            </div>
+                            <!-- Results list -->
+                            <div id="mcpPopularServerList" class="mcp-server-list">
+                                <div class="mcp-empty-state">Click "&#9658; Browse" to load the registry.</div>
+                            </div>
+                            <!-- Pagination controls -->
+                            <div id="mcpRegistryPagination"
+                                style="display:none;margin-top:0.75rem;display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
+                                <button type="button" class="button secondary" id="btnMcpPrevPage"
+                                    style="padding:0.35rem 0.9rem;font-size:0.85rem;" disabled>&#8592; Prev</button>
+                                <span id="mcpPageLabel" style="font-size:0.85rem;color:var(--text-muted,#888);">Page
+                                    1</span>
+                                <button type="button" class="button secondary" id="btnMcpNextPage"
+                                    style="padding:0.35rem 0.9rem;font-size:0.85rem;">Next &#8594;</button>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Global MCP Settings subsection -->
                     <div class="subsection">
                         <div class="subsection-title">
@@ -3984,6 +4065,217 @@
         };
 
         // =============================================================
+        // MCP Registry Browser (search + pagination)
+        // =============================================================
+
+        /** Current page state for the registry browser. */
+        let _registryBrowsePage = null;      // RegistryBrowsePage from backend
+        let _registryBrowsePageNum = 1;      // 1-based display counter
+        let _registryBrowseCursorStack = []; // stack of cursors for Prev navigation
+        let _registryBrowseCurrentCursor = null; // cursor used to load current page
+        let _registryBrowseSearch = '';      // last committed search term
+        let _popularMcpPanelOpen = false;    // panel visibility flag
+        let _registrySearchDebounceTimer = null;
+
+        /** Load (or reload) a page from the registry, optionally filtered by search. */
+        async function loadRegistryPage(searchQuery, cursor) {
+            if (!isTauriAvailable()) return;
+            const container = document.getElementById('mcpPopularServerList');
+            const paginationEl = document.getElementById('mcpRegistryPagination');
+            if (container) {
+                container.innerHTML = '<div class="mcp-empty-state">Loading from MCP Registry\u2026</div>';
+            }
+            if (paginationEl) paginationEl.style.display = 'none';
+            try {
+                _registryBrowsePage = await window.__TAURI__.core.invoke(
+                    'browse_mcp_registry_servers',
+                    { query: searchQuery || null, cursor: cursor || null }
+                );
+                _registryBrowseCurrentCursor = cursor || null;
+                renderRegistryBrowsePage();
+            } catch (e) {
+                console.error('[MCP] Failed to load registry page:', e);
+                if (container) {
+                    container.innerHTML = '<div class="mcp-empty-state">Failed to load registry: ' + escapeHtml(String(e)) + '</div>';
+                }
+            }
+        }
+
+        /** Render the current _registryBrowsePage into the UI. */
+        function renderRegistryBrowsePage() {
+            const container = document.getElementById('mcpPopularServerList');
+            const paginationEl = document.getElementById('mcpRegistryPagination');
+            const countEl = document.getElementById('popularMcpCount');
+            if (!container) return;
+
+            const page = _registryBrowsePage;
+            if (!page || page.servers.length === 0) {
+                container.innerHTML = '<div class="mcp-empty-state">No servers found.</div>';
+                if (countEl) countEl.style.display = 'none';
+                if (paginationEl) paginationEl.style.display = 'none';
+                return;
+            }
+
+            // Update badge with page count
+            if (countEl) {
+                countEl.textContent = 'Page ' + _registryBrowsePageNum;
+                countEl.style.display = '';
+            }
+
+            const configuredNames = new Set((_mcpServers || []).map(s => s.name));
+            let html = '';
+            page.servers.forEach((srv, idx) => {
+                const hasQuickAdd = !!srv.quick_add;
+                const hasAddDisabled = !hasQuickAdd && !!srv.add_disabled;
+                const toolName = hasQuickAdd
+                    ? srv.quick_add.name
+                    : (hasAddDisabled ? srv.add_disabled.name : null);
+                const alreadyAdded = toolName && configuredNames.has(toolName);
+                html += '<div class="mcp-server-card">';
+                html += '  <div class="mcp-server-card-header">';
+                html += '    <span class="mcp-server-name">' + escapeHtml(srv.display_name) + '</span>';
+                if (hasQuickAdd || hasAddDisabled) {
+                    html += '    <span class="mcp-badge mcp-badge-stdio">stdio</span>';
+                }
+                if (hasAddDisabled) {
+                    html += '    <span class="mcp-badge" style="background:#e67e22;color:#fff;" title="Requires environment variable configuration before use">needs config</span>';
+                }
+                if (srv.version) {
+                    html += '    <span class="mcp-badge" style="font-size:0.72rem;opacity:0.75;">v' + escapeHtml(srv.version) + '</span>';
+                }
+                if (alreadyAdded) {
+                    html += '    <span class="mcp-badge" style="background:#27ae60;color:#fff;">\u2713 Added</span>';
+                }
+                html += '  </div>';
+                if (srv.description) {
+                    html += '  <div class="mcp-server-uri" style="font-size:0.85rem;color:var(--text-muted,#888);white-space:normal;">' + escapeHtml(srv.description) + '</div>';
+                }
+                html += '  <div class="mcp-server-actions">';
+                if (hasQuickAdd && !alreadyAdded) {
+                    html += '    <button type="button" class="button primary" data-browse-action="add" data-browse-idx="' + idx + '" style="font-size:0.82rem;">Quick Add</button>';
+                }
+                if (hasAddDisabled && !alreadyAdded) {
+                    html += '    <button type="button" class="button secondary" data-browse-action="add-disabled" data-browse-idx="' + idx + '" style="font-size:0.82rem;" title="Added as disabled \u2014 configure required environment variables to enable">Add (Disabled)</button>';
+                }
+                if (srv.repository_url) {
+                    html += '    <a href="' + escapeHtml(srv.repository_url) + '" target="_blank" rel="noopener noreferrer" class="button secondary" style="font-size:0.82rem;">View Source</a>';
+                }
+                html += '  </div>';
+                html += '</div>';
+            });
+            container.innerHTML = html;
+
+            // CSP-safe: attach Quick Add listeners after innerHTML is set
+            container.querySelectorAll('button[data-browse-action="add"]').forEach(btn => {
+                const idx = parseInt(btn.dataset.browseIdx, 10);
+                btn.addEventListener('click', () => quickAddBrowseServer(idx));
+            });
+            // CSP-safe: attach Add (Disabled) listeners after innerHTML is set
+            container.querySelectorAll('button[data-browse-action="add-disabled"]').forEach(btn => {
+                const idx = parseInt(btn.dataset.browseIdx, 10);
+                btn.addEventListener('click', () => addDisabledBrowseServer(idx));
+            });
+
+            // Pagination controls
+            const hasPrev = _registryBrowseCursorStack.length > 0;
+            const hasNext = !!page.next_cursor;
+            if (paginationEl) {
+                paginationEl.style.display = (hasPrev || hasNext) ? 'flex' : 'none';
+                const prevBtn = document.getElementById('btnMcpPrevPage');
+                const nextBtn = document.getElementById('btnMcpNextPage');
+                const pageLabel = document.getElementById('mcpPageLabel');
+                if (prevBtn) prevBtn.disabled = !hasPrev;
+                if (nextBtn) nextBtn.disabled = !hasNext;
+                if (pageLabel) pageLabel.textContent = 'Page ' + _registryBrowsePageNum;
+            }
+        }
+
+        /**
+         * 1-click add a browse-result server to the user's configured MCP list.
+         *
+         * Flow:
+         *  1. Save config via add_mcp_tool (instant).
+         *  2. Show a "Installing…" spinner in the status bar.
+         *  3. Call provision_mcp_server to verify the runtime and pre-fetch the
+         *     package (up to 60 s for npm, 120 s for uv).
+         *  4. Display the outcome: ✓ ready, ⚠ runtime missing, ⚠ fetch failed.
+         */
+        async function quickAddBrowseServer(idx) {
+            const page = _registryBrowsePage;
+            if (!page) return;
+            const srv = page.servers[idx];
+            if (!srv || !srv.quick_add) return;
+            try {
+                // Step 1: persist config immediately so the server appears in the list.
+                await window.__TAURI__.core.invoke('add_mcp_tool', { tool: srv.quick_add });
+                await loadMcpServers();
+                renderRegistryBrowsePage(); // refresh ✓ Added indicators
+
+                // Step 2: show provisioning spinner (keeps status bar visible during download).
+                showProvisioningStatus(srv.display_name);
+
+                // Step 3: runtime check + package pre-fetch (potentially long-running).
+                const provision = await window.__TAURI__.core.invoke(
+                    'provision_mcp_server', { server: srv.quick_add }
+                );
+
+                // Step 4: display outcome.
+                showProvisionResult(srv.display_name, provision, false);
+            } catch (e) {
+                console.error('[MCP] Failed to add server:', e);
+                showStatus('Failed to add "' + escapeHtml(srv.display_name) + '": ' + e, 'error');
+            }
+        }
+
+        /**
+         * Add a browse-result server that requires configuration before use.
+         *
+         * The server is saved with enabled=false.  The user fills in required
+         * env vars / headers in the MCP settings panel and then enables it.
+         *
+         * Flow:
+         *  1. Save config via add_mcp_tool (instant, enabled=false).
+         *  2. Show a "Installing…" spinner (runtime check + optional pre-install).
+         *  3. Call provision_mcp_server — for stdio servers this still verifies the
+         *     runtime is available and pre-warms the cache; HTTP/SSE returns Skipped.
+         *  4. Display the outcome with a reminder to configure before enabling.
+         */
+        async function addDisabledBrowseServer(idx) {
+            const page = _registryBrowsePage;
+            if (!page) return;
+            const srv = page.servers[idx];
+            if (!srv || !srv.add_disabled) return;
+            try {
+                // Step 1: persist config (disabled state).
+                await window.__TAURI__.core.invoke('add_mcp_tool', { tool: srv.add_disabled });
+                await loadMcpServers();
+                renderRegistryBrowsePage(); // refresh ✓ Added indicators
+
+                // Step 2: show provisioning spinner.
+                showProvisioningStatus(srv.display_name);
+
+                // Step 3: runtime check + optional pre-install.
+                const provision = await window.__TAURI__.core.invoke(
+                    'provision_mcp_server', { server: srv.add_disabled }
+                );
+
+                // Step 4: display outcome (isDisabled=true adds "configure before enabling" hint).
+                showProvisionResult(srv.display_name, provision, true);
+            } catch (e) {
+                console.error('[MCP] Failed to add server:', e);
+                showStatus('Failed to add "' + escapeHtml(srv.display_name) + '": ' + e, 'error');
+            }
+        }
+
+        /** Reset pagination and load page 1 with the current search query. */
+        function resetRegistryToFirstPage() {
+            _registryBrowseCursorStack = [];
+            _registryBrowseCurrentCursor = null;
+            _registryBrowsePageNum = 1;
+            loadRegistryPage(_registryBrowseSearch, null);
+        }
+
+        // =============================================================
         // Knowledge Management
         // =============================================================
         let _knowledgeItems = [];
@@ -4652,14 +4944,83 @@
             updateWebSearchProviderVisibility();
         }
 
-        function showStatus(message, type = 'success') {
+        function showStatus(message, type = 'success', durationMs = 4000) {
             statusMessage.textContent = message;
             statusMessage.className = `status ${type}`;
             statusMessage.style.display = 'block';
 
-            setTimeout(() => {
+            if (statusMessage._hideTimer) {
+                clearTimeout(statusMessage._hideTimer);
+            }
+            statusMessage._hideTimer = setTimeout(() => {
                 statusMessage.style.display = 'none';
-            }, 4000);
+                statusMessage._hideTimer = null;
+            }, durationMs);
+        }
+
+        /**
+         * Show a persistent "provisioning in progress" indicator in the status bar.
+         * Cancels any pending auto-hide timer.  Call {@link showProvisionResult} when done.
+         */
+        function showProvisioningStatus(serverName) {
+            if (statusMessage._hideTimer) {
+                clearTimeout(statusMessage._hideTimer);
+                statusMessage._hideTimer = null;
+            }
+            statusMessage.innerHTML =
+                '<span class="provision-spinner"></span>' +
+                'Installing <strong>' + escapeHtml(serverName) + '</strong>…';
+            statusMessage.className = 'status provisioning';
+            statusMessage.style.display = 'flex';
+        }
+
+        /**
+         * Translate a {@link ProvisionResult} into a status bar message.
+         *
+         * @param {string}  serverName  - Display name of the server.
+         * @param {object}  provision   - { status, message } from provision_mcp_server.
+         * @param {boolean} isDisabled  - true when the server was added in disabled state.
+         */
+        function showProvisionResult(serverName, provision, isDisabled) {
+            const name = escapeHtml(serverName);
+            switch (provision.status) {
+                case 'ready': {
+                    const suffix = isDisabled
+                        ? ' Configure required settings in the MCP panel, then enable it.'
+                        : '';
+                    showStatus(
+                        '✓ "' + name + '" added and ready.' + suffix,
+                        'success', 8000
+                    );
+                    break;
+                }
+                case 'skipped': {
+                    const suffix = isDisabled
+                        ? ' Configure required settings in the MCP panel, then enable it.'
+                        : '';
+                    showStatus(
+                        '✓ "' + name + '" added.' + suffix,
+                        'success', 6000
+                    );
+                    break;
+                }
+                case 'runtime_missing':
+                    showStatus(
+                        '⚠ "' + name + '" added, but the required runtime is not installed. ' +
+                        provision.message,
+                        'warning', 12000
+                    );
+                    break;
+                case 'fetch_failed':
+                    showStatus(
+                        '⚠ "' + name + '" added, but package download failed. It will retry on first connection. ' +
+                        provision.message,
+                        'warning', 12000
+                    );
+                    break;
+                default:
+                    showStatus('✓ "' + name + '" added.', 'success', 6000);
+            }
         }
 
         /**
@@ -4732,11 +5093,42 @@
         // - non-empty and != MASKED_SECRET => store
         const MASKED_SECRET = '********';
 
+        function normalizeSecretInputValue(input) {
+            const rawValue = (input?.value || '').trim();
+            if (!rawValue || rawValue === MASKED_SECRET) return '';
+
+            const hadStoredKey = input?.dataset?.hasKey === 'true';
+            if (hadStoredKey && rawValue.startsWith(MASKED_SECRET)) {
+                return rawValue.slice(MASKED_SECRET.length).trim();
+            }
+
+            return rawValue;
+        }
+
+        function clearMaskedSecretForEdit(input) {
+            if (!input || (input.value || '') !== MASKED_SECRET) return false;
+            input.value = '';
+            input.placeholder = input.dataset.placeholderWhenMissing || '';
+            input.dataset.touched = 'true';
+            return true;
+        }
+
         function ensureSecretInputTracking(input) {
             if (!input) return;
             if (input.dataset.secretTracked === 'true') return;
             input.dataset.secretTracked = 'true';
             input.dataset.touched = 'false';
+
+            input.addEventListener('beforeinput', (event) => {
+                const inputType = event?.inputType || '';
+                if (inputType.startsWith('insert') || inputType.startsWith('delete')) {
+                    clearMaskedSecretForEdit(input);
+                }
+            });
+
+            input.addEventListener('paste', () => {
+                clearMaskedSecretForEdit(input);
+            });
 
             // Mark touched on any user edit (paste, delete, typing).
             input.addEventListener('input', () => {
@@ -4756,6 +5148,7 @@
             if (!input) return;
             ensureSecretInputTracking(input);
             input.dataset.hasKey = hasKey ? 'true' : 'false';
+            input.dataset.placeholderWhenMissing = placeholderWhenMissing;
             input.dataset.touched = 'false';
 
             if (hasKey) {
@@ -5272,11 +5665,12 @@
                         if (!input) return;
                         ensureSecretInputTracking(input);
 
-                        const val = (input.value || '').trim();
+                        const rawVal = (input.value || '').trim();
+                        const val = normalizeSecretInputValue(input);
                         const hadKey = (input.dataset.hasKey === 'true');
                         const touched = (input.dataset.touched === 'true');
 
-                        if (val === MASKED_SECRET) {
+                        if (rawVal === MASKED_SECRET) {
                             // Unchanged existing key.
                             return;
                         }
@@ -5893,13 +6287,14 @@
 
             // Get API key from input field
             const apiKeyInput = document.getElementById('openaiLlmApiKey');
-            const apiKeyFromInput = (apiKeyInput?.value || '').trim();
+            const apiKeyFromInput = normalizeSecretInputValue(apiKeyInput);
 
             try {
                 setDropdownLoading('openaiLlmModel', true);
 
                 // Check if API key exists in input field
-                const hasKeyInInput = apiKeyFromInput.length > 0;
+                // Exclude the MASKED_SECRET sentinel ('********') — the real key is in the keychain.
+                const hasKeyInInput = apiKeyFromInput.length > 0 && apiKeyFromInput !== MASKED_SECRET;
 
                 // Check if API key exists in keychain
                 const hasKeyInKeychain = !hasKeyInInput && await window.__TAURI__.core.invoke('has_api_key', { provider: 'openai' });
@@ -5919,12 +6314,12 @@
                 // Show indicator if using keychain
                 if (hasKeyInKeychain && !hasKeyInInput) {
                     console.log('[OpenAI] Using API key from secure storage (keychain)');
-                    // Optional: Add visual indicator that key is from keychain
-                    // This helps users understand why models are loading without visible key
                 }
 
-                // API key exists - fetch models (backend will check keychain if apiKey is empty)
-                const models = await window.__TAURI__.core.invoke('list_openai_models', { api_key: apiKeyFromInput });
+                // Pass the real key from input, or '' so the backend falls back to the keychain.
+                // Never send the MASKED_SECRET sentinel ('********') to the backend.
+                const effectiveApiKey = hasKeyInInput ? apiKeyFromInput : '';
+                const models = await window.__TAURI__.core.invoke('list_openai_models', { api_key: effectiveApiKey });
                 if (!isLatestRefreshToken('openaiModels', token)) return;
 
                 modelSelect.disabled = false;
@@ -5978,13 +6373,14 @@
 
             // Get API key from input field
             const apiKeyInput = document.getElementById('anthropicApiKey');
-            const apiKeyFromInput = (apiKeyInput?.value || '').trim();
+            const apiKeyFromInput = normalizeSecretInputValue(apiKeyInput);
 
             try {
                 setDropdownLoading('anthropicLlmModel', true);
 
                 // Check if API key exists in input field
-                const hasKeyInInput = apiKeyFromInput.length > 0;
+                // Exclude the MASKED_SECRET sentinel ('********') — the real key is in the keychain.
+                const hasKeyInInput = apiKeyFromInput.length > 0 && apiKeyFromInput !== MASKED_SECRET;
 
                 // Check if API key exists in keychain
                 const hasKeyInKeychain = !hasKeyInInput && await window.__TAURI__.core.invoke('has_api_key', { provider: 'anthropic' });
@@ -6006,8 +6402,10 @@
                     console.log('[Anthropic] Using API key from secure storage (keychain)');
                 }
 
-                // API key exists - fetch models (backend will check keychain if apiKey is empty)
-                const models = await window.__TAURI__.core.invoke('list_anthropic_models', { api_key: apiKeyFromInput });
+                // Pass the real key from input, or '' so the backend falls back to the keychain.
+                // Never send the MASKED_SECRET sentinel ('********') to the backend.
+                const effectiveApiKey = hasKeyInInput ? apiKeyFromInput : '';
+                const models = await window.__TAURI__.core.invoke('list_anthropic_models', { api_key: effectiveApiKey });
                 if (!isLatestRefreshToken('anthropicModels', token)) return;
 
                 modelSelect.disabled = false;
@@ -6060,13 +6458,14 @@
 
             // Get API key from input field
             const apiKeyInput = document.getElementById('grokApiKey');
-            const apiKeyFromInput = (apiKeyInput?.value || '').trim();
+            const apiKeyFromInput = normalizeSecretInputValue(apiKeyInput);
 
             try {
                 setDropdownLoading('grokLlmModel', true);
 
                 // Check if API key exists in input field
-                const hasKeyInInput = apiKeyFromInput.length > 0;
+                // Exclude the MASKED_SECRET sentinel ('********') — the real key is in the keychain.
+                const hasKeyInInput = apiKeyFromInput.length > 0 && apiKeyFromInput !== MASKED_SECRET;
 
                 // Check if API key exists in keychain
                 const hasKeyInKeychain = !hasKeyInInput && await window.__TAURI__.core.invoke('has_api_key', { provider: 'grok' });
@@ -6088,8 +6487,10 @@
                     console.log('[Grok] Using API key from secure storage (keychain)');
                 }
 
-                // API key exists - fetch models (backend will check keychain if apiKey is empty)
-                const models = await window.__TAURI__.core.invoke('list_grok_models', { api_key: apiKeyFromInput });
+                // Pass the real key from input, or '' so the backend falls back to the keychain.
+                // Never send the MASKED_SECRET sentinel ('********') to the backend.
+                const effectiveApiKey = hasKeyInInput ? apiKeyFromInput : '';
+                const models = await window.__TAURI__.core.invoke('list_grok_models', { api_key: effectiveApiKey });
                 if (!isLatestRefreshToken('grokModels', token)) return;
 
                 modelSelect.disabled = false;
@@ -6147,7 +6548,7 @@
 
             // Get API key from input field
             const apiKeyInput = document.getElementById('geminiApiKey');
-            const apiKeyFromInput = (apiKeyInput?.value || '').trim();
+            const apiKeyFromInput = normalizeSecretInputValue(apiKeyInput);
 
             try {
                 setDropdownLoading('geminiLlmModel', true);
@@ -6175,8 +6576,10 @@
                     console.log('[Gemini] Using API key from secure storage (keychain)');
                 }
 
-                // API key exists - fetch models (backend will check keychain if apiKey is empty)
-                const models = await window.__TAURI__.core.invoke('list_gemini_models', { api_key: apiKeyFromInput });
+                // Pass the real key from input, or '' so the backend falls back to the keychain.
+                // Never send the MASKED_SECRET sentinel ('********') to the backend.
+                const effectiveApiKey = hasKeyInInput ? apiKeyFromInput : '';
+                const models = await window.__TAURI__.core.invoke('list_gemini_models', { api_key: effectiveApiKey });
                 if (!isLatestRefreshToken('geminiModels', token)) return;
 
                 modelSelect.disabled = false;
@@ -6330,7 +6733,7 @@
             const statusSpan = document.getElementById('sttModelStatus');
             const apiKeyInput = document.getElementById('openaiApiKey') || document.getElementById('openaiLlmApiKey');
             const currentValue = modelSelect?.value;
-            const apiKeyFromInput = (apiKeyInput?.value || '').trim();
+            const apiKeyFromInput = normalizeSecretInputValue(apiKeyInput);
 
             if (!modelSelect) return;
 
@@ -6339,7 +6742,8 @@
                 if (statusSpan) statusSpan.textContent = 'Loading models...';
 
                 // Check if API key exists in input field
-                const hasKeyInInput = apiKeyFromInput.length > 0;
+                // Exclude the MASKED_SECRET sentinel ('********') — the real key is in the keychain.
+                const hasKeyInInput = apiKeyFromInput.length > 0 && apiKeyFromInput !== MASKED_SECRET;
 
                 // Check if API key exists in keychain
                 const hasKeyInKeychain = !hasKeyInInput && await window.__TAURI__.core.invoke('has_api_key', { provider: 'openai' });
@@ -6357,8 +6761,10 @@
                     console.log('[OpenAI STT] Using API key from secure storage (keychain)');
                 }
 
-                // API key exists - fetch models (backend will check keychain if apiKey is empty)
-                const models = await window.__TAURI__.core.invoke('list_openai_stt_models', { api_key: apiKeyFromInput });
+                // Pass the real key from input, or '' so the backend falls back to the keychain.
+                // Never send the MASKED_SECRET sentinel ('********') to the backend.
+                const effectiveApiKey = hasKeyInInput ? apiKeyFromInput : '';
+                const models = await window.__TAURI__.core.invoke('list_openai_stt_models', { api_key: effectiveApiKey });
 
                 modelSelect.disabled = false;
                 modelSelect.innerHTML = '';
@@ -7058,6 +7464,66 @@
             if (btnSaveMcp) btnSaveMcp.addEventListener('click', () => window.saveMcpServerForm());
             const btnCloseMcp = document.getElementById('btnCloseMcpForm');
             if (btnCloseMcp) btnCloseMcp.addEventListener('click', () => window.closeMcpForm());
+
+            // Registry browser panel toggle
+            const btnTogglePopular = document.getElementById('btnTogglePopularMcp');
+            if (btnTogglePopular) {
+                btnTogglePopular.addEventListener('click', async () => {
+                    _popularMcpPanelOpen = !_popularMcpPanelOpen;
+                    const panel = document.getElementById('popularMcpPanel');
+                    if (panel) panel.style.display = _popularMcpPanelOpen ? 'block' : 'none';
+                    btnTogglePopular.textContent = _popularMcpPanelOpen ? '\u25be Browse' : '\u25b8 Browse';
+                    if (_popularMcpPanelOpen && !_registryBrowsePage) {
+                        resetRegistryToFirstPage();
+                    }
+                });
+            }
+
+            // Registry search input — debounced 350 ms
+            const searchInput = document.getElementById('mcpRegistrySearch');
+            const clearBtn = document.getElementById('btnClearMcpSearch');
+            if (searchInput) {
+                searchInput.addEventListener('input', () => {
+                    const q = searchInput.value;
+                    if (clearBtn) clearBtn.style.display = q ? '' : 'none';
+                    clearTimeout(_registrySearchDebounceTimer);
+                    _registrySearchDebounceTimer = setTimeout(() => {
+                        _registryBrowseSearch = q.trim();
+                        resetRegistryToFirstPage();
+                    }, 350);
+                });
+            }
+            if (clearBtn) {
+                clearBtn.addEventListener('click', () => {
+                    if (searchInput) searchInput.value = '';
+                    clearBtn.style.display = 'none';
+                    _registryBrowseSearch = '';
+                    resetRegistryToFirstPage();
+                });
+            }
+
+            // Pagination: Next page
+            const btnNext = document.getElementById('btnMcpNextPage');
+            if (btnNext) {
+                btnNext.addEventListener('click', () => {
+                    if (!_registryBrowsePage || !_registryBrowsePage.next_cursor) return;
+                    // Push current cursor onto the back-stack before advancing
+                    _registryBrowseCursorStack.push(_registryBrowseCurrentCursor);
+                    _registryBrowsePageNum++;
+                    loadRegistryPage(_registryBrowseSearch, _registryBrowsePage.next_cursor);
+                });
+            }
+
+            // Pagination: Prev page
+            const btnPrev = document.getElementById('btnMcpPrevPage');
+            if (btnPrev) {
+                btnPrev.addEventListener('click', () => {
+                    if (_registryBrowseCursorStack.length === 0) return;
+                    const prevCursor = _registryBrowseCursorStack.pop();
+                    _registryBrowsePageNum = Math.max(1, _registryBrowsePageNum - 1);
+                    loadRegistryPage(_registryBrowseSearch, prevCursor);
+                });
+            }
 
             // Knowledge buttons / form
             const btnRefreshKnowledge = document.getElementById('btnRefreshKnowledge');

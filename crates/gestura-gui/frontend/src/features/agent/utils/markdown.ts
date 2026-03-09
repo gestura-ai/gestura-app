@@ -21,12 +21,80 @@ function escapeHtmlText(t: string): string {
   return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function splitMarkdownTableRow(row: string): string[] {
-  return row
-    .replace(/^\|/, '')
-    .replace(/\|$/, '')
-    .split('|')
-    .map((c) => c.trim());
+/**
+ * Check whether a line is a GFM table separator row (e.g. `| --- | :---: | ---: |`).
+ * Requires at least one pipe and at least one dash group of 3+ dashes.
+ */
+function isMarkdownTableSeparatorLine(line: string): boolean {
+  const src = (line ?? '').trim();
+  if (!src) return false;
+  if (!src.includes('|') || !src.includes('-')) return false;
+  return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(src);
+}
+
+/**
+ * Split a GFM table row into trimmed cell strings.
+ * - Strips leading/trailing pipes.
+ * - Handles pipes inside inline code spans (`` `a | b` ``).
+ * - Handles escaped pipes (`\|`).
+ */
+function splitMarkdownTableRow(line: string): string[] {
+  let src = (line ?? '').trim();
+  if (src.startsWith('|')) src = src.slice(1);
+  if (src.endsWith('|')) src = src.slice(0, -1);
+
+  const cells: string[] = [];
+  let cell = '';
+  let inCode = false;
+  let escaped = false;
+
+  for (let idx = 0; idx < src.length; idx++) {
+    const ch = src[idx];
+    if (escaped) {
+      cell += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      if (src[idx + 1] === '|') {
+        escaped = true;
+        continue;
+      }
+      cell += ch;
+      continue;
+    }
+    if (ch === '`') {
+      inCode = !inCode;
+      cell += ch;
+      continue;
+    }
+    if (ch === '|' && !inCode) {
+      cells.push(cell.trim());
+      cell = '';
+      continue;
+    }
+    cell += ch;
+  }
+  cells.push(cell.trim());
+  return cells;
+}
+
+/**
+ * Parse column alignment from a GFM separator row.
+ */
+function parseMarkdownTableAlignments(sepLine: string, colCount: number): Array<'left' | 'right' | 'center' | null> {
+  const parts = splitMarkdownTableRow(sepLine);
+  const out: Array<'left' | 'right' | 'center' | null> = [];
+  for (let idx = 0; idx < colCount; idx++) {
+    const p = (parts[idx] ?? '').trim();
+    const starts = p.startsWith(':');
+    const ends = p.endsWith(':');
+    if (starts && ends) out.push('center');
+    else if (ends) out.push('right');
+    else if (starts) out.push('left');
+    else out.push(null);
+  }
+  return out;
 }
 
 // ─── Inline markdown ──────────────────────────────────────────────────────────
@@ -130,32 +198,27 @@ export function parseMarkdown(input: string): string {
       continue;
     }
 
-    // Table
-    const tableSepMatch = lines[i + 1]?.match(/^\|?[\s:|]+(\|[\s:|]+)*\|?\s*$/);
-    if (line.trim().startsWith('|') && tableSepMatch) {
+    // Table (GFM: header row followed by separator row)
+    if (line.includes('|') && i + 1 < lines.length && isMarkdownTableSeparatorLine(lines[i + 1])) {
       flushParagraph(paragraphBuf);
       const headers = splitMarkdownTableRow(line);
-      const sepCells = splitMarkdownTableRow(lines[i + 1]);
-      const aligns = sepCells.map((c) => {
-        if (/^:-+:$/.test(c.trim())) return 'center';
-        if (/^-+:$/.test(c.trim())) return 'right';
-        if (/^:-+$/.test(c.trim())) return 'left';
-        return null;
-      });
+      const aligns = parseMarkdownTableAlignments(lines[i + 1], headers.length);
       i += 2;
       const rowLines: string[] = [];
-      while (i < lines.length && lines[i].trim().startsWith('|')) {
+      while (i < lines.length && !/^\s*$/.test(lines[i]) && lines[i].includes('|')) {
         rowLines.push(lines[i]);
         i++;
       }
       const thead = `<thead><tr>${headers.map((h, idx) => {
-        const style = aligns[idx] ? ` style="text-align:${aligns[idx]}"` : '';
+        const a = aligns[idx];
+        const style = a ? ` style="text-align:${a}"` : '';
         return `<th${style}>${renderInlineMarkdown(h)}</th>`;
       }).join('')}</tr></thead>`;
       const tbodyRows = rowLines.map((rl) => {
         const cells = splitMarkdownTableRow(rl);
         return `<tr>${headers.map((_h, idx) => {
-          const style = aligns[idx] ? ` style="text-align:${aligns[idx]}"` : '';
+          const a = aligns[idx];
+          const style = a ? ` style="text-align:${a}"` : '';
           return `<td${style}>${renderInlineMarkdown(cells[idx] ?? '')}</td>`;
         }).join('')}</tr>`;
       }).join('');

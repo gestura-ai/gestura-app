@@ -47,7 +47,7 @@
 }
 
 .tab--active {
-  background: var(--bg-base);
+  background: var(--bg-editor-base);
   border-color: var(--glass-border);
   color: var(--text-primary);
   font-weight: 500;
@@ -116,3 +116,56 @@
   display: none;
 }
 
+/* ─── Inline tab rename input ────────────────────────────────────────────────── */
+
+.tab-rename-input {
+  flex: 1;
+  min-width: 0;
+  max-width: 140px;
+  padding: 1px 4px;
+  font-size: 12.5px;
+  font-family: inherit;
+  font-weight: 500;
+  background: var(--bg-glass-strong);
+  border: 1px solid var(--accent-primary);
+  border-radius: 4px;
+  color: var(--text-primary);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(var(--accent-primary-rgb), 0.18);
+  height: 20px;
+  line-height: 1;
+}
+
+/* ─── Tab context menu ───────────────────────────────────────────────────────── */
+
+.tab-context-menu {
+  position: fixed;
+  z-index: 300;
+  background: var(--bg-glass-strong);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-md, 0 8px 24px rgba(0, 0, 0, 0.22));
+  padding: 4px 0;
+  min-width: 140px;
+  backdrop-filter: blur(12px);
+}
+
+.tab-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 14px;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.tab-context-menu button:hover {
+  background: rgba(var(--accent-primary-rgb, 37, 99, 235), 0.1);
+}

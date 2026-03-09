@@ -18,6 +18,7 @@ import {
   getSessionHistory,
   getTaskHierarchy,
   listKnowledgeItems,
+  getEnabledKnowledge,
   getSessionToolSettings,
   listBuiltinTools,
   listDiscoveredMcpTools,
@@ -405,11 +406,13 @@ export function useChatSession(sessionId: string): ChatSessionState {
         if (lastToolContextRef.current) {
           lastToolContextRef.current = { ...lastToolContextRef.current, success: action.success, output: action.output };
         }
-        // Notify ExplorerPanel and EditorArea to refresh when a workspace-mutating tool completes.
-        // Triggered for file/shell/git regardless of success — a partial shell run may still
-        // have written files before returning a non-zero exit code.
-        if (['file', 'shell', 'git'].includes(action.name)) {
-          window.dispatchEvent(new CustomEvent('gestura:workspace:changed'));
+        if (action.name === 'gui_control' && action.success && lastToolContextRef.current) {
+          try {
+            const parsedArgs = JSON.parse(lastToolContextRef.current.args);
+            if (typeof parsedArgs.action === 'string') {
+              window.dispatchEvent(new CustomEvent('gestura:gui_control', { detail: { action: parsedArgs.action, target: parsedArgs.target } }));
+            }
+          } catch { /* ignore parse errors */ }
         }
         break;
       }
@@ -478,10 +481,21 @@ export function useChatSession(sessionId: string): ChatSessionState {
         setStatus({ text: 'Cancelled', kind: 'ready' });
         break;
 
-      case 'error':
+      case 'error': {
         setStreamingMessage((prev) => { finalizeStream(prev); return null; });
         setStatus({ text: `Error: ${action.message}`, kind: 'error' });
+        const errId = nanoid();
+        const errBlock: TextBlock = { kind: 'text', id: errId, content: `⚠️ **Error:** ${action.message}` };
+        setMessages((prev) => [...prev, {
+          id: nanoid(),
+          role: 'assistant',
+          rawMarkdown: `⚠️ **Error:** ${action.message}`,
+          blocks: [errBlock],
+          isStreaming: false,
+          timestamp: Date.now(),
+        }]);
         break;
+      }
 
       case 'agent-message': {
         const id = nanoid();
@@ -527,8 +541,15 @@ export function useChatSession(sessionId: string): ChatSessionState {
   }, [sessionId]);
 
   const refreshKnowledge = useCallback(async () => {
-    try { setKnowledgeItems(await listKnowledgeItems()); } catch { /* ignore */ }
-  }, []);
+    try {
+      const [items, enabledIds] = await Promise.all([
+        listKnowledgeItems(),
+        getEnabledKnowledge(sessionId),
+      ]);
+      const enabledSet = new Set(enabledIds);
+      setKnowledgeItems(items.map((item) => ({ ...item, enabled: enabledSet.has(item.id) })));
+    } catch { /* ignore */ }
+  }, [sessionId]);
 
   const refreshToolSettings = useCallback(async () => {
     try {

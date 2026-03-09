@@ -1,5 +1,20 @@
 /* ─── Fonts ─────────────────────────────────────────────────────────────────── */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+/*
+ * The Google Fonts @import has been intentionally removed.
+ *
+ * Reasons:
+ *  1. The Tauri CSP (style-src 'self' 'unsafe-inline') blocks external
+ *     stylesheet imports in production, causing a FOUT (flash of unstyled text)
+ *     as the browser falls back to the system font stack immediately anyway.
+ *  2. Even when allowed, the network round-trip adds latency on every window
+ *     open, contributing to the visible flash of unstyled content.
+ *
+ * Inter and JetBrains Mono are both widely pre-installed on modern systems and
+ * listed as the first preference in the font stacks below.  On machines that do
+ * not have them installed, the -apple-system / BlinkMacSystemFont / Segoe UI /
+ * Liberation Sans cascade is visually identical for the Gestura UI at all used
+ * weights (300–600).
+ */
 
 /* ─── CSS token definitions (matching agent.html) ──────────────────────────── */
 :root {
@@ -50,7 +65,7 @@
     --brand-gradient-diagonal: linear-gradient(135deg, rgb(96, 165, 250), rgb(192, 132, 252));
     --accent-glow: rgba(var(--accent-primary-rgb), 0.3);
     --user-bubble: rgb(96, 165, 250);
-    --user-text: #ffffff;
+    --user-text: #000000;
     --agent-bubble: rgba(255, 255, 255, 0.08);
     --agent-text: #f5f5f7;
     --tool-bg: rgba(48, 209, 88, 0.15);
@@ -101,7 +116,7 @@ html[data-theme="dark"] {
   --brand-gradient-diagonal: linear-gradient(135deg, rgb(96, 165, 250), rgb(192, 132, 252));
   --accent-glow: rgba(var(--accent-primary-rgb), 0.3);
   --user-bubble: rgb(96, 165, 250);
-  --user-text: #ffffff;
+  --user-text: #000000;
   --agent-bubble: rgba(255, 255, 255, 0.08);
   --agent-text: #f5f5f7;
   --tool-bg: rgba(48, 209, 88, 0.15);
@@ -122,7 +137,8 @@ html {
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: 'Inter', ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    'Liberation Sans', sans-serif;
   background: var(--bg-base);
   color: var(--text-primary);
   min-height: 100vh;
@@ -145,12 +161,36 @@ body {
 }
 
 /* ─── Root app container ─────────────────────────────────────────────────── */
+/*
+ * .agent-app starts at opacity:0 (set by the critical inline CSS in
+ * agent_v2.html so no JavaScript is needed before first paint).
+ * Once React marks the window ready, .app-ready is added and the animation
+ * below fades the content in, matching the moment window.show() is called.
+ */
 .agent-app {
   display: flex;
   flex-direction: row;
   flex: 1;
   width: 100%;
   overflow: hidden;
+  /* opacity:0 is the initial state defined in the inline <style> in agent_v2.html */
+}
+
+/* Fade-in triggered when isReady becomes true in AgentApp.tsx */
+@keyframes agent-app-fade-in {
+  from {
+    opacity: 0;
+    transform: scale(0.997);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.agent-app.app-ready {
+  animation: agent-app-fade-in 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 /* ─── Message-only mode: single chat column (matches agent.html body) ──── */
@@ -169,7 +209,6 @@ body {
   width: 240px;
   min-width: 160px;
   max-width: 400px;
-  border-right: 1px solid var(--glass-border);
   overflow: hidden;
   transition: width 200ms ease, flex-basis 200ms ease, min-width 200ms ease, opacity 200ms ease;
 }
@@ -187,7 +226,6 @@ body {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  border-right: 1px solid var(--glass-border);
   background: var(--bg-editor-base);
 }
 
@@ -209,47 +247,96 @@ body {
   pointer-events: none;
 }
 
-/* ─── Panel Toggles ──────────────────────────────────────────────────────── */
+/* ─── Panel Resizer ──────────────────────────────────────────────────────── */
 
-.panel-toggle-container {
+/* Outer column — sits between panels in the flex row.
+   Width is 1px so the gutter IS the divider line with zero gap on either side.
+   The drag track extends ±4px beyond the gutter for a comfortable hit area. */
+.panel-resizer {
   position: relative;
-  width: 0;
+  flex: 0 0 1px;
+  width: 1px;
   height: 100%;
-  display: flex;
-  align-items: center;
-  z-index: 50;
+  /* Needs to sit above the neighboring panels so the thumb isn't hidden by
+     the chat input/footer (thumb intentionally overlaps the gutter edge). */
+  z-index: 200;
 }
 
-.panel-toggle-btn {
+/* The gutter itself IS the 1px divider — no ::before pseudo needed, but kept
+   for the colour token so tweaking the border colour stays in one place. */
+.panel-resizer::before {
+  content: '';
   position: absolute;
-  width: 14px;
-  height: 36px;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: var(--glass-border);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Full-height invisible drag track — wider hit area via absolute inset */
+.panel-resizer__track {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+  cursor: col-resize;
+  z-index: 1;
+}
+
+/* Visible thumb — centred horizontally, anchored toward the bottom of the panel */
+.panel-resizer__thumb {
+  position: absolute;
+  bottom: 80px;
+  top: auto;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 20px;
+  height: 44px;
+  border-radius: 10px;
   background: var(--bg-glass-strong);
   border: 1px solid var(--glass-border);
   display: flex;
   align-items: center;
   justify-content: center;
-  cursor: pointer;
+  cursor: col-resize;
+  /* Elevate within the resizer's stacking context */
+  z-index: 2;
+  /* Force onto its own compositing layer so it paints above GPU-composited
+     neighbor panels (e.g. the chat panel promoted via CSS transitions). */
+  will-change: transform;
   color: var(--text-secondary);
-  transition: all 0.2s ease;
+  opacity: 1;
+  transition: background 0.2s ease, color 0.2s ease,
+    border-color 0.2s ease, box-shadow 0.2s ease;
   backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  box-shadow: var(--shadow-sm);
+  user-select: none;
 }
 
-.panel-toggle-btn:hover {
-  color: var(--text-primary);
+/* Accent highlight on direct thumb hover */
+.panel-resizer__thumb:hover {
   background: var(--bg-glass);
+  color: var(--text-primary);
+  border-color: rgba(var(--accent-primary-rgb), 0.5);
+  box-shadow: var(--shadow-md);
 }
 
-.panel-toggle-left {
-  left: 0;
-  border-radius: 0 6px 6px 0;
-  border-left: none;
+/* Prevent SVG from swallowing pointer events */
+.panel-resizer__thumb svg {
+  pointer-events: none;
+  flex-shrink: 0;
 }
 
-.panel-toggle-right {
-  right: 0;
-  border-radius: 6px 0 0 6px;
-  border-right: none;
+/* Transparent background eliminates the visible blank gap — only the ::before
+   1px divider line is visible. Each side's adjacent panel provides its own bg. */
+.panel-resizer--left,
+.panel-resizer--right {
+  background: transparent;
 }
 
 /* ─── Generic panel ──────────────────────────────────────────────────────── */

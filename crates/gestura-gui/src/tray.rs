@@ -1,6 +1,7 @@
 //! System tray utilities for Gestura
 use crate::window_manager::{self, get_all_sessions};
 use chrono::{DateTime, Local, Timelike, Utc};
+use gestura_core::AppConfigSecurityExt;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::image::Image;
@@ -76,6 +77,62 @@ impl Default for ListeningState {
             session_id: None,
         }
     }
+}
+
+/// Check whether the app is ready to start agent sessions and voice listening.
+///
+/// Returns `true` only when:
+/// - A configuration file exists on disk (onboarding has been completed), AND
+/// - The primary LLM provider has credentials (or is a local provider like ollama), AND
+/// - The STT/voice provider is assigned to something other than empty/`"none"`.
+///
+/// When this returns `false`, the "New Agent Session" and "Start Listening" tray
+/// items are grayed-out so the user is guided to finish onboarding first.
+/// Returns `true` when the app is fully configured and agent sessions can start.
+///
+/// Checks:
+/// - Config file exists (onboarding completed)
+/// - Primary LLM provider has credentials in the keychain (or is Ollama — no key needed)
+/// - STT/voice provider is set and, for local Whisper, the model binary is on disk
+pub(crate) fn is_app_configured() -> bool {
+    // Config file existence is the canonical "onboarding completed" marker.
+    if crate::AppConfig::is_first_run() {
+        return false;
+    }
+
+    let config = crate::AppConfig::load();
+
+    // Verify the primary LLM provider has credentials.
+    // API keys are stored in the system keychain — never in the config file.
+    let llm_ok = match config.llm.primary.to_lowercase().trim() {
+        "ollama" => true, // local provider — no API key required
+        "openai" => !crate::api::try_get_api_key_from_keychain_sync("openai").is_empty(),
+        "anthropic" => !crate::api::try_get_api_key_from_keychain_sync("anthropic").is_empty(),
+        "gemini" => !crate::api::try_get_api_key_from_keychain_sync("gemini").is_empty(),
+        "grok" => !crate::api::try_get_api_key_from_keychain_sync("grok").is_empty(),
+        _ => false,
+    };
+
+    // Verify the STT/voice provider is assigned (non-empty and not explicitly "none").
+    // For local Whisper the model binary must also exist on disk.
+    let stt_ok = {
+        let p = config.voice.provider.trim().to_lowercase();
+        if p.is_empty() || p == "none" {
+            false
+        } else if p == "local" {
+            let model_path = config
+                .voice
+                .local_model_path
+                .as_deref()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(crate::AppConfig::default_whisper_model_path);
+            model_path.exists()
+        } else {
+            true
+        }
+    };
+
+    llm_ok && stt_ok
 }
 
 /// Initialize the system tray with comprehensive menu options.
@@ -208,6 +265,22 @@ pub fn init_tray(app: &AppHandle) -> tauri::Result<()> {
         }
     });
 
+    // Listen for onboarding-complete events so that the tray menu re-enables
+    // the "New Agent Session" and "Start Listening" items once the user finishes
+    // onboarding and the configuration file has been written to disk.
+    let app_handle = app.clone();
+    app.listen("onboarding-complete", move |_event| {
+        tracing::info!(
+            "Received onboarding-complete event, rebuilding tray menu to enable agent features"
+        );
+        if let Err(e) = rebuild_tray_menu(&app_handle) {
+            tracing::error!(
+                "Failed to rebuild tray menu after onboarding completion: {}",
+                e
+            );
+        }
+    });
+
     tracing::info!("✅ System tray initialized successfully - SINGLE ICON GUARANTEED");
     Ok(())
 }
@@ -215,6 +288,11 @@ pub fn init_tray(app: &AppHandle) -> tauri::Result<()> {
 /// Build the comprehensive tray menu with session management
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let menu = Menu::new(app)?;
+
+    // Gate agent session and listening features behind onboarding / provider configuration.
+    // Both items are disabled until the user has completed onboarding and assigned both
+    // an LLM provider and an STT/voice provider in the configuration.
+    let app_configured = is_app_configured();
 
     // Main actions - dynamically set listen text based on state
     let listening_state = LISTENING_STATE.lock().unwrap();
@@ -225,28 +303,39 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     };
     drop(listening_state);
 
-    let listen = MenuItem::with_id(app, "listen", listen_text, true, Option::<&str>::None)?;
+    // "Start/Stop Listening" is only available after full configuration.
+    let listen = MenuItem::with_id(
+        app,
+        "listen",
+        listen_text,
+        app_configured,
+        Option::<&str>::None,
+    )?;
+    // "New Agent Session" is only available after full configuration.
     let new_agent = MenuItem::with_id(
         app,
         "new_agent",
         "New Agent Session",
-        true,
+        app_configured,
         Option::<&str>::None,
     )?;
     let config = MenuItem::with_id(app, "config", "Configuration", true, Option::<&str>::None)?;
 
-    // "Open Shell" creates a new session and opens a terminal for it (always enabled)
-    let new_shell = MenuItem::with_id(app, "new_shell", "Open Shell", true, Option::<&str>::None)?;
-
-    // "Resume in Shell" opens the active session in a terminal (disabled when no active session)
-    let has_active_session = window_manager::get_active_agent_for_voice().is_some();
-    let resume_shell = MenuItem::with_id(
-        app,
-        "resume_shell",
-        "Resume in Shell",
-        has_active_session, // Disabled/grayed out when no active session
-        Option::<&str>::None,
-    )?;
+    // "Agent Shell" creates a new session and opens a terminal for it.
+    // Only shown when the Gestura CLI binary is present on this machine — users
+    // who install the GUI only won't have the CLI available.
+    let cli_installed = crate::shell_session::is_cli_installed_cached();
+    let new_shell = if cli_installed {
+        Some(MenuItem::with_id(
+            app,
+            "new_shell",
+            "Agent Shell",
+            true,
+            Option::<&str>::None,
+        )?)
+    } else {
+        None
+    };
 
     // DevTools entries are debug-only so release builds don't surface internal tooling.
     #[cfg(debug_assertions)]
@@ -283,8 +372,9 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     menu.append(&separator1)?;
     menu.append(&new_agent)?;
     menu.append(&sessions_menu)?;
-    menu.append(&new_shell)?;
-    menu.append(&resume_shell)?;
+    if let Some(ref shell_item) = new_shell {
+        menu.append(shell_item)?;
+    }
     menu.append(&separator2)?;
     menu.append(&config)?;
 
@@ -501,25 +591,27 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             }
         }
         "new_shell" => {
-            // Create a new agent session and open it in the shell
-            tracing::info!("Creating new shell session from tray menu");
+            // "Agent Shell" — create a new agent session and open it in the terminal.
+            // This item is only added to the menu when the CLI is present, so we can
+            // trust it won't fire without a CLI binary available.
+            tracing::info!("Creating new agent shell session from tray menu");
             match window_manager::create_new_agent_session() {
                 Ok(session_id) => {
                     tracing::info!(session_id = %session_id, "New agent session created for shell");
                     match window_manager::open_shell_session_for_agent_resume(&session_id) {
                         Ok(()) => {
-                            tracing::info!(session_id = %session_id, "Shell session opened for new agent");
+                            tracing::info!(session_id = %session_id, "Agent shell session opened");
                             show_system_notification(
                                 app,
-                                "Shell Session",
+                                "Agent Shell",
                                 "Created new session and opened in terminal",
                             );
                         }
                         Err(e) => {
-                            tracing::error!(session_id = %session_id, error = %e, "Failed to open shell for new session");
+                            tracing::error!(session_id = %session_id, error = %e, "Failed to open agent shell for new session");
                             show_system_notification(
                                 app,
-                                "Shell Session Error",
+                                "Agent Shell Error",
                                 &format!("Failed to open shell: {}", e),
                             );
                         }
@@ -529,43 +621,10 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                     tracing::error!("Failed to create agent session for shell: {}", e);
                     show_system_notification(
                         app,
-                        "Shell Session Error",
+                        "Agent Shell Error",
                         &format!("Failed to create session: {}", e),
                     );
                 }
-            }
-        }
-        "resume_shell" => {
-            // Resume the active agent session in the shell
-            tracing::info!("Resuming active session in shell from tray menu");
-            if let Some(session_id) = window_manager::get_active_agent_for_voice() {
-                match window_manager::open_shell_session_for_agent_resume(&session_id) {
-                    Ok(()) => {
-                        tracing::info!(session_id = %session_id, "Shell session opened for agent resume");
-                        show_system_notification(
-                            app,
-                            "Shell Session",
-                            "Resumed active session in terminal",
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!(session_id = %session_id, error = %e, "Failed to open shell for agent resume");
-                        show_system_notification(
-                            app,
-                            "Shell Session Error",
-                            &format!("Failed to resume session: {}", e),
-                        );
-                    }
-                }
-            } else {
-                // This shouldn't happen since the menu item should be disabled,
-                // but handle gracefully anyway
-                tracing::warn!("Resume in Shell clicked but no active session");
-                show_system_notification(
-                    app,
-                    "No Active Session",
-                    "Create a new session first using 'Open Shell'",
-                );
             }
         }
         #[cfg(debug_assertions)]
@@ -610,8 +669,15 @@ fn handle_tray_event(tray: &tauri::tray::TrayIcon, event: TrayIconEvent) {
             button_state: MouseButtonState::Up,
             ..
         } => {
-            // Single left-click: Show menu or create new agent session
+            // Single left-click: create a new agent session — but only when the app
+            // has been fully configured (onboarding complete + providers assigned).
             tracing::info!("Tray single-click detected");
+            if !is_app_configured() {
+                tracing::info!(
+                    "Tray single-click ignored: onboarding not complete or providers not configured"
+                );
+                return;
+            }
             if let Err(e) = window_manager::create_new_agent_session() {
                 tracing::error!("Failed to create agent session on click: {}", e);
             }
@@ -620,8 +686,15 @@ fn handle_tray_event(tray: &tauri::tray::TrayIcon, event: TrayIconEvent) {
             button: MouseButton::Left,
             ..
         } => {
-            // Double left-click: Toggle listening mode
+            // Double left-click: toggle listening mode — gated behind the same
+            // configuration check as the "Start Listening" menu item.
             tracing::info!("Tray double-click detected - toggling listen mode");
+            if !is_app_configured() {
+                tracing::info!(
+                    "Tray double-click ignored: onboarding not complete or providers not configured"
+                );
+                return;
+            }
             toggle_listening_mode(app);
         }
         // Note: Right-click events are handled automatically by the tray system

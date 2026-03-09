@@ -402,23 +402,43 @@ html[data-theme="dark"] .text-content.markdown-body pre {
   text-decoration: underline;
 }
 
+.text-content.markdown-body .md-table-wrapper {
+  overflow-x: auto;
+  margin: 8px 0;
+  border-radius: 6px;
+}
+
 .text-content.markdown-body table {
   border-collapse: collapse;
+  border-spacing: 0;
   width: 100%;
-  margin: 8px 0;
   font-size: 13px;
+  min-width: 100%;
 }
 
 .text-content.markdown-body th,
 .text-content.markdown-body td {
   border: 1px solid var(--glass-border);
-  padding: 6px 10px;
+  padding: 7px 10px;
   text-align: left;
+  vertical-align: top;
 }
 
-.text-content.markdown-body th {
+.text-content.markdown-body thead th {
   background: rgba(0, 0, 0, 0.04);
-  font-weight: 600;
+  font-weight: 700;
+}
+
+.text-content.markdown-body tbody tr:nth-child(even) {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+html[data-theme="dark"] .text-content.markdown-body thead th {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+html[data-theme="dark"] .text-content.markdown-body tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .text-content.markdown-body .task-item {
@@ -1492,6 +1512,9 @@ html[data-theme="dark"] .confirmation-args {
 }
 
 .tools-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
@@ -1506,6 +1529,146 @@ html[data-theme="dark"] .confirmation-args {
   margin-top: 0;
   border-top: none;
   padding-top: 0;
+}
+
+/* Collapsible toggle button reset */
+.tools-section-toggle {
+  width: 100%;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 8px 4px 4px 0;
+  margin-top: 8px;
+  border-top: 1px solid var(--border-subtle, var(--glass-border));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  border-radius: 4px;
+  transition: color 0.15s ease;
+}
+
+.tools-section-toggle:first-child {
+  margin-top: 0;
+  border-top: none;
+  padding-top: 0;
+}
+
+.tools-section-toggle:hover {
+  color: var(--text-primary);
+}
+
+.tools-section-toggle:hover .tools-section-chevron {
+  color: var(--accent-primary);
+}
+
+/* Chevron indicator */
+.tools-section-chevron {
+  font-size: 14px;
+  font-style: normal;
+  color: var(--text-secondary);
+  transition: transform 0.2s ease, color 0.15s ease;
+  transform: rotate(0deg);
+  display: inline-block;
+  line-height: 1;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+}
+
+.tools-section-chevron.open {
+  transform: rotate(90deg);
+}
+
+/* MCP badge in tool list */
+.tool-mcp-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(var(--accent-primary-rgb, 37, 99, 235), 0.12);
+  color: var(--accent-primary);
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+/* Server group label inside MCP tools list */
+.tools-server-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-secondary);
+  padding: 6px 8px 2px;
+  opacity: 0.7;
+}
+
+/* Per-server collapsible row inside MCP tools list */
+.mcp-server-entry {
+  margin-bottom: 2px;
+}
+
+.mcp-server-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  padding: 5px 8px 3px;
+  text-align: left;
+  text-transform: uppercase;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.mcp-server-toggle:hover {
+  background: var(--hover-bg, rgba(255, 255, 255, 0.06));
+  color: var(--text-primary);
+}
+
+.mcp-server-toggle.open {
+  color: var(--text-primary);
+}
+
+.mcp-server-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Nested tool list inside a server's collapsible */
+.mcp-server-tools-list {
+  padding-left: 8px;
+  border-left: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  margin: 2px 0 6px 12px;
+}
+
+/* "Connecting…" hint in the MCP section header */
+.mcp-connecting-hint {
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.2px;
+  opacity: 0.6;
+  font-style: italic;
+  margin-left: 4px;
 }
 
 .tool-details {

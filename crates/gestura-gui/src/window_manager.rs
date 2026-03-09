@@ -348,14 +348,14 @@ impl WindowManager {
                 .center()
                 .resizable(true)
                 .decorations(true)
-                .visible(true)
-                .focused(true) // Ensure window gets focus when created
+                // Start hidden — the React frontend calls window.show() once the
+                // theme and layout are fully applied, eliminating the white/blank
+                // flash that occurs when the native frame appears before the
+                // WebView has finished painting its first styled frame.
+                .visible(false)
+                .focused(false)
                 .devtools(true)
                 .build()?;
-
-        // Make sure window is shown and focused
-        let _ = window.show();
-        let _ = window.set_focus();
 
         // Store window info
         let window_info = WindowInfo {
@@ -454,7 +454,7 @@ impl WindowManager {
             return Ok(());
         }
 
-        let _window = WebviewWindowBuilder::new(
+        let window = WebviewWindowBuilder::new(
             &self.app,
             window_label,
             WebviewUrl::App("onboarding.html".into()),
@@ -469,6 +469,22 @@ impl WindowManager {
         .transparent(false) // Ensure opaque background
         .devtools(true)
         .build()?;
+
+        // Prevent closing the onboarding window via the OS close button until the
+        // app is fully configured (LLM credentials + STT provider ready).
+        // Programmatic close via `close_onboarding_window()` only runs after
+        // `complete_onboarding()` succeeds, at which point `is_app_configured()`
+        // returns `true` and the event handler allows the close to proceed.
+        window.on_window_event(move |event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event
+                && !crate::tray::is_app_configured()
+            {
+                tracing::info!(
+                    "Blocking onboarding window close — app is not yet fully configured"
+                );
+                api.prevent_close();
+            }
+        });
 
         tracing::info!("Created onboarding window");
         Ok(())

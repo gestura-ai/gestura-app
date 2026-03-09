@@ -142,11 +142,13 @@ export function ProvidersPanel({
           }
         }
         const options = rawModels.map(toModelOption).filter((m): m is ModelOption => m !== null);
+        // If the saved model is not in the fetched list, inject it so the user's
+        // preference is preserved rather than silently falling back to options[0].
+        if (currentModel && !options.some((o) => o.id === currentModel)) {
+          options.unshift({ id: currentModel, label: `${currentModel} (saved)` });
+        }
         setLlmModels(options);
-        const selectedId =
-          currentModel && options.some((o) => o.id === currentModel)
-            ? currentModel
-            : options[0]?.id ?? "";
+        const selectedId = currentModel || (options[0]?.id ?? "");
         setLlmModel(selectedId);
       } catch (e) {
         console.error("[ProvidersPanel] Failed to load models for", provider, e);

@@ -10,6 +10,8 @@ import {
   listMcpTools,
   McpClientTool,
   McpServer,
+  ProvisionResult,
+  provisionMcpServer,
   removeMcpTool,
   Scope,
   ServerStatus,
@@ -31,6 +33,7 @@ const DEFAULT_SERVER: McpServer = {
   scope: 'user',
   timeout_secs: 30,
   auto_reconnect: true,
+  session_default_enabled: true,
 };
 
 const McpPanel: React.FC = () => {
@@ -43,6 +46,8 @@ const McpPanel: React.FC = () => {
   const [toolCallName, setToolCallName] = useState('');
   const [toolCallArgs, setToolCallArgs] = useState('{}');
   const [toolCallResult, setToolCallResult] = useState<string | null>(null);
+  const [provisioning, setProvisioning] = useState(false);
+  const [provisionResult, setProvisionResult] = useState<ProvisionResult | null>(null);
 
   const mcpState = useAsyncState(
     async () => {
@@ -67,6 +72,7 @@ const McpPanel: React.FC = () => {
     setEnvText('');
     setHeaderText('');
     setIsNew(true);
+    setProvisionResult(null);
   };
 
   const openEditForm = (srv: McpServer) => {
@@ -74,6 +80,7 @@ const McpPanel: React.FC = () => {
     setEnvText(Object.entries(srv.env || {}).map(([k, v]) => `${k}=${v}`).join('\n'));
     setHeaderText(Object.entries(srv.headers || {}).map(([k, v]) => `${k}: ${v}`).join('\n'));
     setIsNew(false);
+    setProvisionResult(null);
   };
 
   const saveServer = async () => {
@@ -95,8 +102,30 @@ const McpPanel: React.FC = () => {
     };
     try {
       await addMcpTool(entry);
-      setEditing(null);
       await mcpState.reload({ showLoading: false });
+
+      // Only provision stdio servers — HTTP/SSE remotes need no local install.
+      if (entry.type === 'stdio') {
+        setProvisioning(true);
+        setProvisionResult(null);
+        try {
+          const result = await provisionMcpServer(entry);
+          setProvisionResult(result);
+        } catch (e) {
+          console.error('Provision check failed:', e);
+          setProvisionResult({
+            name: entry.name,
+            status: 'fetch_failed',
+            message: `Provision check failed: ${e}`,
+          });
+        } finally {
+          setProvisioning(false);
+        }
+        // Keep the form open so the user can read the provision result.
+      } else {
+        // Remote server — nothing to install; close the form immediately.
+        setEditing(null);
+      }
     } catch (e) {
       console.error('Failed to save MCP server:', e);
     }
@@ -348,11 +377,66 @@ const McpPanel: React.FC = () => {
               </FormGroup>
             </div>
 
+            <FormGroup
+              label={
+                <>
+                  <input
+                    type="checkbox"
+                    checked={editing.session_default_enabled ?? true}
+                    onChange={e => setEditing({ ...editing, session_default_enabled: e.target.checked })}
+                  />{' '}
+                  Enable tools by default in new sessions
+                </>
+              }
+            >
+              {null}
+            </FormGroup>
+
+            {/* Provisioning spinner shown while install/check runs */}
+            {provisioning && (
+              <div className="mcp-provision-banner mcp-provision-checking">
+                <span className="mcp-provision-icon">⏳</span>
+                <span>Checking runtime and installing package…</span>
+              </div>
+            )}
+
+            {/* Provision result banner — shown after install completes */}
+            {!provisioning && provisionResult && (() => {
+              const { status, message } = provisionResult;
+              const bannerClass =
+                status === 'ready' ? 'mcp-provision-ready'
+                  : status === 'skipped' ? 'mcp-provision-skipped'
+                    : status === 'runtime_missing' ? 'mcp-provision-error'
+                      : /* fetch_failed */            'mcp-provision-error';
+              const icon =
+                status === 'ready' ? '✅'
+                  : status === 'skipped' ? 'ℹ️'
+                    : '⚠️';
+              return (
+                <div className={`mcp-provision-banner ${bannerClass}`}>
+                  <span className="mcp-provision-icon">{icon}</span>
+                  <span className="mcp-provision-message">{message}</span>
+                </div>
+              );
+            })()}
+
             <div className="mcp-form-actions">
-              <Button onClick={saveServer}>
-                {isNew ? 'Add Server' : 'Save Changes'}
-              </Button>
-              <Button tone="secondary" onClick={() => setEditing(null)}>Cancel</Button>
+              {/* While provisioning is in progress, only show a disabled button */}
+              {!provisionResult ? (
+                <>
+                  <Button onClick={saveServer} disabled={provisioning}>
+                    {provisioning ? 'Installing…' : isNew ? 'Add Server' : 'Save Changes'}
+                  </Button>
+                  <Button tone="secondary" onClick={() => { setEditing(null); setProvisionResult(null); }} disabled={provisioning}>
+                    Cancel
+                  </Button>
+                </>
+              ) : (
+                /* After provisioning, let the user dismiss the panel */
+                <Button onClick={() => { setEditing(null); setProvisionResult(null); }}>
+                  Done
+                </Button>
+              )}
             </div>
           </div>
         )}

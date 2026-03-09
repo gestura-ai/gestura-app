@@ -5,12 +5,15 @@ import { LogicalSize } from '@tauri-apps/api/dpi';
 import ThemeController from '../../app/ThemeController';
 import { useViewMode } from './hooks/useViewMode';
 import { useKeyboardShortcuts } from '../../shared/hooks/useKeyboardShortcuts';
+import { usePanelResize } from './hooks/usePanelResize';
 import { getConfig } from '../../services/tauri/config';
 import type { UiSettings } from '../../types/config';
 import './AgentApp.css';
 import { ChatPanel } from './components/ChatPanel';
 import { ExplorerPanel } from './components/ExplorerPanel';
-import { EditorArea } from './components/EditorArea';
+// Lazy-load EditorArea so that @codemirror/* (675 kB) is only fetched when the
+// user first opens the editor view — keeping the initial chat bundle small.
+const EditorArea = React.lazy(() => import('./components/EditorArea'));
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 export interface AgentAppProps {
@@ -28,20 +31,54 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
   const [explorerOpen, setExplorerOpen] = useState(true);
   const [chatOpen, setChatOpen] = useState(true);
 
-  // Load theme configuration on mount.
+  // Controls visibility and the CSS fade-in animation. The window is created
+  // hidden by Rust (visible:false); we reveal it here once the theme tokens and
+  // layout have been committed to the DOM, eliminating all paint flashes.
+  const [isReady, setIsReady] = useState(false);
+
+  const explorer = usePanelResize(240, 160, 480, 'left');
+  const chat = usePanelResize(340, 260, 520, 'right');
+
+  // Load theme configuration on mount. When the IPC resolves (or fails), mark
+  // the app as ready so the window-show effect can fire in the next commit.
   useEffect(() => {
     getConfig()
-      .then((cfg) => setUiSettings(cfg.ui))
-      .catch((err) => console.warn('[AgentApp] config load failed:', err));
+      .then((cfg) => {
+        setUiSettings(cfg.ui);
+        setIsReady(true);
+      })
+      .catch((err) => {
+        console.warn('[AgentApp] config load failed — using defaults:', err);
+        // Still reveal the window so the user is not left staring at nothing.
+        setIsReady(true);
+      });
   }, []);
 
-  // Resize window to match the active view mode.
+  // Once isReady is true, ThemeController will have already committed its
+  // data-theme update (child effects run before parent effects in React).
+  // Showing the window here means the OS frame appears fully painted.
   useEffect(() => {
+    if (!isReady) return;
+    const win = getCurrentWindow();
+    // Set the correct initial size for the current view mode before revealing.
+    win
+      .setSize(viewMode === 'editor' ? EDITOR_SIZE : CHAT_SIZE)
+      .catch((err) => console.warn('[AgentApp] initial resize failed:', err))
+      .finally(() => {
+        win.show().catch((err) => console.warn('[AgentApp] window show failed:', err));
+        win.setFocus().catch(() => { });
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isReady]);
+
+  // Resize window whenever the view mode changes after the initial reveal.
+  useEffect(() => {
+    if (!isReady) return;
     const win = getCurrentWindow();
     win.setSize(viewMode === 'editor' ? EDITOR_SIZE : CHAT_SIZE).catch((err) =>
       console.warn('[AgentApp] window resize failed:', err)
     );
-  }, [viewMode]);
+  }, [viewMode, isReady]);
 
   // Derive isDark from theme settings + system preference.
   const isDark = useMemo(() => {
@@ -113,8 +150,55 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
 
   useKeyboardShortcuts(handleKeyDown);
 
+  // ── Intercept GUI Control commands sent by the Agent ────────────────────────
+  useEffect(() => {
+    const handleGuiControl = (e: Event) => {
+      const payload = (e as CustomEvent<{ action: string, target?: string }>).detail;
+      if (!payload || !payload.action) return;
+
+      switch (payload.action) {
+        case 'toggle_view_mode':
+          toggleViewMode();
+          break;
+        case 'open_explorer':
+          if (viewMode !== 'editor') toggleViewMode();
+          setExplorerOpen(true);
+          break;
+        case 'close_explorer':
+          if (viewMode !== 'editor') toggleViewMode();
+          setExplorerOpen(false);
+          break;
+        case 'open_chat':
+          if (viewMode !== 'editor') toggleViewMode();
+          setChatOpen(true);
+          break;
+        case 'close_chat':
+          if (viewMode !== 'editor') toggleViewMode();
+          setChatOpen(false);
+          break;
+        case 'navigate_config':
+          // In the future this might open a preferences modal
+          break;
+      }
+    };
+    window.addEventListener('gestura:gui_control', handleGuiControl);
+    return () => window.removeEventListener('gestura:gui_control', handleGuiControl);
+  }, [toggleViewMode, viewMode]);
+
   // ── Layout ──────────────────────────────────────────────────────────────────
   const isEditor = viewMode === 'editor';
+
+  const explorerStyle: React.CSSProperties = explorerOpen
+    ? { width: explorer.width, flexBasis: explorer.width, minWidth: 160 }
+    : {};
+
+  // Only apply inline resize style in editor mode — in message-only mode the
+  // CSS (.agent-app--message-only .agent-panel--chat) sets width: 100% and
+  // flex: 1 1 auto, and inline styles would override that and pin it to the
+  // resizer's fixed width (340 px), making it look like a narrow left panel.
+  const chatStyle: React.CSSProperties = (isEditor && chatOpen)
+    ? { width: chat.width, flexBasis: chat.width, minWidth: 260 }
+    : {};
 
   return (
     <>
@@ -125,43 +209,51 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
           isEditor ? 'agent-app--editor' : 'agent-app--message-only',
           isEditor && explorerOpen ? 'agent-app--explorer-open' : '',
           isEditor && chatOpen ? 'agent-app--chat-open' : '',
+          // Triggers the CSS fade-in once theme + config are committed to the DOM.
+          isReady ? 'app-ready' : '',
         ]
           .filter(Boolean)
           .join(' ')}
       >
         {isEditor && (
-          <ExplorerPanel sessionId={sessionId} onOpenFile={handleOpenFile} />
+          <ExplorerPanel sessionId={sessionId} onOpenFile={handleOpenFile} style={explorerStyle} />
         )}
         {isEditor && (
-          <div className="panel-toggle-container">
+          <div className="panel-resizer panel-resizer--left">
+            <div className="panel-resizer__track" onMouseDown={explorer.handleMouseDown} />
             <div
-              className="panel-toggle-btn panel-toggle-left"
-              onClick={() => setExplorerOpen(!explorerOpen)}
-              title={explorerOpen ? "Collapse Explorer" : "Expand Explorer"}
+              className="panel-resizer__thumb panel-resizer__thumb--left"
+              onMouseDown={(e) => { e.stopPropagation(); explorer.handleMouseDown(e); }}
+              onClick={() => setExplorerOpen((v) => !v)}
+              title={explorerOpen ? 'Collapse Explorer (\u2318B)' : 'Expand Explorer (\u2318B)'}
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d={explorerOpen ? "M15 18l-6-6 6-6" : "M9 18l6-6-6-6"} />
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d={explorerOpen ? 'M15 18l-6-6 6-6' : 'M9 18l6-6-6-6'} />
               </svg>
             </div>
           </div>
         )}
         {isEditor && (
-          <EditorArea sessionId={sessionId} isDark={isDark} />
+          <React.Suspense fallback={null}>
+            <EditorArea sessionId={sessionId} isDark={isDark} />
+          </React.Suspense>
         )}
         {isEditor && (
-          <div className="panel-toggle-container">
+          <div className="panel-resizer panel-resizer--right">
+            <div className="panel-resizer__track" onMouseDown={chat.handleMouseDown} />
             <div
-              className="panel-toggle-btn panel-toggle-right"
-              onClick={() => setChatOpen(!chatOpen)}
-              title={chatOpen ? "Collapse Chat" : "Expand Chat"}
+              className="panel-resizer__thumb panel-resizer__thumb--right"
+              onMouseDown={(e) => { e.stopPropagation(); chat.handleMouseDown(e); }}
+              onClick={() => setChatOpen((v) => !v)}
+              title={chatOpen ? 'Collapse Chat' : 'Expand Chat'}
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d={chatOpen ? "M9 18l6-6-6-6" : "M15 18l-6-6 6-6"} />
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d={chatOpen ? 'M9 18l6-6-6-6' : 'M15 18l-6-6 6-6'} />
               </svg>
             </div>
           </div>
         )}
-        <ChatPanel sessionId={sessionId} onToggleEditor={toggleViewMode} viewMode={viewMode} />
+        <ChatPanel sessionId={sessionId} onToggleEditor={toggleViewMode} viewMode={viewMode} style={chatStyle} />
       </div>
     </>
   );

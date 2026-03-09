@@ -9233,6 +9233,26 @@
             }
         });
 
+        // =====================================================================
+        // CLI presence check — hide shell-dependent controls when CLI is absent
+        // =====================================================================
+        (async () => {
+            try {
+                const cliInstalled = await window.__TAURI__.core.invoke('check_cli_installed');
+                if (!cliInstalled) {
+                    const termBtn = document.getElementById('quickTerminalBtn');
+                    if (termBtn) {
+                        termBtn.style.display = 'none';
+                        console.log('[agent] Gestura CLI not found — hiding terminal quick-link');
+                    }
+                }
+            } catch (err) {
+                // Non-fatal: if the check fails we leave the button visible and
+                // let the user discover the error naturally when they click it.
+                console.warn('[agent] check_cli_installed failed:', err);
+            }
+        })();
+
         // Initialize
         initHeaderControls();
         setupEvents().catch((err) => {

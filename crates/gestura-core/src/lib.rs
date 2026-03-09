@@ -306,8 +306,9 @@ pub use llm_provider::{
 pub use mcp::{
     CachedTool, JsonRpcError, JsonRpcRequest, JsonRpcResponse, LocalMcp, McpCacheStats, McpClient,
     McpClientRegistry, McpDiscoveryManager, McpIntegrator, McpRequestContext, McpResourceHandler,
-    McpServer, McpServerConfig, McpServerInfo, McpToolHandler, MdhResource, ServerState, TokenInfo,
-    get_mcp, get_mcp_client_registry, mdh_translate,
+    McpServer, McpServerConfig, McpServerInfo, McpToolHandler, MdhResource, PopularMcpServer,
+    RegistryBrowseEntry, RegistryBrowsePage, ServerState, TokenInfo, browse_mcp_registry, get_mcp,
+    get_mcp_client_registry, list_popular_mcp_servers, mdh_translate, normalize_mcp_server_name,
 };
 pub use memory_bank::{
     MemoryBankEntry, MemoryBankError, clear_memory_bank, ensure_memory_bank_dir,
@@ -348,7 +349,9 @@ pub use stream_reconnect::{
 pub use streaming::{
     CancellationToken, ShellOutputStream, ShellProcessState, StreamChunk, start_streaming,
 };
-pub use tasks::{Task, TaskError, TaskList, TaskManager, TaskSource, TaskStatus};
+pub use tasks::{
+    Task, TaskError, TaskList, TaskManager, TaskSource, TaskStatus, get_global_task_manager,
+};
 pub use telemetry::{
     Metric, MetricType, SystemHealth, TelemetryManager, Timer, get_telemetry_manager,
 };

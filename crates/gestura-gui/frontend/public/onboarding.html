@@ -476,6 +476,26 @@
             color: #fff;
         }
 
+        /* Help / hint text beneath form fields */
+        .help-text {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-top: 0.35rem;
+            line-height: 1.4;
+        }
+
+        .help-text a {
+            color: var(--accent-primary);
+            text-decoration: none;
+            border-bottom: 1px solid rgba(99, 102, 241, 0.3);
+            transition: border-color 0.2s, opacity 0.2s;
+        }
+
+        .help-text a:hover {
+            border-bottom-color: var(--accent-primary);
+            opacity: 0.85;
+        }
+
         /* Radio option cards – keep radio circle on the same line as the text */
         .option-card {
             position: relative;
@@ -1005,7 +1025,8 @@
                                 <input type="radio" name="voiceMode" value="openai">
                                 <div>
                                     <strong>OpenAI Whisper API</strong>
-                                    <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Uses cloud API. Faster but requires internet and API key.</p>
+                                    <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Uses cloud API. Faster but requires internet and an API key.</p>
+                                    <p class="help-text" style="margin: 0.2rem 0 0;">Get your API key from <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI Platform</a>. Set it in the AI Provider step below.</p>
                                 </div>
                             </label>
                         </div>
@@ -1550,7 +1571,18 @@
                 await invoke('close_onboarding_window');
             } catch (error) {
                 console.error('Error completing onboarding:', error);
-                window.close();
+                // Do NOT close the window — keep the user on the final step so they
+                // can retry. The window is intentionally uncloseable until configured.
+                const nextBtn = document.getElementById('nextBtn');
+                if (nextBtn) {
+                    nextBtn.disabled = false;
+                    nextBtn.textContent = 'Try Again';
+                }
+                await setStepContentHtml(`
+                    <h2><span class="icon-x-circle" style="color: rgb(var(--danger-rgb));"></span> Setup Failed</h2>
+                    <p style="color: rgb(var(--danger-rgb)); margin: 1rem 0;">${error}</p>
+                    <p>Please check your API key and voice configuration, then click <strong>Try Again</strong>.</p>
+                `);
             }
         }
 
@@ -1619,7 +1651,11 @@
                             await invoke('close_onboarding_window');
                         } catch (e) {
                             console.error('Error completing onboarding after download:', e);
-                            window.close();
+                            // Do NOT close the window — show the error and let the user retry.
+                            const statusEl = document.getElementById('downloadStatus');
+                            if (statusEl) {
+                                statusEl.innerHTML = `<span class="icon-x-circle" style="color: rgb(var(--danger-rgb));"></span> Setup failed: ${e}. Please restart the app and try again.`;
+                            }
                         }
                     }, 1000);
                 }
@@ -1749,6 +1785,26 @@
             return 'Enter your API key';
         }
 
+        function llmApiKeyHelpText(provider) {
+            if (provider === 'openai') return 'Get your API key from <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI Platform</a>.';
+            if (provider === 'anthropic') return 'Get your API key from <a href="https://console.anthropic.com/" target="_blank">Anthropic Console</a>.';
+            if (provider === 'gemini') return 'Get your API key from <a href="https://aistudio.google.dev/apikey" target="_blank">Google AI Studio</a>.';
+            if (provider === 'grok') return 'Get your API key from <a href="https://console.x.ai/" target="_blank">xAI Console</a>.';
+            return '';
+        }
+
+        function setCloudSelectedModel(value) {
+            const select = document.getElementById('cloudModelSelect');
+            if (!select) return;
+
+            const normalized = (value || '').trim();
+            if (normalized) {
+                select.dataset.selectedModel = normalized;
+            } else {
+                delete select.dataset.selectedModel;
+            }
+        }
+
         async function hydrateLlmApiKeyPlaceholder(provider) {
             try {
                 // Only relevant for hosted providers.
@@ -1773,19 +1829,21 @@
                     // Show the delete button and wire it up (CSP-safe).
                     if (deleteBtn) {
                         deleteBtn.style.display = '';
-                        deleteBtn.addEventListener('click', async () => {
+                        deleteBtn.onclick = async () => {
                             try {
                                 await invoke('delete_api_key', { provider });
                                 input.value = '';
                                 input.placeholder = llmApiKeyPlaceholder(provider);
                                 deleteBtn.style.display = 'none';
+                                await fetchCloudModels(provider);
                             } catch (err) {
                                 console.error('Failed to delete API key:', err);
                             }
-                        });
+                        };
                     }
                 } else if (deleteBtn) {
                     deleteBtn.style.display = 'none';
+                    deleteBtn.onclick = null;
                 }
             } catch (e) {
                 // Non-fatal; keep base placeholder.
@@ -1939,10 +1997,27 @@
                 // Restore previous selection or saved config model.
                 if (currentVal) {
                     const match = [...select.options].find(o => o.value === currentVal);
-                    if (match) select.value = currentVal;
+                    if (match) {
+                        select.value = currentVal;
+                    } else {
+                        // Saved model is not in the fetched list — inject it so it can be
+                        // selected and saved when the user proceeds to the next step.
+                        const opt = document.createElement('option');
+                        opt.value = currentVal;
+                        opt.textContent = currentVal;
+                        // Insert after the placeholder (index 0) so it appears first.
+                        select.insertBefore(opt, select.options[1] ?? null);
+                        select.value = currentVal;
+                    }
+                } else {
+                    // No saved model — auto-select the first real option so the value is
+                    // never empty and saveLLMConfigIfNeeded() always persists a model.
+                    const firstReal = [...select.options].find(o => o.value);
+                    if (firstReal) select.value = firstReal.value;
                 }
 
                 select.disabled = false;
+                setCloudSelectedModel(select.value || currentVal);
                 if (status) { status.style.color = 'var(--success-color, #22c55e)'; status.textContent = `✓ ${models.length} model${models.length !== 1 ? 's' : ''} available`; }
             } catch (e) {
                 console.error(`Failed to fetch ${provider} models:`, e);
@@ -1952,7 +2027,7 @@
             }
         }
 
-        function renderLLMConfig({ fetchOllamaModels: shouldFetchOllamaModels = true } = {}) {
+        function renderLLMConfig({ fetchOllamaModels: shouldFetchOllamaModels = true, fetchCloudModels: shouldFetchCloudModels = true, preferredCloudModel = '' } = {}) {
             const container = document.getElementById('llmConfig');
             if (!container) return;
             const provider = document.getElementById('llmProvider')?.value || 'ollama';
@@ -1972,7 +2047,7 @@
                         </div>
                         <div id="ollamaStatus" style="font-size:0.75rem;margin-top:0.25rem;color:var(--text-secondary);">Checking Ollama…</div>
                     </div>
-                    <p style="font-size:0.8rem;color:var(--text-secondary);margin-top:0.5rem;">Make sure Ollama is running locally with your model pulled.</p>
+                    <p class="help-text" style="margin-top:0.5rem;">Install Ollama from <a href="https://ollama.ai" target="_blank">ollama.ai</a>, then run <code>ollama pull llama3.2</code> to download a model. Make sure Ollama is running locally.</p>
                 `;
                 // Fetch models asynchronously after the DOM is updated.
                 // Callers can disable this (e.g., when re-hydrating from config
@@ -1988,7 +2063,8 @@
                             <input type="password" id="apiKey" class="onb-input" placeholder="${llmApiKeyPlaceholder(provider)}">
                             <button id="deleteApiKeyBtn" class="btn btn-small btn-delete-api-key" style="display:none;" title="Delete stored API key">Delete Key</button>
                         </div>
-                        <p style="font-size:0.75rem;color:var(--text-secondary);margin-top:0.25rem;">Keys are stored securely in your OS keychain. Leave blank to keep your existing key.</p>
+                        <div class="help-text" style="margin-top:0.35rem;">${llmApiKeyHelpText(provider)}</div>
+                        <div class="help-text" style="margin-top:0.25rem;">Keys are stored securely in your OS keychain. Leave blank to keep your existing key.</div>
                     </div>
                     <div id="cloudModelSection" class="config-section" style="margin-top:0.75rem; display:none;">
                         <label for="cloudModelSelect">Model</label>
@@ -2011,6 +2087,7 @@
             // Async placeholder hydration (key existence) without blocking UI render.
             // Also trigger model fetch for cloud providers (uses keychain key if available).
             if (provider === 'openai' || provider === 'anthropic' || provider === 'gemini' || provider === 'grok') {
+                setCloudSelectedModel(preferredCloudModel);
                 void hydrateLlmApiKeyPlaceholder(provider);
 
                 // Debounced model fetch when the user types an API key.
@@ -2023,8 +2100,15 @@
                     });
                 }
 
+                const cloudSelect = document.getElementById('cloudModelSelect');
+                cloudSelect?.addEventListener('change', () => {
+                    setCloudSelectedModel(cloudSelect.value);
+                });
+
                 // Kick off an initial model fetch (uses keychain key if already stored).
-                setTimeout(() => void fetchCloudModels(provider), 0);
+                if (shouldFetchCloudModels) {
+                    setTimeout(() => void fetchCloudModels(provider), 0);
+                }
             }
         }
 
@@ -2092,8 +2176,14 @@
                     providerSelect.value = llmPrimary;
                 }
 
-                // Render config UI (without auto-fetch for Ollama so we can set URL first).
-                renderLLMConfig({ fetchOllamaModels: false });
+                const savedCloudModel = (config?.llm?.[llmPrimary]?.model || '').trim();
+
+                // Render config UI without auto-fetch so we can hydrate saved values first.
+                renderLLMConfig({
+                    fetchOllamaModels: false,
+                    fetchCloudModels: false,
+                    preferredCloudModel: savedCloudModel,
+                });
 
                 // Populate Ollama fields if applicable.
                 if (llmPrimary === 'ollama' && ollamaConfig) {
@@ -2133,18 +2223,9 @@
                     }
                 }
 
-                // Hydrate the cloud-provider model dropdown with the saved model.
-                // renderLLMConfig() already kicked off fetchCloudModels() in the
-                // background; we just need to tell it which value to restore once
-                // the model list arrives.
                 if (llmPrimary === 'openai' || llmPrimary === 'anthropic' || llmPrimary === 'gemini' || llmPrimary === 'grok') {
-                    const savedModel = (config?.llm?.[llmPrimary]?.model || '').trim();
-                    const cloudSelect = document.getElementById('cloudModelSelect');
-                    if (cloudSelect && savedModel) {
-                        // Stash the saved model on the element so fetchCloudModels()
-                        // can restore it after the API call finishes.
-                        cloudSelect.dataset.selectedModel = savedModel;
-                    }
+                    setCloudSelectedModel(savedCloudModel);
+                    await fetchCloudModels(llmPrimary);
                 }
             } catch (error) {
                 console.error('Error loading LLM config:', error);

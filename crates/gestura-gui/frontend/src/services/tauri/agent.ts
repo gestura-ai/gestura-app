@@ -153,8 +153,8 @@ export const breakDownRequirements = (sessionId: string, requirements: string): 
 export const listKnowledgeItems = (): Promise<KnowledgeItem[]> =>
   invokeTauri('list_knowledge_items');
 
-export const getEnabledKnowledge = (): Promise<KnowledgeItem[]> =>
-  invokeTauri('get_enabled_knowledge');
+export const getEnabledKnowledge = (sessionId: string): Promise<string[]> =>
+  invokeTauri('get_enabled_knowledge', { session_id: sessionId });
 
 export const setKnowledgeEnabled = (sessionId: string, id: string, enabled: boolean): Promise<void> =>
   invokeTauri('set_knowledge_enabled', { session_id: sessionId, knowledge_id: id, enabled });

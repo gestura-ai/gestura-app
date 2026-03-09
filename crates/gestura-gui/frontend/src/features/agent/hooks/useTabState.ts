@@ -169,6 +169,19 @@ export function useTabState() {
     });
   }, [activeTabId]);
 
+  /**
+   * Update the label and relPath of a tab (used after renaming a file on disk).
+   */
+  const renameTab = useCallback((tabId: string, newLabel: string, newRelPath: string) => {
+    setTabs((prev) => {
+      const next = prev.map((t) =>
+        t.id === tabId ? { ...t, label: newLabel, relPath: newRelPath } : t
+      );
+      persistTabs(next, activeTabId);
+      return next;
+    });
+  }, [activeTabId]);
+
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
 
   return {
@@ -184,6 +197,7 @@ export function useTabState() {
     toggleDiffView,
     reorderTabs,
     updateScrollOffset,
+    renameTab,
   };
 }
 

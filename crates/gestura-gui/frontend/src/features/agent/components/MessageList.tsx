@@ -10,6 +10,7 @@ import {
   shellProcessStop,
   shellProcessPause,
   shellProcessResume,
+  openShellForSession,
 } from '../../../services/tauri/agent';
 import type {
   AgentMessage,
@@ -132,7 +133,7 @@ const ShellBlockView: React.FC<{ block: ShellBlock; sessionId: string }> = ({ bl
           )}
           <button title="Copy command" onClick={() => navigator.clipboard.writeText(block.command).catch(console.error)}>⧉</button>
           <button title="Open in terminal" onClick={() => {
-            import('../../../services/tauri/agent').then(({ openShellForSession }) => openShellForSession(sessionId).catch(console.error));
+            openShellForSession(sessionId).catch(console.error);
           }}>↗</button>
           <button title={collapsed ? 'Expand' : 'Collapse'} onClick={() => setCollapsed((c) => !c)}>
             {collapsed ? '▸' : '▾'}
