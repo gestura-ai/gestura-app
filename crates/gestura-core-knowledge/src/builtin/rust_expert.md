@@ -75,3 +75,15 @@ pub struct Config {
 | Error Handling | `references/errors.md` | error, result, anyhow |
 | Testing | `references/testing.md` | test, mock, assert |
 
+## Authoritative Sources
+
+- **The Rust Programming Language (The Book)**: https://doc.rust-lang.org/book/
+- **Rust Standard Library**: https://doc.rust-lang.org/std/
+- **Rust Reference**: https://doc.rust-lang.org/reference/
+- **Rustonomicon** (unsafe Rust): https://doc.rust-lang.org/nomicon/
+- **Async Book**: https://rust-lang.github.io/async-book/
+- **Crate documentation (docs.rs)**: https://docs.rs — every published crate's docs
+- **Crates.io** (package registry): https://crates.io
+- **Rust Edition Guide**: https://doc.rust-lang.org/edition-guide/
+- **Clippy Lints**: https://rust-lang.github.io/rust-clippy/
+

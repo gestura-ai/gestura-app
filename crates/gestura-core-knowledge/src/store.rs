@@ -469,6 +469,188 @@ fn builtin_knowledge_items() -> Vec<KnowledgeItem> {
         .with_triggers(["a2a", "agent to agent", "agent card", "agent protocol"])
         .with_category("protocol")
         .with_content(include_str!("builtin/a2a_expert.md")),
+        // Python Expert
+        KnowledgeItem::new(
+            "python-expert",
+            "Python Expert",
+            "Expert Python programming with modern Python 3.10+ patterns",
+        )
+        .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
+        .with_triggers([
+            "python", "pip", "asyncio", "pydantic", "fastapi", "django", "flask", "pytest",
+        ])
+        .with_category("language")
+        .with_content(include_str!("builtin/python_expert.md")),
+        // JavaScript Expert
+        KnowledgeItem::new(
+            "javascript-expert",
+            "JavaScript Expert",
+            "Expert JavaScript programming with modern ES2023+ patterns",
+        )
+        .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
+        .with_triggers([
+            "javascript",
+            "js",
+            "node",
+            "nodejs",
+            "npm",
+            "ecmascript",
+            "promise",
+            "event loop",
+        ])
+        .with_category("language")
+        .with_content(include_str!("builtin/javascript_expert.md")),
+        // TypeScript Expert
+        KnowledgeItem::new(
+            "typescript-expert",
+            "TypeScript Expert",
+            "Expert TypeScript programming with strict type system patterns",
+        )
+        .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
+        .with_triggers([
+            "typescript",
+            "ts",
+            "tsconfig",
+            "type inference",
+            "generics typescript",
+            "zod",
+        ])
+        .with_category("language")
+        .with_content(include_str!("builtin/typescript_expert.md")),
+        // Go Expert
+        KnowledgeItem::new(
+            "go-expert",
+            "Go Expert",
+            "Expert Go programming with idiomatic patterns and concurrency",
+        )
+        .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
+        .with_triggers([
+            "go",
+            "golang",
+            "goroutine",
+            "channel",
+            "go module",
+            "defer",
+            "interface go",
+        ])
+        .with_category("language")
+        .with_content(include_str!("builtin/go_expert.md")),
+        // Java Expert
+        KnowledgeItem::new(
+            "java-expert",
+            "Java Expert",
+            "Expert Java programming with modern Java 21+ and the JVM ecosystem",
+        )
+        .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
+        .with_triggers([
+            "java",
+            "jvm",
+            "spring",
+            "maven",
+            "gradle",
+            "record java",
+            "stream api",
+            "virtual threads",
+        ])
+        .with_category("language")
+        .with_content(include_str!("builtin/java_expert.md")),
+        // C++ Expert
+        KnowledgeItem::new(
+            "cpp-expert",
+            "C++ Expert",
+            "Expert C++ programming with modern C++20/23 and RAII patterns",
+        )
+        .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
+        .with_triggers([
+            "c++",
+            "cpp",
+            "cmake",
+            "raii",
+            "smart pointer",
+            "template",
+            "stl",
+            "concepts",
+        ])
+        .with_category("language")
+        .with_content(include_str!("builtin/cpp_expert.md")),
+        // C# Expert
+        KnowledgeItem::new(
+            "csharp-expert",
+            "C# Expert",
+            "Expert C# programming with modern C# 12+ and .NET 8+",
+        )
+        .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
+        .with_triggers([
+            "c#", "csharp", "dotnet", ".net", "asp.net", "linq", "nuget", "blazor",
+        ])
+        .with_category("language")
+        .with_content(include_str!("builtin/csharp_expert.md")),
+        // Swift Expert
+        KnowledgeItem::new(
+            "swift-expert",
+            "Swift Expert",
+            "Expert Swift programming with Swift 6, concurrency, and Apple platform development",
+        )
+        .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
+        .with_triggers([
+            "swift",
+            "swiftui",
+            "ios",
+            "macos development",
+            "xcode",
+            "actor swift",
+            "combine",
+            "swiftpm",
+        ])
+        .with_category("language")
+        .with_content(include_str!("builtin/swift_expert.md")),
+        // Kotlin Expert
+        KnowledgeItem::new(
+            "kotlin-expert",
+            "Kotlin Expert",
+            "Expert Kotlin programming with coroutines and multiplatform development",
+        )
+        .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
+        .with_triggers([
+            "kotlin",
+            "coroutines",
+            "ktor",
+            "android kotlin",
+            "kotlin multiplatform",
+            "flow kotlin",
+        ])
+        .with_category("language")
+        .with_content(include_str!("builtin/kotlin_expert.md")),
+        // Ruby Expert
+        KnowledgeItem::new(
+            "ruby-expert",
+            "Ruby Expert",
+            "Expert Ruby programming with Ruby 3.x, Rails, and idiomatic patterns",
+        )
+        .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
+        .with_triggers([
+            "ruby",
+            "rails",
+            "gem",
+            "bundler",
+            "rspec",
+            "active record",
+            "rake",
+        ])
+        .with_category("language")
+        .with_content(include_str!("builtin/ruby_expert.md")),
+        // PHP Expert
+        KnowledgeItem::new(
+            "php-expert",
+            "PHP Expert",
+            "Expert PHP programming with modern PHP 8.3+ and Composer ecosystem",
+        )
+        .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
+        .with_triggers([
+            "php", "composer", "laravel", "symfony", "phpunit", "psr", "doctrine",
+        ])
+        .with_category("language")
+        .with_content(include_str!("builtin/php_expert.md")),
     ];
 
     items.extend(anthropic_knowledge_work_plugins_sales_items());
