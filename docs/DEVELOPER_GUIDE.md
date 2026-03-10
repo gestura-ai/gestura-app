@@ -101,6 +101,15 @@ cargo run -p gestura-cli -- agent
 
 ## Core-First Architecture
 
+For the canonical crate and module reference, prefer generated Rustdoc via:
+
+```bash
+cargo doc --workspace --no-deps
+```
+
+Use this guide for contributor workflow and operational development practices;
+use crate/module Rustdoc for the source-of-truth architecture and API surface.
+
 ### Design Principles
 
 1. **Single Source of Truth**: All business logic in `gestura-core`
@@ -537,9 +546,10 @@ jobs:
 ## Resources
 
 ### Documentation
-- **Architecture**: See `docs/ARCHITECTURE.md`
-- **API Reference**: See `docs/API.md`
-- **Code Organization**: See `docs/CODE_ORGANIZATION.md`
+- **Generated Rustdoc**: Run `cargo doc --workspace --no-deps`
+- **Architecture Transition Guide**: See `docs/ARCHITECTURE.md`
+- **API Routing Guide**: See `docs/API.md`
+- **Code Organization Map**: See `docs/CODE_ORGANIZATION.md`
 
 ### Community
 - **GitHub**: https://github.com/gestura-ai/gestura-app
