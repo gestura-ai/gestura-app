@@ -1998,16 +1998,13 @@ pub async fn process_agent_message_streaming(
                         let summary = context_manager.summarize_history(&history);
                         let content = history.join("\n\n");
 
-                        let entry = gestura_core::memory_bank::MemoryBankEntry {
-                            timestamp: chrono::Utc::now(),
-                            session_id: resolved_session_id
+                        let entry = gestura_core::memory_bank::MemoryBankEntry::new(
+                            resolved_session_id
                                 .clone()
                                 .unwrap_or_else(|| "unknown".to_string()),
-                            category: None,
-                            summary: summary.clone(),
+                            summary.clone(),
                             content,
-                            file_path: None,
-                        };
+                        );
 
                         match gestura_core::memory_bank::save_to_memory_bank(workspace_dir, &entry)
                             .await

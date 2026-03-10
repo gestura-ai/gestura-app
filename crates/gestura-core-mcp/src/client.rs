@@ -91,7 +91,19 @@ struct StdioConnection {
 
 impl Drop for StdioConnection {
     fn drop(&mut self) {
-        // Best-effort cleanup.
+        #[cfg(unix)]
+        {
+            if let Some(pid) = self.child.id() {
+                // Send SIGKILL to the process group (negative PID).
+                // Requires libc or simple command execution to kill process subtree if possible.
+                // We will use standard kill command to be safe and avoid pulling in `libc` directly.
+                let _ = std::process::Command::new("kill")
+                    .arg("-9")
+                    .arg(format!("-{}", pid))
+                    .output();
+            }
+        }
+        // Fallback for non-unix or immediate child stop
         let _ = self.child.start_kill();
     }
 }
@@ -220,17 +232,28 @@ impl McpClient {
                     )))
                 })?;
 
-                let mut cmd = tokio::process::Command::new(command);
+                let resolved_command = crate::cmd_utils::resolve_mcp_command(command);
+                let mut envs = entry.env.clone();
+                crate::cmd_utils::inject_enriched_path(&mut envs);
+
+                let mut cmd = tokio::process::Command::new(resolved_command.clone());
                 cmd.args(&entry.args)
-                    .envs(&entry.env)
+                    .envs(&envs)
+                    .kill_on_drop(true)
                     .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::null());
 
+                // On Unix platforms, create a new process group so that we can kill the entire tree
+                #[cfg(unix)]
+                {
+                    cmd.process_group(0);
+                }
+
                 let mut child = cmd.spawn().map_err(|e| {
                     AppError::Io(std::io::Error::other(format!(
                         "Failed to spawn MCP server '{}' ({}): {e}",
-                        entry.name, command
+                        entry.name, resolved_command
                     )))
                 })?;
 

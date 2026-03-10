@@ -88,7 +88,8 @@ async fn provision_stdio(entry: &McpServerEntry) -> ProvisionResult {
 // ── npm / npx ─────────────────────────────────────────────────────────────────
 
 async fn provision_npm(entry: &McpServerEntry) -> ProvisionResult {
-    if !runtime_available("npx").await {
+    let npx_cmd = crate::cmd_utils::resolve_mcp_command("npx");
+    if !runtime_available(&npx_cmd).await {
         return ProvisionResult {
             name: entry.name.clone(),
             status: ProvisionStatus::RuntimeMissing,
@@ -106,11 +107,15 @@ async fn provision_npm(entry: &McpServerEntry) -> ProvisionResult {
         };
     }
 
+    let mut envs = entry.env.clone();
+    crate::cmd_utils::inject_enriched_path(&mut envs);
+
     // Run `npx --yes <pkg>` with stdin closed.  MCP servers exit immediately on EOF,
     // so the cache is populated even if the process exits non-zero or times out.
     let result = timeout(Duration::from_secs(60), async {
-        let mut child = Command::new("npx")
+        let mut child = Command::new(&npx_cmd)
             .args(["--yes", pkg])
+            .envs(&envs)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -144,7 +149,8 @@ async fn provision_npm(entry: &McpServerEntry) -> ProvisionResult {
 // ── pypi / uvx ────────────────────────────────────────────────────────────────
 
 async fn provision_pypi(entry: &McpServerEntry) -> ProvisionResult {
-    if !runtime_available("uv").await {
+    let uv_cmd = crate::cmd_utils::resolve_mcp_command("uv");
+    if !runtime_available(&uv_cmd).await {
         return ProvisionResult {
             name: entry.name.clone(),
             status: ProvisionStatus::RuntimeMissing,
@@ -162,13 +168,17 @@ async fn provision_pypi(entry: &McpServerEntry) -> ProvisionResult {
         };
     }
 
+    let mut envs = entry.env.clone();
+    crate::cmd_utils::inject_enriched_path(&mut envs);
+
     // `uv tool install <pkg>==<version>` is idempotent:
     //   - exits 0 on fresh install
     //   - exits 1 with "already installed" on stderr when already present
     let result = timeout(
         Duration::from_secs(120),
-        Command::new("uv")
+        Command::new(&uv_cmd)
             .args(["tool", "install", pkg_version])
+            .envs(&envs)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -255,8 +265,13 @@ async fn runtime_available(cmd: &str) -> bool {
     #[cfg(not(target_os = "windows"))]
     let checker = "which";
 
+    // Inject the same PATH that the tool will run with
+    let mut envs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    crate::cmd_utils::inject_enriched_path(&mut envs);
+
     Command::new(checker)
         .arg(cmd)
+        .envs(&envs)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

@@ -1045,7 +1045,7 @@ pub(crate) struct MemoryOutcome {
 pub(crate) enum MemoryLiveAction {
     List,
     Search { query: String, limit: usize },
-    Save { entry: MemoryBankEntry },
+    Save { entry: Box<MemoryBankEntry> },
     ClearAll,
     Delete { file_path: PathBuf },
 }
@@ -1178,19 +1178,21 @@ pub(crate) fn run_memory_subcommand(
                 .unwrap_or_else(|| ContextManager::new().summarize_history(&history));
             let content = history.join("\n\n");
 
-            let entry = MemoryBankEntry {
-                timestamp: chrono::Utc::now(),
-                session_id: session.id.clone(),
-                category,
+            let mut entry = gestura_core::memory_bank::MemoryBankEntry::new(
+                session.id.clone(),
                 summary,
                 content,
-                file_path: None,
-            };
+            );
+            if let Some(cat) = category {
+                entry = entry.with_category(cat);
+            }
 
             Ok(MemoryOutcome {
                 lines: vec!["Saving conversation to memory bank…".to_string()],
                 changed: true,
-                live_action: Some(MemoryLiveAction::Save { entry }),
+                live_action: Some(MemoryLiveAction::Save {
+                    entry: Box::new(entry),
+                }),
             })
         }
         "clear" => {

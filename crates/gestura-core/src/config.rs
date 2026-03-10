@@ -362,6 +362,21 @@ impl AppConfigSecurityExt for AppConfig {
             }
         }
 
+        // Aggregate servers from `.mcp.json` scopes and add them to `config.mcp_servers`
+        let mcp_json_servers = crate::mcp::config::McpJsonFile::load_aggregated();
+        for server in mcp_json_servers {
+            // Overwrite existing entries from config.yaml if they share the same name.
+            if let Some(existing) = config
+                .mcp_servers
+                .iter_mut()
+                .find(|s| s.name == server.name)
+            {
+                *existing = server;
+            } else {
+                config.mcp_servers.push(server);
+            }
+        }
+
         config
     }
 
@@ -428,6 +443,21 @@ impl AppConfigSecurityExt for AppConfig {
 
             if yaml_exists && json_exists && !backup_exists {
                 let _ = tokio::fs::rename(&json_path, &backup_path).await;
+            }
+        }
+
+        // Aggregate servers from `.mcp.json` scopes and add them to `config.mcp_servers`
+        let mcp_json_servers = crate::mcp::config::McpJsonFile::load_aggregated_async().await;
+        for server in mcp_json_servers {
+            // Overwrite existing entries from config.yaml if they share the same name.
+            if let Some(existing) = config
+                .mcp_servers
+                .iter_mut()
+                .find(|s| s.name == server.name)
+            {
+                *existing = server;
+            } else {
+                config.mcp_servers.push(server);
             }
         }
 

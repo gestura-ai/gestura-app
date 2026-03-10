@@ -321,6 +321,74 @@ impl McpJsonFile {
             })
             .collect()
     }
+
+    /// Recursively resolve `.mcp.json` paths for user, project, and local scopes.
+    /// Returns a list of (scope, path) to load, from lowest to highest precedence.
+    pub fn resolve_scope_paths() -> Vec<(McpScope, std::path::PathBuf)> {
+        let mut paths = Vec::new();
+
+        // 1. User scope (~/.mcp.json) - Lowest Precedence
+        if let Some(home) = dirs::home_dir() {
+            paths.push((McpScope::User, home.join(".mcp.json")));
+        }
+
+        // 2. Project scope (.mcp.json in current directory)
+        if let Ok(cwd) = std::env::current_dir() {
+            paths.push((McpScope::Project, cwd.join(".mcp.json")));
+
+            // 3. Local scope (.gestura.json in current directory) - Highest Precedence
+            paths.push((McpScope::Local, cwd.join(".gestura.json")));
+        }
+
+        paths
+    }
+
+    /// Load and merge `.mcp.json` files across User, Project, and Local scopes.
+    ///
+    /// The resulting `Vec<McpServerEntry>` represents the flattened and merged
+    /// configuration where `Local` > `Project` > `User`. Only active entries
+    /// are retained per name.
+    pub fn load_aggregated() -> Vec<McpServerEntry> {
+        let mut merged: std::collections::HashMap<String, McpServerEntry> =
+            std::collections::HashMap::new();
+
+        for (scope, path) in Self::resolve_scope_paths() {
+            if path.exists()
+                && let Ok(mcp_file) = Self::load(&path)
+            {
+                for entry in mcp_file.into_entries(scope) {
+                    // Higher precedence overwrites lower precedence.
+                    merged.insert(entry.name.clone(), entry);
+                }
+            }
+        }
+
+        merged.into_values().collect()
+    }
+
+    /// Async version of `load_aggregated`.
+    pub async fn load_aggregated_async() -> Vec<McpServerEntry> {
+        let mut merged: std::collections::HashMap<String, McpServerEntry> =
+            std::collections::HashMap::new();
+
+        for (scope, path) in Self::resolve_scope_paths() {
+            if tokio::fs::try_exists(&path).await.unwrap_or(false)
+                && let Ok(content) = tokio::fs::read_to_string(&path).await
+                && let Ok(mut parsed) = serde_json::from_str::<Self>(&content)
+            {
+                for (key, entry) in parsed.mcp_servers.iter_mut() {
+                    if entry.name.is_empty() {
+                        entry.name = key.clone();
+                    }
+                }
+                for entry in parsed.into_entries(scope) {
+                    merged.insert(entry.name.clone(), entry);
+                }
+            }
+        }
+
+        merged.into_values().collect()
+    }
 }
 
 /// Import MCP servers from Claude Desktop config.

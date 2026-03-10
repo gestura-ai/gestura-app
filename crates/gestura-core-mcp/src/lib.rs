@@ -5,6 +5,7 @@
 //! and prompts.
 
 pub mod client;
+pub mod cmd_utils;
 pub mod config;
 pub mod discovery;
 pub mod integrator;
