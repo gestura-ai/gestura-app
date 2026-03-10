@@ -1,4 +1,31 @@
 //! Shared memory console service for CLI and GUI inspection workflows.
+//!
+//! This module provides the unified memory-console surface used across CLI,
+//! GUI, and agent-facing memory inspection flows. It composes two underlying
+//! systems:
+//!
+//! - session working memory from `agent_sessions`
+//! - durable memory-bank entries from `gestura_core::memory_bank`
+//!
+//! ## Design role
+//!
+//! The memory console is intentionally a facade-level service instead of a
+//! standalone domain crate because it coordinates multiple domains at once:
+//!
+//! - session storage
+//! - durable memory-bank retrieval and mutation
+//! - task lifecycle/memory event integration
+//! - shared DTOs consumed by both CLI and GUI presentation layers
+//!
+//! ## High-signal workflows
+//!
+//! - overview facets and counts for memory health
+//! - cross-memory search over working and durable memory
+//! - inspection of promotions, archival state, and provenance
+//! - task-aware memory lifecycle views for handoffs and blockers
+//!
+//! This keeps memory-related UX parity in one core-owned place instead of
+//! duplicating query logic in multiple frontends.
 
 use crate::agent_sessions::{
     AgentSession, AgentSessionStore, FileAgentSessionStore, SessionBlockerStatus, SessionFilter,

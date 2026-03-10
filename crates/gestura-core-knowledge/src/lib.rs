@@ -1,27 +1,49 @@
-//! Knowledge system for agent expertise and context
+//! Knowledge system for agent expertise and contextual guidance.
 //!
-//! This crate provides a progressive disclosure knowledge system that loads
-//! specialized expertise on-demand based on the user's query. Inspired by
-//! the claude-skills pattern.
+//! `gestura-core-knowledge` provides a progressive-disclosure knowledge base
+//! that lets the runtime expose specialized expertise only when it is relevant
+//! to the current request. This keeps default prompts lean while still allowing
+//! rich built-in guidance for areas such as Rust, Tauri, CLI workflows, MCP,
+//! voice, and other expert domains.
 //!
-//! # Architecture
+//! ## Design role
+//!
+//! This crate sits beside, not inside, the request-context system:
+//!
+//! - `gestura-core-context` decides *what categories of context* are relevant
+//! - `gestura-core-knowledge` provides curated expert content that can be
+//!   enabled, matched, and loaded when those requests benefit from it
+//!
+//! Knowledge items can come from built-in expert documents or user-managed
+//! additions persisted on disk.
+//!
+//! ## Main concepts
+//!
+//! - `KnowledgeStore`: registry and persistence layer for knowledge items
+//! - `KnowledgeItem`: a single expert document with metadata, triggers, and
+//!   optional reference material
+//! - `KnowledgeQuery`: query-time filter and ranking input
+//! - `KnowledgeSettingsManager`: per-session/default enablement for knowledge
+//!   items so users and sessions can opt into specific expertise
+//!
+//! ## Built-in knowledge structure
+//!
+//! Built-in experts follow a compact core-plus-references pattern:
 //!
 //! ```text
 //! knowledge/
 //! ├── rust-expert/
-//! │   ├── KNOWLEDGE.md          # Lean core (~80 lines)
-//! │   └── references/           # Loaded on-demand
-//! │       ├── async.md
-//! │       ├── errors.md
-//! │       └── testing.md
+//! │   ├── KNOWLEDGE.md
+//! │   └── references/
 //! └── tauri-expert/
 //!     ├── KNOWLEDGE.md
 //!     └── references/
-//!         ├── commands.md
-//!         └── plugins.md
 //! ```
 //!
-//! # Usage
+//! The goal is to keep the top-level expert doc concise and load reference
+//! material only when that extra depth is needed.
+//!
+//! ## Usage
 //!
 //! ```rust,ignore
 //! use gestura_core::knowledge::{KnowledgeStore, KnowledgeQuery};

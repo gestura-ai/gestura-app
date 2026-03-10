@@ -264,7 +264,7 @@ impl KnowledgeStore {
     /// Find knowledge items matching a query
     ///
     /// Searches across all registered items regardless of their `enabled` field.
-    /// Per-session enablement is managed by [`KnowledgeSettingsManager`].
+    /// Per-session enablement is managed by [`crate::KnowledgeSettingsManager`].
     pub fn find(&self, query: &KnowledgeQuery) -> Vec<KnowledgeMatch> {
         let items = self.items.read().unwrap();
         let mut matches: Vec<KnowledgeMatch> = items
