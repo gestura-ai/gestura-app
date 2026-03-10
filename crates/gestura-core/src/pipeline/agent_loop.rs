@@ -260,6 +260,12 @@ impl AgentPipeline {
                         // Forward in case an inner stream echoes one.
                         let _ = tx.send(chunk).await;
                     }
+                    StreamChunk::ReflectionStarted { .. } => {
+                        let _ = tx.send(chunk).await;
+                    }
+                    StreamChunk::ReflectionComplete { .. } => {
+                        let _ = tx.send(chunk).await;
+                    }
                     StreamChunk::ShellOutput { .. } => {
                         // Forward real-time shell output to frontend
                         let _ = tx.send(chunk).await;
@@ -299,10 +305,6 @@ impl AgentPipeline {
 
                         if let Some(u) = usage {
                             response.usage = Some(u.clone());
-                        }
-                        // Don't forward Done yet if we have tool calls to process
-                        if tool_calls_in_iteration.is_empty() {
-                            let _ = tx.send(chunk).await;
                         }
                     }
                     StreamChunk::Error(e) => {
@@ -382,9 +384,6 @@ impl AgentPipeline {
                 &tool_calls_in_iteration,
             );
         }
-
-        // Send final Done if not already sent
-        let _ = tx.send(StreamChunk::Done(response.usage.clone())).await;
 
         Ok(response)
     }
@@ -512,7 +511,7 @@ impl AgentPipeline {
     ///
     /// When `tool_schemas` is provided, the appropriate provider-specific schema
     /// slice is selected and forwarded to [`LlmProvider::call_with_tools`].
-    async fn call_llm_with_fallback(
+    pub(super) async fn call_llm_with_fallback(
         &self,
         prompt: &str,
         tool_schemas: Option<&crate::tools::schemas::ProviderToolSchemas>,

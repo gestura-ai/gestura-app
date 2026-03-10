@@ -158,6 +158,9 @@ pub struct PipelineSettings {
     /// Project guardrails settings.
     #[serde(default)]
     pub project_guardrails: ProjectGuardrailsSettings,
+    /// ERL-inspired experiential reflection settings.
+    #[serde(default)]
+    pub reflection: ReflectionSettings,
 }
 
 /// Settings for project-level guardrails discovery and prompt injection.
@@ -188,6 +191,7 @@ impl Default for PipelineSettings {
             max_context_tokens: 0,
             log_token_usage: true,
             project_guardrails: ProjectGuardrailsSettings::default(),
+            reflection: ReflectionSettings::default(),
         }
     }
 }
@@ -196,6 +200,51 @@ impl PipelineSettings {
     /// Get auto-compaction threshold as a float (0.0-1.0).
     pub fn auto_compact_threshold(&self) -> f64 {
         (self.auto_compact_threshold_percent as f64) / 100.0
+    }
+}
+
+/// Settings for ERL-inspired experiential reflection.
+///
+/// When enabled, the agent generates structured reflections on suboptimal
+/// turns and stores them for retrieval in future context injection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ReflectionSettings {
+    /// Enable the experiential reflection phase.
+    pub enabled: bool,
+    /// Quality threshold percentage (0–100). Reflection triggers when the
+    /// response quality score falls below `threshold / 100`.
+    pub quality_threshold_percent: u8,
+    /// Maximum number of past reflections to inject into prompt context.
+    pub max_injected: usize,
+    /// Maximum number of text-only reflection-guided revision attempts.
+    pub max_retry_attempts: usize,
+    /// Minimum confidence percentage (0–100) for promoting a reflection
+    /// to long-term memory.
+    pub promotion_confidence_percent: u8,
+}
+
+impl Default for ReflectionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            quality_threshold_percent: 60,
+            max_injected: 3,
+            max_retry_attempts: 1,
+            promotion_confidence_percent: 75,
+        }
+    }
+}
+
+impl ReflectionSettings {
+    /// Get quality threshold as a float (0.0–1.0).
+    pub fn quality_threshold(&self) -> f32 {
+        self.quality_threshold_percent as f32 / 100.0
+    }
+
+    /// Get promotion confidence as a float (0.0–1.0).
+    pub fn promotion_confidence(&self) -> f32 {
+        self.promotion_confidence_percent as f32 / 100.0
     }
 }
 
@@ -923,6 +972,11 @@ impl AppConfig {
             "pipeline.compaction_strategy",
             "pipeline.max_context_tokens",
             "pipeline.log_token_usage",
+            "pipeline.reflection.enabled",
+            "pipeline.reflection.quality_threshold_percent",
+            "pipeline.reflection.max_injected",
+            "pipeline.reflection.max_retry_attempts",
+            "pipeline.reflection.promotion_confidence_percent",
             "developer.enable_simulators",
             "developer.verbose_ble_logging",
         ];

@@ -111,12 +111,21 @@ export interface McpTool {
   endpoint: string;
 }
 
+export interface ReflectionSettings {
+  enabled: boolean;
+  quality_threshold_percent: number;
+  max_injected: number;
+  max_retry_attempts: number;
+  promotion_confidence_percent: number;
+}
+
 export interface PipelineSettings {
   max_history_messages: number;
   auto_compact_threshold_percent: number;
   compaction_strategy: string;
   max_context_tokens: number;
   log_token_usage: boolean;
+  reflection: ReflectionSettings;
 }
 
 export interface AppConfig {

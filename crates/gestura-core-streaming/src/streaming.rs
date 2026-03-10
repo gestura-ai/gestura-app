@@ -288,6 +288,20 @@ pub enum StreamChunk {
     Paused,
     /// An error occurred
     Error(String),
+    /// Experiential reflection phase has started (ERL-inspired).
+    ReflectionStarted {
+        /// Human-readable reason for triggering reflection.
+        reason: String,
+    },
+    /// Experiential reflection phase completed (ERL-inspired).
+    ReflectionComplete {
+        /// Brief summary of what was learned.
+        summary: String,
+        /// Whether the reflection was stored in session working memory.
+        stored: bool,
+        /// Whether the reflection was promoted to long-term memory bank.
+        promoted: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -365,6 +379,10 @@ async fn forward_attempt_stream(
             }
             StreamChunk::AgentLoopIteration { .. } => {
                 // Forward agent loop iteration markers without marking as output
+                let _ = tx.send(chunk).await;
+            }
+            StreamChunk::ReflectionStarted { .. } | StreamChunk::ReflectionComplete { .. } => {
+                // Forward reflection events without marking as output
                 let _ = tx.send(chunk).await;
             }
             StreamChunk::ShellOutput { .. } => {

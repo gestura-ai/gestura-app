@@ -57,6 +57,13 @@ impl PipelineConfigExt for PipelineConfig {
             self.max_context_tokens = settings.max_context_tokens.min(self.max_context_tokens);
         }
 
+        // Map YAML reflection settings → pipeline ReflectionConfig
+        self.reflection.enabled = settings.reflection.enabled;
+        self.reflection.quality_threshold = settings.reflection.quality_threshold();
+        self.reflection.max_injected_reflections = settings.reflection.max_injected;
+        self.reflection.max_retry_attempts = settings.reflection.max_retry_attempts;
+        self.reflection.promotion_confidence = settings.reflection.promotion_confidence();
+
         self
     }
 }

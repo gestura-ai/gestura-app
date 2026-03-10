@@ -14,6 +14,7 @@
 mod agent_loop;
 mod compaction;
 mod prompt;
+mod reflection;
 mod tool_dispatch;
 mod tool_router;
 pub mod types;
@@ -627,6 +628,8 @@ impl AgentPipeline {
         }
 
         // 5. Execute the agentic loop with workspace sandboxing
+        let reflection_tx = tx.clone();
+        let reflection_cancel_token = cancel_token.clone();
         let mut response = self
             .execute_agentic_loop_streaming(
                 prompt,
@@ -641,6 +644,79 @@ impl AgentPipeline {
             )
             .await?;
 
+        response.truncated = truncated;
+
+        if reflection_cancel_token.is_cancelled() {
+            return Ok(response);
+        }
+
+        if let Some(mut generated_reflection) = self
+            .maybe_generate_reflection(
+                &request.input,
+                &response,
+                &request.metadata,
+                Some(&reflection_tx),
+                &reflection_cancel_token,
+                self.pipeline_config.max_iterations,
+            )
+            .await
+        {
+            let retry = self
+                .maybe_run_reflection_retry(
+                    &request.input,
+                    &response,
+                    &generated_reflection.reflection,
+                    generated_reflection.initial_quality_score,
+                    Some(&reflection_tx),
+                )
+                .await;
+
+            if let Some(retry) = retry.as_ref() {
+                merge_token_usage(&mut response.usage, &retry.usage);
+                generated_reflection.reflection.improvement_score = Some(retry.improvement_score);
+
+                if retry.improved {
+                    let _ = reflection_tx
+                        .send(StreamChunk::Status {
+                            message: format!(
+                                "Reflection-guided revision improved quality from {:.0}% to {:.0}%",
+                                generated_reflection.initial_quality_score * 100.0,
+                                retry.retry_quality_score * 100.0,
+                            ),
+                        })
+                        .await;
+
+                    let revised_block = format!(
+                        "{}{}",
+                        reflection::REFLECTION_RETRY_SEPARATOR,
+                        retry.revised_content
+                    );
+                    response.content.push_str(&revised_block);
+                    self.emit_reflection_retry_text(&reflection_tx, &revised_block)
+                        .await;
+                } else {
+                    let _ = reflection_tx
+                        .send(StreamChunk::Status {
+                            message: format!(
+                                "Reflection-guided revision did not materially improve quality ({:.0}% → {:.0}%)",
+                                generated_reflection.initial_quality_score * 100.0,
+                                retry.retry_quality_score * 100.0,
+                            ),
+                        })
+                        .await;
+                }
+            }
+
+            self.finalize_reflection(
+                &generated_reflection.reflection,
+                &request.metadata,
+                workspace.as_ref(),
+                Some(&reflection_tx),
+                retry.as_ref(),
+            )
+            .await;
+        }
+
         // 5.1. Run PostPipeline hooks (best-effort)
         if let Some(ref engine) = hook_engine {
             let hook_ctx = HookContext {
@@ -652,7 +728,11 @@ impl AgentPipeline {
                 .await;
         }
 
-        response.truncated = truncated;
+        if !reflection_cancel_token.is_cancelled() {
+            let _ = reflection_tx
+                .send(StreamChunk::Done(response.usage.clone()))
+                .await;
+        }
 
         Ok(response)
     }
@@ -1179,6 +1259,49 @@ impl AgentPipeline {
             )
             .await?;
 
+        response.truncated = truncated;
+
+        if let Some(mut generated_reflection) = self
+            .maybe_generate_reflection(
+                &request.input,
+                &response,
+                &request.metadata,
+                None,
+                &crate::streaming::CancellationToken::new(),
+                self.pipeline_config.max_iterations,
+            )
+            .await
+        {
+            let retry = self
+                .maybe_run_reflection_retry(
+                    &request.input,
+                    &response,
+                    &generated_reflection.reflection,
+                    generated_reflection.initial_quality_score,
+                    None,
+                )
+                .await;
+
+            if let Some(retry) = retry.as_ref() {
+                merge_token_usage(&mut response.usage, &retry.usage);
+                generated_reflection.reflection.improvement_score = Some(retry.improvement_score);
+
+                if retry.improved {
+                    response.content = retry.revised_content.clone();
+                    response.thinking = None;
+                }
+            }
+
+            self.finalize_reflection(
+                &generated_reflection.reflection,
+                &request.metadata,
+                workspace.as_ref(),
+                None,
+                retry.as_ref(),
+            )
+            .await;
+        }
+
         // 5.1. Run PostPipeline hooks (best-effort)
         if let Some(ref engine) = hook_engine {
             let hook_ctx = HookContext {
@@ -1189,8 +1312,6 @@ impl AgentPipeline {
             self.run_hook_best_effort(engine, HookEvent::PostPipeline, &hook_ctx)
                 .await;
         }
-
-        response.truncated = truncated;
 
         Ok(response)
     }
@@ -1491,6 +1612,19 @@ impl AgentPipeline {
                 "Added memory bank context to request"
             );
             resolved_context.memory_sections.extend(memory_context);
+
+            if self.pipeline_config.reflection.enabled
+                && let Some(reflection_sections) = self
+                    .load_relevant_reflections(workspace_dir, metadata, query)
+                    .await
+                && !reflection_sections.is_empty()
+            {
+                tracing::debug!(
+                    reflection_context_len = reflection_sections.len(),
+                    "Added past reflections to request"
+                );
+                resolved_context.memory_sections.extend(reflection_sections);
+            }
         }
 
         // 3.3 Knowledge items — only available when the pipeline was wired with
@@ -1503,6 +1637,32 @@ impl AgentPipeline {
             );
             resolved_context.knowledge.push(knowledge_context);
         }
+    }
+}
+
+fn merge_token_usage(
+    usage: &mut Option<crate::llm_provider::TokenUsage>,
+    additional: &crate::llm_provider::TokenUsage,
+) {
+    if let Some(existing) = usage.as_mut() {
+        existing.input_tokens += additional.input_tokens;
+        existing.output_tokens += additional.output_tokens;
+        existing.total_tokens += additional.total_tokens;
+        existing.estimated_cost_usd =
+            match (existing.estimated_cost_usd, additional.estimated_cost_usd) {
+                (Some(lhs), Some(rhs)) => Some(lhs + rhs),
+                (Some(lhs), None) => Some(lhs),
+                (None, Some(rhs)) => Some(rhs),
+                (None, None) => None,
+            };
+        if existing.model.is_none() {
+            existing.model = additional.model.clone();
+        }
+        if existing.provider.is_none() {
+            existing.provider = additional.provider.clone();
+        }
+    } else {
+        *usage = Some(additional.clone());
     }
 }
 

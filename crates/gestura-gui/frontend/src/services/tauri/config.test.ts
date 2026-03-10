@@ -37,6 +37,13 @@ const makeConfig = (): AppConfig => ({
     compaction_strategy: 'none',
     max_context_tokens: 4096,
     log_token_usage: false,
+    reflection: {
+      enabled: false,
+      quality_threshold_percent: 60,
+      max_injected: 3,
+      max_retry_attempts: 1,
+      promotion_confidence_percent: 75,
+    },
   },
 });
 

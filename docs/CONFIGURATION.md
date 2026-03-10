@@ -88,6 +88,18 @@ mdh_pointers: {}
 ui_prefs:
   theme: system
   show_notifications: true
+pipeline:
+  max_history_messages: 10
+  auto_compact_threshold_percent: 80
+  compaction_strategy: Summarize
+  max_context_tokens: 0
+  log_token_usage: false
+  reflection:
+    enabled: false
+    quality_threshold_percent: 60
+    max_injected: 3
+    max_retry_attempts: 1
+    promotion_confidence_percent: 75
 ```
 
 ## Configuration Fields
@@ -116,6 +128,38 @@ ui_prefs:
 |-------|------|-------------|
 | `theme` | string | UI theme: `"light"`, `"dark"`, or `"system"` |
 | `show_notifications` | boolean | Whether to show system notifications |
+
+### Pipeline Settings (`pipeline`)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `max_history_messages` | integer | Maximum conversation history messages included in prompt context |
+| `auto_compact_threshold_percent` | integer | Trigger compaction when context reaches this percentage of the limit |
+| `compaction_strategy` | string | Overflow handling strategy such as `Summarize`, `Truncate`, `Clear`, `Prompt`, or `MemoryBank` |
+| `max_context_tokens` | integer | Maximum context tokens (0 uses provider defaults) |
+| `log_token_usage` | boolean | Enable token usage logging for debugging/monitoring |
+
+#### Reflection Settings (`pipeline.reflection`)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | boolean | Turn on ERL-inspired experiential reflection for low-quality turns |
+| `quality_threshold_percent` | integer | Reflection triggers when quality falls below this percentage |
+| `max_injected` | integer | Maximum number of past reflections injected into future prompts |
+| `max_retry_attempts` | integer | Number of same-turn text-only revision retries after reflection (`0` disables, current runtime applies at most `1`) |
+| `promotion_confidence_percent` | integer | Minimum confidence before a reflection is promoted to long-term memory |
+
+Example:
+
+```yaml
+pipeline:
+  reflection:
+    enabled: true
+    quality_threshold_percent: 55
+    max_injected: 4
+    max_retry_attempts: 1
+    promotion_confidence_percent: 80
+```
 
 ## Backup and Migration
 

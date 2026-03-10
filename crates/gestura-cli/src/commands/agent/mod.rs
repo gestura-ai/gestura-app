@@ -1499,6 +1499,32 @@ fn run_basic_mode(opts: AgentOptions<'_>) -> Result<()> {
                                 print!("  ");
                                 let _ = std::io::stdout().flush();
                             }
+                            StreamChunk::ReflectionStarted { reason } => {
+                                println!();
+                                println!(
+                                    "  {} {}",
+                                    "↺".magenta(),
+                                    format!("reflection: {reason}").dimmed()
+                                );
+                                print!("  ");
+                                let _ = std::io::stdout().flush();
+                            }
+                            StreamChunk::ReflectionComplete {
+                                summary,
+                                stored,
+                                promoted,
+                            } => {
+                                println!();
+                                println!(
+                                    "  {} {}{}{}",
+                                    "🧠".magenta(),
+                                    summary.dimmed(),
+                                    if stored { " · stored" } else { "" },
+                                    if promoted { " · promoted" } else { "" },
+                                );
+                                print!("  ");
+                                let _ = std::io::stdout().flush();
+                            }
                             StreamChunk::Done(_) => {
                                 saw_done = true;
                                 break;

@@ -762,6 +762,26 @@ fn run_main_loop(
                                 app.set_status("Reviewing tool results…".to_string());
                             }
                         }
+                        StreamChunk::ReflectionStarted { reason } => {
+                            push_activity_info(app, format!("🧠 Reflection started: {}", reason));
+                            app.set_status("Generating reflection…".to_string());
+                        }
+                        StreamChunk::ReflectionComplete {
+                            summary,
+                            stored,
+                            promoted,
+                        } => {
+                            let mut line = format!("🧠 Reflection complete: {}", summary);
+                            if stored || promoted {
+                                line.push_str(&format!(
+                                    " ({}{})",
+                                    if stored { "stored" } else { "not stored" },
+                                    if promoted { ", promoted" } else { "" }
+                                ));
+                            }
+                            push_activity_info(app, line);
+                            app.set_status("Reflection complete".to_string());
+                        }
                         StreamChunk::ShellOutput { data, .. } => {
                             // Show streaming shell output in the activity pane.
                             let preview = truncate_for_preview(&data, 200);

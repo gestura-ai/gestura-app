@@ -56,6 +56,13 @@ export async function installTauriIpcMock(page: Page): Promise<void> {
         compaction_strategy: 'Summarize',
         max_context_tokens: 0,
         log_token_usage: false,
+        reflection: {
+          enabled: false,
+          quality_threshold_percent: 60,
+          max_injected: 3,
+          max_retry_attempts: 1,
+          promotion_confidence_percent: 75,
+        },
       },
     };
 
@@ -64,7 +71,29 @@ export async function installTauriIpcMock(page: Page): Promise<void> {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (!raw) return { ...defaultConfig };
         const parsed = JSON.parse(raw);
-        return { ...defaultConfig, ...parsed };
+        return {
+          ...defaultConfig,
+          ...parsed,
+          voice: { ...defaultConfig.voice, ...(parsed?.voice || {}) },
+          llm: { ...defaultConfig.llm, ...(parsed?.llm || {}) },
+          ui: { ...defaultConfig.ui, ...(parsed?.ui || {}) },
+          developer: {
+            ...defaultConfig.developer,
+            ...(parsed?.developer || {}),
+            simulator: {
+              ...defaultConfig.developer.simulator,
+              ...(parsed?.developer?.simulator || {}),
+            },
+          },
+          pipeline: {
+            ...defaultConfig.pipeline,
+            ...(parsed?.pipeline || {}),
+            reflection: {
+              ...defaultConfig.pipeline.reflection,
+              ...(parsed?.pipeline?.reflection || {}),
+            },
+          },
+        };
       } catch {
         return { ...defaultConfig };
       }

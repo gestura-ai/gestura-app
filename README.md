@@ -180,7 +180,7 @@ Key sections:
 - `mdh_pointers`: map of dataset aliases to URIs
 - `nats_url`: default `nats://127.0.0.1:4222`
 - `permissions`: `{ default_level: "sandbox"|"restricted"|"full", default_enabled_tools: {...} }`
-- `pipeline`: `{ max_history_messages, auto_compact_threshold_percent, compaction_strategy, max_context_tokens, log_token_usage, project_guardrails: { enabled, max_chars } }`
+- `pipeline`: `{ max_history_messages, auto_compact_threshold_percent, compaction_strategy, max_context_tokens, log_token_usage, reflection: { enabled, quality_threshold_percent, max_injected, max_retry_attempts, promotion_confidence_percent }, project_guardrails: { enabled, max_chars } }`
 - `web_search`: `{ provider: "local"|"serpapi"|"duckduckgo"|"brave", serpapi_key, brave_key }`
 - `notifications`: `{ sound_enabled, haptic_enabled, sound_volume }`
 - `hooks`: Hook/event-driven command templates configuration

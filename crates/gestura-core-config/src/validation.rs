@@ -118,6 +118,7 @@ pub fn validate_config(config: &AppConfig) -> ConfigValidationResult {
     validate_llm_config(config, &mut result);
     validate_voice_config(config, &mut result);
     validate_ui_config(config, &mut result);
+    validate_pipeline_config(config, &mut result);
     validate_hotkey_config(config, &mut result);
     result
 }
@@ -238,6 +239,31 @@ fn validate_ui_config(config: &AppConfig, result: &mut ConfigValidationResult) {
         result.add_error(
             "notifications.haptic_intensity",
             "Haptic intensity must be between 0 and 100",
+        );
+    }
+}
+
+fn validate_pipeline_config(config: &AppConfig, result: &mut ConfigValidationResult) {
+    let reflection = &config.pipeline.reflection;
+
+    if reflection.max_injected == 0 {
+        result.add_warning(
+            "pipeline.reflection.max_injected",
+            "Reflection retrieval is disabled because max_injected is 0",
+        );
+    }
+
+    if reflection.max_retry_attempts > 1 {
+        result.add_warning(
+            "pipeline.reflection.max_retry_attempts",
+            "Only one reflection-guided revision is currently applied per turn; values above 1 are clamped",
+        );
+    }
+
+    if reflection.enabled && reflection.promotion_confidence_percent == 0 {
+        result.add_warning(
+            "pipeline.reflection.promotion_confidence_percent",
+            "Reflection promotion confidence is 0, so nearly every reflection may be promoted",
         );
     }
 }

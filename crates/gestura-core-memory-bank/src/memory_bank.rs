@@ -60,6 +60,8 @@ pub enum MemoryType {
     Blocker,
     /// Handoff/checkpoint material.
     Handoff,
+    /// Structured reflection from a failed/suboptimal agent attempt (ERL-inspired).
+    Reflection,
 }
 
 impl std::fmt::Display for MemoryType {
@@ -72,6 +74,7 @@ impl std::fmt::Display for MemoryType {
             Self::Decision => write!(f, "decision"),
             Self::Blocker => write!(f, "blocker"),
             Self::Handoff => write!(f, "handoff"),
+            Self::Reflection => write!(f, "reflection"),
         }
     }
 }
@@ -88,6 +91,7 @@ impl std::str::FromStr for MemoryType {
             "decision" => Ok(Self::Decision),
             "blocker" => Ok(Self::Blocker),
             "handoff" => Ok(Self::Handoff),
+            "reflection" => Ok(Self::Reflection),
             _ => Err(format!("Unknown memory type: {value}")),
         }
     }
@@ -957,6 +961,7 @@ impl MemoryBankEntry {
 
         score += match self.memory_type {
             MemoryType::Procedural | MemoryType::Semantic => 0.8,
+            MemoryType::Reflection => 0.7,
             MemoryType::Decision | MemoryType::Handoff => 0.6,
             MemoryType::Blocker | MemoryType::Resource => 0.4,
             MemoryType::Episodic => 0.3,

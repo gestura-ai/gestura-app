@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use gestura_core_foundation::context::{ContextCategory, ResolvedContext};
 use gestura_core_llm::TokenUsage;
 
+use crate::reflection::ReflectionConfig;
+
 pub use gestura_core_foundation::permissions::PermissionLevel;
 
 /// Strategy for selecting which tools to include for an LLM request.
@@ -371,6 +373,11 @@ pub struct PipelineConfig {
     /// - [`ToolRoutingStrategy::Hybrid`]: uses keywords when confidence is high;
     ///   falls back to LLM routing when confidence is below the threshold.
     pub tool_routing_strategy: ToolRoutingStrategy,
+    /// Configuration for ERL-inspired experiential reflection.
+    ///
+    /// When enabled, the agent generates structured reflections on suboptimal
+    /// turns and stores them for retrieval in future context injection.
+    pub reflection: ReflectionConfig,
 }
 
 impl Default for PipelineConfig {
@@ -396,6 +403,7 @@ impl Default for PipelineConfig {
             tool_routing_strategy: ToolRoutingStrategy::Hybrid {
                 confidence_threshold: 0.3,
             },
+            reflection: ReflectionConfig::default(),
         }
     }
 }

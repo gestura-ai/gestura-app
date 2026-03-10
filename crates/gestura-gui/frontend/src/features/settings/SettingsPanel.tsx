@@ -1,5 +1,5 @@
 import React from 'react';
-import { AppConfig, LlmSettings, PipelineSettings, UiSettings } from '../../types/config';
+import { AppConfig, LlmSettings, PipelineSettings, ReflectionSettings, UiSettings } from '../../types/config';
 import { FormGroup } from '../../shared/components/FormGroup';
 import { PanelSection } from '../../shared/components/PanelSection';
 
@@ -9,6 +9,11 @@ interface SettingsPanelProps {
 }
 
 const SettingsPanel: React.FC<SettingsPanelProps> = ({ config, onConfigUpdate }) => {
+  const parseIntegerOr = (value: string, fallback: number) => {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isNaN(parsed) ? fallback : parsed;
+  };
+
   const updateConfig = (updates: Partial<AppConfig>) => {
     onConfigUpdate({ ...config, ...updates });
   };
@@ -28,6 +33,12 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ config, onConfigUpdate })
   const updatePipelineSettings = (updates: Partial<PipelineSettings>) => {
     updateConfig({
       pipeline: { ...config.pipeline, ...updates },
+    });
+  };
+
+  const updateReflectionSettings = (updates: Partial<ReflectionSettings>) => {
+    updatePipelineSettings({
+      reflection: { ...config.pipeline.reflection, ...updates },
     });
   };
 
@@ -175,6 +186,94 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ config, onConfigUpdate })
           hint="Log token usage for debugging and monitoring"
         >
           {null}
+        </FormGroup>
+
+        <FormGroup
+          label={
+            <>
+              <input
+                type="checkbox"
+                checked={config.pipeline.reflection.enabled}
+                onChange={(e) => updateReflectionSettings({ enabled: e.target.checked })}
+              />{' '}
+              Enable experiential reflection
+            </>
+          }
+          hint="Generate structured reflections after low-quality turns and reuse them in future context."
+        >
+          {null}
+        </FormGroup>
+
+        <FormGroup
+          label="Reflection Quality Threshold (%)"
+          hint="Trigger reflection when the response quality score falls below this percentage. Lower values make reflection rarer."
+        >
+          <input
+            type="number"
+            aria-label="Reflection Quality Threshold (%)"
+            value={config.pipeline.reflection.quality_threshold_percent}
+            onChange={(e) =>
+              updateReflectionSettings({
+                quality_threshold_percent: parseIntegerOr(e.target.value, 60),
+              })
+            }
+            min="0"
+            max="100"
+          />
+        </FormGroup>
+
+        <FormGroup
+          label="Past Reflections to Inject"
+          hint="Maximum number of relevant past reflections to inject back into prompt context for future turns."
+        >
+          <input
+            type="number"
+            aria-label="Past Reflections to Inject"
+            value={config.pipeline.reflection.max_injected}
+            onChange={(e) =>
+              updateReflectionSettings({
+                max_injected: parseIntegerOr(e.target.value, 3),
+              })
+            }
+            min="0"
+            max="20"
+          />
+        </FormGroup>
+
+        <FormGroup
+          label="Reflection Retry Attempts"
+          hint="Number of same-turn text-only revisions after reflection. Current runtime behavior applies at most one retry and never replays tools."
+        >
+          <input
+            type="number"
+            aria-label="Reflection Retry Attempts"
+            value={config.pipeline.reflection.max_retry_attempts}
+            onChange={(e) =>
+              updateReflectionSettings({
+                max_retry_attempts: parseIntegerOr(e.target.value, 0),
+              })
+            }
+            min="0"
+            max="1"
+          />
+        </FormGroup>
+
+        <FormGroup
+          label="Reflection Promotion Confidence (%)"
+          hint="Minimum confidence needed before a reflection is promoted into long-term shared memory."
+        >
+          <input
+            type="number"
+            aria-label="Reflection Promotion Confidence (%)"
+            value={config.pipeline.reflection.promotion_confidence_percent}
+            onChange={(e) =>
+              updateReflectionSettings({
+                promotion_confidence_percent: parseIntegerOr(e.target.value, 75),
+              })
+            }
+            min="0"
+            max="100"
+          />
         </FormGroup>
       </PanelSection>
     </div>

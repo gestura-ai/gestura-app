@@ -2330,6 +2330,8 @@ pub async fn process_agent_message_streaming(
                     StreamChunk::RetryAttempt { .. } => "RetryAttempt",
                     StreamChunk::ContextCompacted { .. } => "ContextCompacted",
                     StreamChunk::MemoryBankSaved { .. } => "MemoryBankSaved",
+                    StreamChunk::ReflectionStarted { .. } => "ReflectionStarted",
+                    StreamChunk::ReflectionComplete { .. } => "ReflectionComplete",
                     StreamChunk::TokenUsageUpdate { .. } => "TokenUsageUpdate",
                     StreamChunk::ConfigRequest { .. } => "ConfigRequest",
                     StreamChunk::ToolConfirmationRequired { .. } => "ToolConfirmationRequired",
@@ -2445,6 +2447,33 @@ pub async fn process_agent_message_streaming(
                     "messages_saved": messages_saved
                 });
                 emit("agent-memory-bank-saved", payload);
+            }
+            StreamChunk::ReflectionStarted { reason } => {
+                let payload = serde_json::json!({
+                    "text": format!("Generating reflection: {}", reason),
+                    "kind": "reflection",
+                    "reason": reason,
+                });
+                emit("agent-stream-status", payload);
+            }
+            StreamChunk::ReflectionComplete {
+                summary,
+                stored,
+                promoted,
+            } => {
+                let payload = serde_json::json!({
+                    "text": format!(
+                        "Reflection complete: {}{}{}",
+                        summary,
+                        if stored { " · stored" } else { "" },
+                        if promoted { " · promoted" } else { "" },
+                    ),
+                    "kind": "reflection",
+                    "summary": summary,
+                    "stored": stored,
+                    "promoted": promoted,
+                });
+                emit("agent-stream-status", payload);
             }
             StreamChunk::TokenUsageUpdate {
                 estimated,
@@ -2966,6 +2995,37 @@ pub async fn resume_agent_streaming(
                     }
                     StreamChunk::AgentLoopIteration { iteration } => {
                         emit("agent-stream-agent-iteration", serde_json::json!({ "iteration": iteration }));
+                    }
+                    StreamChunk::ReflectionStarted { reason } => {
+                        emit(
+                            "agent-stream-status",
+                            serde_json::json!({
+                                "text": format!("Generating reflection: {}", reason),
+                                "kind": "reflection",
+                                "reason": reason,
+                            }),
+                        );
+                    }
+                    StreamChunk::ReflectionComplete {
+                        summary,
+                        stored,
+                        promoted,
+                    } => {
+                        emit(
+                            "agent-stream-status",
+                            serde_json::json!({
+                                "text": format!(
+                                    "Reflection complete: {}{}{}",
+                                    summary,
+                                    if stored { " · stored" } else { "" },
+                                    if promoted { " · promoted" } else { "" },
+                                ),
+                                "kind": "reflection",
+                                "summary": summary,
+                                "stored": stored,
+                                "promoted": promoted,
+                            }),
+                        );
                     }
                     _ => {}
                 }

@@ -260,6 +260,11 @@ async fn test_pipeline_settings_persistence() {
     config.pipeline.compaction_strategy = CompactionStrategy::MemoryBank;
     config.pipeline.max_context_tokens = 100_000;
     config.pipeline.log_token_usage = false;
+    config.pipeline.reflection.enabled = true;
+    config.pipeline.reflection.quality_threshold_percent = 55;
+    config.pipeline.reflection.max_injected = 4;
+    config.pipeline.reflection.max_retry_attempts = 1;
+    config.pipeline.reflection.promotion_confidence_percent = 80;
 
     // Save and reload
     assert!(config.save_to_path(&config_path).is_ok());
@@ -274,6 +279,23 @@ async fn test_pipeline_settings_persistence() {
     );
     assert_eq!(reloaded_config.pipeline.max_context_tokens, 100_000);
     assert!(!reloaded_config.pipeline.log_token_usage);
+    assert!(reloaded_config.pipeline.reflection.enabled);
+    assert_eq!(
+        reloaded_config
+            .pipeline
+            .reflection
+            .quality_threshold_percent,
+        55
+    );
+    assert_eq!(reloaded_config.pipeline.reflection.max_injected, 4);
+    assert_eq!(reloaded_config.pipeline.reflection.max_retry_attempts, 1);
+    assert_eq!(
+        reloaded_config
+            .pipeline
+            .reflection
+            .promotion_confidence_percent,
+        80
+    );
 
     // Verify auto_compact_threshold() helper method
     assert_eq!(reloaded_config.pipeline.auto_compact_threshold(), 0.75);
