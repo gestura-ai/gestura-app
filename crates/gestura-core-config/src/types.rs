@@ -206,7 +206,11 @@ impl PipelineSettings {
 /// Settings for ERL-inspired experiential reflection.
 ///
 /// When enabled, the agent generates structured reflections on suboptimal
-/// turns and stores them for retrieval in future context injection.
+/// turns, may attempt a same-turn text-only revision, and stores the resulting
+/// corrective knowledge for future context injection.
+///
+/// The feature defaults to disabled because it introduces at least one extra
+/// model call on weak turns and therefore affects latency/cost.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct ReflectionSettings {

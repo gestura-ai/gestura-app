@@ -289,11 +289,17 @@ pub enum StreamChunk {
     /// An error occurred
     Error(String),
     /// Experiential reflection phase has started (ERL-inspired).
+    ///
+    /// UIs can use this to surface that the pipeline is performing a
+    /// post-answer self-review step rather than continuing normal tool use.
     ReflectionStarted {
         /// Human-readable reason for triggering reflection.
         reason: String,
     },
     /// Experiential reflection phase completed (ERL-inspired).
+    ///
+    /// This reports both the learned summary and whether the result stayed only
+    /// in short-term/session storage or was also promoted into long-term memory.
     ReflectionComplete {
         /// Brief summary of what was learned.
         summary: String,

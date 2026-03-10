@@ -6,6 +6,7 @@
 //! - Context analysis and reduction
 //! - Tool filtering based on request
 //! - Agentic loop for tool execution
+//! - Optional ERL-inspired reflection, retry, and memory consolidation
 //! - Streaming and non-streaming responses
 //! - Token estimation and truncation
 //! - Fallback to secondary providers
@@ -627,7 +628,11 @@ impl AgentPipeline {
             }
         }
 
-        // 5. Execute the agentic loop with workspace sandboxing
+        // 5. Execute the agentic loop with workspace sandboxing.
+        // 6. If experiential reflection is enabled, evaluate the completed turn,
+        //    optionally generate a structured reflection, attempt a safe
+        //    text-only revision, and consolidate the result into memory before
+        //    running PostPipeline hooks.
         let reflection_tx = tx.clone();
         let reflection_cancel_token = cancel_token.clone();
         let mut response = self
@@ -717,7 +722,7 @@ impl AgentPipeline {
             .await;
         }
 
-        // 5.1. Run PostPipeline hooks (best-effort)
+        // 7. Run PostPipeline hooks (best-effort) after the reflection phase.
         if let Some(ref engine) = hook_engine {
             let hook_ctx = HookContext {
                 workspace_dir: request.metadata.workspace_dir.clone(),
@@ -1602,6 +1607,10 @@ impl AgentPipeline {
         }
 
         // 3.2 Long-term memory bank — only available when workspace_dir is known.
+        //     When experiential reflection is enabled, we also inject a small
+        //     number of relevant past reflections after the regular memory-bank
+        //     lookup so the model can learn from prior failures without turning
+        //     every prompt into a reflection dump.
         if let Some(workspace_dir) = workspace_dir
             && let Some(memory_context) = self
                 .search_and_load_memory_bank(workspace_dir, metadata, query, 3)

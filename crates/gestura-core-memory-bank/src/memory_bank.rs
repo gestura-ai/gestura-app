@@ -60,7 +60,8 @@ pub enum MemoryType {
     Blocker,
     /// Handoff/checkpoint material.
     Handoff,
-    /// Structured reflection from a failed/suboptimal agent attempt (ERL-inspired).
+    /// Structured corrective reflection promoted from a failed/suboptimal agent
+    /// attempt (ERL-inspired) so future turns can retrieve and reuse it.
     Reflection,
 }
 

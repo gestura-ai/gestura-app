@@ -1,11 +1,37 @@
 //! Pipeline reflection integration — ERL-inspired experiential learning.
 //!
-//! This module adds the reflection phase to `AgentPipeline`, implementing:
+//! This module is the runtime half of Gestura's reflection system. It takes the
+//! portable reflection types/helpers from `gestura-core-pipeline` and wires them
+//! into the agent loop implemented by `AgentPipeline`.
 //!
-//! 1. **Context injection** — load past reflections into prompt context
-//! 2. **Quality gating** — evaluate response quality after the agentic loop
-//! 3. **Reflection generation** — one extra LLM call to analyze suboptimal turns
-//! 4. **Memory storage** — save reflections for future retrieval + promotion
+//! ## Runtime flow
+//!
+//! When reflection is enabled, the pipeline currently does the following:
+//!
+//! 1. **Context injection** — during context enrichment, retrieve relevant
+//!    `MemoryType::Reflection` entries from the memory bank and append them to
+//!    `resolved_context.memory_sections`.
+//! 2. **Quality gating** — after the main agentic loop returns, score the turn
+//!    using heuristic quality signals.
+//! 3. **Reflection generation** — if the score falls below the configured
+//!    threshold, emit `StreamChunk::ReflectionStarted` and make one lightweight,
+//!    no-tools LLM call to produce a structured reflection.
+//! 4. **Same-turn retry** — optionally ask the model for a text-only revision of
+//!    the already-produced answer using the reflection as guidance. This never
+//!    replays tools or side effects.
+//! 5. **Consolidation** — store the reflection in session working memory and,
+//!    when confidence is high enough, promote it to the long-term memory bank as
+//!    `MemoryType::Reflection`.
+//! 6. **Completion event** — emit `StreamChunk::ReflectionComplete` so CLI/GUI
+//!    surfaces can show what was learned and whether it was persisted.
+//!
+//! ## Boundaries
+//!
+//! - Pure prompt/parse/scoring logic lives in `gestura-core-pipeline`.
+//! - Config lives in `gestura-core-config` and is mapped into
+//!   `PipelineConfig.reflection`.
+//! - Long-term persistence uses the memory-bank domain.
+//! - Streaming visibility is expressed via `gestura-core-streaming` events.
 
 use crate::agent_sessions::{AgentSessionStore, FileAgentSessionStore};
 use crate::memory_bank::{MemoryBankEntry, MemoryScope, MemoryType};
@@ -45,7 +71,16 @@ pub(super) struct ReflectionRetryOutcome {
 impl AgentPipeline {
     /// Query the memory bank for past reflections relevant to the current request.
     ///
-    /// Returns formatted prompt sections ready for injection into `resolved_context.memory_sections`.
+    /// Returns formatted prompt sections ready for injection into
+    /// `resolved_context.memory_sections`.
+    ///
+    /// Retrieval is intentionally narrow:
+    ///
+    /// - only `MemoryType::Reflection` entries are eligible,
+    /// - only long-term memory kinds are searched,
+    /// - session/workspace/repository scopes are considered,
+    /// - and task/agent/tag metadata are reused when available so the injected
+    ///   reflections are tied to the current request shape.
     pub(super) async fn load_relevant_reflections(
         &self,
         workspace_dir: &Path,
@@ -118,6 +153,9 @@ impl AgentPipeline {
     ///
     /// Returns the parsed reflection plus the initial quality score when the
     /// response qualifies for reflection.
+    ///
+    /// This is the only extra-model-call step in the reflection flow, which is
+    /// why the feature stays opt-in and behind a quality gate.
     pub(super) async fn maybe_generate_reflection(
         &self,
         request_input: &str,
@@ -247,6 +285,10 @@ impl AgentPipeline {
     ///
     /// This does not re-execute tools. Instead it asks the model to revise the
     /// already-produced answer using the reflection and observed tool outcomes.
+    ///
+    /// The retry is deliberately conservative: it can improve wording and repair
+    /// omissions in the final answer, but it cannot introduce new side effects by
+    /// rerunning tools.
     pub(super) async fn maybe_run_reflection_retry(
         &self,
         request_input: &str,
@@ -315,6 +357,11 @@ impl AgentPipeline {
     }
 
     /// Store a reflection and emit the final reflection completion event.
+    ///
+    /// This is the consolidation step of the runtime flow: after any optional
+    /// same-turn retry, the pipeline persists the reflection and reports whether
+    /// it was only stored for the current session or also promoted to long-term
+    /// memory.
     pub(super) async fn finalize_reflection(
         &self,
         reflection: &AgentReflection,
@@ -398,6 +445,12 @@ impl AgentPipeline {
     /// Store a reflection in session working memory and optionally promote to long-term.
     ///
     /// Returns `(stored, promoted)` booleans.
+    ///
+    /// Storage happens in two tiers:
+    ///
+    /// 1. short-term/session working memory for immediate follow-up turns
+    /// 2. long-term memory-bank promotion when the reflection appears strong
+    ///    enough to generalize beyond the current episode
     async fn store_reflection(
         &self,
         reflection: &AgentReflection,

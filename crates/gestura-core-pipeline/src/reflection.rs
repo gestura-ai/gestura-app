@@ -1,13 +1,27 @@
-// Component 2: Reflection Data Structures
-//! ERL-inspired experiential reflection types and logic.
+//! ERL-inspired experiential reflection types and pure helpers.
 //!
-//! This module implements concepts from Experiential Reinforcement Learning (ERL)
-//! adapted for an LLM agent pipeline. Instead of training-time RL, it provides:
+//! This module adapts the high-level loop from Experiential Reinforcement
+//! Learning (ERL) into Gestura's pipeline model:
 //!
-//! - **Quality gating**: only trigger reflection on suboptimal responses
-//! - **Structured reflection generation**: LLM-powered analysis of what went wrong
-//! - **Cross-episode memory**: reflections stored for retrieval in future turns
-//! - **Consolidation**: high-confidence reflections promoted to long-term memory
+//! 1. **Experience** — the agent makes an initial attempt and observes tool
+//!    outcomes plus any obvious failure signals.
+//! 2. **Reflection** — when the response quality score falls below a configured
+//!    threshold, the runtime asks the model for a structured explanation of what
+//!    went wrong and how to improve.
+//! 3. **Consolidation** — the resulting reflection can be reused within the same
+//!    turn, stored in session working memory, and promoted into long-term memory
+//!    for later prompt injection.
+//!
+//! This crate owns the *portable* pieces of that design:
+//!
+//! - reflection configuration and data structures
+//! - quality-signal extraction and heuristic scoring
+//! - prompt construction for reflection generation
+//! - parsing of the structured reflection response format
+//!
+//! The concrete runtime integration lives in
+//! `gestura-core/src/pipeline/reflection.rs`, which wires these helpers into the
+//! agent loop, streaming events, session storage, and memory-bank promotion.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -16,10 +30,18 @@ use crate::types::{AgentResponse, ToolResult};
 
 /// Configuration for the experiential reflection system.
 ///
-/// Maps to ERL paper concepts:
-/// - `quality_threshold` → τ (gated reflection trigger)
-/// - `max_injected_reflections` → cross-episode memory retrieval limit
-/// - `promotion_confidence` → consolidation gate for long-term storage
+/// The settings map the ERL-inspired design onto Gestura's runtime behavior:
+///
+/// - `enabled` keeps the feature opt-in because it adds an extra LLM call on
+///   weak turns and can therefore increase latency/cost.
+/// - `quality_threshold` maps to ERL's τ-style gate for deciding when a turn is
+///   poor enough to merit reflection.
+/// - `max_injected_reflections` limits how much cross-episode corrective memory
+///   can be injected back into future prompts.
+/// - `max_retry_attempts` bounds same-turn, text-only revision attempts so the
+///   pipeline can improve wording without replaying tool side effects.
+/// - `promotion_confidence` gates whether a reflection is strong enough to move
+///   from short-term/session memory into long-term memory-bank storage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReflectionConfig {
     /// Enable the reflection phase in the agent loop.
@@ -54,8 +76,15 @@ impl Default for ReflectionConfig {
 
 /// A structured reflection generated after a suboptimal agent turn.
 ///
-/// Mirrors ERL's Δ (reflection) that captures what went wrong and how
-/// to improve, enabling the agent to avoid repeating the same mistakes.
+/// This is Gestura's durable representation of ERL's corrective reflection: a
+/// concise summary of the attempted action, the failure mode, and the strategy
+/// the agent should apply next time.
+///
+/// The runtime can:
+///
+/// - use it immediately for a same-turn retry,
+/// - store it in session working memory as short-term corrective context, and
+/// - promote it into `MemoryType::Reflection` for retrieval in future turns.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentReflection {
     /// What the agent attempted.
@@ -147,6 +176,11 @@ pub fn score_reflection_improvement(initial_quality: f32, retry_quality: f32) ->
 }
 
 /// Build heuristic quality signals from an agent response.
+///
+/// These signals stand in for the explicit reward signal used in ERL. Gestura
+/// does not have a verifiable task reward for most agent turns, so the runtime
+/// falls back to observable quality proxies such as tool errors, iteration
+/// pressure, truncation, and explicit failure language.
 pub fn quality_signals_for_response(
     response: &AgentResponse,
     max_iterations: usize,
@@ -251,8 +285,13 @@ pub fn detect_failure_patterns(text: &str) -> bool {
 
 /// Build the reflection prompt that asks the LLM to analyze a suboptimal turn.
 ///
-/// This corresponds to ERL's reflection generation step: given the initial
-/// attempt and environment feedback, produce a structured analysis.
+/// This is the pure prompt-construction step for reflection generation:
+///
+/// - the original user request becomes the task context,
+/// - the agent response becomes the failed/suboptimal attempt,
+/// - tool errors and quality signals become the environment feedback,
+/// - and the output contract forces the model into the structured
+///   `ATTEMPT`/`ISSUE`/`STRATEGY`/`TAGS` format expected by the parser.
 pub fn build_reflection_prompt(
     user_request: &str,
     agent_response: &str,
@@ -292,8 +331,10 @@ pub fn build_reflection_prompt(
 
 /// Parse a structured reflection from an LLM response.
 ///
-/// Expects the format produced by `build_reflection_prompt`.
-/// Returns `None` if the response cannot be parsed.
+/// Expects the format produced by `build_reflection_prompt` and intentionally
+/// fails closed if any of the core fields are missing. The runtime treats an
+/// unparsable reflection as non-durable so it does not enter session or
+/// long-term memory in a malformed shape.
 pub fn parse_reflection_response(response: &str, session_id: &str) -> Option<AgentReflection> {
     let mut attempt = None;
     let mut issue = None;
