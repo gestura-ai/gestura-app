@@ -4,7 +4,7 @@
 //! `gestura-core-foundation::secrets` and are re-exported from the crate root.
 //!
 //! This module adds the `SecureStorageSecretProvider` implementation that depends
-//! on [`SecureStorage`](crate::SecureStorage) (OS keychain).
+//! on [`SecureStorage`] (OS keychain).
 
 use crate::SecureStorage;
 use gestura_core_foundation::secrets::{SecretKey, SecretProvider};

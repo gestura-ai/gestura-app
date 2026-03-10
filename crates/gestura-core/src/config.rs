@@ -12,6 +12,20 @@
 //! On load, if `config.yaml` does not exist but `config.json` does, we
 //! automatically migrate the JSON file to YAML.
 //!
+//! ## File location and layering
+//!
+//! Gestura's user configuration is centered on `~/.gestura/config.yaml`.
+//! Pure types and validation live in `gestura-core-config`, while this facade
+//! adds the runtime wiring needed to make configuration work in the full app.
+//!
+//! This includes:
+//!
+//! - file-system loading and saving helpers
+//! - JSON-to-YAML migration glue for older installs
+//! - security-aware secret hydration from keychain/secure storage
+//! - canonical-key and legacy-key fallback logic for stored secrets
+//! - user-friendly recovery behavior for fresh installs and reinstalls
+//!
 //! ## Configuration Precedence
 //!
 //! Configuration values are loaded with the following precedence (highest first):
@@ -20,6 +34,20 @@
 //! 3. Default values
 //!
 //! See [`crate::config_env`] for environment variable documentation.
+//!
+//! ## Secret handling
+//!
+//! Secrets should preferentially live in secure storage rather than plaintext
+//! config files. This module provides the security-aware bridge that can:
+//!
+//! - read from keychain-backed secure storage when available
+//! - fall back to legacy key names during migration
+//! - self-heal secrets into canonical storage keys when possible
+//! - populate the public `AppConfig` model with hydrated runtime values
+//!
+//! Keeping this logic here rather than in `gestura-core-config` preserves a
+//! clean separation between pure config modeling and OS-integrated secret
+//! management.
 
 // All config types from the domain crate are part of this module's public API.
 pub use gestura_core_config::*;

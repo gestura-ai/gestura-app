@@ -1,15 +1,43 @@
-//! Security domain crate: encryption, keychain, sandboxing, GDPR compliance
+//! Security primitives, secure storage, sandboxing, and privacy helpers.
 //!
-//! This crate owns all security-related functionality for Gestura:
-//! - Secure storage (OS keychain, in-memory mock)
-//! - AES-256-GCM encryption (feature-gated behind `security`)
-//! - Secret provider backed by secure storage
-//! - Process sandboxing and isolation
-//! - GDPR compliance (data export, deletion, consent, audit trails)
+//! `gestura-core-security` owns the core security-related functionality for the
+//! workspace. It combines secret storage, optional encryption, execution
+//! sandboxing, and GDPR-focused data handling into a single domain crate.
 //!
-//! # Features
+//! ## Responsibilities
 //!
-//! - `security`: Enables AES-256-GCM encryption and OS keychain integration
+//! - secure storage abstraction with OS-keychain and mock implementations
+//! - AES-256-GCM encryption helpers behind the `security` feature
+//! - secret-provider integration for runtime config and provider credentials
+//! - sandbox configuration and isolation primitives
+//! - GDPR support such as export, deletion, consent, and audit-oriented helpers
+//!
+//! ## Security model
+//!
+//! The workspace follows a default-deny posture for dangerous behavior. This
+//! crate does not implement the full tool-permission system itself, but it
+//! provides the lower-level building blocks used by higher-level orchestration:
+//!
+//! - secure secret storage instead of plaintext where possible
+//! - explicit sandbox boundaries for untrusted execution
+//! - typed privacy and token models used across protocol and tool flows
+//!
+//! ## Feature-gated behavior
+//!
+//! - `security`: enables AES-256-GCM encryption and OS keychain integration
+//!
+//! When the `security` feature is unavailable or keychain access is disabled,
+//! the crate can fall back to mock/in-memory behavior that keeps tests and
+//! reduced environments usable without pretending secrets are durably protected.
+//!
+//! ## Stable import paths
+//!
+//! Most application code should import through the facade paths exposed by
+//! `gestura-core`, such as:
+//!
+//! - `gestura_core::security::*`
+//! - `gestura_core::gdpr::*`
+//! - `gestura_core::sandbox::*`
 
 pub mod gdpr;
 pub mod sandbox;
@@ -92,10 +120,12 @@ pub fn keychain_access_disabled() -> bool {
         || std::env::var_os("CI").is_some()
 }
 
-/// Create the appropriate secure storage implementation based on features
+/// Create the appropriate secure storage implementation based on features.
 ///
-/// When the `security` feature is enabled, returns a keychain-backed storage.
-/// Otherwise, returns an in-memory mock storage suitable for testing.
+/// When the `security` feature is enabled, this returns a keychain-backed
+/// storage unless keychain access has been explicitly disabled. Otherwise, it
+/// returns an in-memory mock storage suitable for tests and constrained
+/// environments.
 pub fn create_secure_storage() -> Box<dyn SecureStorage> {
     #[cfg(all(feature = "security", not(test)))]
     {
