@@ -45,10 +45,10 @@ The core crate contains all business logic organized by domain:
 ### Session Management
 | Module | Files | Description |
 |--------|-------|-------------|
-| `agent_sessions/` | `mod.rs`, `types.rs`, `store.rs` | Session persistence |
+| `agent_sessions/` | `mod.rs`, `types.rs`, `store.rs` | Session persistence + short-term working memory |
 | `session_manager.rs` | - | Active session lifecycle |
 | `context/` | `mod.rs`, `types.rs`, `manager.rs`, `analyzer.rs`, `cache.rs` | Context window management |
-| `memory_bank/` | `mod.rs` | Long-term memory storage |
+| `memory_bank/` | `mod.rs` | Long-term/shared memory storage with typed scope + provenance |
 
 ### Tools & Permissions
 | Module | Files | Description |
@@ -115,7 +115,7 @@ LLM provider implementations live in `crates/gestura-core-llm/`.
 |--------|-------|-------------|
 | `scripting/` | `mod.rs`, `runtime.rs` | Multi-language scripting engine |
 | `agents/` | `mod.rs` | Agent orchestration and spawning |
-| `tasks/` | `mod.rs` | Task management |
+| `tasks/` | `mod.rs` | Task management + memory lifecycle tracking |
 
 ### Infrastructure
 | Module | Files | Description |

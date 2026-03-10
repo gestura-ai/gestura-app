@@ -72,6 +72,642 @@ pub struct SessionToolCall {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Resource kind tracked in session working memory.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMemoryResourceKind {
+    /// User or assistant message-derived resource.
+    Message,
+    /// Tool execution result.
+    ToolCall,
+    /// File path or file content reference.
+    File,
+    /// Command or terminal output reference.
+    Command,
+    /// Web/documentation reference.
+    Web,
+    /// Task or workflow reference.
+    Task,
+    /// Knowledge or policy reference.
+    Knowledge,
+    /// Fallback classification.
+    Other,
+}
+
+/// A resource remembered for the active session only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionMemoryResource {
+    /// Stable local identifier.
+    pub id: String,
+    /// Resource classification.
+    pub kind: SessionMemoryResourceKind,
+    /// Human-readable resource label.
+    pub label: String,
+    /// Resource value or summary.
+    pub value: String,
+    /// Origin of the resource.
+    pub source: String,
+    /// Associated tool call if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A durable decision made during the session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionMemoryDecision {
+    /// Stable local identifier.
+    pub id: String,
+    /// Short decision summary.
+    pub summary: String,
+    /// Optional rationale or supporting detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
+    /// Tags used for targeted retrieval.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Status for a remembered blocker.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionBlockerStatus {
+    /// Blocker is currently active.
+    Open,
+    /// Blocker has been resolved.
+    Resolved,
+}
+
+/// A blocker tracked in short-term memory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionMemoryBlocker {
+    /// Stable local identifier.
+    pub id: String,
+    /// Short blocker summary.
+    pub summary: String,
+    /// Optional supporting detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Current blocker status.
+    pub status: SessionBlockerStatus,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Timeline entry kind for short-term memory.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMemoryEntryKind {
+    /// User request or goal.
+    UserGoal,
+    /// Assistant-produced synthesis.
+    AssistantSummary,
+    /// Tool-derived insight.
+    ToolInsight,
+    /// Handoff or checkpoint note.
+    Handoff,
+}
+
+/// Source bucket for promoting short-term memory into durable memory.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMemoryPromotionSource {
+    /// Promoted from a remembered resource.
+    Resource,
+    /// Promoted from a remembered decision.
+    Decision,
+    /// Promoted from a remembered blocker.
+    Blocker,
+    /// Promoted from a timeline entry.
+    Timeline,
+    /// Promoted from suggested next actions.
+    NextAction,
+}
+
+/// High-value short-term memory candidate for durable promotion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionMemoryPromotionCandidate {
+    /// Source bucket for the candidate.
+    pub source: SessionMemoryPromotionSource,
+    /// Short summary suitable for prompt or durable storage.
+    pub summary: String,
+    /// Optional detail for richer promotion records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Suggested retrieval tags.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Relative priority score.
+    pub score: f32,
+}
+
+/// A compact timeline entry retained in session-local memory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionMemoryEntry {
+    /// Stable local identifier.
+    pub id: String,
+    /// Entry classification.
+    pub kind: SessionMemoryEntryKind,
+    /// Short summary used for retrieval.
+    pub summary: String,
+    /// Optional detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Related tool call if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+}
+
+/// Session-scoped working memory for the active task.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionWorkingMemory {
+    /// Optional higher-level directive identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directive_id: Option<String>,
+    /// Optional active task identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_task_id: Option<String>,
+    /// Rolling summary of the current work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Suggested next actions for the current session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next_actions: Vec<String>,
+    /// Open questions discovered while working.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_questions: Vec<String>,
+    /// Resources gathered for the active session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<SessionMemoryResource>,
+    /// Decisions made during the session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<SessionMemoryDecision>,
+    /// Known blockers for the session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blockers: Vec<SessionMemoryBlocker>,
+    /// Compact timeline used for retrieval and handoff generation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub timeline: Vec<SessionMemoryEntry>,
+}
+
+impl SessionWorkingMemory {
+    const MAX_RESOURCES: usize = 24;
+    const MAX_DECISIONS: usize = 16;
+    const MAX_BLOCKERS: usize = 12;
+    const MAX_TIMELINE: usize = 24;
+    const MAX_NEXT_ACTIONS: usize = 10;
+    const MAX_OPEN_QUESTIONS: usize = 10;
+
+    fn new_id() -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+
+    fn truncate_text(text: &str, max_chars: usize) -> String {
+        let trimmed = text.trim();
+        if trimmed.chars().count() <= max_chars {
+            return trimmed.to_string();
+        }
+
+        let truncated: String = trimmed.chars().take(max_chars).collect();
+        format!("{}…", truncated.trim_end())
+    }
+
+    fn push_bounded<T>(items: &mut Vec<T>, item: T, max_len: usize) {
+        items.push(item);
+        if items.len() > max_len {
+            let excess = items.len() - max_len;
+            items.drain(0..excess);
+        }
+    }
+
+    /// Track a resource for the active session.
+    pub fn remember_resource(
+        &mut self,
+        kind: SessionMemoryResourceKind,
+        label: impl Into<String>,
+        value: impl Into<String>,
+        source: impl Into<String>,
+        tool_call_id: Option<String>,
+    ) {
+        let now = Utc::now();
+        let label = label.into();
+        let value = Self::truncate_text(&value.into(), 280);
+        let source = source.into();
+
+        if let Some(existing) = self.resources.iter_mut().find(|resource| {
+            resource.kind == kind
+                && resource.label == label
+                && resource.tool_call_id == tool_call_id
+        }) {
+            existing.value = value;
+            existing.source = source;
+            existing.updated_at = now;
+            return;
+        }
+
+        Self::push_bounded(
+            &mut self.resources,
+            SessionMemoryResource {
+                id: Self::new_id(),
+                kind,
+                label,
+                value,
+                source,
+                tool_call_id,
+                created_at: now,
+                updated_at: now,
+            },
+            Self::MAX_RESOURCES,
+        );
+    }
+
+    /// Track a decision for the active session.
+    pub fn remember_decision(
+        &mut self,
+        summary: impl Into<String>,
+        rationale: Option<String>,
+        tags: Vec<String>,
+    ) {
+        let now = Utc::now();
+        let summary = Self::truncate_text(&summary.into(), 180);
+
+        if let Some(existing) = self
+            .decisions
+            .iter_mut()
+            .find(|decision| decision.summary == summary)
+        {
+            existing.rationale = rationale;
+            existing.tags = tags;
+            existing.updated_at = now;
+            return;
+        }
+
+        Self::push_bounded(
+            &mut self.decisions,
+            SessionMemoryDecision {
+                id: Self::new_id(),
+                summary,
+                rationale,
+                tags,
+                created_at: now,
+                updated_at: now,
+            },
+            Self::MAX_DECISIONS,
+        );
+    }
+
+    /// Track or refresh a blocker in the active session.
+    pub fn remember_blocker(&mut self, summary: impl Into<String>, detail: Option<String>) {
+        let now = Utc::now();
+        let summary = Self::truncate_text(&summary.into(), 180);
+
+        if let Some(existing) = self
+            .blockers
+            .iter_mut()
+            .find(|blocker| blocker.summary == summary)
+        {
+            existing.detail = detail;
+            existing.status = SessionBlockerStatus::Open;
+            existing.updated_at = now;
+            return;
+        }
+
+        Self::push_bounded(
+            &mut self.blockers,
+            SessionMemoryBlocker {
+                id: Self::new_id(),
+                summary,
+                detail,
+                status: SessionBlockerStatus::Open,
+                created_at: now,
+                updated_at: now,
+            },
+            Self::MAX_BLOCKERS,
+        );
+    }
+
+    /// Resolve a blocker previously tracked in the active session.
+    pub fn resolve_blocker(&mut self, summary: &str) {
+        if let Some(blocker) = self
+            .blockers
+            .iter_mut()
+            .find(|blocker| blocker.summary == summary)
+        {
+            blocker.status = SessionBlockerStatus::Resolved;
+            blocker.updated_at = Utc::now();
+        }
+    }
+
+    /// Record a next action for the current session.
+    pub fn add_next_action(&mut self, action: impl Into<String>) {
+        let action = Self::truncate_text(&action.into(), 160);
+        if !action.is_empty() && !self.next_actions.iter().any(|existing| existing == &action) {
+            Self::push_bounded(&mut self.next_actions, action, Self::MAX_NEXT_ACTIONS);
+        }
+    }
+
+    /// Record an open question for the current session.
+    pub fn add_open_question(&mut self, question: impl Into<String>) {
+        let question = Self::truncate_text(&question.into(), 160);
+        if !question.is_empty()
+            && !self
+                .open_questions
+                .iter()
+                .any(|existing| existing == &question)
+        {
+            Self::push_bounded(&mut self.open_questions, question, Self::MAX_OPEN_QUESTIONS);
+        }
+    }
+
+    /// Track the current user goal.
+    pub fn remember_user_goal(&mut self, content: &str) {
+        let summary = Self::truncate_text(content, 180);
+        if summary.is_empty() {
+            return;
+        }
+
+        self.summary = Some(summary.clone());
+        Self::push_bounded(
+            &mut self.timeline,
+            SessionMemoryEntry {
+                id: Self::new_id(),
+                kind: SessionMemoryEntryKind::UserGoal,
+                summary,
+                detail: None,
+                tool_call_id: None,
+                created_at: Utc::now(),
+            },
+            Self::MAX_TIMELINE,
+        );
+    }
+
+    /// Track an assistant-produced summary for short-term retrieval.
+    pub fn remember_assistant_summary(&mut self, content: &str, thinking: Option<&str>) {
+        let summary = Self::truncate_text(content, 220);
+        if summary.is_empty() {
+            return;
+        }
+
+        self.summary = Some(summary.clone());
+        Self::push_bounded(
+            &mut self.timeline,
+            SessionMemoryEntry {
+                id: Self::new_id(),
+                kind: SessionMemoryEntryKind::AssistantSummary,
+                summary,
+                detail: thinking.map(|value| Self::truncate_text(value, 220)),
+                tool_call_id: None,
+                created_at: Utc::now(),
+            },
+            Self::MAX_TIMELINE,
+        );
+    }
+
+    /// Track a tool call in short-term memory.
+    pub fn remember_tool_call(&mut self, call: &SessionToolCall) {
+        let summary = format!("{} executed", call.name);
+        self.remember_resource(
+            SessionMemoryResourceKind::ToolCall,
+            call.name.clone(),
+            call.result.clone(),
+            "tool_call",
+            Some(call.id.clone()),
+        );
+        Self::push_bounded(
+            &mut self.timeline,
+            SessionMemoryEntry {
+                id: Self::new_id(),
+                kind: SessionMemoryEntryKind::ToolInsight,
+                summary,
+                detail: Some(Self::truncate_text(&call.result, 220)),
+                tool_call_id: Some(call.id.clone()),
+                created_at: Utc::now(),
+            },
+            Self::MAX_TIMELINE,
+        );
+    }
+
+    /// Track a tool result message in short-term memory.
+    pub fn remember_tool_result(&mut self, tool_call_id: &str, content: &str) {
+        self.remember_resource(
+            SessionMemoryResourceKind::ToolCall,
+            format!("Tool result {tool_call_id}"),
+            content,
+            "tool_result",
+            Some(tool_call_id.to_string()),
+        );
+    }
+
+    /// Build targeted short-term memory sections for prompt context.
+    pub fn relevant_sections(&self, query: &str, limit: usize) -> Vec<String> {
+        let query_lower = query.to_ascii_lowercase();
+        let mut scored_sections: Vec<(f32, String)> = Vec::new();
+
+        if let Some(summary) = &self.summary {
+            let score = if summary.to_ascii_lowercase().contains(&query_lower) {
+                4.0
+            } else {
+                1.5
+            };
+            scored_sections.push((score, format!("Working summary: {summary}")));
+        }
+
+        for resource in &self.resources {
+            let haystack = format!("{} {} {}", resource.label, resource.value, resource.source)
+                .to_ascii_lowercase();
+            let score = if query_lower.is_empty() || haystack.contains(&query_lower) {
+                3.0
+            } else {
+                0.8
+            };
+            scored_sections.push((
+                score,
+                format!(
+                    "Resource [{}]: {} => {}",
+                    resource.source, resource.label, resource.value
+                ),
+            ));
+        }
+
+        for decision in &self.decisions {
+            let haystack = format!(
+                "{} {} {}",
+                decision.summary,
+                decision.rationale.clone().unwrap_or_default(),
+                decision.tags.join(" ")
+            )
+            .to_ascii_lowercase();
+            let score = if query_lower.is_empty() || haystack.contains(&query_lower) {
+                3.8
+            } else {
+                1.0
+            };
+            let detail = decision
+                .rationale
+                .as_deref()
+                .map(|value| format!(" ({value})"))
+                .unwrap_or_default();
+            scored_sections.push((score, format!("Decision: {}{}", decision.summary, detail)));
+        }
+
+        for blocker in &self.blockers {
+            let haystack = format!(
+                "{} {} {:?}",
+                blocker.summary,
+                blocker.detail.clone().unwrap_or_default(),
+                blocker.status
+            )
+            .to_ascii_lowercase();
+            let score = if query_lower.is_empty() || haystack.contains(&query_lower) {
+                3.6
+            } else {
+                0.9
+            };
+            let detail = blocker
+                .detail
+                .as_deref()
+                .map(|value| format!(" ({value})"))
+                .unwrap_or_default();
+            scored_sections.push((
+                score,
+                format!(
+                    "Blocker [{:?}]: {}{}",
+                    blocker.status, blocker.summary, detail
+                ),
+            ));
+        }
+
+        for entry in &self.timeline {
+            let haystack = format!(
+                "{} {} {:?}",
+                entry.summary,
+                entry.detail.clone().unwrap_or_default(),
+                entry.kind
+            )
+            .to_ascii_lowercase();
+            let score = if query_lower.is_empty() || haystack.contains(&query_lower) {
+                2.8
+            } else {
+                0.7
+            };
+            let detail = entry
+                .detail
+                .as_deref()
+                .map(|value| format!(" ({value})"))
+                .unwrap_or_default();
+            scored_sections.push((score, format!("Timeline: {}{}", entry.summary, detail)));
+        }
+
+        if !self.next_actions.is_empty() {
+            scored_sections.push((
+                2.0,
+                format!("Next actions: {}", self.next_actions.join("; ")),
+            ));
+        }
+
+        if !self.open_questions.is_empty() {
+            scored_sections.push((
+                2.0,
+                format!("Open questions: {}", self.open_questions.join("; ")),
+            ));
+        }
+
+        scored_sections.sort_by(|a, b| b.0.total_cmp(&a.0));
+        scored_sections
+            .into_iter()
+            .take(limit)
+            .map(|(_, section)| section)
+            .collect()
+    }
+
+    /// Select high-value short-term memory items for durable promotion.
+    pub fn promotion_candidates(&self, limit: usize) -> Vec<SessionMemoryPromotionCandidate> {
+        let mut candidates = Vec::new();
+
+        for decision in &self.decisions {
+            let mut tags = decision.tags.clone();
+            if tags.is_empty() {
+                tags.push("decision".to_string());
+            }
+            candidates.push(SessionMemoryPromotionCandidate {
+                source: SessionMemoryPromotionSource::Decision,
+                summary: decision.summary.clone(),
+                detail: decision.rationale.clone(),
+                tags,
+                score: 4.0,
+            });
+        }
+
+        for blocker in &self.blockers {
+            if blocker.status == SessionBlockerStatus::Resolved {
+                continue;
+            }
+            candidates.push(SessionMemoryPromotionCandidate {
+                source: SessionMemoryPromotionSource::Blocker,
+                summary: blocker.summary.clone(),
+                detail: blocker.detail.clone(),
+                tags: vec!["blocker".to_string()],
+                score: 3.6,
+            });
+        }
+
+        for resource in &self.resources {
+            candidates.push(SessionMemoryPromotionCandidate {
+                source: SessionMemoryPromotionSource::Resource,
+                summary: format!("{}: {}", resource.label, resource.value),
+                detail: Some(format!(
+                    "kind={:?}; source={}",
+                    resource.kind, resource.source
+                )),
+                tags: vec![
+                    resource.source.clone(),
+                    format!("{:?}", resource.kind).to_ascii_lowercase(),
+                ],
+                score: 3.0,
+            });
+        }
+
+        for entry in &self.timeline {
+            if entry.kind == SessionMemoryEntryKind::AssistantSummary
+                || entry.kind == SessionMemoryEntryKind::Handoff
+            {
+                candidates.push(SessionMemoryPromotionCandidate {
+                    source: SessionMemoryPromotionSource::Timeline,
+                    summary: entry.summary.clone(),
+                    detail: entry.detail.clone(),
+                    tags: vec![format!("{:?}", entry.kind).to_ascii_lowercase()],
+                    score: 2.4,
+                });
+            }
+        }
+
+        for action in &self.next_actions {
+            candidates.push(SessionMemoryPromotionCandidate {
+                source: SessionMemoryPromotionSource::NextAction,
+                summary: action.clone(),
+                detail: None,
+                tags: vec!["next_action".to_string()],
+                score: 1.8,
+            });
+        }
+
+        candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
+        candidates.truncate(limit);
+        candidates
+    }
+}
+
 /// Session-scoped LLM configuration override.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionLlmConfig {
@@ -186,6 +822,9 @@ pub struct SessionState {
     /// Tool call history.
     #[serde(default)]
     pub tool_calls: Vec<SessionToolCall>,
+    /// Short-term working memory for this session.
+    #[serde(default)]
+    pub working_memory: SessionWorkingMemory,
     /// Total tokens used in this session (best-effort).
     #[serde(default)]
     pub total_tokens: u64,
@@ -238,6 +877,7 @@ impl SessionState {
             timestamp: Utc::now(),
             source,
         });
+        self.working_memory.remember_user_goal(content);
     }
 
     /// Add an assistant message.
@@ -246,10 +886,12 @@ impl SessionState {
             role: "assistant".to_string(),
             content: content.to_string(),
             tool_call_id: None,
-            thinking,
+            thinking: thinking.clone(),
             timestamp: Utc::now(),
             source: MessageSource::System,
         });
+        self.working_memory
+            .remember_assistant_summary(content, thinking.as_deref());
     }
 
     /// Add a tool result message.
@@ -262,11 +904,57 @@ impl SessionState {
             timestamp: Utc::now(),
             source: MessageSource::System,
         });
+        self.working_memory
+            .remember_tool_result(tool_call_id, content);
     }
 
     /// Record a tool call.
     pub fn record_tool_call(&mut self, call: SessionToolCall) {
+        self.working_memory.remember_tool_call(&call);
         self.tool_calls.push(call);
+    }
+
+    /// Add a decision to session working memory.
+    pub fn remember_decision(
+        &mut self,
+        summary: impl Into<String>,
+        rationale: Option<String>,
+        tags: Vec<String>,
+    ) {
+        self.working_memory
+            .remember_decision(summary, rationale, tags);
+    }
+
+    /// Add or refresh a blocker in session working memory.
+    pub fn remember_blocker(&mut self, summary: impl Into<String>, detail: Option<String>) {
+        self.working_memory.remember_blocker(summary, detail);
+    }
+
+    /// Resolve an existing blocker in session working memory.
+    pub fn resolve_blocker(&mut self, summary: &str) {
+        self.working_memory.resolve_blocker(summary);
+    }
+
+    /// Track an explicit resource in session working memory.
+    pub fn remember_resource(
+        &mut self,
+        kind: SessionMemoryResourceKind,
+        label: impl Into<String>,
+        value: impl Into<String>,
+        source: impl Into<String>,
+    ) {
+        self.working_memory
+            .remember_resource(kind, label, value, source, None);
+    }
+
+    /// Return prompt-ready short-term memory sections relevant to the query.
+    pub fn relevant_working_memory_sections(&self, query: &str, limit: usize) -> Vec<String> {
+        self.working_memory.relevant_sections(query, limit)
+    }
+
+    /// Return high-value short-term memory candidates for durable promotion.
+    pub fn promotion_candidates(&self, limit: usize) -> Vec<SessionMemoryPromotionCandidate> {
+        self.working_memory.promotion_candidates(limit)
     }
 
     /// Convert to pipeline messages.
@@ -387,5 +1075,107 @@ impl AgentSession {
     /// Serialize this session as pretty JSON.
     pub fn to_pretty_json(&self) -> Result<String, gestura_core_foundation::AppError> {
         Ok(serde_json::to_string_pretty(self)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_mutations_update_working_memory() {
+        let mut state = SessionState::default();
+
+        state.add_user_message("Investigate memory workflow", MessageSource::Text);
+        state.add_assistant_message(
+            "I will inspect the memory-bank and session modules.",
+            Some("Need to compare durable vs session state".to_string()),
+        );
+        state.record_tool_call(SessionToolCall {
+            id: "tool-1".to_string(),
+            name: "codebase-retrieval".to_string(),
+            arguments: "{}".to_string(),
+            result: "Found memory bank implementation".to_string(),
+            success: true,
+            duration_ms: 12,
+            timestamp: Utc::now(),
+        });
+        state.add_tool_message("tool-1", "Relevant files collected");
+
+        assert!(state.working_memory.summary.is_some());
+        assert!(!state.working_memory.timeline.is_empty());
+        assert!(!state.working_memory.resources.is_empty());
+        assert!(
+            state
+                .working_memory
+                .resources
+                .iter()
+                .any(|resource| resource.tool_call_id.as_deref() == Some("tool-1"))
+        );
+    }
+
+    #[test]
+    fn relevant_working_memory_sections_prioritize_matches() {
+        let mut state = SessionState::default();
+        state.remember_decision(
+            "Adopt scoped long-term memory",
+            Some("Shared memory should remain directive-scoped".to_string()),
+            vec!["memory".to_string(), "directive".to_string()],
+        );
+        state.remember_blocker(
+            "Need prompt-budget controls",
+            Some("Avoid flooding context with low-value memory".to_string()),
+        );
+        state.remember_resource(
+            SessionMemoryResourceKind::File,
+            "memory_bank.rs",
+            "Durable memory entry schema",
+            "view",
+        );
+
+        let sections = state.relevant_working_memory_sections("directive memory", 3);
+        assert_eq!(sections.len(), 3);
+        assert!(sections.iter().any(|section| section.contains("Decision")));
+    }
+
+    #[test]
+    fn promotion_candidates_prioritize_decisions_and_blockers() {
+        let mut state = SessionState::default();
+        state.remember_decision(
+            "Adopt directive-scoped durable memory",
+            Some("Cross-agent coordination needs shared context".to_string()),
+            vec!["memory".to_string(), "directive".to_string()],
+        );
+        state.remember_blocker(
+            "Need reflection gate for promotions",
+            Some("Avoid noisy long-term memory".to_string()),
+        );
+
+        let candidates = state.promotion_candidates(2);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].source, SessionMemoryPromotionSource::Decision);
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| { candidate.source == SessionMemoryPromotionSource::Blocker })
+        );
+    }
+
+    #[test]
+    fn working_memory_round_trips_through_session_json() {
+        let mut session = AgentSession::new_sandbox(None).unwrap();
+        session.state.remember_blocker(
+            "Need orchestrator handoff summary",
+            Some("Subagent outputs should promote selectively".to_string()),
+        );
+
+        let json = session.to_pretty_json().unwrap();
+        let restored: AgentSession = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.state.working_memory.blockers.len(), 1);
+        assert_eq!(
+            restored.state.working_memory.blockers[0].summary,
+            "Need orchestrator handoff summary"
+        );
     }
 }

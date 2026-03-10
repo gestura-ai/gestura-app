@@ -78,6 +78,27 @@ fn build_prompt_skips_guardrails_when_disabled() {
 }
 
 #[test]
+fn build_prompt_includes_memory_sections() {
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let request = AgentRequest::new("continue the implementation");
+
+    let context = crate::context::ResolvedContext {
+        memory_sections: vec![
+            "### Session Working Memory\nDecision: Keep short-term memory session scoped"
+                .to_string(),
+            "### Long-Term Memory\nShared directive summary".to_string(),
+        ],
+        ..Default::default()
+    };
+
+    let prompt = pipeline.build_prompt(&request, &context);
+
+    assert!(prompt.contains("Relevant memory:"));
+    assert!(prompt.contains("Decision: Keep short-term memory session scoped"));
+    assert!(prompt.contains("Shared directive summary"));
+}
+
+#[test]
 fn test_pipeline_config_defaults() {
     let config = PipelineConfig::default();
     assert_eq!(config.max_iterations, 10);

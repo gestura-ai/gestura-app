@@ -115,6 +115,71 @@ pub struct TaskBackgroundJob {
     pub message: Option<String>,
 }
 
+/// Phase in the task/memory lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskMemoryPhase {
+    /// Task was delegated to a subagent.
+    Delegated,
+    /// Task produced a handoff summary.
+    Handoff,
+    /// Task promoted durable/shared memory.
+    Promoted,
+    /// Task hit a blocker relevant to memory tracking.
+    Blocked,
+}
+
+/// Structured event recorded in task metadata for memory lifecycle tracking.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskMemoryEvent {
+    /// Lifecycle phase represented by this event.
+    pub phase: TaskMemoryPhase,
+    /// Human-readable summary.
+    pub summary: String,
+    /// Optional scope for the related memory record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Optional memory type for the related memory record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_type: Option<String>,
+    /// Optional durable memory file path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_file_path: Option<String>,
+    /// Timestamp when this event was recorded.
+    pub recorded_at: DateTime<Utc>,
+}
+
+impl TaskMemoryEvent {
+    /// Create a new task memory event.
+    pub fn new(
+        phase: TaskMemoryPhase,
+        summary: impl Into<String>,
+        scope: Option<String>,
+        memory_type: Option<String>,
+        memory_file_path: Option<String>,
+    ) -> Self {
+        Self {
+            phase,
+            summary: summary.into(),
+            scope,
+            memory_type,
+            memory_file_path,
+            recorded_at: Utc::now(),
+        }
+    }
+}
+
+/// Structured task-local memory lifecycle information persisted in metadata.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TaskMemoryLifecycle {
+    /// Recorded lifecycle events.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<TaskMemoryEvent>,
+    /// Most recent durable memory file path, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_memory_file_path: Option<String>,
+}
+
 impl TaskBackgroundJob {
     /// Create a new background job record.
     pub fn new(
@@ -891,6 +956,75 @@ impl TaskManager {
         Ok(())
     }
 
+    /// Record a structured memory lifecycle event in task metadata.
+    pub fn record_memory_event(
+        &self,
+        session_id: &str,
+        task_id: &str,
+        event: TaskMemoryEvent,
+    ) -> Result<(), TaskError> {
+        let mut task_list = self.get_or_load(session_id)?;
+        let task = task_list
+            .find_task_mut(task_id)
+            .ok_or_else(|| TaskError::NotFound(task_id.to_string()))?;
+
+        let metadata = task.metadata.get_or_insert_with(|| serde_json::json!({}));
+        if !metadata.is_object() {
+            *metadata = serde_json::json!({});
+        }
+
+        let Some(metadata_map) = metadata.as_object_mut() else {
+            return Err(TaskError::InvalidInput(
+                "task metadata could not be represented as an object".to_string(),
+            ));
+        };
+
+        let mut lifecycle: TaskMemoryLifecycle = metadata_map
+            .get("memory_lifecycle")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default();
+
+        if let Some(memory_file_path) = event.memory_file_path.clone() {
+            lifecycle.last_memory_file_path = Some(memory_file_path);
+        }
+        lifecycle.events.push(event);
+        if lifecycle.events.len() > 32 {
+            let excess = lifecycle.events.len() - 32;
+            lifecycle.events.drain(0..excess);
+        }
+
+        metadata_map.insert(
+            "memory_lifecycle".to_string(),
+            serde_json::to_value(&lifecycle)?,
+        );
+        task.updated_at = Utc::now();
+
+        self.update_and_save(task_list)?;
+        Ok(())
+    }
+
+    /// Read structured memory lifecycle data from task metadata.
+    pub fn get_memory_lifecycle(
+        &self,
+        session_id: &str,
+        task_id: &str,
+    ) -> Result<Option<TaskMemoryLifecycle>, TaskError> {
+        let task = self.get_task(session_id, task_id)?;
+        let Some(task) = task else {
+            return Ok(None);
+        };
+        let Some(metadata) = task.metadata else {
+            return Ok(None);
+        };
+        let Some(value) = metadata.get("memory_lifecycle") else {
+            return Ok(None);
+        };
+
+        Ok(Some(serde_json::from_value(value.clone())?))
+    }
+
     /// Get a specific task by ID
     pub fn get_task(&self, session_id: &str, task_id: &str) -> Result<Option<Task>, TaskError> {
         let task_list = self.get_or_load(session_id)?;
@@ -1234,5 +1368,39 @@ mod tests {
         assert_eq!(tree[0].children.len(), 1);
         assert_eq!(tree[0].children[0].task.id, child.id);
         assert_eq!(tree[0].children[0].children.len(), 1);
+    }
+
+    #[test]
+    fn test_record_memory_event() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let session_id = "session-123";
+
+        let task = manager
+            .create_task(session_id, "Memory Task", "Track delegation", None)
+            .unwrap();
+
+        manager
+            .record_memory_event(
+                session_id,
+                &task.id,
+                TaskMemoryEvent::new(
+                    TaskMemoryPhase::Delegated,
+                    "Delegated to subagent",
+                    Some("directive".to_string()),
+                    Some("handoff".to_string()),
+                    None,
+                ),
+            )
+            .unwrap();
+
+        let lifecycle = manager
+            .get_memory_lifecycle(session_id, &task.id)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(lifecycle.events.len(), 1);
+        assert_eq!(lifecycle.events[0].phase, TaskMemoryPhase::Delegated);
+        assert_eq!(lifecycle.events[0].summary, "Delegated to subagent");
     }
 }

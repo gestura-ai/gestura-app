@@ -10,7 +10,11 @@
 
 use crate::tools::PermissionManager;
 use crate::{AgentPipeline, AgentRequest, AppConfig, RequestSource};
+use crate::{MemoryBankEntry, MemoryScope, MemoryType};
+use crate::{TaskManager, TaskStatus};
+use serde_json::json;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{Mutex, RwLock, mpsc};
 
@@ -145,6 +149,8 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             active.insert(task_id.clone(), task.clone());
         }
 
+        record_task_dispatch(&task);
+
         // Notify observer (best-effort).
         let observer_for_start = { self.observer.read().await.clone() };
         if let Some(obs) = observer_for_start.as_ref() {
@@ -263,10 +269,25 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
     agent_manager.update_activity(&task.agent_id).await;
 
     // Build the agent request with tool filtering.
-    let request = AgentRequest::new(&full_prompt)
+    let mut request = AgentRequest::new(&full_prompt)
         .with_streaming(false)
         .with_source(RequestSource::Orchestrator)
-        .with_allowed_tools(task.required_tools.clone());
+        .with_allowed_tools(task.required_tools.clone())
+        .with_agent(task.agent_id.clone())
+        .with_memory_tags(task.memory_tags.clone());
+
+    if let Some(session_id) = task.session_id.as_deref() {
+        request = request.with_session(session_id.to_string());
+    }
+    if let Some(directive_id) = task.directive_id.as_deref() {
+        request = request.with_directive(directive_id.to_string());
+    }
+    if let Some(tracking_task_id) = task.tracking_task_id.as_deref() {
+        request = request.with_task(tracking_task_id.to_string());
+    }
+    if let Some(workspace_dir) = task.workspace_dir.as_ref() {
+        request = request.with_workspace(workspace_dir.clone());
+    }
 
     // Execute via unified pipeline.
     let pipeline = AgentPipeline::with_provider_optimized_config(config.clone()).with_knowledge(
@@ -308,6 +329,17 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
                 })
                 .collect();
 
+            let task_result = TaskResult {
+                task_id: task.id.clone(),
+                agent_id: task.agent_id.clone(),
+                success: true,
+                output: response.content.clone(),
+                tool_calls: tool_calls.clone(),
+                duration_ms: 0,
+            };
+            let memory_file_path = persist_delegated_task_memory(task, &task_result).await;
+            record_task_completion(task, &task_result, memory_file_path.as_deref());
+
             tracing::info!(
                 agent_id = %task.agent_id,
                 task_id = %task.id,
@@ -319,6 +351,17 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
             (Ok(response.content), tool_calls)
         }
         Err(e) => {
+            let task_result = TaskResult {
+                task_id: task.id.clone(),
+                agent_id: task.agent_id.clone(),
+                success: false,
+                output: e.to_string(),
+                tool_calls: Vec::new(),
+                duration_ms: 0,
+            };
+            let memory_file_path = persist_delegated_task_memory(task, &task_result).await;
+            record_task_completion(task, &task_result, memory_file_path.as_deref());
+
             tracing::error!(
                 agent_id = %task.agent_id,
                 task_id = %task.id,
@@ -328,6 +371,235 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
             (Err(e.to_string()), Vec::new())
         }
     }
+}
+
+async fn persist_delegated_task_memory(
+    task: &DelegatedTask,
+    task_result: &TaskResult,
+) -> Option<PathBuf> {
+    let workspace_dir = task.workspace_dir.as_deref()?;
+    let session_id = task.session_id.as_deref()?;
+
+    let mut tags = task.memory_tags.clone();
+    tags.extend(["delegation".to_string(), "subagent".to_string()]);
+    tags.sort();
+    tags.dedup();
+
+    let summary = if task_result.success {
+        task.name
+            .clone()
+            .unwrap_or_else(|| format!("Delegated task completed by {}", task.agent_id))
+    } else {
+        task.name
+            .clone()
+            .unwrap_or_else(|| format!("Delegated task blocked on {}", task.agent_id))
+    };
+
+    let tool_calls = if task_result.tool_calls.is_empty() {
+        "- No tool calls recorded".to_string()
+    } else {
+        task_result
+            .tool_calls
+            .iter()
+            .map(|call| {
+                format!(
+                    "- {} (success: {}, {} ms)",
+                    call.tool_name, call.success, call.duration_ms
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let content = format!(
+        "## Delegated Task\n- Orchestrator Task ID: {}\n- Tracking Task ID: {}\n- Agent ID: {}\n- Directive ID: {}\n\n## Prompt\n{}\n\n## Result\n{}\n\n## Tool Calls\n{}\n",
+        task.id,
+        task.tracking_task_id.as_deref().unwrap_or("n/a"),
+        task.agent_id,
+        task.directive_id.as_deref().unwrap_or("n/a"),
+        task.prompt,
+        task_result.output,
+        tool_calls,
+    );
+
+    let entry = MemoryBankEntry::new(session_id.to_string(), summary, content)
+        .with_memory_type(if task_result.success {
+            MemoryType::Handoff
+        } else {
+            MemoryType::Blocker
+        })
+        .with_scope(if task.directive_id.is_some() {
+            MemoryScope::Directive
+        } else {
+            MemoryScope::Session
+        })
+        .with_category("delegation")
+        .with_provenance(
+            Some(
+                task.tracking_task_id
+                    .clone()
+                    .unwrap_or_else(|| task.id.clone()),
+            ),
+            task.directive_id.clone(),
+            Some(task.agent_id.clone()),
+        )
+        .with_tags(tags)
+        .with_promotion(
+            session_id.to_string(),
+            "Delegated subagent result promoted for supervisor retrieval",
+        )
+        .with_confidence(if task_result.success { 0.88 } else { 0.65 });
+
+    match crate::save_to_memory_bank(workspace_dir, &entry).await {
+        Ok(path) => Some(path),
+        Err(error) => {
+            tracing::warn!(
+                task_id = %task.id,
+                agent_id = %task.agent_id,
+                error = %error,
+                "Failed to persist delegated task memory"
+            );
+            None
+        }
+    }
+}
+
+fn record_task_dispatch(task: &DelegatedTask) {
+    let Some(workspace_dir) = task.workspace_dir.as_deref() else {
+        return;
+    };
+    let Some(session_id) = task.session_id.as_deref() else {
+        return;
+    };
+    let Some(tracking_task_id) = task.tracking_task_id.as_deref() else {
+        return;
+    };
+
+    let manager = TaskManager::new(workspace_dir);
+    let _ = manager.update_task_status(session_id, tracking_task_id, TaskStatus::InProgress);
+    let _ = manager.record_memory_event(
+        session_id,
+        tracking_task_id,
+        crate::tasks::TaskMemoryEvent::new(
+            crate::tasks::TaskMemoryPhase::Delegated,
+            format!("Delegated to agent {}", task.agent_id),
+            task.directive_id.as_ref().map(|_| "directive".to_string()),
+            Some("handoff".to_string()),
+            None,
+        ),
+    );
+    merge_task_metadata(
+        &manager,
+        session_id,
+        tracking_task_id,
+        json!({
+            "delegation": {
+                "orchestrator_task_id": task.id,
+                "agent_id": task.agent_id,
+                "directive_id": task.directive_id,
+                "state": "delegated",
+                "memory_tags": task.memory_tags,
+            }
+        }),
+    );
+}
+
+fn record_task_completion(
+    task: &DelegatedTask,
+    task_result: &TaskResult,
+    memory_file_path: Option<&Path>,
+) {
+    let Some(workspace_dir) = task.workspace_dir.as_deref() else {
+        return;
+    };
+    let Some(session_id) = task.session_id.as_deref() else {
+        return;
+    };
+    let Some(tracking_task_id) = task.tracking_task_id.as_deref() else {
+        return;
+    };
+
+    let manager = TaskManager::new(workspace_dir);
+    if task_result.success {
+        let _ = manager.update_task_status(session_id, tracking_task_id, TaskStatus::Completed);
+    }
+    let _ = manager.record_memory_event(
+        session_id,
+        tracking_task_id,
+        crate::tasks::TaskMemoryEvent::new(
+            if task_result.success {
+                crate::tasks::TaskMemoryPhase::Promoted
+            } else {
+                crate::tasks::TaskMemoryPhase::Blocked
+            },
+            if task_result.success {
+                format!("Delegated work completed by {}", task.agent_id)
+            } else {
+                format!("Delegated work blocked on {}", task.agent_id)
+            },
+            Some(
+                if task.directive_id.is_some() {
+                    "directive"
+                } else {
+                    "session"
+                }
+                .to_string(),
+            ),
+            Some(
+                if task_result.success {
+                    "handoff"
+                } else {
+                    "blocker"
+                }
+                .to_string(),
+            ),
+            memory_file_path.map(|path| path.display().to_string()),
+        ),
+    );
+    merge_task_metadata(
+        &manager,
+        session_id,
+        tracking_task_id,
+        json!({
+            "delegation": {
+                "orchestrator_task_id": task.id,
+                "agent_id": task.agent_id,
+                "directive_id": task.directive_id,
+                "state": if task_result.success { "completed" } else { "blocked" },
+                "last_output": task_result.output,
+                "memory_file_path": memory_file_path.map(|path| path.display().to_string()),
+                "tool_calls": task_result.tool_calls,
+            }
+        }),
+    );
+}
+
+fn merge_task_metadata(
+    manager: &TaskManager,
+    session_id: &str,
+    task_id: &str,
+    patch: serde_json::Value,
+) {
+    let existing = manager
+        .get_task(session_id, task_id)
+        .ok()
+        .flatten()
+        .and_then(|task| task.metadata)
+        .unwrap_or_else(|| json!({}));
+
+    let Some(mut existing_map) = existing.as_object().cloned() else {
+        return;
+    };
+    let Some(patch_map) = patch.as_object() else {
+        return;
+    };
+
+    for (key, value) in patch_map {
+        existing_map.insert(key.clone(), value.clone());
+    }
+
+    let _ =
+        manager.update_task_metadata(session_id, task_id, serde_json::Value::Object(existing_map));
 }
 
 #[async_trait::async_trait]
@@ -411,6 +683,10 @@ mod tests {
             required_tools: vec![],
             priority: 1,
             session_id: None,
+            directive_id: None,
+            tracking_task_id: None,
+            workspace_dir: None,
+            memory_tags: vec![],
             name: None,
         };
 

@@ -153,10 +153,18 @@ pub struct RequestMetadata {
     pub source: RequestSource,
     /// Session ID if available
     pub session_id: Option<String>,
+    /// Higher-level directive ID if available.
+    pub directive_id: Option<String>,
+    /// Active task ID if available.
+    pub task_id: Option<String>,
+    /// Agent ID if available.
+    pub agent_id: Option<String>,
     /// User ID if available (for A2A)
     pub user_id: Option<String>,
     /// Additional context hints
     pub hints: HashMap<String, String>,
+    /// Memory tags used to target retrieval.
+    pub memory_tags: Vec<String>,
     /// Allowed tools (if empty, all tools are allowed)
     pub allowed_tools: Vec<String>,
     /// Optional per-request override for whether tools may be executed.
@@ -455,6 +463,30 @@ impl AgentRequest {
     /// Set session ID
     pub fn with_session(mut self, session_id: impl Into<String>) -> Self {
         self.metadata.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Set directive ID for targeted memory retrieval and coordination.
+    pub fn with_directive(mut self, directive_id: impl Into<String>) -> Self {
+        self.metadata.directive_id = Some(directive_id.into());
+        self
+    }
+
+    /// Set active task ID for targeted memory retrieval and coordination.
+    pub fn with_task(mut self, task_id: impl Into<String>) -> Self {
+        self.metadata.task_id = Some(task_id.into());
+        self
+    }
+
+    /// Set agent ID for targeted memory retrieval and coordination.
+    pub fn with_agent(mut self, agent_id: impl Into<String>) -> Self {
+        self.metadata.agent_id = Some(agent_id.into());
+        self
+    }
+
+    /// Set retrieval tags for targeted memory loading.
+    pub fn with_memory_tags(mut self, tags: Vec<String>) -> Self {
+        self.metadata.memory_tags = tags;
         self
     }
 

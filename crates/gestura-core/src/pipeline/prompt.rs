@@ -35,6 +35,40 @@ impl AgentPipeline {
             }
         }
 
+        if !context.memory_sections.is_empty() {
+            const MAX_MEMORY_SECTIONS: usize = 4;
+            const MAX_MEMORY_CHARS: usize = 2_400;
+
+            prompt.push_str("Relevant memory:\n");
+            let mut used_chars = 0usize;
+            for section in context.memory_sections.iter().take(MAX_MEMORY_SECTIONS) {
+                if used_chars >= MAX_MEMORY_CHARS {
+                    break;
+                }
+
+                let remaining = MAX_MEMORY_CHARS.saturating_sub(used_chars);
+                let rendered = if section.chars().count() > remaining {
+                    format!(
+                        "{}…",
+                        section
+                            .chars()
+                            .take(remaining)
+                            .collect::<String>()
+                            .trim_end()
+                    )
+                } else {
+                    section.clone()
+                };
+
+                prompt.push_str(&rendered);
+                used_chars += rendered.chars().count();
+                if !rendered.ends_with('\n') {
+                    prompt.push('\n');
+                }
+                prompt.push('\n');
+            }
+        }
+
         // Add knowledge context (memory bank + enabled knowledge items)
         if !context.knowledge.is_empty() {
             for knowledge_section in &context.knowledge {
@@ -132,42 +166,103 @@ impl AgentPipeline {
 
     /// Search memory bank for relevant entries and load them into context
     /// Returns additional context string to prepend to the resolved context
+    pub(super) fn load_session_working_memory(
+        &self,
+        session_id: Option<&str>,
+        query: &str,
+        max_entries: usize,
+    ) -> Option<Vec<String>> {
+        let session_id = session_id?;
+        let store = FileAgentSessionStore::new_default();
+
+        match store.load(session_id) {
+            Ok(session) => {
+                let sections = session
+                    .state
+                    .relevant_working_memory_sections(query, max_entries)
+                    .into_iter()
+                    .map(|section| format!("### Session Working Memory\n{section}"))
+                    .collect::<Vec<_>>();
+
+                if sections.is_empty() {
+                    tracing::debug!(session_id, "No short-term working memory found for session");
+                    None
+                } else {
+                    Some(sections)
+                }
+            }
+            Err(error) => {
+                tracing::debug!(session_id, error = %error, "Failed to load session working memory");
+                None
+            }
+        }
+    }
+
     pub(super) async fn search_and_load_memory_bank(
         &self,
         workspace_dir: &std::path::Path,
+        metadata: &RequestMetadata,
         query: &str,
         max_entries: usize,
-    ) -> Option<String> {
-        // Search for relevant memory bank entries
-        match crate::memory_bank::search_memory_bank(workspace_dir, query, max_entries).await {
-            Ok(entries) if !entries.is_empty() => {
+    ) -> Option<Vec<String>> {
+        let mut memory_query = crate::memory_bank::MemoryBankQuery::text(query)
+            .with_limit(max_entries)
+            .with_min_confidence(0.45);
+        memory_query.kinds = vec![crate::memory_bank::MemoryKind::LongTerm];
+        memory_query.scopes = vec![
+            crate::memory_bank::MemoryScope::Directive,
+            crate::memory_bank::MemoryScope::Workspace,
+            crate::memory_bank::MemoryScope::Repository,
+        ];
+
+        if metadata.session_id.is_some() {
+            memory_query
+                .scopes
+                .push(crate::memory_bank::MemoryScope::Session);
+        }
+        if metadata.task_id.is_some() {
+            memory_query
+                .scopes
+                .push(crate::memory_bank::MemoryScope::Task);
+            if let Some(task_id) = metadata.task_id.as_deref() {
+                memory_query = memory_query.with_task(task_id.to_string());
+            }
+        }
+        if let Some(directive_id) = metadata.directive_id.as_deref() {
+            memory_query = memory_query.with_directive(directive_id.to_string());
+        }
+        if let Some(agent_id) = metadata.agent_id.as_deref() {
+            memory_query = memory_query.with_agent(agent_id.to_string());
+        }
+        if !metadata.memory_tags.is_empty() {
+            memory_query = memory_query.with_tags(metadata.memory_tags.clone());
+        }
+
+        match crate::memory_bank::search_memory_bank_with_query(workspace_dir, &memory_query).await
+        {
+            Ok(results) if !results.is_empty() => {
                 tracing::info!(
-                    entries_found = entries.len(),
+                    entries_found = results.len(),
                     max_entries = max_entries,
                     "Found relevant memory bank entries"
                 );
 
-                // Build context from entries
-                let mut context = String::from("## Relevant Context from Memory Bank\n\n");
+                let sections = results
+                    .into_iter()
+                    .map(|result| {
+                        let mut section = String::from("### Long-Term Memory\n");
+                        section.push_str(&result.entry.to_prompt_section(400));
+                        if !result.matched_fields.is_empty() {
+                            section.push_str(&format!(
+                                "Matched via: {}\n",
+                                result.matched_fields.join(", ")
+                            ));
+                        }
+                        section
+                    })
+                    .collect::<Vec<_>>();
 
-                for entry in entries {
-                    context.push_str(&format!(
-                        "### Memory Entry ({})\n",
-                        entry.timestamp.format("%Y-%m-%d %H:%M UTC")
-                    ));
-                    context.push_str(&format!("**Summary**: {}\n\n", entry.summary));
-
-                    // Include a preview of the content (first 500 chars)
-                    let preview = if entry.content.len() > 500 {
-                        format!("{}...\n\n", &entry.content[..500])
-                    } else {
-                        format!("{}\n\n", entry.content)
-                    };
-                    context.push_str(&preview);
-                    context.push_str("---\n\n");
-                }
-
-                Some(context)
+                Some(sections)
             }
             Ok(_) => {
                 tracing::debug!("No relevant memory bank entries found");

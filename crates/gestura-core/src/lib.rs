@@ -311,9 +311,9 @@ pub use mcp::{
     get_mcp_client_registry, list_popular_mcp_servers, mdh_translate, normalize_mcp_server_name,
 };
 pub use memory_bank::{
-    MemoryBankEntry, MemoryBankError, clear_memory_bank, ensure_memory_bank_dir,
-    get_memory_bank_dir, list_memory_bank, load_from_memory_bank, save_to_memory_bank,
-    search_memory_bank,
+    MemoryBankEntry, MemoryBankError, MemoryBankQuery, MemoryKind, MemoryScope, MemorySearchResult,
+    MemoryType, clear_memory_bank, ensure_memory_bank_dir, get_memory_bank_dir, list_memory_bank,
+    load_from_memory_bank, save_to_memory_bank, search_memory_bank, search_memory_bank_with_query,
 };
 pub use model_display::{
     format_anthropic_model_name, format_gemini_model_name, format_grok_model_name,
@@ -350,7 +350,8 @@ pub use streaming::{
     CancellationToken, ShellOutputStream, ShellProcessState, StreamChunk, start_streaming,
 };
 pub use tasks::{
-    Task, TaskError, TaskList, TaskManager, TaskSource, TaskStatus, get_global_task_manager,
+    Task, TaskError, TaskList, TaskManager, TaskMemoryEvent, TaskMemoryLifecycle, TaskMemoryPhase,
+    TaskSource, TaskStatus, get_global_task_manager,
 };
 pub use telemetry::{
     Metric, MetricType, SystemHealth, TelemetryManager, Timer, get_telemetry_manager,

@@ -100,6 +100,9 @@ pub struct ResolvedContext {
     pub tools: Vec<ToolContext>,
     /// File contents if loaded
     pub files: Vec<FileContext>,
+    /// Retrieved memory sections (short-term and long-term) relevant to the request.
+    #[serde(default)]
+    pub memory_sections: Vec<String>,
     /// Session history (potentially summarized)
     pub history_summary: Option<String>,
     /// Knowledge items activated

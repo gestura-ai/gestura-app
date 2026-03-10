@@ -81,6 +81,18 @@ pub struct DelegatedTask {
     /// Session ID for UI integration
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Shared directive identifier for cross-agent coordination.
+    #[serde(default)]
+    pub directive_id: Option<String>,
+    /// Optional task identifier in the session task list used for lifecycle tracking.
+    #[serde(default)]
+    pub tracking_task_id: Option<String>,
+    /// Workspace root for sandboxing and durable memory persistence.
+    #[serde(default)]
+    pub workspace_dir: Option<PathBuf>,
+    /// Tags used for targeted memory retrieval and promotion.
+    #[serde(default)]
+    pub memory_tags: Vec<String>,
     /// Human-readable task name for UI display
     #[serde(default)]
     pub name: Option<String>,
@@ -352,6 +364,10 @@ mod tests {
             required_tools: vec!["shell".into()],
             priority: 1,
             session_id: Some("session-123".into()),
+            directive_id: Some("directive-1".into()),
+            tracking_task_id: Some("task-track-1".into()),
+            workspace_dir: Some(PathBuf::from("/tmp/workspace")),
+            memory_tags: vec!["memory".into(), "delegation".into()],
             name: Some("Test Task".into()),
         };
 
@@ -359,6 +375,9 @@ mod tests {
         let parsed: DelegatedTask = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.id, "task-1");
         assert_eq!(parsed.session_id, Some("session-123".into()));
+        assert_eq!(parsed.directive_id, Some("directive-1".into()));
+        assert_eq!(parsed.tracking_task_id, Some("task-track-1".into()));
+        assert_eq!(parsed.memory_tags, vec!["memory", "delegation"]);
     }
 
     #[test]

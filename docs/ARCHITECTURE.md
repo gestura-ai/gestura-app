@@ -230,6 +230,13 @@ gestura-gui/src/
 | `agents/` | Agent orchestration | `AgentEnvelope`, `AgentSpawner`, `OrchestratorToolCall` |
 | `nats_mq/` | NATS messaging | `Connection`, `Publisher`, `Subscriber` |
 
+### Memory Architecture
+
+- **Short-term memory** lives in `agent_sessions/` as session-scoped working memory (resources, decisions, blockers, timeline, next actions).
+- **Long-term/shared memory** lives in `memory_bank/` as typed records with explicit `memory_type`, `scope`, provenance, tags, and confidence.
+- **Pipeline retrieval** injects both short-term and long-term memory into prompt context through `ResolvedContext.memory_sections`, with prompt-budget caps.
+- **Delegated work** can promote durable handoff/blocker records and mirror those events into task metadata for lifecycle tracking.
+
 ### GUI Thin Wrappers
 
 After the Core-First migration, GUI modules are thin re-export wrappers:

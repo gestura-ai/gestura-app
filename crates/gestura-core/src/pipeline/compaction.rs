@@ -158,11 +158,62 @@ impl AgentPipeline {
                             .collect::<Vec<_>>()
                             .join("\n\n");
 
+                        let mut promotion_tags = metadata.memory_tags.clone();
+                        let mut promoted_sections = Vec::new();
+
+                        if let Some(session_id_ref) = metadata.session_id.as_deref() {
+                            let store = FileAgentSessionStore::new_default();
+                            if let Ok(session) = store.load(session_id_ref) {
+                                for candidate in session.state.promotion_candidates(5) {
+                                    promotion_tags.extend(candidate.tags.clone());
+                                    let detail = candidate
+                                        .detail
+                                        .as_deref()
+                                        .map(|value| format!(" ({value})"))
+                                        .unwrap_or_default();
+                                    promoted_sections.push(format!(
+                                        "- {:?}: {}{}",
+                                        candidate.source, candidate.summary, detail
+                                    ));
+                                }
+                            }
+                        }
+
+                        promotion_tags.sort();
+                        promotion_tags.dedup();
+
+                        let content = if promoted_sections.is_empty() {
+                            content
+                        } else {
+                            format!(
+                                "{content}\n\n## Promoted Working Memory\n{}\n",
+                                promoted_sections.join("\n")
+                            )
+                        };
+
                         let entry = crate::memory_bank::MemoryBankEntry::new(
                             session_id.clone(),
                             summary.clone(),
                             content,
-                        );
+                        )
+                        .with_memory_type(crate::memory_bank::MemoryType::Handoff)
+                        .with_scope(if metadata.directive_id.is_some() {
+                            crate::memory_bank::MemoryScope::Directive
+                        } else {
+                            crate::memory_bank::MemoryScope::Session
+                        })
+                        .with_category("compaction")
+                        .with_provenance(
+                            metadata.task_id.clone(),
+                            metadata.directive_id.clone(),
+                            metadata.agent_id.clone(),
+                        )
+                        .with_tags(promotion_tags)
+                        .with_promotion(
+                            session_id.clone(),
+                            "Auto-compaction promoted high-value working memory",
+                        )
+                        .with_confidence(0.82);
 
                         match crate::memory_bank::save_to_memory_bank(workspace_dir, &entry).await {
                             Ok(file_path) => {

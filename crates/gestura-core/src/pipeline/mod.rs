@@ -23,7 +23,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 pub use tool_router::{RoutingResult, ToolRouter, build_tool_router};
 
-use crate::agent_sessions::FileAgentSessionStore;
+use crate::agent_sessions::{AgentSessionStore, FileAgentSessionStore};
 use crate::checkpoints::{CheckpointManager, CheckpointRetentionPolicy, FileCheckpointStore};
 use crate::config::AppConfig;
 use crate::context::{ContextManager, RequestAnalyzer};
@@ -562,7 +562,7 @@ impl AgentPipeline {
             &mut resolved_context,
             request.metadata.workspace_dir.as_deref(),
             &request.input,
-            request.metadata.session_id.as_deref(),
+            &request.metadata,
         )
         .await;
 
@@ -592,7 +592,7 @@ impl AgentPipeline {
                 &mut resolved_context,
                 request.metadata.workspace_dir.as_deref(),
                 &request.input,
-                request.metadata.session_id.as_deref(),
+                &request.metadata,
             )
             .await;
         }
@@ -1046,7 +1046,7 @@ impl AgentPipeline {
             &mut resolved_context,
             request.metadata.workspace_dir.as_deref(),
             &request.input,
-            request.metadata.session_id.as_deref(),
+            &request.metadata,
         )
         .await;
 
@@ -1102,7 +1102,7 @@ impl AgentPipeline {
                 &mut resolved_context,
                 request.metadata.workspace_dir.as_deref(),
                 &request.input,
-                request.metadata.session_id.as_deref(),
+                &request.metadata,
             )
             .await;
         }
@@ -1466,24 +1466,37 @@ impl AgentPipeline {
         resolved_context: &mut crate::context::ResolvedContext,
         workspace_dir: Option<&std::path::Path>,
         query: &str,
-        session_id: Option<&str>,
+        metadata: &RequestMetadata,
     ) {
-        // 3.1 Memory bank — only available when workspace_dir is known.
+        // 3.1 Short-term working memory — session-local and loaded first.
+        if let Some(short_term_sections) =
+            self.load_session_working_memory(metadata.session_id.as_deref(), query, 4)
+            && !short_term_sections.is_empty()
+        {
+            tracing::debug!(
+                memory_sections = short_term_sections.len(),
+                "Added session working memory to request"
+            );
+            resolved_context.memory_sections.extend(short_term_sections);
+        }
+
+        // 3.2 Long-term memory bank — only available when workspace_dir is known.
         if let Some(workspace_dir) = workspace_dir
             && let Some(memory_context) = self
-                .search_and_load_memory_bank(workspace_dir, query, 3)
+                .search_and_load_memory_bank(workspace_dir, metadata, query, 3)
                 .await
         {
             tracing::debug!(
                 memory_context_len = memory_context.len(),
                 "Added memory bank context to request"
             );
-            resolved_context.knowledge.push(memory_context);
+            resolved_context.memory_sections.extend(memory_context);
         }
 
-        // 3.2 Knowledge items — only available when the pipeline was wired with
+        // 3.3 Knowledge items — only available when the pipeline was wired with
         //     `with_knowledge()` *and* the session has items enabled.
-        if let Some(knowledge_context) = self.load_enabled_knowledge(session_id) {
+        if let Some(knowledge_context) = self.load_enabled_knowledge(metadata.session_id.as_deref())
+        {
             tracing::debug!(
                 knowledge_context_len = knowledge_context.len(),
                 "Added enabled knowledge to request"
