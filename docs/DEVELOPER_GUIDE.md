@@ -43,35 +43,18 @@ cargo run -p gestura-cli -- --help  # CLI
 
 ## Development Environment
 
-### Workspace Structure
+### Workspace Navigation
 
-```
-gestura-app/
-├── Cargo.toml              # Workspace manifest
-├── crates/
-│   ├── gestura-core/       # Shared business logic (source of truth)
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── lib.rs      # Re-exports
-│   │       ├── pipeline/   # Agent pipeline
-│   │       ├── tools/      # Tool registry & implementations
-│   │       ├── mcp/        # MCP server
-│   │       ├── a2a/        # A2A protocol
-│   │       └── ...
-│   ├── gestura-cli/        # CLI binary
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── main.rs     # Entry point
-│   │       └── commands/   # CLI commands
-│   └── gestura-gui/        # Tauri desktop app
-│       ├── Cargo.toml
-│       ├── tauri.conf.json
-│       ├── frontend/       # Web frontend
-│       └── src/
-│           ├── main.rs     # Tauri entry
-│           └── ...         # Thin wrappers
-├── docs/                   # Documentation
-└── AGENTS.md               # AI assistant guide
+Treat the workspace as three layers:
+
+- `gestura-core` — stable public facade and cross-domain integration points
+- `gestura-core-*` — focused domain crates that own most business logic
+- `gestura-cli` / `gestura-gui` — thin presentation layers and platform wiring
+
+For the canonical crate/module map, prefer generated Rustdoc:
+
+```bash
+cargo doc --workspace --no-deps
 ```
 
 ### Build Commands
@@ -112,26 +95,20 @@ use crate/module Rustdoc for the source-of-truth architecture and API surface.
 
 ### Design Principles
 
-1. **Single Source of Truth**: All business logic in `gestura-core`
+1. **Single Source of Truth**: Business logic lives in `gestura-core` and the owning `gestura-core-*` domain crates
 2. **Thin Presentation Layers**: CLI and GUI delegate to core
-3. **Re-export Pattern**: GUI/CLI modules re-export core types
+3. **Re-export Pattern**: `gestura-core` exposes stable public paths over domain crates
 4. **Feature Gates**: Optional functionality via Cargo features
 
-### Module Organization (gestura-core)
+### Ownership Rule of Thumb
 
-| Category | Modules | Description |
-|----------|---------|-------------|
-| AI & Pipeline | `pipeline/`, `llm_provider.rs`, `persona.rs` | Agent execution |
-| Sessions | `agent_sessions/`, `session_manager.rs`, `context/` | State management |
-| Tools | `tools/`, `tool_confirmation.rs` | Tool registry |
-| Protocols | `mcp/`, `a2a/`, `nats_mq/` | Communication |
-| Security | `security/`, `sandbox/`, `gdpr.rs` | Safety & privacy |
-| Analytics | `analytics/`, `recommendations/`, `audio/` | ML features |
-| Extensibility | `scripting/`, `agents/`, `tasks/` | Plugin system |
+- If a feature belongs to one domain, put it in the owning `gestura-core-*` crate.
+- If it defines a stable public entry point or cross-domain orchestration, wire it through `gestura-core`.
+- If it is mostly UI, transport, or platform integration, keep it in `gestura-cli` or `gestura-gui`.
 
 ### Re-export Pattern
 
-GUI modules are thin wrappers that re-export core functionality:
+The facade and presentation layers should stay thin over the owning core domain:
 
 ```rust
 // crates/gestura-gui/src/security.rs (18 lines)
@@ -149,12 +126,12 @@ pub use gestura_core::a2a::*;
 
 ## Adding New Features
 
-### Step 1: Implement in Core
+### Step 1: Implement in the Owning Domain Crate
 
-Add business logic to `gestura-core`:
+Add business logic to the relevant `gestura-core-*` crate first:
 
 ```rust
-// crates/gestura-core/src/new_feature/mod.rs
+// crates/gestura-core-new-feature/src/lib.rs
 pub mod types;
 mod implementation;
 
@@ -163,7 +140,7 @@ pub use implementation::*;
 ```
 
 ```rust
-// crates/gestura-core/src/new_feature/types.rs
+// crates/gestura-core-new-feature/src/types.rs
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,15 +166,16 @@ impl NewFeature {
 }
 ```
 
-### Step 2: Export from lib.rs
+### Step 2: Re-export Through `gestura-core`
 
 ```rust
 // crates/gestura-core/src/lib.rs
-#[cfg(feature = "new_feature")]
-pub mod new_feature;
+pub mod new_feature {
+    pub use gestura_core_new_feature::*;
+}
 ```
 
-### Step 3: Create GUI Wrapper
+### Step 3: Add Presentation-Layer Wiring Only If Needed
 
 ```rust
 // crates/gestura-gui/src/new_feature.rs
@@ -302,7 +280,11 @@ if perms.requires_confirmation(&tool_call) {
 
 ## Scripting Engine
 
-The scripting engine is implemented in `gestura-core/src/scripting/` and provides sandboxed execution of user scripts.
+The scripting domain lives in `gestura-core-scripting` and is surfaced through
+`gestura_core::scripting::*` in generated Rustdoc.
+
+Use this guide for workflow-level expectations; use generated docs for the exact
+API surface.
 
 ### Script Types
 
@@ -315,97 +297,59 @@ The scripting engine is implemented in `gestura-core/src/scripting/` and provide
 ### Creating a Script
 
 ```rust
-// crates/gestura-core/src/scripting/mod.rs
-use crate::scripting::{Script, ScriptEngine, ScriptContext};
+use gestura_core::scripting::{ScriptContext, ScriptPermission, ScriptingEngine};
 
 // Load and execute a script
-let engine = ScriptEngine::new(config)?;
-let script = Script::from_file("my_script.lua")?;
+let engine = ScriptingEngine::new(script_directory);
+engine.initialize().await?;
+let script_id = engine.load_script(&script_path).await?;
 
 let context = ScriptContext {
-    input: serde_json::json!({"location": "NYC"}),
-    permissions: vec!["network".to_string()],
+    script_id: script_id.clone(),
+    user_id: "user-1".into(),
+    session_id: "session-1".into(),
+    variables: std::collections::HashMap::new(),
+    permissions: vec![ScriptPermission::Network("api.example.com".into())],
+    execution_timeout: std::time::Duration::from_secs(30),
 };
 
-let result = engine.execute(&script, context).await?;
+let result = engine.execute_script(&script_id, context).await?;
 ```
 
 ### Script Permissions
 
-Scripts run in a sandbox with explicit permissions:
+Treat the exact scripting API surface as generated-doc material.
 
-| Permission | Description |
-|------------|-------------|
-| `network` | HTTP requests |
-| `filesystem` | File read/write (scoped) |
-| `system` | Execute commands |
-| `clipboard` | Clipboard access |
+For contributor work, the important rules are:
 
-### Script API (from Lua)
-
-```lua
--- @name Example Script
--- @version 1.0.0
--- @permission network
-
-function main(args)
-    -- HTTP requests
-    local response = http.get("https://api.example.com/data")
-
-    -- JSON parsing
-    local data = json.decode(response.body)
-
-    -- Notifications
-    gestura.notify("Title", "Message")
-
-    return { success = true, data = data }
-end
-```
+- request only the permissions a script actually needs
+- keep execution timeouts explicit
+- document triggers and side effects clearly
+- prefer generated Rustdoc for exact types, enums, and runtime methods
 
 ## MCP Integration
 
 ### MCP Server (Core Implementation)
 
-The MCP server is implemented in `gestura-core/src/mcp/` with full 2025-11-25 spec compliance.
+The MCP protocol domain lives in `gestura-core-mcp` and is surfaced through
+`gestura_core::mcp::*`.
 
-```rust
-use gestura_core::mcp::{McpServer, ServerCapabilities};
+Use generated Rustdoc for the protocol/API surface and `gestura mcp --help` for
+the CLI contract.
 
-// Create MCP server
-let server = McpServer::new(config)?;
+Built-in tool implementation details now belong in generated docs for:
 
-// Register tools
-server.register_tool("file_read", file_read_handler);
-server.register_tool("shell_exec", shell_exec_handler);
-
-// Start server
-server.serve().await?;
-```
-
-### Built-in MCP Tools
-
-| Tool | Description | Permission |
-|------|-------------|------------|
-| `file_read` | Read file contents | ReadOnly |
-| `file_write` | Write to file | WriteLocal |
-| `file_edit` | Edit file with diff | WriteLocal |
-| `shell_exec` | Execute shell command | Execute |
-| `git_status` | Get git status | ReadOnly |
-| `web_fetch` | Fetch URL content | Network |
+- `gestura_core::tools::*`
+- `gestura-core-tools`
+- `gestura_core::mcp::*`
+- `gestura-core-mcp`
 
 ### MCP CLI Commands
 
 ```bash
-# Start MCP server
-gestura mcp serve
-
-# List registered tools
+gestura mcp list
+gestura mcp status
 gestura mcp tools
-
-# Call a tool
-gestura mcp call file_read --path ./README.md
-
-# Show capabilities
 gestura mcp capabilities
 ```
 

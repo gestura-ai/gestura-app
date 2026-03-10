@@ -49,6 +49,24 @@ gestura-app/
 The long-term direction is to make crate-level and module-level Rustdoc the
 canonical architecture and API reference for the project.
 
+### Generated Docs Quick Start
+
+If you want a single generated-doc entry point, start with the public facade:
+
+```bash
+cargo doc -p gestura-core --no-deps --open
+```
+
+If you want the full workspace reference:
+
+```bash
+cargo doc --workspace --no-deps
+```
+
+If you do not use `--open`, the main facade landing page is:
+
+- `target/doc/gestura_core/index.html`
+
 - Primary API and architecture docs should live in `crates/*/src/lib.rs` and
   public module docs.
 - `cargo doc --workspace --no-deps` should produce a useful entry point for the
@@ -56,12 +74,33 @@ canonical architecture and API reference for the project.
 - The `docs/` directory should gradually shrink toward operational content such
   as install, packaging, release, and troubleshooting guides.
 
-Start with the facade and domain crates in generated docs:
+Suggested reading path inside generated docs:
+
+1. Start with `gestura-core`
+2. From there, jump to the key facade modules:
+   - `gestura_core::pipeline`
+   - `gestura_core::tools`
+   - `gestura_core::config`
+   - `gestura_core::llm_provider`
+   - `gestura_core::mcp`
+   - `gestura_core::a2a`
+   - `gestura_core::knowledge`
+   - `gestura_core::memory_bank`
+   - `gestura_core::agents`
+   - `gestura_core::tasks`
+3. Follow those links into the owning `gestura-core-*` domain crates when you
+   need implementation-domain detail
+
+High-signal generated-doc crate entry points:
 
 - `gestura-core`
 - `gestura-core-tools`
 - `gestura-core-config`
 - `gestura-core-mcp`
+- `gestura-core-pipeline`
+- `gestura-core-sessions`
+- `gestura-core-context`
+- `gestura-core-security`
 - other `gestura-core-*` crates as their public docs mature
 
 ## Features

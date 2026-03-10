@@ -5,6 +5,27 @@
 //! focused `gestura-core-*` domain crates so downstream code can import through
 //! a single, consistent path.
 //!
+//! ## Generated docs quick start
+//!
+//! If you are exploring the generated docs, start with these high-signal module
+//! entry points:
+//!
+//! - [`pipeline`]: main agent execution flow and request/response model
+//! - [`tools`]: built-in tools, permissions, schemas, and confirmation helpers
+//! - [`config`]: application configuration plus secret-hydration/runtime bridges
+//! - [`llm_provider`]: provider selection and LLM facade access
+//! - [`mcp`] and [`a2a`]: protocol surfaces for MCP and agent-to-agent flows
+//! - [`agent_sessions`], [`session_manager`], and [`tasks`]: session and task state
+//! - [`knowledge`], [`memory_bank`], and [`memory_console`]: expert knowledge and memory
+//! - [`security`] and [`streaming`]: security/runtime streaming boundaries
+//!
+//! A good reading path is:
+//!
+//! 1. start here in `gestura-core`
+//! 2. jump into one of the facade modules above
+//! 3. follow the re-export or module docs into the owning `gestura-core-*` crate
+//!    when you need domain-level detail
+//!
 //! ## Core-first architecture
 //!
 //! The workspace follows a core-first layout:
