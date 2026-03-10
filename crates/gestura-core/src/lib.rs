@@ -46,6 +46,7 @@ pub(crate) mod guardrails;
 pub mod llm_overrides;
 pub mod llm_provider;
 pub mod llm_validation;
+pub mod memory_console;
 /// OpenAI(-compatible) API compatibility helpers (e.g., parameter support quirks).
 pub mod openai_compat;
 pub mod orchestrator;

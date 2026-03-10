@@ -2,7 +2,7 @@
 //!
 //! Command-line interface providing feature parity with the GUI application.
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use colored::Colorize;
 
 mod commands;
@@ -163,6 +163,12 @@ enum Commands {
     Session {
         #[command(subcommand)]
         action: SessionAction,
+    },
+
+    /// Inspect and control session and durable memory
+    Memory {
+        #[command(flatten)]
+        command: MemoryCommand,
     },
 
     /// Agent interaction
@@ -463,6 +469,169 @@ enum SessionAction {
     },
     /// Delete a session
     Delete { session: String },
+}
+
+#[derive(Args, Clone)]
+pub struct MemoryCommand {
+    /// Session id or prefix to inspect (use `last` for the most recent session)
+    #[arg(long)]
+    session: Option<String>,
+
+    /// Workspace path to inspect when not using a session workspace
+    #[arg(long)]
+    workspace: Option<std::path::PathBuf>,
+
+    #[command(subcommand)]
+    action: Option<MemoryAction>,
+}
+
+#[derive(Subcommand, Clone)]
+pub enum MemoryAction {
+    /// List recent sessions available to the memory console
+    Sessions {
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show overview counts for the current workspace/session
+    Overview {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Search working and durable memory with shared filters
+    Search {
+        query: Option<String>,
+        #[arg(short, long, default_value = "12")]
+        limit: usize,
+        #[arg(long)]
+        include_archived: bool,
+        #[arg(long = "kind")]
+        kind: Vec<String>,
+        #[arg(long = "type")]
+        memory_type: Vec<String>,
+        #[arg(long = "scope")]
+        scope: Vec<String>,
+        #[arg(long = "tag")]
+        tag: Vec<String>,
+        #[arg(long)]
+        task: Option<String>,
+        #[arg(long)]
+        directive: Option<String>,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        category: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the current session working-memory snapshot
+    Working {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show promotable working-memory candidates
+    Promotions {
+        #[arg(short, long, default_value = "12")]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect task-local memory lifecycle for a task id
+    Task {
+        task_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show a durable memory entry in detail
+    Show {
+        entry_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Promote an item into durable memory
+    Promote {
+        summary: String,
+        #[arg(long)]
+        detail: Option<String>,
+        #[arg(long)]
+        category: Option<String>,
+        #[arg(long, default_value = "long-term")]
+        kind: String,
+        #[arg(long = "type", default_value = "semantic")]
+        memory_type: String,
+        #[arg(long, default_value = "workspace")]
+        scope: String,
+        #[arg(long)]
+        task: Option<String>,
+        #[arg(long)]
+        directive: Option<String>,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long = "tag")]
+        tag: Vec<String>,
+        #[arg(long, default_value = "0.8")]
+        confidence: f32,
+        #[arg(long)]
+        reason: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Edit a durable memory entry
+    Edit {
+        entry_id: String,
+        #[arg(long)]
+        summary: Option<String>,
+        #[arg(long)]
+        content: Option<String>,
+        #[arg(long)]
+        category: Option<String>,
+        #[arg(long)]
+        clear_category: bool,
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long = "type")]
+        memory_type: Option<String>,
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long)]
+        task: Option<String>,
+        #[arg(long)]
+        clear_task: bool,
+        #[arg(long)]
+        directive: Option<String>,
+        #[arg(long)]
+        clear_directive: bool,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        clear_agent: bool,
+        #[arg(long = "tag")]
+        tags: Option<Vec<String>>,
+        #[arg(long)]
+        confidence: Option<f32>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Archive or restore a durable memory entry
+    Archive {
+        entry_id: String,
+        #[arg(long)]
+        restore: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a durable memory entry
+    Delete {
+        entry_id: String,
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
+    /// Clear all durable memory for the selected workspace
+    Clear {
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -954,6 +1123,10 @@ fn main() {
         Some(Commands::Mcp { action }) => commands::mcp::run(action),
         Some(Commands::A2a { action }) => commands::a2a::run(action),
         Some(Commands::Knowledge { action }) => commands::knowledge::run(action),
+        Some(Commands::Memory { command }) => match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt.block_on(commands::memory::run(command.clone())),
+            Err(error) => Err(Box::<dyn std::error::Error>::from(error)),
+        },
         Some(Commands::Context { action }) => {
             use commands::context::ContextAction as CA;
             let ctx_action = match action {

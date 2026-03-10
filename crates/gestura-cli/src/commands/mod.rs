@@ -15,6 +15,7 @@ pub mod init;
 pub mod knowledge;
 pub mod listen;
 pub mod mcp;
+pub mod memory;
 pub mod model;
 pub mod privacy;
 pub mod session;

@@ -236,6 +236,8 @@ gestura-gui/src/
 - **Long-term/shared memory** lives in `memory_bank/` as typed records with explicit `memory_type`, `scope`, provenance, tags, and confidence.
 - **Pipeline retrieval** injects both short-term and long-term memory into prompt context through `ResolvedContext.memory_sections`, with prompt-budget caps.
 - **Delegated work** can promote durable handoff/blocker records and mirror those events into task metadata for lifecycle tracking.
+- **Operator controls** are centralized in `gestura_core::memory_console`, which powers the same Overview/Search/Working/Durable/Promotions/Task/Maintenance facets in both the CLI and GUI.
+- **Presentation parity** is intentional: `gestura memory`, agent-mode `/memory`, the global GUI Memory panel, and the agent-side Memory panel all call the same core DTOs and mutation APIs.
 
 ### GUI Thin Wrappers
 

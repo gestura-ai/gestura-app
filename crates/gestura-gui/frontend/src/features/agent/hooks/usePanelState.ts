@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 export type PanelName =
   | "menu"
   | "tasks"
+  | "memory"
   | "knowledge"
   | "providers"
   | "settings"

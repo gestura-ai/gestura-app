@@ -17,6 +17,7 @@ import { ToastContainer } from './ToastContainer';
 import { MenuPanel } from './MenuPanel';
 import { TaskPanel } from './TaskPanel';
 import { KnowledgePanel } from './KnowledgePanel';
+import { MemoryConsolePanel } from '../../memory/components/MemoryConsolePanel';
 import { ProvidersPanel } from './ProvidersPanel';
 import { SessionSettingsPanel } from './SessionSettingsPanel';
 import type { PanelName } from '../hooks/usePanelState';
@@ -164,6 +165,23 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ sessionId, onToggleEditor,
       <TaskPanel isOpen={isOpen('tasks')} onClose={closePanel} sessionId={sessionId}
         tasks={tasks} onRefreshTasks={refreshTasks} onSendMessage={sendMessage}
         onShowToast={showToast} />
+
+      {isOpen('memory') && (
+        <div className="session-panel-overlay visible" onClick={closePanel}>
+          <div className="session-panel open" onClick={(event) => event.stopPropagation()}>
+            <div className="task-panel-header">
+              <div>
+                <h3>Memory</h3>
+                <p className="task-panel-subtitle">Unified session + durable memory console</p>
+              </div>
+              <button className="session-panel-close" onClick={closePanel} title="Close">
+                <span className="icon-close" />
+              </button>
+            </div>
+            <MemoryConsolePanel sessionId={sessionId} title="Session Memory" />
+          </div>
+        </div>
+      )}
 
       <KnowledgePanel isOpen={isOpen('knowledge')} onClose={closePanel}
         sessionId={sessionId}

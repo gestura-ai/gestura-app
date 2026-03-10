@@ -65,6 +65,14 @@ export function MenuPanel({ isOpen, onClose, onNavigate }: MenuPanelProps) {
 
           <div
             className="menu-item"
+            onClick={() => handleItem("memory")}
+          >
+            <span className="icon-database-01" />
+            <span className="menu-item-label">Memory</span>
+          </div>
+
+          <div
+            className="menu-item"
             onClick={() => handleItem("tasks")}
           >
             <span className="icon-checklist" />

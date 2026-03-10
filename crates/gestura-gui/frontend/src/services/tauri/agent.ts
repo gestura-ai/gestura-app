@@ -32,8 +32,253 @@ export interface HistoryMessage {
   content: string;
 }
 
+export interface MemoryConsoleSessionSummary {
+  session_id: string;
+  title: string;
+  last_active: string;
+  message_count: number;
+  workspace_dir?: string | null;
+}
+
+export interface MemoryConsoleCount {
+  key: string;
+  count: number;
+}
+
+export interface MemoryConsoleQuery {
+  text?: string | null;
+  limit?: number;
+  include_working_memory?: boolean;
+  include_durable_memory?: boolean;
+  include_archived?: boolean;
+  kinds?: string[];
+  memory_types?: string[];
+  scopes?: string[];
+  session_id?: string | null;
+  task_id?: string | null;
+  directive_id?: string | null;
+  agent_id?: string | null;
+  category?: string | null;
+  tags?: string[];
+  min_confidence?: number | null;
+}
+
+export interface WorkingMemoryMatch {
+  id: string;
+  section: string;
+  summary: string;
+  detail?: string | null;
+  tags: string[];
+  status?: string | null;
+  score: number;
+}
+
+export interface MemoryConsoleEntrySummary {
+  entry_id: string;
+  timestamp: string;
+  memory_kind: string;
+  memory_type: string;
+  scope: string;
+  session_id: string;
+  category?: string | null;
+  task_id?: string | null;
+  directive_id?: string | null;
+  agent_id?: string | null;
+  tags: string[];
+  confidence: number;
+  summary: string;
+  file_path?: string | null;
+  archived: boolean;
+  score?: number | null;
+  matched_fields: string[];
+}
+
+export interface MemoryConsoleEntryDetail {
+  summary: MemoryConsoleEntrySummary;
+  content: string;
+  promoted_from_session_id?: string | null;
+  promotion_reason?: string | null;
+}
+
+export interface MemoryConsoleOverview {
+  workspace_dir: string;
+  session?: MemoryConsoleSessionSummary | null;
+  durable_total: number;
+  open_blocker_count: number;
+  promotion_candidate_count: number;
+  working_resource_count: number;
+  working_decision_count: number;
+  working_summary?: string | null;
+  recent_entries: MemoryConsoleEntrySummary[];
+  counts_by_kind: MemoryConsoleCount[];
+  counts_by_type: MemoryConsoleCount[];
+  counts_by_scope: MemoryConsoleCount[];
+}
+
+export interface MemoryConsoleSearchResponse {
+  query: MemoryConsoleQuery;
+  working_memory: WorkingMemoryMatch[];
+  durable_memory: MemoryConsoleEntrySummary[];
+}
+
+export interface SessionWorkingMemory {
+  resources: Array<Record<string, unknown>>;
+  decisions: Array<Record<string, unknown>>;
+  blockers: Array<Record<string, unknown>>;
+  timeline: Array<Record<string, unknown>>;
+  next_actions: string[];
+  open_questions: string[];
+  summary?: string | null;
+}
+
+export interface SessionMemoryPromotionCandidate {
+  source: 'resource' | 'decision' | 'blocker' | 'timeline' | 'next_action';
+  summary: string;
+  detail?: string | null;
+  tags: string[];
+  score: number;
+}
+
+export interface TaskMemoryConsoleDetail {
+  task_id: string;
+  lifecycle: {
+    events: Array<Record<string, unknown>>;
+    last_memory_file_path?: string | null;
+  };
+}
+
+export interface PromoteMemoryCandidateRequest {
+  summary: string;
+  detail?: string | null;
+  category?: string | null;
+  memory_kind: string;
+  memory_type: string;
+  scope: string;
+  task_id?: string | null;
+  directive_id?: string | null;
+  agent_id?: string | null;
+  tags: string[];
+  confidence: number;
+  promotion_reason?: string | null;
+}
+
+export interface UpdateMemoryEntryRequest {
+  summary?: string;
+  content?: string;
+  category?: string | null;
+  memory_kind?: string;
+  memory_type?: string;
+  scope?: string;
+  task_id?: string | null;
+  directive_id?: string | null;
+  agent_id?: string | null;
+  tags?: string[];
+  confidence?: number;
+}
+
 export const getSessionHistory = (sessionId: string): Promise<HistoryMessage[]> =>
   invokeTauri('get_session_history', { session_id: sessionId });
+
+export const getMemoryConsoleSessions = (limit = 12): Promise<MemoryConsoleSessionSummary[]> =>
+  invokeTauri('get_memory_console_sessions', { limit });
+
+export const getMemoryConsoleOverview = (
+  sessionId?: string | null,
+  workspaceDir?: string | null,
+): Promise<MemoryConsoleOverview> =>
+  invokeTauri('get_memory_console_overview', {
+    session_id: sessionId ?? null,
+    workspace_dir: workspaceDir ?? null,
+  });
+
+export const searchMemoryConsoleEntries = (
+  query: MemoryConsoleQuery,
+  sessionId?: string | null,
+  workspaceDir?: string | null,
+): Promise<MemoryConsoleSearchResponse> =>
+  invokeTauri('search_memory_console_entries', {
+    session_id: sessionId ?? null,
+    workspace_dir: workspaceDir ?? null,
+    query,
+  });
+
+export const getMemoryWorkingSnapshot = (sessionId: string): Promise<SessionWorkingMemory> =>
+  invokeTauri('get_memory_working_snapshot', { session_id: sessionId });
+
+export const getMemoryPromotionCandidates = (
+  sessionId: string,
+  limit = 12,
+): Promise<SessionMemoryPromotionCandidate[]> =>
+  invokeTauri('get_memory_promotion_candidates', { session_id: sessionId, limit });
+
+export const getMemoryTaskLifecycle = (
+  sessionId: string,
+  taskId: string,
+): Promise<TaskMemoryConsoleDetail> =>
+  invokeTauri('get_memory_task_lifecycle', { session_id: sessionId, task_id: taskId });
+
+export const getMemoryEntryDetail = (
+  entryId: string,
+  sessionId?: string | null,
+  workspaceDir?: string | null,
+): Promise<MemoryConsoleEntryDetail> =>
+  invokeTauri('get_memory_entry_detail', {
+    session_id: sessionId ?? null,
+    workspace_dir: workspaceDir ?? null,
+    entry_id: entryId,
+  });
+
+export const promoteMemoryCandidateEntry = (
+  sessionId: string,
+  request: PromoteMemoryCandidateRequest,
+): Promise<MemoryConsoleEntryDetail> =>
+  invokeTauri('promote_memory_candidate_entry', { session_id: sessionId, request });
+
+export const updateMemoryEntryDetail = (
+  entryId: string,
+  request: UpdateMemoryEntryRequest,
+  sessionId?: string | null,
+  workspaceDir?: string | null,
+): Promise<MemoryConsoleEntryDetail> =>
+  invokeTauri('update_memory_entry_detail', {
+    session_id: sessionId ?? null,
+    workspace_dir: workspaceDir ?? null,
+    entry_id: entryId,
+    request,
+  });
+
+export const setMemoryEntryArchived = (
+  entryId: string,
+  archived: boolean,
+  sessionId?: string | null,
+  workspaceDir?: string | null,
+): Promise<MemoryConsoleEntryDetail> =>
+  invokeTauri('set_memory_entry_archived', {
+    session_id: sessionId ?? null,
+    workspace_dir: workspaceDir ?? null,
+    entry_id: entryId,
+    archived,
+  });
+
+export const deleteMemoryEntry = (
+  entryId: string,
+  sessionId?: string | null,
+  workspaceDir?: string | null,
+): Promise<void> =>
+  invokeTauri('delete_memory_entry', {
+    session_id: sessionId ?? null,
+    workspace_dir: workspaceDir ?? null,
+    entry_id: entryId,
+  });
+
+export const clearMemoryConsoleEntries = (
+  sessionId?: string | null,
+  workspaceDir?: string | null,
+): Promise<number> =>
+  invokeTauri('clear_memory_console_entries', {
+    session_id: sessionId ?? null,
+    workspace_dir: workspaceDir ?? null,
+  });
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 

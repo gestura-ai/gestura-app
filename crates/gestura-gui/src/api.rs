@@ -4002,6 +4002,211 @@ pub fn get_session_workspace_by_id(session_id: String) -> Option<String> {
         .map(|p| p.display().to_string())
 }
 
+fn resolve_memory_console_context(
+    session_id: Option<&str>,
+    workspace_dir: Option<String>,
+) -> Result<
+    (
+        Option<gestura_core::agent_sessions::AgentSession>,
+        std::path::PathBuf,
+    ),
+    String,
+> {
+    let session = session_id.and_then(|target| {
+        crate::window_manager::get_all_sessions()
+            .into_iter()
+            .find(|candidate| candidate.id == target)
+            .map(|candidate| gestura_core::agent_sessions::AgentSession {
+                id: candidate.id,
+                title: candidate.title,
+                created_at: candidate.created_at,
+                last_active: candidate.last_active,
+                model: candidate
+                    .state
+                    .llm_config
+                    .as_ref()
+                    .and_then(|cfg| cfg.model.clone()),
+                state: candidate.state,
+            })
+    });
+
+    let workspace_dir = workspace_dir
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            session
+                .as_ref()
+                .and_then(|current| current.workspace_dir().cloned())
+        })
+        .ok_or_else(|| "No workspace directory available for memory console".to_string())?;
+
+    Ok((session, workspace_dir))
+}
+
+/// List recent sessions for the memory console.
+#[tauri::command]
+pub fn get_memory_console_sessions(
+    limit: Option<usize>,
+) -> Result<Vec<gestura_core::memory_console::MemoryConsoleSessionSummary>, String> {
+    gestura_core::memory_console::list_memory_console_sessions(
+        &gestura_core::agent_sessions::FileAgentSessionStore::default(),
+        limit.unwrap_or(12),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Get memory-console overview for a session/workspace.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn get_memory_console_overview(
+    session_id: Option<String>,
+    workspace_dir: Option<String>,
+) -> Result<gestura_core::memory_console::MemoryConsoleOverview, String> {
+    let (session, workspace_dir) =
+        resolve_memory_console_context(session_id.as_deref(), workspace_dir)?;
+    gestura_core::memory_console::get_memory_console_overview(&workspace_dir, session.as_ref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Search working and durable memory with the shared console query DTO.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn search_memory_console_entries(
+    session_id: Option<String>,
+    workspace_dir: Option<String>,
+    query: gestura_core::memory_console::MemoryConsoleQuery,
+) -> Result<gestura_core::memory_console::MemoryConsoleSearchResponse, String> {
+    let (session, workspace_dir) =
+        resolve_memory_console_context(session_id.as_deref(), workspace_dir)?;
+    gestura_core::memory_console::search_memory_console(&workspace_dir, session.as_ref(), query)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Get the working-memory snapshot for the selected session.
+#[tauri::command(rename_all = "snake_case")]
+pub fn get_memory_working_snapshot(
+    session_id: String,
+) -> Result<gestura_core::agent_sessions::SessionWorkingMemory, String> {
+    let (session, _) = resolve_memory_console_context(Some(&session_id), None)?;
+    let session = session.ok_or_else(|| format!("Session not found: {}", session_id))?;
+    Ok(gestura_core::memory_console::get_working_memory_snapshot(
+        &session,
+    ))
+}
+
+/// Get promotion candidates for the selected session.
+#[tauri::command(rename_all = "snake_case")]
+pub fn get_memory_promotion_candidates(
+    session_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<gestura_core::agent_sessions::SessionMemoryPromotionCandidate>, String> {
+    let (session, _) = resolve_memory_console_context(Some(&session_id), None)?;
+    let session = session.ok_or_else(|| format!("Session not found: {}", session_id))?;
+    Ok(
+        gestura_core::memory_console::get_memory_promotion_candidates(
+            &session,
+            limit.unwrap_or(12),
+        ),
+    )
+}
+
+/// Get task-local memory lifecycle for a session/task.
+#[tauri::command(rename_all = "snake_case")]
+pub fn get_memory_task_lifecycle(
+    session_id: String,
+    task_id: String,
+) -> Result<gestura_core::memory_console::TaskMemoryConsoleDetail, String> {
+    gestura_core::memory_console::get_task_memory_console_detail(
+        get_task_manager(),
+        &session_id,
+        &task_id,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Get a durable memory entry by id.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn get_memory_entry_detail(
+    session_id: Option<String>,
+    workspace_dir: Option<String>,
+    entry_id: String,
+) -> Result<gestura_core::memory_console::MemoryConsoleEntryDetail, String> {
+    let (_, workspace_dir) = resolve_memory_console_context(session_id.as_deref(), workspace_dir)?;
+    gestura_core::memory_console::get_memory_entry_detail(&workspace_dir, &entry_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Promote a candidate or ad-hoc item into durable memory.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn promote_memory_candidate_entry(
+    session_id: String,
+    request: gestura_core::memory_console::PromoteMemoryCandidateRequest,
+) -> Result<gestura_core::memory_console::MemoryConsoleEntryDetail, String> {
+    let (session, workspace_dir) = resolve_memory_console_context(Some(&session_id), None)?;
+    let session = session.ok_or_else(|| format!("Session not found: {}", session_id))?;
+    gestura_core::memory_console::promote_memory_candidate(
+        &workspace_dir,
+        &session,
+        request,
+        Some(get_task_manager()),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Update a durable memory entry.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn update_memory_entry_detail(
+    session_id: Option<String>,
+    workspace_dir: Option<String>,
+    entry_id: String,
+    request: gestura_core::memory_console::UpdateMemoryEntryRequest,
+) -> Result<gestura_core::memory_console::MemoryConsoleEntryDetail, String> {
+    let (_, workspace_dir) = resolve_memory_console_context(session_id.as_deref(), workspace_dir)?;
+    gestura_core::memory_console::update_memory_entry_detail(&workspace_dir, &entry_id, request)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Archive or restore a durable memory entry.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn set_memory_entry_archived(
+    session_id: Option<String>,
+    workspace_dir: Option<String>,
+    entry_id: String,
+    archived: bool,
+) -> Result<gestura_core::memory_console::MemoryConsoleEntryDetail, String> {
+    let (_, workspace_dir) = resolve_memory_console_context(session_id.as_deref(), workspace_dir)?;
+    gestura_core::memory_console::set_memory_entry_archived(&workspace_dir, &entry_id, archived)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Delete a durable memory entry.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn delete_memory_entry(
+    session_id: Option<String>,
+    workspace_dir: Option<String>,
+    entry_id: String,
+) -> Result<(), String> {
+    let (_, workspace_dir) = resolve_memory_console_context(session_id.as_deref(), workspace_dir)?;
+    gestura_core::memory_console::delete_memory_entry_by_id(&workspace_dir, &entry_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Clear all durable memory entries for a workspace.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn clear_memory_console_entries(
+    session_id: Option<String>,
+    workspace_dir: Option<String>,
+) -> Result<usize, String> {
+    let (_, workspace_dir) = resolve_memory_console_context(session_id.as_deref(), workspace_dir)?;
+    gestura_core::memory_console::clear_memory_console(&workspace_dir)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Set the workspace directory for a session
 #[tauri::command]
 pub fn set_session_workspace(session_id: String, workspace_path: String) -> Result<(), String> {

@@ -49,6 +49,7 @@ The core crate contains all business logic organized by domain:
 | `session_manager.rs` | - | Active session lifecycle |
 | `context/` | `mod.rs`, `types.rs`, `manager.rs`, `analyzer.rs`, `cache.rs` | Context window management |
 | `memory_bank/` | `mod.rs` | Long-term/shared memory storage with typed scope + provenance |
+| `memory_console.rs` | - | Shared CLI/GUI memory inspection + mutation facade |
 
 ### Tools & Permissions
 | Module | Files | Description |
@@ -152,6 +153,7 @@ gestura-cli/src/
     ├── health.rs        # Health check
     ├── init.rs          # Initialize project
     ├── knowledge.rs     # Knowledge base
+    ├── memory.rs        # Unified memory console (`gestura memory` + interactive browser)
     ├── model.rs         # Model selection
     ├── privacy.rs       # Privacy settings
     ├── completion.rs    # Shell completions
@@ -166,7 +168,7 @@ Thin Tauri wrapper with platform-specific integrations:
 gestura-gui/src/
 ├── main.rs              # Tauri entry point
 ├── lib.rs               # Module exports
-├── api.rs               # Tauri commands
+├── api.rs               # Tauri commands (includes memory-console overview/search/actions)
 │
 ├── # Thin Re-export Wrappers (delegate to gestura-core)
 ├── a2a.rs               # Re-exports gestura_core::a2a
@@ -195,6 +197,11 @@ gestura-gui/src/
 ├── integrations/        # External integrations
 └── utils/               # Utility modules
 ```
+
+Frontend memory-console surfaces live in:
+
+- `crates/gestura-gui/frontend/src/features/memory/components/MemoryConsolePanel.tsx` — reusable global/session memory console UI
+- `crates/gestura-gui/frontend/src/features/agent/components/ChatPanel.tsx` + `MenuPanel.tsx` — agent-side Memory panel entry points
 
 ## Re-export Pattern
 

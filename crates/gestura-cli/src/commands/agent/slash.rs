@@ -1256,15 +1256,16 @@ fn memory_usage_lines() -> Vec<String> {
     vec![
         "━━━ /memory ━━━".to_string(),
         String::new(),
-        "Interactive: /memory".to_string(),
+        "Interactive memory console: /memory".to_string(),
         String::new(),
-        "Commands:".to_string(),
+        "Quick commands:".to_string(),
         "  /memory list".to_string(),
         "  /memory search <query> [--limit <n>]".to_string(),
         "  /memory save [--summary <text>] [--category <name>] [--last <n>]".to_string(),
         "  /memory delete --confirmed <path>".to_string(),
         "  /memory clear --confirmed".to_string(),
         String::new(),
+        "Open /memory with no subcommand to browse Overview, Search, Working, Durable, Promotions, Task Memory, and Maintenance.".to_string(),
         "Destructive actions require --confirmed (or use the interactive UI).".to_string(),
     ]
 }

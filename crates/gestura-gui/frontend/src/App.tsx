@@ -11,6 +11,7 @@ import OnboardingWizard from './app/OnboardingWizard';
 import HelpSystem from './shared/components/HelpSystem';
 import SimulatorPanel from './features/simulator/SimulatorPanel';
 import McpPanel from './features/mcp/McpPanel';
+import MemoryConsolePanel from './features/memory/components/MemoryConsolePanel';
 import { AppConfig, UiSettings } from './types/config';
 import { getConfig, saveConfig, setUiPrefs } from './services/tauri/config';
 import { useKeyboardShortcuts } from './shared/hooks/useKeyboardShortcuts';
@@ -182,6 +183,12 @@ function App() {
               🔌 MCP
             </button>
             <button
+              className={`btn ${activePanel === 'memory' ? '' : 'btn-secondary'}`}
+              onClick={() => setActivePanel('memory')}
+            >
+              🧠 Memory
+            </button>
+            <button
               className={`btn ${activePanel === 'simulator' ? '' : 'btn-secondary'}`}
               onClick={() => setActivePanel('simulator')}
             >
@@ -211,6 +218,9 @@ function App() {
           )}
           {activePanel === 'mcp' && (
             <McpPanel />
+          )}
+          {activePanel === 'memory' && (
+            <MemoryConsolePanel allowSessionSelection title="Memory Console" />
           )}
           {activePanel === 'simulator' && (
             <SimulatorPanel onClose={() => setActivePanel('ring')} />

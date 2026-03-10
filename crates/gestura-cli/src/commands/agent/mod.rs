@@ -2804,6 +2804,22 @@ fn basic_mode_knowledge_command(args: &[&str], session: &AgentSession) {
 /// When called with no subcommand, shows a dialoguer-based interactive menu.
 /// Also supports explicit subcommands: `list`, `save`, `search <query>`, `clear`, `delete <path>`.
 fn basic_mode_memory_command(args: &[&str], session: &AgentSession) {
+    if args.is_empty() {
+        match tokio::runtime::Runtime::new() {
+            Ok(rt) => {
+                if let Err(error) =
+                    rt.block_on(crate::commands::memory::browse_session_memory(session))
+                {
+                    println!("{} {}", "✗".red().bold(), format!("{error}").red());
+                }
+            }
+            Err(error) => {
+                println!("{} {}", "✗".red().bold(), format!("{error}").red());
+            }
+        }
+        return;
+    }
+
     use dialoguer::{Confirm, Select, theme::ColorfulTheme};
     use live_actions::{MemoryExecOutput, execute_memory_live_action};
 
