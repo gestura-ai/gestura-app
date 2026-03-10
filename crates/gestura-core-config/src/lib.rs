@@ -1,10 +1,25 @@
-//! Configuration domain crate for Gestura
+//! Configuration types, validation, environment loading, and file watching.
 //!
-//! This crate owns all configuration **type definitions**, pure loading/saving
-//! helpers, environment-variable support, validation, and file-watching.
+//! `gestura-core-config` is the source of truth for Gestura configuration data
+//! structures and pure configuration workflows.
 //!
-//! Security-dependent operations (keychain hydration, secret migration,
-//! sanitization) remain in `gestura-core` as bridge code.
+//! ## Responsibilities
+//!
+//! - `AppConfig` and nested configuration structs/enums
+//! - environment-variable loading and override helpers
+//! - validation rules and config sanity checks
+//! - file watching for live reload flows
+//! - hook and plugin configuration models
+//!
+//! ## Boundary with `gestura-core`
+//!
+//! This crate avoids runtime integrations that require security-sensitive or
+//! platform-specific bridges. Keychain hydration, secure secret migration, and
+//! other security-dependent extensions remain in the `gestura-core::config`
+//! facade layer.
+//!
+//! For most consumers, the stable public import paths remain
+//! `gestura_core::config::*` and `gestura_core::config_env::*`.
 
 pub mod config_env;
 pub mod hooks_types;

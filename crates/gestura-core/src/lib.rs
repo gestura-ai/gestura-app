@@ -1,26 +1,66 @@
-//! Gestura Core Library
+//! Gestura's public core facade.
 //!
-//! This crate contains the shared business logic for the Gestura voice-first AI assistant.
-//! It is used by both the GUI (Tauri) and CLI applications.
+//! `gestura-core` is the stable Rust API surface for Gestura.app. It owns the
+//! cross-domain orchestration that ties the workspace together and re-exports
+//! focused `gestura-core-*` domain crates so downstream code can import through
+//! a single, consistent path.
 //!
-//! # Features
+//! ## Core-first architecture
 //!
-//! - `voice-local` - Enable local Whisper speech-to-text (default)
-//! - `voice-openai` - Enable OpenAI Whisper API
-//! - `nats` - Enable NATS messaging integration
-//! - `ble` - Enable Bluetooth LE for haptic devices
-//! - `security` - Enable encryption and keychain features
+//! The workspace follows a core-first layout:
 //!
-//! # Modules
+//! - domain logic lives in dedicated crates such as `gestura-core-tools`,
+//!   `gestura-core-mcp`, `gestura-core-config`, and `gestura-core-context`
+//! - `gestura-core` re-exports those crates under stable public module names
+//! - presentation layers (`gestura-cli`, `gestura-gui`) stay thin and delegate
+//!   to this facade instead of owning business logic
 //!
-//! Core functionality is organized into these modules:
-//! - `config` - Application configuration management
-//! - `error` - Error types and handling
-//! - `llm` - LLM provider integrations (OpenAI, Anthropic, Grok, Ollama)
-//! - `speech` - Speech-to-text processing
-//! - `audio` - Audio capture and processing
-//! - `mcp` - Model Context Protocol integration
-//! - `session` - Agent session management
+//! In practice, this means new work usually follows this path:
+//!
+//! 1. add or update behavior in the relevant domain crate
+//! 2. expose the stable public entry point from `gestura-core`
+//! 3. consume the stable API from CLI and GUI code
+//!
+//! ## What this crate owns directly
+//!
+//! This facade is intentionally more than a re-export crate. It also owns the
+//! integration points that combine multiple domains, including:
+//!
+//! - the agent pipeline and tool execution loop
+//! - provider selection from application configuration
+//! - guardrails, checkpoints, compaction, and orchestration helpers
+//! - configuration bridges that depend on security or runtime integration
+//! - shared surfaces consumed by both CLI and GUI entry points
+//!
+//! ## High-signal module groups
+//!
+//! - `pipeline`: agent request execution, tool routing, reflection, and
+//!   streaming integration
+//! - `tools`: stable access to built-in tools, schemas, permissions, and
+//!   streaming shell helpers
+//! - `config`: application configuration plus core-owned security bridges
+//! - `llm_provider`: provider selection and facade access to LLM types
+//! - `mcp`, `a2a`, `knowledge`, `memory_bank`: protocol and knowledge surfaces
+//! - `session_manager`, `session_workspace`, `agent_sessions`: session state and
+//!   workspace lifecycle
+//!
+//! ## Cargo features
+//!
+//! The facade exposes optional capabilities through Cargo features:
+//!
+//! - `voice-local`: local Whisper speech-to-text support
+//! - `nats`: NATS messaging integration
+//! - `json-ld`: JSON-LD processing for MDH workflows
+//! - `security`: encryption, keychain, and secure-storage integrations
+//! - `macos-permissions`, `linux-permissions`, `windows-permissions`:
+//!   platform-specific permission helpers
+//!
+//! ## Documentation strategy
+//!
+//! The long-term goal is for crate-level and module-level Rustdoc to become the
+//! canonical architecture and API reference surfaced by `cargo doc`. External
+//! documents should increasingly focus on operational workflows such as install,
+//! packaging, release, and troubleshooting.
 
 /// Crate version from Cargo.toml
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -33,12 +73,16 @@ pub const NAME: &str = env!("CARGO_PKG_NAME");
 // ============================================================================
 
 pub mod agent_sessions;
+/// Agent lifecycle management and orchestration primitives re-exported from
+/// `gestura-core-agents`.
 pub mod agents {
     pub use gestura_core_agents::*;
 }
 pub mod checkpoints;
 pub mod compaction;
 pub mod config;
+/// Smart request analysis, entity extraction, and context resolution re-exported
+/// from `gestura-core-context`.
 pub mod context {
     pub use gestura_core_context::*;
 }
@@ -54,6 +98,7 @@ pub mod pipeline;
 pub mod prompt_enhancement;
 pub mod speech;
 pub mod streaming;
+/// Token accounting helpers re-exported from `gestura-core-llm`.
 pub mod token_tracker {
     pub use gestura_core_llm::token_tracker::*;
 }
@@ -64,168 +109,220 @@ pub mod tools;
 // ============================================================================
 
 // -- gestura-core-foundation --
+/// Shared application errors and result aliases re-exported from
+/// `gestura-core-foundation`.
 pub mod error {
     pub use gestura_core_foundation::error::*;
 }
+/// Cross-cutting event types re-exported from `gestura-core-foundation`.
 pub mod events {
     pub use gestura_core_foundation::events::*;
 }
+/// Execution-mode policy primitives re-exported from
+/// `gestura-core-foundation`.
 pub mod execution_mode {
     pub use gestura_core_foundation::execution_mode::*;
 }
+/// Shared interaction model types re-exported from `gestura-core-foundation`.
 pub mod interaction {
     pub use gestura_core_foundation::interaction::*;
 }
+/// Human-friendly model display helpers re-exported from
+/// `gestura-core-foundation`.
 pub mod model_display {
     pub use gestura_core_foundation::model_display::*;
 }
+/// Platform-detection helpers re-exported from `gestura-core-foundation`.
 pub mod platform {
     pub use gestura_core_foundation::platform::*;
 }
+/// Streaming error types re-exported from `gestura-core-foundation`.
 pub mod stream_error {
     pub use gestura_core_foundation::stream_error::*;
 }
+/// Streaming health state types re-exported from `gestura-core-foundation`.
 pub mod stream_health {
     pub use gestura_core_foundation::stream_health::*;
 }
+/// Streaming reconnection helpers re-exported from `gestura-core-foundation`.
 pub mod stream_reconnect {
     pub use gestura_core_foundation::stream_reconnect::*;
 }
+/// Telemetry and instrumentation types re-exported from
+/// `gestura-core-foundation`.
 pub mod telemetry {
     pub use gestura_core_foundation::telemetry::*;
 }
 
 // -- gestura-core-llm --
+/// Built-in provider model defaults re-exported from `gestura-core-llm`.
 pub mod default_models {
     pub use gestura_core_llm::default_models::*;
 }
+/// Model discovery and listing helpers re-exported from `gestura-core-llm`.
 pub mod model_listing {
     pub use gestura_core_llm::model_listing::*;
 }
 
 // -- gestura-core-mcp --
+/// Model Context Protocol types and services re-exported from
+/// `gestura-core-mcp`.
 pub mod mcp {
     pub use gestura_core_mcp::*;
 }
 
 // -- gestura-core-sessions --
+/// Authentication and session-management services re-exported from
+/// `gestura-core-sessions`.
 pub mod session_manager {
     pub use gestura_core_sessions::session_manager::*;
 }
+/// Session-scoped workspace management re-exported from
+/// `gestura-core-sessions`.
 pub mod session_workspace {
     pub use gestura_core_sessions::session_workspace::*;
 }
 
 // -- gestura-core-streaming --
+/// Streaming cancellation primitives re-exported from
+/// `gestura-core-streaming`.
 pub mod stream_cancellation {
     pub use gestura_core_streaming::cancellation::*;
 }
 
 // -- gestura-core-tasks --
+/// Task-management primitives re-exported from `gestura-core-tasks`.
 pub mod tasks {
     pub use gestura_core_tasks::tasks::*;
 }
+/// Workflow helpers re-exported from `gestura-core-tasks`.
 pub mod workflows {
     pub use gestura_core_tasks::workflows::*;
 }
 
 // -- gestura-core-security --
+/// Security domain types and services re-exported from `gestura-core-security`.
 pub mod security {
     pub use gestura_core_security::*;
 }
+/// GDPR-specific helpers re-exported from `gestura-core-security`.
 pub mod gdpr {
     pub use gestura_core_security::gdpr::*;
 }
+/// Sandbox primitives re-exported from `gestura-core-security`.
 pub mod sandbox {
     pub use gestura_core_security::sandbox::*;
 }
 
 // -- gestura-core-audio --
+/// Audio noise-cancellation utilities re-exported from `gestura-core-audio`.
 pub mod audio {
     pub use gestura_core_audio::noise_cancellation::*;
 }
+/// Audio capture helpers re-exported from `gestura-core-audio`.
 pub mod audio_capture {
     pub use gestura_core_audio::audio_capture::*;
 }
+/// Speech-to-text provider interfaces re-exported from `gestura-core-audio`.
 pub mod stt_provider {
     pub use gestura_core_audio::stt_provider::*;
 }
 
 // -- gestura-core-tools --
+/// Tool inspection and review helpers re-exported from `gestura-core-tools`.
 pub mod tool_inspection {
     pub use gestura_core_tools::tool_inspection::*;
 }
 
 // -- gestura-core-config --
+/// Environment-based configuration loading re-exported from
+/// `gestura-core-config`.
 pub mod config_env {
     pub use gestura_core_config::config_env::*;
 }
 
 // -- gestura-core-foundation + gestura-core-security --
+/// Secret-provider abstractions surfaced from foundation and security crates.
 pub mod secrets {
     pub use gestura_core_foundation::secrets::*;
     pub use gestura_core_security::secrets::SecureStorageSecretProvider;
 }
 
 // -- gestura-core-memory-bank --
+/// Persistent memory-bank types and services re-exported from
+/// `gestura-core-memory-bank`.
 pub mod memory_bank {
     pub use gestura_core_memory_bank::*;
 }
 
 // -- gestura-core-a2a --
+/// Agent-to-Agent protocol types and helpers re-exported from
+/// `gestura-core-a2a`.
 pub mod a2a {
     pub use gestura_core_a2a::*;
 }
 
 // -- gestura-core-explorer --
+/// File-system exploration helpers re-exported from `gestura-core-explorer`.
 pub mod explorer {
     pub use gestura_core_explorer::*;
 }
 
 // -- gestura-core-knowledge --
+/// Built-in knowledge and expertise surfaces re-exported from
+/// `gestura-core-knowledge`.
 pub mod knowledge {
     pub use gestura_core_knowledge::*;
 }
 
 // -- gestura-core-nats --
+/// NATS messaging primitives re-exported from `gestura-core-nats`.
 pub mod nats_mq {
     pub use gestura_core_nats::*;
 }
 
 // -- gestura-core-ipc --
+/// Hotkey inter-process communication types re-exported from `gestura-core-ipc`.
 pub mod hotkey_ipc {
     pub use gestura_core_ipc::*;
 }
 
 // -- gestura-core-analytics --
+/// Usage analytics types re-exported from `gestura-core-analytics`.
 pub mod analytics {
     pub use gestura_core_analytics::analytics::*;
 }
+/// Recommendation types re-exported from `gestura-core-analytics`.
 pub mod recommendations {
     pub use gestura_core_analytics::recommendations::*;
 }
 
 // -- gestura-core-hooks --
+/// Hook engine types re-exported from `gestura-core-hooks`.
 pub mod hooks {
     pub use gestura_core_hooks::*;
 }
 
 // -- gestura-core-scripting --
+/// Scripting-engine types re-exported from `gestura-core-scripting`.
 pub mod scripting {
     pub use gestura_core_scripting::*;
 }
 
 // -- gestura-core-plugins --
+/// Plugin-system types re-exported from `gestura-core-plugins`.
 pub mod plugin_system {
     pub use gestura_core_plugins::*;
 }
 
 // -- gestura-core-retry --
+/// Retry strategy helpers re-exported from `gestura-core-retry`.
 pub mod retry {
     pub use gestura_core_retry::*;
 }
 
 // -- tool_confirmation (merged into gestura-core-tools) --
+/// Tool-confirmation flows re-exported from `gestura-core-tools`.
 pub mod tool_confirmation {
     pub use gestura_core_tools::tool_confirmation::*;
 }

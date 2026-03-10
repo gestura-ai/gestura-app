@@ -1,6 +1,6 @@
 //! Async file operations for pipeline integration
 //!
-//! Wraps the synchronous [`FileTools`](crate::file::FileTools) via
+//! Wraps the synchronous [`FileTools`] via
 //! `tokio::task::spawn_blocking` for use in async contexts (pipeline, GUI).
 
 use crate::error::AppError;

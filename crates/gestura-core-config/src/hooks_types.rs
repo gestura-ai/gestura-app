@@ -1,4 +1,4 @@
-//! Hook configuration types used in [`AppConfig`].
+//! Hook configuration types used in [`crate::types::AppConfig`].
 //!
 //! These are the serializable hook definitions that appear in
 //! `~/.gestura/config.yaml`. Runtime types like `HookContext` remain

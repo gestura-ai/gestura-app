@@ -5,7 +5,7 @@
 //! formatted strings, allowing each interface to present results appropriately.
 //!
 //! # Tools
-//! - [`file`]: File system operations (read, write, edit, search, list, tree)
+//! - [`mod@file`]: File system operations (read, write, edit, search, list, tree)
 //! - [`shell`]: Shell command execution
 //! - [`git`]: Git repository operations
 //! - [`code`]: Code analysis and navigation

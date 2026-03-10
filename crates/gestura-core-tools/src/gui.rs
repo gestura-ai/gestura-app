@@ -5,7 +5,8 @@
 //! the start of the tool to update its UI state seamlessly.
 //!
 //! # Tools
-//! - [`gui_control`]: Dispatches a synthetic event that the frontend uses for UI layout.
+//! - `gui_control`: dispatches a synthetic event that the frontend uses for UI
+//!   layout.
 
 use crate::error::Result;
 use serde::{Deserialize, Serialize};

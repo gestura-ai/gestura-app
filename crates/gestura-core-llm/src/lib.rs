@@ -1,11 +1,49 @@
-//! LLM provider unification for Gestura
+//! Feature-gated LLM provider implementations and shared provider abstractions.
 //!
-//! Provides a trait and implementations for various LLM providers:
-//! - OpenAI (GPT models)
-//! - Anthropic (Claude models)
+//! `gestura-core-llm` is the domain crate behind Gestura's provider layer. It
+//! defines the common `LlmProvider` trait, shared response/token models, model
+//! listing helpers, default model catalogs, and the concrete provider
+//! implementations used by the runtime.
+//!
+//! ## Supported providers
+//!
+//! Provider implementations are enabled with Cargo features and currently cover:
+//!
+//! - OpenAI
+//! - Anthropic
 //! - Grok (xAI)
-//! - Gemini (Google Generative Language API)
-//! - Ollama (local models)
+//! - Gemini
+//! - Ollama (local)
+//!
+//! ## Design role
+//!
+//! This crate owns provider-specific HTTP behavior and response normalization.
+//! Higher-level concerns such as configuration-driven provider selection,
+//! runtime overrides, and pipeline orchestration remain in `gestura-core`.
+//!
+//! The stable public import path for most consumers remains
+//! `gestura_core::llm_provider::*`.
+//!
+//! ## Shared abstractions
+//!
+//! - `LlmProvider`: async provider interface used by the runtime
+//! - `LlmCallResponse`: normalized response with text, usage, and tool calls
+//! - `TokenUsage`: provider-agnostic token accounting and estimated cost data
+//! - `ToolCallInfo`: normalized native function/tool call representation
+//! - `default_models`, `model_listing`, `token_tracker`: support modules for
+//!   model defaults, discovery, and token accounting
+//!
+//! ## Native tool calling
+//!
+//! Where providers support it, Gestura normalizes native function/tool calling
+//! into a common `ToolCallInfo` representation so the pipeline can process tool
+//! calls consistently across providers.
+//!
+//! ## Feature-gated workspace design
+//!
+//! This crate is intentionally feature-gated so applications can compile only
+//! the providers they need. That keeps optional integrations isolated and makes
+//! the workspace easier to reason about in `cargo doc` and CI.
 
 pub mod default_models;
 pub mod model_listing;
@@ -166,7 +204,8 @@ pub trait LlmProvider: Send + Sync {
     /// return structured tool call responses.
     ///
     /// The default implementation ignores the tools parameter and delegates to
-    /// [`call_with_usage`]. Providers should override this to pass tools natively.
+    /// [`Self::call_with_usage`]. Providers should override this to pass tools
+    /// natively.
     async fn call_with_tools(
         &self,
         prompt: &str,

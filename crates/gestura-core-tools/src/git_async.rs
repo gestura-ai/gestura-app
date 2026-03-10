@@ -1,6 +1,6 @@
 //! Async git operations for pipeline integration
 //!
-//! Wraps the synchronous [`GitTools`](crate::git::GitTools) via
+//! Wraps the synchronous [`GitTools`] via
 //! `tokio::task::spawn_blocking` for use in async contexts (pipeline, GUI).
 
 use crate::error::AppError;

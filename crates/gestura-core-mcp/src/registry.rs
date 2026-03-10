@@ -97,7 +97,7 @@ pub struct RegistryBrowsePage {
 /// - Has an npm `stdio` package
 /// - Declares **zero** environment variables (no required user setup)
 ///
-/// Results are sorted by the curated [`PRIORITY_PACKAGES`] list first, then
+/// Results are sorted by the curated `PRIORITY_PACKAGES` list first, then
 /// alphabetically as a tiebreak for servers not in the curated set.
 /// Returns an error if fewer than `limit` servers pass all filters.
 pub async fn list_popular_mcp_servers(limit: usize) -> Result<Vec<PopularMcpServer>> {
@@ -221,7 +221,7 @@ const PRIORITY_PACKAGES: &[&str] = &[
 
 /// Return the priority rank of a package identifier.
 ///
-/// Packages in [`PRIORITY_PACKAGES`] return their 0-based index; anything else
+/// Packages in `PRIORITY_PACKAGES` return their 0-based index; anything else
 /// returns [`usize::MAX`] so it sorts after all curated entries.
 fn priority_index(pkg_id: &str) -> usize {
     PRIORITY_PACKAGES

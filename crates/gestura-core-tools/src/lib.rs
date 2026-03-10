@@ -1,9 +1,27 @@
-//! Gestura Core Tools
+//! Built-in tools, schemas, permissions, and tool policy for Gestura.
 //!
-//! Domain crate containing implementations for Gestura's built-in tools.
+//! This domain crate owns the implementation of Gestura's built-in tools and
+//! the shared machinery around them: registry construction, permission checks,
+//! policy evaluation, provider schema generation, and async wrappers used by the
+//! higher-level pipeline.
 //!
-//! This crate intentionally does **not** depend on the `gestura-core` facade.
-//! The facade crate re-exports these modules to preserve stable public paths.
+//! ## Design role
+//!
+//! This crate is intentionally independent from the `gestura-core` facade so it
+//! can stay workable with lower coupling and faster iteration. The public stable
+//! import path for most consumers remains `gestura_core::tools::*`, which
+//! re-exports these modules from the facade crate.
+//!
+//! ## High-signal modules
+//!
+//! - `file`, `shell`, `git`, `web`, `screen`: built-in tool implementations
+//! - `registry`: built-in tool catalog and discovery helpers
+//! - `schemas`: provider-specific tool schemas for OpenAI, Anthropic, and Gemini
+//! - `permissions`: permission management and audit-friendly checks
+//! - `policy`: policy evaluation helpers layered on top of permissions
+//!
+//! Pipeline orchestration and higher-level request handling stay in
+//! `gestura-core`; this crate focuses on the tools domain itself.
 
 /// Error compatibility module.
 ///

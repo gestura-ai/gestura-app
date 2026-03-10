@@ -1,6 +1,6 @@
 //! Async shell operations for pipeline integration
 //!
-//! Wraps the synchronous [`ShellTools`](crate::shell::ShellTools) via
+//! Wraps the synchronous [`ShellTools`] via
 //! `tokio::task::spawn_blocking` for use in async contexts (pipeline, GUI).
 
 use crate::error::{AppError, Result};

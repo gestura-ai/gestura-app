@@ -1,6 +1,6 @@
 //! Async code operations for pipeline integration
 //!
-//! Wraps the synchronous [`CodeTools`](crate::code::CodeTools) via
+//! Wraps the synchronous [`CodeTools`] via
 //! `tokio::task::spawn_blocking` for use in async contexts (pipeline, GUI).
 
 use crate::code::{CodeTools, EditOp};

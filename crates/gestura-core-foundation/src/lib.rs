@@ -1,7 +1,26 @@
-//! Gestura Core Foundation
+//! Shared, dependency-light primitives for the Gestura workspace.
 //!
-//! This crate contains shared primitives that multiple `gestura-core-*` domain crates
-//! can depend on without pulling in the full `gestura-core` facade.
+//! `gestura-core-foundation` exists so domain crates can share core models and
+//! policies without depending on the larger `gestura-core` facade. This crate is
+//! intended to stay small, stable, and broadly reusable across the workspace.
+//!
+//! ## What belongs here
+//!
+//! - cross-cutting error and result types
+//! - execution-mode and permission primitives
+//! - shared event, telemetry, platform, and interaction models
+//! - context analysis data structures reused by higher-level crates
+//!
+//! ## What does not belong here
+//!
+//! - protocol implementations
+//! - tool implementations
+//! - pipeline orchestration
+//! - GUI or CLI presentation concerns
+//!
+//! Most application code should still import through `gestura_core::*`, while
+//! domain crates may depend on this crate directly when they need a lightweight
+//! shared foundation.
 
 pub mod context;
 pub mod error;

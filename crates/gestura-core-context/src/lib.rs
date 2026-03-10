@@ -1,31 +1,48 @@
-//! Smart context management for efficient LLM interactions
+//! Smart context analysis, resolution, and caching for Gestura.
 //!
-//! This module provides tools for analyzing user requests, determining what
-//! context is needed, and efficiently managing context through caching.
+//! `gestura-core-context` helps the runtime decide what context is relevant for
+//! a request before invoking an LLM. It provides lightweight request analysis,
+//! entity extraction, category classification, tool-aware context resolution,
+//! and cache-backed reuse of previous results.
 //!
-//! # Architecture
+//! ## Resolution model
 //!
-//! The context system uses a three-tier approach:
+//! The context system follows a three-stage approach:
 //!
-//! 1. **Request Analysis** - Parse user requests to determine intent without LLM
-//! 2. **Context Resolution** - Load only the context needed for the request
-//! 3. **Smart Caching** - Cache frequently accessed context with TTL
+//! 1. **Request analysis**: infer intent and extract entities without needing a
+//!    model round-trip
+//! 2. **Context resolution**: load only the categories and tool descriptors that
+//!    are likely relevant to the request
+//! 3. **Smart caching**: reuse recent analysis and resolved context with TTL- and
+//!    size-based cache limits
 //!
-//! # Example
+//! ## Main entry points
+//!
+//! - `RequestAnalyzer`: parses requests into categories, entities, and intent
+//! - `ContextManager`: orchestrates analysis, resolution, and cache lookup
+//! - `ContextCache`: reusable caching layer with observable stats
+//! - foundation re-exports: shared context data structures from
+//!   `gestura-core-foundation`
+//!
+//! ## Architecture boundary
+//!
+//! This crate owns context-domain behavior. It does not decide how the pipeline
+//! uses the resolved context inside a full agent run; that orchestration remains
+//! in `gestura-core`.
+//!
+//! Most application code should import these types through
+//! `gestura_core::context::*`, while code inside the workspace may depend on
+//! this domain crate directly when evolving context analysis itself.
+//!
+//! ## Example
 //!
 //! ```rust,ignore
 //! use gestura_core::context::ContextManager;
 //!
 //! let manager = ContextManager::new();
-//!
-//! // Analyze a request
 //! let analysis = manager.analyze("Read the file src/main.rs");
-//! println!("Needs tools: {}", analysis.needs_tools);
-//! println!("Categories: {:?}", analysis.categories);
-//!
-//! // Resolve context (includes caching)
-//! let context = manager.resolve_context("Show git status");
-//! println!("Tools available: {}", context.tools.len());
+//! let context = manager.resolve_simple("Show git status", None);
+//! println!("{:?} -> {} tools", analysis.categories, context.tools.len());
 //! ```
 
 mod analyzer;

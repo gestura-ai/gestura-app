@@ -1,8 +1,26 @@
-//! Gestura MCP domain crate.
+//! Model Context Protocol implementation for Gestura.
 //!
-//! Owns the Model Context Protocol (MCP) implementation (protocol version 2025-11-25),
-//! including client/server plumbing, discovery/caching, lifecycle, notifications,
-//! and prompts.
+//! This crate owns Gestura's MCP protocol layer for protocol version
+//! `2025-11-25`, including the protocol data model, client/server plumbing,
+//! discovery and caching, connection lifecycle, notifications, prompt registry,
+//! and local integration helpers.
+//!
+//! ## Responsibilities
+//!
+//! - MCP client and server implementations
+//! - service discovery, caching, and registry helpers
+//! - session lifecycle and notification delivery
+//! - prompt resources and prompt registry access
+//! - MCP-specific configuration, errors, and inspection helpers
+//!
+//! ## Boundary with `gestura-core`
+//!
+//! Higher-level agent orchestration stays in `gestura-core`. This crate focuses
+//! on implementing the MCP protocol surface itself so it can evolve as a
+//! cohesive domain.
+//!
+//! Most application code should import MCP items through `gestura_core::mcp::*`
+//! unless it specifically needs to depend on this domain crate directly.
 
 pub mod client;
 pub mod cmd_utils;

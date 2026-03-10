@@ -1,6 +1,6 @@
 //! Async screen capture operations for pipeline integration
 //!
-//! Wraps the synchronous [`ScreenTools`](crate::screen::ScreenTools) via
+//! Wraps the synchronous [`ScreenTools`] via
 //! `tokio::task::spawn_blocking` for use in async contexts (pipeline, GUI).
 
 use crate::error::{AppError, Result};

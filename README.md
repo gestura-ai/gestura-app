@@ -44,6 +44,26 @@ gestura-app/
 - **Re-export Pattern**: `gestura-core` re-exports domain crates as stable public API paths
 - **Feature Gates**: Optional functionality via Cargo features (`voice-local`, `nats`, `security`, etc.)
 
+## Documentation Strategy
+
+The long-term direction is to make crate-level and module-level Rustdoc the
+canonical architecture and API reference for the project.
+
+- Primary API and architecture docs should live in `crates/*/src/lib.rs` and
+  public module docs.
+- `cargo doc --workspace --no-deps` should produce a useful entry point for the
+  workspace libraries.
+- The `docs/` directory should gradually shrink toward operational content such
+  as install, packaging, release, and troubleshooting guides.
+
+Start with the facade and domain crates in generated docs:
+
+- `gestura-core`
+- `gestura-core-tools`
+- `gestura-core-config`
+- `gestura-core-mcp`
+- other `gestura-core-*` crates as their public docs mature
+
 ## Features
 
 ### Voice & LLM
