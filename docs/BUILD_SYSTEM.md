@@ -1,4 +1,4 @@
-# Haptic Harmony Simulator - Build System Documentation
+# Gestura.app Build System Documentation
 
 This document describes the comprehensive build system for multi-platform releases and package manager publishing.
 

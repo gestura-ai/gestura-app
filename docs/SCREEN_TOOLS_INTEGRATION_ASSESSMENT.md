@@ -4,6 +4,18 @@
 **Status:** Implementation Plan  
 **Goal:** Integrate screen recording and screenshot capabilities as MCP tools available to LLMs
 
+## Status Note
+
+This file is an **assessment / implementation-planning document**. It should
+not be treated as the canonical source for exact file locations, line numbers,
+command signatures, or current ownership boundaries.
+
+For current source-of-truth reference material, prefer:
+
+- generated Rustdoc for the owning crates/modules
+- current source under `crates/gestura-core*`, `crates/gestura-cli`, and `crates/gestura-gui`
+- CLI help for the live command surface
+
 ---
 
 ## Executive Summary
@@ -12,19 +24,11 @@ The screen recording and screenshot functionality has been **fully implemented**
 
 ### Current State
 
-✅ **Complete:**
-- Core implementation in `crates/gestura-core/src/tools/screen.rs` (746 lines)
-- Platform-specific screenshot and recording for macOS, Linux, Windows
-- Async wrappers in `tools/mod.rs` (`screen_async` module)
-- Tool definitions in `tools/registry.rs` (2 new tools: `screenshot`, `screen_record`)
-- Permission checks in `gestura-gui/src/permissions.rs`
+At the time of writing, the core screen-capture functionality existed, but the
+agent-facing integration path was incomplete.
 
-❌ **Missing:**
-- Tool execution dispatcher in `pipeline/mod.rs` (no cases for screenshot/screen_record)
-- JSON schemas in `tools/schemas.rs` (incomplete or missing)
-- CLI commands (`gestura tools screenshot`, `gestura tools screen_record`)
-- GUI image display for screenshot results
-- LLM integration testing
+The useful part of this document is the gap analysis and rollout sequencing,
+not the exact file/line references or code snippets.
 
 ---
 
@@ -715,16 +719,10 @@ cargo tauri dev
 
 ---
 
-## Appendix: Key Files Reference
+## Appendix: Working Notes
 
-| File | Purpose | Lines | Status |
-|------|---------|-------|--------|
-| `crates/gestura-core/src/tools/screen.rs` | Core implementation | 746 | ✅ Complete |
-| `crates/gestura-core/src/tools/mod.rs` | Async wrappers | 84-202 | ✅ Complete |
-| `crates/gestura-core/src/tools/registry.rs` | Tool definitions | 155-194 | ✅ Complete |
-| `crates/gestura-core/src/pipeline/mod.rs` | Tool execution | 2457-2487 | ❌ Missing dispatcher |
-| `crates/gestura-core/src/tools/schemas.rs` | JSON schemas | 39-326 | ❌ Missing schemas |
-| `crates/gestura-cli/src/commands/tools/screen.rs` | CLI commands | N/A | ❌ Not created |
-| `crates/gestura-gui/frontend/public/agent.html` | GUI display | N/A | ❌ No image support |
+Any file references in this document should be treated as working notes from the
+time of the assessment. Re-check current source and generated docs before using
+them for implementation work.
 
 

@@ -3,55 +3,37 @@
 ## Overview
 This document outlines the implementation of screenshot and screen recording as **first-class features** in the Gestura GUI, following Core-First Architecture principles.
 
-## Status: Backend Complete ✅
+## Status
+
+This file is an **implementation-planning document**, not the canonical source
+for exact Tauri command signatures, current registration state, or Rust type
+definitions.
+
+For the current source of truth, use:
+
+- `docs/IPC_CONTRACTS_GESTURA_GUI.md`
+- `crates/gestura-gui/src/main.rs`
+- `crates/gestura-gui/src/api.rs`
+- generated docs/source for the owning Rust modules
+
+## Backend Status: Complete ✅
 
 ### Completed (Backend)
 
-#### 1. Tauri Commands Added (`crates/gestura-gui/src/api.rs`)
+#### 1. Frontend/IPC Surface Exists
 
-Three new Tauri commands expose core screen capture functionality to the frontend:
+Screen-capture-related GUI IPC handlers and registration points exist in the GUI
+host. Use the IPC guide and current source files rather than this doc for exact
+command names or signatures.
 
-```rust
-#[tauri::command]
-pub async fn capture_screenshot(
-    output_path: String,
-    region: Option<(u32, u32, u32, u32)>,
-    display: Option<u32>,
-) -> Result<gestura_core::tools::screen::ScreenshotResult, String>
-
-#[tauri::command]
-pub async fn start_screen_recording(
-    output_path: String,
-    region: Option<(u32, u32, u32, u32)>,
-    display: Option<u32>,
-) -> Result<gestura_core::tools::screen::RecordingStartResult, String>
-
-#[tauri::command]
-pub async fn stop_screen_recording(
-    recording_id: String,
-) -> Result<gestura_core::tools::screen::RecordingStopResult, String>
-```
-
-**Return Types:**
-- `ScreenshotResult`: path, width, height, format, timestamp, file_size_bytes
-- `RecordingStartResult`: recording_id, output_path, started_at
-- `RecordingStopResult`: recording_id, path, duration_secs, file_size_bytes, format
-
-#### 2. Commands Registered (`crates/gestura-gui/src/main.rs`)
-
-All three commands registered in the Tauri invoke handler:
-- `gestura_gui::api::capture_screenshot`
-- `gestura_gui::api::start_screen_recording`
-- `gestura_gui::api::stop_screen_recording`
-
-#### 3. Core Implementation (`gestura-core/src/tools/screen.rs`)
+#### 2. Core Implementation Exists
 
 Cross-platform implementation already exists:
 - **macOS**: `screencapture`, `ffmpeg` with AVFoundation
 - **Linux**: `grim`/`scrot`, `wf-recorder`/`ffmpeg`
 - **Windows**: PowerShell, `ffmpeg` with gdigrab
 
-#### 4. Permission Handling
+#### 3. Permission Handling Exists
 
 Existing permission commands work for screen recording:
 - `check_permission("screen_recording")`

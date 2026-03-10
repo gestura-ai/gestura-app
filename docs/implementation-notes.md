@@ -2,6 +2,19 @@
 
 This document captures key architectural decisions, design patterns, and implementation context for the Gestura workspace refactoring and CLI implementation project.
 
+## Status
+
+This file should be treated as a **historical design / implementation-notes**
+document, not the canonical source for current crate ownership, module layout,
+or exact command/API surface.
+
+For current source-of-truth reference material, prefer:
+
+- `cargo doc --workspace --no-deps`
+- `docs/ARCHITECTURE.md`
+- `docs/CODE_ORGANIZATION.md`
+- `docs/API.md`
+
 ---
 
 ## Document History
@@ -83,34 +96,18 @@ The permission system follows a **defense-in-depth** approach:
 
 ## 2. Workspace Architecture
 
-### 2.1 Crate Structure
+This section reflects an **earlier refactor snapshot** from before the current,
+broader `gestura-core-*` domain-crate split.
 
-```
-gestura-app/
-├── Cargo.toml                    # Workspace root
-├── crates/
-│   ├── gestura-core/             # Shared business logic (library)
-│   ├── gestura-cli/              # CLI binary
-│   └── gestura-gui/              # Tauri GUI binary
-```
+Current rule of thumb:
 
-### 2.2 Module Classification
+- business logic belongs in the owning `gestura-core-*` crate
+- `gestura-core` provides stable facade paths and cross-domain orchestration
+- `gestura-cli` and `gestura-gui` remain presentation/integration layers
 
-| Module | Destination | Refactoring Needed |
-|--------|-------------|-------------------|
-| `error.rs` | gestura-core | None |
-| `config.rs` | gestura-core | None |
-| `llm_provider.rs` | gestura-core | None |
-| `mcp.rs` | gestura-core | None |
-| `gdpr.rs` | gestura-core | None |
-| `session_manager.rs` | gestura-core | None |
-| `telemetry.rs` | gestura-core | None |
-| `audio_capture.rs` | gestura-core | Remove config coupling |
-| `speech.rs` | Split | Extract core logic from Tauri bindings |
-| `tray.rs` | gestura-gui | None (GUI-only) |
-| `api.rs` | gestura-gui | None (GUI-only) |
+For the current crate/module map, use generated Rustdoc instead of this file.
 
-### 2.3 Dependency Strategy
+### 2.1 Dependency Strategy
 
 - **Workspace Dependencies**: Shared versions in root `Cargo.toml`
 - **Feature Flags**: `voice-local`, `voice-openai`, `nats`, `ble`, `security`
@@ -165,18 +162,17 @@ Using `ratatui` for terminal UI in agent mode:
 
 ## 5. System Tools Implementation (2026-01-14)
 
-### 5.1 Completed Implementation
+### 5.1 Historical Snapshot
 
-All six system tool categories have been implemented in `crates/gestura-cli/src/commands/tools/`:
+This section records the implementation shape that existed during the
+2026-01-14 tools work. Treat it as historical context, not the authoritative
+current CLI/tool contract.
 
-| Module | File | Subcommands | Status |
-|--------|------|-------------|--------|
-| File | `file.rs` | read, write, edit, search, list, tree, add, drop, context | ✅ Complete |
-| Shell | `shell.rs` | run, test, history, last | ✅ Complete |
-| Git | `git.rs` | status, diff, log, commit, undo, branch, checkout, stash, blame, conflicts, resolve | ✅ Complete |
-| Code | `code.rs` | map, symbols, references, definition, lint, test, deps, stats | ✅ Complete |
-| Web | `web.rs` | fetch, search, screenshot | ✅ Complete |
-| Permissions | `permissions.rs` | list, grant, revoke, reset, check | ✅ Complete |
+For the current surface, prefer:
+
+- `gestura --help`
+- `gestura tools --help`
+- generated Rustdoc for `gestura-core-tools` and `gestura-core`
 
 ### 5.2 Key Implementation Details
 
@@ -192,44 +188,18 @@ All six system tool categories have been implemented in `crates/gestura-cli/src/
 
 6. **Permissions**: JSON-based permission storage in `~/.config/gestura/permissions.json`. Default permissions for safe operations.
 
-### 5.3 Dependencies Added
+### 5.3 Current Command Discovery
 
-```toml
-# crates/gestura-cli/Cargo.toml
-regex = "1.12"
-reqwest = { version = "0.12", features = ["json"] }
-```
-
-### 5.4 Usage Examples
+Instead of keeping command examples synchronized here, use live command help:
 
 ```bash
-# File operations
-gestura tools file read Cargo.toml --lines 1-20
-gestura tools file list --all
-gestura tools file tree --depth 3
-gestura tools file search "fn main" --recursive
-
-# Shell operations
-gestura tools shell run "ls -la"
-gestura tools shell test "rm -rf /"  # Safety check
-
-# Git operations
-gestura tools git status
-gestura tools git diff --staged
-gestura tools git log --count 5 --oneline
-
-# Code analysis
-gestura tools code stats
-gestura tools code symbols src/main.rs
-gestura tools code map --depth 2
-
-# Web operations
-gestura tools web fetch https://example.com
-
-# Permissions
-gestura tools permissions list
-gestura tools permissions grant shell.run
-gestura tools permissions check write ./file.txt
+gestura tools --help
+gestura tools file --help
+gestura tools shell --help
+gestura tools git --help
+gestura tools code --help
+gestura tools web --help
+gestura tools permissions --help
 ```
 
 ---
