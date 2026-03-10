@@ -34,6 +34,8 @@ use uuid::Uuid;
 pub enum TaskStatus {
     /// Task has not been started
     NotStarted,
+    /// Task is blocked on dependencies, approvals, or other coordination gates
+    Blocked,
     /// Task is currently in progress
     InProgress,
     /// Task has been completed
@@ -46,6 +48,7 @@ impl std::fmt::Display for TaskStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotStarted => write!(f, "not_started"),
+            Self::Blocked => write!(f, "blocked"),
             Self::InProgress => write!(f, "in_progress"),
             Self::Completed => write!(f, "completed"),
             Self::Cancelled => write!(f, "cancelled"),
@@ -61,11 +64,12 @@ impl std::str::FromStr for TaskStatus {
         let norm = s.trim().to_ascii_lowercase().replace('-', "_");
         match norm.as_str() {
             "not_started" | "todo" | "new" => Ok(Self::NotStarted),
+            "blocked" | "waiting" | "pending" => Ok(Self::Blocked),
             "in_progress" | "doing" | "wip" => Ok(Self::InProgress),
             "completed" | "done" => Ok(Self::Completed),
             "cancelled" | "canceled" | "dropped" => Ok(Self::Cancelled),
             _ => Err(format!(
-                "Unknown task status: '{}'. Expected: not_started, in_progress, completed, cancelled",
+                "Unknown task status: '{}'. Expected: not_started, blocked, in_progress, completed, cancelled",
                 s
             )),
         }
@@ -92,6 +96,10 @@ pub enum TaskSource {
 pub enum TaskBackgroundStatus {
     /// The background job has been queued but has not started.
     Queued,
+    /// The background job is blocked on another dependency or review gate.
+    Blocked,
+    /// The background job is waiting on explicit approval.
+    AwaitingApproval,
     /// The background job is currently running.
     Running,
     /// The background job completed successfully.

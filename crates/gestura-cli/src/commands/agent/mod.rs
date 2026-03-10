@@ -4362,6 +4362,7 @@ fn basic_mode_tasks_command(session: &AgentSession) {
     fn status_icon(status: TaskStatus) -> &'static str {
         match status {
             TaskStatus::NotStarted => "[ ]",
+            TaskStatus::Blocked => "[!]",
             TaskStatus::InProgress => "[/]",
             TaskStatus::Completed => "[x]",
             TaskStatus::Cancelled => "[-]",
@@ -4371,6 +4372,7 @@ fn basic_mode_tasks_command(session: &AgentSession) {
     fn next_status(status: TaskStatus) -> &'static str {
         match status {
             TaskStatus::NotStarted => "in_progress",
+            TaskStatus::Blocked => "in_progress",
             TaskStatus::InProgress => "completed",
             TaskStatus::Completed => "cancelled",
             TaskStatus::Cancelled => "not_started",

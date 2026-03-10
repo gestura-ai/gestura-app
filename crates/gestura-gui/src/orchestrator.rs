@@ -7,11 +7,17 @@
 
 use std::collections::HashMap;
 use tauri::AppHandle;
+use tauri::Emitter;
 use tokio::sync::Mutex;
 
-pub use gestura_core::agents::{DelegatedTask, OrchestratorToolCall, TaskResult};
+pub use gestura_core::agents::{
+    AgentExecutionMode, AgentRole, AgentSpawnRequest, DelegatedTask, OrchestratorToolCall,
+    TaskResult,
+};
 pub use gestura_core::orchestrator::{
-    AgentOrchestrator, OrchestratorAgentManager, OrchestratorObserver,
+    AgentOrchestrator, ExecutionEnvironment, OrchestratorAgentManager, OrchestratorObserver,
+    SupervisorRun, SupervisorRunStatus, SupervisorTaskRecord, SupervisorTaskState, TeamMessage,
+    TeamMessageKind,
 };
 
 /// A Tauri-backed observer that mirrors orchestrator task lifecycle events into the
@@ -37,6 +43,19 @@ impl OrchestratorObserver for TauriTaskObserver {
         let Some(session_id) = task.session_id.as_deref() else {
             return;
         };
+
+        if let Some(existing_task_id) = task.tracking_task_id.clone() {
+            let _ = crate::task_integration::mark_task_in_progress(
+                &self.app,
+                session_id,
+                &existing_task_id,
+            );
+            self.ui_task_mapping
+                .lock()
+                .await
+                .insert(task.id.clone(), existing_task_id);
+            return;
+        }
 
         let task_name = task.name.clone().unwrap_or_else(|| {
             // Generate a name from the prompt (first 50 chars)
@@ -97,5 +116,13 @@ impl OrchestratorObserver for TauriTaskObserver {
         );
 
         self.ui_task_mapping.lock().await.remove(&task.id);
+    }
+
+    async fn on_run_updated(&self, run: SupervisorRun) {
+        let _ = self.app.emit("orchestrator-run-updated", &run);
+    }
+
+    async fn on_team_message(&self, message: TeamMessage) {
+        let _ = self.app.emit("orchestrator-team-message", &message);
     }
 }

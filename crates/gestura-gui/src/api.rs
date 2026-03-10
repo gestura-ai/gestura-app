@@ -3328,9 +3328,28 @@ pub async fn delegate_task(
 pub async fn spawn_subagent(
     agent_id: String,
     name: String,
+    role: Option<crate::orchestrator::AgentRole>,
+    execution_mode: Option<crate::orchestrator::AgentExecutionMode>,
+    capabilities: Option<Vec<String>>,
+    workspace_dir: Option<String>,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<(), String> {
-    state.orchestrator.spawn_subagent(&agent_id, &name).await
+    let mut request = crate::orchestrator::AgentSpawnRequest::new(
+        agent_id,
+        name,
+        role.unwrap_or(crate::orchestrator::AgentRole::Implementer),
+    );
+    if let Some(execution_mode) = execution_mode {
+        request.execution_mode = execution_mode;
+    }
+    if let Some(capabilities) = capabilities {
+        request.capabilities = capabilities;
+    }
+    request.workspace_dir = workspace_dir.map(std::path::PathBuf::from);
+    state
+        .orchestrator
+        .spawn_subagent_with_request(request)
+        .await
 }
 
 /// List all active tasks
@@ -3348,6 +3367,103 @@ pub async fn cancel_task(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<(), String> {
     state.orchestrator.cancel_task(&task_id).await
+}
+
+/// List supervisor runs tracked by the orchestrator.
+#[tauri::command]
+pub async fn list_supervisor_runs(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Vec<crate::orchestrator::SupervisorRun>, String> {
+    Ok(state.orchestrator.list_supervisor_runs().await)
+}
+
+/// Fetch a specific supervisor run.
+#[tauri::command]
+pub async fn get_supervisor_run(
+    run_id: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Option<crate::orchestrator::SupervisorRun>, String> {
+    Ok(state.orchestrator.get_supervisor_run(&run_id).await)
+}
+
+/// Approve a delegated task.
+#[tauri::command]
+pub async fn approve_workflow_task(
+    task_id: String,
+    decided_by: Option<String>,
+    note: Option<String>,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<(), String> {
+    state
+        .orchestrator
+        .approve_task(&task_id, decided_by, note)
+        .await
+}
+
+/// Reject or request revision for a delegated task.
+#[tauri::command]
+pub async fn reject_workflow_task(
+    task_id: String,
+    decided_by: Option<String>,
+    note: Option<String>,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<(), String> {
+    state
+        .orchestrator
+        .reject_task(&task_id, decided_by, note)
+        .await
+}
+
+/// Retry a workflow task.
+#[tauri::command]
+pub async fn retry_workflow_task(
+    task_id: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<(), String> {
+    state.orchestrator.retry_task(&task_id).await
+}
+
+/// Claim a workflow task for a specific agent.
+#[tauri::command]
+pub async fn claim_workflow_task(
+    task_id: String,
+    agent_id: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<(), String> {
+    state.orchestrator.claim_task(&task_id, &agent_id).await
+}
+
+/// Send a structured team message.
+#[tauri::command]
+pub async fn send_workflow_message(
+    run_id: String,
+    task_id: Option<String>,
+    kind: crate::orchestrator::TeamMessageKind,
+    sender_agent_id: Option<String>,
+    recipient_agent_id: Option<String>,
+    content: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<crate::orchestrator::TeamMessage, String> {
+    state
+        .orchestrator
+        .send_team_message(
+            &run_id,
+            task_id,
+            kind,
+            sender_agent_id,
+            recipient_agent_id,
+            content,
+        )
+        .await
+}
+
+/// List workflow messages for a supervisor run.
+#[tauri::command]
+pub async fn list_workflow_messages(
+    run_id: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Vec<crate::orchestrator::TeamMessage>, String> {
+    Ok(state.orchestrator.list_team_messages(&run_id).await)
 }
 
 // Audio Device Management Commands
@@ -5108,12 +5224,13 @@ pub fn update_task_status(
     let manager = get_task_manager();
     let task_status = match status.to_lowercase().as_str() {
         "notstarted" | "not_started" => TaskStatus::NotStarted,
+        "blocked" | "waiting" => TaskStatus::Blocked,
         "inprogress" | "in_progress" => TaskStatus::InProgress,
         "completed" => TaskStatus::Completed,
         "cancelled" => TaskStatus::Cancelled,
         _ => {
             return Err(format!(
-                "Invalid task status: {}. Use 'notstarted', 'inprogress', 'completed', or 'cancelled'",
+                "Invalid task status: {}. Use 'notstarted', 'blocked', 'inprogress', 'completed', or 'cancelled'",
                 status
             ));
         }

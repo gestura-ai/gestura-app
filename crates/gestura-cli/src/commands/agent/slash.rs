@@ -1022,6 +1022,7 @@ fn format_task_details(task: &Task) -> Vec<String> {
 fn status_icon(status: TaskStatus) -> &'static str {
     match status {
         TaskStatus::NotStarted => "[ ]",
+        TaskStatus::Blocked => "[!]",
         TaskStatus::InProgress => "[/]",
         TaskStatus::Completed => "[x]",
         TaskStatus::Cancelled => "[-]",

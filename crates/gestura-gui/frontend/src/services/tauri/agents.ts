@@ -4,6 +4,10 @@ export interface Agent {
   id: string;
   name: string;
   status: string;
+  role?: string;
+  capabilities?: string[];
+  workspace_dir?: string | null;
+  execution_mode?: string;
 }
 
 export interface ListAgentsResponse {

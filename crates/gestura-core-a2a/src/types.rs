@@ -2,6 +2,7 @@
 //!
 //! Core types for the Agent-to-Agent protocol.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -100,11 +101,101 @@ pub struct OAuth2Config {
 pub struct A2ATask {
     pub id: String,
     pub status: TaskStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_reason: Option<String>,
     pub messages: Vec<A2AMessage>,
     #[serde(default)]
     pub artifacts: Vec<Artifact>,
     #[serde(default)]
+    pub retry_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub requested_capabilities: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract: Option<RemoteTaskContract>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<TaskProvenance>,
+    #[serde(default)]
+    pub audit_log: Vec<TaskAuditEvent>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
+}
+
+/// Rich remote task create request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateTaskRequest {
+    pub message: A2AMessage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub requested_capabilities: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract: Option<RemoteTaskContract>,
+    #[serde(default)]
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+impl CreateTaskRequest {
+    pub fn from_message(message: A2AMessage) -> Self {
+        Self {
+            message,
+            run_id: None,
+            parent_task_id: None,
+            role: None,
+            requested_capabilities: Vec::new(),
+            contract: None,
+            metadata: HashMap::new(),
+        }
+    }
+}
+
+/// Structured contract shared with a remote worker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTaskContract {
+    pub objective: String,
+    #[serde(default)]
+    pub acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    pub constraints: Vec<String>,
+    #[serde(default)]
+    pub deliverables: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_format: Option<String>,
+}
+
+/// Remote provenance metadata for a task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskProvenance {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_version: Option<String>,
+}
+
+/// Audit entry recorded for task lifecycle changes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskAuditEvent {
+    pub at: DateTime<Utc>,
+    pub event: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// Task status
@@ -112,6 +203,7 @@ pub struct A2ATask {
 #[serde(rename_all = "lowercase")]
 pub enum TaskStatus {
     Pending,
+    Blocked,
     Running,
     Completed,
     Failed,

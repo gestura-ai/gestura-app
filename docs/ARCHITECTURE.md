@@ -230,6 +230,15 @@ gestura-gui/src/
 | `agents/` | Agent orchestration | `AgentEnvelope`, `AgentSpawner`, `OrchestratorToolCall` |
 | `nats_mq/` | NATS messaging | `Connection`, `Publisher`, `Subscriber` |
 
+### Supervisor Orchestration Architecture
+
+- **Supervisor runs** group related delegated tasks under a durable `run_id`, with persisted state stored under `.gestura/orchestrator/<session>/`.
+- **Delegated task records** now track specialist `role`, dependency edges, approval/review/test gates, execution environment metadata, ownership claims, and structured task results.
+- **Execution environments** support shared-workspace, isolated-workspace, git-worktree scaffolding, and remote/A2A delegation metadata.
+- **Task graph mirroring** pushes orchestration state back into the session task system so blocked, queued, running, completed, and gated work remain visible in CLI/GUI task views.
+- **Team coordination** uses structured run/task messages and run-level observer events so presentation layers can render approvals, retries, claims, and handoffs without owning business logic.
+- **Remote parity**: A2A tasks now carry run/task lineage, requested capabilities, structured contracts, provenance, retries, and audit entries for safer remote delegation.
+
 ### Memory Architecture
 
 - **Short-term memory** lives in `agent_sessions/` as session-scoped working memory (resources, decisions, blockers, timeline, next actions).

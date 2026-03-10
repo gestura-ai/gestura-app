@@ -8,18 +8,284 @@
 //! - Adapters (GUI/CLI) may attach observers to emit UI events, but must not re-implement
 //!   orchestration logic.
 
+use crate::tasks::{TaskBackgroundJob, TaskBackgroundStatus};
 use crate::tools::PermissionManager;
 use crate::{AgentPipeline, AgentRequest, AppConfig, RequestSource};
 use crate::{MemoryBankEntry, MemoryScope, MemoryType};
 use crate::{TaskManager, TaskStatus};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{Mutex, RwLock, mpsc};
+use uuid::Uuid;
 
 // Re-export shared task types for convenience and adapter compatibility.
-pub use crate::agents::{AgentInfo, AgentSpawner, DelegatedTask, OrchestratorToolCall, TaskResult};
+pub use crate::agents::{
+    AgentExecutionMode, AgentInfo, AgentRole, AgentSpawnRequest, AgentSpawner, DelegatedTask,
+    DelegationBrief, OrchestratorToolCall, RemoteAgentTarget, TaskArtifactRecord, TaskResult,
+};
+
+/// Approval state tracked by the supervisor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalState {
+    /// No explicit approval step is required.
+    NotRequired,
+    /// Waiting for a human or supervisor decision.
+    Pending,
+    /// Approved to proceed or complete.
+    Approved,
+    /// Rejected and should not proceed.
+    Rejected,
+    /// Revision requested before retrying.
+    NeedsRevision,
+}
+
+/// Execution state for a task managed by the supervisor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupervisorTaskState {
+    /// Accepted but not yet running.
+    Queued,
+    /// Waiting on dependencies.
+    Blocked,
+    /// Waiting on approval before execution.
+    PendingApproval,
+    /// Currently executing.
+    Running,
+    /// Waiting for review approval after execution.
+    ReviewPending,
+    /// Waiting for test validation after execution.
+    TestPending,
+    /// Completed successfully.
+    Completed,
+    /// Failed execution or gating.
+    Failed,
+    /// Cancelled before completion.
+    Cancelled,
+}
+
+/// Aggregate status for a supervisor run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupervisorRunStatus {
+    /// Drafting/queued.
+    Draft,
+    /// Some work is actively running.
+    Running,
+    /// Waiting on approvals or validation gates.
+    Waiting,
+    /// All tasks completed successfully.
+    Completed,
+    /// At least one task failed.
+    Failed,
+    /// Run was cancelled.
+    Cancelled,
+}
+
+/// Structured team-message category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TeamMessageKind {
+    /// General status update.
+    StatusUpdate,
+    /// Clarification request.
+    Clarification,
+    /// Blocker notification.
+    Blocker,
+    /// Handoff summary.
+    Handoff,
+    /// Review feedback.
+    ReviewFeedback,
+    /// Approval decision note.
+    ApprovalDecision,
+}
+
+/// Message exchanged within a supervisor run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamMessage {
+    /// Message identifier.
+    pub id: String,
+    /// Run identifier.
+    pub run_id: String,
+    /// Optional task identifier this message refers to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    /// Message kind.
+    pub kind: TeamMessageKind,
+    /// Sender agent identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_agent_id: Option<String>,
+    /// Recipient agent identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient_agent_id: Option<String>,
+    /// Human-readable content.
+    pub content: String,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+}
+
+impl TeamMessage {
+    /// Build a new team message.
+    pub fn new(
+        run_id: impl Into<String>,
+        task_id: Option<String>,
+        kind: TeamMessageKind,
+        sender_agent_id: Option<String>,
+        recipient_agent_id: Option<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            run_id: run_id.into(),
+            task_id,
+            kind,
+            sender_agent_id,
+            recipient_agent_id,
+            content: content.into(),
+            created_at: Utc::now(),
+        }
+    }
+}
+
+/// Execution environment bound to a task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionEnvironment {
+    /// Stable environment identifier.
+    pub id: String,
+    /// Assigned execution mode.
+    pub execution_mode: AgentExecutionMode,
+    /// Root directory used for execution.
+    pub root_dir: PathBuf,
+    /// Whether writes are allowed inside the environment.
+    pub write_access: bool,
+    /// Optional branch or logical branch label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_name: Option<String>,
+    /// Optional planned worktree path when using git-worktree mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<PathBuf>,
+    /// Optional remote URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_url: Option<String>,
+}
+
+/// Approval details tracked per task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskApprovalRecord {
+    /// Current approval state.
+    pub state: ApprovalState,
+    /// When approval was requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_at: Option<DateTime<Utc>>,
+    /// When a decision was made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<DateTime<Utc>>,
+    /// Actor that made the decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<String>,
+    /// Optional explanatory note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl TaskApprovalRecord {
+    fn not_required() -> Self {
+        Self {
+            state: ApprovalState::NotRequired,
+            requested_at: None,
+            decided_at: None,
+            decided_by: None,
+            note: None,
+        }
+    }
+
+    fn pending() -> Self {
+        Self {
+            state: ApprovalState::Pending,
+            requested_at: Some(Utc::now()),
+            decided_at: None,
+            decided_by: None,
+            note: None,
+        }
+    }
+}
+
+/// Persistent task record owned by a supervisor run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SupervisorTaskRecord {
+    /// The original delegated task definition.
+    pub task: DelegatedTask,
+    /// Current supervisor state.
+    pub state: SupervisorTaskState,
+    /// Approval tracking for the task.
+    pub approval: TaskApprovalRecord,
+    /// Prepared execution environment.
+    pub environment: ExecutionEnvironment,
+    /// Agent that currently claims or owns the work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimed_by: Option<String>,
+    /// Number of attempts made.
+    #[serde(default)]
+    pub attempts: u32,
+    /// Reasons the task is blocked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_reasons: Vec<String>,
+    /// Latest execution result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<TaskResult>,
+    /// Task-scoped coordination messages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<TeamMessage>,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+    /// Execution start time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+    /// Completion time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+/// Persistent supervisor run state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SupervisorRun {
+    /// Run identifier.
+    pub id: String,
+    /// Optional session association.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Workspace root used for persistence/environment prep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_dir: Option<PathBuf>,
+    /// Lead agent coordinating the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead_agent_id: Option<String>,
+    /// Aggregate run status.
+    pub status: SupervisorRunStatus,
+    /// Tasks that belong to the run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<SupervisorTaskRecord>,
+    /// Run-wide messages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<TeamMessage>,
+    /// Run creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+    /// Run completion time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+    /// Additional data surfaced to UI/adapters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
 
 /// Agent manager capabilities required by the orchestrator.
 ///
@@ -48,20 +314,30 @@ pub trait OrchestratorObserver: Send + Sync {
 
     /// Called after a task has completed (success or failure).
     async fn on_task_completed(&self, task: DelegatedTask, result: TaskResult);
+
+    /// Called whenever a supervisor run changes.
+    async fn on_run_updated(&self, _run: SupervisorRun) {}
+
+    /// Called when a team message is recorded.
+    async fn on_team_message(&self, _message: TeamMessage) {}
 }
 
 /// Orchestrator for coordinating subagents and delegated task execution.
 ///
 /// The orchestrator is core-owned and does not depend on Tauri. GUI/CLI layers can
 /// attach an [`OrchestratorObserver`] to receive lifecycle events.
+#[derive(Clone)]
 pub struct AgentOrchestrator<M: OrchestratorAgentManager> {
     agent_manager: M,
-    permission_manager: PermissionManager,
+    permission_manager: Arc<PermissionManager>,
     active_tasks: Arc<Mutex<HashMap<String, DelegatedTask>>>,
+    supervisor_runs: Arc<Mutex<HashMap<String, SupervisorRun>>>,
+    task_run_index: Arc<Mutex<HashMap<String, String>>>,
     result_tx: mpsc::Sender<TaskResult>,
     result_rx: Arc<Mutex<mpsc::Receiver<TaskResult>>>,
     config: AppConfig,
     observer: Arc<RwLock<Option<Arc<dyn OrchestratorObserver>>>>,
+    default_workspace_dir: Option<PathBuf>,
 }
 
 impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
@@ -70,12 +346,15 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         let (result_tx, result_rx) = mpsc::channel(100);
         Self {
             agent_manager,
-            permission_manager: PermissionManager::new(),
+            permission_manager: Arc::new(PermissionManager::new()),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
+            supervisor_runs: Arc::new(Mutex::new(HashMap::new())),
+            task_run_index: Arc::new(Mutex::new(HashMap::new())),
             result_tx,
             result_rx: Arc::new(Mutex::new(result_rx)),
             config,
             observer: Arc::new(RwLock::new(None)),
+            default_workspace_dir: std::env::current_dir().ok(),
         }
     }
 
@@ -95,10 +374,21 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
 
     /// Spawn and register a new subagent.
     pub async fn spawn_subagent(&self, id: &str, name: &str) -> Result<(), String> {
-        tracing::info!(agent_id = %id, agent_name = %name, "Spawning subagent");
-        self.agent_manager
-            .spawn_agent(id.to_string(), name.to_string())
-            .await;
+        self.spawn_subagent_with_request(AgentSpawnRequest::new(
+            id.to_string(),
+            name.to_string(),
+            AgentRole::Implementer,
+        ))
+        .await
+    }
+
+    /// Spawn and register a subagent using an explicit specialist configuration.
+    pub async fn spawn_subagent_with_request(
+        &self,
+        request: AgentSpawnRequest,
+    ) -> Result<(), String> {
+        tracing::info!(agent_id = %request.id, agent_name = %request.name, role = ?request.role, "Spawning subagent");
+        self.agent_manager.spawn_agent_with_request(request).await;
         Ok(())
     }
 
@@ -107,29 +397,35 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
     /// - Ensures the target agent exists (spawning a default one if needed)
     /// - Enforces tool permission checks
     /// - Executes the task asynchronously via the unified pipeline
-    pub async fn delegate_task(&self, task: DelegatedTask) -> Result<String, String> {
+    pub async fn delegate_task(&self, mut task: DelegatedTask) -> Result<String, String> {
         let task_id = task.id.clone();
         let agent_id = task.agent_id.clone();
         let session_id = task.session_id.clone();
+
+        if task.run_id.is_none() {
+            task.run_id = Some(Uuid::new_v4().to_string());
+        }
+        if task.role.is_none() {
+            task.role = Some(AgentRole::Implementer);
+        }
+        if task.name.is_none() {
+            task.name = Some(format!(
+                "{} task",
+                task.role.clone().unwrap_or_default().label()
+            ));
+        }
 
         tracing::info!(
             task_id = %task_id,
             agent_id = %agent_id,
             session_id = ?session_id,
+            run_id = ?task.run_id,
+            role = ?task.role,
             priority = task.priority,
             "Delegating task to subagent"
         );
 
-        // Check if agent exists, spawn if needed.
-        if self
-            .agent_manager
-            .get_agent_status(&agent_id)
-            .await
-            .is_none()
-        {
-            self.spawn_subagent(&agent_id, &format!("Subagent-{}", agent_id))
-                .await?;
-        }
+        self.ensure_agent_exists(&task).await?;
 
         // Check tool permissions.
         for tool in &task.required_tools {
@@ -143,54 +439,109 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             }
         }
 
-        // Store in active tasks.
-        {
-            let mut active = self.active_tasks.lock().await;
-            active.insert(task_id.clone(), task.clone());
-        }
+        let environment = self.prepare_environment(&task)?;
+        task.environment_id = Some(environment.id.clone());
+        self.ensure_tracking_task(&mut task).await;
 
-        record_task_dispatch(&task);
+        let run_id = task
+            .run_id
+            .clone()
+            .ok_or_else(|| "Delegated task is missing run_id".to_string())?;
 
-        // Notify observer (best-effort).
-        let observer_for_start = { self.observer.read().await.clone() };
-        if let Some(obs) = observer_for_start.as_ref() {
-            obs.on_task_started(task.clone()).await;
-        }
+        let (run_snapshot, task_snapshot, should_start) = {
+            let mut runs = self.supervisor_runs.lock().await;
+            let run = runs.entry(run_id.clone()).or_insert_with(|| SupervisorRun {
+                id: run_id.clone(),
+                session_id: task.session_id.clone(),
+                workspace_dir: task
+                    .workspace_dir
+                    .clone()
+                    .or_else(|| self.default_workspace_dir.clone()),
+                lead_agent_id: Some("supervisor".to_string()),
+                status: SupervisorRunStatus::Draft,
+                tasks: Vec::new(),
+                messages: Vec::new(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                completed_at: None,
+                metadata: None,
+            });
 
-        // Execute task in background.
-        let agent_manager = self.agent_manager.clone();
-        let config = self.config.clone();
-        let result_tx = self.result_tx.clone();
-        let active_tasks = Arc::clone(&self.active_tasks);
-        let observer = Arc::clone(&self.observer);
-
-        tokio::spawn(async move {
-            let start = std::time::Instant::now();
-            let (result, tool_calls) = execute_delegated_task(&agent_manager, &config, &task).await;
-            let duration_ms = start.elapsed().as_millis() as u64;
-
-            let task_result = TaskResult {
-                task_id: task.id.clone(),
-                agent_id: task.agent_id.clone(),
-                success: result.is_ok(),
-                output: result.clone().unwrap_or_else(|e| e),
-                tool_calls: tool_calls.clone(),
-                duration_ms,
-            };
-
-            // Remove from active.
-            active_tasks.lock().await.remove(&task.id);
-
-            // Observer notification (best-effort).
-            let observer_for_complete = { observer.read().await.clone() };
-            if let Some(obs) = observer_for_complete.as_ref() {
-                obs.on_task_completed(task.clone(), task_result.clone())
-                    .await;
+            if run.session_id.is_none() {
+                run.session_id = task.session_id.clone();
+            }
+            if run.workspace_dir.is_none() {
+                run.workspace_dir = task
+                    .workspace_dir
+                    .clone()
+                    .or_else(|| self.default_workspace_dir.clone());
             }
 
-            // Send result to consumers (best-effort).
-            let _ = result_tx.send(task_result).await;
-        });
+            let blocked_reasons = unresolved_dependency_reasons(run, &task);
+            let approval = if task.approval_required {
+                TaskApprovalRecord::pending()
+            } else {
+                TaskApprovalRecord::not_required()
+            };
+            let state = if task.approval_required {
+                SupervisorTaskState::PendingApproval
+            } else if blocked_reasons.is_empty() {
+                SupervisorTaskState::Queued
+            } else {
+                SupervisorTaskState::Blocked
+            };
+
+            let now = Utc::now();
+            let mut new_record = SupervisorTaskRecord {
+                task: task.clone(),
+                state,
+                approval,
+                environment,
+                claimed_by: Some(task.agent_id.clone()),
+                attempts: 0,
+                blocked_reasons,
+                result: None,
+                messages: Vec::new(),
+                created_at: now,
+                updated_at: now,
+                started_at: None,
+                completed_at: None,
+            };
+
+            if let Some(existing) = run
+                .tasks
+                .iter_mut()
+                .find(|record| record.task.id == task_id)
+            {
+                new_record.attempts = existing.attempts;
+                new_record.created_at = existing.created_at;
+                *existing = new_record.clone();
+            } else {
+                run.tasks.push(new_record.clone());
+            }
+
+            run.updated_at = Utc::now();
+            run.status = recalculate_run_status(run);
+
+            (
+                run.clone(),
+                new_record.clone(),
+                state == SupervisorTaskState::Queued,
+            )
+        };
+
+        self.task_run_index
+            .lock()
+            .await
+            .insert(task_id.clone(), run_id.clone());
+
+        record_task_dispatch(&task, &task_snapshot, &run_snapshot);
+        self.persist_run(&run_snapshot)?;
+        self.notify_run_updated(run_snapshot).await;
+
+        if should_start {
+            self.start_task_execution(task.clone()).await?;
+        }
 
         Ok(task_id)
     }
@@ -207,9 +558,342 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         active.values().cloned().collect()
     }
 
+    /// List live and persisted supervisor runs known to the orchestrator.
+    pub async fn list_supervisor_runs(&self) -> Vec<SupervisorRun> {
+        let mut runs = self
+            .supervisor_runs
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(root) = self.default_workspace_dir.as_deref() {
+            for run in load_persisted_runs(root) {
+                if !runs.iter().any(|existing| existing.id == run.id) {
+                    runs.push(run);
+                }
+            }
+        }
+        runs.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        runs
+    }
+
+    /// Fetch a supervisor run by id.
+    pub async fn get_supervisor_run(&self, run_id: &str) -> Option<SupervisorRun> {
+        if let Some(run) = self.supervisor_runs.lock().await.get(run_id).cloned() {
+            return Some(run);
+        }
+
+        self.default_workspace_dir
+            .as_deref()
+            .and_then(|root| load_persisted_run_by_id(root, run_id))
+    }
+
+    /// List team messages for a run.
+    pub async fn list_team_messages(&self, run_id: &str) -> Vec<TeamMessage> {
+        self.get_supervisor_run(run_id)
+            .await
+            .map(|run| {
+                let mut messages = run.messages;
+                for task in run.tasks {
+                    messages.extend(task.messages);
+                }
+                messages.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+                messages
+            })
+            .unwrap_or_default()
+    }
+
     /// List all running subagents.
     pub async fn list_subagents(&self) -> Vec<AgentInfo> {
         self.agent_manager.list_agents().await
+    }
+
+    /// Approve a task before execution or after a review/test gate.
+    pub async fn approve_task(
+        &self,
+        task_id: &str,
+        decided_by: Option<String>,
+        note: Option<String>,
+    ) -> Result<(), String> {
+        let run_id = self
+            .task_run_index
+            .lock()
+            .await
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| format!("Task '{}' not found", task_id))?;
+
+        let mut queued_to_start = None;
+        let run_snapshot = {
+            let mut runs = self.supervisor_runs.lock().await;
+            let run = runs
+                .get_mut(&run_id)
+                .ok_or_else(|| format!("Run '{}' not found", run_id))?;
+            let dependency_states = run
+                .tasks
+                .iter()
+                .map(|record| (record.task.id.clone(), record.state))
+                .collect::<HashMap<_, _>>();
+            let record = run
+                .tasks
+                .iter_mut()
+                .find(|record| record.task.id == task_id)
+                .ok_or_else(|| format!("Task '{}' not found in run", task_id))?;
+
+            record.approval.state = ApprovalState::Approved;
+            record.approval.decided_at = Some(Utc::now());
+            record.approval.decided_by = decided_by;
+            record.approval.note = note;
+            record.updated_at = Utc::now();
+
+            match record.state {
+                SupervisorTaskState::PendingApproval => {
+                    let blocked = dependency_reasons_from_states(&dependency_states, &record.task);
+                    if blocked.is_empty() {
+                        record.state = SupervisorTaskState::Queued;
+                        record.blocked_reasons.clear();
+                        queued_to_start = Some(record.task.clone());
+                    } else {
+                        record.state = SupervisorTaskState::Blocked;
+                        record.blocked_reasons = blocked;
+                    }
+                }
+                SupervisorTaskState::ReviewPending => {
+                    if record.task.test_required {
+                        record.state = SupervisorTaskState::TestPending;
+                        record.approval = TaskApprovalRecord::pending();
+                        record.approval.note =
+                            Some("Review approved. Awaiting explicit test validation.".to_string());
+                    } else {
+                        record.state = SupervisorTaskState::Completed;
+                        record.completed_at = Some(Utc::now());
+                    }
+                }
+                SupervisorTaskState::TestPending => {
+                    record.state = SupervisorTaskState::Completed;
+                    record.completed_at = Some(Utc::now());
+                }
+                _ => {
+                    return Err(format!(
+                        "Task '{}' is not waiting for approval or gate completion",
+                        task_id
+                    ));
+                }
+            }
+
+            run.updated_at = Utc::now();
+            run.status = recalculate_run_status(run);
+            run.clone()
+        };
+
+        self.persist_run(&run_snapshot)?;
+        self.notify_run_updated(run_snapshot).await;
+
+        if let Some(task) = queued_to_start {
+            self.start_task_execution(task).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Reject or request revision for a delegated task.
+    pub async fn reject_task(
+        &self,
+        task_id: &str,
+        decided_by: Option<String>,
+        note: Option<String>,
+    ) -> Result<(), String> {
+        let run_id = self
+            .task_run_index
+            .lock()
+            .await
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| format!("Task '{}' not found", task_id))?;
+
+        let run_snapshot = {
+            let mut runs = self.supervisor_runs.lock().await;
+            let run = runs
+                .get_mut(&run_id)
+                .ok_or_else(|| format!("Run '{}' not found", run_id))?;
+            let record = run
+                .tasks
+                .iter_mut()
+                .find(|record| record.task.id == task_id)
+                .ok_or_else(|| format!("Task '{}' not found in run", task_id))?;
+
+            record.approval.state = ApprovalState::NeedsRevision;
+            record.approval.decided_at = Some(Utc::now());
+            record.approval.decided_by = decided_by;
+            record.approval.note = note;
+            record.state = SupervisorTaskState::Failed;
+            record.updated_at = Utc::now();
+            run.updated_at = Utc::now();
+            run.status = recalculate_run_status(run);
+            run.clone()
+        };
+
+        self.persist_run(&run_snapshot)?;
+        self.notify_run_updated(run_snapshot).await;
+        Ok(())
+    }
+
+    /// Retry a task that previously failed or was blocked.
+    pub async fn retry_task(&self, task_id: &str) -> Result<(), String> {
+        let run_id = self
+            .task_run_index
+            .lock()
+            .await
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| format!("Task '{}' not found", task_id))?;
+
+        let mut queued_to_start = None;
+        let run_snapshot = {
+            let mut runs = self.supervisor_runs.lock().await;
+            let run = runs
+                .get_mut(&run_id)
+                .ok_or_else(|| format!("Run '{}' not found", run_id))?;
+            let dependency_states = run
+                .tasks
+                .iter()
+                .map(|record| (record.task.id.clone(), record.state))
+                .collect::<HashMap<_, _>>();
+            let record = run
+                .tasks
+                .iter_mut()
+                .find(|record| record.task.id == task_id)
+                .ok_or_else(|| format!("Task '{}' not found in run", task_id))?;
+
+            if !matches!(
+                record.state,
+                SupervisorTaskState::Failed
+                    | SupervisorTaskState::Cancelled
+                    | SupervisorTaskState::Blocked
+            ) {
+                return Err(format!(
+                    "Task '{}' cannot be retried from its current state",
+                    task_id
+                ));
+            }
+
+            record.attempts += 1;
+            record.result = None;
+            record.completed_at = None;
+            record.started_at = None;
+            record.updated_at = Utc::now();
+
+            if record.task.approval_required {
+                record.state = SupervisorTaskState::PendingApproval;
+                record.approval = TaskApprovalRecord::pending();
+            } else {
+                let blocked = dependency_reasons_from_states(&dependency_states, &record.task);
+                if blocked.is_empty() {
+                    record.state = SupervisorTaskState::Queued;
+                    record.blocked_reasons.clear();
+                    queued_to_start = Some(record.task.clone());
+                } else {
+                    record.state = SupervisorTaskState::Blocked;
+                    record.blocked_reasons = blocked;
+                }
+            }
+
+            run.updated_at = Utc::now();
+            run.status = recalculate_run_status(run);
+            run.clone()
+        };
+
+        self.persist_run(&run_snapshot)?;
+        self.notify_run_updated(run_snapshot).await;
+
+        if let Some(task) = queued_to_start {
+            self.start_task_execution(task).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Claim ownership of a queued task for an agent.
+    pub async fn claim_task(&self, task_id: &str, agent_id: &str) -> Result<(), String> {
+        let run_id = self
+            .task_run_index
+            .lock()
+            .await
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| format!("Task '{}' not found", task_id))?;
+
+        let run_snapshot = {
+            let mut runs = self.supervisor_runs.lock().await;
+            let run = runs
+                .get_mut(&run_id)
+                .ok_or_else(|| format!("Run '{}' not found", run_id))?;
+            let record = run
+                .tasks
+                .iter_mut()
+                .find(|record| record.task.id == task_id)
+                .ok_or_else(|| format!("Task '{}' not found in run", task_id))?;
+
+            record.claimed_by = Some(agent_id.to_string());
+            record.task.agent_id = agent_id.to_string();
+            record.updated_at = Utc::now();
+            run.updated_at = Utc::now();
+            run.status = recalculate_run_status(run);
+            run.clone()
+        };
+
+        self.persist_run(&run_snapshot)?;
+        self.notify_run_updated(run_snapshot).await;
+        Ok(())
+    }
+
+    /// Record a structured team message.
+    pub async fn send_team_message(
+        &self,
+        run_id: &str,
+        task_id: Option<String>,
+        kind: TeamMessageKind,
+        sender_agent_id: Option<String>,
+        recipient_agent_id: Option<String>,
+        content: impl Into<String>,
+    ) -> Result<TeamMessage, String> {
+        let message = TeamMessage::new(
+            run_id.to_string(),
+            task_id.clone(),
+            kind,
+            sender_agent_id,
+            recipient_agent_id,
+            content,
+        );
+
+        let run_snapshot = {
+            let mut runs = self.supervisor_runs.lock().await;
+            let run = runs
+                .get_mut(run_id)
+                .ok_or_else(|| format!("Run '{}' not found", run_id))?;
+
+            if let Some(task_id) = task_id.as_deref() {
+                let record = run
+                    .tasks
+                    .iter_mut()
+                    .find(|record| record.task.id == task_id)
+                    .ok_or_else(|| format!("Task '{}' not found in run", task_id))?;
+                record.messages.push(message.clone());
+                record.updated_at = Utc::now();
+            } else {
+                run.messages.push(message.clone());
+            }
+
+            run.updated_at = Utc::now();
+            run.status = recalculate_run_status(run);
+            run.clone()
+        };
+
+        self.persist_run(&run_snapshot)?;
+        self.notify_run_updated(run_snapshot).await;
+        self.notify_team_message(message.clone()).await;
+        Ok(message)
     }
 
     /// Cancel a running task.
@@ -225,6 +909,29 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             self.agent_manager
                 .send_event(&task.agent_id, format!("cancel:{}", task_id))
                 .await;
+
+            if let Some(run_id) = self.task_run_index.lock().await.get(task_id).cloned() {
+                let run_snapshot = {
+                    let mut runs = self.supervisor_runs.lock().await;
+                    let run = runs
+                        .get_mut(&run_id)
+                        .ok_or_else(|| format!("Run '{}' not found", run_id))?;
+                    if let Some(record) = run
+                        .tasks
+                        .iter_mut()
+                        .find(|record| record.task.id == task_id)
+                    {
+                        record.state = SupervisorTaskState::Cancelled;
+                        record.completed_at = Some(Utc::now());
+                        record.updated_at = Utc::now();
+                    }
+                    run.updated_at = Utc::now();
+                    run.status = recalculate_run_status(run);
+                    run.clone()
+                };
+                self.persist_run(&run_snapshot)?;
+                self.notify_run_updated(run_snapshot).await;
+            }
             Ok(())
         } else {
             Err(format!("Task '{}' not found", task_id))
@@ -236,6 +943,296 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         tracing::info!(grace_secs = grace_secs, "Shutting down all subagents");
         self.agent_manager.shutdown_all(grace_secs).await;
     }
+
+    async fn ensure_agent_exists(&self, task: &DelegatedTask) -> Result<(), String> {
+        if self
+            .agent_manager
+            .get_agent_status(&task.agent_id)
+            .await
+            .is_none()
+        {
+            let role = task.role.clone().unwrap_or_default();
+            let mut request = AgentSpawnRequest::new(
+                task.agent_id.clone(),
+                format!("{}-{}", role.label().replace(' ', "-"), task.agent_id),
+                role.clone(),
+            );
+            request.workspace_dir = task.workspace_dir.clone();
+            request.execution_mode = task.execution_mode.clone();
+            self.spawn_subagent_with_request(request).await?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_tracking_task(&self, task: &mut DelegatedTask) {
+        let (Some(workspace_dir), Some(session_id)) =
+            (task.workspace_dir.as_deref(), task.session_id.as_deref())
+        else {
+            return;
+        };
+        if task.tracking_task_id.is_some() {
+            return;
+        }
+
+        let manager = TaskManager::new(workspace_dir);
+        let name = task
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("Delegated: {}", task.agent_id));
+        let description = task
+            .delegation_brief
+            .as_ref()
+            .map(|brief| brief.objective.clone())
+            .unwrap_or_else(|| task.prompt.clone());
+        if let Ok(created) = manager.create_orchestrator_task(
+            session_id,
+            task.id.clone(),
+            task.agent_id.clone(),
+            name,
+            description,
+            task.context.clone(),
+        ) {
+            task.tracking_task_id = Some(created.id);
+        }
+    }
+
+    fn prepare_environment(&self, task: &DelegatedTask) -> Result<ExecutionEnvironment, String> {
+        let root = task
+            .workspace_dir
+            .clone()
+            .or_else(|| self.default_workspace_dir.clone())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let run_id = task.run_id.as_deref().unwrap_or("global-run").to_string();
+        let environment_id = task
+            .environment_id
+            .clone()
+            .unwrap_or_else(|| format!("env-{}-{}", run_id, task.agent_id));
+
+        let prepared_root = match task.execution_mode {
+            AgentExecutionMode::SharedWorkspace => root.clone(),
+            AgentExecutionMode::IsolatedWorkspace | AgentExecutionMode::GitWorktree => {
+                let prepared = root
+                    .join(".gestura")
+                    .join("environments")
+                    .join(&run_id)
+                    .join(&task.agent_id);
+                fs::create_dir_all(&prepared)
+                    .map_err(|error| format!("Failed to prepare environment: {error}"))?;
+                prepared
+            }
+            AgentExecutionMode::Remote => root.clone(),
+        };
+
+        Ok(ExecutionEnvironment {
+            id: environment_id,
+            execution_mode: task.execution_mode.clone(),
+            root_dir: prepared_root.clone(),
+            write_access: !task.planning_only,
+            branch_name: matches!(task.execution_mode, AgentExecutionMode::GitWorktree)
+                .then(|| format!("gestura/{run_id}/{}", task.agent_id)),
+            worktree_path: matches!(task.execution_mode, AgentExecutionMode::GitWorktree)
+                .then_some(prepared_root),
+            remote_url: task.remote_target.as_ref().map(|target| target.url.clone()),
+        })
+    }
+
+    async fn start_task_execution(&self, task: DelegatedTask) -> Result<(), String> {
+        let run_id = task
+            .run_id
+            .clone()
+            .ok_or_else(|| "Task is missing run_id".to_string())?;
+
+        let (run_snapshot, task_snapshot) = {
+            let mut active = self.active_tasks.lock().await;
+            active.insert(task.id.clone(), task.clone());
+            drop(active);
+
+            let mut runs = self.supervisor_runs.lock().await;
+            let run = runs
+                .get_mut(&run_id)
+                .ok_or_else(|| format!("Run '{}' not found", run_id))?;
+            let task_snapshot = {
+                let record = run
+                    .tasks
+                    .iter_mut()
+                    .find(|record| record.task.id == task.id)
+                    .ok_or_else(|| format!("Task '{}' not found in run", task.id))?;
+
+                record.state = SupervisorTaskState::Running;
+                record.started_at = Some(Utc::now());
+                record.updated_at = Utc::now();
+                record.blocked_reasons.clear();
+                record.clone()
+            };
+
+            run.updated_at = Utc::now();
+            run.status = recalculate_run_status(run);
+
+            (run.clone(), task_snapshot)
+        };
+
+        record_task_dispatch(&task, &task_snapshot, &run_snapshot);
+        self.persist_run(&run_snapshot)?;
+        self.notify_run_updated(run_snapshot.clone()).await;
+
+        let observer_for_start = { self.observer.read().await.clone() };
+        if let Some(obs) = observer_for_start.as_ref() {
+            obs.on_task_started(task.clone()).await;
+        }
+
+        let orchestrator = self.clone();
+        tokio::spawn(async move {
+            let start = std::time::Instant::now();
+            let (result, tool_calls) =
+                execute_delegated_task(&orchestrator.agent_manager, &orchestrator.config, &task)
+                    .await;
+            let duration_ms = start.elapsed().as_millis() as u64;
+
+            let task_result = TaskResult {
+                task_id: task.id.clone(),
+                agent_id: task.agent_id.clone(),
+                success: result.is_ok(),
+                run_id: task.run_id.clone(),
+                tracking_task_id: task.tracking_task_id.clone(),
+                output: result.clone().unwrap_or_else(|error| error),
+                summary: task.name.clone(),
+                tool_calls,
+                artifacts: Vec::new(),
+                duration_ms,
+            };
+
+            if let Err(error) = orchestrator
+                .complete_task_execution(task, task_result)
+                .await
+            {
+                tracing::error!(error = %error, "Failed to finalize delegated task execution");
+            }
+        });
+
+        Ok(())
+    }
+
+    async fn complete_task_execution(
+        &self,
+        task: DelegatedTask,
+        task_result: TaskResult,
+    ) -> Result<(), String> {
+        let run_id = task_result
+            .run_id
+            .clone()
+            .or_else(|| task.run_id.clone())
+            .ok_or_else(|| "Completed task result is missing run_id".to_string())?;
+
+        let memory_file_path = persist_delegated_task_memory(&task, &task_result).await;
+        let (run_snapshot, task_snapshot, tasks_to_start) = {
+            self.active_tasks.lock().await.remove(&task.id);
+
+            let mut runs = self.supervisor_runs.lock().await;
+            let run = runs
+                .get_mut(&run_id)
+                .ok_or_else(|| format!("Run '{}' not found", run_id))?;
+            let record = run
+                .tasks
+                .iter_mut()
+                .find(|record| record.task.id == task.id)
+                .ok_or_else(|| format!("Task '{}' not found in run", task.id))?;
+
+            record.result = Some(task_result.clone());
+            record.completed_at = Some(Utc::now());
+            record.updated_at = Utc::now();
+
+            if task_result.success {
+                if record.task.reviewer_required {
+                    record.state = SupervisorTaskState::ReviewPending;
+                    record.approval = TaskApprovalRecord::pending();
+                    record.approval.note =
+                        Some("Execution finished. Awaiting explicit review approval.".to_string());
+                } else if record.task.test_required {
+                    record.state = SupervisorTaskState::TestPending;
+                    record.approval = TaskApprovalRecord::pending();
+                    record.approval.note =
+                        Some("Execution finished. Awaiting explicit test validation.".to_string());
+                } else {
+                    record.state = SupervisorTaskState::Completed;
+                    if matches!(record.approval.state, ApprovalState::Pending) {
+                        record.approval.state = ApprovalState::Approved;
+                        record.approval.decided_at = Some(Utc::now());
+                    }
+                }
+            } else {
+                record.state = SupervisorTaskState::Failed;
+                if matches!(record.approval.state, ApprovalState::Pending) {
+                    record.approval.state = ApprovalState::NeedsRevision;
+                    record.approval.note = Some("Execution failed and requires revision".into());
+                }
+            }
+
+            let task_snapshot = record.clone();
+            let ready_to_start = collect_ready_tasks(run);
+            run.updated_at = Utc::now();
+            run.status = recalculate_run_status(run);
+            (run.clone(), task_snapshot, ready_to_start)
+        };
+
+        record_task_completion(
+            &task,
+            &task_result,
+            memory_file_path.as_deref(),
+            &task_snapshot,
+            &run_snapshot,
+        );
+        self.persist_run(&run_snapshot)?;
+        self.notify_run_updated(run_snapshot).await;
+
+        let observer_for_complete = { self.observer.read().await.clone() };
+        if let Some(obs) = observer_for_complete.as_ref() {
+            obs.on_task_completed(task.clone(), task_result.clone())
+                .await;
+        }
+
+        let _ = self.result_tx.send(task_result).await;
+
+        for next_task in tasks_to_start {
+            self.schedule_task_execution(next_task);
+        }
+
+        Ok(())
+    }
+
+    fn schedule_task_execution(&self, task: DelegatedTask) {
+        let orchestrator = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = orchestrator.start_task_execution(task).await {
+                tracing::error!(error = %error, "Failed to start ready task");
+            }
+        });
+    }
+
+    fn persist_run(&self, run: &SupervisorRun) -> Result<(), String> {
+        let Some(root) = run
+            .workspace_dir
+            .as_deref()
+            .or(self.default_workspace_dir.as_deref())
+        else {
+            return Ok(());
+        };
+
+        persist_run_to_disk(root, run)
+    }
+
+    async fn notify_run_updated(&self, run: SupervisorRun) {
+        let observer_for_run = { self.observer.read().await.clone() };
+        if let Some(obs) = observer_for_run.as_ref() {
+            obs.on_run_updated(run).await;
+        }
+    }
+
+    async fn notify_team_message(&self, message: TeamMessage) {
+        let observer_for_message = { self.observer.read().await.clone() };
+        if let Some(obs) = observer_for_message.as_ref() {
+            obs.on_team_message(message).await;
+        }
+    }
 }
 
 /// Execute a delegated task on the specified agent using the unified AgentPipeline.
@@ -246,16 +1243,27 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
     config: &AppConfig,
     task: &DelegatedTask,
 ) -> (Result<String, String>, Vec<OrchestratorToolCall>) {
-    // Build prompt with context.
-    let full_prompt = if let Some(ctx) = &task.context {
-        format!(
-            "Context:\n{}\n\nTask:\n{}",
-            serde_json::to_string_pretty(ctx).unwrap_or_default(),
-            task.prompt
-        )
-    } else {
-        task.prompt.clone()
-    };
+    let role = task.role.clone().unwrap_or_default();
+    let mut prompt_sections = vec![role.prompt_preamble().to_string()];
+
+    if let Some(brief) = &task.delegation_brief {
+        prompt_sections.push(format!("Delegation Brief:\n{}", brief.as_prompt_section()));
+    }
+    if let Some(ctx) = &task.context {
+        prompt_sections.push(format!(
+            "Context:\n{}",
+            serde_json::to_string_pretty(ctx).unwrap_or_default()
+        ));
+    }
+    prompt_sections.push(format!("Task:\n{}", task.prompt));
+    if task.planning_only {
+        prompt_sections.push(
+            "Execution Mode:\nPlanning only. Produce a structured plan and do not claim implementation was performed."
+                .to_string(),
+        );
+    }
+
+    let full_prompt = prompt_sections.join("\n\n");
 
     tracing::debug!(
         agent_id = %task.agent_id,
@@ -329,17 +1337,6 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
                 })
                 .collect();
 
-            let task_result = TaskResult {
-                task_id: task.id.clone(),
-                agent_id: task.agent_id.clone(),
-                success: true,
-                output: response.content.clone(),
-                tool_calls: tool_calls.clone(),
-                duration_ms: 0,
-            };
-            let memory_file_path = persist_delegated_task_memory(task, &task_result).await;
-            record_task_completion(task, &task_result, memory_file_path.as_deref());
-
             tracing::info!(
                 agent_id = %task.agent_id,
                 task_id = %task.id,
@@ -351,17 +1348,6 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
             (Ok(response.content), tool_calls)
         }
         Err(e) => {
-            let task_result = TaskResult {
-                task_id: task.id.clone(),
-                agent_id: task.agent_id.clone(),
-                success: false,
-                output: e.to_string(),
-                tool_calls: Vec::new(),
-                duration_ms: 0,
-            };
-            let memory_file_path = persist_delegated_task_memory(task, &task_result).await;
-            record_task_completion(task, &task_result, memory_file_path.as_deref());
-
             tracing::error!(
                 agent_id = %task.agent_id,
                 task_id = %task.id,
@@ -464,7 +1450,7 @@ async fn persist_delegated_task_memory(
     }
 }
 
-fn record_task_dispatch(task: &DelegatedTask) {
+fn record_task_dispatch(task: &DelegatedTask, record: &SupervisorTaskRecord, run: &SupervisorRun) {
     let Some(workspace_dir) = task.workspace_dir.as_deref() else {
         return;
     };
@@ -476,13 +1462,32 @@ fn record_task_dispatch(task: &DelegatedTask) {
     };
 
     let manager = TaskManager::new(workspace_dir);
-    let _ = manager.update_task_status(session_id, tracking_task_id, TaskStatus::InProgress);
+    let task_status = match record.state {
+        SupervisorTaskState::Blocked
+        | SupervisorTaskState::PendingApproval
+        | SupervisorTaskState::ReviewPending
+        | SupervisorTaskState::TestPending => TaskStatus::Blocked,
+        SupervisorTaskState::Running => TaskStatus::InProgress,
+        SupervisorTaskState::Completed => TaskStatus::Completed,
+        SupervisorTaskState::Cancelled | SupervisorTaskState::Failed => TaskStatus::Cancelled,
+        _ => TaskStatus::NotStarted,
+    };
+    let _ = manager.update_task_status(session_id, tracking_task_id, task_status);
+    let _ = manager.set_task_background_job(
+        session_id,
+        tracking_task_id,
+        Some(TaskBackgroundJob::new(
+            background_status_for_state(record.state),
+            Some(task.id.clone()),
+            Some(background_message_for_record(record)),
+        )),
+    );
     let _ = manager.record_memory_event(
         session_id,
         tracking_task_id,
         crate::tasks::TaskMemoryEvent::new(
             crate::tasks::TaskMemoryPhase::Delegated,
-            format!("Delegated to agent {}", task.agent_id),
+            format!("Delegated to agent {} as {:?}", task.agent_id, task.role),
             task.directive_id.as_ref().map(|_| "directive".to_string()),
             Some("handoff".to_string()),
             None,
@@ -494,11 +1499,28 @@ fn record_task_dispatch(task: &DelegatedTask) {
         tracking_task_id,
         json!({
             "delegation": {
+                "run_id": task.run_id,
                 "orchestrator_task_id": task.id,
                 "agent_id": task.agent_id,
                 "directive_id": task.directive_id,
-                "state": "delegated",
+                "role": task.role,
+                "state": format!("{:?}", record.state).to_lowercase(),
+                "approval_state": format!("{:?}", record.approval.state).to_lowercase(),
+                "dependencies": task.depends_on,
+                "environment": {
+                    "id": record.environment.id,
+                    "mode": format!("{:?}", record.environment.execution_mode).to_lowercase(),
+                    "root_dir": record.environment.root_dir,
+                    "write_access": record.environment.write_access,
+                    "branch_name": record.environment.branch_name,
+                    "worktree_path": record.environment.worktree_path,
+                    "remote_url": record.environment.remote_url,
+                },
+                "planning_only": task.planning_only,
+                "reviewer_required": task.reviewer_required,
+                "test_required": task.test_required,
                 "memory_tags": task.memory_tags,
+                "run_status": format!("{:?}", run.status).to_lowercase(),
             }
         }),
     );
@@ -508,6 +1530,8 @@ fn record_task_completion(
     task: &DelegatedTask,
     task_result: &TaskResult,
     memory_file_path: Option<&Path>,
+    record: &SupervisorTaskRecord,
+    run: &SupervisorRun,
 ) {
     let Some(workspace_dir) = task.workspace_dir.as_deref() else {
         return;
@@ -520,22 +1544,42 @@ fn record_task_completion(
     };
 
     let manager = TaskManager::new(workspace_dir);
-    if task_result.success {
-        let _ = manager.update_task_status(session_id, tracking_task_id, TaskStatus::Completed);
-    }
+    let task_status = match record.state {
+        SupervisorTaskState::Blocked
+        | SupervisorTaskState::PendingApproval
+        | SupervisorTaskState::ReviewPending
+        | SupervisorTaskState::TestPending => TaskStatus::Blocked,
+        SupervisorTaskState::Completed => TaskStatus::Completed,
+        SupervisorTaskState::Cancelled | SupervisorTaskState::Failed => TaskStatus::Cancelled,
+        SupervisorTaskState::Running => TaskStatus::InProgress,
+        _ => TaskStatus::NotStarted,
+    };
+    let _ = manager.update_task_status(session_id, tracking_task_id, task_status);
+    let _ = manager.set_task_background_job(
+        session_id,
+        tracking_task_id,
+        Some(TaskBackgroundJob::new(
+            background_status_for_state(record.state),
+            Some(task.id.clone()),
+            Some(background_message_for_record(record)),
+        )),
+    );
     let _ = manager.record_memory_event(
         session_id,
         tracking_task_id,
         crate::tasks::TaskMemoryEvent::new(
-            if task_result.success {
+            if matches!(record.state, SupervisorTaskState::Completed) {
                 crate::tasks::TaskMemoryPhase::Promoted
             } else {
                 crate::tasks::TaskMemoryPhase::Blocked
             },
-            if task_result.success {
+            if matches!(record.state, SupervisorTaskState::Completed) {
                 format!("Delegated work completed by {}", task.agent_id)
             } else {
-                format!("Delegated work blocked on {}", task.agent_id)
+                format!(
+                    "Delegated work waiting on {:?} for {}",
+                    record.state, task.agent_id
+                )
             },
             Some(
                 if task.directive_id.is_some() {
@@ -546,7 +1590,7 @@ fn record_task_completion(
                 .to_string(),
             ),
             Some(
-                if task_result.success {
+                if matches!(record.state, SupervisorTaskState::Completed) {
                     "handoff"
                 } else {
                     "blocker"
@@ -562,16 +1606,209 @@ fn record_task_completion(
         tracking_task_id,
         json!({
             "delegation": {
+                "run_id": task.run_id,
                 "orchestrator_task_id": task.id,
                 "agent_id": task.agent_id,
                 "directive_id": task.directive_id,
-                "state": if task_result.success { "completed" } else { "blocked" },
+                "role": task.role,
+                "state": format!("{:?}", record.state).to_lowercase(),
+                "approval_state": format!("{:?}", record.approval.state).to_lowercase(),
                 "last_output": task_result.output,
+                "summary": task_result.summary,
+                "attempts": record.attempts,
                 "memory_file_path": memory_file_path.map(|path| path.display().to_string()),
                 "tool_calls": task_result.tool_calls,
+                "artifacts": task_result.artifacts,
+                "run_status": format!("{:?}", run.status).to_lowercase(),
             }
         }),
     );
+}
+
+fn background_status_for_state(state: SupervisorTaskState) -> TaskBackgroundStatus {
+    match state {
+        SupervisorTaskState::Queued => TaskBackgroundStatus::Queued,
+        SupervisorTaskState::Blocked => TaskBackgroundStatus::Blocked,
+        SupervisorTaskState::PendingApproval
+        | SupervisorTaskState::ReviewPending
+        | SupervisorTaskState::TestPending => TaskBackgroundStatus::AwaitingApproval,
+        SupervisorTaskState::Running => TaskBackgroundStatus::Running,
+        SupervisorTaskState::Completed => TaskBackgroundStatus::Succeeded,
+        SupervisorTaskState::Failed => TaskBackgroundStatus::Failed,
+        SupervisorTaskState::Cancelled => TaskBackgroundStatus::Cancelled,
+    }
+}
+
+fn background_message_for_record(record: &SupervisorTaskRecord) -> String {
+    match record.state {
+        SupervisorTaskState::Queued => "Queued for execution".to_string(),
+        SupervisorTaskState::Blocked => {
+            if record.blocked_reasons.is_empty() {
+                "Blocked".to_string()
+            } else {
+                format!("Blocked: {}", record.blocked_reasons.join("; "))
+            }
+        }
+        SupervisorTaskState::PendingApproval => "Awaiting supervisor approval".to_string(),
+        SupervisorTaskState::Running => "Running".to_string(),
+        SupervisorTaskState::ReviewPending => "Awaiting review approval".to_string(),
+        SupervisorTaskState::TestPending => "Awaiting test validation".to_string(),
+        SupervisorTaskState::Completed => "Completed".to_string(),
+        SupervisorTaskState::Failed => "Failed".to_string(),
+        SupervisorTaskState::Cancelled => "Cancelled".to_string(),
+    }
+}
+
+fn unresolved_dependency_reasons(run: &SupervisorRun, task: &DelegatedTask) -> Vec<String> {
+    let dependency_states = run
+        .tasks
+        .iter()
+        .map(|record| (record.task.id.clone(), record.state))
+        .collect::<HashMap<_, _>>();
+    dependency_reasons_from_states(&dependency_states, task)
+}
+
+fn dependency_reasons_from_states(
+    dependency_states: &HashMap<String, SupervisorTaskState>,
+    task: &DelegatedTask,
+) -> Vec<String> {
+    task.depends_on
+        .iter()
+        .filter_map(|dependency_id| match dependency_states.get(dependency_id) {
+            Some(SupervisorTaskState::Completed) => None,
+            Some(state) => Some(format!("Waiting on task '{}' ({:?})", dependency_id, state)),
+            None => Some(format!("Waiting on unknown dependency '{}'", dependency_id)),
+        })
+        .collect()
+}
+
+fn recalculate_run_status(run: &SupervisorRun) -> SupervisorRunStatus {
+    if run.tasks.is_empty() {
+        return SupervisorRunStatus::Draft;
+    }
+    if run
+        .tasks
+        .iter()
+        .all(|record| matches!(record.state, SupervisorTaskState::Cancelled))
+    {
+        return SupervisorRunStatus::Cancelled;
+    }
+    if run.tasks.iter().any(|record| {
+        matches!(
+            record.state,
+            SupervisorTaskState::Running | SupervisorTaskState::Queued
+        )
+    }) {
+        return SupervisorRunStatus::Running;
+    }
+    if run.tasks.iter().any(|record| {
+        matches!(
+            record.state,
+            SupervisorTaskState::Blocked
+                | SupervisorTaskState::PendingApproval
+                | SupervisorTaskState::ReviewPending
+                | SupervisorTaskState::TestPending
+        )
+    }) {
+        return SupervisorRunStatus::Waiting;
+    }
+    if run
+        .tasks
+        .iter()
+        .all(|record| matches!(record.state, SupervisorTaskState::Completed))
+    {
+        return SupervisorRunStatus::Completed;
+    }
+    if run
+        .tasks
+        .iter()
+        .any(|record| matches!(record.state, SupervisorTaskState::Failed))
+    {
+        return SupervisorRunStatus::Failed;
+    }
+    SupervisorRunStatus::Draft
+}
+
+fn collect_ready_tasks(run: &mut SupervisorRun) -> Vec<DelegatedTask> {
+    let completed_ids = run
+        .tasks
+        .iter()
+        .filter(|record| matches!(record.state, SupervisorTaskState::Completed))
+        .map(|record| record.task.id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let now = Utc::now();
+
+    let mut ready = Vec::new();
+    for record in &mut run.tasks {
+        if !matches!(record.state, SupervisorTaskState::Blocked) {
+            continue;
+        }
+        if matches!(record.approval.state, ApprovalState::Pending) {
+            continue;
+        }
+        if record
+            .task
+            .depends_on
+            .iter()
+            .all(|dependency_id| completed_ids.contains(dependency_id))
+        {
+            record.state = SupervisorTaskState::Queued;
+            record.blocked_reasons.clear();
+            record.updated_at = now;
+            ready.push(record.task.clone());
+        }
+    }
+
+    ready
+}
+
+fn persist_run_to_disk(root: &Path, run: &SupervisorRun) -> Result<(), String> {
+    let session_key = run.session_id.as_deref().unwrap_or("global");
+    let dir = root.join(".gestura").join("orchestrator").join(session_key);
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Failed to create orchestrator persistence dir: {error}"))?;
+    let path = dir.join(format!("{}.json", run.id));
+    let content = serde_json::to_vec_pretty(run)
+        .map_err(|error| format!("Failed to serialize supervisor run: {error}"))?;
+    fs::write(path, content).map_err(|error| format!("Failed to persist supervisor run: {error}"))
+}
+
+fn load_persisted_runs(root: &Path) -> Vec<SupervisorRun> {
+    let base = root.join(".gestura").join("orchestrator");
+    let Ok(session_dirs) = fs::read_dir(base) else {
+        return Vec::new();
+    };
+
+    let mut runs = Vec::new();
+    for session_dir in session_dirs.flatten() {
+        let path = session_dir.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(content) = fs::read(&path) else {
+                continue;
+            };
+            let Ok(run) = serde_json::from_slice::<SupervisorRun>(&content) else {
+                continue;
+            };
+            runs.push(run);
+        }
+    }
+    runs
+}
+
+fn load_persisted_run_by_id(root: &Path, run_id: &str) -> Option<SupervisorRun> {
+    load_persisted_runs(root)
+        .into_iter()
+        .find(|run| run.id == run_id)
 }
 
 fn merge_task_metadata(
@@ -685,7 +1922,19 @@ mod tests {
             session_id: None,
             directive_id: None,
             tracking_task_id: None,
+            run_id: Some("run-test".into()),
+            parent_task_id: None,
+            depends_on: vec![],
+            role: Some(AgentRole::Implementer),
+            delegation_brief: None,
+            planning_only: false,
+            approval_required: false,
+            reviewer_required: false,
+            test_required: false,
             workspace_dir: None,
+            execution_mode: AgentExecutionMode::SharedWorkspace,
+            environment_id: None,
+            remote_target: None,
             memory_tags: vec![],
             name: None,
         };

@@ -100,12 +100,53 @@ impl A2AClient {
 
     /// Create a task on a remote agent
     pub async fn create_task(&self, url: &str, message: &str) -> Result<A2ATask> {
-        let params = serde_json::json!({
-            "role": "user",
-            "parts": [{"type": "text", "text": message}]
+        let request = CreateTaskRequest::from_message(A2AMessage {
+            role: "user".to_string(),
+            parts: vec![MessagePart::Text {
+                text: message.to_string(),
+            }],
         });
 
+        self.create_task_with_request(url, request).await
+    }
+
+    /// Create a task with a structured remote contract.
+    pub async fn create_task_with_request(
+        &self,
+        url: &str,
+        task: CreateTaskRequest,
+    ) -> Result<A2ATask> {
+        let params = serde_json::to_value(task).map_err(|e| {
+            AppError::Io(std::io::Error::other(format!(
+                "Failed to serialize A2A task request: {e}"
+            )))
+        })?;
+
         let request = A2ARequest::new("task/create", params);
+        let response = self.send_request(url, request).await?;
+
+        if let Some(error) = response.error {
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "A2A error {}: {}",
+                error.code, error.message
+            ))));
+        }
+
+        let result = response
+            .result
+            .ok_or_else(|| AppError::Io(std::io::Error::other("No result in A2A response")))?;
+
+        serde_json::from_value(result).map_err(|e| {
+            AppError::Io(std::io::Error::other(format!(
+                "Failed to parse A2ATask: {e}"
+            )))
+        })
+    }
+
+    /// Retry an existing remote task.
+    pub async fn retry_task(&self, url: &str, task_id: &str) -> Result<A2ATask> {
+        let params = serde_json::json!({"taskId": task_id});
+        let request = A2ARequest::new("task/retry", params);
         let response = self.send_request(url, request).await?;
 
         if let Some(error) = response.error {

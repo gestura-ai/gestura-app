@@ -1888,6 +1888,7 @@ fn open_tasks_browser(app: &mut TuiApp) {
             for (root, subtasks) in &hierarchy {
                 let status_icon = match root.status {
                     gestura_core::tasks::TaskStatus::NotStarted => "[ ]",
+                    gestura_core::tasks::TaskStatus::Blocked => "[!]",
                     gestura_core::tasks::TaskStatus::InProgress => "[/]",
                     gestura_core::tasks::TaskStatus::Completed => "[x]",
                     gestura_core::tasks::TaskStatus::Cancelled => "[-]",
@@ -1905,6 +1906,7 @@ fn open_tasks_browser(app: &mut TuiApp) {
                 for sub in subtasks {
                     let sub_icon = match sub.status {
                         gestura_core::tasks::TaskStatus::NotStarted => "[ ]",
+                        gestura_core::tasks::TaskStatus::Blocked => "[!]",
                         gestura_core::tasks::TaskStatus::InProgress => "[/]",
                         gestura_core::tasks::TaskStatus::Completed => "[x]",
                         gestura_core::tasks::TaskStatus::Cancelled => "[-]",

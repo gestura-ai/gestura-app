@@ -4,7 +4,9 @@
 //! and authentication tokens.
 
 use colored::Colorize;
-use gestura_core::a2a::{A2AClient, AgentCard};
+use gestura_core::a2a::{
+    A2AClient, A2AMessage, AgentCard, CreateTaskRequest, MessagePart, RemoteTaskContract,
+};
 use tokio::runtime::Runtime;
 
 use super::Result;
@@ -260,12 +262,40 @@ fn send_task(url: &str, message: &str) -> Result<()> {
         A2AClient::new()
     };
 
-    match rt.block_on(client.create_task(url, message)) {
+    let request = CreateTaskRequest {
+        message: A2AMessage {
+            role: "user".to_string(),
+            parts: vec![MessagePart::Text {
+                text: message.to_string(),
+            }],
+        },
+        run_id: None,
+        parent_task_id: None,
+        role: Some("remote_worker".to_string()),
+        requested_capabilities: vec!["analysis".to_string(), "artifacts".to_string()],
+        contract: Some(RemoteTaskContract {
+            objective: message.to_string(),
+            acceptance_criteria: vec!["Return a concise remote status update".to_string()],
+            constraints: vec!["Preserve provenance in task output".to_string()],
+            deliverables: vec!["Remote result summary".to_string()],
+            output_format: Some("text".to_string()),
+        }),
+        metadata: std::collections::HashMap::new(),
+    };
+
+    match rt.block_on(client.create_task_with_request(url, request)) {
         Ok(task) => {
             println!("{} Task created successfully!", "✓".green());
             println!();
             println!("{}: {}", "Task ID".bold(), task.id.cyan());
             println!("{}: {:?}", "Status".bold(), task.status);
+            if let Some(role) = &task.role {
+                println!("{}: {}", "Role".bold(), role);
+            }
+            if let Some(contract) = &task.contract {
+                println!("{}: {}", "Objective".bold(), contract.objective);
+            }
+            println!("{}: {}", "Created At".bold(), task.created_at);
 
             if !task.messages.is_empty() {
                 println!();
@@ -285,6 +315,21 @@ fn send_task(url: &str, message: &str) -> Result<()> {
                             }
                         }
                     }
+                }
+            }
+
+            match rt.block_on(client.get_task_status(url, &task.id)) {
+                Ok(status) => {
+                    println!();
+                    println!("{}", "Remote Status Snapshot".bold().yellow());
+                    println!("{}: {:?}", "Status".bold(), status.status);
+                    if let Some(reason) = status.status_reason {
+                        println!("{}: {}", "Reason".bold(), reason);
+                    }
+                    println!("{}: {}", "Retry Count".bold(), status.retry_count);
+                }
+                Err(error) => {
+                    println!("{} {}", "Status polling failed:".yellow(), error);
                 }
             }
         }

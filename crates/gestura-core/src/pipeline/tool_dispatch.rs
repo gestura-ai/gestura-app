@@ -1244,12 +1244,13 @@ impl AgentPipeline {
 
                         let status = match status_str.to_lowercase().as_str() {
                             "notstarted" | "not_started" => TaskStatus::NotStarted,
+                            "blocked" | "waiting" => TaskStatus::Blocked,
                             "inprogress" | "in_progress" => TaskStatus::InProgress,
                             "completed" => TaskStatus::Completed,
                             "cancelled" => TaskStatus::Cancelled,
                             _ => {
                                 return ToolResult::Error(format!(
-                                    "Invalid status '{}'. Use 'notstarted', 'inprogress', 'completed', or 'cancelled'",
+                                    "Invalid status '{}'. Use 'notstarted', 'blocked', 'inprogress', 'completed', or 'cancelled'",
                                     status_str
                                 ));
                             }

@@ -18,8 +18,8 @@ use gestura_core::pipeline::{AgentPipeline, AgentRequest, RequestSource};
 
 // Re-export core types for backwards compatibility
 pub use gestura_core::agents::{
-    AgentCommand, AgentEnvelope, AgentInfo, AgentSpawner, AgentStatus, DelegatedTask,
-    OrchestratorToolCall, TaskResult,
+    AgentCommand, AgentEnvelope, AgentExecutionMode, AgentInfo, AgentRole, AgentSpawnRequest,
+    AgentSpawner, AgentStatus, DelegatedTask, OrchestratorToolCall, TaskResult,
 };
 
 /// Record kept for each agent in memory
@@ -27,6 +27,10 @@ struct AgentRecord {
     name: String,
     tx: mpsc::Sender<AgentCommand>,
     _handle: JoinHandle<()>,
+    role: AgentRole,
+    capabilities: Vec<String>,
+    workspace_dir: Option<PathBuf>,
+    execution_mode: AgentExecutionMode,
     #[allow(dead_code)]
     created_at: chrono::DateTime<chrono::Utc>,
     last_activity: chrono::DateTime<chrono::Utc>,
@@ -99,8 +103,14 @@ impl AgentManager {
 
     /// Spawn a lightweight agent task with GUI-specific event handling
     pub async fn spawn_agent(&self, id: String, name: String) {
+        self.spawn_agent_with_request(AgentSpawnRequest::new(id, name, AgentRole::Implementer))
+            .await;
+    }
+
+    /// Spawn a lightweight agent using an explicit configuration request.
+    pub async fn spawn_agent_with_request(&self, request: AgentSpawnRequest) {
         let (tx, mut rx) = mpsc::channel::<AgentCommand>(32);
-        self.persist_state(&id, &name, AgentStatus::Running);
+        self.persist_state(&request.id, &request.name, AgentStatus::Running);
 
         // GUI-specific agent task with MDH and LLM integration
         let handle = tokio::spawn(async move {
@@ -163,13 +173,17 @@ impl AgentManager {
 
         let now = chrono::Utc::now();
         let rec = AgentRecord {
-            name: name.clone(),
+            name: request.name.clone(),
             tx,
             _handle: handle,
+            role: request.role,
+            capabilities: request.capabilities,
+            workspace_dir: request.workspace_dir,
+            execution_mode: request.execution_mode,
             created_at: now,
             last_activity: now,
         };
-        self.inner.lock().await.agents.insert(id, rec);
+        self.inner.lock().await.agents.insert(request.id, rec);
     }
 
     /// Get status information for a specific agent
@@ -180,6 +194,10 @@ impl AgentManager {
             name: rec.name.clone(),
             status: "running".to_string(),
             last_activity: rec.last_activity,
+            role: rec.role.clone(),
+            capabilities: rec.capabilities.clone(),
+            workspace_dir: rec.workspace_dir.clone(),
+            execution_mode: rec.execution_mode.clone(),
         })
     }
 
@@ -194,6 +212,10 @@ impl AgentManager {
                 name: rec.name.clone(),
                 status: "running".to_string(),
                 last_activity: rec.last_activity,
+                role: rec.role.clone(),
+                capabilities: rec.capabilities.clone(),
+                workspace_dir: rec.workspace_dir.clone(),
+                execution_mode: rec.execution_mode.clone(),
             })
             .collect()
     }
@@ -250,6 +272,10 @@ impl AgentManager {
 impl AgentSpawner for AgentManager {
     async fn spawn_agent(&self, id: String, name: String) {
         AgentManager::spawn_agent(self, id, name).await;
+    }
+
+    async fn spawn_agent_with_request(&self, request: AgentSpawnRequest) {
+        AgentManager::spawn_agent_with_request(self, request).await;
     }
 
     async fn send_event(&self, id: &str, payload: String) {

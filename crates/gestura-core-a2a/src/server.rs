@@ -10,7 +10,8 @@
 //!   `ProfileStore` (suitable for local adapters and tests).
 
 use super::{
-    A2AError, A2AMessage, A2ARequest, A2AResponse, A2ATask, AgentCard, Artifact, TaskStatus,
+    A2AError, A2AMessage, A2ARequest, A2AResponse, A2ATask, AgentCard, Artifact, CreateTaskRequest,
+    TaskAuditEvent, TaskProvenance, TaskStatus,
 };
 use chrono::{DateTime, Duration, Utc};
 use rand::Rng;
@@ -232,7 +233,10 @@ impl A2AServer {
 
         // Auth is currently required for task creation/cancellation if the agent
         // card advertises an auth scheme.
-        let requires_auth = matches!(request.method.as_str(), "task/create" | "task/cancel");
+        let requires_auth = matches!(
+            request.method.as_str(),
+            "task/create" | "task/cancel" | "task/retry"
+        );
         if requires_auth && self.agent_card.authentication.is_some() && caller_profile.is_none() {
             return A2AResponse {
                 jsonrpc: "2.0".to_string(),
@@ -251,6 +255,7 @@ impl A2AServer {
             "task/create" => self.handle_task_create(&request.params, caller_profile.as_ref()),
             "task/status" => self.handle_task_status(&request.params),
             "task/cancel" => self.handle_task_cancel(&request.params),
+            "task/retry" => self.handle_task_retry(&request.params),
             "profile/register" => self.handle_profile_register(&request.params),
             "profile/validate" => self.handle_profile_validate(&request.params),
             _ => Err(A2AError {
@@ -295,16 +300,22 @@ impl A2AServer {
         params: &serde_json::Value,
         caller: Option<&AgentProfile>,
     ) -> Result<serde_json::Value, A2AError> {
-        let message: A2AMessage = serde_json::from_value(params.clone()).map_err(|e| A2AError {
-            code: -32602,
-            message: format!("Invalid params: {e}"),
-            data: None,
-        })?;
+        let request = serde_json::from_value::<CreateTaskRequest>(params.clone())
+            .or_else(|_| {
+                serde_json::from_value::<A2AMessage>(params.clone())
+                    .map(CreateTaskRequest::from_message)
+            })
+            .map_err(|e| A2AError {
+                code: -32602,
+                message: format!("Invalid params: {e}"),
+                data: None,
+            })?;
 
         let task_id = uuid::Uuid::new_v4().to_string();
-        let mut metadata = HashMap::new();
+        let mut metadata = request.metadata;
+        let now = Utc::now();
 
-        if let Some(profile) = caller {
+        let provenance = if let Some(profile) = caller {
             metadata.insert(
                 "caller_agent_id".to_string(),
                 serde_json::json!(profile.agent_id),
@@ -313,13 +324,36 @@ impl A2AServer {
 
             let mut profiles = self.task_profiles.write().unwrap();
             profiles.insert(task_id.clone(), profile.clone());
-        }
+
+            Some(TaskProvenance {
+                caller_agent_id: Some(profile.agent_id.clone()),
+                caller_name: Some(profile.name.clone()),
+                caller_version: Some(profile.version.clone()),
+            })
+        } else {
+            None
+        };
 
         let task = A2ATask {
             id: task_id.clone(),
             status: TaskStatus::Pending,
-            messages: vec![message],
+            status_reason: Some("Accepted by remote agent".to_string()),
+            messages: vec![request.message],
             artifacts: vec![],
+            retry_count: 0,
+            run_id: request.run_id,
+            parent_task_id: request.parent_task_id,
+            role: request.role,
+            requested_capabilities: request.requested_capabilities,
+            contract: request.contract,
+            provenance,
+            audit_log: vec![TaskAuditEvent {
+                at: now,
+                event: "created".to_string(),
+                detail: Some("Remote task accepted".to_string()),
+            }],
+            created_at: now,
+            updated_at: now,
             metadata,
         };
 
@@ -405,6 +439,40 @@ impl A2AServer {
         })
     }
 
+    fn handle_task_retry(&self, params: &serde_json::Value) -> Result<serde_json::Value, A2AError> {
+        let task_id = params
+            .get("taskId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| A2AError {
+                code: -32602,
+                message: "Missing taskId parameter".to_string(),
+                data: None,
+            })?;
+
+        let mut tasks = self.tasks.write().unwrap();
+        let task = tasks.get_mut(task_id).ok_or_else(|| A2AError {
+            code: -32001,
+            message: format!("Task not found: {task_id}"),
+            data: None,
+        })?;
+
+        task.status = TaskStatus::Pending;
+        task.status_reason = Some("Retry requested".to_string());
+        task.retry_count += 1;
+        task.updated_at = Utc::now();
+        task.audit_log.push(TaskAuditEvent {
+            at: task.updated_at,
+            event: "retried".to_string(),
+            detail: Some(format!("Retry count is now {}", task.retry_count)),
+        });
+
+        serde_json::to_value(task).map_err(|e| A2AError {
+            code: -32603,
+            message: format!("Serialization error: {e}"),
+            data: None,
+        })
+    }
+
     fn handle_task_cancel(
         &self,
         params: &serde_json::Value,
@@ -426,6 +494,13 @@ impl A2AServer {
         })?;
 
         task.status = TaskStatus::Cancelled;
+        task.status_reason = Some("Cancelled by caller".to_string());
+        task.updated_at = Utc::now();
+        task.audit_log.push(TaskAuditEvent {
+            at: task.updated_at,
+            event: "cancelled".to_string(),
+            detail: Some("Remote caller cancelled task".to_string()),
+        });
         tracing::info!(task_id = %task_id, "A2A task cancelled");
 
         serde_json::to_value(task).map_err(|e| A2AError {
@@ -442,6 +517,13 @@ impl A2AServer {
             .get_mut(task_id)
             .ok_or_else(|| format!("Task not found: {task_id}"))?;
         task.status = status;
+        task.updated_at = Utc::now();
+        task.status_reason = Some(format!("Updated to {:?}", task.status));
+        task.audit_log.push(TaskAuditEvent {
+            at: task.updated_at,
+            event: "status_updated".to_string(),
+            detail: Some(format!("Task status changed to {:?}", task.status)),
+        });
         Ok(())
     }
 
@@ -452,6 +534,12 @@ impl A2AServer {
             .get_mut(task_id)
             .ok_or_else(|| format!("Task not found: {task_id}"))?;
         task.artifacts.push(artifact);
+        task.updated_at = Utc::now();
+        task.audit_log.push(TaskAuditEvent {
+            at: task.updated_at,
+            event: "artifact_added".to_string(),
+            detail: Some("Artifact attached to remote task".to_string()),
+        });
         Ok(())
     }
 }
