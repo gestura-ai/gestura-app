@@ -41,21 +41,20 @@ Notes:
 - Current versions persist config as `~/.gestura/config.yaml`.
 - If `config.yaml` is missing but a legacy `~/.gestura/config.json` exists, Gestura will load it and auto-migrate it to YAML.
 
-### API Commands
+### Canonical API/Type Reference
 
-```javascript
-// Check if this is the first run
-const isFirstRun = await window.__TAURI__.core.invoke('is_first_run');
+This document focuses on the configuration file layout and operational setup.
 
-// Get the config file path
-const configPath = await window.__TAURI__.core.invoke('get_config_path');
+For exact Rust configuration types and the canonical library/API surface, use
+generated Rustdoc:
 
-// Load configuration
-const config = await window.__TAURI__.core.invoke('get_config');
-
-// Save configuration
-await window.__TAURI__.core.invoke('save_config', { cfg: config });
+```bash
+cargo doc -p gestura-core-config --no-deps
 ```
+
+For GUI IPC command details such as `get_config` and `save_config`, see:
+
+- `docs/IPC_CONTRACTS_GESTURA_GUI.md`
 
 ## Configuration Structure
 

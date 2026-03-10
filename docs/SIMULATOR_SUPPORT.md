@@ -72,31 +72,17 @@ The simulator support is configured through the `DeveloperSettings` in the appli
 - **enable_metrics**: Collect and display performance metrics
 - **discovery_port_range**: Port range for localhost discovery
 
-## API Commands
+## Canonical API / IPC Reference
 
-### Simulator Management
+This document focuses on simulator workflow, configuration, and testing
+guidance.
 
-- `get_simulators()`: Get all connected simulators
-- `scan_for_simulators()`: Scan for available simulators
-- `reset_simulator(device_id)`: Reset a specific simulator
-- `get_simulator_health(device_id)`: Get simulator health status
-- `get_simulator_logs(device_id)`: Get connection logs
+For the exact GUI IPC contract and command inventory, use:
 
-### Testing and Debugging
+- `docs/IPC_CONTRACTS_GESTURA_GUI.md`
 
-- `send_test_haptic(device_id, pattern_type)`: Send test haptic patterns
-- `run_simulator_test(device_id)`: Run comprehensive test suite
-- `get_simulator_metrics(device_id)`: Get performance metrics
-- `start_health_monitoring(device_id, interval)`: Start health monitoring
-- `stop_health_monitoring(device_id)`: Stop health monitoring
-
-### Configuration
-
-- `is_developer_mode_enabled()`: Check developer mode status
-- `toggle_developer_mode(enabled)`: Enable/disable developer mode
-- `toggle_simulator_support(enabled)`: Enable/disable simulator support
-- `get_simulator_config()`: Get simulator configuration
-- `update_simulator_config(config)`: Update simulator settings
+For the owning Rust types and implementation surface, use generated docs for the
+relevant crates/modules rather than treating this file as an API reference.
 
 ## Test Haptic Patterns
 
@@ -112,18 +98,13 @@ The simulator supports specialized test patterns for development and validation:
 
 ### Usage Example
 
-```typescript
-// Send a latency test pattern
-await invoke('send_test_haptic', {
-  deviceId: 'simulator-001',
-  patternType: 'latency'
-});
+Use the simulator panel or the documented GUI IPC surface to:
 
-// Run comprehensive test suite
-const results = await invoke('run_simulator_test', {
-  deviceId: 'simulator-001'
-});
-```
+- send a named test haptic pattern to a simulator
+- run the simulator test suite for a selected device
+- inspect the returned metrics/results in the UI
+
+For exact command names and payload shapes, use `docs/IPC_CONTRACTS_GESTURA_GUI.md`.
 
 ## UI Integration
 
@@ -148,51 +129,28 @@ The Simulator Panel provides a comprehensive interface for managing and testing 
 
 ### 1. Enable Developer Mode
 
-```typescript
-await invoke('toggle_developer_mode', { enabled: true });
-```
+Enable developer mode from the UI before attempting simulator-specific actions.
+
+If you are wiring or debugging the frontend implementation, use
+`docs/IPC_CONTRACTS_GESTURA_GUI.md` for the exact command contract.
 
 ### 2. Scan for Simulators
 
-```typescript
-const simulators = await invoke('scan_for_simulators');
-console.log('Found simulators:', simulators);
-```
+Run a simulator scan from the UI and confirm the discovered devices appear in the
+simulator panel.
 
 ### 3. Connect and Test
 
-```typescript
-// Get simulator status
-const status = await invoke('get_simulator_health', { 
-  deviceId: 'simulator-001' 
-});
+For a selected simulator:
 
-// Send test haptic
-await invoke('send_test_haptic', {
-  deviceId: 'simulator-001',
-  patternType: 'connectivity'
-});
-
-// Run comprehensive tests
-const testResults = await invoke('run_simulator_test', {
-  deviceId: 'simulator-001'
-});
-```
+- verify current health/status
+- send a connectivity or latency test pattern
+- run the broader simulator test suite and inspect the results
 
 ### 4. Monitor Performance
 
-```typescript
-// Get performance metrics
-const metrics = await invoke('get_simulator_metrics', {
-  deviceId: 'simulator-001'
-});
-
-// Start health monitoring
-await invoke('start_health_monitoring', {
-  deviceId: 'simulator-001',
-  intervalSeconds: 30
-});
-```
+Use the simulator panel to review performance metrics and enable periodic health
+monitoring during longer development sessions.
 
 ## Simulator Implementation
 
@@ -233,22 +191,14 @@ Simulators are identified by:
 
 ### Debug Commands
 
-```typescript
-// Get detailed logs
-const logs = await invoke('get_simulator_logs', {
-  deviceId: 'simulator-001'
-});
+For debugging, focus on three operator actions:
 
-// Reset simulator
-await invoke('reset_simulator', {
-  deviceId: 'simulator-001'
-});
+- inspect detailed simulator logs
+- reset the simulator before retrying a test sequence
+- re-check health/status after reset or reconnection attempts
 
-// Check health
-const health = await invoke('get_simulator_health', {
-  deviceId: 'simulator-001'
-});
-```
+Use `docs/IPC_CONTRACTS_GESTURA_GUI.md` only when you need the exact frontend ↔
+Tauri command contract.
 
 ## Best Practices
 
