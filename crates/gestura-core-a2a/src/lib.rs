@@ -1,9 +1,22 @@
-//! A2A (Agent-to-Agent) protocol.
+//! Agent-to-Agent protocol types, client, and server for Gestura.
 //!
-//! This crate provides:
-//! - A transport-agnostic JSON-RPC **protocol server** (`A2AServer`) intended to be
-//!   hosted by shell crates (GUI/CLI) over HTTP/SSE.
-//! - An HTTP **client** (`A2AClient`) for calling remote A2A agents.
+//! `gestura-core-a2a` implements Gestura's A2A domain: a transport-agnostic
+//! JSON-RPC server model, an HTTP client for remote agents, and the typed task
+//! lifecycle/provenance structures needed for cross-agent delegation.
+//!
+//! ## Main concepts
+//!
+//! - `A2AServer`: protocol server that shells can expose over HTTP/SSE
+//! - `A2AClient`: HTTP client for discovery, task creation, retries, status, and cancellation
+//! - `AgentCard` / `Skill`: remote capability advertisement
+//! - `A2ATask`, `TaskStatus`, `RemoteTaskContract`: typed remote-task lifecycle
+//! - `TaskProvenance` / `TaskAuditEvent`: provenance and audit metadata
+//!
+//! ## Architecture boundary
+//!
+//! This crate owns protocol logic and domain types. Listener setup, shell
+//! transport hosting, and GUI/CLI presentation concerns remain in the shell
+//! crates that embed it.
 //!
 //! ## Stable import paths
 //!
