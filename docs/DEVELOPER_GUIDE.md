@@ -106,6 +106,44 @@ use crate/module Rustdoc for the source-of-truth architecture and API surface.
 - If it defines a stable public entry point or cross-domain orchestration, wire it through `gestura-core`.
 - If it is mostly UI, transport, or platform integration, keep it in `gestura-cli` or `gestura-gui`.
 
+### Workflow Approval Gates
+
+Gestura workflow approvals are now policy-backed gates, not loose UI flags. The source of truth lives in `gestura_core::orchestrator` and is persisted with each supervisor run/task record.
+
+#### Gate scopes
+
+- `pre_execution` — blocks work before agent execution starts
+- `review` — blocks completion until reviewer/supervisor approval is recorded
+- `test_validation` — blocks completion until tester/supervisor validation is recorded
+
+#### Allowed actors by default
+
+- `pre_execution`: `supervisor`, `user`
+- `review`: `reviewer`, `supervisor`
+- `test_validation`: `tester`, `supervisor`
+
+Delegated tasks derive these policies from `approval_required`, `reviewer_required`, and `test_required`. Do not hard-code ad hoc approval checks in CLI/GUI handlers; always route through core orchestrator methods so authorization, audit history, and retry semantics stay consistent.
+
+#### Operator surfaces
+
+- GUI: workflow panel shows active gate scope, allowed actor kinds, request provenance, and latest decision history
+- Tauri API: `approve_workflow_task` / `reject_workflow_task` take a structured `ApprovalActor`
+- CLI slash commands:
+  - `/task approvals`
+  - `/task approve <workflow_task_id> [--actor <supervisor|reviewer|tester|user>] [note...]`
+  - `/task reject <workflow_task_id> [--actor <supervisor|reviewer|tester|user>] [note...]`
+
+Approval CLI commands operate on delegated workflow task IDs (full ID or unique prefix), not the local task-manager UUID alone.
+
+#### Common failure modes
+
+- **Unauthorized actor**: the actor kind does not match the gate policy for the active scope
+- **No active gate**: the task is not currently in `pending_approval`, `review_pending`, or `test_pending`
+- **Workspace mismatch**: CLI approval commands need the current session workspace so they can load persisted supervisor runs
+- **Ambiguous task prefix**: the supplied workflow task prefix matches multiple pending gates
+
+When adding new approval-adjacent features, update the policy in core first, expose the resulting state through stable API models, and only then add controls in CLI/GUI layers.
+
 ### Re-export Pattern
 
 The facade and presentation layers should stay thin over the owning core domain:

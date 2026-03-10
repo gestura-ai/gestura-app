@@ -1,14 +1,22 @@
 import React, { useMemo, useState } from 'react';
 import { Agent, listAgents } from '../../services/tauri/agents';
 import {
+  ApprovalActor,
+  ApprovalActorKind,
+  ApprovalScope,
   approveWorkflowTask,
   cancelTask,
   claimWorkflowTask,
   DelegatedTask,
   delegateTask,
+  EnvironmentRecord,
+  cleanupWorkflowEnvironment,
   listActiveTasks,
   listSupervisorRuns,
+  listWorkflowEnvironments,
+  reconcileWorkflowState,
   rejectWorkflowTask,
+  retryWorkflowEnvironment,
   retryWorkflowTask,
   sendWorkflowMessage,
   spawnSubagent,
@@ -28,10 +36,62 @@ const summarizeTask = (task: SupervisorTaskRecord | DelegatedTask): string => {
   return value.length > 120 ? `${value.slice(0, 117)}...` : value;
 };
 
+const approvalScopeForState = (state: SupervisorTaskRecord['state']): ApprovalScope | null => {
+  switch (state) {
+    case 'pending_approval':
+      return 'pre_execution';
+    case 'review_pending':
+      return 'review';
+    case 'test_pending':
+      return 'test_validation';
+    default:
+      return null;
+  }
+};
+
+const defaultApprovalActorKind = (state: SupervisorTaskRecord['state']): ApprovalActorKind => {
+  switch (state) {
+    case 'pending_approval':
+      return 'supervisor';
+    case 'review_pending':
+      return 'reviewer';
+    case 'test_pending':
+      return 'tester';
+    default:
+      return 'user';
+  }
+};
+
+const approvalActorOptionsForRecord = (record: SupervisorTaskRecord): ApprovalActorKind[] => {
+  const scope = approvalScopeForState(record.state);
+  if (!scope) return [];
+  const requirement =
+    scope === 'pre_execution'
+      ? record.approval.policy.pre_execution
+      : scope === 'review'
+        ? record.approval.policy.review
+        : record.approval.policy.test_validation;
+  return requirement.allowed_deciders.length > 0 ? requirement.allowed_deciders : [defaultApprovalActorKind(record.state)];
+};
+
+const formatApprovalActorLabel = (kind: ApprovalActorKind): string =>
+  kind
+    .split('_')
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
+
+const buildApprovalActor = (record: SupervisorTaskRecord, kind: ApprovalActorKind): ApprovalActor => ({
+  kind,
+  id: `workflow-panel:${record.task.id}:${kind}`,
+  display_name: `Workflow Panel (${formatApprovalActorLabel(kind)})`,
+});
+
 const WorkflowsPanel: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<'runs' | 'environments'>('runs');
   const [showNewTask, setShowNewTask] = useState(false);
   const [messageDrafts, setMessageDrafts] = useState<Record<string, string>>({});
   const [claimSelections, setClaimSelections] = useState<Record<string, string>>({});
+  const [approvalActorSelections, setApprovalActorSelections] = useState<Record<string, ApprovalActorKind>>({});
   const [newTask, setNewTask] = useState({
     description: '',
     agentId: '',
@@ -46,10 +106,16 @@ const WorkflowsPanel: React.FC = () => {
 
   const workflowsState = useAsyncState(
     async () => {
-      const [tasks, runs, agentRes] = await Promise.all([listActiveTasks(), listSupervisorRuns(), listAgents()]);
+      const [tasks, runs, environments, agentRes] = await Promise.all([
+        listActiveTasks(),
+        listSupervisorRuns(),
+        listWorkflowEnvironments(),
+        listAgents(),
+      ]);
       return {
         activeTasks: tasks,
         runs,
+        environments,
         agents: (Array.isArray(agentRes?.agents) ? agentRes.agents : []) as Agent[],
       };
     },
@@ -58,11 +124,16 @@ const WorkflowsPanel: React.FC = () => {
 
   const activeTasks = workflowsState.data?.activeTasks ?? [];
   const runs = workflowsState.data?.runs ?? [];
+  const environments = workflowsState.data?.environments ?? [];
   const agents = workflowsState.data?.agents ?? [];
 
   const sortedRuns = useMemo(
     () => [...runs].sort((left, right) => right.updated_at.localeCompare(left.updated_at)),
     [runs]
+  );
+  const sortedEnvironments = useMemo(
+    () => [...environments].sort((left, right) => right.updated_at.localeCompare(left.updated_at)),
+    [environments]
   );
 
   useInterval(() => {
@@ -152,6 +223,15 @@ const WorkflowsPanel: React.FC = () => {
     }
   };
 
+  const handleEnvironmentAction = async (action: () => Promise<void>) => {
+    try {
+      await action();
+      await refresh();
+    } catch (error) {
+      console.error('Environment action failed:', error);
+    }
+  };
+
   if (workflowsState.loading) {
     return (
       <div className="workflows-panel">
@@ -169,9 +249,19 @@ const WorkflowsPanel: React.FC = () => {
           <p>Coordinate specialist agents, approvals, run state, and handoff messaging.</p>
         </div>
         <div className="workflows-actions">
+          <Button tone="secondary" onClick={() => handleEnvironmentAction(() => reconcileWorkflowState())}>Reconcile</Button>
           <Button tone="secondary" onClick={handleSpawnAgent}>+ Agent</Button>
           <Button onClick={() => setShowNewTask(true)}>+ Workflow Task</Button>
         </div>
+      </div>
+
+      <div className="workflow-tabs" style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        <Button tone={activeTab === 'runs' ? 'primary' : 'secondary'} onClick={() => setActiveTab('runs')}>
+          Runs ({sortedRuns.length})
+        </Button>
+        <Button tone={activeTab === 'environments' ? 'primary' : 'secondary'} onClick={() => setActiveTab('environments')}>
+          Environments ({sortedEnvironments.length})
+        </Button>
       </div>
 
       <div className="workflows-content">
@@ -217,118 +307,231 @@ const WorkflowsPanel: React.FC = () => {
           )}
         </div>
 
-        <div className="workflows-section">
-          <h3>Supervisor Runs ({sortedRuns.length})</h3>
-          {sortedRuns.length === 0 ? (
-            <p className="empty-state">No supervisor runs yet. Create a workflow task to start one.</p>
-          ) : (
-            <div className="task-list">
-              {sortedRuns.map((run: SupervisorRun) => (
-                <div key={run.id} className="task-card">
-                  <div className="task-header">
-                    <span className="task-id">{run.id}</span>
-                    <span className="task-priority">{run.status}</span>
-                  </div>
-                  <div className="task-footer">
-                    <span>{run.tasks.length} tasks</span>
-                    <span>Updated {new Date(run.updated_at).toLocaleString()}</span>
-                  </div>
-
-                  <div className="task-list">
-                    {run.tasks.map((record) => {
-                      const claimAgent = claimSelections[record.task.id] ?? record.task.agent_id;
-                      return (
-                        <div key={record.task.id} className="task-card">
-                          <div className="task-header">
-                            <span className="task-id">{record.task.id}</span>
-                            <span className="task-priority">{record.state}</span>
-                          </div>
-                          <div className="task-description">{summarizeTask(record)}</div>
-                          <div className="task-footer">
-                            <span>Role: {record.task.role ?? 'implementer'}</span>
-                            <span>Approval: {record.approval.state}</span>
-                          </div>
-                          {record.blocked_reasons.length > 0 ? (
-                            <div className="task-description">Blocked by: {record.blocked_reasons.join('; ')}</div>
-                          ) : null}
-                          <div className="task-footer">
-                            <span>Env: {record.environment.execution_mode}</span>
-                            <span>Owner: {record.claimed_by ?? record.task.agent_id}</span>
-                          </div>
-                          <div className="modal-actions">
-                            {gatedStates.has(record.state) ? (
-                              <>
-                                <Button size="small" onClick={() => handleTaskAction(() => approveWorkflowTask(record.task.id))}>
-                                  Approve
-                                </Button>
-                                <Button
-                                  tone="secondary"
-                                  size="small"
-                                  onClick={() => handleTaskAction(() => rejectWorkflowTask(record.task.id, 'Needs revision'))}
-                                >
-                                  Request revision
-                                </Button>
-                              </>
-                            ) : null}
-                            {retryableStates.has(record.state) ? (
-                              <Button size="small" onClick={() => handleTaskAction(() => retryWorkflowTask(record.task.id))}>
-                                Retry
-                              </Button>
-                            ) : null}
-                            <select
-                              value={claimAgent}
-                              onChange={(event) =>
-                                setClaimSelections((current) => ({ ...current, [record.task.id]: event.target.value }))
-                              }
-                            >
-                              {agents.map((agent) => (
-                                <option key={agent.id} value={agent.id}>
-                                  {agent.name}
-                                </option>
-                              ))}
-                            </select>
-                            <Button
-                              tone="secondary"
-                              size="small"
-                              disabled={!claimAgent}
-                              onClick={() => handleTaskAction(() => claimWorkflowTask(record.task.id, claimAgent))}
-                            >
-                              Claim
-                            </Button>
-                            {record.state === 'running' ? (
-                              <Button tone="danger" size="small" onClick={() => handleTaskAction(() => cancelTask(record.task.id))}>
-                                Cancel
-                              </Button>
-                            ) : null}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  <FormGroup label="Team message">
-                    <textarea
-                      value={messageDrafts[run.id] ?? ''}
-                      onChange={(event) => setMessageDrafts((current) => ({ ...current, [run.id]: event.target.value }))}
-                      placeholder="Share a blocker, handoff, or review note..."
-                      rows={2}
-                    />
-                  </FormGroup>
-                  <div className="modal-actions">
-                    <Button tone="secondary" onClick={() => handleSendMessage(run.id)}>
-                      Send message
-                    </Button>
-                  </div>
-                  {run.messages.length > 0 ? (
-                    <div className="task-description">
-                      Latest: {run.messages[run.messages.length - 1]?.content}
+        {activeTab === 'runs' ? (
+          <div className="workflows-section">
+            <h3>Supervisor Runs ({sortedRuns.length})</h3>
+            {sortedRuns.length === 0 ? (
+              <p className="empty-state">No supervisor runs yet. Create a workflow task to start one.</p>
+            ) : (
+              <div className="task-list">
+                {sortedRuns.map((run: SupervisorRun) => (
+                  <div key={run.id} className="task-card">
+                    <div className="task-header">
+                      <span className="task-id">{run.id}</span>
+                      <span className="task-priority">{run.status}</span>
                     </div>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+                    <div className="task-footer">
+                      <span>{run.tasks.length} tasks</span>
+                      <span>Updated {new Date(run.updated_at).toLocaleString()}</span>
+                    </div>
+
+                    <div className="task-list">
+                      {run.tasks.map((record) => {
+                        const claimAgent = claimSelections[record.task.id] ?? record.task.agent_id;
+                        const approvalScope = approvalScopeForState(record.state);
+                        const approvalActorOptions = approvalActorOptionsForRecord(record);
+                        const approvalActorKind =
+                          approvalActorSelections[record.task.id] ?? approvalActorOptions[0] ?? defaultApprovalActorKind(record.state);
+                        const latestDecision = record.approval.decisions[record.approval.decisions.length - 1];
+                        return (
+                          <div key={record.task.id} className="task-card">
+                            <div className="task-header">
+                              <span className="task-id">{record.task.id}</span>
+                              <span className="task-priority">{record.state}</span>
+                            </div>
+                            <div className="task-description">{summarizeTask(record)}</div>
+                            <div className="task-footer">
+                              <span>Role: {record.task.role ?? 'implementer'}</span>
+                              <span>Approval: {record.approval.state}</span>
+                            </div>
+                            {approvalScope ? (
+                              <div className="task-description">
+                                Gate: {approvalScope} · Requested by{' '}
+                                {record.approval.active_request?.requested_by.display_name ?? record.approval.active_request?.requested_by.id ?? 'system'}
+                              </div>
+                            ) : null}
+                            {approvalScope && approvalActorOptions.length > 0 ? (
+                              <div className="task-description">
+                                Allowed approvers: {approvalActorOptions.map(formatApprovalActorLabel).join(', ')}
+                              </div>
+                            ) : null}
+                            {latestDecision ? (
+                              <div className="task-description">
+                                Last decision: {latestDecision.decision} by {latestDecision.actor.display_name ?? latestDecision.actor.id}
+                              </div>
+                            ) : null}
+                            {record.blocked_reasons.length > 0 ? (
+                              <div className="task-description">Blocked by: {record.blocked_reasons.join('; ')}</div>
+                            ) : null}
+                            <div className="task-footer">
+                              <span>
+                                Env: {record.environment.execution_mode} · {record.environment.state}/{record.environment.health}
+                              </span>
+                              <span>Owner: {record.claimed_by ?? record.task.agent_id}</span>
+                            </div>
+                            <div className="modal-actions">
+                              {gatedStates.has(record.state) ? (
+                                <>
+                                  <select
+                                    value={approvalActorKind}
+                                    onChange={(event) =>
+                                      setApprovalActorSelections((current) => ({
+                                        ...current,
+                                        [record.task.id]: event.target.value as ApprovalActorKind,
+                                      }))
+                                    }
+                                  >
+                                    {approvalActorOptions.map((kind) => (
+                                      <option key={kind} value={kind}>
+                                        {formatApprovalActorLabel(kind)}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <Button
+                                    size="small"
+                                    onClick={() =>
+                                      handleTaskAction(() =>
+                                        approveWorkflowTask(
+                                          record.task.id,
+                                          buildApprovalActor(record, approvalActorKind),
+                                          approvalScope ? `Approved ${approvalScope} gate.` : undefined
+                                        )
+                                      )
+                                    }
+                                  >
+                                    Approve
+                                  </Button>
+                                  <Button
+                                    tone="secondary"
+                                    size="small"
+                                    onClick={() =>
+                                      handleTaskAction(() =>
+                                        rejectWorkflowTask(
+                                          record.task.id,
+                                          buildApprovalActor(record, approvalActorKind),
+                                          approvalScope ? `Revision requested for ${approvalScope} gate.` : 'Needs revision'
+                                        )
+                                      )
+                                    }
+                                  >
+                                    Request revision
+                                  </Button>
+                                </>
+                              ) : null}
+                              {retryableStates.has(record.state) ? (
+                                <Button size="small" onClick={() => handleTaskAction(() => retryWorkflowTask(record.task.id))}>
+                                  Retry
+                                </Button>
+                              ) : null}
+                              <Button tone="secondary" size="small" onClick={() => setActiveTab('environments')}>
+                                Open env
+                              </Button>
+                              <select
+                                value={claimAgent}
+                                onChange={(event) =>
+                                  setClaimSelections((current) => ({ ...current, [record.task.id]: event.target.value }))
+                                }
+                              >
+                                {agents.map((agent) => (
+                                  <option key={agent.id} value={agent.id}>
+                                    {agent.name}
+                                  </option>
+                                ))}
+                              </select>
+                              <Button
+                                tone="secondary"
+                                size="small"
+                                disabled={!claimAgent}
+                                onClick={() => handleTaskAction(() => claimWorkflowTask(record.task.id, claimAgent))}
+                              >
+                                Claim
+                              </Button>
+                              {record.state === 'running' ? (
+                                <Button tone="danger" size="small" onClick={() => handleTaskAction(() => cancelTask(record.task.id))}>
+                                  Cancel
+                                </Button>
+                              ) : null}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <FormGroup label="Team message">
+                      <textarea
+                        value={messageDrafts[run.id] ?? ''}
+                        onChange={(event) => setMessageDrafts((current) => ({ ...current, [run.id]: event.target.value }))}
+                        placeholder="Share a blocker, handoff, or review note..."
+                        rows={2}
+                      />
+                    </FormGroup>
+                    <div className="modal-actions">
+                      <Button tone="secondary" onClick={() => handleSendMessage(run.id)}>
+                        Send message
+                      </Button>
+                    </div>
+                    {run.messages.length > 0 ? (
+                      <div className="task-description">Latest: {run.messages[run.messages.length - 1]?.content}</div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="workflows-section">
+            <h3>Execution Environments ({sortedEnvironments.length})</h3>
+            {sortedEnvironments.length === 0 ? (
+              <p className="empty-state">No persisted environments yet.</p>
+            ) : (
+              <div className="task-list">
+                {sortedEnvironments.map((environment: EnvironmentRecord) => (
+                  <div key={environment.id} className="task-card">
+                    <div className="task-header">
+                      <span className="task-id">{environment.id}</span>
+                      <span className="task-priority">{environment.state}</span>
+                    </div>
+                    <div className="task-footer">
+                      <span>{environment.spec.execution_mode}</span>
+                      <span>{environment.health}</span>
+                    </div>
+                    <div className="task-description">Path: {environment.prepared_path}</div>
+                    <div className="task-footer">
+                      <span>Run: {environment.spec.run_id}</span>
+                      <span>Task: {environment.spec.task_id}</span>
+                    </div>
+                    {environment.recovery_action ? (
+                      <div className="task-description">
+                        Recovery: {environment.recovery_status} · {environment.recovery_action}
+                      </div>
+                    ) : null}
+                    {environment.failure ? (
+                      <div className="task-description">Failure: {environment.failure.message}</div>
+                    ) : null}
+                    {environment.cleanup_result ? (
+                      <div className="task-description">Cleanup: {environment.cleanup_result.summary}</div>
+                    ) : null}
+                    <div className="modal-actions">
+                      <Button
+                        size="small"
+                        onClick={() => handleEnvironmentAction(() => retryWorkflowEnvironment(environment.id).then(() => undefined))}
+                      >
+                        Retry prep
+                      </Button>
+                      <Button
+                        tone="secondary"
+                        size="small"
+                        onClick={() => handleEnvironmentAction(() => cleanupWorkflowEnvironment(environment.id, true).then(() => undefined))}
+                      >
+                        Cleanup
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {showNewTask ? (

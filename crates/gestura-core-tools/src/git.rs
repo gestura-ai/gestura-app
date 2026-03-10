@@ -97,6 +97,21 @@ pub struct BranchInfo {
     pub upstream: Option<String>,
 }
 
+/// Information about a git worktree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitWorktreeInfo {
+    /// Filesystem path of the worktree.
+    pub path: PathBuf,
+    /// Branch name associated with the worktree, when attached.
+    pub branch: Option<String>,
+    /// HEAD commit for the worktree.
+    pub head: Option<String>,
+    /// Whether the worktree is bare.
+    pub is_bare: bool,
+    /// Whether the worktree is detached.
+    pub is_detached: bool,
+}
+
 /// Git operations service
 pub struct GitTools {
     work_dir: Option<PathBuf>,
@@ -120,8 +135,12 @@ impl GitTools {
     }
 
     fn run_git(&self, args: &[&str]) -> Result<String> {
+        self.run_git_in(self.work_dir.as_deref(), args)
+    }
+
+    fn run_git_in(&self, dir: Option<&Path>, args: &[&str]) -> Result<String> {
         let mut cmd = Command::new("git");
-        if let Some(ref dir) = self.work_dir {
+        if let Some(dir) = dir {
             cmd.current_dir(dir);
         }
         cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -135,6 +154,113 @@ impl GitTools {
                 String::from_utf8_lossy(&output.stderr).to_string(),
             )))
         }
+    }
+
+    fn run_git_status_only(&self, dir: Option<&Path>, args: &[&str]) -> Result<bool> {
+        let mut cmd = Command::new("git");
+        if let Some(dir) = dir {
+            cmd.current_dir(dir);
+        }
+        let status = cmd.args(args).status().map_err(AppError::Io)?;
+        Ok(status.success())
+    }
+
+    /// Resolve the repository top-level path.
+    pub fn rev_parse_toplevel(&self) -> Result<PathBuf> {
+        self.run_git(&["rev-parse", "--show-toplevel"])
+            .map(PathBuf::from)
+    }
+
+    /// Return the current branch name.
+    pub fn current_branch(&self) -> Result<String> {
+        self.run_git(&["branch", "--show-current"])
+    }
+
+    /// Check whether a local branch exists.
+    pub fn branch_exists(&self, branch: &str) -> Result<bool> {
+        self.run_git_status_only(
+            self.work_dir.as_deref(),
+            &[
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
+        )
+    }
+
+    /// Check whether the current working directory is inside a git repository.
+    pub fn path_is_git_repo(&self) -> Result<bool> {
+        self.run_git_status_only(
+            self.work_dir.as_deref(),
+            &["rev-parse", "--is-inside-work-tree"],
+        )
+    }
+
+    /// List all worktrees for the repository.
+    pub fn worktree_list(&self) -> Result<Vec<GitWorktreeInfo>> {
+        let output = self.run_git(&["worktree", "list", "--porcelain"])?;
+        parse_worktree_list(&output)
+    }
+
+    /// Create a worktree for an existing or new branch.
+    pub fn worktree_add(
+        &self,
+        path: &Path,
+        branch: &str,
+        base_branch: &str,
+        create_branch: bool,
+    ) -> Result<GitWorktreeInfo> {
+        let path_str = path.to_string_lossy().to_string();
+        let branch_exists = self.branch_exists(branch)?;
+
+        let mut args: Vec<&str> = vec!["worktree", "add"];
+        if create_branch && !branch_exists {
+            args.push("-b");
+            args.push(branch);
+            args.push(&path_str);
+            args.push(base_branch);
+        } else {
+            args.push(&path_str);
+            args.push(branch);
+        }
+
+        self.run_git(&args)?;
+        let desired_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        self.worktree_list()?
+            .into_iter()
+            .find(|info| {
+                info.path == desired_path
+                    || info.path.canonicalize().ok().as_ref() == Some(&desired_path)
+            })
+            .ok_or_else(|| {
+                AppError::Io(std::io::Error::other(
+                    "Created worktree was not discoverable",
+                ))
+            })
+    }
+
+    /// Remove a worktree path.
+    pub fn worktree_remove(&self, path: &Path, force: bool) -> Result<()> {
+        let path_str = path.to_string_lossy().to_string();
+        if force {
+            self.run_git(&["worktree", "remove", "--force", &path_str])?;
+        } else {
+            self.run_git(&["worktree", "remove", &path_str])?;
+        }
+        Ok(())
+    }
+
+    /// Prune stale worktree metadata.
+    pub fn worktree_prune(&self) -> Result<()> {
+        self.run_git(&["worktree", "prune"])?;
+        Ok(())
+    }
+
+    /// Check whether a worktree has uncommitted changes.
+    pub fn is_worktree_clean(&self, path: &Path) -> Result<bool> {
+        let status = self.run_git_in(Some(path), &["status", "--porcelain"])?;
+        Ok(status.trim().is_empty())
     }
 
     /// Get repository status
@@ -333,9 +459,105 @@ fn parse_status(c: char) -> ChangeStatus {
     }
 }
 
+fn parse_worktree_list(output: &str) -> Result<Vec<GitWorktreeInfo>> {
+    let mut worktrees = Vec::new();
+    let mut current_path: Option<PathBuf> = None;
+    let mut current_branch: Option<String> = None;
+    let mut current_head: Option<String> = None;
+    let mut is_bare = false;
+    let mut is_detached = false;
+
+    let flush = |worktrees: &mut Vec<GitWorktreeInfo>,
+                 current_path: &mut Option<PathBuf>,
+                 current_branch: &mut Option<String>,
+                 current_head: &mut Option<String>,
+                 is_bare: &mut bool,
+                 is_detached: &mut bool| {
+        if let Some(path) = current_path.take() {
+            worktrees.push(GitWorktreeInfo {
+                path,
+                branch: current_branch.take(),
+                head: current_head.take(),
+                is_bare: *is_bare,
+                is_detached: *is_detached,
+            });
+        }
+        *is_bare = false;
+        *is_detached = false;
+    };
+
+    for line in output.lines() {
+        if line.trim().is_empty() {
+            flush(
+                &mut worktrees,
+                &mut current_path,
+                &mut current_branch,
+                &mut current_head,
+                &mut is_bare,
+                &mut is_detached,
+            );
+            continue;
+        }
+
+        if let Some(value) = line.strip_prefix("worktree ") {
+            flush(
+                &mut worktrees,
+                &mut current_path,
+                &mut current_branch,
+                &mut current_head,
+                &mut is_bare,
+                &mut is_detached,
+            );
+            current_path = Some(PathBuf::from(value.trim()));
+        } else if let Some(value) = line.strip_prefix("HEAD ") {
+            current_head = Some(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("branch refs/heads/") {
+            current_branch = Some(value.trim().to_string());
+        } else if line.trim() == "bare" {
+            is_bare = true;
+        } else if line.trim() == "detached" {
+            is_detached = true;
+        }
+    }
+
+    flush(
+        &mut worktrees,
+        &mut current_path,
+        &mut current_branch,
+        &mut current_head,
+        &mut is_bare,
+        &mut is_detached,
+    );
+
+    if worktrees.is_empty() && !output.trim().is_empty() {
+        return Err(AppError::Io(std::io::Error::other(
+            "Failed to parse git worktree list output",
+        )));
+    }
+
+    Ok(worktrees)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn init_test_repo() -> tempfile::TempDir {
+        let temp = tempdir().unwrap();
+        let repo = temp.path();
+
+        let git = GitTools::new(Some(repo.to_path_buf()));
+        git.run_git(&["init", "-b", "main"]).unwrap();
+        git.run_git(&["config", "user.email", "test@example.com"])
+            .unwrap();
+        git.run_git(&["config", "user.name", "Test User"]).unwrap();
+        fs::write(repo.join("README.md"), "hello\n").unwrap();
+        git.run_git(&["add", "README.md"]).unwrap();
+        git.run_git(&["commit", "-m", "initial"]).unwrap();
+        temp
+    }
 
     #[test]
     fn test_parse_status() {
@@ -387,5 +609,47 @@ mod tests {
         let branches = branches.unwrap();
         // Should have at least one branch
         assert!(!branches.is_empty());
+    }
+
+    #[test]
+    fn test_parse_worktree_list() {
+        let parsed = parse_worktree_list(
+            "worktree /tmp/repo\nHEAD abc123\nbranch refs/heads/main\n\nworktree /tmp/repo-feature\nHEAD def456\nbranch refs/heads/feature\n\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].branch.as_deref(), Some("main"));
+        assert_eq!(parsed[1].branch.as_deref(), Some("feature"));
+    }
+
+    #[test]
+    fn test_worktree_lifecycle() {
+        let temp = init_test_repo();
+        let worktree_parent = tempdir().unwrap();
+        let repo = temp.path();
+        let tools = GitTools::new(Some(repo.to_path_buf()));
+        let worktree_path = worktree_parent.path().join("feature-worktree");
+
+        let info = tools
+            .worktree_add(&worktree_path, "gestura/test-feature", "main", true)
+            .unwrap();
+        let normalized_worktree_path = worktree_path.canonicalize().unwrap();
+        assert_eq!(info.path, normalized_worktree_path);
+        assert_eq!(info.branch.as_deref(), Some("gestura/test-feature"));
+        assert!(
+            tools
+                .worktree_list()
+                .unwrap()
+                .iter()
+                .any(|entry| entry.path == normalized_worktree_path)
+        );
+        assert!(tools.is_worktree_clean(&worktree_path).unwrap());
+
+        fs::write(worktree_path.join("README.md"), "changed\n").unwrap();
+        assert!(!tools.is_worktree_clean(&worktree_path).unwrap());
+
+        tools.worktree_remove(&worktree_path, true).unwrap();
+        tools.worktree_prune().unwrap();
+        assert!(!worktree_path.exists());
     }
 }

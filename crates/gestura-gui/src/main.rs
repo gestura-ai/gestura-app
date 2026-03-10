@@ -209,6 +209,11 @@ async fn main() {
             gestura_gui::api::claim_workflow_task,
             gestura_gui::api::send_workflow_message,
             gestura_gui::api::list_workflow_messages,
+            gestura_gui::api::list_workflow_environments,
+            gestura_gui::api::get_workflow_environment,
+            gestura_gui::api::retry_workflow_environment,
+            gestura_gui::api::cleanup_workflow_environment,
+            gestura_gui::api::reconcile_workflow_state,
             // Audio device management commands
             gestura_gui::api::list_audio_devices,
             gestura_gui::api::check_microphone_available,

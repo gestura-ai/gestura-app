@@ -8,42 +8,40 @@
 //! - Adapters (GUI/CLI) may attach observers to emit UI events, but must not re-implement
 //!   orchestration logic.
 
+mod approval;
+mod environment;
+mod persistence;
+mod recovery;
+
 use crate::tasks::{TaskBackgroundJob, TaskBackgroundStatus};
 use crate::tools::PermissionManager;
-use crate::{AgentPipeline, AgentRequest, AppConfig, RequestSource};
+use crate::{AgentPipeline, AgentRequest, AppConfig, RequestSource, SessionWorkspace};
 use crate::{MemoryBankEntry, MemoryScope, MemoryType};
 use crate::{TaskManager, TaskStatus};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{Mutex, RwLock, mpsc};
 use uuid::Uuid;
 
+use self::persistence::{
+    load_persisted_environment_by_id, load_persisted_environments, load_persisted_run_by_id,
+    load_persisted_runs, persist_environment_to_disk, persist_run_to_disk,
+};
+
 // Re-export shared task types for convenience and adapter compatibility.
+pub use self::approval::{
+    ApprovalActor, ApprovalActorKind, ApprovalDecision, ApprovalDecisionKind, ApprovalPolicy,
+    ApprovalRequest, ApprovalRequirement, ApprovalScope, ApprovalState, TaskApprovalRecord,
+    actor_kind_for_agent_role, default_actor_kind_for_scope,
+};
 pub use crate::agents::{
     AgentExecutionMode, AgentInfo, AgentRole, AgentSpawnRequest, AgentSpawner, DelegatedTask,
     DelegationBrief, OrchestratorToolCall, RemoteAgentTarget, TaskArtifactRecord, TaskResult,
 };
-
-/// Approval state tracked by the supervisor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalState {
-    /// No explicit approval step is required.
-    NotRequired,
-    /// Waiting for a human or supervisor decision.
-    Pending,
-    /// Approved to proceed or complete.
-    Approved,
-    /// Rejected and should not proceed.
-    Rejected,
-    /// Revision requested before retrying.
-    NeedsRevision,
-}
 
 /// Execution state for a task managed by the supervisor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +83,240 @@ pub enum SupervisorRunStatus {
     Failed,
     /// Run was cancelled.
     Cancelled,
+}
+
+/// Durable environment lifecycle state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentState {
+    /// Environment has been requested but not provisioned yet.
+    #[default]
+    Requested,
+    /// Environment resources are being provisioned.
+    Provisioning,
+    /// Environment is ready to be used.
+    Ready,
+    /// Environment is actively leased to a running task.
+    InUse,
+    /// Environment is queued for cleanup.
+    CleanupQueued,
+    /// Cleanup is running.
+    Cleaning,
+    /// Environment was archived/retained for inspection.
+    Archived,
+    /// Environment was removed.
+    Removed,
+    /// Environment is being reconciled after restart or drift.
+    Recovering,
+    /// Environment entered a failed state.
+    Failed,
+}
+
+/// Health assessment for an environment on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentHealth {
+    /// Environment is clean and matches expectations.
+    Clean,
+    /// Environment exists but has uncommitted/unexpected changes.
+    Dirty,
+    /// Environment path is missing.
+    Missing,
+    /// Environment path exists but no longer matches the expected shape.
+    Drifted,
+    /// Environment no longer belongs to an active run/task.
+    Orphaned,
+    /// Health has not yet been verified.
+    #[default]
+    Unknown,
+}
+
+/// Cleanup behavior for an execution environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupPolicy {
+    /// Always keep the environment.
+    #[default]
+    KeepAlways,
+    /// Remove on success.
+    RemoveOnSuccess,
+    /// Archive on failure.
+    ArchiveOnFailure,
+    /// Always archive.
+    ArchiveAlways,
+    /// Remove when clean, archive otherwise.
+    RemoveWhenCleanOtherwiseArchive,
+}
+
+/// Resulting cleanup action for an environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupDisposition {
+    /// The environment was kept in place.
+    Kept,
+    /// The environment was archived/retained.
+    Archived,
+    /// The environment was removed from disk.
+    Removed,
+}
+
+/// Cleanup result for an environment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CleanupResult {
+    /// Final cleanup action performed.
+    pub disposition: CleanupDisposition,
+    /// Completion time of cleanup.
+    pub completed_at: DateTime<Utc>,
+    /// Retained path when the environment was preserved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_path: Option<PathBuf>,
+    /// Human-readable cleanup summary.
+    pub summary: String,
+}
+
+/// Recovery status for an environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryStatus {
+    /// No recovery action is required.
+    #[default]
+    NotRequired,
+    /// Recovery action is pending.
+    Pending,
+    /// Recovery has reconciled the environment.
+    Reconciled,
+    /// Manual/operator intervention is required.
+    NeedsOperatorAction,
+    /// Recovery itself failed.
+    Failed,
+}
+
+/// Recommended recovery action for an environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryAction {
+    /// Nothing to do.
+    Noop,
+    /// Recreate the missing environment.
+    RecreateMissingEnvironment,
+    /// Release a stale execution lease.
+    ReleaseStaleLease,
+    /// Archive a dirty environment for inspection.
+    ArchiveDirtyEnvironment,
+    /// Queue environment cleanup.
+    QueueCleanup,
+    /// Block the owning task and surface the issue.
+    MarkTaskBlocked,
+}
+
+/// Kind of failure observed while managing an environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentFailureKind {
+    WorkspaceNotFound,
+    PathOutsideWorkspace,
+    NotGitRepository,
+    GitCommandFailed,
+    WorktreeAlreadyExists,
+    WorktreeCreationFailed,
+    WorktreeInvalid,
+    WorktreeDirty,
+    CleanupDenied,
+    LeaseConflict,
+    PersistenceError,
+    RecoveryError,
+}
+
+/// Structured failure details for environment operations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvironmentFailure {
+    /// Failure kind.
+    pub kind: EnvironmentFailureKind,
+    /// Human-readable message.
+    pub message: String,
+    /// Command associated with the failure, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Stderr associated with the failure, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr: Option<String>,
+    /// Time the failure occurred.
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// Lease type held on an environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentLeaseKind {
+    /// Lease for task execution.
+    Execution,
+    /// Lease held during recovery.
+    Recovery,
+    /// Lease held during cleanup.
+    Cleanup,
+}
+
+/// Active or historical environment lease.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvironmentLease {
+    /// Owning task id.
+    pub task_id: String,
+    /// Owning agent id.
+    pub agent_id: String,
+    /// Lease kind.
+    pub lease_kind: EnvironmentLeaseKind,
+    /// Acquisition timestamp.
+    pub acquired_at: DateTime<Utc>,
+    /// Release timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released_at: Option<DateTime<Utc>>,
+}
+
+/// Git worktree provisioning details.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitWorktreeSpec {
+    /// Repository root used for git operations.
+    pub repo_root: PathBuf,
+    /// Base branch used to seed the worktree branch.
+    pub base_branch: String,
+    /// Generated worktree branch name.
+    pub worktree_branch: String,
+    /// Filesystem path of the worktree.
+    pub worktree_path: PathBuf,
+    /// Whether branch creation is allowed when missing.
+    pub create_branch_if_missing: bool,
+}
+
+/// Durable specification for an execution environment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvironmentSpec {
+    /// Environment id.
+    pub id: String,
+    /// Execution mode requested by the task.
+    pub execution_mode: AgentExecutionMode,
+    /// Workspace root associated with the environment.
+    pub workspace_root: PathBuf,
+    /// Concrete prepared path used for execution.
+    pub prepared_path: PathBuf,
+    /// Owning session id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Owning run id.
+    pub run_id: String,
+    /// Owning task id.
+    pub task_id: String,
+    /// Owning agent id.
+    pub agent_id: String,
+    /// Cleanup policy.
+    pub cleanup_policy: CleanupPolicy,
+    /// Whether writes are allowed.
+    pub write_access: bool,
+    /// Git worktree details when using worktree mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_worktree: Option<GitWorktreeSpec>,
+    /// Remote target URL when this is a remote execution surface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_url: Option<String>,
 }
 
 /// Structured team-message category.
@@ -172,46 +404,94 @@ pub struct ExecutionEnvironment {
     /// Optional remote URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_url: Option<String>,
+    /// Durable environment lifecycle state.
+    #[serde(default)]
+    pub state: EnvironmentState,
+    /// Current environment health.
+    #[serde(default)]
+    pub health: EnvironmentHealth,
+    /// Cleanup behavior for the environment.
+    #[serde(default)]
+    pub cleanup_policy: CleanupPolicy,
+    /// Recovery status for the environment.
+    #[serde(default)]
+    pub recovery_status: RecoveryStatus,
+    /// Recommended recovery action when intervention is required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_action: Option<RecoveryAction>,
+    /// Latest structured failure details.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<EnvironmentFailure>,
+    /// Last cleanup result if cleanup has occurred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_result: Option<CleanupResult>,
 }
 
-/// Approval details tracked per task.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskApprovalRecord {
-    /// Current approval state.
-    pub state: ApprovalState,
-    /// When approval was requested.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_at: Option<DateTime<Utc>>,
-    /// When a decision was made.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub decided_at: Option<DateTime<Utc>>,
-    /// Actor that made the decision.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub decided_by: Option<String>,
-    /// Optional explanatory note.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
-}
-
-impl TaskApprovalRecord {
-    fn not_required() -> Self {
+impl ExecutionEnvironment {
+    fn from_record(record: &EnvironmentRecord) -> Self {
+        let git_worktree = record.spec.git_worktree.as_ref();
         Self {
-            state: ApprovalState::NotRequired,
-            requested_at: None,
-            decided_at: None,
-            decided_by: None,
-            note: None,
+            id: record.id.clone(),
+            execution_mode: record.spec.execution_mode.clone(),
+            root_dir: record.prepared_path.clone(),
+            write_access: record.spec.write_access,
+            branch_name: git_worktree.map(|spec| spec.worktree_branch.clone()),
+            worktree_path: git_worktree.map(|spec| spec.worktree_path.clone()),
+            remote_url: record.spec.remote_url.clone(),
+            state: record.state,
+            health: record.health,
+            cleanup_policy: record.spec.cleanup_policy,
+            recovery_status: record.recovery_status,
+            recovery_action: record.recovery_action,
+            failure: record.failure.clone(),
+            cleanup_result: record.cleanup_result.clone(),
         }
     }
+}
 
-    fn pending() -> Self {
-        Self {
-            state: ApprovalState::Pending,
-            requested_at: Some(Utc::now()),
-            decided_at: None,
-            decided_by: None,
-            note: None,
-        }
+/// Durable persisted record for an execution environment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvironmentRecord {
+    /// Stable environment identifier.
+    pub id: String,
+    /// Durable environment specification.
+    pub spec: EnvironmentSpec,
+    /// Current lifecycle state.
+    pub state: EnvironmentState,
+    /// Current health assessment.
+    pub health: EnvironmentHealth,
+    /// Prepared execution path.
+    pub prepared_path: PathBuf,
+    /// Optional active or historical lease.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease: Option<EnvironmentLease>,
+    /// Optional cleanup result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_result: Option<CleanupResult>,
+    /// Recovery status.
+    #[serde(default)]
+    pub recovery_status: RecoveryStatus,
+    /// Recommended recovery action, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_action: Option<RecoveryAction>,
+    /// Latest failure details.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<EnvironmentFailure>,
+    /// Creation time.
+    pub created_at: DateTime<Utc>,
+    /// Last update time.
+    pub updated_at: DateTime<Utc>,
+    /// Last verification time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_verified_at: Option<DateTime<Utc>>,
+    /// Additional environment metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+impl EnvironmentRecord {
+    fn summary(&self) -> ExecutionEnvironment {
+        ExecutionEnvironment::from_record(self)
     }
 }
 
@@ -224,6 +504,9 @@ pub struct SupervisorTaskRecord {
     pub state: SupervisorTaskState,
     /// Approval tracking for the task.
     pub approval: TaskApprovalRecord,
+    /// Stable execution environment id.
+    #[serde(default)]
+    pub environment_id: String,
     /// Prepared execution environment.
     pub environment: ExecutionEnvironment,
     /// Agent that currently claims or owns the work.
@@ -320,6 +603,21 @@ pub trait OrchestratorObserver: Send + Sync {
 
     /// Called when a team message is recorded.
     async fn on_team_message(&self, _message: TeamMessage) {}
+
+    /// Called when an environment record changes.
+    async fn on_environment_updated(&self, _environment: EnvironmentRecord) {}
+
+    /// Called when an environment recovery action is recorded.
+    async fn on_environment_recovery(
+        &self,
+        _environment_id: String,
+        _action: RecoveryAction,
+        _summary: String,
+    ) {
+    }
+
+    /// Called when environment cleanup completes.
+    async fn on_environment_cleanup(&self, _environment_id: String, _result: CleanupResult) {}
 }
 
 /// Orchestrator for coordinating subagents and delegated task execution.
@@ -332,6 +630,7 @@ pub struct AgentOrchestrator<M: OrchestratorAgentManager> {
     permission_manager: Arc<PermissionManager>,
     active_tasks: Arc<Mutex<HashMap<String, DelegatedTask>>>,
     supervisor_runs: Arc<Mutex<HashMap<String, SupervisorRun>>>,
+    environments: Arc<Mutex<HashMap<String, EnvironmentRecord>>>,
     task_run_index: Arc<Mutex<HashMap<String, String>>>,
     result_tx: mpsc::Sender<TaskResult>,
     result_rx: Arc<Mutex<mpsc::Receiver<TaskResult>>>,
@@ -343,19 +642,31 @@ pub struct AgentOrchestrator<M: OrchestratorAgentManager> {
 impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
     /// Create a new orchestrator with the given agent manager and application config.
     pub fn new(agent_manager: M, config: AppConfig) -> Self {
+        Self::new_with_workspace_root(agent_manager, config, std::env::current_dir().ok())
+    }
+
+    /// Create a new orchestrator with an explicit workspace root for persisted state.
+    pub fn new_with_workspace_root(
+        agent_manager: M,
+        config: AppConfig,
+        default_workspace_dir: Option<PathBuf>,
+    ) -> Self {
         let (result_tx, result_rx) = mpsc::channel(100);
-        Self {
+        let orchestrator = Self {
             agent_manager,
             permission_manager: Arc::new(PermissionManager::new()),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
             supervisor_runs: Arc::new(Mutex::new(HashMap::new())),
+            environments: Arc::new(Mutex::new(HashMap::new())),
             task_run_index: Arc::new(Mutex::new(HashMap::new())),
             result_tx,
             result_rx: Arc::new(Mutex::new(result_rx)),
             config,
             observer: Arc::new(RwLock::new(None)),
-            default_workspace_dir: std::env::current_dir().ok(),
-        }
+            default_workspace_dir,
+        };
+        orchestrator.bootstrap_persisted_state();
+        orchestrator
     }
 
     /// Attach an observer used for adapter-side event emission.
@@ -439,8 +750,9 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             }
         }
 
-        let environment = self.prepare_environment(&task)?;
-        task.environment_id = Some(environment.id.clone());
+        let environment_record = self.prepare_environment(&task).await?;
+        let environment = environment_record.summary();
+        task.environment_id = Some(environment_record.id.clone());
         self.ensure_tracking_task(&mut task).await;
 
         let run_id = task
@@ -479,11 +791,24 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
 
             let blocked_reasons = unresolved_dependency_reasons(run, &task);
             let approval = if task.approval_required {
-                TaskApprovalRecord::pending()
+                TaskApprovalRecord::pending(
+                    &task,
+                    ApprovalScope::PreExecution,
+                    ApprovalActor::system("orchestrator"),
+                    Some("Task submitted. Awaiting explicit pre-execution approval.".to_string()),
+                )
             } else {
-                TaskApprovalRecord::not_required()
+                TaskApprovalRecord::not_required(&task)
             };
-            let state = if task.approval_required {
+            let mut blocked_reasons = blocked_reasons;
+            if matches!(environment.state, EnvironmentState::Failed)
+                && let Some(failure) = &environment.failure
+            {
+                blocked_reasons.push(failure.message.clone());
+            }
+            let state = if matches!(environment.state, EnvironmentState::Failed) {
+                SupervisorTaskState::Blocked
+            } else if task.approval_required {
                 SupervisorTaskState::PendingApproval
             } else if blocked_reasons.is_empty() {
                 SupervisorTaskState::Queued
@@ -496,6 +821,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 task: task.clone(),
                 state,
                 approval,
+                environment_id: environment_record.id.clone(),
                 environment,
                 claimed_by: Some(task.agent_id.clone()),
                 attempts: 0,
@@ -613,7 +939,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
     pub async fn approve_task(
         &self,
         task_id: &str,
-        decided_by: Option<String>,
+        actor: ApprovalActor,
         note: Option<String>,
     ) -> Result<(), String> {
         let run_id = self
@@ -625,7 +951,8 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             .ok_or_else(|| format!("Task '{}' not found", task_id))?;
 
         let mut queued_to_start = None;
-        let run_snapshot = {
+        let mut completion_environment_id = None;
+        let (mut run_snapshot, approval_message) = {
             let mut runs = self.supervisor_runs.lock().await;
             let run = runs
                 .get_mut(&run_id)
@@ -641,10 +968,28 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 .find(|record| record.task.id == task_id)
                 .ok_or_else(|| format!("Task '{}' not found in run", task_id))?;
 
-            record.approval.state = ApprovalState::Approved;
-            record.approval.decided_at = Some(Utc::now());
-            record.approval.decided_by = decided_by;
-            record.approval.note = note;
+            let scope = approval_scope_for_state(record.state).ok_or_else(|| {
+                format!(
+                    "Task '{}' is not waiting for approval or gate completion",
+                    task_id
+                )
+            })?;
+
+            let decision = record.approval.record_decision(
+                scope,
+                ApprovalDecisionKind::Approved,
+                actor,
+                note,
+            )?;
+            let approval_message = TeamMessage::new(
+                run.id.clone(),
+                Some(record.task.id.clone()),
+                TeamMessageKind::ApprovalDecision,
+                Some(decision.actor.id.clone()),
+                Some(record.task.agent_id.clone()),
+                format_approval_decision_message(&decision),
+            );
+
             record.updated_at = Utc::now();
 
             match record.state {
@@ -662,17 +1007,21 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 SupervisorTaskState::ReviewPending => {
                     if record.task.test_required {
                         record.state = SupervisorTaskState::TestPending;
-                        record.approval = TaskApprovalRecord::pending();
-                        record.approval.note =
-                            Some("Review approved. Awaiting explicit test validation.".to_string());
+                        record.approval.request(
+                            ApprovalScope::TestValidation,
+                            ApprovalActor::system("orchestrator"),
+                            Some("Review approved. Awaiting explicit test validation.".to_string()),
+                        );
                     } else {
                         record.state = SupervisorTaskState::Completed;
                         record.completed_at = Some(Utc::now());
+                        completion_environment_id = Some(record.environment_id.clone());
                     }
                 }
                 SupervisorTaskState::TestPending => {
                     record.state = SupervisorTaskState::Completed;
                     record.completed_at = Some(Utc::now());
+                    completion_environment_id = Some(record.environment_id.clone());
                 }
                 _ => {
                     return Err(format!(
@@ -682,13 +1031,30 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 }
             }
 
+            record.messages.push(approval_message.clone());
+            run.messages.push(approval_message.clone());
+
             run.updated_at = Utc::now();
             run.status = recalculate_run_status(run);
-            run.clone()
+            (run.clone(), Some(approval_message))
         };
+
+        if let Some(environment_id) = completion_environment_id
+            && let Some(environment) = self
+                .finalize_environment_for_task(&environment_id, true, false)
+                .await?
+        {
+            self.update_environment_in_runs(&environment).await?;
+            if let Some(run) = self.supervisor_runs.lock().await.get(&run_id).cloned() {
+                run_snapshot = run;
+            }
+        }
 
         self.persist_run(&run_snapshot)?;
         self.notify_run_updated(run_snapshot).await;
+        if let Some(message) = approval_message {
+            self.notify_team_message(message).await;
+        }
 
         if let Some(task) = queued_to_start {
             self.start_task_execution(task).await?;
@@ -701,7 +1067,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
     pub async fn reject_task(
         &self,
         task_id: &str,
-        decided_by: Option<String>,
+        actor: ApprovalActor,
         note: Option<String>,
     ) -> Result<(), String> {
         let run_id = self
@@ -712,7 +1078,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             .cloned()
             .ok_or_else(|| format!("Task '{}' not found", task_id))?;
 
-        let run_snapshot = {
+        let (mut run_snapshot, approval_message) = {
             let mut runs = self.supervisor_runs.lock().await;
             let run = runs
                 .get_mut(&run_id)
@@ -723,19 +1089,55 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 .find(|record| record.task.id == task_id)
                 .ok_or_else(|| format!("Task '{}' not found in run", task_id))?;
 
-            record.approval.state = ApprovalState::NeedsRevision;
-            record.approval.decided_at = Some(Utc::now());
-            record.approval.decided_by = decided_by;
-            record.approval.note = note;
+            let scope = approval_scope_for_state(record.state).ok_or_else(|| {
+                format!(
+                    "Task '{}' is not waiting for approval or gate completion",
+                    task_id
+                )
+            })?;
+            let decision = record.approval.record_decision(
+                scope,
+                ApprovalDecisionKind::NeedsRevision,
+                actor,
+                note,
+            )?;
+            let approval_message = TeamMessage::new(
+                run.id.clone(),
+                Some(record.task.id.clone()),
+                TeamMessageKind::ApprovalDecision,
+                Some(decision.actor.id.clone()),
+                Some(record.task.agent_id.clone()),
+                format_approval_decision_message(&decision),
+            );
             record.state = SupervisorTaskState::Failed;
             record.updated_at = Utc::now();
+            record.messages.push(approval_message.clone());
+            run.messages.push(approval_message.clone());
             run.updated_at = Utc::now();
             run.status = recalculate_run_status(run);
-            run.clone()
+            (run.clone(), Some(approval_message))
         };
+
+        if let Some(environment_id) = run_snapshot
+            .tasks
+            .iter()
+            .find(|record| record.task.id == task_id)
+            .map(|record| record.environment_id.clone())
+            && let Some(environment) = self
+                .finalize_environment_for_task(&environment_id, false, true)
+                .await?
+        {
+            self.update_environment_in_runs(&environment).await?;
+            if let Some(run) = self.supervisor_runs.lock().await.get(&run_id).cloned() {
+                run_snapshot = run;
+            }
+        }
 
         self.persist_run(&run_snapshot)?;
         self.notify_run_updated(run_snapshot).await;
+        if let Some(message) = approval_message {
+            self.notify_team_message(message).await;
+        }
         Ok(())
     }
 
@@ -750,7 +1152,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             .ok_or_else(|| format!("Task '{}' not found", task_id))?;
 
         let mut queued_to_start = None;
-        let run_snapshot = {
+        let (mut run_snapshot, environment_id) = {
             let mut runs = self.supervisor_runs.lock().await;
             let run = runs
                 .get_mut(&run_id)
@@ -783,11 +1185,19 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             record.completed_at = None;
             record.started_at = None;
             record.updated_at = Utc::now();
+            record.blocked_reasons.clear();
+            let environment_id = record.environment_id.clone();
 
             if record.task.approval_required {
                 record.state = SupervisorTaskState::PendingApproval;
-                record.approval = TaskApprovalRecord::pending();
+                record.approval.reset_for_task(&record.task);
+                record.approval.request(
+                    ApprovalScope::PreExecution,
+                    ApprovalActor::system("orchestrator"),
+                    Some("Task retried. Awaiting explicit pre-execution approval.".to_string()),
+                );
             } else {
+                record.approval.reset_for_task(&record.task);
                 let blocked = dependency_reasons_from_states(&dependency_states, &record.task);
                 if blocked.is_empty() {
                     record.state = SupervisorTaskState::Queued;
@@ -801,8 +1211,34 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
 
             run.updated_at = Utc::now();
             run.status = recalculate_run_status(run);
-            run.clone()
+            (run.clone(), environment_id)
         };
+
+        let environment = self.retry_environment_preparation(&environment_id).await?;
+        self.update_environment_in_runs(&environment).await?;
+        if matches!(environment.state, EnvironmentState::Failed) {
+            let mut runs = self.supervisor_runs.lock().await;
+            if let Some(run) = runs.get_mut(&run_id)
+                && let Some(record) = run
+                    .tasks
+                    .iter_mut()
+                    .find(|record| record.task.id == task_id)
+            {
+                record.state = SupervisorTaskState::Blocked;
+                record.environment = environment.summary();
+                record.blocked_reasons = environment
+                    .failure
+                    .as_ref()
+                    .map(|failure| vec![failure.message.clone()])
+                    .unwrap_or_default();
+                run.updated_at = Utc::now();
+                run.status = recalculate_run_status(run);
+                run_snapshot = run.clone();
+                queued_to_start = None;
+            }
+        } else if let Some(run) = self.supervisor_runs.lock().await.get(&run_id).cloned() {
+            run_snapshot = run;
+        }
 
         self.persist_run(&run_snapshot)?;
         self.notify_run_updated(run_snapshot).await;
@@ -911,7 +1347,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 .await;
 
             if let Some(run_id) = self.task_run_index.lock().await.get(task_id).cloned() {
-                let run_snapshot = {
+                let mut run_snapshot = {
                     let mut runs = self.supervisor_runs.lock().await;
                     let run = runs
                         .get_mut(&run_id)
@@ -929,6 +1365,20 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                     run.status = recalculate_run_status(run);
                     run.clone()
                 };
+                if let Some(environment_id) = run_snapshot
+                    .tasks
+                    .iter()
+                    .find(|record| record.task.id == task_id)
+                    .map(|record| record.environment_id.clone())
+                    && let Some(environment) = self
+                        .finalize_environment_for_task(&environment_id, false, true)
+                        .await?
+                {
+                    self.update_environment_in_runs(&environment).await?;
+                    if let Some(run) = self.supervisor_runs.lock().await.get(&run_id).cloned() {
+                        run_snapshot = run;
+                    }
+                }
                 self.persist_run(&run_snapshot)?;
                 self.notify_run_updated(run_snapshot).await;
             }
@@ -996,51 +1446,18 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         }
     }
 
-    fn prepare_environment(&self, task: &DelegatedTask) -> Result<ExecutionEnvironment, String> {
-        let root = task
-            .workspace_dir
-            .clone()
-            .or_else(|| self.default_workspace_dir.clone())
-            .unwrap_or_else(|| PathBuf::from("."));
-        let run_id = task.run_id.as_deref().unwrap_or("global-run").to_string();
-        let environment_id = task
-            .environment_id
-            .clone()
-            .unwrap_or_else(|| format!("env-{}-{}", run_id, task.agent_id));
-
-        let prepared_root = match task.execution_mode {
-            AgentExecutionMode::SharedWorkspace => root.clone(),
-            AgentExecutionMode::IsolatedWorkspace | AgentExecutionMode::GitWorktree => {
-                let prepared = root
-                    .join(".gestura")
-                    .join("environments")
-                    .join(&run_id)
-                    .join(&task.agent_id);
-                fs::create_dir_all(&prepared)
-                    .map_err(|error| format!("Failed to prepare environment: {error}"))?;
-                prepared
-            }
-            AgentExecutionMode::Remote => root.clone(),
-        };
-
-        Ok(ExecutionEnvironment {
-            id: environment_id,
-            execution_mode: task.execution_mode.clone(),
-            root_dir: prepared_root.clone(),
-            write_access: !task.planning_only,
-            branch_name: matches!(task.execution_mode, AgentExecutionMode::GitWorktree)
-                .then(|| format!("gestura/{run_id}/{}", task.agent_id)),
-            worktree_path: matches!(task.execution_mode, AgentExecutionMode::GitWorktree)
-                .then_some(prepared_root),
-            remote_url: task.remote_target.as_ref().map(|target| target.url.clone()),
-        })
-    }
-
     async fn start_task_execution(&self, task: DelegatedTask) -> Result<(), String> {
         let run_id = task
             .run_id
             .clone()
             .ok_or_else(|| "Task is missing run_id".to_string())?;
+        let environment_id = task
+            .environment_id
+            .clone()
+            .ok_or_else(|| format!("Task '{}' is missing environment_id", task.id))?;
+        let leased_environment = self
+            .acquire_environment_lease(&environment_id, &task.id, &task.agent_id)
+            .await?;
 
         let (run_snapshot, task_snapshot) = {
             let mut active = self.active_tasks.lock().await;
@@ -1062,6 +1479,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 record.started_at = Some(Utc::now());
                 record.updated_at = Utc::now();
                 record.blocked_reasons.clear();
+                record.environment = leased_environment.summary();
                 record.clone()
             };
 
@@ -1124,7 +1542,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             .ok_or_else(|| "Completed task result is missing run_id".to_string())?;
 
         let memory_file_path = persist_delegated_task_memory(&task, &task_result).await;
-        let (run_snapshot, task_snapshot, tasks_to_start) = {
+        let (mut run_snapshot, task_snapshot, tasks_to_start, environment_id, finalized_state) = {
             self.active_tasks.lock().await.remove(&task.id);
 
             let mut runs = self.supervisor_runs.lock().await;
@@ -1144,35 +1562,69 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             if task_result.success {
                 if record.task.reviewer_required {
                     record.state = SupervisorTaskState::ReviewPending;
-                    record.approval = TaskApprovalRecord::pending();
-                    record.approval.note =
-                        Some("Execution finished. Awaiting explicit review approval.".to_string());
+                    record.approval.request(
+                        ApprovalScope::Review,
+                        ApprovalActor::system("orchestrator"),
+                        Some("Execution finished. Awaiting explicit review approval.".to_string()),
+                    );
                 } else if record.task.test_required {
                     record.state = SupervisorTaskState::TestPending;
-                    record.approval = TaskApprovalRecord::pending();
-                    record.approval.note =
-                        Some("Execution finished. Awaiting explicit test validation.".to_string());
+                    record.approval.request(
+                        ApprovalScope::TestValidation,
+                        ApprovalActor::system("orchestrator"),
+                        Some("Execution finished. Awaiting explicit test validation.".to_string()),
+                    );
                 } else {
                     record.state = SupervisorTaskState::Completed;
                     if matches!(record.approval.state, ApprovalState::Pending) {
-                        record.approval.state = ApprovalState::Approved;
-                        record.approval.decided_at = Some(Utc::now());
+                        record.approval.reset_for_task(&record.task);
+                        record.approval.note = Some(
+                            "Execution completed after clearing a stale pending approval state."
+                                .into(),
+                        );
                     }
                 }
             } else {
                 record.state = SupervisorTaskState::Failed;
                 if matches!(record.approval.state, ApprovalState::Pending) {
-                    record.approval.state = ApprovalState::NeedsRevision;
-                    record.approval.note = Some("Execution failed and requires revision".into());
+                    record.approval.reset_for_task(&record.task);
+                    record.approval.note = Some(
+                        "Execution failed after clearing a stale pending approval state.".into(),
+                    );
                 }
             }
 
-            let task_snapshot = record.clone();
+            let (task_snapshot, environment_id, finalized_state) =
+                (record.clone(), record.environment_id.clone(), record.state);
             let ready_to_start = collect_ready_tasks(run);
             run.updated_at = Utc::now();
             run.status = recalculate_run_status(run);
-            (run.clone(), task_snapshot, ready_to_start)
+            (
+                run.clone(),
+                task_snapshot,
+                ready_to_start,
+                environment_id,
+                finalized_state,
+            )
         };
+
+        let updated_environment = match finalized_state {
+            SupervisorTaskState::Completed => {
+                self.finalize_environment_for_task(&environment_id, true, false)
+                    .await?
+            }
+            SupervisorTaskState::Failed | SupervisorTaskState::Cancelled => {
+                self.finalize_environment_for_task(&environment_id, false, true)
+                    .await?
+            }
+            _ => self.release_environment_lease(&environment_id).await?,
+        };
+        if let Some(environment) = updated_environment {
+            self.update_environment_in_runs(&environment).await?;
+            if let Some(run) = self.supervisor_runs.lock().await.get(&run_id).cloned() {
+                run_snapshot = run;
+            }
+        }
 
         record_task_completion(
             &task,
@@ -1506,12 +1958,41 @@ fn record_task_dispatch(task: &DelegatedTask, record: &SupervisorTaskRecord, run
                 "role": task.role,
                 "state": format!("{:?}", record.state).to_lowercase(),
                 "approval_state": format!("{:?}", record.approval.state).to_lowercase(),
+                "approval": {
+                    "scope": record.approval.scope.map(|value| format!("{:?}", value).to_lowercase()),
+                    "requested_at": record.approval.requested_at,
+                    "decided_at": record.approval.decided_at,
+                    "decided_by": record.approval.decided_by,
+                    "note": record.approval.note,
+                    "active_request": record.approval.active_request.as_ref(),
+                    "latest_decision": record.approval.latest_decision(),
+                    "policy": {
+                        "pre_execution": {
+                            "required": record.approval.policy.pre_execution.required,
+                            "allowed_deciders": record.approval.policy.pre_execution.allowed_deciders,
+                        },
+                        "review": {
+                            "required": record.approval.policy.review.required,
+                            "allowed_deciders": record.approval.policy.review.allowed_deciders,
+                        },
+                        "test_validation": {
+                            "required": record.approval.policy.test_validation.required,
+                            "allowed_deciders": record.approval.policy.test_validation.allowed_deciders,
+                        }
+                    }
+                },
                 "dependencies": task.depends_on,
                 "environment": {
                     "id": record.environment.id,
                     "mode": format!("{:?}", record.environment.execution_mode).to_lowercase(),
                     "root_dir": record.environment.root_dir,
                     "write_access": record.environment.write_access,
+                    "state": format!("{:?}", record.environment.state).to_lowercase(),
+                    "health": format!("{:?}", record.environment.health).to_lowercase(),
+                    "cleanup_policy": format!("{:?}", record.environment.cleanup_policy).to_lowercase(),
+                    "recovery_status": format!("{:?}", record.environment.recovery_status).to_lowercase(),
+                    "recovery_action": record.environment.recovery_action.map(|value| format!("{:?}", value).to_lowercase()),
+                    "failure": record.environment.failure.as_ref(),
                     "branch_name": record.environment.branch_name,
                     "worktree_path": record.environment.worktree_path,
                     "remote_url": record.environment.remote_url,
@@ -1613,12 +2094,48 @@ fn record_task_completion(
                 "role": task.role,
                 "state": format!("{:?}", record.state).to_lowercase(),
                 "approval_state": format!("{:?}", record.approval.state).to_lowercase(),
+                "approval": {
+                    "scope": record.approval.scope.map(|value| format!("{:?}", value).to_lowercase()),
+                    "requested_at": record.approval.requested_at,
+                    "decided_at": record.approval.decided_at,
+                    "decided_by": record.approval.decided_by,
+                    "note": record.approval.note,
+                    "active_request": record.approval.active_request.as_ref(),
+                    "latest_decision": record.approval.latest_decision(),
+                    "policy": {
+                        "pre_execution": {
+                            "required": record.approval.policy.pre_execution.required,
+                            "allowed_deciders": record.approval.policy.pre_execution.allowed_deciders,
+                        },
+                        "review": {
+                            "required": record.approval.policy.review.required,
+                            "allowed_deciders": record.approval.policy.review.allowed_deciders,
+                        },
+                        "test_validation": {
+                            "required": record.approval.policy.test_validation.required,
+                            "allowed_deciders": record.approval.policy.test_validation.allowed_deciders,
+                        }
+                    }
+                },
                 "last_output": task_result.output,
                 "summary": task_result.summary,
                 "attempts": record.attempts,
                 "memory_file_path": memory_file_path.map(|path| path.display().to_string()),
                 "tool_calls": task_result.tool_calls,
                 "artifacts": task_result.artifacts,
+                "environment": {
+                    "id": record.environment.id,
+                    "mode": format!("{:?}", record.environment.execution_mode).to_lowercase(),
+                    "state": format!("{:?}", record.environment.state).to_lowercase(),
+                    "health": format!("{:?}", record.environment.health).to_lowercase(),
+                    "recovery_status": format!("{:?}", record.environment.recovery_status).to_lowercase(),
+                    "recovery_action": record.environment.recovery_action.map(|value| format!("{:?}", value).to_lowercase()),
+                    "failure": record.environment.failure.as_ref(),
+                    "cleanup_result": record.environment.cleanup_result.as_ref(),
+                    "branch_name": record.environment.branch_name,
+                    "worktree_path": record.environment.worktree_path,
+                    "remote_url": record.environment.remote_url,
+                },
                 "run_status": format!("{:?}", run.status).to_lowercase(),
             }
         }),
@@ -1762,55 +2279,6 @@ fn collect_ready_tasks(run: &mut SupervisorRun) -> Vec<DelegatedTask> {
     ready
 }
 
-fn persist_run_to_disk(root: &Path, run: &SupervisorRun) -> Result<(), String> {
-    let session_key = run.session_id.as_deref().unwrap_or("global");
-    let dir = root.join(".gestura").join("orchestrator").join(session_key);
-    fs::create_dir_all(&dir)
-        .map_err(|error| format!("Failed to create orchestrator persistence dir: {error}"))?;
-    let path = dir.join(format!("{}.json", run.id));
-    let content = serde_json::to_vec_pretty(run)
-        .map_err(|error| format!("Failed to serialize supervisor run: {error}"))?;
-    fs::write(path, content).map_err(|error| format!("Failed to persist supervisor run: {error}"))
-}
-
-fn load_persisted_runs(root: &Path) -> Vec<SupervisorRun> {
-    let base = root.join(".gestura").join("orchestrator");
-    let Ok(session_dirs) = fs::read_dir(base) else {
-        return Vec::new();
-    };
-
-    let mut runs = Vec::new();
-    for session_dir in session_dirs.flatten() {
-        let path = session_dir.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let Ok(entries) = fs::read_dir(path) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("json") {
-                continue;
-            }
-            let Ok(content) = fs::read(&path) else {
-                continue;
-            };
-            let Ok(run) = serde_json::from_slice::<SupervisorRun>(&content) else {
-                continue;
-            };
-            runs.push(run);
-        }
-    }
-    runs
-}
-
-fn load_persisted_run_by_id(root: &Path, run_id: &str) -> Option<SupervisorRun> {
-    load_persisted_runs(root)
-        .into_iter()
-        .find(|run| run.id == run_id)
-}
-
 fn merge_task_metadata(
     manager: &TaskManager,
     session_id: &str,
@@ -1837,6 +2305,30 @@ fn merge_task_metadata(
 
     let _ =
         manager.update_task_metadata(session_id, task_id, serde_json::Value::Object(existing_map));
+}
+
+fn approval_scope_for_state(state: SupervisorTaskState) -> Option<ApprovalScope> {
+    match state {
+        SupervisorTaskState::PendingApproval => Some(ApprovalScope::PreExecution),
+        SupervisorTaskState::ReviewPending => Some(ApprovalScope::Review),
+        SupervisorTaskState::TestPending => Some(ApprovalScope::TestValidation),
+        _ => None,
+    }
+}
+
+fn format_approval_decision_message(decision: &ApprovalDecision) -> String {
+    format!(
+        "{:?} gate {:?} by {} ({:?}){}",
+        decision.scope,
+        decision.decision,
+        decision.actor.id,
+        decision.actor.kind,
+        decision
+            .note
+            .as_ref()
+            .map(|note| format!(": {note}"))
+            .unwrap_or_default()
+    )
 }
 
 #[async_trait::async_trait]
@@ -1886,6 +2378,106 @@ fn orchestrator_knowledge_settings() -> &'static crate::KnowledgeSettingsManager
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    fn test_environment(id: &str, root_dir: PathBuf) -> ExecutionEnvironment {
+        ExecutionEnvironment {
+            id: id.to_string(),
+            execution_mode: AgentExecutionMode::SharedWorkspace,
+            root_dir,
+            write_access: true,
+            branch_name: None,
+            worktree_path: None,
+            remote_url: None,
+            state: EnvironmentState::Ready,
+            health: EnvironmentHealth::Clean,
+            cleanup_policy: CleanupPolicy::KeepAlways,
+            recovery_status: RecoveryStatus::NotRequired,
+            recovery_action: None,
+            failure: None,
+            cleanup_result: None,
+        }
+    }
+
+    async fn seed_review_pending_task(
+        orchestrator: &AgentOrchestrator<crate::agents::AgentManager>,
+        workspace_dir: PathBuf,
+        test_required: bool,
+    ) {
+        let task = DelegatedTask {
+            id: "task-approval".into(),
+            agent_id: "agent-reviewer".into(),
+            prompt: "Review the patch".into(),
+            context: None,
+            required_tools: vec![],
+            priority: 1,
+            session_id: None,
+            directive_id: None,
+            tracking_task_id: None,
+            run_id: Some("run-approval".into()),
+            parent_task_id: None,
+            depends_on: vec![],
+            role: Some(AgentRole::Reviewer),
+            delegation_brief: None,
+            planning_only: false,
+            approval_required: false,
+            reviewer_required: true,
+            test_required,
+            workspace_dir: Some(workspace_dir.clone()),
+            execution_mode: AgentExecutionMode::SharedWorkspace,
+            environment_id: Some("env-approval".into()),
+            remote_target: None,
+            memory_tags: vec![],
+            name: Some("Review the patch".into()),
+        };
+
+        let record = SupervisorTaskRecord {
+            task: task.clone(),
+            state: SupervisorTaskState::ReviewPending,
+            approval: TaskApprovalRecord::pending(
+                &task,
+                ApprovalScope::Review,
+                ApprovalActor::system("orchestrator"),
+                Some("Execution finished. Awaiting explicit review approval.".into()),
+            ),
+            environment_id: "env-approval".into(),
+            environment: test_environment("env-approval", workspace_dir.clone()),
+            claimed_by: Some(task.agent_id.clone()),
+            attempts: 0,
+            blocked_reasons: vec![],
+            result: None,
+            messages: vec![],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+        };
+
+        let run = SupervisorRun {
+            id: "run-approval".into(),
+            session_id: None,
+            workspace_dir: Some(workspace_dir),
+            lead_agent_id: None,
+            metadata: None,
+            status: SupervisorRunStatus::Waiting,
+            tasks: vec![record],
+            messages: vec![],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            completed_at: None,
+        };
+
+        orchestrator
+            .supervisor_runs
+            .lock()
+            .await
+            .insert(run.id.clone(), run);
+        orchestrator
+            .task_run_index
+            .lock()
+            .await
+            .insert(task.id.clone(), "run-approval".into());
+    }
 
     #[tokio::test]
     async fn test_orchestrator_creation_and_spawn() {
@@ -1907,7 +2499,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_delegate_task_submission() {
-        let manager = crate::agents::AgentManager::new(PathBuf::from("/tmp/test.db"));
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("test.db"));
         let config = AppConfig::default();
 
         let orchestrator = AgentOrchestrator::new(manager, config);
@@ -1942,5 +2535,167 @@ mod tests {
         // Verify task can be submitted
         let id = orchestrator.delegate_task(task).await.unwrap();
         assert_eq!(id, "task-1");
+    }
+
+    #[tokio::test]
+    async fn test_review_gate_rejects_unauthorized_actor() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("approval.db"));
+        let orchestrator = AgentOrchestrator::new(manager, AppConfig::default());
+
+        seed_review_pending_task(&orchestrator, tmp.path().to_path_buf(), false).await;
+
+        let error = orchestrator
+            .approve_task(
+                "task-approval",
+                ApprovalActor::new(ApprovalActorKind::Tester, "tester-1"),
+                Some("Looks good".into()),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("not authorized"));
+    }
+
+    #[tokio::test]
+    async fn test_review_gate_records_authorized_decision() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("approval-success.db"));
+        let orchestrator = AgentOrchestrator::new(manager, AppConfig::default());
+
+        seed_review_pending_task(&orchestrator, tmp.path().to_path_buf(), false).await;
+
+        orchestrator
+            .approve_task(
+                "task-approval",
+                ApprovalActor::new(ApprovalActorKind::Reviewer, "reviewer-1"),
+                Some("Approved after review".into()),
+            )
+            .await
+            .unwrap();
+
+        let run = orchestrator
+            .supervisor_runs
+            .lock()
+            .await
+            .get("run-approval")
+            .cloned()
+            .unwrap();
+        let record = run
+            .tasks
+            .iter()
+            .find(|record| record.task.id == "task-approval")
+            .unwrap();
+
+        assert_eq!(record.state, SupervisorTaskState::Completed);
+        assert_eq!(record.approval.state, ApprovalState::Approved);
+        assert_eq!(record.approval.decisions.len(), 1);
+        assert_eq!(
+            record.approval.decisions[0].actor.kind,
+            ApprovalActorKind::Reviewer
+        );
+        assert_eq!(
+            run.messages.last().map(|message| message.kind),
+            Some(TeamMessageKind::ApprovalDecision)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_review_then_test_gates_require_separate_authorized_decisions() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("approval-multistep.db"));
+        let orchestrator = AgentOrchestrator::new(manager, AppConfig::default());
+
+        seed_review_pending_task(&orchestrator, tmp.path().to_path_buf(), true).await;
+
+        orchestrator
+            .approve_task(
+                "task-approval",
+                ApprovalActor::new(ApprovalActorKind::Reviewer, "reviewer-1"),
+                Some("Review passed".into()),
+            )
+            .await
+            .unwrap();
+
+        {
+            let run = orchestrator
+                .supervisor_runs
+                .lock()
+                .await
+                .get("run-approval")
+                .cloned()
+                .unwrap();
+            let record = run
+                .tasks
+                .iter()
+                .find(|record| record.task.id == "task-approval")
+                .unwrap();
+            assert_eq!(record.state, SupervisorTaskState::TestPending);
+            assert_eq!(record.approval.state, ApprovalState::Pending);
+            assert_eq!(record.approval.scope, Some(ApprovalScope::TestValidation));
+            assert_eq!(record.approval.requests.len(), 2);
+            assert_eq!(record.approval.decisions.len(), 1);
+        }
+
+        let error = orchestrator
+            .approve_task(
+                "task-approval",
+                ApprovalActor::new(ApprovalActorKind::Reviewer, "reviewer-1"),
+                Some("Trying to approve test gate".into()),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.contains("not authorized"));
+
+        orchestrator
+            .approve_task(
+                "task-approval",
+                ApprovalActor::new(ApprovalActorKind::Tester, "tester-1"),
+                Some("Tests passed".into()),
+            )
+            .await
+            .unwrap();
+
+        let run = orchestrator
+            .supervisor_runs
+            .lock()
+            .await
+            .get("run-approval")
+            .cloned()
+            .unwrap();
+        let record = run
+            .tasks
+            .iter()
+            .find(|record| record.task.id == "task-approval")
+            .unwrap();
+
+        assert_eq!(record.state, SupervisorTaskState::Completed);
+        assert_eq!(record.approval.state, ApprovalState::Approved);
+        assert_eq!(record.approval.decisions.len(), 2);
+        assert_eq!(
+            record.approval.decisions[1].scope,
+            ApprovalScope::TestValidation
+        );
+        assert_eq!(
+            record.approval.decisions[1].actor.kind,
+            ApprovalActorKind::Tester
+        );
+    }
+
+    #[test]
+    fn test_approval_record_deserializes_from_legacy_shape() {
+        let legacy = serde_json::json!({
+            "state": "pending",
+            "requested_at": "2026-03-10T00:00:00Z",
+            "note": "Legacy approval"
+        });
+
+        let record: TaskApprovalRecord = serde_json::from_value(legacy).unwrap();
+
+        assert_eq!(record.state, ApprovalState::Pending);
+        assert_eq!(record.scope, None);
+        assert!(record.requests.is_empty());
+        assert!(record.decisions.is_empty());
+        assert!(record.active_request.is_none());
     }
 }

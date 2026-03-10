@@ -1,0 +1,137 @@
+use super::{EnvironmentRecord, SupervisorRun};
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+fn session_key(session_id: Option<&str>) -> &str {
+    session_id.unwrap_or("global")
+}
+
+fn base_dir(root: &Path) -> PathBuf {
+    root.join(".gestura").join("orchestrator")
+}
+
+fn session_dir(root: &Path, session_id: Option<&str>) -> PathBuf {
+    base_dir(root).join(session_key(session_id))
+}
+
+fn runs_dir(root: &Path, session_id: Option<&str>) -> PathBuf {
+    session_dir(root, session_id).join("runs")
+}
+
+fn environments_dir(root: &Path, session_id: Option<&str>) -> PathBuf {
+    session_dir(root, session_id).join("environments")
+}
+
+fn load_json_files<T: serde::de::DeserializeOwned>(dir: &Path) -> Vec<T> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                return None;
+            }
+            let content = fs::read(&path).ok()?;
+            serde_json::from_slice::<T>(&content).ok()
+        })
+        .collect()
+}
+
+pub(super) fn persist_run_to_disk(root: &Path, run: &SupervisorRun) -> Result<(), String> {
+    let session = run.session_id.as_deref();
+    let legacy_dir = session_dir(root, session);
+    let dir = runs_dir(root, session);
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Failed to create orchestrator run dir: {error}"))?;
+    let path = dir.join(format!("{}.json", run.id));
+    let content = serde_json::to_vec_pretty(run)
+        .map_err(|error| format!("Failed to serialize supervisor run: {error}"))?;
+    fs::write(&path, content)
+        .map_err(|error| format!("Failed to persist supervisor run: {error}"))?;
+
+    let legacy_path = legacy_dir.join(format!("{}.json", run.id));
+    if legacy_path.exists() {
+        let _ = fs::remove_file(legacy_path);
+    }
+    Ok(())
+}
+
+pub(super) fn persist_environment_to_disk(
+    root: &Path,
+    environment: &EnvironmentRecord,
+) -> Result<(), String> {
+    let dir = environments_dir(root, environment.spec.session_id.as_deref());
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Failed to create orchestrator environment dir: {error}"))?;
+    let path = dir.join(format!("{}.json", environment.id));
+    let content = serde_json::to_vec_pretty(environment)
+        .map_err(|error| format!("Failed to serialize environment record: {error}"))?;
+    fs::write(path, content)
+        .map_err(|error| format!("Failed to persist environment record: {error}"))
+}
+
+pub(super) fn load_persisted_runs(root: &Path) -> Vec<SupervisorRun> {
+    let Ok(session_dirs) = fs::read_dir(base_dir(root)) else {
+        return Vec::new();
+    };
+
+    let mut runs = Vec::new();
+    for session_dir in session_dirs.flatten() {
+        let path = session_dir.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let mut seen = HashSet::new();
+        let modern_runs_dir = path.join("runs");
+        for run in load_json_files::<SupervisorRun>(&modern_runs_dir) {
+            seen.insert(run.id.clone());
+            runs.push(run);
+        }
+
+        for run in load_json_files::<SupervisorRun>(&path) {
+            if seen.insert(run.id.clone()) {
+                runs.push(run);
+            }
+        }
+    }
+
+    runs
+}
+
+pub(super) fn load_persisted_run_by_id(root: &Path, run_id: &str) -> Option<SupervisorRun> {
+    load_persisted_runs(root)
+        .into_iter()
+        .find(|run| run.id == run_id)
+}
+
+pub(super) fn load_persisted_environments(root: &Path) -> Vec<EnvironmentRecord> {
+    let Ok(session_dirs) = fs::read_dir(base_dir(root)) else {
+        return Vec::new();
+    };
+
+    let mut environments = Vec::new();
+    for session_dir in session_dirs.flatten() {
+        let path = session_dir.path();
+        if !path.is_dir() {
+            continue;
+        }
+        environments.extend(load_json_files::<EnvironmentRecord>(
+            &path.join("environments"),
+        ));
+    }
+    environments
+}
+
+pub(super) fn load_persisted_environment_by_id(
+    root: &Path,
+    environment_id: &str,
+) -> Option<EnvironmentRecord> {
+    load_persisted_environments(root)
+        .into_iter()
+        .find(|record| record.id == environment_id)
+}

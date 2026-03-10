@@ -3390,28 +3390,22 @@ pub async fn get_supervisor_run(
 #[tauri::command]
 pub async fn approve_workflow_task(
     task_id: String,
-    decided_by: Option<String>,
+    actor: crate::orchestrator::ApprovalActor,
     note: Option<String>,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<(), String> {
-    state
-        .orchestrator
-        .approve_task(&task_id, decided_by, note)
-        .await
+    state.orchestrator.approve_task(&task_id, actor, note).await
 }
 
 /// Reject or request revision for a delegated task.
 #[tauri::command]
 pub async fn reject_workflow_task(
     task_id: String,
-    decided_by: Option<String>,
+    actor: crate::orchestrator::ApprovalActor,
     note: Option<String>,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<(), String> {
-    state
-        .orchestrator
-        .reject_task(&task_id, decided_by, note)
-        .await
+    state.orchestrator.reject_task(&task_id, actor, note).await
 }
 
 /// Retry a workflow task.
@@ -3464,6 +3458,60 @@ pub async fn list_workflow_messages(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Vec<crate::orchestrator::TeamMessage>, String> {
     Ok(state.orchestrator.list_team_messages(&run_id).await)
+}
+
+/// List durable workflow execution environments.
+#[tauri::command]
+pub async fn list_workflow_environments(
+    run_id: Option<String>,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Vec<crate::orchestrator::EnvironmentRecord>, String> {
+    Ok(state
+        .orchestrator
+        .list_environments(run_id.as_deref())
+        .await)
+}
+
+/// Get a single workflow execution environment.
+#[tauri::command]
+pub async fn get_workflow_environment(
+    environment_id: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Option<crate::orchestrator::EnvironmentRecord>, String> {
+    Ok(state.orchestrator.get_environment(&environment_id).await)
+}
+
+/// Retry environment preparation for a workflow task.
+#[tauri::command]
+pub async fn retry_workflow_environment(
+    environment_id: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<crate::orchestrator::EnvironmentRecord, String> {
+    state
+        .orchestrator
+        .retry_environment_preparation(&environment_id)
+        .await
+}
+
+/// Cleanup a workflow environment on demand.
+#[tauri::command]
+pub async fn cleanup_workflow_environment(
+    environment_id: String,
+    archive_if_dirty: Option<bool>,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<crate::orchestrator::EnvironmentRecord, String> {
+    state
+        .orchestrator
+        .cleanup_environment(&environment_id, archive_if_dirty.unwrap_or(true))
+        .await
+}
+
+/// Reconcile workflow state after restart or disk drift.
+#[tauri::command]
+pub async fn reconcile_workflow_state(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<(), String> {
+    state.orchestrator.reconcile_orchestrator_state().await
 }
 
 // Audio Device Management Commands

@@ -1,19 +1,22 @@
 //! Shared slash-command helpers for agent (basic + TUI).
-//!
-//! This module intentionally stays dependency-free (no shell quoting, etc.).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::commands::tools::permissions::permission_manager;
 
 use gestura_core::{
-    AppConfig,
+    AppConfig, AppConfigSecurityExt,
     agent_sessions::{AgentSession, SessionPermissionLevel},
+    agents::AgentManager,
     config::{McpScope, McpServerEntry, McpTransportType, infer_transport_from_endpoint},
     context::ContextManager,
     find_tool,
     hooks::{HookCommandTemplate, HookDefinition, HookEvent},
     memory_bank::MemoryBankEntry,
+    orchestrator::{
+        AgentOrchestrator, ApprovalActor, ApprovalActorKind, ApprovalScope, ApprovalState,
+        SupervisorRun, SupervisorTaskRecord, SupervisorTaskState,
+    },
     tasks::{Task, TaskManager, TaskStatus},
     tools::permissions::PermissionScope,
 };
@@ -641,12 +644,36 @@ fn map_check_action(action: &str) -> (String, String) {
 pub(crate) struct TasksOutcome {
     pub(crate) lines: Vec<String>,
     pub(crate) changed: bool,
+    pub(crate) live_action: Option<TasksLiveAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TasksLiveAction {
+    ListApprovals {
+        session_id: String,
+        workspace_dir: PathBuf,
+    },
+    DecideApproval {
+        session_id: String,
+        workspace_dir: PathBuf,
+        task_spec: String,
+        actor_kind: ApprovalActorKind,
+        decision: TaskApprovalCliDecision,
+        note: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TaskApprovalCliDecision {
+    Approve,
+    Reject,
 }
 
 pub(crate) fn run_tasks_subcommand(
     args: &[&str],
     manager: &TaskManager,
     session_id: &str,
+    workspace_dir: Option<&Path>,
 ) -> std::result::Result<TasksOutcome, String> {
     let sub = args
         .first()
@@ -657,6 +684,7 @@ pub(crate) fn run_tasks_subcommand(
         return Ok(TasksOutcome {
             lines: tasks_usage_lines(),
             changed: false,
+            live_action: None,
         });
     }
 
@@ -669,6 +697,7 @@ pub(crate) fn run_tasks_subcommand(
             Ok(TasksOutcome {
                 lines,
                 changed: false,
+                live_action: None,
             })
         }
         "create" => {
@@ -686,6 +715,7 @@ pub(crate) fn run_tasks_subcommand(
                     task.name
                 )],
                 changed: true,
+                live_action: None,
             })
         }
         "create-sub" | "sub" => {
@@ -711,6 +741,7 @@ pub(crate) fn run_tasks_subcommand(
                     short_id(&parent_id)
                 )],
                 changed: true,
+                live_action: None,
             })
         }
         "show" => {
@@ -728,6 +759,7 @@ pub(crate) fn run_tasks_subcommand(
             Ok(TasksOutcome {
                 lines: format_task_details(task),
                 changed: false,
+                live_action: None,
             })
         }
         "status" => {
@@ -757,6 +789,7 @@ pub(crate) fn run_tasks_subcommand(
                     status
                 )],
                 changed: true,
+                live_action: None,
             })
         }
         "update" => {
@@ -783,6 +816,7 @@ pub(crate) fn run_tasks_subcommand(
             Ok(TasksOutcome {
                 lines: vec![format!("Updated task {}", short_id(&task_id))],
                 changed: true,
+                live_action: None,
             })
         }
         "delete" | "del" | "rm" | "remove" => {
@@ -823,6 +857,7 @@ pub(crate) fn run_tasks_subcommand(
                     deleted.name
                 )],
                 changed: true,
+                live_action: None,
             })
         }
         "current" => {
@@ -838,6 +873,7 @@ pub(crate) fn run_tasks_subcommand(
                             None => "Current task: (none)".to_string(),
                         }],
                         changed: false,
+                        live_action: None,
                     })
                 }
                 "set" => {
@@ -851,6 +887,7 @@ pub(crate) fn run_tasks_subcommand(
                     Ok(TasksOutcome {
                         lines: vec![format!("Set current task -> {}", short_id(&task_id))],
                         changed: true,
+                        live_action: None,
                     })
                 }
                 "clear" | "unset" => {
@@ -860,6 +897,7 @@ pub(crate) fn run_tasks_subcommand(
                     Ok(TasksOutcome {
                         lines: vec!["Cleared current task".to_string()],
                         changed: true,
+                        live_action: None,
                     })
                 }
                 _ => Err(
@@ -891,6 +929,57 @@ pub(crate) fn run_tasks_subcommand(
                     short_id(&blocked_by_id)
                 )],
                 changed: true,
+                live_action: None,
+            })
+        }
+        "approvals" | "approval" | "pending-approvals" => {
+            let workspace_dir = workspace_dir
+                .ok_or_else(|| {
+                    "No workspace directory configured. Cannot inspect workflow approvals."
+                        .to_string()
+                })?
+                .to_path_buf();
+            Ok(TasksOutcome {
+                lines: vec!["Listing workflow approvals…".to_string()],
+                changed: false,
+                live_action: Some(TasksLiveAction::ListApprovals {
+                    session_id: session_id.to_string(),
+                    workspace_dir,
+                }),
+            })
+        }
+        "approve" | "reject" => {
+            let workspace_dir = workspace_dir
+                .ok_or_else(|| {
+                    "No workspace directory configured. Cannot update workflow approvals."
+                        .to_string()
+                })?
+                .to_path_buf();
+            let decision = if sub == "approve" {
+                TaskApprovalCliDecision::Approve
+            } else {
+                TaskApprovalCliDecision::Reject
+            };
+            let usage = format!(
+                "Usage: /task {sub} <workflow_task_id> [--actor <supervisor|reviewer|tester|user>] [note...]"
+            );
+            let (task_spec, actor_kind, note) = parse_task_approval_command(args, &usage)?;
+            Ok(TasksOutcome {
+                lines: vec![format!(
+                    "Submitting {:?} decision for workflow task {} as {}…",
+                    decision,
+                    task_spec,
+                    format_approval_actor_kind(actor_kind)
+                )],
+                changed: true,
+                live_action: Some(TasksLiveAction::DecideApproval {
+                    session_id: session_id.to_string(),
+                    workspace_dir,
+                    task_spec,
+                    actor_kind,
+                    decision,
+                    note,
+                }),
             })
         }
         _ => Err(format!("Unknown /task subcommand '{sub}'. Try: /task help")),
@@ -914,8 +1003,71 @@ fn tasks_usage_lines() -> Vec<String> {
         "  /task current set <id>".to_string(),
         "  /task current clear".to_string(),
         "  /task dep add <task_id> <blocked_by_id>".to_string(),
+        "  /task approvals".to_string(),
+        "  /task approve <workflow_task_id> [--actor <supervisor|reviewer|tester|user>] [note...]".to_string(),
+        "  /task reject <workflow_task_id> [--actor <supervisor|reviewer|tester|user>] [note...]".to_string(),
         "IDs can be full UUIDs or unique prefixes. Use '.' to refer to current task.".to_string(),
+        "Approval commands use delegated workflow task IDs/prefixes and default to actor=supervisor.".to_string(),
     ]
+}
+
+fn parse_task_approval_command(
+    args: &[&str],
+    usage: &str,
+) -> std::result::Result<(String, ApprovalActorKind, Option<String>), String> {
+    let Some(task_spec) = args.get(1).copied() else {
+        return Err(usage.to_string());
+    };
+
+    let mut actor_kind = ApprovalActorKind::Supervisor;
+    let mut note_parts: Vec<&str> = Vec::new();
+    let mut i = 2;
+    while i < args.len() {
+        match args[i] {
+            "--actor" | "-a" => {
+                let Some(value) = args.get(i + 1).copied() else {
+                    return Err(usage.to_string());
+                };
+                actor_kind = parse_approval_actor_kind(value)?;
+                i += 2;
+            }
+            other => {
+                note_parts.push(other);
+                i += 1;
+            }
+        }
+    }
+
+    let note = if note_parts.is_empty() {
+        None
+    } else {
+        Some(note_parts.join(" "))
+    };
+
+    Ok((task_spec.to_string(), actor_kind, note))
+}
+
+fn parse_approval_actor_kind(value: &str) -> std::result::Result<ApprovalActorKind, String> {
+    match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "user" => Ok(ApprovalActorKind::User),
+        "supervisor" => Ok(ApprovalActorKind::Supervisor),
+        "reviewer" => Ok(ApprovalActorKind::Reviewer),
+        "tester" => Ok(ApprovalActorKind::Tester),
+        "system" => Ok(ApprovalActorKind::System),
+        other => Err(format!(
+            "Unknown approval actor '{other}'. Expected one of: supervisor, reviewer, tester, user"
+        )),
+    }
+}
+
+fn format_approval_actor_kind(kind: ApprovalActorKind) -> &'static str {
+    match kind {
+        ApprovalActorKind::User => "user",
+        ApprovalActorKind::Supervisor => "supervisor",
+        ApprovalActorKind::Reviewer => "reviewer",
+        ApprovalActorKind::Tester => "tester",
+        ApprovalActorKind::System => "system",
+    }
 }
 
 fn resolve_task_id_spec(
@@ -969,6 +1121,340 @@ fn resolve_task_id_from_list(
     }
 }
 
+pub(crate) fn execute_tasks_live_action(
+    rt: &tokio::runtime::Runtime,
+    action: TasksLiveAction,
+) -> std::result::Result<Vec<String>, String> {
+    let orchestrator = build_cli_orchestrator(action.workspace_dir());
+
+    match action {
+        TasksLiveAction::ListApprovals {
+            session_id,
+            workspace_dir,
+        } => rt.block_on(async move {
+            let runs = scoped_supervisor_runs(&orchestrator, &session_id, &workspace_dir).await;
+            Ok(format_pending_approval_lines(&runs))
+        }),
+        TasksLiveAction::DecideApproval {
+            session_id,
+            workspace_dir,
+            task_spec,
+            actor_kind,
+            decision,
+            note,
+        } => rt.block_on(async move {
+            let runs = scoped_supervisor_runs(&orchestrator, &session_id, &workspace_dir).await;
+            let (run_id, task_id) = resolve_pending_workflow_task_spec(&task_spec, &runs)?;
+            let mut actor = ApprovalActor::new(
+                actor_kind,
+                format!(
+                    "cli:{}:{}",
+                    session_id,
+                    format_approval_actor_kind(actor_kind)
+                ),
+            );
+            actor.display_name = Some(format!("CLI ({})", format_approval_actor_kind(actor_kind)));
+
+            match decision {
+                TaskApprovalCliDecision::Approve => {
+                    orchestrator
+                        .approve_task(&task_id, actor, note.clone())
+                        .await?
+                }
+                TaskApprovalCliDecision::Reject => {
+                    orchestrator
+                        .reject_task(&task_id, actor, note.clone())
+                        .await?
+                }
+            }
+
+            let run = orchestrator
+                .get_supervisor_run(&run_id)
+                .await
+                .ok_or_else(|| format!("Workflow run '{}' no longer exists", run_id))?;
+            let record = run
+                .tasks
+                .iter()
+                .find(|record| record.task.id == task_id)
+                .ok_or_else(|| format!("Workflow task '{}' no longer exists", task_id))?;
+            Ok(format_task_approval_decision_lines(
+                record,
+                decision,
+                note.as_deref(),
+            ))
+        }),
+    }
+}
+
+impl TasksLiveAction {
+    fn workspace_dir(&self) -> &Path {
+        match self {
+            Self::ListApprovals { workspace_dir, .. }
+            | Self::DecideApproval { workspace_dir, .. } => workspace_dir.as_path(),
+        }
+    }
+}
+
+fn build_cli_orchestrator(workspace_dir: &Path) -> AgentOrchestrator<AgentManager> {
+    AgentOrchestrator::new_with_workspace_root(
+        AgentManager::new(AgentManager::default_db_path()),
+        AppConfig::load(),
+        Some(workspace_dir.to_path_buf()),
+    )
+}
+
+async fn scoped_supervisor_runs(
+    orchestrator: &AgentOrchestrator<AgentManager>,
+    session_id: &str,
+    workspace_dir: &Path,
+) -> Vec<SupervisorRun> {
+    orchestrator
+        .list_supervisor_runs()
+        .await
+        .into_iter()
+        .filter(|run| supervisor_run_matches_scope(run, session_id, workspace_dir))
+        .collect()
+}
+
+fn supervisor_run_matches_scope(
+    run: &SupervisorRun,
+    session_id: &str,
+    workspace_dir: &Path,
+) -> bool {
+    run.session_id.as_deref() == Some(session_id)
+        || run.workspace_dir.as_deref() == Some(workspace_dir)
+}
+
+fn resolve_pending_workflow_task_spec(
+    spec: &str,
+    runs: &[SupervisorRun],
+) -> std::result::Result<(String, String), String> {
+    let pending_records: Vec<(&SupervisorRun, &SupervisorTaskRecord)> = runs
+        .iter()
+        .flat_map(|run| {
+            run.tasks
+                .iter()
+                .filter(|record| is_pending_approval_record(record))
+                .map(move |record| (run, record))
+        })
+        .collect();
+
+    if let Some((run, record)) = pending_records
+        .iter()
+        .find(|(_, record)| record.task.id == spec.trim())
+        .copied()
+    {
+        return Ok((run.id.clone(), record.task.id.clone()));
+    }
+
+    let matches: Vec<(&SupervisorRun, &SupervisorTaskRecord)> = pending_records
+        .into_iter()
+        .filter(|(_, record)| record.task.id.starts_with(spec.trim()))
+        .collect();
+
+    match matches.len() {
+        0 => Err(format!(
+            "No pending workflow approval matches task id/prefix '{spec}'"
+        )),
+        1 => Ok((matches[0].0.id.clone(), matches[0].1.task.id.clone())),
+        _ => {
+            let mut ids: Vec<String> = matches
+                .iter()
+                .take(8)
+                .map(|(_, record)| record.task.id.clone())
+                .collect();
+            if matches.len() > 8 {
+                ids.push("…".to_string());
+            }
+            Err(format!(
+                "Ambiguous workflow task prefix '{spec}' (matches: {})",
+                ids.join(", ")
+            ))
+        }
+    }
+}
+
+fn format_pending_approval_lines(runs: &[SupervisorRun]) -> Vec<String> {
+    let pending_records: Vec<(&SupervisorRun, &SupervisorTaskRecord)> = runs
+        .iter()
+        .flat_map(|run| {
+            run.tasks
+                .iter()
+                .filter(|record| is_pending_approval_record(record))
+                .map(move |record| (run, record))
+        })
+        .collect();
+
+    let mut lines = vec![
+        "━━━ Pending Workflow Approvals ━━━".to_string(),
+        String::new(),
+    ];
+
+    if pending_records.is_empty() {
+        lines.push("No pending workflow approvals for this session/workspace.".to_string());
+        return lines;
+    }
+
+    for (run, record) in pending_records {
+        let scope = record
+            .approval
+            .scope
+            .or_else(|| approval_scope_for_task_state(record.state))
+            .map(format_approval_scope)
+            .unwrap_or("unknown");
+        let requested_by = record
+            .approval
+            .active_request
+            .as_ref()
+            .map(|request| {
+                request
+                    .requested_by
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| request.requested_by.id.clone())
+            })
+            .unwrap_or_else(|| "system".to_string());
+        let allowed = allowed_actor_kinds_for_record(record)
+            .into_iter()
+            .map(format_approval_actor_kind)
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!(
+            "• {} [{}] run={} state={}",
+            record.task.id,
+            scope,
+            short_id(&run.id),
+            format_supervisor_task_state(record.state)
+        ));
+        lines.push(format!(
+            "  Task: {}",
+            record
+                .task
+                .name
+                .as_deref()
+                .unwrap_or(record.task.prompt.as_str())
+        ));
+        lines.push(format!("  Requested by: {requested_by}"));
+        lines.push(format!("  Allowed actors: {allowed}"));
+        if let Some(note) = record.approval.note.as_deref() {
+            lines.push(format!("  Note: {note}"));
+        }
+        lines.push(String::new());
+    }
+
+    lines
+}
+
+fn format_task_approval_decision_lines(
+    record: &SupervisorTaskRecord,
+    decision: TaskApprovalCliDecision,
+    note: Option<&str>,
+) -> Vec<String> {
+    let mut lines = vec![format!(
+        "{} workflow task {}",
+        match decision {
+            TaskApprovalCliDecision::Approve => "Approved",
+            TaskApprovalCliDecision::Reject => "Requested revision for",
+        },
+        record.task.id
+    )];
+    lines.push(format!(
+        "Task state: {}",
+        format_supervisor_task_state(record.state)
+    ));
+    lines.push(format!(
+        "Approval state: {}",
+        format_approval_state(record.approval.state)
+    ));
+    if let Some(scope) = record
+        .approval
+        .latest_decision()
+        .map(|decision| decision.scope)
+        .or(record.approval.scope)
+        .or_else(|| approval_scope_for_task_state(record.state))
+    {
+        lines.push(format!("Gate: {}", format_approval_scope(scope)));
+    }
+    if let Some(latest) = record.approval.latest_decision() {
+        lines.push(format!(
+            "Latest decision: {:?} by {} ({})",
+            latest.decision,
+            latest
+                .actor
+                .display_name
+                .as_deref()
+                .unwrap_or(latest.actor.id.as_str()),
+            format_approval_actor_kind(latest.actor.kind)
+        ));
+    }
+    if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
+        lines.push(format!("Note: {note}"));
+    }
+    lines
+}
+
+fn is_pending_approval_record(record: &SupervisorTaskRecord) -> bool {
+    matches!(
+        record.state,
+        SupervisorTaskState::PendingApproval
+            | SupervisorTaskState::ReviewPending
+            | SupervisorTaskState::TestPending
+    ) && matches!(record.approval.state, ApprovalState::Pending)
+}
+
+fn approval_scope_for_task_state(state: SupervisorTaskState) -> Option<ApprovalScope> {
+    match state {
+        SupervisorTaskState::PendingApproval => Some(ApprovalScope::PreExecution),
+        SupervisorTaskState::ReviewPending => Some(ApprovalScope::Review),
+        SupervisorTaskState::TestPending => Some(ApprovalScope::TestValidation),
+        _ => None,
+    }
+}
+
+fn allowed_actor_kinds_for_record(record: &SupervisorTaskRecord) -> Vec<ApprovalActorKind> {
+    let Some(scope) = record
+        .approval
+        .scope
+        .or_else(|| approval_scope_for_task_state(record.state))
+    else {
+        return Vec::new();
+    };
+
+    record.approval.allowed_actor_kinds(scope).to_vec()
+}
+
+fn format_approval_scope(scope: ApprovalScope) -> &'static str {
+    match scope {
+        ApprovalScope::PreExecution => "pre_execution",
+        ApprovalScope::Review => "review",
+        ApprovalScope::TestValidation => "test_validation",
+    }
+}
+
+fn format_approval_state(state: ApprovalState) -> &'static str {
+    match state {
+        ApprovalState::NotRequired => "not_required",
+        ApprovalState::Pending => "pending",
+        ApprovalState::Approved => "approved",
+        ApprovalState::Rejected => "rejected",
+        ApprovalState::NeedsRevision => "needs_revision",
+    }
+}
+
+fn format_supervisor_task_state(state: SupervisorTaskState) -> &'static str {
+    match state {
+        SupervisorTaskState::Queued => "queued",
+        SupervisorTaskState::PendingApproval => "pending_approval",
+        SupervisorTaskState::Running => "running",
+        SupervisorTaskState::ReviewPending => "review_pending",
+        SupervisorTaskState::TestPending => "test_pending",
+        SupervisorTaskState::Completed => "completed",
+        SupervisorTaskState::Cancelled => "cancelled",
+        SupervisorTaskState::Failed => "failed",
+        SupervisorTaskState::Blocked => "blocked",
+    }
+}
+
 fn format_task_hierarchy(hierarchy: &[(Task, Vec<Task>)]) -> Vec<String> {
     if hierarchy.is_empty() {
         return vec![
@@ -1000,6 +1486,12 @@ fn format_task_details(task: &Task) -> Vec<String> {
     lines.push(format!("ID: {}", task.id));
     lines.push(format!("Name: {}", task.name));
     lines.push(format!("Status: {:?}", task.status));
+    if let Some(background) = &task.background_job {
+        lines.push(format!("Background: {:?}", background.status));
+        if let Some(message) = &background.message {
+            lines.push(format!("Background message: {message}"));
+        }
+    }
     if let Some(parent) = &task.parent_id {
         lines.push(format!("Parent: {}", short_id(parent)));
     }
@@ -1013,6 +1505,85 @@ fn format_task_details(task: &Task) -> Vec<String> {
                 .join(", ")
         ));
     }
+
+    if let Some(metadata) = &task.metadata
+        && let Some(delegation) = metadata.get("delegation")
+    {
+        if let Some(run_id) = delegation.get("run_id").and_then(|value| value.as_str()) {
+            lines.push(format!("Run: {run_id}"));
+        }
+        if let Some(agent_id) = delegation.get("agent_id").and_then(|value| value.as_str()) {
+            lines.push(format!("Agent: {agent_id}"));
+        }
+        if let Some(approval) = delegation.get("approval") {
+            if let Some(scope) = approval.get("scope").and_then(|value| value.as_str()) {
+                lines.push(format!("Approval gate: {scope}"));
+            }
+            if let Some(requested_by) = approval
+                .get("active_request")
+                .and_then(|value| value.get("requested_by"))
+                .and_then(|value| value.get("id"))
+                .and_then(|value| value.as_str())
+            {
+                lines.push(format!("Approval requested by: {requested_by}"));
+            }
+            if let Some(decision) = approval.get("latest_decision") {
+                let decision_kind = decision
+                    .get("decision")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown");
+                let actor = decision
+                    .get("actor")
+                    .and_then(|value| value.get("id"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown");
+                lines.push(format!(
+                    "Latest approval decision: {decision_kind} by {actor}"
+                ));
+            }
+        }
+        if let Some(environment) = delegation.get("environment") {
+            let environment_id = environment
+                .get("id")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown");
+            let mode = environment
+                .get("mode")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown");
+            let state = environment
+                .get("state")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown");
+            let health = environment
+                .get("health")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown");
+            lines.push(format!("Environment: {environment_id} ({mode})"));
+            lines.push(format!("Environment state: {state} / {health}"));
+            if let Some(action) = environment
+                .get("recovery_action")
+                .and_then(|value| value.as_str())
+            {
+                lines.push(format!("Recovery action: {action}"));
+            }
+            if let Some(path) = environment
+                .get("worktree_path")
+                .and_then(|value| value.as_str())
+                .or_else(|| environment.get("root_dir").and_then(|value| value.as_str()))
+            {
+                lines.push(format!("Environment path: {path}"));
+            }
+            if let Some(message) = environment
+                .get("failure")
+                .and_then(|value| value.get("message"))
+                .and_then(|value| value.as_str())
+            {
+                lines.push(format!("Environment failure: {message}"));
+            }
+        }
+    }
+
     lines.push(String::new());
     lines.push("Description:".to_string());
     lines.push(task.description.clone());
@@ -2038,18 +2609,163 @@ mod tests {
             .create_task(session_id, "TestTask", "desc", None)
             .unwrap();
 
-        let err =
-            run_tasks_subcommand(&["delete", task.id.as_str()], &manager, session_id).unwrap_err();
+        let err = run_tasks_subcommand(
+            &["delete", task.id.as_str()],
+            &manager,
+            session_id,
+            Some(&base),
+        )
+        .unwrap_err();
         assert!(err.contains("--confirmed"));
 
         let out = run_tasks_subcommand(
             &["delete", "--confirmed", task.id.as_str()],
             &manager,
             session_id,
+            Some(&base),
         )
         .unwrap();
         assert!(out.changed);
         assert!(out.lines.join("\n").contains("Deleted task"));
+    }
+
+    #[test]
+    fn task_approval_commands_require_workspace_and_parse_live_actions() {
+        use gestura_core::tasks::TaskManager;
+
+        let base = std::env::temp_dir()
+            .join("gestura-slash-tests")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&base).unwrap();
+
+        let manager = TaskManager::new(&base);
+        let err = run_tasks_subcommand(&["approvals"], &manager, "session-1", None).unwrap_err();
+        assert!(err.contains("workspace directory"));
+
+        let out = run_tasks_subcommand(
+            &[
+                "approve", "task-123", "--actor", "reviewer", "Looks", "good",
+            ],
+            &manager,
+            "session-1",
+            Some(&base),
+        )
+        .unwrap();
+        assert!(out.changed);
+        assert_eq!(
+            out.live_action,
+            Some(TasksLiveAction::DecideApproval {
+                session_id: "session-1".to_string(),
+                workspace_dir: base.clone(),
+                task_spec: "task-123".to_string(),
+                actor_kind: ApprovalActorKind::Reviewer,
+                decision: TaskApprovalCliDecision::Approve,
+                note: Some("Looks good".to_string()),
+            })
+        );
+
+        let out = run_tasks_subcommand(&["approvals"], &manager, "session-1", Some(&base)).unwrap();
+        assert_eq!(
+            out.live_action,
+            Some(TasksLiveAction::ListApprovals {
+                session_id: "session-1".to_string(),
+                workspace_dir: base,
+            })
+        );
+    }
+
+    #[test]
+    fn pending_workflow_approval_lines_include_scope_and_allowed_actors() {
+        use chrono::Utc;
+        use gestura_core::agents::{AgentExecutionMode, AgentRole, DelegatedTask};
+        use gestura_core::orchestrator::{
+            ApprovalActor, CleanupPolicy, EnvironmentHealth, EnvironmentState,
+            ExecutionEnvironment, RecoveryStatus, SupervisorRun, SupervisorRunStatus,
+            SupervisorTaskRecord, SupervisorTaskState, TaskApprovalRecord,
+        };
+
+        let workspace_dir = std::env::temp_dir().join("gestura-cli-approval-lines");
+        let task = DelegatedTask {
+            id: "task-review-1".to_string(),
+            agent_id: "agent-review-1".to_string(),
+            prompt: "Review this patch".to_string(),
+            context: None,
+            required_tools: vec![],
+            priority: 1,
+            session_id: Some("session-approval".to_string()),
+            directive_id: None,
+            tracking_task_id: None,
+            run_id: Some("run-approval".to_string()),
+            parent_task_id: None,
+            depends_on: vec![],
+            role: Some(AgentRole::Reviewer),
+            delegation_brief: None,
+            planning_only: false,
+            approval_required: false,
+            reviewer_required: true,
+            test_required: false,
+            workspace_dir: Some(workspace_dir.clone()),
+            execution_mode: AgentExecutionMode::SharedWorkspace,
+            environment_id: Some("env-approval".to_string()),
+            remote_target: None,
+            memory_tags: vec![],
+            name: Some("Review patch".to_string()),
+        };
+        let approval = TaskApprovalRecord::pending(
+            &task,
+            ApprovalScope::Review,
+            ApprovalActor::system("orchestrator"),
+            Some("Execution finished. Awaiting explicit review approval.".to_string()),
+        );
+        let run = SupervisorRun {
+            id: "run-approval".to_string(),
+            session_id: Some("session-approval".to_string()),
+            workspace_dir: Some(workspace_dir.clone()),
+            lead_agent_id: Some("lead-1".to_string()),
+            metadata: None,
+            status: SupervisorRunStatus::Waiting,
+            tasks: vec![SupervisorTaskRecord {
+                task,
+                state: SupervisorTaskState::ReviewPending,
+                approval,
+                environment_id: "env-approval".to_string(),
+                environment: ExecutionEnvironment {
+                    id: "env-approval".to_string(),
+                    execution_mode: AgentExecutionMode::SharedWorkspace,
+                    root_dir: workspace_dir,
+                    write_access: true,
+                    branch_name: None,
+                    worktree_path: None,
+                    remote_url: None,
+                    state: EnvironmentState::Ready,
+                    health: EnvironmentHealth::Clean,
+                    cleanup_policy: CleanupPolicy::KeepAlways,
+                    recovery_status: RecoveryStatus::NotRequired,
+                    recovery_action: None,
+                    failure: None,
+                    cleanup_result: None,
+                },
+                claimed_by: Some("agent-review-1".to_string()),
+                attempts: 0,
+                blocked_reasons: vec![],
+                result: None,
+                messages: vec![],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                started_at: None,
+                completed_at: None,
+            }],
+            messages: vec![],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            completed_at: None,
+        };
+
+        let lines = format_pending_approval_lines(&[run]);
+        let joined = lines.join("\n");
+        assert!(joined.contains("task-review-1 [review]"));
+        assert!(joined.contains("Requested by: orchestrator"));
+        assert!(joined.contains("Allowed actors: reviewer, supervisor"));
     }
 
     #[test]

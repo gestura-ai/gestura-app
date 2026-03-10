@@ -2086,7 +2086,7 @@ fn handle_command(
             if args.is_empty() {
                 open_tasks_browser(app);
             } else {
-                handle_tasks_command(app, args)?;
+                handle_tasks_command(app, args, rt)?;
             }
         }
         "/task" => {
@@ -2095,7 +2095,7 @@ fn handle_command(
             if args.is_empty() {
                 open_tasks_browser(app);
             } else {
-                handle_tasks_command(app, args)?;
+                handle_tasks_command(app, args, rt)?;
             }
         }
         "/hooks" | "/hook" => {
@@ -2871,17 +2871,36 @@ fn handle_rewind_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
 }
 
 /// Handle `/task`/`/tasks <subcommand...>` command - manage tasks for the current session.
-fn handle_tasks_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
+fn handle_tasks_command(
+    app: &mut TuiApp,
+    args: &[&str],
+    rt: &tokio::runtime::Runtime,
+) -> Result<()> {
     use gestura_core::tasks::TaskManager;
 
     let task_manager =
         TaskManager::new(dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")));
 
-    match super::slash::run_tasks_subcommand(args, &task_manager, &app.session.id) {
+    match super::slash::run_tasks_subcommand(
+        args,
+        &task_manager,
+        &app.session.id,
+        app.session.workspace_dir().map(|path| path.as_path()),
+    ) {
         Ok(out) => {
+            let lines = match out.live_action {
+                Some(act) => match super::slash::execute_tasks_live_action(rt, act) {
+                    Ok(lines) => lines,
+                    Err(e) => {
+                        app.set_error(&e);
+                        return Ok(());
+                    }
+                },
+                None => out.lines,
+            };
             app.messages.push(app::TuiMessage {
                 role: "system".to_string(),
-                content: out.lines.join("\n"),
+                content: lines.join("\n"),
                 thinking: None,
                 is_streaming: false,
                 is_error: false,
@@ -2895,9 +2914,12 @@ fn handle_tasks_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
         }
         Err(e) => {
             app.set_error(&e);
-            if let Ok(out) =
-                super::slash::run_tasks_subcommand(&["help"], &task_manager, &app.session.id)
-            {
+            if let Ok(out) = super::slash::run_tasks_subcommand(
+                &["help"],
+                &task_manager,
+                &app.session.id,
+                app.session.workspace_dir().map(|path| path.as_path()),
+            ) {
                 app.messages.push(app::TuiMessage {
                     role: "system".to_string(),
                     content: out.lines.join("\n"),

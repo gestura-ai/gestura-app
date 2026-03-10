@@ -15,9 +15,12 @@ pub use gestura_core::agents::{
     TaskResult,
 };
 pub use gestura_core::orchestrator::{
-    AgentOrchestrator, ExecutionEnvironment, OrchestratorAgentManager, OrchestratorObserver,
-    SupervisorRun, SupervisorRunStatus, SupervisorTaskRecord, SupervisorTaskState, TeamMessage,
-    TeamMessageKind,
+    AgentOrchestrator, ApprovalActor, ApprovalActorKind, ApprovalDecision, ApprovalDecisionKind,
+    ApprovalPolicy, ApprovalRequest, ApprovalRequirement, ApprovalScope, ApprovalState,
+    CleanupResult, EnvironmentHealth, EnvironmentRecord, EnvironmentState, ExecutionEnvironment,
+    OrchestratorAgentManager, OrchestratorObserver, RecoveryAction, RecoveryStatus, SupervisorRun,
+    SupervisorRunStatus, SupervisorTaskRecord, SupervisorTaskState, TaskApprovalRecord,
+    TeamMessage, TeamMessageKind,
 };
 
 /// A Tauri-backed observer that mirrors orchestrator task lifecycle events into the
@@ -124,5 +127,37 @@ impl OrchestratorObserver for TauriTaskObserver {
 
     async fn on_team_message(&self, message: TeamMessage) {
         let _ = self.app.emit("orchestrator-team-message", &message);
+    }
+
+    async fn on_environment_updated(&self, environment: EnvironmentRecord) {
+        let _ = self
+            .app
+            .emit("orchestrator-environment-updated", &environment);
+    }
+
+    async fn on_environment_recovery(
+        &self,
+        environment_id: String,
+        action: RecoveryAction,
+        summary: String,
+    ) {
+        let _ = self.app.emit(
+            "orchestrator-environment-recovery",
+            &serde_json::json!({
+                "environment_id": environment_id,
+                "action": action,
+                "summary": summary,
+            }),
+        );
+    }
+
+    async fn on_environment_cleanup(&self, environment_id: String, result: CleanupResult) {
+        let _ = self.app.emit(
+            "orchestrator-environment-cleanup",
+            &serde_json::json!({
+                "environment_id": environment_id,
+                "result": result,
+            }),
+        );
     }
 }

@@ -1183,7 +1183,7 @@ fn run_basic_mode(opts: AgentOptions<'_>) -> Result<()> {
                         "/tasks" => {
                             println!();
                             if args.is_empty() {
-                                basic_mode_tasks_command(&agent_session);
+                                basic_mode_tasks_command(&agent_session, &rt);
                             } else {
                                 use gestura_core::tasks::TaskManager;
 
@@ -1194,9 +1194,22 @@ fn run_basic_mode(opts: AgentOptions<'_>) -> Result<()> {
                                     &args,
                                     &task_manager,
                                     &agent_session.id,
+                                    agent_session.workspace_dir().map(|path| path.as_path()),
                                 ) {
                                     Ok(out) => {
-                                        for line in out.lines {
+                                        let lines = match out.live_action {
+                                            Some(act) => {
+                                                match slash::execute_tasks_live_action(&rt, act) {
+                                                    Ok(lines) => lines,
+                                                    Err(e) => {
+                                                        println!("{} {}", "✗".red(), e);
+                                                        Vec::new()
+                                                    }
+                                                }
+                                            }
+                                            None => out.lines,
+                                        };
+                                        for line in lines {
                                             println!("{line}");
                                         }
                                     }
@@ -1215,7 +1228,7 @@ fn run_basic_mode(opts: AgentOptions<'_>) -> Result<()> {
                             // when they really want the interactive task browser. Treat `/task`
                             // (no args) as an alias for `/tasks`.
                             if args.is_empty() {
-                                basic_mode_tasks_command(&agent_session);
+                                basic_mode_tasks_command(&agent_session, &rt);
                             } else {
                                 use gestura_core::tasks::TaskManager;
 
@@ -1226,9 +1239,22 @@ fn run_basic_mode(opts: AgentOptions<'_>) -> Result<()> {
                                     &args,
                                     &task_manager,
                                     &agent_session.id,
+                                    agent_session.workspace_dir().map(|path| path.as_path()),
                                 ) {
                                     Ok(out) => {
-                                        for line in out.lines {
+                                        let lines = match out.live_action {
+                                            Some(act) => {
+                                                match slash::execute_tasks_live_action(&rt, act) {
+                                                    Ok(lines) => lines,
+                                                    Err(e) => {
+                                                        println!("{} {}", "✗".red(), e);
+                                                        Vec::new()
+                                                    }
+                                                }
+                                            }
+                                            None => out.lines,
+                                        };
+                                        for line in lines {
                                             println!("{line}");
                                         }
                                     }
@@ -4345,7 +4371,7 @@ fn basic_mode_permissions_command() {
 }
 
 /// Basic mode `/tasks` slash command handler — interactive browser.
-fn basic_mode_tasks_command(session: &AgentSession) {
+fn basic_mode_tasks_command(session: &AgentSession, rt: &tokio::runtime::Runtime) {
     use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
     use gestura_core::tasks::{TaskManager, TaskStatus};
 
@@ -4383,17 +4409,36 @@ fn basic_mode_tasks_command(session: &AgentSession) {
     let task_manager = TaskManager::new(dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")));
 
     let run_canonical = |args: &[&str]| {
-        match slash::run_tasks_subcommand(args, &task_manager, &session.id) {
+        match slash::run_tasks_subcommand(
+            args,
+            &task_manager,
+            &session.id,
+            session.workspace_dir().map(|path| path.as_path()),
+        ) {
             Ok(out) => {
-                for line in out.lines {
+                let lines = match out.live_action {
+                    Some(act) => match slash::execute_tasks_live_action(rt, act) {
+                        Ok(lines) => lines,
+                        Err(e) => {
+                            println!("{} {e}", "✗".red());
+                            Vec::new()
+                        }
+                    },
+                    None => out.lines,
+                };
+                for line in lines {
                     println!("{line}");
                 }
             }
             Err(e) => {
                 println!("{} {e}", "✗".red());
                 // Print usage to guide recovery.
-                if let Ok(out) = slash::run_tasks_subcommand(&["help"], &task_manager, &session.id)
-                {
+                if let Ok(out) = slash::run_tasks_subcommand(
+                    &["help"],
+                    &task_manager,
+                    &session.id,
+                    session.workspace_dir().map(|path| path.as_path()),
+                ) {
                     for line in out.lines {
                         println!("{line}");
                     }
