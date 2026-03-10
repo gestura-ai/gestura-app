@@ -1,7 +1,45 @@
-//! Agent lifecycle management and orchestration
+//! Agent lifecycle management and delegation primitives for Gestura.
 //!
-//! Provides core types for agent spawning, task delegation, and result tracking.
-//! GUI-specific orchestration (with Tauri AppHandle) remains in the GUI crate.
+//! `gestura-core-agents` provides the typed orchestration model for spawning
+//! specialist agents, delegating structured work, and tracking task execution
+//! results across local and remote execution modes.
+//!
+//! ## Design role
+//!
+//! This crate owns the agent/delegation vocabulary used by supervisor-style
+//! orchestration without pulling in GUI-specific concerns. It is intentionally a
+//! domain crate for *types and lifecycle primitives*, while presentation-layer
+//! integration and higher-level runtime coordination remain elsewhere.
+//!
+//! ## Main concepts
+//!
+//! - `AgentRole`: specialist roles such as supervisor, implementer, reviewer,
+//!   tester, and remote worker
+//! - `AgentSpawnRequest`: spawn-time contract including workspace, execution
+//!   mode, and advertised capabilities
+//! - `DelegatedTask`: structured delegated work with approvals, dependencies,
+//!   reviewer/test gates, memory tags, and remote-target metadata
+//! - `TaskResult`: normalized result payload including artifacts and tool-call
+//!   provenance
+//! - `AgentManager` and `AgentSpawner`: lifecycle primitives for creating and
+//!   managing active agents
+//!
+//! ## Execution model
+//!
+//! Delegated work supports several execution environments:
+//!
+//! - shared workspace
+//! - isolated workspace
+//! - git worktree-backed execution
+//! - remote execution targets
+//!
+//! This lets the rest of the system reason about isolation and provenance using
+//! typed metadata instead of ad hoc strings.
+//!
+//! ## Stable import paths
+//!
+//! Most application code should import these types through `gestura_core::agents::*`.
+//! GUI-specific orchestration wrappers remain in the GUI crate.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

@@ -1,8 +1,32 @@
-//! Scripting engine for Gestura
+//! Multi-language scripting engine for Gestura automation.
 //!
-//! Supports Lua, Python, and JavaScript scripting for automation.
+//! `gestura-core-scripting` provides a runtime-managed scripting surface for
+//! loading, validating, and executing user scripts across multiple languages.
+//! It is designed for automation and extensibility while keeping execution
+//! metadata and requested permissions explicit.
 //!
-//! # Example
+//! ## Supported languages
+//!
+//! - Lua
+//! - Python
+//! - JavaScript
+//!
+//! ## Main concepts
+//!
+//! - `Script`: script metadata, source, permissions, triggers, and execution stats
+//! - `ScriptPermission`: requested capabilities such as filesystem or network access
+//! - `ScriptTrigger`: declarative activation sources such as voice, gestures, or schedules
+//! - `ScriptContext`: runtime execution input including variables, session, and timeout
+//! - `ScriptingEngine`: loader, validator, runtime initializer, and executor
+//!
+//! ## Architecture role
+//!
+//! This crate owns the scripting-domain runtime and metadata model. It does not
+//! itself decide policy for *when* scripts should run in the broader product;
+//! higher-level orchestration remains in `gestura-core` and the presentation
+//! layers.
+//!
+//! ## Example
 //!
 //! ```rust,ignore
 //! use gestura_core::scripting::{ScriptingEngine, ScriptContext, ScriptPermission};
@@ -13,6 +37,10 @@
 //! let script_id = engine.load_script(&script_path).await?;
 //! let result = engine.execute_script(&script_id, context).await?;
 //! ```
+//!
+//! ## Stable import paths
+//!
+//! Most application code should import through `gestura_core::scripting::*`.
 
 use gestura_core_foundation::error::AppError;
 use std::collections::HashMap;
