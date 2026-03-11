@@ -3488,6 +3488,40 @@ pub async fn retry_workflow_task(
     state.orchestrator.retry_task(&task_id).await
 }
 
+/// Resume a blocked workflow task from its persisted checkpoint.
+#[tauri::command]
+pub async fn resume_workflow_task(
+    task_id: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<(), String> {
+    state
+        .orchestrator
+        .resume_task_from_checkpoint(&task_id)
+        .await
+}
+
+/// Restart a workflow task from scratch and discard any saved resume state.
+#[tauri::command]
+pub async fn restart_workflow_task_from_scratch(
+    task_id: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<(), String> {
+    state.orchestrator.restart_task_from_scratch(&task_id).await
+}
+
+/// Record that an operator acknowledged a blocked workflow task.
+#[tauri::command]
+pub async fn acknowledge_blocked_workflow_task(
+    task_id: String,
+    note: Option<String>,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<(), String> {
+    state
+        .orchestrator
+        .acknowledge_blocked_task(&task_id, note)
+        .await
+}
+
 /// Claim a workflow task for a specific agent.
 #[tauri::command]
 pub async fn claim_workflow_task(

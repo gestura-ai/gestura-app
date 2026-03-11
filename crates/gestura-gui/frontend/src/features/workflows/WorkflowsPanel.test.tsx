@@ -1,5 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type {
+  ChildSupervisorRunSummary,
+  EnvironmentRecord,
+  SupervisorInheritancePolicy,
+  SupervisorParentRunRef,
+  SupervisorRun,
+} from '../../services/tauri/workflows';
 
 const workflowMocks = vi.hoisted(() => ({
   archiveWorkflowThread: vi.fn().mockResolvedValue(undefined),
@@ -114,7 +121,7 @@ const asyncStateMock = vi.hoisted(() => ({
         created_at: '2026-03-10T00:00:00Z',
         updated_at: '2026-03-10T00:00:00Z',
       },
-    ],
+    ] as EnvironmentRecord[],
     runs: [
       {
         id: 'run-1',
@@ -206,7 +213,7 @@ const asyncStateMock = vi.hoisted(() => ({
         created_at: '2026-03-10T00:00:00Z',
         updated_at: '2026-03-10T00:00:00Z',
       },
-    ],
+    ] as SupervisorRun[],
     threadsByRun: {
       'run-1': [
         {
@@ -352,7 +359,7 @@ describe('WorkflowsPanel', () => {
   });
 
   it('renders child supervisor runs and allows creating another child run', async () => {
-    const rootRun = asyncStateMock.data.runs[0];
+    const rootRun = asyncStateMock.data.runs[0] as SupervisorRun;
     asyncStateMock.data.runs = [
       {
         ...rootRun,
@@ -381,9 +388,18 @@ describe('WorkflowsPanel', () => {
             updated_at: '2026-03-10T00:00:00Z',
             completed_at: null,
           },
-        ],
+        ] as ChildSupervisorRunSummary[],
         hierarchy_summary: {
-          ...rootRun.hierarchy_summary,
+          ...(rootRun.hierarchy_summary ?? {
+            depth: 0,
+            max_depth: 1,
+            child_run_count: 0,
+            descendant_task_count: 0,
+            action_required_child_count: 0,
+            rollup_status: 'waiting',
+            requires_attention: false,
+            blocked_reasons: [],
+          }),
           child_run_count: 1,
           descendant_task_count: 1,
         },
@@ -397,7 +413,7 @@ describe('WorkflowsPanel', () => {
           delegated_by_agent_id: 'supervisor-root',
           objective: 'Own frontend delivery',
           created_at: '2026-03-10T00:00:00Z',
-        },
+        } as SupervisorParentRunRef,
         child_runs: [],
         hierarchy_depth: 1,
         max_hierarchy_depth: 1,
@@ -409,7 +425,7 @@ describe('WorkflowsPanel', () => {
           workspace_dir: '.',
           memory_tags: ['frontend'],
           constraint_notes: [],
-        },
+        } as SupervisorInheritancePolicy,
         status: 'running',
         task_summary: {
           total: 1,

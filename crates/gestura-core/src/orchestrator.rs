@@ -30,7 +30,7 @@ use gestura_core_a2a::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{Mutex, RwLock, mpsc};
@@ -136,6 +136,18 @@ pub enum DelegatedResumeDisposition {
     NotApplicable,
 }
 
+/// Operator actions exposed for delegated-task checkpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegatedCheckpointAction {
+    /// Resume execution from the last persisted checkpoint boundary.
+    ResumeFromCheckpoint,
+    /// Clear any saved resume state and restart the task from scratch.
+    RestartFromScratch,
+    /// Leave the task blocked but record that an operator acknowledged it.
+    AcknowledgeBlocked,
+}
+
 /// Durable checkpoint record for delegated-task execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DelegatedTaskCheckpoint {
@@ -182,6 +194,36 @@ pub struct DelegatedTaskCheckpoint {
     /// Creation timestamp.
     pub created_at: DateTime<Utc>,
     /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Compact checkpoint metadata surfaced on workflow task records.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegatedCheckpointSummary {
+    /// Current checkpoint stage.
+    pub stage: DelegatedCheckpointStage,
+    /// Replay-safety classification.
+    pub replay_safety: DelegatedReplaySafety,
+    /// Restart/resume disposition.
+    pub resume_disposition: DelegatedResumeDisposition,
+    /// Human-readable label for the latest safe boundary.
+    pub safe_boundary_label: String,
+    /// Operator actions currently available for this checkpoint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_actions: Vec<DelegatedCheckpointAction>,
+    /// Optional operator/recovery note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Number of tool calls captured in the checkpoint history.
+    #[serde(default)]
+    pub completed_tool_call_count: usize,
+    /// Whether resumable pipeline state is available.
+    #[serde(default)]
+    pub has_resume_state: bool,
+    /// Whether a terminal result was already published for this checkpoint.
+    #[serde(default)]
+    pub result_published: bool,
+    /// Last update timestamp for the checkpoint.
     pub updated_at: DateTime<Utc>,
 }
 
@@ -854,6 +896,9 @@ pub struct SupervisorTaskRecord {
     /// Task-scoped coordination messages.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<TeamMessage>,
+    /// Delegated checkpoint metadata surfaced for operator workflows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<DelegatedCheckpointSummary>,
     /// Creation timestamp.
     pub created_at: DateTime<Utc>,
     /// Last update timestamp.
@@ -1203,6 +1248,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 result: None,
                 remote_execution: None,
                 messages: Vec::new(),
+                checkpoint: None,
                 created_at: now,
                 updated_at: now,
                 started_at: None,
@@ -1446,6 +1492,11 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 }
             }
         }
+        let checkpoints = load_latest_checkpoints_by_task(checkpoint_roots_for_runs(
+            &runs,
+            self.default_workspace_dir.as_deref(),
+        ));
+        attach_checkpoint_summaries(&mut runs, checkpoints);
         synchronize_run_hierarchy_snapshots(&mut runs);
         runs.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         runs
@@ -1541,6 +1592,11 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             .cloned()
             .collect::<Vec<_>>();
         if !in_memory_runs.is_empty() {
+            let checkpoints = load_latest_checkpoints_by_task(checkpoint_roots_for_runs(
+                &in_memory_runs,
+                self.default_workspace_dir.as_deref(),
+            ));
+            attach_checkpoint_summaries(&mut in_memory_runs, checkpoints);
             synchronize_run_hierarchy_snapshots(&mut in_memory_runs);
             if let Some(run) = in_memory_runs.into_iter().find(|run| run.id == run_id) {
                 return Some(run);
@@ -1549,6 +1605,11 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
 
         self.default_workspace_dir.as_deref().and_then(|root| {
             let mut runs = load_persisted_runs(root);
+            let checkpoints = load_latest_checkpoints_by_task(checkpoint_roots_for_runs(
+                &runs,
+                self.default_workspace_dir.as_deref(),
+            ));
+            attach_checkpoint_summaries(&mut runs, checkpoints);
             synchronize_run_hierarchy_snapshots(&mut runs);
             runs.into_iter().find(|run| run.id == run_id)
         })
@@ -1968,6 +2029,167 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             self.start_task_execution(task).await?;
         }
 
+        Ok(())
+    }
+
+    /// Resume a blocked workflow task from its latest persisted checkpoint.
+    pub async fn resume_task_from_checkpoint(&self, task_id: &str) -> Result<(), String> {
+        let run_id = self
+            .task_run_index
+            .lock()
+            .await
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| format!("Task '{}' not found", task_id))?;
+        let task = self
+            .supervisor_task_record(task_id)
+            .await
+            .map(|record| record.task)
+            .ok_or_else(|| format!("Task '{}' not found", task_id))?;
+        let checkpoint = self
+            .load_delegated_checkpoint(&task)
+            .ok_or_else(|| format!("Task '{}' has no delegated checkpoint", task_id))?;
+
+        if checkpoint.result_published {
+            return Err(format!(
+                "Task '{}' already published a terminal result and cannot be resumed",
+                task_id
+            ));
+        }
+        if checkpoint.resume_disposition != DelegatedResumeDisposition::ResumeFromCheckpoint
+            || checkpoint.resume_state.is_none()
+        {
+            return Err(format!(
+                "Task '{}' is not currently resumable from checkpoint",
+                task_id
+            ));
+        }
+        if self.active_tasks.lock().await.contains_key(task_id) {
+            return Err(format!("Task '{}' is already active", task_id));
+        }
+
+        let blocked_reason = restart_blocked_reason_for_checkpoint(&checkpoint);
+        let (run_snapshot, queued_to_start) = {
+            let mut runs = self.supervisor_runs.lock().await;
+            let run = runs
+                .get_mut(&run_id)
+                .ok_or_else(|| format!("Run '{}' not found", run_id))?;
+            let record = run
+                .tasks
+                .iter_mut()
+                .find(|record| record.task.id == task_id)
+                .ok_or_else(|| format!("Task '{}' not found in run", task_id))?;
+
+            record
+                .blocked_reasons
+                .retain(|reason| reason != &blocked_reason);
+            if !record.blocked_reasons.is_empty() {
+                return Err(format!(
+                    "Task '{}' still has unresolved blockers: {}",
+                    task_id,
+                    record.blocked_reasons.join("; ")
+                ));
+            }
+
+            record.state = SupervisorTaskState::Queued;
+            record.result = None;
+            record.completed_at = None;
+            record.started_at = None;
+            record.updated_at = Utc::now();
+            let queued_to_start = Some(record.task.clone());
+            run.updated_at = Utc::now();
+            refresh_run_rollups(run);
+            (run.clone(), queued_to_start)
+        };
+
+        let mut updated_checkpoint = checkpoint.clone();
+        updated_checkpoint.stage = DelegatedCheckpointStage::Queued;
+        updated_checkpoint.note = Some("manual resume requested from checkpoint".to_string());
+        updated_checkpoint.updated_at = Utc::now();
+        self.persist_delegated_checkpoint(&updated_checkpoint)?;
+        self.persist_run_with_hierarchy_sync(run_snapshot).await?;
+        if let Some(task) = queued_to_start {
+            self.schedule_task_execution(task);
+        }
+        Ok(())
+    }
+
+    /// Restart a workflow task from scratch and discard any saved checkpoint resume state.
+    pub async fn restart_task_from_scratch(&self, task_id: &str) -> Result<(), String> {
+        if let Some(task) = self
+            .supervisor_task_record(task_id)
+            .await
+            .map(|record| record.task)
+            && let Some(mut checkpoint) = self.load_delegated_checkpoint(&task)
+        {
+            checkpoint.stage = DelegatedCheckpointStage::Queued;
+            checkpoint.resume_state = None;
+            checkpoint.completed_tool_calls.clear();
+            checkpoint.resume_disposition = DelegatedResumeDisposition::RestartFromBoundary;
+            checkpoint.safe_boundary_label = "manual restart from scratch".to_string();
+            checkpoint.result_published = false;
+            checkpoint.note = Some("operator cleared checkpoint resume state".to_string());
+            checkpoint.updated_at = Utc::now();
+            self.persist_delegated_checkpoint(&checkpoint)?;
+        }
+
+        self.retry_task(task_id).await
+    }
+
+    /// Record that an operator acknowledged a blocked workflow task without resuming it.
+    pub async fn acknowledge_blocked_task(
+        &self,
+        task_id: &str,
+        note: Option<String>,
+    ) -> Result<(), String> {
+        let run_id = self
+            .task_run_index
+            .lock()
+            .await
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| format!("Task '{}' not found", task_id))?;
+        let task = self
+            .supervisor_task_record(task_id)
+            .await
+            .map(|record| record.task)
+            .ok_or_else(|| format!("Task '{}' not found", task_id))?;
+
+        let run_snapshot = {
+            let mut runs = self.supervisor_runs.lock().await;
+            let run = runs
+                .get_mut(&run_id)
+                .ok_or_else(|| format!("Run '{}' not found", run_id))?;
+            let record = run
+                .tasks
+                .iter_mut()
+                .find(|record| record.task.id == task_id)
+                .ok_or_else(|| format!("Task '{}' not found in run", task_id))?;
+
+            if record.state != SupervisorTaskState::Blocked {
+                return Err(format!(
+                    "Task '{}' is not blocked and does not require acknowledgement",
+                    task_id
+                ));
+            }
+
+            record.updated_at = Utc::now();
+            run.updated_at = Utc::now();
+            refresh_run_rollups(run);
+            run.clone()
+        };
+
+        if let Some(mut checkpoint) = self.load_delegated_checkpoint(&task) {
+            let message = note
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "blocked state acknowledged by operator".to_string());
+            checkpoint.stage = DelegatedCheckpointStage::Blocked;
+            checkpoint.note = Some(message);
+            checkpoint.updated_at = Utc::now();
+            self.persist_delegated_checkpoint(&checkpoint)?;
+        }
+
+        self.persist_run_with_hierarchy_sync(run_snapshot).await?;
         Ok(())
     }
 
@@ -2853,14 +3075,16 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         persist_checkpoint_to_disk(root, checkpoint)
     }
 
+    fn load_delegated_checkpoint(&self, task: &DelegatedTask) -> Option<DelegatedTaskCheckpoint> {
+        let mut checkpoints = load_latest_checkpoints_by_task(checkpoint_roots_for_task(
+            task,
+            self.default_workspace_dir.as_deref(),
+        ));
+        checkpoints.remove(&task.id)
+    }
+
     fn load_checkpoint_resume_state(&self, task: &DelegatedTask) -> Option<PausedExecutionState> {
-        let root = self
-            .default_workspace_dir
-            .as_deref()
-            .or(task.workspace_dir.as_deref())?;
-        load_persisted_checkpoints(root)
-            .into_iter()
-            .find(|checkpoint| checkpoint.task_id == task.id)
+        self.load_delegated_checkpoint(task)
             .and_then(|checkpoint| checkpoint.resume_state)
     }
 
@@ -4385,6 +4609,105 @@ fn provenance_from_metadata(
     })
 }
 
+fn checkpoint_roots_for_runs(runs: &[SupervisorRun], default_root: Option<&Path>) -> Vec<PathBuf> {
+    let mut roots = HashSet::new();
+    if let Some(root) = default_root {
+        roots.insert(root.to_path_buf());
+    }
+    for run in runs {
+        if let Some(workspace_dir) = run.workspace_dir.as_ref() {
+            roots.insert(workspace_dir.clone());
+        }
+        for record in &run.tasks {
+            if let Some(workspace_dir) = record.task.workspace_dir.as_ref() {
+                roots.insert(workspace_dir.clone());
+            }
+        }
+    }
+    roots.into_iter().collect()
+}
+
+fn checkpoint_roots_for_task(task: &DelegatedTask, default_root: Option<&Path>) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(root) = default_root {
+        roots.push(root.to_path_buf());
+    }
+    if let Some(workspace_dir) = task.workspace_dir.as_ref()
+        && !roots.iter().any(|root| root == workspace_dir)
+    {
+        roots.push(workspace_dir.clone());
+    }
+    roots
+}
+
+fn load_latest_checkpoints_by_task<I>(roots: I) -> HashMap<String, DelegatedTaskCheckpoint>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    let mut checkpoints: HashMap<String, DelegatedTaskCheckpoint> = HashMap::new();
+    for root in roots {
+        for checkpoint in load_persisted_checkpoints(&root) {
+            match checkpoints.get(&checkpoint.task_id) {
+                Some(existing) if existing.updated_at >= checkpoint.updated_at => {}
+                _ => {
+                    checkpoints.insert(checkpoint.task_id.clone(), checkpoint);
+                }
+            }
+        }
+    }
+    checkpoints
+}
+
+fn attach_checkpoint_summaries(
+    runs: &mut [SupervisorRun],
+    checkpoints: HashMap<String, DelegatedTaskCheckpoint>,
+) {
+    for run in runs {
+        for record in &mut run.tasks {
+            record.checkpoint = checkpoints
+                .get(&record.task.id)
+                .map(|checkpoint| checkpoint_summary_for_record(checkpoint, record.state));
+        }
+    }
+}
+
+fn checkpoint_summary_for_record(
+    checkpoint: &DelegatedTaskCheckpoint,
+    task_state: SupervisorTaskState,
+) -> DelegatedCheckpointSummary {
+    DelegatedCheckpointSummary {
+        stage: checkpoint.stage,
+        replay_safety: checkpoint.replay_safety,
+        resume_disposition: checkpoint.resume_disposition,
+        safe_boundary_label: checkpoint.safe_boundary_label.clone(),
+        available_actions: checkpoint_available_actions(checkpoint, task_state),
+        note: checkpoint.note.clone(),
+        completed_tool_call_count: checkpoint.completed_tool_calls.len(),
+        has_resume_state: checkpoint.resume_state.is_some(),
+        result_published: checkpoint.result_published,
+        updated_at: checkpoint.updated_at,
+    }
+}
+
+fn checkpoint_available_actions(
+    checkpoint: &DelegatedTaskCheckpoint,
+    task_state: SupervisorTaskState,
+) -> Vec<DelegatedCheckpointAction> {
+    if task_state != SupervisorTaskState::Blocked || checkpoint.result_published {
+        return Vec::new();
+    }
+
+    let mut actions = Vec::new();
+    if checkpoint.resume_disposition == DelegatedResumeDisposition::ResumeFromCheckpoint
+        && checkpoint.resume_state.is_some()
+    {
+        actions.push(DelegatedCheckpointAction::ResumeFromCheckpoint);
+    }
+    actions.push(DelegatedCheckpointAction::RestartFromScratch);
+    actions.push(DelegatedCheckpointAction::AcknowledgeBlocked);
+    actions
+}
+
 fn unresolved_dependency_reasons(run: &SupervisorRun, task: &DelegatedTask) -> Vec<String> {
     let dependency_states = run
         .tasks
@@ -5015,6 +5338,7 @@ mod tests {
             result: None,
             remote_execution: None,
             messages: vec![],
+            checkpoint: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             started_at: None,
@@ -5960,6 +6284,292 @@ mod tests {
         assert_eq!(parent_retried.status, SupervisorRunStatus::Running);
     }
 
+    #[tokio::test]
+    async fn test_supervisor_run_queries_attach_checkpoint_summary() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("checkpoint-summary.db"));
+        let orchestrator = AgentOrchestrator::new_with_workspace_root(
+            manager,
+            AppConfig::default(),
+            Some(tmp.path().to_path_buf()),
+        );
+
+        let task = DelegatedTask {
+            id: "task-checkpoint-summary".to_string(),
+            agent_id: "agent-checkpoint".to_string(),
+            prompt: "Inspect resumability".to_string(),
+            context: None,
+            required_tools: vec![],
+            priority: 1,
+            session_id: Some("session-checkpoint".to_string()),
+            directive_id: None,
+            tracking_task_id: None,
+            run_id: Some("run-checkpoint-summary".to_string()),
+            parent_task_id: None,
+            depends_on: vec![],
+            role: Some(AgentRole::Implementer),
+            delegation_brief: None,
+            planning_only: false,
+            approval_required: false,
+            reviewer_required: false,
+            test_required: false,
+            workspace_dir: Some(tmp.path().to_path_buf()),
+            execution_mode: AgentExecutionMode::SharedWorkspace,
+            environment_id: None,
+            remote_target: None,
+            memory_tags: vec![],
+            name: Some("Checkpoint task".to_string()),
+        };
+        let now = Utc::now();
+        let record = SupervisorTaskRecord {
+            task: task.clone(),
+            state: SupervisorTaskState::Blocked,
+            approval: TaskApprovalRecord::default(),
+            environment_id: "env-checkpoint".to_string(),
+            environment: test_environment("env-checkpoint", tmp.path().to_path_buf()),
+            claimed_by: None,
+            attempts: 1,
+            blocked_reasons: vec!["Task was running when orchestrator restarted; resumable checkpoint available (before tool 'file').".to_string()],
+            result: None,
+            remote_execution: None,
+            messages: vec![],
+            checkpoint: None,
+            created_at: now,
+            updated_at: now,
+            started_at: None,
+            completed_at: None,
+        };
+        let run = SupervisorRun {
+            id: "run-checkpoint-summary".to_string(),
+            session_id: Some("session-checkpoint".to_string()),
+            workspace_dir: Some(tmp.path().to_path_buf()),
+            lead_agent_id: Some("supervisor".to_string()),
+            parent_run: None,
+            child_runs: vec![],
+            hierarchy_depth: 0,
+            max_hierarchy_depth: MAX_CHILD_SUPERVISOR_DEPTH,
+            inherited_policy: None,
+            status: SupervisorRunStatus::Waiting,
+            task_summary: SupervisorRunTaskSummary {
+                total: 1,
+                queued: 0,
+                blocked: 1,
+                pending_approval: 0,
+                running: 0,
+                review_pending: 0,
+                test_pending: 0,
+                completed: 0,
+                failed: 0,
+                cancelled: 0,
+            },
+            hierarchy_summary: None,
+            tasks: vec![record],
+            messages: vec![],
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+            name: None,
+            metadata: None,
+        };
+        orchestrator
+            .supervisor_runs
+            .lock()
+            .await
+            .insert(run.id.clone(), run.clone());
+        orchestrator
+            .task_run_index
+            .lock()
+            .await
+            .insert(task.id.clone(), run.id.clone());
+
+        let checkpoint = DelegatedTaskCheckpoint {
+            id: delegated_checkpoint_id(&task.id),
+            task_id: task.id.clone(),
+            run_id: task.run_id.clone(),
+            session_id: task.session_id.clone(),
+            agent_id: task.agent_id.clone(),
+            environment_id: task.environment_id.clone(),
+            execution_mode: task.execution_mode.clone(),
+            stage: DelegatedCheckpointStage::Blocked,
+            replay_safety: DelegatedReplaySafety::CheckpointResumable,
+            resume_disposition: DelegatedResumeDisposition::ResumeFromCheckpoint,
+            safe_boundary_label: "after tool 'file' result".to_string(),
+            workspace_dir: task.workspace_dir.clone(),
+            completed_tool_calls: vec![],
+            result_published: false,
+            note: Some("resume available after restart".to_string()),
+            resume_state: Some(build_delegated_resume_state(
+                &task,
+                "prompt",
+                "partial",
+                "",
+                &[],
+                1,
+            )),
+            created_at: now,
+            updated_at: now,
+        };
+        persist_checkpoint_to_disk(tmp.path(), &checkpoint).unwrap();
+
+        let listed_run = orchestrator
+            .get_supervisor_run("run-checkpoint-summary")
+            .await
+            .unwrap();
+        let checkpoint_summary = listed_run.tasks[0].checkpoint.as_ref().unwrap();
+        assert_eq!(checkpoint_summary.stage, DelegatedCheckpointStage::Blocked);
+        assert_eq!(
+            checkpoint_summary.resume_disposition,
+            DelegatedResumeDisposition::ResumeFromCheckpoint
+        );
+        assert!(checkpoint_summary.has_resume_state);
+        assert!(
+            checkpoint_summary
+                .available_actions
+                .contains(&DelegatedCheckpointAction::ResumeFromCheckpoint)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_acknowledge_blocked_task_updates_checkpoint_note() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("checkpoint-ack.db"));
+        let orchestrator = AgentOrchestrator::new_with_workspace_root(
+            manager,
+            AppConfig::default(),
+            Some(tmp.path().to_path_buf()),
+        );
+
+        let task = DelegatedTask {
+            id: "task-checkpoint-ack".to_string(),
+            agent_id: "agent-checkpoint".to_string(),
+            prompt: "Need operator acknowledgement".to_string(),
+            context: None,
+            required_tools: vec![],
+            priority: 1,
+            session_id: Some("session-checkpoint".to_string()),
+            directive_id: None,
+            tracking_task_id: None,
+            run_id: Some("run-checkpoint-ack".to_string()),
+            parent_task_id: None,
+            depends_on: vec![],
+            role: Some(AgentRole::Implementer),
+            delegation_brief: None,
+            planning_only: false,
+            approval_required: false,
+            reviewer_required: false,
+            test_required: false,
+            workspace_dir: Some(tmp.path().to_path_buf()),
+            execution_mode: AgentExecutionMode::SharedWorkspace,
+            environment_id: None,
+            remote_target: None,
+            memory_tags: vec![],
+            name: Some("Blocked checkpoint task".to_string()),
+        };
+        let now = Utc::now();
+        let run = SupervisorRun {
+            id: "run-checkpoint-ack".to_string(),
+            session_id: Some("session-checkpoint".to_string()),
+            workspace_dir: Some(tmp.path().to_path_buf()),
+            lead_agent_id: Some("supervisor".to_string()),
+            parent_run: None,
+            child_runs: vec![],
+            hierarchy_depth: 0,
+            max_hierarchy_depth: MAX_CHILD_SUPERVISOR_DEPTH,
+            inherited_policy: None,
+            status: SupervisorRunStatus::Waiting,
+            task_summary: SupervisorRunTaskSummary {
+                total: 1,
+                queued: 0,
+                blocked: 1,
+                pending_approval: 0,
+                running: 0,
+                review_pending: 0,
+                test_pending: 0,
+                completed: 0,
+                failed: 0,
+                cancelled: 0,
+            },
+            hierarchy_summary: None,
+            tasks: vec![SupervisorTaskRecord {
+                task: task.clone(),
+                state: SupervisorTaskState::Blocked,
+                approval: TaskApprovalRecord::default(),
+                environment_id: "env-checkpoint".to_string(),
+                environment: test_environment("env-checkpoint", tmp.path().to_path_buf()),
+                claimed_by: None,
+                attempts: 1,
+                blocked_reasons: vec!["manual review required".to_string()],
+                result: None,
+                remote_execution: None,
+                messages: vec![],
+                checkpoint: None,
+                created_at: now,
+                updated_at: now,
+                started_at: None,
+                completed_at: None,
+            }],
+            messages: vec![],
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+            name: None,
+            metadata: None,
+        };
+        orchestrator
+            .supervisor_runs
+            .lock()
+            .await
+            .insert(run.id.clone(), run.clone());
+        orchestrator
+            .task_run_index
+            .lock()
+            .await
+            .insert(task.id.clone(), run.id.clone());
+
+        persist_checkpoint_to_disk(
+            tmp.path(),
+            &DelegatedTaskCheckpoint {
+                id: delegated_checkpoint_id(&task.id),
+                task_id: task.id.clone(),
+                run_id: task.run_id.clone(),
+                session_id: task.session_id.clone(),
+                agent_id: task.agent_id.clone(),
+                environment_id: task.environment_id.clone(),
+                execution_mode: task.execution_mode.clone(),
+                stage: DelegatedCheckpointStage::Blocked,
+                replay_safety: DelegatedReplaySafety::OperatorGated,
+                resume_disposition: DelegatedResumeDisposition::OperatorInterventionRequired,
+                safe_boundary_label: "before tool 'shell' execution".to_string(),
+                workspace_dir: task.workspace_dir.clone(),
+                completed_tool_calls: vec![],
+                result_published: false,
+                note: Some("waiting for operator".to_string()),
+                resume_state: None,
+                created_at: now,
+                updated_at: now,
+            },
+        )
+        .unwrap();
+
+        orchestrator
+            .acknowledge_blocked_task(&task.id, Some("reviewed by operator".to_string()))
+            .await
+            .unwrap();
+
+        let listed = orchestrator
+            .get_supervisor_run("run-checkpoint-ack")
+            .await
+            .unwrap();
+        assert_eq!(listed.tasks[0].state, SupervisorTaskState::Blocked);
+        assert_eq!(
+            listed.tasks[0]
+                .checkpoint
+                .as_ref()
+                .and_then(|summary| summary.note.as_deref()),
+            Some("reviewed by operator")
+        );
+    }
+
     #[test]
     fn test_approval_record_deserializes_from_legacy_shape() {
         let legacy = serde_json::json!({
@@ -6079,6 +6689,7 @@ mod tests {
             result: None,
             remote_execution: None,
             messages: vec![],
+            checkpoint: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             started_at: None,

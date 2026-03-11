@@ -640,6 +640,7 @@ mod tests {
             result: None,
             remote_execution: None,
             messages: vec![],
+            checkpoint: None,
             created_at: now,
             updated_at: now,
             started_at: None,

@@ -26,6 +26,26 @@ export type SupervisorTaskState =
   | 'failed'
   | 'cancelled';
 export type SupervisorRunStatus = 'draft' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
+export type DelegatedCheckpointStage =
+  | 'queued'
+  | 'dispatched'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'blocked';
+export type DelegatedReplaySafety =
+  | 'pure_readonly'
+  | 'idempotent_write'
+  | 'checkpoint_resumable'
+  | 'operator_gated'
+  | 'non_replayable_side_effect';
+export type DelegatedResumeDisposition =
+  | 'resume_from_checkpoint'
+  | 'restart_from_boundary'
+  | 'operator_intervention_required'
+  | 'not_applicable';
+export type DelegatedCheckpointAction = 'resume_from_checkpoint' | 'restart_from_scratch' | 'acknowledge_blocked';
 export type EnvironmentState =
   | 'requested'
   | 'provisioning'
@@ -388,10 +408,24 @@ export interface SupervisorTaskRecord {
   } | null;
   remote_execution?: RemoteExecutionRecord | null;
   messages: TeamMessage[];
+  checkpoint?: DelegatedCheckpointSummary | null;
   created_at: string;
   updated_at: string;
   started_at?: string | null;
   completed_at?: string | null;
+}
+
+export interface DelegatedCheckpointSummary {
+  stage: DelegatedCheckpointStage;
+  replay_safety: DelegatedReplaySafety;
+  resume_disposition: DelegatedResumeDisposition;
+  safe_boundary_label: string;
+  available_actions: DelegatedCheckpointAction[];
+  note?: string | null;
+  completed_tool_call_count: number;
+  has_resume_state: boolean;
+  result_published: boolean;
+  updated_at: string;
 }
 
 export interface SupervisorRunTaskSummary {
@@ -546,6 +580,18 @@ export const rejectWorkflowTask = async (taskId: string, actor: ApprovalActor, n
 
 export const retryWorkflowTask = async (taskId: string): Promise<void> => {
   await invokeTauri('retry_workflow_task', { task_id: taskId });
+};
+
+export const resumeWorkflowTask = async (taskId: string): Promise<void> => {
+  await invokeTauri('resume_workflow_task', { task_id: taskId });
+};
+
+export const restartWorkflowTaskFromScratch = async (taskId: string): Promise<void> => {
+  await invokeTauri('restart_workflow_task_from_scratch', { task_id: taskId });
+};
+
+export const acknowledgeBlockedWorkflowTask = async (taskId: string, note?: string): Promise<void> => {
+  await invokeTauri('acknowledge_blocked_workflow_task', { task_id: taskId, note });
 };
 
 export const retryWorkflowEnvironment = async (environmentId: string): Promise<EnvironmentRecord> => {

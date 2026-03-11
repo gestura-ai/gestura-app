@@ -16,9 +16,10 @@ use gestura_core::{
     orchestrator::{
         AgentExecutionMode, AgentOrchestrator, AgentRole, ApprovalActor, ApprovalActorKind,
         ApprovalScope, ApprovalState, ChildSupervisorRunRequest, CollaborationActionStatus,
-        CollaborationEscalationLevel, CollaborationRequestKind, SupervisorRun, SupervisorRunStatus,
-        SupervisorTaskRecord, SupervisorTaskState, TeamActionRequestDraft, TeamEscalationDraft,
-        TeamMessageDraft, TeamMessageKind, TeamThread,
+        CollaborationEscalationLevel, CollaborationRequestKind, DelegatedCheckpointAction,
+        DelegatedCheckpointStage, DelegatedReplaySafety, DelegatedResumeDisposition, SupervisorRun,
+        SupervisorRunStatus, SupervisorTaskRecord, SupervisorTaskState, TeamActionRequestDraft,
+        TeamEscalationDraft, TeamMessageDraft, TeamMessageKind, TeamThread,
     },
     tasks::{Task, TaskManager, TaskStatus},
     tools::permissions::PermissionScope,
@@ -673,6 +674,22 @@ pub(crate) enum TasksLiveAction {
         decision: TaskApprovalCliDecision,
         note: Option<String>,
     },
+    ResumeWorkflowTask {
+        session_id: String,
+        workspace_dir: PathBuf,
+        task_spec: String,
+    },
+    RestartWorkflowTask {
+        session_id: String,
+        workspace_dir: PathBuf,
+        task_spec: String,
+    },
+    AcknowledgeBlockedTask {
+        session_id: String,
+        workspace_dir: PathBuf,
+        task_spec: String,
+        note: Option<String>,
+    },
     CreateCollaboration {
         session_id: String,
         workspace_dir: PathBuf,
@@ -1184,6 +1201,78 @@ pub(crate) fn run_tasks_subcommand(
                 }),
             })
         }
+        "resume" => {
+            let workspace_dir = workspace_dir
+                .ok_or_else(|| {
+                    "No workspace directory configured. Cannot resume workflow tasks.".to_string()
+                })?
+                .to_path_buf();
+            let Some(task_spec) = args.get(1).copied() else {
+                return Err("Usage: /task resume <workflow_task_id>".to_string());
+            };
+            Ok(TasksOutcome {
+                lines: vec![format!(
+                    "Resuming workflow task {} from checkpoint…",
+                    task_spec
+                )],
+                changed: true,
+                live_action: Some(TasksLiveAction::ResumeWorkflowTask {
+                    session_id: session_id.to_string(),
+                    workspace_dir,
+                    task_spec: task_spec.to_string(),
+                }),
+            })
+        }
+        "restart" => {
+            let workspace_dir = workspace_dir
+                .ok_or_else(|| {
+                    "No workspace directory configured. Cannot restart workflow tasks.".to_string()
+                })?
+                .to_path_buf();
+            let Some(task_spec) = args.get(1).copied() else {
+                return Err("Usage: /task restart <workflow_task_id>".to_string());
+            };
+            Ok(TasksOutcome {
+                lines: vec![format!(
+                    "Restarting workflow task {} from scratch…",
+                    task_spec
+                )],
+                changed: true,
+                live_action: Some(TasksLiveAction::RestartWorkflowTask {
+                    session_id: session_id.to_string(),
+                    workspace_dir,
+                    task_spec: task_spec.to_string(),
+                }),
+            })
+        }
+        "ack-blocked" | "acknowledge-blocked" => {
+            let workspace_dir = workspace_dir
+                .ok_or_else(|| {
+                    "No workspace directory configured. Cannot acknowledge blocked workflow tasks."
+                        .to_string()
+                })?
+                .to_path_buf();
+            let Some(task_spec) = args.get(1).copied() else {
+                return Err("Usage: /task ack-blocked <workflow_task_id> [note...]".to_string());
+            };
+            let note = args
+                .get(2..)
+                .map(|parts| parts.join(" "))
+                .filter(|note| !note.trim().is_empty());
+            Ok(TasksOutcome {
+                lines: vec![format!(
+                    "Acknowledging blocked workflow task {}…",
+                    task_spec
+                )],
+                changed: true,
+                live_action: Some(TasksLiveAction::AcknowledgeBlockedTask {
+                    session_id: session_id.to_string(),
+                    workspace_dir,
+                    task_spec: task_spec.to_string(),
+                    note,
+                }),
+            })
+        }
         _ => Err(format!("Unknown /task subcommand '{sub}'. Try: /task help")),
     }
 }
@@ -1213,6 +1302,9 @@ fn tasks_usage_lines() -> Vec<String> {
         "  /task approvals".to_string(),
         "  /task approve <workflow_task_id> [--actor <supervisor|reviewer|tester|user>] [note...]".to_string(),
         "  /task reject <workflow_task_id> [--actor <supervisor|reviewer|tester|user>] [note...]".to_string(),
+        "  /task resume <workflow_task_id>".to_string(),
+        "  /task restart <workflow_task_id>".to_string(),
+        "  /task ack-blocked <workflow_task_id> [note...]".to_string(),
         "IDs can be full UUIDs or unique prefixes. Use '.' to refer to current task.".to_string(),
         "Approval commands use delegated workflow task IDs/prefixes and default to actor=supervisor.".to_string(),
     ]
@@ -1560,6 +1652,75 @@ pub(crate) fn execute_tasks_live_action(
                 note.as_deref(),
             ))
         }),
+        TasksLiveAction::ResumeWorkflowTask {
+            session_id,
+            workspace_dir,
+            task_spec,
+        } => rt.block_on(async move {
+            let runs = scoped_supervisor_runs(&orchestrator, &session_id, &workspace_dir).await;
+            let (run_id, task_id) = resolve_workflow_task_spec(&task_spec, &runs)?;
+            orchestrator.resume_task_from_checkpoint(&task_id).await?;
+            let run = orchestrator
+                .get_supervisor_run(&run_id)
+                .await
+                .ok_or_else(|| format!("Workflow run '{}' no longer exists", run_id))?;
+            let record = run
+                .tasks
+                .iter()
+                .find(|record| record.task.id == task_id)
+                .ok_or_else(|| format!("Workflow task '{}' no longer exists", task_id))?;
+            Ok(format_workflow_checkpoint_action_lines(
+                record,
+                "Resumed workflow task from checkpoint",
+            ))
+        }),
+        TasksLiveAction::RestartWorkflowTask {
+            session_id,
+            workspace_dir,
+            task_spec,
+        } => rt.block_on(async move {
+            let runs = scoped_supervisor_runs(&orchestrator, &session_id, &workspace_dir).await;
+            let (run_id, task_id) = resolve_workflow_task_spec(&task_spec, &runs)?;
+            orchestrator.restart_task_from_scratch(&task_id).await?;
+            let run = orchestrator
+                .get_supervisor_run(&run_id)
+                .await
+                .ok_or_else(|| format!("Workflow run '{}' no longer exists", run_id))?;
+            let record = run
+                .tasks
+                .iter()
+                .find(|record| record.task.id == task_id)
+                .ok_or_else(|| format!("Workflow task '{}' no longer exists", task_id))?;
+            Ok(format_workflow_checkpoint_action_lines(
+                record,
+                "Restarted workflow task from scratch",
+            ))
+        }),
+        TasksLiveAction::AcknowledgeBlockedTask {
+            session_id,
+            workspace_dir,
+            task_spec,
+            note,
+        } => rt.block_on(async move {
+            let runs = scoped_supervisor_runs(&orchestrator, &session_id, &workspace_dir).await;
+            let (run_id, task_id) = resolve_workflow_task_spec(&task_spec, &runs)?;
+            orchestrator
+                .acknowledge_blocked_task(&task_id, note.clone())
+                .await?;
+            let run = orchestrator
+                .get_supervisor_run(&run_id)
+                .await
+                .ok_or_else(|| format!("Workflow run '{}' no longer exists", run_id))?;
+            let record = run
+                .tasks
+                .iter()
+                .find(|record| record.task.id == task_id)
+                .ok_or_else(|| format!("Workflow task '{}' no longer exists", task_id))?;
+            Ok(format_workflow_checkpoint_action_lines(
+                record,
+                "Acknowledged blocked workflow task",
+            ))
+        }),
         TasksLiveAction::CreateCollaboration {
             session_id,
             workspace_dir,
@@ -1727,6 +1888,9 @@ impl TasksLiveAction {
             | Self::ListApprovals { workspace_dir, .. }
             | Self::ListThreads { workspace_dir, .. }
             | Self::DecideApproval { workspace_dir, .. }
+            | Self::ResumeWorkflowTask { workspace_dir, .. }
+            | Self::RestartWorkflowTask { workspace_dir, .. }
+            | Self::AcknowledgeBlockedTask { workspace_dir, .. }
             | Self::CreateCollaboration { workspace_dir, .. }
             | Self::UpdateThread { workspace_dir, .. }
             | Self::CreateChildSupervisorRun { workspace_dir, .. } => workspace_dir.as_path(),
@@ -1843,6 +2007,18 @@ fn resolve_workflow_run_or_task_spec(
         [(run_id, task_id)] => Ok((run_id.clone(), Some(task_id.clone()))),
         _ => Err(format!(
             "Workflow task id '{spec}' matched multiple runs/tasks"
+        )),
+    }
+}
+
+fn resolve_workflow_task_spec(
+    spec: &str,
+    runs: &[SupervisorRun],
+) -> std::result::Result<(String, String), String> {
+    match resolve_workflow_run_or_task_spec(spec, runs)? {
+        (run_id, Some(task_id)) => Ok((run_id, task_id)),
+        _ => Err(format!(
+            "'{spec}' matched a workflow run, but a task id is required"
         )),
     }
 }
@@ -2158,6 +2334,50 @@ fn format_task_approval_decision_lines(
     lines
 }
 
+fn format_workflow_checkpoint_action_lines(
+    record: &SupervisorTaskRecord,
+    headline: &str,
+) -> Vec<String> {
+    let mut lines = vec![format!("{headline}: {}", record.task.id)];
+    lines.push(format!(
+        "Task state: {}",
+        format_supervisor_task_state(record.state)
+    ));
+    if let Some(checkpoint) = record.checkpoint.as_ref() {
+        lines.push(format!(
+            "Checkpoint: {} · {} · boundary={} · tool_calls={}",
+            format_checkpoint_stage(checkpoint.stage),
+            format_resume_disposition(checkpoint.resume_disposition),
+            checkpoint.safe_boundary_label,
+            checkpoint.completed_tool_call_count
+        ));
+        lines.push(format!(
+            "Replay safety: {} · Resume state: {}",
+            format_replay_safety(checkpoint.replay_safety),
+            if checkpoint.has_resume_state {
+                "available"
+            } else {
+                "not captured"
+            }
+        ));
+        if !checkpoint.available_actions.is_empty() {
+            lines.push(format!(
+                "Available actions: {}",
+                checkpoint
+                    .available_actions
+                    .iter()
+                    .map(|action| format_checkpoint_action(*action))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if let Some(note) = checkpoint.note.as_deref() {
+            lines.push(format!("Checkpoint note: {note}"));
+        }
+    }
+    lines
+}
+
 fn is_pending_approval_record(record: &SupervisorTaskRecord) -> bool {
     matches!(
         record.state,
@@ -2220,6 +2440,47 @@ fn format_supervisor_task_state(state: SupervisorTaskState) -> &'static str {
     }
 }
 
+fn format_checkpoint_stage(stage: DelegatedCheckpointStage) -> &'static str {
+    match stage {
+        DelegatedCheckpointStage::Queued => "queued",
+        DelegatedCheckpointStage::Dispatched => "dispatched",
+        DelegatedCheckpointStage::Running => "running",
+        DelegatedCheckpointStage::Completed => "completed",
+        DelegatedCheckpointStage::Failed => "failed",
+        DelegatedCheckpointStage::Cancelled => "cancelled",
+        DelegatedCheckpointStage::Blocked => "blocked",
+    }
+}
+
+fn format_replay_safety(safety: DelegatedReplaySafety) -> &'static str {
+    match safety {
+        DelegatedReplaySafety::PureReadonly => "pure_readonly",
+        DelegatedReplaySafety::IdempotentWrite => "idempotent_write",
+        DelegatedReplaySafety::CheckpointResumable => "checkpoint_resumable",
+        DelegatedReplaySafety::OperatorGated => "operator_gated",
+        DelegatedReplaySafety::NonReplayableSideEffect => "non_replayable_side_effect",
+    }
+}
+
+fn format_resume_disposition(disposition: DelegatedResumeDisposition) -> &'static str {
+    match disposition {
+        DelegatedResumeDisposition::ResumeFromCheckpoint => "resume_from_checkpoint",
+        DelegatedResumeDisposition::RestartFromBoundary => "restart_from_boundary",
+        DelegatedResumeDisposition::OperatorInterventionRequired => {
+            "operator_intervention_required"
+        }
+        DelegatedResumeDisposition::NotApplicable => "not_applicable",
+    }
+}
+
+fn format_checkpoint_action(action: DelegatedCheckpointAction) -> &'static str {
+    match action {
+        DelegatedCheckpointAction::ResumeFromCheckpoint => "resume_from_checkpoint",
+        DelegatedCheckpointAction::RestartFromScratch => "restart_from_scratch",
+        DelegatedCheckpointAction::AcknowledgeBlocked => "acknowledge_blocked",
+    }
+}
+
 fn format_supervisor_run_status(status: SupervisorRunStatus) -> &'static str {
     match status {
         SupervisorRunStatus::Draft => "draft",
@@ -2229,6 +2490,31 @@ fn format_supervisor_run_status(status: SupervisorRunStatus) -> &'static str {
         SupervisorRunStatus::Failed => "failed",
         SupervisorRunStatus::Cancelled => "cancelled",
     }
+}
+
+fn checkpoint_tree_line(record: &SupervisorTaskRecord) -> Option<String> {
+    let checkpoint = record.checkpoint.as_ref()?;
+    Some(format!(
+        "  • task {} [{}] · {} · {} · boundary={}{}",
+        short_id(&record.task.id),
+        format_supervisor_task_state(record.state),
+        format_checkpoint_stage(checkpoint.stage),
+        format_resume_disposition(checkpoint.resume_disposition),
+        checkpoint.safe_boundary_label,
+        if checkpoint.available_actions.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " · actions={}",
+                checkpoint
+                    .available_actions
+                    .iter()
+                    .map(|action| format_checkpoint_action(*action))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        }
+    ))
 }
 
 fn format_supervisor_run_tree_lines(runs: &[SupervisorRun]) -> Vec<String> {
@@ -2272,6 +2558,15 @@ fn format_supervisor_run_tree_lines(runs: &[SupervisorRun]) -> Vec<String> {
                 summary.blocked_reasons.join(", ")
             ));
         }
+        for record in root
+            .tasks
+            .iter()
+            .filter(|record| record.checkpoint.is_some())
+        {
+            if let Some(line) = checkpoint_tree_line(record) {
+                lines.push(line);
+            }
+        }
         for child in runs.iter().filter(|run| {
             run.parent_run
                 .as_ref()
@@ -2291,6 +2586,15 @@ fn format_supervisor_run_tree_lines(runs: &[SupervisorRun]) -> Vec<String> {
                 child.task_summary.total,
                 objective
             ));
+            for record in child
+                .tasks
+                .iter()
+                .filter(|record| record.checkpoint.is_some())
+            {
+                if let Some(line) = checkpoint_tree_line(record) {
+                    lines.push(format!("  {line}"));
+                }
+            }
         }
         lines.push(String::new());
     }
@@ -3602,6 +3906,7 @@ mod tests {
                 result: None,
                 remote_execution: None,
                 messages: vec![],
+                checkpoint: None,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 started_at: None,
@@ -3655,6 +3960,47 @@ mod tests {
             Some(TasksLiveAction::ListHierarchy {
                 session_id: "session-1".to_string(),
                 workspace_dir: base.clone(),
+            })
+        );
+
+        let resume =
+            run_tasks_subcommand(&["resume", "task-123"], &manager, "session-1", Some(&base))
+                .unwrap();
+        assert_eq!(
+            resume.live_action,
+            Some(TasksLiveAction::ResumeWorkflowTask {
+                session_id: "session-1".to_string(),
+                workspace_dir: base.clone(),
+                task_spec: "task-123".to_string(),
+            })
+        );
+
+        let restart =
+            run_tasks_subcommand(&["restart", "task-123"], &manager, "session-1", Some(&base))
+                .unwrap();
+        assert_eq!(
+            restart.live_action,
+            Some(TasksLiveAction::RestartWorkflowTask {
+                session_id: "session-1".to_string(),
+                workspace_dir: base.clone(),
+                task_spec: "task-123".to_string(),
+            })
+        );
+
+        let ack = run_tasks_subcommand(
+            &["ack-blocked", "task-123", "waiting", "for", "ops"],
+            &manager,
+            "session-1",
+            Some(&base),
+        )
+        .unwrap();
+        assert_eq!(
+            ack.live_action,
+            Some(TasksLiveAction::AcknowledgeBlockedTask {
+                session_id: "session-1".to_string(),
+                workspace_dir: base.clone(),
+                task_spec: "task-123".to_string(),
+                note: Some("waiting for ops".to_string()),
             })
         );
 

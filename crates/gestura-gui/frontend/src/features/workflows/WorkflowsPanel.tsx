@@ -2,9 +2,11 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { Agent, listAgents } from '../../services/tauri/agents';
 import {
+  acknowledgeBlockedWorkflowTask,
   ApprovalActor,
   ApprovalActorKind,
   ApprovalScope,
+  DelegatedCheckpointAction,
   archiveWorkflowThread,
   approveWorkflowTask,
   cancelTask,
@@ -22,6 +24,8 @@ import {
   listWorkflowThreads,
   reconcileWorkflowState,
   rejectWorkflowTask,
+  restartWorkflowTaskFromScratch,
+  resumeWorkflowTask,
   retryWorkflowEnvironment,
   retryWorkflowTask,
   sendWorkflowCollaborationMessage,
@@ -40,6 +44,17 @@ import { useInterval } from '../../shared/hooks/useInterval';
 
 const gatedStates = new Set(['pending_approval', 'review_pending', 'test_pending']);
 const retryableStates = new Set(['failed', 'blocked', 'cancelled']);
+
+const formatCheckpointLabel = (value: string): string =>
+  value
+    .split('_')
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
+
+const checkpointHasAction = (
+  record: SupervisorTaskRecord,
+  action: DelegatedCheckpointAction,
+): boolean => record.checkpoint?.available_actions.includes(action) ?? false;
 
 const summarizeTask = (task: SupervisorTaskRecord | DelegatedTask): string => {
   const value = 'task' in task ? task.task.name ?? task.task.prompt : task.name ?? task.prompt;
@@ -725,6 +740,10 @@ const WorkflowsPanel: React.FC = () => {
                           const approvalActorKind =
                             approvalActorSelections[record.task.id] ?? approvalActorOptions[0] ?? defaultApprovalActorKind(record.state);
                           const latestDecision = record.approval.decisions[record.approval.decisions.length - 1];
+                          const checkpoint = record.checkpoint;
+                          const canResumeFromCheckpoint = checkpointHasAction(record, 'resume_from_checkpoint');
+                          const canRestartFromScratch = checkpointHasAction(record, 'restart_from_scratch');
+                          const canAcknowledgeBlocked = checkpointHasAction(record, 'acknowledge_blocked');
                           return (
                             <div key={record.task.id} className="task-card">
                               <div className="task-header">
@@ -754,6 +773,18 @@ const WorkflowsPanel: React.FC = () => {
                               ) : null}
                               {record.blocked_reasons.length > 0 ? (
                                 <div className="task-description">Blocked by: {record.blocked_reasons.join('; ')}</div>
+                              ) : null}
+                              {checkpoint ? (
+                                <>
+                                  <div className="task-description">
+                                    Checkpoint: {formatCheckpointLabel(checkpoint.stage)} · {formatCheckpointLabel(checkpoint.resume_disposition)} · {checkpoint.safe_boundary_label}
+                                  </div>
+                                  <div className="task-description">
+                                    Replay safety: {formatCheckpointLabel(checkpoint.replay_safety)} · Tool calls: {checkpoint.completed_tool_call_count} · Resume state:{' '}
+                                    {checkpoint.has_resume_state ? 'available' : 'not captured'}
+                                  </div>
+                                  {checkpoint.note ? <div className="task-description">Checkpoint note: {checkpoint.note}</div> : null}
+                                </>
                               ) : null}
                               {record.remote_execution ? (
                                 <>
@@ -855,6 +886,33 @@ const WorkflowsPanel: React.FC = () => {
                                 {retryableStates.has(record.state) ? (
                                   <Button size="small" onClick={() => handleTaskAction(() => retryWorkflowTask(record.task.id))}>
                                     Retry
+                                  </Button>
+                                ) : null}
+                                {canResumeFromCheckpoint ? (
+                                  <Button size="small" onClick={() => handleTaskAction(() => resumeWorkflowTask(record.task.id))}>
+                                    Resume
+                                  </Button>
+                                ) : null}
+                                {canRestartFromScratch ? (
+                                  <Button
+                                    tone="secondary"
+                                    size="small"
+                                    onClick={() => handleTaskAction(() => restartWorkflowTaskFromScratch(record.task.id))}
+                                  >
+                                    Restart from scratch
+                                  </Button>
+                                ) : null}
+                                {canAcknowledgeBlocked ? (
+                                  <Button
+                                    tone="secondary"
+                                    size="small"
+                                    onClick={() =>
+                                      handleTaskAction(() =>
+                                        acknowledgeBlockedWorkflowTask(record.task.id, 'Acknowledged in workflow panel.')
+                                      )
+                                    }
+                                  >
+                                    Acknowledge blocked
                                   </Button>
                                 ) : null}
                                 <Button tone="secondary" size="small" onClick={() => setActiveTab('environments')}>
