@@ -16,7 +16,10 @@ mod recovery;
 
 use crate::tasks::{TaskBackgroundJob, TaskBackgroundStatus};
 use crate::tools::PermissionManager;
-use crate::{AgentPipeline, AgentRequest, AppConfig, RequestSource, SessionWorkspace};
+use crate::{
+    AgentPipeline, AgentRequest, AppConfig, CancellationToken, PausedExecutionState, RequestSource,
+    SessionWorkspace, StreamChunk, ToolCallRecord,
+};
 use crate::{MemoryBankEntry, MemoryScope, MemoryType};
 use crate::{TaskManager, TaskStatus};
 use chrono::{DateTime, Utc};
@@ -173,6 +176,9 @@ pub struct DelegatedTaskCheckpoint {
     /// Optional terminal or recovery note.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Resumable execution state captured at the last safe boundary, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_state: Option<PausedExecutionState>,
     /// Creation timestamp.
     pub created_at: DateTime<Utc>,
     /// Last update timestamp.
@@ -2406,12 +2412,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             let task_result = if matches!(task.execution_mode, AgentExecutionMode::Remote) {
                 orchestrator.execute_remote_task(&task, start).await
             } else {
-                let (result, tool_calls) = execute_delegated_task(
-                    &orchestrator.agent_manager,
-                    &orchestrator.config,
-                    &task,
-                )
-                .await;
+                let (result, tool_calls) = execute_delegated_task(&orchestrator, &task).await;
                 let duration_ms = start.elapsed().as_millis() as u64;
                 TaskResult {
                     task_id: task.id.clone(),
@@ -2841,15 +2842,26 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         &self,
         checkpoint: &DelegatedTaskCheckpoint,
     ) -> Result<(), String> {
-        let Some(root) = checkpoint
-            .workspace_dir
+        let Some(root) = self
+            .default_workspace_dir
             .as_deref()
-            .or(self.default_workspace_dir.as_deref())
+            .or(checkpoint.workspace_dir.as_deref())
         else {
             return Ok(());
         };
 
         persist_checkpoint_to_disk(root, checkpoint)
+    }
+
+    fn load_checkpoint_resume_state(&self, task: &DelegatedTask) -> Option<PausedExecutionState> {
+        let root = self
+            .default_workspace_dir
+            .as_deref()
+            .or(task.workspace_dir.as_deref())?;
+        load_persisted_checkpoints(root)
+            .into_iter()
+            .find(|checkpoint| checkpoint.task_id == task.id)
+            .and_then(|checkpoint| checkpoint.resume_state)
     }
 
     async fn persist_run_with_hierarchy_sync(
@@ -3196,8 +3208,7 @@ fn collaboration_status_message(status: CollaborationActionStatus, note: Option<
 ///
 /// Returns the final (text) result (or error string) and a structured list of tool calls.
 async fn execute_delegated_task<M: OrchestratorAgentManager>(
-    agent_manager: &M,
-    config: &AppConfig,
+    orchestrator: &AgentOrchestrator<M>,
     task: &DelegatedTask,
 ) -> (Result<String, String>, Vec<OrchestratorToolCall>) {
     let role = task.role.clone().unwrap_or_default();
@@ -3231,11 +3242,14 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
     );
 
     // Update agent activity.
-    agent_manager.update_activity(&task.agent_id).await;
+    orchestrator
+        .agent_manager
+        .update_activity(&task.agent_id)
+        .await;
 
     // Build the agent request with tool filtering.
     let mut request = AgentRequest::new(&full_prompt)
-        .with_streaming(false)
+        .with_streaming(true)
         .with_source(RequestSource::Orchestrator)
         .with_allowed_tools(task.required_tools.clone())
         .with_agent(task.agent_id.clone())
@@ -3254,45 +3268,158 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
         request = request.with_workspace(workspace_dir.clone());
     }
 
-    // Execute via unified pipeline.
-    let pipeline = AgentPipeline::with_provider_optimized_config(config.clone()).with_knowledge(
-        orchestrator_knowledge_store(),
-        orchestrator_knowledge_settings(),
-    );
-    let result = pipeline.process_blocking(request).await;
+    if let Some(resume_state) = orchestrator.load_checkpoint_resume_state(task) {
+        request = request.with_resume_state(resume_state);
+    }
+
+    let pipeline = AgentPipeline::with_provider_optimized_config(orchestrator.config.clone())
+        .with_knowledge(
+            orchestrator_knowledge_store(),
+            orchestrator_knowledge_settings(),
+        );
+    let (tx, mut rx) = mpsc::channel(256);
+    let cancel_token = CancellationToken::new();
+    let pipeline_handle =
+        tokio::spawn(async move { pipeline.process_streaming(request, tx, cancel_token).await });
+
+    #[derive(Default)]
+    struct PendingDelegatedToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+    }
+
+    let mut partial_content = String::new();
+    let mut partial_thinking = String::new();
+    let mut current_iteration = 0u32;
+    let mut pending_tool_call: Option<PendingDelegatedToolCall> = None;
+    let mut completed_resume_tool_calls: Vec<ToolCallRecord> = Vec::new();
+    let mut completed_orchestrator_tool_calls: Vec<OrchestratorToolCall> = Vec::new();
+
+    while let Some(chunk) = rx.recv().await {
+        match chunk {
+            StreamChunk::AgentLoopIteration { iteration } => {
+                current_iteration = iteration;
+            }
+            StreamChunk::Text(text) => partial_content.push_str(&text),
+            StreamChunk::Thinking(thinking) => partial_thinking.push_str(&thinking),
+            StreamChunk::ToolCallStart { id, name } => {
+                pending_tool_call = Some(PendingDelegatedToolCall {
+                    id,
+                    name,
+                    arguments: String::new(),
+                });
+            }
+            StreamChunk::ToolCallArgs(args) => {
+                if let Some(pending) = pending_tool_call.as_mut() {
+                    pending.arguments.push_str(&args);
+                }
+            }
+            StreamChunk::ToolCallEnd => {
+                if let Some(pending) = pending_tool_call.as_ref() {
+                    let pending_call =
+                        pending_orchestrator_tool_call(&pending.name, &pending.arguments);
+                    let replay_safety = replay_safety_for_tool_call(&pending_call);
+                    let checkpoint = delegated_running_checkpoint(
+                        task,
+                        completed_orchestrator_tool_calls.clone(),
+                        build_delegated_resume_state(
+                            task,
+                            &full_prompt,
+                            &partial_content,
+                            &partial_thinking,
+                            &completed_resume_tool_calls,
+                            current_iteration,
+                        ),
+                        replay_safety,
+                        restart_resume_disposition(replay_safety),
+                        format!("before tool '{}' execution", pending.name),
+                        Some(format!(
+                            "Waiting for completion of tool '{}' during delegated execution.",
+                            pending.name
+                        )),
+                    );
+                    let _ = orchestrator.persist_delegated_checkpoint(&checkpoint);
+                }
+            }
+            StreamChunk::ToolCallResult {
+                name,
+                success,
+                output,
+                duration_ms,
+            } => {
+                let pending = pending_tool_call
+                    .take()
+                    .unwrap_or(PendingDelegatedToolCall {
+                        id: format!("delegated-tool-{}", completed_resume_tool_calls.len() + 1),
+                        name,
+                        arguments: String::new(),
+                    });
+                let record = ToolCallRecord {
+                    id: pending.id.clone(),
+                    name: pending.name.clone(),
+                    arguments: pending.arguments.clone(),
+                    result: if success {
+                        crate::ToolResult::Success(output.clone())
+                    } else {
+                        crate::ToolResult::Error(output.clone())
+                    },
+                    duration_ms,
+                };
+                completed_orchestrator_tool_calls.push(orchestrator_tool_call_from_record(&record));
+                completed_resume_tool_calls.push(record);
+                let checkpoint = delegated_running_checkpoint(
+                    task,
+                    completed_orchestrator_tool_calls.clone(),
+                    build_delegated_resume_state(
+                        task,
+                        &full_prompt,
+                        &partial_content,
+                        &partial_thinking,
+                        &completed_resume_tool_calls,
+                        current_iteration,
+                    ),
+                    DelegatedReplaySafety::CheckpointResumable,
+                    DelegatedResumeDisposition::ResumeFromCheckpoint,
+                    format!("after tool '{}' result", pending.name),
+                    Some(format!(
+                        "Persisted tool result for '{}' and captured resumable state.",
+                        pending.name
+                    )),
+                );
+                let _ = orchestrator.persist_delegated_checkpoint(&checkpoint);
+            }
+            _ => {}
+        }
+    }
+
+    let result = match pipeline_handle.await {
+        Ok(result) => result,
+        Err(error) => {
+            tracing::error!(
+                agent_id = %task.agent_id,
+                task_id = %task.id,
+                error = %error,
+                "Delegated task pipeline worker panicked"
+            );
+            return (
+                Err(format!("Delegated pipeline task failed: {error}")),
+                completed_orchestrator_tool_calls,
+            );
+        }
+    };
 
     match result {
         Ok(response) => {
-            // Convert pipeline tool calls to orchestrator format.
-            let tool_calls: Vec<OrchestratorToolCall> = response
-                .tool_calls
-                .into_iter()
-                .map(|tc| {
-                    // Parse arguments as JSON for input.
-                    let input =
-                        serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
-
-                    // Extract output and success from ToolResult.
-                    let (output, success) = match &tc.result {
-                        crate::ToolResult::Success(s) => (
-                            serde_json::from_str(s).unwrap_or(serde_json::json!({"result": s})),
-                            true,
-                        ),
-                        crate::ToolResult::Error(e) => (serde_json::json!({"error": e}), false),
-                        crate::ToolResult::Skipped(reason) => {
-                            (serde_json::json!({"skipped": reason}), false)
-                        }
-                    };
-
-                    OrchestratorToolCall {
-                        tool_name: tc.name,
-                        input,
-                        output,
-                        success,
-                        duration_ms: tc.duration_ms,
-                    }
-                })
-                .collect();
+            let tool_calls = if completed_orchestrator_tool_calls.is_empty() {
+                response
+                    .tool_calls
+                    .iter()
+                    .map(orchestrator_tool_call_from_record)
+                    .collect()
+            } else {
+                completed_orchestrator_tool_calls
+            };
 
             tracing::info!(
                 agent_id = %task.agent_id,
@@ -3309,9 +3436,10 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
                 agent_id = %task.agent_id,
                 task_id = %task.id,
                 error = %e,
+                tool_calls_count = completed_orchestrator_tool_calls.len(),
                 "Task failed"
             );
-            (Err(e.to_string()), Vec::new())
+            (Err(e.to_string()), completed_orchestrator_tool_calls)
         }
     }
 }
@@ -3429,6 +3557,7 @@ fn delegated_start_checkpoint(task: &DelegatedTask) -> DelegatedTaskCheckpoint {
         completed_tool_calls: Vec::new(),
         result_published: false,
         note: Some("Task dispatched and awaiting local execution progress.".to_string()),
+        resume_state: None,
         created_at: now,
         updated_at: now,
     }
@@ -3462,6 +3591,39 @@ fn delegated_terminal_checkpoint(
         } else {
             format!("Task finished unsuccessfully: {}", task_result.output)
         }),
+        resume_state: None,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn delegated_running_checkpoint(
+    task: &DelegatedTask,
+    completed_tool_calls: Vec<OrchestratorToolCall>,
+    resume_state: PausedExecutionState,
+    replay_safety: DelegatedReplaySafety,
+    resume_disposition: DelegatedResumeDisposition,
+    safe_boundary_label: String,
+    note: Option<String>,
+) -> DelegatedTaskCheckpoint {
+    let now = Utc::now();
+    DelegatedTaskCheckpoint {
+        id: delegated_checkpoint_id(&task.id),
+        task_id: task.id.clone(),
+        run_id: task.run_id.clone(),
+        session_id: task.session_id.clone(),
+        agent_id: task.agent_id.clone(),
+        environment_id: task.environment_id.clone(),
+        execution_mode: task.execution_mode.clone(),
+        stage: DelegatedCheckpointStage::Running,
+        replay_safety,
+        resume_disposition,
+        safe_boundary_label,
+        workspace_dir: task.workspace_dir.clone(),
+        completed_tool_calls,
+        result_published: false,
+        note,
+        resume_state: Some(resume_state),
         created_at: now,
         updated_at: now,
     }
@@ -3567,6 +3729,64 @@ fn checkpoint_for_restart_recovery(
     updated.note = Some("execution interrupted during restart".to_string());
     updated.updated_at = Utc::now();
     updated
+}
+
+fn build_delegated_resume_state(
+    task: &DelegatedTask,
+    original_input: &str,
+    partial_content: &str,
+    partial_thinking: &str,
+    completed_tool_calls: &[ToolCallRecord],
+    iteration: u32,
+) -> PausedExecutionState {
+    PausedExecutionState {
+        original_input: original_input.to_string(),
+        system_prompt: None,
+        history: Vec::new(),
+        partial_content: partial_content.to_string(),
+        partial_thinking: if partial_thinking.is_empty() {
+            None
+        } else {
+            Some(partial_thinking.to_string())
+        },
+        completed_tool_calls: completed_tool_calls.to_vec(),
+        iteration,
+        source: RequestSource::Orchestrator,
+        session_id: task.session_id.clone(),
+        workspace_dir: task.workspace_dir.clone(),
+        model_snapshot: None,
+        paused_at: Utc::now(),
+    }
+}
+
+fn orchestrator_tool_call_from_record(record: &ToolCallRecord) -> OrchestratorToolCall {
+    let input = serde_json::from_str(&record.arguments).unwrap_or_else(|_| json!({}));
+    let (output, success) = match &record.result {
+        crate::ToolResult::Success(value) => (
+            serde_json::from_str(value).unwrap_or_else(|_| json!({ "result": value })),
+            true,
+        ),
+        crate::ToolResult::Error(error) => (json!({ "error": error }), false),
+        crate::ToolResult::Skipped(reason) => (json!({ "skipped": reason }), false),
+    };
+
+    OrchestratorToolCall {
+        tool_name: record.name.clone(),
+        input,
+        output,
+        success,
+        duration_ms: record.duration_ms,
+    }
+}
+
+fn pending_orchestrator_tool_call(name: &str, arguments: &str) -> OrchestratorToolCall {
+    OrchestratorToolCall {
+        tool_name: name.to_string(),
+        input: serde_json::from_str(arguments).unwrap_or_else(|_| json!({})),
+        output: json!({}),
+        success: false,
+        duration_ms: 0,
+    }
 }
 
 fn restart_blocked_reason_for_checkpoint(checkpoint: &DelegatedTaskCheckpoint) -> String {

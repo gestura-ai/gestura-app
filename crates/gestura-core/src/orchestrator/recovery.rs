@@ -595,6 +595,7 @@ mod tests {
             completed_tool_calls: Vec::new(),
             result_published: false,
             note: None,
+            resume_state: None,
             created_at: now,
             updated_at: now,
         }
