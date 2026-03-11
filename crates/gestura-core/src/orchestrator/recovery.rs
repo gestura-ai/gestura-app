@@ -57,6 +57,9 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         }
 
         let _ = self.reconcile_persisted_state_sync();
+        for task in self.prepare_resumable_tasks_from_checkpoints_sync() {
+            self.schedule_task_execution(task);
+        }
     }
 
     pub async fn reconcile_orchestrator_state(&self) -> Result<(), String> {
@@ -269,6 +272,73 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         }
 
         Ok(())
+    }
+
+    fn prepare_resumable_tasks_from_checkpoints_sync(&self) -> Vec<DelegatedTask> {
+        let checkpoints_by_task = self
+            .default_workspace_dir
+            .as_deref()
+            .map(load_persisted_checkpoints)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|checkpoint| (checkpoint.task_id.clone(), checkpoint))
+            .collect::<HashMap<_, _>>();
+
+        let Ok(mut runs) = self.supervisor_runs.try_lock() else {
+            return Vec::new();
+        };
+
+        let mut tasks_to_resume = Vec::new();
+        let mut run_updates = Vec::new();
+        let mut checkpoint_updates = Vec::new();
+
+        for run in runs.values_mut() {
+            let mut run_changed = false;
+            for task_record in &mut run.tasks {
+                let Some(checkpoint) = checkpoints_by_task.get(&task_record.task.id) else {
+                    continue;
+                };
+                if !matches!(task_record.state, SupervisorTaskState::Blocked)
+                    || checkpoint.result_published
+                    || checkpoint.resume_state.is_none()
+                    || checkpoint.resume_disposition
+                        != DelegatedResumeDisposition::ResumeFromCheckpoint
+                {
+                    continue;
+                }
+
+                let blocked_reason = restart_blocked_reason_for_checkpoint(checkpoint);
+                task_record.state = SupervisorTaskState::Queued;
+                task_record
+                    .blocked_reasons
+                    .retain(|reason| reason != &blocked_reason);
+                task_record.updated_at = Utc::now();
+                tasks_to_resume.push(task_record.task.clone());
+
+                let mut updated_checkpoint = checkpoint.clone();
+                updated_checkpoint.stage = DelegatedCheckpointStage::Queued;
+                updated_checkpoint.note = Some("resume scheduled after restart".to_string());
+                updated_checkpoint.updated_at = Utc::now();
+                checkpoint_updates.push(updated_checkpoint);
+                run_changed = true;
+            }
+
+            if run_changed {
+                refresh_run_rollups(run);
+                run_updates.push(run.clone());
+            }
+        }
+
+        drop(runs);
+
+        for run in run_updates {
+            let _ = self.persist_run(&run);
+        }
+        for checkpoint in checkpoint_updates {
+            let _ = self.persist_delegated_checkpoint(&checkpoint);
+        }
+
+        tasks_to_resume
     }
 }
 
@@ -968,5 +1038,66 @@ mod tests {
             checkpoint.note.as_deref(),
             Some("execution interrupted during restart")
         );
+    }
+
+    #[test]
+    fn test_prepare_resumable_tasks_from_checkpoints_sync_marks_safe_tasks_pending() {
+        let temp = tempdir().expect("tempdir");
+        let orchestrator = test_orchestrator(temp.path());
+
+        let task = test_task(
+            temp.path(),
+            "run-safe-resume",
+            "task-safe-resume",
+            "agent-safe-resume",
+            AgentExecutionMode::IsolatedWorkspace,
+        );
+        let environment = test_environment_record(
+            temp.path(),
+            task.workspace_dir.as_ref().expect("workspace").clone(),
+            AgentExecutionMode::IsolatedWorkspace,
+            None,
+        );
+        persist_environment_to_disk(temp.path(), &environment).expect("persist environment");
+
+        let mut checkpoint = test_checkpoint(&task);
+        checkpoint.stage = DelegatedCheckpointStage::Blocked;
+        checkpoint.note = Some("execution interrupted during restart".to_string());
+        checkpoint.resume_state = Some(build_delegated_resume_state(
+            &task,
+            "delegated prompt",
+            "partial answer",
+            "",
+            &[],
+            0,
+        ));
+        persist_checkpoint_to_disk(temp.path(), &checkpoint).expect("persist checkpoint");
+
+        let run = test_run(
+            "run-safe-resume",
+            temp.path(),
+            test_task_record(task.clone(), &environment, SupervisorTaskState::Blocked),
+        );
+        orchestrator.persist_run(&run).expect("persist run");
+        orchestrator
+            .supervisor_runs
+            .try_lock()
+            .expect("runs should be lockable")
+            .insert(run.id.clone(), run);
+
+        let resumable = orchestrator.prepare_resumable_tasks_from_checkpoints_sync();
+        assert_eq!(resumable.len(), 1);
+        assert_eq!(resumable[0].id, task.id);
+
+        let runs = orchestrator
+            .supervisor_runs
+            .try_lock()
+            .expect("runs should be lockable after sync prep");
+        let run = runs
+            .get("run-safe-resume")
+            .expect("recovered run should exist");
+        let record = run.tasks.first().expect("task record should exist");
+        assert_eq!(record.state, SupervisorTaskState::Queued);
+        assert!(record.blocked_reasons.is_empty());
     }
 }
