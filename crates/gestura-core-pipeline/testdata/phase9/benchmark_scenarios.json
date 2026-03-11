@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "description": "Phase 9 benchmark and replay fixture matrix for agent-loop maturity work.",
+  "scenarios": [
+    {
+      "id": "restart_resume_planning_boundary",
+      "category": "restart_resume",
+      "summary": "Crash after delegated planning checkpoint but before first tool call.",
+      "mode": "local_isolated",
+      "crash_point": "after_checkpoint_before_tool",
+      "expected": [
+        "task resumes from planning checkpoint",
+        "no duplicate tool execution",
+        "environment lease remains valid or is safely reacquired"
+      ]
+    },
+    {
+      "id": "restart_resume_after_tool_before_result_persist",
+      "category": "restart_resume",
+      "summary": "Crash after a replay-safe tool finishes but before delegated result publication.",
+      "mode": "local_isolated",
+      "crash_point": "after_tool_before_result_persist",
+      "expected": [
+        "result publication occurs once",
+        "artifacts are not duplicated",
+        "checkpoint classification explains replay decision"
+      ]
+    },
+    {
+      "id": "observability_local_tool_heavy_task",
+      "category": "observability",
+      "summary": "Local delegated task uses multiple tools and emits phase/progress/timing telemetry.",
+      "mode": "local_shared",
+      "expected": [
+        "supervisor receives progress updates",
+        "per-tool duration is non-zero",
+        "waiting reasons and current phase are inspectable"
+      ]
+    },
+    {
+      "id": "observability_local_pause_resume",
+      "category": "observability",
+      "summary": "Pause a local delegated task at a safe boundary and resume from checkpoint.",
+      "mode": "local_isolated",
+      "expected": [
+        "pause acknowledged at safe boundary",
+        "resume continues from saved checkpoint",
+        "operator surfaces show paused and resumed states coherently"
+      ]
+    },
+    {
+      "id": "erl_rejected_by_downstream_review",
+      "category": "erl_outcomes",
+      "summary": "Initial answer is heuristically acceptable but later rejected by review/test outcomes.",
+      "expected": [
+        "reflection confidence is downgraded",
+        "strategy is marked lower priority for future injection",
+        "audit trail links reflection to failing outcome"
+      ]
+    },
+    {
+      "id": "erl_corrective_retry_safe_reexecution",
+      "category": "erl_outcomes",
+      "summary": "Low-confidence result triggers bounded corrective re-plan on replay-safe steps only.",
+      "expected": [
+        "corrective retry executes only replay-safe actions",
+        "approval or dangerous side-effect policies remain enforced",
+        "revised result shows measurable improvement"
+      ]
+    },
+    {
+      "id": "memory_governance_duplicate_and_conflict",
+      "category": "memory_governance",
+      "summary": "Corpus contains duplicate lessons and mutually contradictory guidance.",
+      "expected": [
+        "duplicates are grouped",
+        "conflicts are surfaced rather than silently merged",
+        "retrieval ranking prefers higher-confidence outcome-backed memory"
+      ]
+    },
+    {
+      "id": "memory_governance_scope_precedence",
+      "category": "memory_governance",
+      "summary": "Directive-local memory conflicts with older repo-global memory.",
+      "expected": [
+        "retrieval explains scope precedence",
+        "operator can inspect why one memory won",
+        "losing memory remains auditable and reversible"
+      ]
+    },
+    {
+      "id": "shared_cognition_partial_blocker_publication",
+      "category": "shared_cognition",
+      "summary": "Subagent publishes a blocker and partial finding before task completion.",
+      "expected": [
+        "supervisor sees partial finding mid-task",
+        "publication preserves authorship and confidence",
+        "shared memory can later promote the finding without losing provenance"
+      ]
+    },
+    {
+      "id": "shared_cognition_supervisor_steering",
+      "category": "shared_cognition",
+      "summary": "Supervisor changes execution guidance for an active delegated task via shared cognition.",
+      "expected": [
+        "child sees revised steering within bounded latency",
+        "steering change is audited",
+        "task continues without hidden state transition"
+      ]
+    }
+  ]
+}

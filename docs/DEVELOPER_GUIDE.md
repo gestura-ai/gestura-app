@@ -277,6 +277,25 @@ stateDiagram-v2
 - when adding new environment fields, update Rust models, Tauri command docs, TypeScript wrappers, workflow panel rendering, and focused tests together
 - verify both creation and restart paths: add/adjust tests in `environment.rs`, `recovery.rs`, and relevant GUI workflow tests before widening validation scope
 
+### Phase 9 Agent-loop Maturity Program
+
+The next maturity step after Phase 8 is tracked in `docs/AGENT_LOOP_MATURITY_PHASE9.md`.
+
+Use that document as the planning/execution contract for:
+
+- resumable delegated execution
+- local delegated telemetry/control parity
+- outcome-linked ERL and bounded corrective re-execution
+- memory governance and retrieval quality
+- shared supervisor/subagent working memory
+
+Contributor rules for Phase 9 work:
+
+- land replay/resume features behind explicit rollout flags first
+- treat replay-safety classification as a core-owned contract, not adapter logic
+- update benchmark fixtures in `crates/gestura-core-pipeline/testdata/phase9/benchmark_scenarios.json` whenever behavior or acceptance criteria changes
+- do not claim a Phase 9 slice complete without both focused fixture-driven tests and workspace-level regression validation
+
 ### Re-export Pattern
 
 The facade and presentation layers should stay thin over the owning core domain:
