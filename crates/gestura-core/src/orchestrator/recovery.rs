@@ -64,27 +64,41 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
     }
 
     async fn reconcile_persisted_state(&self) -> Result<(), String> {
+        let checkpoints_by_task = self
+            .default_workspace_dir
+            .as_deref()
+            .map(load_persisted_checkpoints)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|checkpoint| (checkpoint.task_id.clone(), checkpoint))
+            .collect::<HashMap<_, _>>();
         let mut runs = self.supervisor_runs.lock().await;
         let mut environments = self.environments.lock().await;
         let mut run_updates = Vec::new();
         let mut environment_updates = Vec::new();
+        let mut checkpoint_updates = Vec::new();
         let observer = self.observer.read().await.clone();
 
         for run in runs.values_mut() {
             let mut run_changed = false;
             for task_record in &mut run.tasks {
                 if matches!(task_record.state, SupervisorTaskState::Running) {
+                    let checkpoint = checkpoints_by_task.get(&task_record.task.id);
+                    let blocked_reason = checkpoint
+                        .map(restart_blocked_reason_for_checkpoint)
+                        .unwrap_or_else(|| "execution interrupted during restart".to_string());
                     task_record.state = SupervisorTaskState::Blocked;
                     if !task_record
                         .blocked_reasons
                         .iter()
-                        .any(|reason| reason == "execution interrupted during restart")
+                        .any(|reason| reason == &blocked_reason)
                     {
-                        task_record
-                            .blocked_reasons
-                            .push("execution interrupted during restart".to_string());
+                        task_record.blocked_reasons.push(blocked_reason);
                     }
                     task_record.updated_at = Utc::now();
+                    if let Some(checkpoint) = checkpoint {
+                        checkpoint_updates.push(checkpoint_for_restart_recovery(checkpoint));
+                    }
                     run_changed = true;
                 }
 
@@ -158,11 +172,22 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         for environment in environment_updates {
             self.persist_environment_record(&environment).await?;
         }
+        for checkpoint in checkpoint_updates {
+            self.persist_delegated_checkpoint(&checkpoint)?;
+        }
 
         Ok(())
     }
 
     fn reconcile_persisted_state_sync(&self) -> Result<(), String> {
+        let checkpoints_by_task = self
+            .default_workspace_dir
+            .as_deref()
+            .map(load_persisted_checkpoints)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|checkpoint| (checkpoint.task_id.clone(), checkpoint))
+            .collect::<HashMap<_, _>>();
         let Ok(mut runs) = self.supervisor_runs.try_lock() else {
             return Ok(());
         };
@@ -172,22 +197,28 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
 
         let mut run_updates = Vec::new();
         let mut environment_updates = Vec::new();
+        let mut checkpoint_updates = Vec::new();
 
         for run in runs.values_mut() {
             let mut run_changed = false;
             for task_record in &mut run.tasks {
                 if matches!(task_record.state, SupervisorTaskState::Running) {
+                    let checkpoint = checkpoints_by_task.get(&task_record.task.id);
+                    let blocked_reason = checkpoint
+                        .map(restart_blocked_reason_for_checkpoint)
+                        .unwrap_or_else(|| "execution interrupted during restart".to_string());
                     task_record.state = SupervisorTaskState::Blocked;
                     if !task_record
                         .blocked_reasons
                         .iter()
-                        .any(|reason| reason == "execution interrupted during restart")
+                        .any(|reason| reason == &blocked_reason)
                     {
-                        task_record
-                            .blocked_reasons
-                            .push("execution interrupted during restart".to_string());
+                        task_record.blocked_reasons.push(blocked_reason);
                     }
                     task_record.updated_at = Utc::now();
+                    if let Some(checkpoint) = checkpoint {
+                        checkpoint_updates.push(checkpoint_for_restart_recovery(checkpoint));
+                    }
                     run_changed = true;
                 }
 
@@ -232,6 +263,9 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         }
         for environment in environment_updates {
             persist_environment_to_disk(&environment.spec.workspace_root, &environment)?;
+        }
+        for checkpoint in checkpoint_updates {
+            self.persist_delegated_checkpoint(&checkpoint)?;
         }
 
         Ok(())
@@ -543,6 +577,29 @@ mod tests {
         }
     }
 
+    fn test_checkpoint(task: &DelegatedTask) -> DelegatedTaskCheckpoint {
+        let now = Utc::now();
+        DelegatedTaskCheckpoint {
+            id: delegated_checkpoint_id(&task.id),
+            task_id: task.id.clone(),
+            run_id: task.run_id.clone(),
+            session_id: task.session_id.clone(),
+            agent_id: task.agent_id.clone(),
+            environment_id: task.environment_id.clone(),
+            execution_mode: task.execution_mode.clone(),
+            stage: DelegatedCheckpointStage::Running,
+            replay_safety: DelegatedReplaySafety::CheckpointResumable,
+            resume_disposition: DelegatedResumeDisposition::ResumeFromCheckpoint,
+            safe_boundary_label: "delegated task dispatch boundary".to_string(),
+            workspace_dir: task.workspace_dir.clone(),
+            completed_tool_calls: Vec::new(),
+            result_published: false,
+            note: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
     fn test_run(
         run_id: &str,
         workspace_root: &Path,
@@ -851,6 +908,64 @@ mod tests {
                 .blocked_reasons
                 .iter()
                 .any(|reason| reason.contains("stale lease released"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_persisted_state_uses_checkpoint_metadata_for_restart_reason() {
+        let temp = tempdir().expect("tempdir");
+        let orchestrator = test_orchestrator(temp.path());
+
+        let task = test_task(
+            temp.path(),
+            "run-resume",
+            "task-resume",
+            "agent-resume",
+            AgentExecutionMode::IsolatedWorkspace,
+        );
+        let environment = orchestrator
+            .prepare_environment(&task)
+            .await
+            .expect("prepare resume environment");
+        let leased = orchestrator
+            .acquire_environment_lease(&environment.id, &task.id, &task.agent_id)
+            .await
+            .expect("acquire environment lease");
+
+        let run = test_run(
+            "run-resume",
+            temp.path(),
+            test_task_record(task.clone(), &leased, SupervisorTaskState::Running),
+        );
+        orchestrator.persist_run(&run).expect("persist run");
+        persist_checkpoint_to_disk(temp.path(), &test_checkpoint(&task))
+            .expect("persist checkpoint");
+
+        let recovered = test_orchestrator(temp.path());
+
+        let runs = recovered.supervisor_runs.lock().await;
+        let run = runs.get("run-resume").expect("recovered run should exist");
+        let record = run.tasks.first().expect("recovered task should exist");
+        assert_eq!(record.state, SupervisorTaskState::Blocked);
+        assert!(record.blocked_reasons.iter().any(|reason| {
+            reason.contains("can resume from checkpoint")
+                && reason.contains("delegated task dispatch boundary")
+        }));
+        drop(runs);
+
+        let checkpoints = load_persisted_checkpoints(temp.path());
+        let checkpoint = checkpoints
+            .into_iter()
+            .find(|checkpoint| checkpoint.task_id == task.id)
+            .expect("checkpoint should persist");
+        assert_eq!(checkpoint.stage, DelegatedCheckpointStage::Blocked);
+        assert_eq!(
+            checkpoint.resume_disposition,
+            DelegatedResumeDisposition::ResumeFromCheckpoint
+        );
+        assert_eq!(
+            checkpoint.note.as_deref(),
+            Some("execution interrupted during restart")
         );
     }
 }

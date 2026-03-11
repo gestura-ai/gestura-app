@@ -35,8 +35,9 @@ use tokio::time::{Duration as TokioDuration, sleep};
 use uuid::Uuid;
 
 use self::persistence::{
-    load_persisted_environment_by_id, load_persisted_environments, load_persisted_runs,
-    persist_environment_to_disk, persist_run_to_disk,
+    load_persisted_checkpoints, load_persisted_environment_by_id, load_persisted_environments,
+    load_persisted_runs, persist_checkpoint_to_disk, persist_environment_to_disk,
+    persist_run_to_disk,
 };
 
 // Re-export shared task types for convenience and adapter compatibility.
@@ -80,6 +81,102 @@ pub enum SupervisorTaskState {
     Failed,
     /// Cancelled before completion.
     Cancelled,
+}
+
+/// Persisted lifecycle stage for a delegated-task checkpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegatedCheckpointStage {
+    /// Task has been queued but not yet dispatched.
+    Queued,
+    /// Task has been dispatched and has a restart-safe boundary before execution.
+    Dispatched,
+    /// Task is actively executing.
+    Running,
+    /// Task completed successfully and the result was published.
+    Completed,
+    /// Task failed and the terminal failure was published.
+    Failed,
+    /// Task was cancelled and the terminal state was published.
+    Cancelled,
+    /// Task is blocked and requires operator/supervisor action.
+    Blocked,
+}
+
+/// Replay-safety class used during delegated-task restart reconciliation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegatedReplaySafety {
+    /// Purely read-only work that may be replayed safely.
+    PureReadonly,
+    /// Write work that is only safe to replay with explicit idempotency guarantees.
+    IdempotentWrite,
+    /// Work that should continue from a saved checkpoint rather than replaying.
+    CheckpointResumable,
+    /// Work whose replay safety is ambiguous and must be operator-gated.
+    OperatorGated,
+    /// Work that must never be auto-replayed after restart.
+    NonReplayableSideEffect,
+}
+
+/// Recovery disposition for a delegated-task checkpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegatedResumeDisposition {
+    /// Resume from a checkpoint boundary.
+    ResumeFromCheckpoint,
+    /// Restart from a replay-safe boundary.
+    RestartFromBoundary,
+    /// Require explicit operator action before retrying.
+    OperatorInterventionRequired,
+    /// No resume action is applicable because the task is terminal.
+    NotApplicable,
+}
+
+/// Durable checkpoint record for delegated-task execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegatedTaskCheckpoint {
+    /// Stable checkpoint identifier.
+    pub id: String,
+    /// Owning delegated task id.
+    pub task_id: String,
+    /// Owning supervisor run id, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Owning session id, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Agent executing the delegated task.
+    pub agent_id: String,
+    /// Execution environment id, if assigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<String>,
+    /// Execution mode in effect for the task.
+    pub execution_mode: AgentExecutionMode,
+    /// Current checkpoint stage.
+    pub stage: DelegatedCheckpointStage,
+    /// Replay-safety classification.
+    pub replay_safety: DelegatedReplaySafety,
+    /// Restart/resume disposition.
+    pub resume_disposition: DelegatedResumeDisposition,
+    /// Human-readable description of the last safe boundary.
+    pub safe_boundary_label: String,
+    /// Workspace used for the task, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_dir: Option<PathBuf>,
+    /// Tool calls completed before or at this checkpoint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub completed_tool_calls: Vec<OrchestratorToolCall>,
+    /// Whether the terminal task result was published to the supervisor state.
+    #[serde(default)]
+    pub result_published: bool,
+    /// Optional terminal or recovery note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
 }
 
 /// Aggregate status for a supervisor run.
@@ -2294,6 +2391,9 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         record_task_dispatch(&task, &task_snapshot, &run_snapshot);
         self.persist_run_with_hierarchy_sync(run_snapshot.clone())
             .await?;
+        if !matches!(task.execution_mode, AgentExecutionMode::Remote) {
+            self.persist_delegated_checkpoint(&delegated_start_checkpoint(&task))?;
+        }
 
         let observer_for_start = { self.observer.read().await.clone() };
         if let Some(obs) = observer_for_start.as_ref() {
@@ -2694,6 +2794,9 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             &run_snapshot,
         );
         self.persist_run_with_hierarchy_sync(run_snapshot).await?;
+        if !matches!(task.execution_mode, AgentExecutionMode::Remote) {
+            self.persist_delegated_checkpoint(&delegated_terminal_checkpoint(&task, &task_result))?;
+        }
         if let Some(message) = gate_message {
             self.notify_team_message(message).await;
         }
@@ -2732,6 +2835,21 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         };
 
         persist_run_to_disk(root, run)
+    }
+
+    fn persist_delegated_checkpoint(
+        &self,
+        checkpoint: &DelegatedTaskCheckpoint,
+    ) -> Result<(), String> {
+        let Some(root) = checkpoint
+            .workspace_dir
+            .as_deref()
+            .or(self.default_workspace_dir.as_deref())
+        else {
+            return Ok(());
+        };
+
+        persist_checkpoint_to_disk(root, checkpoint)
     }
 
     async fn persist_run_with_hierarchy_sync(
@@ -3285,6 +3403,188 @@ async fn persist_delegated_task_memory(
                 "Failed to persist delegated task memory"
             );
             None
+        }
+    }
+}
+
+fn delegated_checkpoint_id(task_id: &str) -> String {
+    format!("checkpoint-{task_id}")
+}
+
+fn delegated_start_checkpoint(task: &DelegatedTask) -> DelegatedTaskCheckpoint {
+    let now = Utc::now();
+    DelegatedTaskCheckpoint {
+        id: delegated_checkpoint_id(&task.id),
+        task_id: task.id.clone(),
+        run_id: task.run_id.clone(),
+        session_id: task.session_id.clone(),
+        agent_id: task.agent_id.clone(),
+        environment_id: task.environment_id.clone(),
+        execution_mode: task.execution_mode.clone(),
+        stage: DelegatedCheckpointStage::Running,
+        replay_safety: DelegatedReplaySafety::CheckpointResumable,
+        resume_disposition: DelegatedResumeDisposition::ResumeFromCheckpoint,
+        safe_boundary_label: "delegated task dispatch boundary".to_string(),
+        workspace_dir: task.workspace_dir.clone(),
+        completed_tool_calls: Vec::new(),
+        result_published: false,
+        note: Some("Task dispatched and awaiting local execution progress.".to_string()),
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn delegated_terminal_checkpoint(
+    task: &DelegatedTask,
+    task_result: &TaskResult,
+) -> DelegatedTaskCheckpoint {
+    let now = Utc::now();
+    DelegatedTaskCheckpoint {
+        id: delegated_checkpoint_id(&task.id),
+        task_id: task.id.clone(),
+        run_id: task_result.run_id.clone().or_else(|| task.run_id.clone()),
+        session_id: task.session_id.clone(),
+        agent_id: task.agent_id.clone(),
+        environment_id: task.environment_id.clone(),
+        execution_mode: task.execution_mode.clone(),
+        stage: delegated_terminal_stage(task_result),
+        replay_safety: replay_safety_for_task_result(task_result),
+        resume_disposition: DelegatedResumeDisposition::NotApplicable,
+        safe_boundary_label: format!(
+            "result persisted after {} tool call(s)",
+            task_result.tool_calls.len()
+        ),
+        workspace_dir: task.workspace_dir.clone(),
+        completed_tool_calls: task_result.tool_calls.clone(),
+        result_published: true,
+        note: Some(if task_result.success {
+            "Task completed and terminal result was published.".to_string()
+        } else {
+            format!("Task finished unsuccessfully: {}", task_result.output)
+        }),
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn delegated_terminal_stage(task_result: &TaskResult) -> DelegatedCheckpointStage {
+    if task_result.success {
+        return DelegatedCheckpointStage::Completed;
+    }
+
+    match task_result.terminal_state_hint {
+        Some(TaskTerminalStateHint::Cancelled) => DelegatedCheckpointStage::Cancelled,
+        Some(TaskTerminalStateHint::Blocked) => DelegatedCheckpointStage::Blocked,
+        _ => DelegatedCheckpointStage::Failed,
+    }
+}
+
+fn replay_safety_for_task_result(task_result: &TaskResult) -> DelegatedReplaySafety {
+    if task_result.tool_calls.is_empty() {
+        return DelegatedReplaySafety::CheckpointResumable;
+    }
+
+    task_result
+        .tool_calls
+        .iter()
+        .map(replay_safety_for_tool_call)
+        .max_by_key(|safety| replay_safety_rank(*safety))
+        .unwrap_or(DelegatedReplaySafety::CheckpointResumable)
+}
+
+fn replay_safety_for_tool_call(tool_call: &OrchestratorToolCall) -> DelegatedReplaySafety {
+    match tool_call.tool_name.as_str() {
+        "web" | "web_search" | "code" => DelegatedReplaySafety::PureReadonly,
+        "shell" | "screen_record" => DelegatedReplaySafety::NonReplayableSideEffect,
+        "a2a" | "mcp" | "permissions" | "task" | "screenshot" => {
+            DelegatedReplaySafety::OperatorGated
+        }
+        "file" => match tool_call
+            .input
+            .get("operation")
+            .and_then(|value| value.as_str())
+        {
+            Some("read" | "list" | "search" | "tree" | "stat") => {
+                DelegatedReplaySafety::PureReadonly
+            }
+            Some("write" | "append" | "copy" | "move" | "mkdir") => {
+                DelegatedReplaySafety::OperatorGated
+            }
+            Some("delete" | "remove") => DelegatedReplaySafety::NonReplayableSideEffect,
+            _ => DelegatedReplaySafety::OperatorGated,
+        },
+        "git" => match tool_call
+            .input
+            .get("operation")
+            .or_else(|| tool_call.input.get("action"))
+            .and_then(|value| value.as_str())
+        {
+            Some("status" | "diff" | "log" | "show" | "blame" | "branch_list") => {
+                DelegatedReplaySafety::PureReadonly
+            }
+            Some("checkout" | "restore" | "stash_apply" | "worktree_add") => {
+                DelegatedReplaySafety::OperatorGated
+            }
+            Some("commit" | "push" | "merge" | "rebase" | "reset" | "stash") => {
+                DelegatedReplaySafety::NonReplayableSideEffect
+            }
+            _ => DelegatedReplaySafety::OperatorGated,
+        },
+        _ => DelegatedReplaySafety::OperatorGated,
+    }
+}
+
+fn replay_safety_rank(safety: DelegatedReplaySafety) -> u8 {
+    match safety {
+        DelegatedReplaySafety::PureReadonly => 0,
+        DelegatedReplaySafety::IdempotentWrite => 1,
+        DelegatedReplaySafety::CheckpointResumable => 2,
+        DelegatedReplaySafety::OperatorGated => 3,
+        DelegatedReplaySafety::NonReplayableSideEffect => 4,
+    }
+}
+
+fn restart_resume_disposition(safety: DelegatedReplaySafety) -> DelegatedResumeDisposition {
+    match safety {
+        DelegatedReplaySafety::PureReadonly | DelegatedReplaySafety::IdempotentWrite => {
+            DelegatedResumeDisposition::RestartFromBoundary
+        }
+        DelegatedReplaySafety::CheckpointResumable => {
+            DelegatedResumeDisposition::ResumeFromCheckpoint
+        }
+        DelegatedReplaySafety::OperatorGated | DelegatedReplaySafety::NonReplayableSideEffect => {
+            DelegatedResumeDisposition::OperatorInterventionRequired
+        }
+    }
+}
+
+fn checkpoint_for_restart_recovery(
+    checkpoint: &DelegatedTaskCheckpoint,
+) -> DelegatedTaskCheckpoint {
+    let mut updated = checkpoint.clone();
+    updated.stage = DelegatedCheckpointStage::Blocked;
+    updated.resume_disposition = restart_resume_disposition(updated.replay_safety);
+    updated.note = Some("execution interrupted during restart".to_string());
+    updated.updated_at = Utc::now();
+    updated
+}
+
+fn restart_blocked_reason_for_checkpoint(checkpoint: &DelegatedTaskCheckpoint) -> String {
+    match checkpoint.resume_disposition {
+        DelegatedResumeDisposition::ResumeFromCheckpoint => format!(
+            "execution interrupted during restart; task can resume from checkpoint '{}'",
+            checkpoint.safe_boundary_label
+        ),
+        DelegatedResumeDisposition::RestartFromBoundary => format!(
+            "execution interrupted during restart; task can safely restart from boundary '{}'",
+            checkpoint.safe_boundary_label
+        ),
+        DelegatedResumeDisposition::OperatorInterventionRequired => format!(
+            "execution interrupted during restart; operator action required because boundary '{}' is {:?}",
+            checkpoint.safe_boundary_label, checkpoint.replay_safety
+        ),
+        DelegatedResumeDisposition::NotApplicable => {
+            "execution interrupted during restart".to_string()
         }
     }
 }

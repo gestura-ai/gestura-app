@@ -1,4 +1,4 @@
-use super::{EnvironmentRecord, SupervisorRun};
+use super::{DelegatedTaskCheckpoint, EnvironmentRecord, SupervisorRun};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,6 +21,10 @@ fn runs_dir(root: &Path, session_id: Option<&str>) -> PathBuf {
 
 fn environments_dir(root: &Path, session_id: Option<&str>) -> PathBuf {
     session_dir(root, session_id).join("environments")
+}
+
+fn checkpoints_dir(root: &Path, session_id: Option<&str>) -> PathBuf {
+    session_dir(root, session_id).join("checkpoints")
 }
 
 fn load_json_files<T: serde::de::DeserializeOwned>(dir: &Path) -> Vec<T> {
@@ -74,6 +78,20 @@ pub(super) fn persist_environment_to_disk(
         .map_err(|error| format!("Failed to persist environment record: {error}"))
 }
 
+pub(super) fn persist_checkpoint_to_disk(
+    root: &Path,
+    checkpoint: &DelegatedTaskCheckpoint,
+) -> Result<(), String> {
+    let dir = checkpoints_dir(root, checkpoint.session_id.as_deref());
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Failed to create orchestrator checkpoint dir: {error}"))?;
+    let path = dir.join(format!("{}.json", checkpoint.task_id));
+    let content = serde_json::to_vec_pretty(checkpoint)
+        .map_err(|error| format!("Failed to serialize delegated checkpoint: {error}"))?;
+    fs::write(path, content)
+        .map_err(|error| format!("Failed to persist delegated checkpoint: {error}"))
+}
+
 pub(super) fn load_persisted_runs(root: &Path) -> Vec<SupervisorRun> {
     let Ok(session_dirs) = fs::read_dir(base_dir(root)) else {
         return Vec::new();
@@ -119,6 +137,24 @@ pub(super) fn load_persisted_environments(root: &Path) -> Vec<EnvironmentRecord>
         ));
     }
     environments
+}
+
+pub(super) fn load_persisted_checkpoints(root: &Path) -> Vec<DelegatedTaskCheckpoint> {
+    let Ok(session_dirs) = fs::read_dir(base_dir(root)) else {
+        return Vec::new();
+    };
+
+    let mut checkpoints = Vec::new();
+    for session_dir in session_dirs.flatten() {
+        let path = session_dir.path();
+        if !path.is_dir() {
+            continue;
+        }
+        checkpoints.extend(load_json_files::<DelegatedTaskCheckpoint>(
+            &path.join("checkpoints"),
+        ));
+    }
+    checkpoints
 }
 
 pub(super) fn load_persisted_environment_by_id(
