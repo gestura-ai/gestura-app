@@ -9,6 +9,7 @@
 //!   orchestration logic.
 
 mod approval;
+mod collaboration;
 mod environment;
 mod persistence;
 mod recovery;
@@ -19,17 +20,23 @@ use crate::{AgentPipeline, AgentRequest, AppConfig, RequestSource, SessionWorksp
 use crate::{MemoryBankEntry, MemoryScope, MemoryType};
 use crate::{TaskManager, TaskStatus};
 use chrono::{DateTime, Utc};
+use gestura_core_a2a::{
+    A2AClient, A2AMessage, A2ATask, Artifact as RemoteArtifact, ArtifactManifestEntry,
+    CreateTaskRequest, MessagePart, RemoteTaskContract, RemoteTaskLease, RemoteTaskLeaseRequest,
+    RemoteTaskProgress as A2ARemoteTaskProgress, TaskProvenance, TaskStatus as A2ATaskStatus,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::time::{Duration as TokioDuration, sleep};
 use uuid::Uuid;
 
 use self::persistence::{
-    load_persisted_environment_by_id, load_persisted_environments, load_persisted_run_by_id,
-    load_persisted_runs, persist_environment_to_disk, persist_run_to_disk,
+    load_persisted_environment_by_id, load_persisted_environments, load_persisted_runs,
+    persist_environment_to_disk, persist_run_to_disk,
 };
 
 // Re-export shared task types for convenience and adapter compatibility.
@@ -38,9 +45,17 @@ pub use self::approval::{
     ApprovalRequest, ApprovalRequirement, ApprovalScope, ApprovalState, TaskApprovalRecord,
     actor_kind_for_agent_role, default_actor_kind_for_scope,
 };
+pub use self::collaboration::{
+    CollaborationActionStatus, CollaborationEscalationLevel, CollaborationRequestKind,
+    CollaborationThreadStatus, DEFAULT_RESOLVED_THREAD_RETENTION_DAYS, TeamActionRequest,
+    TeamActionRequestDraft, TeamArtifactReference, TeamEscalation, TeamEscalationDraft,
+    TeamMessage, TeamMessageDraft, TeamMessageKind, TeamResultReference, TeamThread,
+    archive_resolved_threads, build_team_threads, build_team_threads_with_options,
+};
 pub use crate::agents::{
     AgentExecutionMode, AgentInfo, AgentRole, AgentSpawnRequest, AgentSpawner, DelegatedTask,
     DelegationBrief, OrchestratorToolCall, RemoteAgentTarget, TaskArtifactRecord, TaskResult,
+    TaskTerminalStateHint,
 };
 
 /// Execution state for a task managed by the supervisor.
@@ -83,6 +98,206 @@ pub enum SupervisorRunStatus {
     Failed,
     /// Run was cancelled.
     Cancelled,
+}
+
+/// Maximum allowed parent -> child supervisor depth.
+pub const MAX_CHILD_SUPERVISOR_DEPTH: u8 = 1;
+
+fn default_max_child_supervisor_depth() -> u8 {
+    MAX_CHILD_SUPERVISOR_DEPTH
+}
+
+/// Task-state counts for a supervisor run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorRunTaskSummary {
+    /// Total tasks in the run.
+    pub total: usize,
+    /// Queued tasks.
+    pub queued: usize,
+    /// Blocked tasks.
+    pub blocked: usize,
+    /// Tasks awaiting pre-execution approval.
+    pub pending_approval: usize,
+    /// Running tasks.
+    pub running: usize,
+    /// Tasks awaiting review.
+    pub review_pending: usize,
+    /// Tasks awaiting test validation.
+    pub test_pending: usize,
+    /// Completed tasks.
+    pub completed: usize,
+    /// Failed tasks.
+    pub failed: usize,
+    /// Cancelled tasks.
+    pub cancelled: usize,
+}
+
+/// Inherited policy applied to tasks created inside a supervisor run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorInheritancePolicy {
+    /// Whether child tasks must require pre-execution approval.
+    #[serde(default)]
+    pub approval_required: bool,
+    /// Whether child tasks must require review.
+    #[serde(default)]
+    pub reviewer_required: bool,
+    /// Whether child tasks must require test validation.
+    #[serde(default)]
+    pub test_required: bool,
+    /// Execution mode enforced for child tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<AgentExecutionMode>,
+    /// Workspace root propagated to child tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_dir: Option<PathBuf>,
+    /// Memory tags appended to child tasks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memory_tags: Vec<String>,
+    /// Human-readable inherited constraints.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraint_notes: Vec<String>,
+}
+
+impl SupervisorInheritancePolicy {
+    /// Apply inherited policy to a delegated task before it is recorded.
+    pub fn apply_to_task(&self, task: &mut DelegatedTask) {
+        task.approval_required |= self.approval_required;
+        task.reviewer_required |= self.reviewer_required;
+        task.test_required |= self.test_required;
+        if let Some(execution_mode) = self.execution_mode.clone() {
+            task.execution_mode = execution_mode;
+        }
+        if task.workspace_dir.is_none() {
+            task.workspace_dir = self.workspace_dir.clone();
+        }
+        for tag in &self.memory_tags {
+            if !task.memory_tags.contains(tag) {
+                task.memory_tags.push(tag.clone());
+            }
+        }
+    }
+}
+
+/// Parent run reference stored on child supervisor runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorParentRunRef {
+    /// Parent supervisor run identifier.
+    pub parent_run_id: String,
+    /// Optional parent task that initiated the child run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<String>,
+    /// Delegating actor if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_by_agent_id: Option<String>,
+    /// Child-run objective inherited from the delegation request.
+    pub objective: String,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+}
+
+/// Summary stored on parent runs for each child supervisor run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChildSupervisorRunSummary {
+    /// Child run identifier.
+    pub run_id: String,
+    /// Human-readable child run label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Child objective.
+    pub objective: String,
+    /// Lead child supervisor agent if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead_agent_id: Option<String>,
+    /// Current child run status.
+    pub status: SupervisorRunStatus,
+    /// Child task summary.
+    #[serde(default)]
+    pub task_summary: SupervisorRunTaskSummary,
+    /// Whether the child needs attention.
+    #[serde(default)]
+    pub requires_attention: bool,
+    /// Child blocked reasons roll-up.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_reasons: Vec<String>,
+    /// Child creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Child update timestamp.
+    pub updated_at: DateTime<Utc>,
+    /// Child completion timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+/// Roll-up state for a run and its direct children.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorHierarchySummary {
+    /// Depth of this run in the hierarchy.
+    #[serde(default)]
+    pub depth: u8,
+    /// Maximum supported child depth.
+    #[serde(default = "default_max_child_supervisor_depth")]
+    pub max_depth: u8,
+    /// Number of direct child runs.
+    #[serde(default)]
+    pub child_run_count: usize,
+    /// Total tasks across direct child runs.
+    #[serde(default)]
+    pub descendant_task_count: usize,
+    /// Direct children that currently require attention.
+    #[serde(default)]
+    pub action_required_child_count: usize,
+    /// Roll-up status across this run and its children.
+    pub rollup_status: SupervisorRunStatus,
+    /// Whether any child run requires attention.
+    #[serde(default)]
+    pub requires_attention: bool,
+    /// Aggregate blocked reasons surfaced from children.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_reasons: Vec<String>,
+}
+
+/// Request payload for creating a direct child supervisor run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChildSupervisorRunRequest {
+    /// Parent run identifier.
+    pub parent_run_id: String,
+    /// Optional explicit child run identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Lead agent id for the child supervisor.
+    pub lead_agent_id: String,
+    /// Child objective/mission statement.
+    pub objective: String,
+    /// Optional child run display name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Optional parent task that motivated the child run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<String>,
+    /// Optional session override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Optional workspace override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_dir: Option<PathBuf>,
+    /// Whether child tasks require pre-execution approval by default.
+    #[serde(default)]
+    pub approval_required: bool,
+    /// Whether child tasks require review by default.
+    #[serde(default)]
+    pub reviewer_required: bool,
+    /// Whether child tasks require test validation by default.
+    #[serde(default)]
+    pub test_required: bool,
+    /// Execution mode to inherit into child tasks.
+    #[serde(default)]
+    pub execution_mode: AgentExecutionMode,
+    /// Memory tags appended to child tasks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memory_tags: Vec<String>,
+    /// Human-readable inherited constraints.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraint_notes: Vec<String>,
 }
 
 /// Durable environment lifecycle state.
@@ -319,71 +534,6 @@ pub struct EnvironmentSpec {
     pub remote_url: Option<String>,
 }
 
-/// Structured team-message category.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TeamMessageKind {
-    /// General status update.
-    StatusUpdate,
-    /// Clarification request.
-    Clarification,
-    /// Blocker notification.
-    Blocker,
-    /// Handoff summary.
-    Handoff,
-    /// Review feedback.
-    ReviewFeedback,
-    /// Approval decision note.
-    ApprovalDecision,
-}
-
-/// Message exchanged within a supervisor run.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TeamMessage {
-    /// Message identifier.
-    pub id: String,
-    /// Run identifier.
-    pub run_id: String,
-    /// Optional task identifier this message refers to.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
-    /// Message kind.
-    pub kind: TeamMessageKind,
-    /// Sender agent identifier.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sender_agent_id: Option<String>,
-    /// Recipient agent identifier.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recipient_agent_id: Option<String>,
-    /// Human-readable content.
-    pub content: String,
-    /// Creation timestamp.
-    pub created_at: DateTime<Utc>,
-}
-
-impl TeamMessage {
-    /// Build a new team message.
-    pub fn new(
-        run_id: impl Into<String>,
-        task_id: Option<String>,
-        kind: TeamMessageKind,
-        sender_agent_id: Option<String>,
-        recipient_agent_id: Option<String>,
-        content: impl Into<String>,
-    ) -> Self {
-        Self {
-            id: Uuid::new_v4().to_string(),
-            run_id: run_id.into(),
-            task_id,
-            kind,
-            sender_agent_id,
-            recipient_agent_id,
-            content: content.into(),
-            created_at: Utc::now(),
-        }
-    }
-}
-
 /// Execution environment bound to a task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionEnvironment {
@@ -495,6 +645,80 @@ impl EnvironmentRecord {
     }
 }
 
+/// Remote progress snapshot mirrored from an A2A task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteExecutionProgress {
+    /// Optional current stage label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// Optional human-readable status message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Percent completion when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percent: Option<u8>,
+    /// Last remote update time.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Summary of a remote artifact available for a task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteExecutionArtifact {
+    /// Artifact display name.
+    pub name: String,
+    /// Number of message parts in the artifact payload.
+    #[serde(default)]
+    pub part_count: usize,
+    /// Additional artifact metadata.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+/// Compatibility assessment for a remote peer.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RemoteExecutionCompatibility {
+    /// Supported task features confirmed by the peer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_features: Vec<String>,
+    /// Warnings emitted when degrading to an older peer capability set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    /// Negotiated protocol version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<String>,
+}
+
+/// Mirrored remote execution state for a workflow task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteExecutionRecord {
+    /// Target remote agent.
+    pub target: RemoteAgentTarget,
+    /// Remote task identifier.
+    pub remote_task_id: String,
+    /// Latest remote task status.
+    pub status: String,
+    /// Optional status reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_reason: Option<String>,
+    /// Latest remote lease snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease: Option<RemoteTaskLease>,
+    /// Latest remote progress snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<RemoteExecutionProgress>,
+    /// Current remote artifact manifest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<RemoteExecutionArtifact>,
+    /// Provenance details from the remote task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<gestura_core_a2a::TaskProvenance>,
+    /// Compatibility assessment for this remote peer.
+    #[serde(default)]
+    pub compatibility: RemoteExecutionCompatibility,
+    /// Last sync timestamp.
+    pub last_synced_at: DateTime<Utc>,
+}
+
 /// Persistent task record owned by a supervisor run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SupervisorTaskRecord {
@@ -521,6 +745,9 @@ pub struct SupervisorTaskRecord {
     /// Latest execution result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<TaskResult>,
+    /// Latest mirrored remote execution state, if task runs remotely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_execution: Option<RemoteExecutionRecord>,
     /// Task-scoped coordination messages.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<TeamMessage>,
@@ -541,6 +768,9 @@ pub struct SupervisorTaskRecord {
 pub struct SupervisorRun {
     /// Run identifier.
     pub id: String,
+    /// Optional human-readable run label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Optional session association.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -550,8 +780,29 @@ pub struct SupervisorRun {
     /// Lead agent coordinating the run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lead_agent_id: Option<String>,
+    /// Parent run metadata when this is a child supervisor run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run: Option<SupervisorParentRunRef>,
+    /// Direct child supervisor runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub child_runs: Vec<ChildSupervisorRunSummary>,
+    /// Depth of this run in the supervisor hierarchy.
+    #[serde(default)]
+    pub hierarchy_depth: u8,
+    /// Maximum supported hierarchy depth.
+    #[serde(default = "default_max_child_supervisor_depth")]
+    pub max_hierarchy_depth: u8,
+    /// Policy inherited by tasks created within this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherited_policy: Option<SupervisorInheritancePolicy>,
     /// Aggregate run status.
     pub status: SupervisorRunStatus,
+    /// Summary of task states for this run.
+    #[serde(default)]
+    pub task_summary: SupervisorRunTaskSummary,
+    /// Roll-up hierarchy state for UI/adapters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hierarchy_summary: Option<SupervisorHierarchySummary>,
     /// Tasks that belong to the run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<SupervisorTaskRecord>,
@@ -603,6 +854,9 @@ pub trait OrchestratorObserver: Send + Sync {
 
     /// Called when a team message is recorded.
     async fn on_team_message(&self, _message: TeamMessage) {}
+
+    /// Called when a collaboration thread changes.
+    async fn on_team_thread_updated(&self, _thread: TeamThread) {}
 
     /// Called when an environment record changes.
     async fn on_environment_updated(&self, _environment: EnvironmentRecord) {}
@@ -738,15 +992,18 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
 
         self.ensure_agent_exists(&task).await?;
 
-        // Check tool permissions.
-        for tool in &task.required_tools {
-            let check = self
-                .permission_manager
-                .check(tool, "execute", None)
-                .map_err(|e| format!("Permission check error: {}", e))?;
-            if !check.allowed {
-                tracing::warn!(tool = %tool, task_id = %task_id, reason = %check.reason, "Tool not permitted for task");
-                return Err(format!("Tool '{}' not permitted: {}", tool, check.reason));
+        // Check local tool permissions only for local/shared execution. Remote
+        // tasks rely on the remote peer's authenticated capability contract.
+        if task.execution_mode != AgentExecutionMode::Remote {
+            for tool in &task.required_tools {
+                let check = self
+                    .permission_manager
+                    .check(tool, "execute", None)
+                    .map_err(|e| format!("Permission check error: {}", e))?;
+                if !check.allowed {
+                    tracing::warn!(tool = %tool, task_id = %task_id, reason = %check.reason, "Tool not permitted for task");
+                    return Err(format!("Tool '{}' not permitted: {}", tool, check.reason));
+                }
             }
         }
 
@@ -760,17 +1017,25 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             .clone()
             .ok_or_else(|| "Delegated task is missing run_id".to_string())?;
 
-        let (run_snapshot, task_snapshot, should_start) = {
+        let (run_snapshot, task_snapshot, should_start, initial_message) = {
             let mut runs = self.supervisor_runs.lock().await;
             let run = runs.entry(run_id.clone()).or_insert_with(|| SupervisorRun {
                 id: run_id.clone(),
+                name: task.name.clone(),
                 session_id: task.session_id.clone(),
                 workspace_dir: task
                     .workspace_dir
                     .clone()
                     .or_else(|| self.default_workspace_dir.clone()),
                 lead_agent_id: Some("supervisor".to_string()),
+                parent_run: None,
+                child_runs: Vec::new(),
+                hierarchy_depth: 0,
+                max_hierarchy_depth: MAX_CHILD_SUPERVISOR_DEPTH,
+                inherited_policy: None,
                 status: SupervisorRunStatus::Draft,
+                task_summary: SupervisorRunTaskSummary::default(),
+                hierarchy_summary: None,
                 tasks: Vec::new(),
                 messages: Vec::new(),
                 created_at: Utc::now(),
@@ -787,6 +1052,12 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                     .workspace_dir
                     .clone()
                     .or_else(|| self.default_workspace_dir.clone());
+            }
+            if run.name.is_none() {
+                run.name = task.name.clone();
+            }
+            if let Some(policy) = run.inherited_policy.as_ref() {
+                policy.apply_to_task(&mut task);
             }
 
             let blocked_reasons = unresolved_dependency_reasons(run, &task);
@@ -827,11 +1098,21 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 attempts: 0,
                 blocked_reasons,
                 result: None,
+                remote_execution: None,
                 messages: Vec::new(),
                 created_at: now,
                 updated_at: now,
                 started_at: None,
                 completed_at: None,
+            };
+
+            let initial_message = if matches!(state, SupervisorTaskState::PendingApproval) {
+                let message =
+                    build_gate_request_message(&run.id, &new_record, ApprovalScope::PreExecution);
+                new_record.messages.push(message.clone());
+                Some(message)
+            } else {
+                None
             };
 
             if let Some(existing) = run
@@ -848,11 +1129,14 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
 
             run.updated_at = Utc::now();
             run.status = recalculate_run_status(run);
+            run.task_summary = summarize_run_tasks(run);
+            run.hierarchy_summary = Some(build_hierarchy_summary(run));
 
             (
                 run.clone(),
                 new_record.clone(),
                 state == SupervisorTaskState::Queued,
+                initial_message,
             )
         };
 
@@ -862,14 +1146,173 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             .insert(task_id.clone(), run_id.clone());
 
         record_task_dispatch(&task, &task_snapshot, &run_snapshot);
-        self.persist_run(&run_snapshot)?;
-        self.notify_run_updated(run_snapshot).await;
+        self.persist_run_with_hierarchy_sync(run_snapshot).await?;
+        if let Some(message) = initial_message {
+            self.notify_team_message(message).await;
+        }
 
         if should_start {
             self.start_task_execution(task.clone()).await?;
         }
 
         Ok(task_id)
+    }
+
+    /// Create a direct child supervisor run under an existing parent run.
+    pub async fn create_child_supervisor_run(
+        &self,
+        request: ChildSupervisorRunRequest,
+    ) -> Result<SupervisorRun, String> {
+        let objective = request.objective.trim();
+        if objective.is_empty() {
+            return Err("Child supervisor objective cannot be empty".to_string());
+        }
+        if request.lead_agent_id.trim().is_empty() {
+            return Err("Child supervisor lead_agent_id cannot be empty".to_string());
+        }
+
+        let child_run_id = request
+            .run_id
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| format!("run-child-{}", Uuid::new_v4()));
+        if self.get_supervisor_run(&child_run_id).await.is_some() {
+            return Err(format!("Supervisor run '{}' already exists", child_run_id));
+        }
+
+        let parent_snapshot = self
+            .get_supervisor_run(&request.parent_run_id)
+            .await
+            .ok_or_else(|| {
+                format!(
+                    "Parent supervisor run '{}' not found",
+                    request.parent_run_id
+                )
+            })?;
+        ensure_parent_run_accepts_child(&parent_snapshot)?;
+
+        if self
+            .agent_manager
+            .get_agent_status(&request.lead_agent_id)
+            .await
+            .is_none()
+        {
+            let mut spawn_request = AgentSpawnRequest::new(
+                request.lead_agent_id.clone(),
+                request
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("Child supervisor {}", request.lead_agent_id)),
+                AgentRole::Supervisor,
+            );
+            spawn_request.workspace_dir = request
+                .workspace_dir
+                .clone()
+                .or_else(|| parent_snapshot.workspace_dir.clone());
+            spawn_request.execution_mode = request.execution_mode.clone();
+            self.spawn_subagent_with_request(spawn_request).await?;
+        }
+
+        let now = Utc::now();
+        let (child_run, parent_run, parent_message, child_message) = {
+            let mut runs = self.supervisor_runs.lock().await;
+            let parent = runs.get_mut(&request.parent_run_id).ok_or_else(|| {
+                format!(
+                    "Parent supervisor run '{}' no longer exists",
+                    request.parent_run_id
+                )
+            })?;
+            ensure_parent_run_accepts_child(parent)?;
+
+            let inherited_policy = build_child_inherited_policy(parent, &request);
+            let child_run = SupervisorRun {
+                id: child_run_id.clone(),
+                name: request.name.clone().or_else(|| Some(objective.to_string())),
+                session_id: request
+                    .session_id
+                    .clone()
+                    .or_else(|| parent.session_id.clone()),
+                workspace_dir: request
+                    .workspace_dir
+                    .clone()
+                    .or_else(|| parent.workspace_dir.clone()),
+                lead_agent_id: Some(request.lead_agent_id.clone()),
+                parent_run: Some(SupervisorParentRunRef {
+                    parent_run_id: parent.id.clone(),
+                    parent_task_id: request.parent_task_id.clone(),
+                    delegated_by_agent_id: parent.lead_agent_id.clone(),
+                    objective: objective.to_string(),
+                    created_at: now,
+                }),
+                child_runs: Vec::new(),
+                hierarchy_depth: parent.hierarchy_depth.saturating_add(1),
+                max_hierarchy_depth: parent.max_hierarchy_depth,
+                inherited_policy: Some(inherited_policy),
+                status: SupervisorRunStatus::Draft,
+                task_summary: SupervisorRunTaskSummary::default(),
+                hierarchy_summary: Some(SupervisorHierarchySummary {
+                    depth: parent.hierarchy_depth.saturating_add(1),
+                    max_depth: parent.max_hierarchy_depth,
+                    child_run_count: 0,
+                    descendant_task_count: 0,
+                    action_required_child_count: 0,
+                    rollup_status: SupervisorRunStatus::Draft,
+                    requires_attention: false,
+                    blocked_reasons: Vec::new(),
+                }),
+                tasks: Vec::new(),
+                messages: Vec::new(),
+                created_at: now,
+                updated_at: now,
+                completed_at: None,
+                metadata: None,
+            };
+
+            let parent_message = TeamMessage::new(
+                parent.id.clone(),
+                request.parent_task_id.clone(),
+                TeamMessageKind::Handoff,
+                parent.lead_agent_id.clone(),
+                Some(request.lead_agent_id.clone()),
+                format!(
+                    "Delegated child supervisor run {} for objective: {}",
+                    child_run_id, objective
+                ),
+            );
+            let child_message = TeamMessage::new(
+                child_run_id.clone(),
+                None,
+                TeamMessageKind::StatusUpdate,
+                parent.lead_agent_id.clone(),
+                Some(request.lead_agent_id.clone()),
+                format!(
+                    "Child supervisor run created under {} with objective: {}",
+                    parent.id, objective
+                ),
+            );
+
+            parent.messages.push(parent_message.clone());
+            parent.updated_at = now;
+            parent.completed_at = None;
+            parent.child_runs.push(build_child_run_summary(&child_run));
+            parent.task_summary = summarize_run_tasks(parent);
+            parent.status = recalculate_run_status(parent);
+            parent.hierarchy_summary = Some(build_hierarchy_summary(parent));
+            let parent_run = parent.clone();
+
+            let mut child_run = child_run;
+            child_run.messages.push(child_message.clone());
+            runs.insert(child_run.id.clone(), child_run.clone());
+            (child_run, parent_run, parent_message, child_message)
+        };
+
+        self.persist_run(&child_run)?;
+        self.persist_run(&parent_run)?;
+        self.notify_run_updated(child_run.clone()).await;
+        self.notify_run_updated(parent_run).await;
+        self.notify_team_message(parent_message).await;
+        self.notify_team_message(child_message).await;
+        Ok(child_run)
     }
 
     /// Get the result of a completed task if one is ready.
@@ -900,19 +1343,112 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 }
             }
         }
+        synchronize_run_hierarchy_snapshots(&mut runs);
         runs.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         runs
     }
 
+    /// List only root supervisor runs (child runs excluded from the top-level list).
+    pub async fn list_root_supervisor_runs(&self) -> Vec<SupervisorRun> {
+        self.list_supervisor_runs()
+            .await
+            .into_iter()
+            .filter(|run| run.parent_run.is_none())
+            .collect()
+    }
+
+    /// List child supervisor runs for a specific parent run.
+    pub async fn list_child_supervisor_runs(&self, parent_run_id: &str) -> Vec<SupervisorRun> {
+        self.list_supervisor_runs()
+            .await
+            .into_iter()
+            .filter(|run| {
+                run.parent_run
+                    .as_ref()
+                    .is_some_and(|parent| parent.parent_run_id == parent_run_id)
+            })
+            .collect()
+    }
+
+    /// Return the ancestor chain for a run, ordered from root to immediate parent.
+    pub async fn get_supervisor_run_ancestry(&self, run_id: &str) -> Vec<SupervisorRun> {
+        let runs = self.list_supervisor_runs().await;
+        let index = runs
+            .iter()
+            .cloned()
+            .map(|run| (run.id.clone(), run))
+            .collect::<HashMap<_, _>>();
+        let mut ancestors = Vec::new();
+        let mut current_parent = index.get(run_id).and_then(|run| {
+            run.parent_run
+                .as_ref()
+                .map(|parent| parent.parent_run_id.clone())
+        });
+        while let Some(parent_id) = current_parent {
+            let Some(parent) = index.get(&parent_id).cloned() else {
+                break;
+            };
+            current_parent = parent
+                .parent_run
+                .as_ref()
+                .map(|parent| parent.parent_run_id.clone());
+            ancestors.push(parent);
+        }
+        ancestors.reverse();
+        ancestors
+    }
+
+    /// Return all descendants beneath a run (bounded to one level for now).
+    pub async fn get_supervisor_run_descendants(&self, run_id: &str) -> Vec<SupervisorRun> {
+        self.list_supervisor_runs()
+            .await
+            .into_iter()
+            .filter(|run| {
+                run.parent_run
+                    .as_ref()
+                    .is_some_and(|parent| parent.parent_run_id == run_id)
+            })
+            .collect()
+    }
+
+    /// Return leaf tasks visible beneath a run, including direct children.
+    pub async fn list_supervisor_leaf_tasks(&self, run_id: &str) -> Vec<SupervisorTaskRecord> {
+        let runs = self.list_supervisor_runs().await;
+        let mut leaf_tasks = Vec::new();
+        if let Some(run) = runs.iter().find(|run| run.id == run_id) {
+            leaf_tasks.extend(run.tasks.clone());
+        }
+        for child in runs.iter().filter(|run| {
+            run.parent_run
+                .as_ref()
+                .is_some_and(|parent| parent.parent_run_id == run_id)
+        }) {
+            leaf_tasks.extend(child.tasks.clone());
+        }
+        leaf_tasks
+    }
+
     /// Fetch a supervisor run by id.
     pub async fn get_supervisor_run(&self, run_id: &str) -> Option<SupervisorRun> {
-        if let Some(run) = self.supervisor_runs.lock().await.get(run_id).cloned() {
-            return Some(run);
+        let mut in_memory_runs = self
+            .supervisor_runs
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        if !in_memory_runs.is_empty() {
+            synchronize_run_hierarchy_snapshots(&mut in_memory_runs);
+            if let Some(run) = in_memory_runs.into_iter().find(|run| run.id == run_id) {
+                return Some(run);
+            }
         }
 
-        self.default_workspace_dir
-            .as_deref()
-            .and_then(|root| load_persisted_run_by_id(root, run_id))
+        self.default_workspace_dir.as_deref().and_then(|root| {
+            let mut runs = load_persisted_runs(root);
+            synchronize_run_hierarchy_snapshots(&mut runs);
+            runs.into_iter().find(|run| run.id == run_id)
+        })
     }
 
     /// List team messages for a run.
@@ -928,6 +1464,20 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 messages
             })
             .unwrap_or_default()
+    }
+
+    /// List grouped collaboration threads for a run.
+    pub async fn list_team_threads(&self, run_id: &str) -> Vec<TeamThread> {
+        self.list_team_threads_with_options(run_id, false).await
+    }
+
+    /// List grouped collaboration threads for a run with archive controls.
+    pub async fn list_team_threads_with_options(
+        &self,
+        run_id: &str,
+        include_archived: bool,
+    ) -> Vec<TeamThread> {
+        build_team_threads_with_options(&self.list_team_messages(run_id).await, include_archived)
     }
 
     /// List all running subagents.
@@ -952,7 +1502,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
 
         let mut queued_to_start = None;
         let mut completion_environment_id = None;
-        let (mut run_snapshot, approval_message) = {
+        let (mut run_snapshot, collaboration_messages) = {
             let mut runs = self.supervisor_runs.lock().await;
             let run = runs
                 .get_mut(&run_id)
@@ -981,7 +1531,14 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 actor,
                 note,
             )?;
-            let approval_message = TeamMessage::new(
+            let thread_context = resolve_open_gate_request(
+                record,
+                scope,
+                &decision.actor.id,
+                CollaborationActionStatus::Resolved,
+                decision.note.clone(),
+            );
+            let mut approval_message = TeamMessage::new(
                 run.id.clone(),
                 Some(record.task.id.clone()),
                 TeamMessageKind::ApprovalDecision,
@@ -989,6 +1546,27 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 Some(record.task.agent_id.clone()),
                 format_approval_decision_message(&decision),
             );
+            if let Some((thread_id, reply_to_message_id)) = thread_context {
+                approval_message =
+                    approval_message.with_thread(thread_id, Some(reply_to_message_id));
+            }
+            if let Some(result) = record.result.as_ref() {
+                approval_message = approval_message
+                    .with_result_reference(TeamResultReference::from_task_result(result));
+                approval_message = approval_message.with_artifact_references(
+                    result
+                        .artifacts
+                        .iter()
+                        .map(|artifact| {
+                            TeamArtifactReference::from_task_artifact(
+                                Some(record.task.id.clone()),
+                                artifact,
+                            )
+                        })
+                        .collect(),
+                );
+            }
+            let mut collaboration_messages = vec![approval_message.clone()];
 
             record.updated_at = Utc::now();
 
@@ -1012,6 +1590,13 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                             ApprovalActor::system("orchestrator"),
                             Some("Review approved. Awaiting explicit test validation.".to_string()),
                         );
+                        let message = build_gate_request_message(
+                            &run.id,
+                            record,
+                            ApprovalScope::TestValidation,
+                        );
+                        record.messages.push(message.clone());
+                        collaboration_messages.push(message);
                     } else {
                         record.state = SupervisorTaskState::Completed;
                         record.completed_at = Some(Utc::now());
@@ -1036,7 +1621,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
 
             run.updated_at = Utc::now();
             run.status = recalculate_run_status(run);
-            (run.clone(), Some(approval_message))
+            (run.clone(), collaboration_messages)
         };
 
         if let Some(environment_id) = completion_environment_id
@@ -1050,9 +1635,8 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             }
         }
 
-        self.persist_run(&run_snapshot)?;
-        self.notify_run_updated(run_snapshot).await;
-        if let Some(message) = approval_message {
+        self.persist_run_with_hierarchy_sync(run_snapshot).await?;
+        for message in collaboration_messages {
             self.notify_team_message(message).await;
         }
 
@@ -1101,7 +1685,14 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 actor,
                 note,
             )?;
-            let approval_message = TeamMessage::new(
+            let thread_context = resolve_open_gate_request(
+                record,
+                scope,
+                &decision.actor.id,
+                CollaborationActionStatus::NeedsRevision,
+                decision.note.clone(),
+            );
+            let mut approval_message = TeamMessage::new(
                 run.id.clone(),
                 Some(record.task.id.clone()),
                 TeamMessageKind::ApprovalDecision,
@@ -1109,6 +1700,26 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 Some(record.task.agent_id.clone()),
                 format_approval_decision_message(&decision),
             );
+            if let Some((thread_id, reply_to_message_id)) = thread_context {
+                approval_message =
+                    approval_message.with_thread(thread_id, Some(reply_to_message_id));
+            }
+            if let Some(result) = record.result.as_ref() {
+                approval_message = approval_message
+                    .with_result_reference(TeamResultReference::from_task_result(result));
+                approval_message = approval_message.with_artifact_references(
+                    result
+                        .artifacts
+                        .iter()
+                        .map(|artifact| {
+                            TeamArtifactReference::from_task_artifact(
+                                Some(record.task.id.clone()),
+                                artifact,
+                            )
+                        })
+                        .collect(),
+                );
+            }
             record.state = SupervisorTaskState::Failed;
             record.updated_at = Utc::now();
             record.messages.push(approval_message.clone());
@@ -1133,8 +1744,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             }
         }
 
-        self.persist_run(&run_snapshot)?;
-        self.notify_run_updated(run_snapshot).await;
+        self.persist_run_with_hierarchy_sync(run_snapshot).await?;
         if let Some(message) = approval_message {
             self.notify_team_message(message).await;
         }
@@ -1152,7 +1762,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             .ok_or_else(|| format!("Task '{}' not found", task_id))?;
 
         let mut queued_to_start = None;
-        let (mut run_snapshot, environment_id) = {
+        let (mut run_snapshot, environment_id, retry_message) = {
             let mut runs = self.supervisor_runs.lock().await;
             let run = runs
                 .get_mut(&run_id)
@@ -1182,11 +1792,13 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
 
             record.attempts += 1;
             record.result = None;
+            record.remote_execution = None;
             record.completed_at = None;
             record.started_at = None;
             record.updated_at = Utc::now();
             record.blocked_reasons.clear();
             let environment_id = record.environment_id.clone();
+            let mut retry_message = None;
 
             if record.task.approval_required {
                 record.state = SupervisorTaskState::PendingApproval;
@@ -1196,6 +1808,10 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                     ApprovalActor::system("orchestrator"),
                     Some("Task retried. Awaiting explicit pre-execution approval.".to_string()),
                 );
+                let message =
+                    build_gate_request_message(&run.id, record, ApprovalScope::PreExecution);
+                record.messages.push(message.clone());
+                retry_message = Some(message);
             } else {
                 record.approval.reset_for_task(&record.task);
                 let blocked = dependency_reasons_from_states(&dependency_states, &record.task);
@@ -1211,7 +1827,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
 
             run.updated_at = Utc::now();
             run.status = recalculate_run_status(run);
-            (run.clone(), environment_id)
+            (run.clone(), environment_id, retry_message)
         };
 
         let environment = self.retry_environment_preparation(&environment_id).await?;
@@ -1240,8 +1856,10 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             run_snapshot = run;
         }
 
-        self.persist_run(&run_snapshot)?;
-        self.notify_run_updated(run_snapshot).await;
+        self.persist_run_with_hierarchy_sync(run_snapshot).await?;
+        if let Some(message) = retry_message {
+            self.notify_team_message(message).await;
+        }
 
         if let Some(task) = queued_to_start {
             self.start_task_execution(task).await?;
@@ -1279,8 +1897,84 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             run.clone()
         };
 
-        self.persist_run(&run_snapshot)?;
-        self.notify_run_updated(run_snapshot).await;
+        self.persist_run_with_hierarchy_sync(run_snapshot).await?;
+        Ok(())
+    }
+
+    async fn supervisor_task_record(&self, task_id: &str) -> Option<SupervisorTaskRecord> {
+        let run_id = self.task_run_index.lock().await.get(task_id).cloned()?;
+        let runs = self.supervisor_runs.lock().await;
+        runs.get(&run_id).and_then(|run| {
+            run.tasks
+                .iter()
+                .find(|record| record.task.id == task_id)
+                .cloned()
+        })
+    }
+
+    async fn remote_execution_for_task(&self, task_id: &str) -> Option<RemoteExecutionRecord> {
+        self.supervisor_task_record(task_id)
+            .await
+            .and_then(|record| record.remote_execution)
+    }
+
+    async fn sync_remote_task_snapshot(
+        &self,
+        task: &DelegatedTask,
+        remote_target: &RemoteAgentTarget,
+        remote_task: &A2ATask,
+        manifest: &[ArtifactManifestEntry],
+        compatibility: RemoteExecutionCompatibility,
+    ) -> Result<(), String> {
+        let run_id = task
+            .run_id
+            .clone()
+            .ok_or_else(|| format!("Task '{}' missing run_id", task.id))?;
+        let run_snapshot = {
+            let mut runs = self.supervisor_runs.lock().await;
+            let run = runs
+                .get_mut(&run_id)
+                .ok_or_else(|| format!("Run '{}' not found", run_id))?;
+            let record = run
+                .tasks
+                .iter_mut()
+                .find(|record| record.task.id == task.id)
+                .ok_or_else(|| format!("Task '{}' not found in run", task.id))?;
+            record.remote_execution = Some(RemoteExecutionRecord {
+                target: remote_target.clone(),
+                remote_task_id: remote_task.id.clone(),
+                status: a2a_status_label(remote_task.status),
+                status_reason: remote_task.status_reason.clone(),
+                lease: remote_task.lease.clone(),
+                progress: progress_from_remote(remote_task.progress.as_ref()),
+                artifacts: artifacts_from_manifest(manifest),
+                provenance: remote_task
+                    .provenance
+                    .clone()
+                    .or_else(|| provenance_from_metadata(&remote_task.metadata)),
+                compatibility,
+                last_synced_at: Utc::now(),
+            });
+            if matches!(remote_task.status, A2ATaskStatus::Blocked) {
+                record.state = SupervisorTaskState::Blocked;
+                record.blocked_reasons = vec![
+                    remote_task
+                        .status_reason
+                        .clone()
+                        .unwrap_or_else(|| "Remote execution blocked".to_string()),
+                ];
+            }
+            record.updated_at = Utc::now();
+            run.updated_at = Utc::now();
+            run.status = recalculate_run_status(run);
+            run.clone()
+        };
+        self.persist_run_with_hierarchy_sync(run_snapshot.clone())
+            .await?;
+        let observer = { self.observer.read().await.clone() };
+        if let Some(observer) = observer.as_ref() {
+            observer.on_run_updated(run_snapshot).await;
+        }
         Ok(())
     }
 
@@ -1294,42 +1988,134 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         recipient_agent_id: Option<String>,
         content: impl Into<String>,
     ) -> Result<TeamMessage, String> {
-        let message = TeamMessage::new(
-            run_id.to_string(),
-            task_id.clone(),
-            kind,
-            sender_agent_id,
-            recipient_agent_id,
-            content,
-        );
+        self.send_team_message_draft(
+            run_id,
+            TeamMessageDraft {
+                task_id,
+                kind,
+                sender_agent_id,
+                recipient_agent_id,
+                content: content.into(),
+                thread_id: None,
+                reply_to_message_id: None,
+                action_request: None,
+                escalation: None,
+                unread_by_agent_ids: Vec::new(),
+            },
+        )
+        .await
+    }
+
+    /// Record a structured collaboration message using the richer draft payload.
+    pub async fn send_team_message_draft(
+        &self,
+        run_id: &str,
+        draft: TeamMessageDraft,
+    ) -> Result<TeamMessage, String> {
+        let message = draft.into_message(run_id.to_string());
+        let thread_id = message.effective_thread_id().to_string();
 
         let run_snapshot = {
             let mut runs = self.supervisor_runs.lock().await;
             let run = runs
                 .get_mut(run_id)
                 .ok_or_else(|| format!("Run '{}' not found", run_id))?;
-
-            if let Some(task_id) = task_id.as_deref() {
-                let record = run
-                    .tasks
-                    .iter_mut()
-                    .find(|record| record.task.id == task_id)
-                    .ok_or_else(|| format!("Task '{}' not found in run", task_id))?;
-                record.messages.push(message.clone());
-                record.updated_at = Utc::now();
-            } else {
-                run.messages.push(message.clone());
-            }
-
-            run.updated_at = Utc::now();
-            run.status = recalculate_run_status(run);
+            insert_team_message(run, message.clone())?;
+            apply_collaboration_retention(run);
             run.clone()
         };
 
-        self.persist_run(&run_snapshot)?;
-        self.notify_run_updated(run_snapshot).await;
+        build_team_threads_with_options(&collect_team_messages(&run_snapshot), true)
+            .into_iter()
+            .find(|thread| thread.id == thread_id)
+            .ok_or_else(|| format!("Thread '{}' not found after recording message", thread_id))?;
+
+        self.persist_run_with_hierarchy_sync(run_snapshot).await?;
         self.notify_team_message(message.clone()).await;
         Ok(message)
+    }
+
+    /// Update the latest actionable request in a collaboration thread.
+    pub async fn update_team_thread_action(
+        &self,
+        run_id: &str,
+        thread_id: &str,
+        status: CollaborationActionStatus,
+        actor_id: Option<String>,
+        note: Option<String>,
+    ) -> Result<TeamThread, String> {
+        let (run_snapshot, thread, action_reply) = {
+            let mut runs = self.supervisor_runs.lock().await;
+            let run = runs
+                .get_mut(run_id)
+                .ok_or_else(|| format!("Run '{}' not found", run_id))?;
+
+            let (task_id, reply_to_message_id) = resolve_team_thread_action_request(
+                run,
+                thread_id,
+                status,
+                actor_id.clone(),
+                note.clone(),
+            )?;
+
+            let reply_kind = match status {
+                CollaborationActionStatus::NeedsRevision => TeamMessageKind::ReviewFeedback,
+                _ => TeamMessageKind::StatusUpdate,
+            };
+            let reply_content = collaboration_status_message(status, note.clone());
+            let action_reply = TeamMessage::new(
+                run_id.to_string(),
+                task_id,
+                reply_kind,
+                actor_id.clone(),
+                None,
+                reply_content,
+            )
+            .with_thread(thread_id.to_string(), Some(reply_to_message_id));
+            insert_team_message(run, action_reply.clone())?;
+            apply_collaboration_retention(run);
+            let run_snapshot = run.clone();
+            let thread =
+                build_team_threads_with_options(&collect_team_messages(&run_snapshot), true)
+                    .into_iter()
+                    .find(|thread| thread.id == thread_id)
+                    .ok_or_else(|| format!("Thread '{}' not found", thread_id))?;
+            (run_snapshot, thread, action_reply)
+        };
+
+        self.persist_run_with_hierarchy_sync(run_snapshot).await?;
+        self.notify_team_message(action_reply).await;
+        Ok(thread)
+    }
+
+    /// Archive an existing collaboration thread.
+    pub async fn archive_team_thread(
+        &self,
+        run_id: &str,
+        thread_id: &str,
+        actor_id: Option<String>,
+        note: Option<String>,
+    ) -> Result<TeamThread, String> {
+        let (run_snapshot, thread) = {
+            let mut runs = self.supervisor_runs.lock().await;
+            let run = runs
+                .get_mut(run_id)
+                .ok_or_else(|| format!("Run '{}' not found", run_id))?;
+
+            archive_team_thread_messages(run, thread_id, actor_id, note)?;
+            apply_collaboration_retention(run);
+            let run_snapshot = run.clone();
+            let thread =
+                build_team_threads_with_options(&collect_team_messages(&run_snapshot), true)
+                    .into_iter()
+                    .find(|thread| thread.id == thread_id)
+                    .ok_or_else(|| format!("Thread '{}' not found", thread_id))?;
+            (run_snapshot, thread)
+        };
+
+        self.persist_run_with_hierarchy_sync(run_snapshot).await?;
+        self.notify_team_thread_updated(thread.clone()).await;
+        Ok(thread)
     }
 
     /// Cancel a running task.
@@ -1341,10 +2127,27 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
 
         if let Some(task) = task_opt {
             tracing::info!(task_id = %task_id, agent_id = %task.agent_id, "Cancelling task");
-            // Send cancellation event to the agent.
-            self.agent_manager
-                .send_event(&task.agent_id, format!("cancel:{}", task_id))
-                .await;
+            if matches!(task.execution_mode, AgentExecutionMode::Remote) {
+                if let (Some(remote_target), Some(remote_execution)) = (
+                    task.remote_target.clone(),
+                    self.remote_execution_for_task(task_id).await,
+                ) {
+                    let client = match remote_target.auth_token {
+                        Some(token) => A2AClient::with_auth(token),
+                        None => A2AClient::new(),
+                    };
+                    if let Err(error) = client
+                        .cancel_task(&remote_target.url, &remote_execution.remote_task_id)
+                        .await
+                    {
+                        tracing::warn!(task_id = %task_id, error = %error, "Failed to cancel remote A2A task");
+                    }
+                }
+            } else {
+                self.agent_manager
+                    .send_event(&task.agent_id, format!("cancel:{}", task_id))
+                    .await;
+            }
 
             if let Some(run_id) = self.task_run_index.lock().await.get(task_id).cloned() {
                 let mut run_snapshot = {
@@ -1379,8 +2182,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                         run_snapshot = run;
                     }
                 }
-                self.persist_run(&run_snapshot)?;
-                self.notify_run_updated(run_snapshot).await;
+                self.persist_run_with_hierarchy_sync(run_snapshot).await?;
             }
             Ok(())
         } else {
@@ -1490,8 +2292,8 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         };
 
         record_task_dispatch(&task, &task_snapshot, &run_snapshot);
-        self.persist_run(&run_snapshot)?;
-        self.notify_run_updated(run_snapshot.clone()).await;
+        self.persist_run_with_hierarchy_sync(run_snapshot.clone())
+            .await?;
 
         let observer_for_start = { self.observer.read().await.clone() };
         if let Some(obs) = observer_for_start.as_ref() {
@@ -1501,22 +2303,33 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         let orchestrator = self.clone();
         tokio::spawn(async move {
             let start = std::time::Instant::now();
-            let (result, tool_calls) =
-                execute_delegated_task(&orchestrator.agent_manager, &orchestrator.config, &task)
-                    .await;
-            let duration_ms = start.elapsed().as_millis() as u64;
-
-            let task_result = TaskResult {
-                task_id: task.id.clone(),
-                agent_id: task.agent_id.clone(),
-                success: result.is_ok(),
-                run_id: task.run_id.clone(),
-                tracking_task_id: task.tracking_task_id.clone(),
-                output: result.clone().unwrap_or_else(|error| error),
-                summary: task.name.clone(),
-                tool_calls,
-                artifacts: Vec::new(),
-                duration_ms,
+            let task_result = if matches!(task.execution_mode, AgentExecutionMode::Remote) {
+                orchestrator.execute_remote_task(&task, start).await
+            } else {
+                let (result, tool_calls) = execute_delegated_task(
+                    &orchestrator.agent_manager,
+                    &orchestrator.config,
+                    &task,
+                )
+                .await;
+                let duration_ms = start.elapsed().as_millis() as u64;
+                TaskResult {
+                    task_id: task.id.clone(),
+                    agent_id: task.agent_id.clone(),
+                    success: result.is_ok(),
+                    run_id: task.run_id.clone(),
+                    tracking_task_id: task.tracking_task_id.clone(),
+                    output: result.clone().unwrap_or_else(|error| error),
+                    summary: task.name.clone(),
+                    tool_calls,
+                    artifacts: Vec::new(),
+                    terminal_state_hint: Some(if result.is_ok() {
+                        TaskTerminalStateHint::Completed
+                    } else {
+                        TaskTerminalStateHint::Failed
+                    }),
+                    duration_ms,
+                }
             };
 
             if let Err(error) = orchestrator
@@ -1528,6 +2341,225 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         });
 
         Ok(())
+    }
+
+    async fn execute_remote_task(
+        &self,
+        task: &DelegatedTask,
+        start: std::time::Instant,
+    ) -> TaskResult {
+        let duration_ms = || start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        let Some(remote_target) = task.remote_target.clone() else {
+            return TaskResult {
+                task_id: task.id.clone(),
+                agent_id: task.agent_id.clone(),
+                success: false,
+                run_id: task.run_id.clone(),
+                tracking_task_id: task.tracking_task_id.clone(),
+                output: "Task is marked remote without a remote target".to_string(),
+                summary: task.name.clone(),
+                tool_calls: vec![],
+                artifacts: vec![],
+                terminal_state_hint: Some(TaskTerminalStateHint::Failed),
+                duration_ms: duration_ms(),
+            };
+        };
+
+        let client = match remote_target.auth_token.as_ref() {
+            Some(token) => A2AClient::with_auth(token.clone()),
+            None => A2AClient::new(),
+        };
+        let remote_card = match client.discover(&remote_target.url).await {
+            Ok(card) => card,
+            Err(error) => {
+                return TaskResult {
+                    task_id: task.id.clone(),
+                    agent_id: task.agent_id.clone(),
+                    success: false,
+                    run_id: task.run_id.clone(),
+                    tracking_task_id: task.tracking_task_id.clone(),
+                    output: format!(
+                        "Failed to discover remote agent at {}: {error}",
+                        remote_target.url
+                    ),
+                    summary: task.name.clone(),
+                    tool_calls: vec![],
+                    artifacts: vec![],
+                    terminal_state_hint: Some(TaskTerminalStateHint::Blocked),
+                    duration_ms: duration_ms(),
+                };
+            }
+        };
+
+        let compatibility = compatibility_from_card(&remote_card, &remote_target);
+        if remote_card.authentication.is_some() && remote_target.auth_token.is_none() {
+            return TaskResult {
+                task_id: task.id.clone(),
+                agent_id: task.agent_id.clone(),
+                success: false,
+                run_id: task.run_id.clone(),
+                tracking_task_id: task.tracking_task_id.clone(),
+                output: format!(
+                    "Remote agent at {} requires authentication, but no auth token is configured",
+                    remote_target.url
+                ),
+                summary: task.name.clone(),
+                tool_calls: vec![],
+                artifacts: vec![],
+                terminal_state_hint: Some(TaskTerminalStateHint::Blocked),
+                duration_ms: duration_ms(),
+            };
+        }
+        let request = match self.supervisor_task_record(&task.id).await {
+            Some(record) => build_remote_task_request(task, &record, &compatibility),
+            None => {
+                return TaskResult {
+                    task_id: task.id.clone(),
+                    agent_id: task.agent_id.clone(),
+                    success: false,
+                    run_id: task.run_id.clone(),
+                    tracking_task_id: task.tracking_task_id.clone(),
+                    output: format!("Missing supervisor record for remote task {}", task.id),
+                    summary: task.name.clone(),
+                    tool_calls: vec![],
+                    artifacts: vec![],
+                    terminal_state_hint: Some(TaskTerminalStateHint::Failed),
+                    duration_ms: duration_ms(),
+                };
+            }
+        };
+
+        let remote_task = match client
+            .create_task_with_request(&remote_target.url, request)
+            .await
+        {
+            Ok(task_state) => task_state,
+            Err(error) => {
+                return TaskResult {
+                    task_id: task.id.clone(),
+                    agent_id: task.agent_id.clone(),
+                    success: false,
+                    run_id: task.run_id.clone(),
+                    tracking_task_id: task.tracking_task_id.clone(),
+                    output: format!(
+                        "Failed to create remote task on {}: {error}",
+                        remote_target.url
+                    ),
+                    summary: task.name.clone(),
+                    tool_calls: vec![],
+                    artifacts: vec![],
+                    terminal_state_hint: Some(TaskTerminalStateHint::Blocked),
+                    duration_ms: duration_ms(),
+                };
+            }
+        };
+
+        let mut manifest = if remote_card
+            .supported_rpc_methods
+            .iter()
+            .any(|method| method == "task/artifacts")
+        {
+            client
+                .list_task_artifacts(&remote_target.url, &remote_task.id)
+                .await
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if let Err(error) = self
+            .sync_remote_task_snapshot(
+                task,
+                &remote_target,
+                &remote_task,
+                &manifest,
+                compatibility.clone(),
+            )
+            .await
+        {
+            tracing::warn!(task_id = %task.id, error = %error, "Failed to persist initial remote task snapshot");
+        }
+
+        let mut current = remote_task;
+        loop {
+            match current.status {
+                A2ATaskStatus::Completed => {
+                    return TaskResult {
+                        task_id: task.id.clone(),
+                        agent_id: task.agent_id.clone(),
+                        success: true,
+                        run_id: task.run_id.clone(),
+                        tracking_task_id: task.tracking_task_id.clone(),
+                        output: summarize_remote_task_output(&current),
+                        summary: task.name.clone(),
+                        tool_calls: vec![],
+                        artifacts: task_artifacts_from_remote_payload(&current.artifacts),
+                        terminal_state_hint: task_terminal_hint_for_a2a_status(current.status),
+                        duration_ms: duration_ms(),
+                    };
+                }
+                A2ATaskStatus::Failed | A2ATaskStatus::Cancelled | A2ATaskStatus::Blocked => {
+                    return TaskResult {
+                        task_id: task.id.clone(),
+                        agent_id: task.agent_id.clone(),
+                        success: false,
+                        run_id: task.run_id.clone(),
+                        tracking_task_id: task.tracking_task_id.clone(),
+                        output: summarize_remote_task_output(&current),
+                        summary: task.name.clone(),
+                        tool_calls: vec![],
+                        artifacts: task_artifacts_from_remote_payload(&current.artifacts),
+                        terminal_state_hint: task_terminal_hint_for_a2a_status(current.status),
+                        duration_ms: duration_ms(),
+                    };
+                }
+                _ => {}
+            }
+
+            sleep(TokioDuration::from_secs(2)).await;
+            current = match client
+                .get_task_status(&remote_target.url, &current.id)
+                .await
+            {
+                Ok(task_state) => task_state,
+                Err(error) => {
+                    return TaskResult {
+                        task_id: task.id.clone(),
+                        agent_id: task.agent_id.clone(),
+                        success: false,
+                        run_id: task.run_id.clone(),
+                        tracking_task_id: task.tracking_task_id.clone(),
+                        output: format!("Failed to refresh remote task {}: {error}", current.id),
+                        summary: task.name.clone(),
+                        tool_calls: vec![],
+                        artifacts: vec![],
+                        terminal_state_hint: Some(TaskTerminalStateHint::Blocked),
+                        duration_ms: duration_ms(),
+                    };
+                }
+            };
+            if remote_card
+                .supported_rpc_methods
+                .iter()
+                .any(|method| method == "task/artifacts")
+            {
+                manifest = client
+                    .list_task_artifacts(&remote_target.url, &current.id)
+                    .await
+                    .unwrap_or_default();
+            }
+            if let Err(error) = self
+                .sync_remote_task_snapshot(
+                    task,
+                    &remote_target,
+                    &current,
+                    &manifest,
+                    compatibility.clone(),
+                )
+                .await
+            {
+                tracing::warn!(task_id = %task.id, error = %error, "Failed to sync remote task snapshot");
+            }
+        }
     }
 
     async fn complete_task_execution(
@@ -1542,7 +2574,14 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             .ok_or_else(|| "Completed task result is missing run_id".to_string())?;
 
         let memory_file_path = persist_delegated_task_memory(&task, &task_result).await;
-        let (mut run_snapshot, task_snapshot, tasks_to_start, environment_id, finalized_state) = {
+        let (
+            mut run_snapshot,
+            task_snapshot,
+            tasks_to_start,
+            environment_id,
+            finalized_state,
+            gate_message,
+        ) = {
             self.active_tasks.lock().await.remove(&task.id);
 
             let mut runs = self.supervisor_runs.lock().await;
@@ -1558,6 +2597,13 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             record.result = Some(task_result.clone());
             record.completed_at = Some(Utc::now());
             record.updated_at = Utc::now();
+            let mut gate_message = None;
+            let hinted_terminal_state = task_result.terminal_state_hint.map(|hint| match hint {
+                TaskTerminalStateHint::Completed => SupervisorTaskState::Completed,
+                TaskTerminalStateHint::Failed => SupervisorTaskState::Failed,
+                TaskTerminalStateHint::Cancelled => SupervisorTaskState::Cancelled,
+                TaskTerminalStateHint::Blocked => SupervisorTaskState::Blocked,
+            });
 
             if task_result.success {
                 if record.task.reviewer_required {
@@ -1567,6 +2613,10 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                         ApprovalActor::system("orchestrator"),
                         Some("Execution finished. Awaiting explicit review approval.".to_string()),
                     );
+                    let message =
+                        build_gate_request_message(&run.id, record, ApprovalScope::Review);
+                    record.messages.push(message.clone());
+                    gate_message = Some(message);
                 } else if record.task.test_required {
                     record.state = SupervisorTaskState::TestPending;
                     record.approval.request(
@@ -1574,6 +2624,10 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                         ApprovalActor::system("orchestrator"),
                         Some("Execution finished. Awaiting explicit test validation.".to_string()),
                     );
+                    let message =
+                        build_gate_request_message(&run.id, record, ApprovalScope::TestValidation);
+                    record.messages.push(message.clone());
+                    gate_message = Some(message);
                 } else {
                     record.state = SupervisorTaskState::Completed;
                     if matches!(record.approval.state, ApprovalState::Pending) {
@@ -1585,7 +2639,12 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                     }
                 }
             } else {
-                record.state = SupervisorTaskState::Failed;
+                record.state = hinted_terminal_state.unwrap_or(SupervisorTaskState::Failed);
+                record.blocked_reasons = if matches!(record.state, SupervisorTaskState::Blocked) {
+                    vec![task_result.output.clone()]
+                } else {
+                    Vec::new()
+                };
                 if matches!(record.approval.state, ApprovalState::Pending) {
                     record.approval.reset_for_task(&record.task);
                     record.approval.note = Some(
@@ -1605,6 +2664,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 ready_to_start,
                 environment_id,
                 finalized_state,
+                gate_message,
             )
         };
 
@@ -1633,8 +2693,10 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             &task_snapshot,
             &run_snapshot,
         );
-        self.persist_run(&run_snapshot)?;
-        self.notify_run_updated(run_snapshot).await;
+        self.persist_run_with_hierarchy_sync(run_snapshot).await?;
+        if let Some(message) = gate_message {
+            self.notify_team_message(message).await;
+        }
 
         let observer_for_complete = { self.observer.read().await.clone() };
         if let Some(obs) = observer_for_complete.as_ref() {
@@ -1672,6 +2734,53 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         persist_run_to_disk(root, run)
     }
 
+    async fn persist_run_with_hierarchy_sync(
+        &self,
+        run: SupervisorRun,
+    ) -> Result<Vec<SupervisorRun>, String> {
+        self.persist_run(&run)?;
+        let mut updated_runs = vec![run.clone()];
+        if let Some(parent_run) = self.sync_parent_run_from_child(&run.id).await? {
+            self.persist_run(&parent_run)?;
+            updated_runs.push(parent_run);
+        }
+        for snapshot in &updated_runs {
+            self.notify_run_updated(snapshot.clone()).await;
+        }
+        Ok(updated_runs)
+    }
+
+    async fn sync_parent_run_from_child(
+        &self,
+        child_run_id: &str,
+    ) -> Result<Option<SupervisorRun>, String> {
+        let mut runs = self.supervisor_runs.lock().await;
+        let Some(child_run) = runs.get(child_run_id).cloned() else {
+            return Ok(None);
+        };
+        let Some(parent_ref) = child_run.parent_run.as_ref() else {
+            return Ok(None);
+        };
+        let parent = runs.get_mut(&parent_ref.parent_run_id).ok_or_else(|| {
+            format!(
+                "Parent supervisor run '{}' not found for child '{}'",
+                parent_ref.parent_run_id, child_run_id
+            )
+        })?;
+        upsert_child_run_summary(parent, &child_run);
+        parent.updated_at = child_run.updated_at.max(parent.updated_at);
+        refresh_run_rollups(parent);
+        if matches!(
+            parent.status,
+            SupervisorRunStatus::Completed | SupervisorRunStatus::Cancelled
+        ) {
+            parent.completed_at.get_or_insert(Utc::now());
+        } else {
+            parent.completed_at = None;
+        }
+        Ok(Some(parent.clone()))
+    }
+
     async fn notify_run_updated(&self, run: SupervisorRun) {
         let observer_for_run = { self.observer.read().await.clone() };
         if let Some(obs) = observer_for_run.as_ref() {
@@ -1682,9 +2791,287 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
     async fn notify_team_message(&self, message: TeamMessage) {
         let observer_for_message = { self.observer.read().await.clone() };
         if let Some(obs) = observer_for_message.as_ref() {
-            obs.on_team_message(message).await;
+            obs.on_team_message(message.clone()).await;
+        }
+
+        if let Some(thread) = self
+            .list_team_threads_with_options(&message.run_id, true)
+            .await
+            .into_iter()
+            .find(|thread| thread.id == message.effective_thread_id())
+        {
+            self.notify_team_thread_updated(thread).await;
         }
     }
+
+    async fn notify_team_thread_updated(&self, thread: TeamThread) {
+        let observer_for_thread = { self.observer.read().await.clone() };
+        if let Some(obs) = observer_for_thread.as_ref() {
+            obs.on_team_thread_updated(thread).await;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TeamMessageLocation {
+    Run(usize),
+    Task {
+        task_index: usize,
+        message_index: usize,
+    },
+}
+
+fn collect_team_messages(run: &SupervisorRun) -> Vec<TeamMessage> {
+    let mut messages = Vec::with_capacity(
+        run.messages.len()
+            + run
+                .tasks
+                .iter()
+                .map(|task| task.messages.len())
+                .sum::<usize>(),
+    );
+    messages.extend(run.messages.clone());
+    for task in &run.tasks {
+        messages.extend(task.messages.clone());
+    }
+    messages.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+    messages
+}
+
+fn insert_team_message(run: &mut SupervisorRun, message: TeamMessage) -> Result<(), String> {
+    if let Some(task_id) = message.task_id.as_deref() {
+        let record = run
+            .tasks
+            .iter_mut()
+            .find(|record| record.task.id == task_id)
+            .ok_or_else(|| format!("Task '{}' not found in run", task_id))?;
+        if matches!(message.kind, TeamMessageKind::Blocker)
+            && !record
+                .blocked_reasons
+                .iter()
+                .any(|reason| reason == &message.content)
+        {
+            record.blocked_reasons.push(message.content.clone());
+            if !matches!(
+                record.state,
+                SupervisorTaskState::Completed
+                    | SupervisorTaskState::Failed
+                    | SupervisorTaskState::Cancelled
+            ) {
+                record.state = SupervisorTaskState::Blocked;
+            }
+        }
+        record.messages.push(message);
+        record.updated_at = Utc::now();
+    } else {
+        run.messages.push(message);
+    }
+
+    run.updated_at = Utc::now();
+    run.status = recalculate_run_status(run);
+    Ok(())
+}
+
+fn find_latest_thread_action_location(
+    run: &SupervisorRun,
+    thread_id: &str,
+) -> Option<(TeamMessageLocation, DateTime<Utc>)> {
+    let mut latest = None;
+    for (message_index, message) in run.messages.iter().enumerate() {
+        if message.effective_thread_id() == thread_id && message.action_request.is_some() {
+            latest = Some((TeamMessageLocation::Run(message_index), message.created_at));
+        }
+    }
+    for (task_index, task) in run.tasks.iter().enumerate() {
+        for (message_index, message) in task.messages.iter().enumerate() {
+            if message.effective_thread_id() == thread_id && message.action_request.is_some() {
+                match latest {
+                    Some((_, current_time)) if current_time >= message.created_at => {}
+                    _ => {
+                        latest = Some((
+                            TeamMessageLocation::Task {
+                                task_index,
+                                message_index,
+                            },
+                            message.created_at,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    latest
+}
+
+fn resolve_team_thread_action_request(
+    run: &mut SupervisorRun,
+    thread_id: &str,
+    status: CollaborationActionStatus,
+    actor_id: Option<String>,
+    note: Option<String>,
+) -> Result<(Option<String>, String), String> {
+    let (location, _) = find_latest_thread_action_location(run, thread_id)
+        .ok_or_else(|| format!("Thread '{}' has no actionable request", thread_id))?;
+    let blocker_contents = collect_team_messages(run)
+        .into_iter()
+        .filter(|message| {
+            message.effective_thread_id() == thread_id
+                && matches!(message.kind, TeamMessageKind::Blocker)
+        })
+        .map(|message| message.content)
+        .collect::<Vec<_>>();
+
+    let (task_id, message_id) = match location {
+        TeamMessageLocation::Run(message_index) => {
+            let message = run
+                .messages
+                .get_mut(message_index)
+                .ok_or_else(|| format!("Thread '{}' message not found", thread_id))?;
+            let action_request = message
+                .action_request
+                .as_mut()
+                .ok_or_else(|| format!("Thread '{}' has no actionable request", thread_id))?;
+            action_request.resolve(status, actor_id.clone(), note.clone());
+            message.unread_by_agent_ids.clear();
+            (message.task_id.clone(), message.id.clone())
+        }
+        TeamMessageLocation::Task {
+            task_index,
+            message_index,
+        } => {
+            let record = run
+                .tasks
+                .get_mut(task_index)
+                .ok_or_else(|| format!("Thread '{}' task not found", thread_id))?;
+            let message = record
+                .messages
+                .get_mut(message_index)
+                .ok_or_else(|| format!("Thread '{}' message not found", thread_id))?;
+            let action_request = message
+                .action_request
+                .as_mut()
+                .ok_or_else(|| format!("Thread '{}' has no actionable request", thread_id))?;
+            action_request.resolve(status, actor_id.clone(), note.clone());
+            message.unread_by_agent_ids.clear();
+            record.updated_at = Utc::now();
+            (Some(record.task.id.clone()), message.id.clone())
+        }
+    };
+
+    if matches!(
+        status,
+        CollaborationActionStatus::Resolved | CollaborationActionStatus::Cancelled
+    ) && !blocker_contents.is_empty()
+        && let Some(task_id) = task_id.as_deref()
+        && let Some(record) = run
+            .tasks
+            .iter_mut()
+            .find(|record| record.task.id == task_id)
+    {
+        record
+            .blocked_reasons
+            .retain(|reason| !blocker_contents.iter().any(|content| content == reason));
+        if record.blocked_reasons.is_empty() && matches!(record.state, SupervisorTaskState::Blocked)
+        {
+            record.state = SupervisorTaskState::Queued;
+        }
+        record.updated_at = Utc::now();
+    }
+
+    run.updated_at = Utc::now();
+    run.status = recalculate_run_status(run);
+    Ok((task_id, message_id))
+}
+
+fn archive_team_thread_messages(
+    run: &mut SupervisorRun,
+    thread_id: &str,
+    actor_id: Option<String>,
+    note: Option<String>,
+) -> Result<(), String> {
+    let mut found = false;
+    for message in &mut run.messages {
+        if message.effective_thread_id() == thread_id {
+            message.archive(actor_id.clone(), note.clone());
+            found = true;
+        }
+    }
+    for task in &mut run.tasks {
+        for message in &mut task.messages {
+            if message.effective_thread_id() == thread_id {
+                message.archive(actor_id.clone(), note.clone());
+                found = true;
+            }
+        }
+        if found {
+            task.updated_at = Utc::now();
+        }
+    }
+    if !found {
+        return Err(format!("Thread '{}' not found", thread_id));
+    }
+    run.updated_at = Utc::now();
+    run.status = recalculate_run_status(run);
+    Ok(())
+}
+
+fn apply_collaboration_retention(run: &mut SupervisorRun) {
+    let cutoff = Utc::now() - chrono::Duration::days(DEFAULT_RESOLVED_THREAD_RETENTION_DAYS.max(0));
+    let thread_ids = build_team_threads_with_options(&collect_team_messages(run), true)
+        .into_iter()
+        .filter(|thread| {
+            !thread.archived
+                && matches!(thread.status, CollaborationThreadStatus::Resolved)
+                && thread.updated_at <= cutoff
+        })
+        .map(|thread| thread.id)
+        .collect::<Vec<_>>();
+
+    if thread_ids.is_empty() {
+        return;
+    }
+
+    for message in &mut run.messages {
+        if thread_ids
+            .iter()
+            .any(|candidate| candidate == message.effective_thread_id())
+        {
+            message.archive(
+                Some("orchestrator".to_string()),
+                Some("Auto-archived after retention period".to_string()),
+            );
+        }
+    }
+    for task in &mut run.tasks {
+        let mut touched = false;
+        for message in &mut task.messages {
+            if thread_ids
+                .iter()
+                .any(|candidate| candidate == message.effective_thread_id())
+            {
+                message.archive(
+                    Some("orchestrator".to_string()),
+                    Some("Auto-archived after retention period".to_string()),
+                );
+                touched = true;
+            }
+        }
+        if touched {
+            task.updated_at = Utc::now();
+        }
+    }
+}
+
+fn collaboration_status_message(status: CollaborationActionStatus, note: Option<String>) -> String {
+    note.unwrap_or_else(|| match status {
+        CollaborationActionStatus::Open => "Action request reopened.".to_string(),
+        CollaborationActionStatus::Acknowledged => "Action request acknowledged.".to_string(),
+        CollaborationActionStatus::Resolved => "Action request resolved.".to_string(),
+        CollaborationActionStatus::NeedsRevision => {
+            "Changes requested before proceeding.".to_string()
+        }
+        CollaborationActionStatus::Cancelled => "Action request cancelled.".to_string(),
+    })
 }
 
 /// Execute a delegated task on the specified agent using the unified AgentPipeline.
@@ -2157,6 +3544,14 @@ fn background_status_for_state(state: SupervisorTaskState) -> TaskBackgroundStat
 }
 
 fn background_message_for_record(record: &SupervisorTaskRecord) -> String {
+    if let Some(remote) = remote_background_message(record)
+        && matches!(
+            record.state,
+            SupervisorTaskState::Running | SupervisorTaskState::Blocked
+        )
+    {
+        return remote;
+    }
     match record.state {
         SupervisorTaskState::Queued => "Queued for execution".to_string(),
         SupervisorTaskState::Blocked => {
@@ -2174,6 +3569,300 @@ fn background_message_for_record(record: &SupervisorTaskRecord) -> String {
         SupervisorTaskState::Failed => "Failed".to_string(),
         SupervisorTaskState::Cancelled => "Cancelled".to_string(),
     }
+}
+
+fn remote_background_message(record: &SupervisorTaskRecord) -> Option<String> {
+    let remote = record.remote_execution.as_ref()?;
+    let mut parts = vec![format!("Remote {}", remote.status)];
+    if let Some(reason) = remote.status_reason.as_deref() {
+        parts.push(reason.to_string());
+    }
+    if let Some(progress) = remote.progress.as_ref() {
+        if let Some(percent) = progress.percent {
+            parts.push(format!("{percent}%"));
+        }
+        if let Some(stage) = progress.stage.as_deref() {
+            parts.push(stage.to_string());
+        }
+    }
+    Some(parts.join(" • "))
+}
+
+fn a2a_status_label(status: A2ATaskStatus) -> String {
+    match status {
+        A2ATaskStatus::Pending => "pending",
+        A2ATaskStatus::Blocked => "blocked",
+        A2ATaskStatus::Running => "running",
+        A2ATaskStatus::Completed => "completed",
+        A2ATaskStatus::Cancelled => "cancelled",
+        A2ATaskStatus::Failed => "failed",
+    }
+    .to_string()
+}
+
+fn task_terminal_hint_for_a2a_status(status: A2ATaskStatus) -> Option<TaskTerminalStateHint> {
+    match status {
+        A2ATaskStatus::Completed => Some(TaskTerminalStateHint::Completed),
+        A2ATaskStatus::Cancelled => Some(TaskTerminalStateHint::Cancelled),
+        A2ATaskStatus::Failed => Some(TaskTerminalStateHint::Failed),
+        A2ATaskStatus::Blocked => Some(TaskTerminalStateHint::Blocked),
+        _ => None,
+    }
+}
+
+fn progress_from_remote(
+    progress: Option<&A2ARemoteTaskProgress>,
+) -> Option<RemoteExecutionProgress> {
+    progress.map(|progress| RemoteExecutionProgress {
+        stage: progress.stage.clone(),
+        message: progress.message.clone(),
+        percent: progress.percent,
+        updated_at: progress.updated_at,
+    })
+}
+
+fn artifacts_from_manifest(manifest: &[ArtifactManifestEntry]) -> Vec<RemoteExecutionArtifact> {
+    manifest
+        .iter()
+        .map(|artifact| RemoteExecutionArtifact {
+            name: artifact.name.clone(),
+            part_count: artifact.part_count,
+            metadata: artifact.metadata.clone(),
+        })
+        .collect()
+}
+
+fn summarize_remote_task_output(task: &A2ATask) -> String {
+    task.messages
+        .iter()
+        .rev()
+        .flat_map(|message| message.parts.iter().rev())
+        .find_map(|part| match part {
+            MessagePart::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .or_else(|| task.status_reason.clone())
+        .unwrap_or_else(|| {
+            format!(
+                "Remote task {} finished with status {}",
+                task.id,
+                a2a_status_label(task.status)
+            )
+        })
+}
+
+fn task_artifacts_from_remote_payload(artifacts: &[RemoteArtifact]) -> Vec<TaskArtifactRecord> {
+    artifacts
+        .iter()
+        .map(|artifact| TaskArtifactRecord {
+            name: artifact.name.clone(),
+            kind: "a2a_artifact".to_string(),
+            uri: Some(format!("a2a://artifact/{}", artifact.name)),
+            summary: Some(
+                artifact
+                    .parts
+                    .iter()
+                    .find_map(|part| match part {
+                        MessagePart::Text { text } => {
+                            Some(text.chars().take(160).collect::<String>())
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "Remote artifact".to_string()),
+            ),
+        })
+        .collect()
+}
+
+fn compatibility_from_card(
+    card: &gestura_core_a2a::AgentCard,
+    remote_target: &RemoteAgentTarget,
+) -> RemoteExecutionCompatibility {
+    let mut warnings = Vec::new();
+    if card.authentication.is_some() && remote_target.auth_token.is_none() {
+        warnings.push(
+            "Remote peer advertises authentication, but no auth token is configured".to_string(),
+        );
+    }
+    if !card
+        .supported_task_features
+        .iter()
+        .any(|feature| feature == "authenticated-mutations")
+    {
+        warnings
+            .push("Remote peer does not advertise authenticated mutation enforcement".to_string());
+    }
+    if !card
+        .supported_task_features
+        .iter()
+        .any(|feature| feature == "provenance")
+    {
+        warnings.push("Remote peer does not advertise provenance support".to_string());
+    }
+    if !card
+        .supported_task_features
+        .iter()
+        .any(|feature| feature == "leases")
+    {
+        warnings.push(
+            "Remote peer does not advertise lease support; heartbeat-based tracking will be disabled"
+                .to_string(),
+        );
+    }
+    if !card
+        .supported_task_features
+        .iter()
+        .any(|feature| feature == "idempotency")
+    {
+        warnings.push(
+            "Remote peer does not advertise idempotency support; retries may duplicate work"
+                .to_string(),
+        );
+    }
+    if !card
+        .supported_rpc_methods
+        .iter()
+        .any(|method| method == "task/artifacts")
+    {
+        warnings.push("Remote peer does not advertise artifact manifest support".to_string());
+    }
+    RemoteExecutionCompatibility {
+        supported_features: card.supported_task_features.clone(),
+        warnings,
+        protocol_version: Some(card.protocol_version.clone()),
+    }
+}
+
+fn build_remote_task_request(
+    task: &DelegatedTask,
+    record: &SupervisorTaskRecord,
+    compatibility: &RemoteExecutionCompatibility,
+) -> CreateTaskRequest {
+    let brief = task
+        .delegation_brief
+        .clone()
+        .unwrap_or_else(|| DelegationBrief {
+            objective: task.name.clone().unwrap_or_else(|| task.prompt.clone()),
+            acceptance_criteria: Vec::new(),
+            constraints: Vec::new(),
+            deliverables: vec!["Provide a concise text result".to_string()],
+            context_summary: None,
+        });
+    let mut metadata = HashMap::new();
+    metadata.insert("gesturaRunId".to_string(), json!(task.run_id));
+    metadata.insert("gesturaTaskId".to_string(), json!(task.id));
+    metadata.insert("executionMode".to_string(), json!("remote"));
+    metadata.insert("attempt".to_string(), json!(record.attempts));
+    metadata.insert(
+        "approvalRequired".to_string(),
+        json!(task.approval_required),
+    );
+    metadata.insert(
+        "reviewerRequired".to_string(),
+        json!(task.reviewer_required),
+    );
+    metadata.insert("testRequired".to_string(), json!(task.test_required));
+    if let Some(workspace_dir) = task.workspace_dir.as_ref() {
+        metadata.insert(
+            "workspaceDir".to_string(),
+            json!(workspace_dir.to_string_lossy().to_string()),
+        );
+    }
+    CreateTaskRequest {
+        message: A2AMessage {
+            role: "user".to_string(),
+            parts: vec![MessagePart::Text {
+                text: task.prompt.clone(),
+            }],
+        },
+        run_id: task.run_id.clone(),
+        parent_task_id: task.parent_task_id.clone(),
+        role: task
+            .role
+            .clone()
+            .map(|role| format!("{role:?}").to_lowercase()),
+        requested_capabilities: task.required_tools.clone(),
+        contract: Some(RemoteTaskContract {
+            objective: brief.objective,
+            acceptance_criteria: brief.acceptance_criteria,
+            constraints: brief.constraints,
+            deliverables: brief.deliverables,
+            output_format: Some("text".to_string()),
+        }),
+        idempotency_key: compatibility
+            .supported_features
+            .iter()
+            .any(|feature| feature == "idempotency")
+            .then(|| {
+                format!(
+                    "gestura:{}:{}:{}",
+                    task.run_id
+                        .clone()
+                        .unwrap_or_else(|| "standalone".to_string()),
+                    task.id,
+                    record.attempts
+                )
+            }),
+        lease_request: compatibility
+            .supported_features
+            .iter()
+            .any(|feature| feature == "leases")
+            .then_some(RemoteTaskLeaseRequest {
+                ttl_secs: 120,
+                heartbeat_interval_secs: 15,
+            }),
+        metadata,
+    }
+}
+
+fn provenance_from_metadata(
+    metadata: &HashMap<String, serde_json::Value>,
+) -> Option<TaskProvenance> {
+    let caller_agent_id = metadata
+        .get("caller_agent_id")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
+    let caller_name = metadata
+        .get("caller_name")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
+    let caller_version = metadata
+        .get("caller_version")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
+    let caller_capabilities = metadata
+        .get("caller_capabilities")
+        .and_then(|value| value.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let authenticated = metadata
+        .get("caller_authenticated")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let auth_scheme = metadata
+        .get("caller_auth_scheme")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
+
+    (caller_agent_id.is_some()
+        || caller_name.is_some()
+        || caller_version.is_some()
+        || !caller_capabilities.is_empty()
+        || authenticated
+        || auth_scheme.is_some())
+    .then_some(TaskProvenance {
+        caller_agent_id,
+        caller_name,
+        caller_version,
+        caller_capabilities,
+        authenticated,
+        auth_scheme,
+    })
 }
 
 fn unresolved_dependency_reasons(run: &SupervisorRun, task: &DelegatedTask) -> Vec<String> {
@@ -2200,13 +3889,27 @@ fn dependency_reasons_from_states(
 }
 
 fn recalculate_run_status(run: &SupervisorRun) -> SupervisorRunStatus {
-    if run.tasks.is_empty() {
+    if run.tasks.is_empty() && run.child_runs.is_empty() {
         return SupervisorRunStatus::Draft;
     }
-    if run
-        .tasks
-        .iter()
-        .all(|record| matches!(record.state, SupervisorTaskState::Cancelled))
+    let own_tasks = !run.tasks.is_empty();
+    let own_cancelled = own_tasks
+        && run
+            .tasks
+            .iter()
+            .all(|record| matches!(record.state, SupervisorTaskState::Cancelled));
+    let child_cancelled = !run.child_runs.is_empty()
+        && run
+            .child_runs
+            .iter()
+            .all(|child| matches!(child.status, SupervisorRunStatus::Cancelled));
+    if (own_tasks || !run.child_runs.is_empty())
+        && (if own_tasks { own_cancelled } else { true })
+        && (if !run.child_runs.is_empty() {
+            child_cancelled
+        } else {
+            true
+        })
     {
         return SupervisorRunStatus::Cancelled;
     }
@@ -2215,7 +3918,11 @@ fn recalculate_run_status(run: &SupervisorRun) -> SupervisorRunStatus {
             record.state,
             SupervisorTaskState::Running | SupervisorTaskState::Queued
         )
-    }) {
+    }) || run
+        .child_runs
+        .iter()
+        .any(|child| matches!(child.status, SupervisorRunStatus::Running))
+    {
         return SupervisorRunStatus::Running;
     }
     if run.tasks.iter().any(|record| {
@@ -2226,24 +3933,242 @@ fn recalculate_run_status(run: &SupervisorRun) -> SupervisorRunStatus {
                 | SupervisorTaskState::ReviewPending
                 | SupervisorTaskState::TestPending
         )
+    }) || run.child_runs.iter().any(|child| {
+        child.requires_attention || matches!(child.status, SupervisorRunStatus::Waiting)
     }) {
         return SupervisorRunStatus::Waiting;
     }
     if run
         .tasks
         .iter()
-        .all(|record| matches!(record.state, SupervisorTaskState::Completed))
-    {
-        return SupervisorRunStatus::Completed;
-    }
-    if run
-        .tasks
-        .iter()
         .any(|record| matches!(record.state, SupervisorTaskState::Failed))
+        || run
+            .child_runs
+            .iter()
+            .any(|child| matches!(child.status, SupervisorRunStatus::Failed))
     {
         return SupervisorRunStatus::Failed;
     }
+    let own_completed = own_tasks
+        && run
+            .tasks
+            .iter()
+            .all(|record| matches!(record.state, SupervisorTaskState::Completed));
+    let child_completed = !run.child_runs.is_empty()
+        && run
+            .child_runs
+            .iter()
+            .all(|child| matches!(child.status, SupervisorRunStatus::Completed));
+    if (own_tasks || !run.child_runs.is_empty())
+        && (if own_tasks { own_completed } else { true })
+        && (if !run.child_runs.is_empty() {
+            child_completed
+        } else {
+            true
+        })
+    {
+        return SupervisorRunStatus::Completed;
+    }
+    if run.tasks.iter().all(|record| {
+        matches!(
+            record.state,
+            SupervisorTaskState::Completed | SupervisorTaskState::Cancelled
+        )
+    }) && run.child_runs.iter().all(|child| {
+        matches!(
+            child.status,
+            SupervisorRunStatus::Completed | SupervisorRunStatus::Cancelled
+        )
+    }) {
+        return SupervisorRunStatus::Completed;
+    }
     SupervisorRunStatus::Draft
+}
+
+fn summarize_run_tasks(run: &SupervisorRun) -> SupervisorRunTaskSummary {
+    let mut summary = SupervisorRunTaskSummary {
+        total: run.tasks.len(),
+        ..SupervisorRunTaskSummary::default()
+    };
+    for record in &run.tasks {
+        match record.state {
+            SupervisorTaskState::Queued => summary.queued += 1,
+            SupervisorTaskState::Blocked => summary.blocked += 1,
+            SupervisorTaskState::PendingApproval => summary.pending_approval += 1,
+            SupervisorTaskState::Running => summary.running += 1,
+            SupervisorTaskState::ReviewPending => summary.review_pending += 1,
+            SupervisorTaskState::TestPending => summary.test_pending += 1,
+            SupervisorTaskState::Completed => summary.completed += 1,
+            SupervisorTaskState::Failed => summary.failed += 1,
+            SupervisorTaskState::Cancelled => summary.cancelled += 1,
+        }
+    }
+    summary
+}
+
+fn run_requires_attention(run: &SupervisorRun) -> bool {
+    run.tasks.iter().any(|record| {
+        matches!(
+            record.state,
+            SupervisorTaskState::Blocked
+                | SupervisorTaskState::PendingApproval
+                | SupervisorTaskState::ReviewPending
+                | SupervisorTaskState::TestPending
+                | SupervisorTaskState::Failed
+        )
+    }) || run.child_runs.iter().any(|child| child.requires_attention)
+}
+
+fn build_child_inherited_policy(
+    parent: &SupervisorRun,
+    request: &ChildSupervisorRunRequest,
+) -> SupervisorInheritancePolicy {
+    let mut policy = parent.inherited_policy.clone().unwrap_or_default();
+    policy.approval_required |= request.approval_required;
+    policy.reviewer_required |= request.reviewer_required;
+    policy.test_required |= request.test_required;
+    policy.execution_mode = Some(request.execution_mode.clone());
+    policy.workspace_dir = request
+        .workspace_dir
+        .clone()
+        .or_else(|| parent.workspace_dir.clone());
+    for tag in &request.memory_tags {
+        if !policy.memory_tags.contains(tag) {
+            policy.memory_tags.push(tag.clone());
+        }
+    }
+    for note in &request.constraint_notes {
+        if !policy.constraint_notes.contains(note) {
+            policy.constraint_notes.push(note.clone());
+        }
+    }
+    policy
+}
+
+fn build_child_run_summary(run: &SupervisorRun) -> ChildSupervisorRunSummary {
+    ChildSupervisorRunSummary {
+        run_id: run.id.clone(),
+        name: run.name.clone(),
+        objective: run
+            .parent_run
+            .as_ref()
+            .map(|parent| parent.objective.clone())
+            .unwrap_or_else(|| run.name.clone().unwrap_or_else(|| run.id.clone())),
+        lead_agent_id: run.lead_agent_id.clone(),
+        status: recalculate_run_status(run),
+        task_summary: summarize_run_tasks(run),
+        requires_attention: run_requires_attention(run),
+        blocked_reasons: run
+            .tasks
+            .iter()
+            .flat_map(|record| record.blocked_reasons.clone())
+            .collect(),
+        created_at: run.created_at,
+        updated_at: run.updated_at,
+        completed_at: run.completed_at,
+    }
+}
+
+fn upsert_child_run_summary(parent: &mut SupervisorRun, child: &SupervisorRun) {
+    let summary = build_child_run_summary(child);
+    if let Some(existing) = parent
+        .child_runs
+        .iter_mut()
+        .find(|entry| entry.run_id == child.id)
+    {
+        *existing = summary;
+    } else {
+        parent.child_runs.push(summary);
+    }
+}
+
+fn build_hierarchy_summary(run: &SupervisorRun) -> SupervisorHierarchySummary {
+    let descendant_task_count = run
+        .child_runs
+        .iter()
+        .map(|child| child.task_summary.total)
+        .sum();
+    let action_required_child_count = run
+        .child_runs
+        .iter()
+        .filter(|child| child.requires_attention)
+        .count();
+    let blocked_reasons = run
+        .child_runs
+        .iter()
+        .flat_map(|child| child.blocked_reasons.clone())
+        .collect();
+    SupervisorHierarchySummary {
+        depth: run.hierarchy_depth,
+        max_depth: run.max_hierarchy_depth,
+        child_run_count: run.child_runs.len(),
+        descendant_task_count,
+        action_required_child_count,
+        rollup_status: recalculate_run_status(run),
+        requires_attention: action_required_child_count > 0,
+        blocked_reasons,
+    }
+}
+
+fn refresh_run_rollups(run: &mut SupervisorRun) {
+    if run.name.is_none() {
+        run.name = run
+            .tasks
+            .first()
+            .and_then(|record| record.task.name.clone());
+    }
+    if run.max_hierarchy_depth == 0 {
+        run.max_hierarchy_depth = MAX_CHILD_SUPERVISOR_DEPTH;
+    }
+    run.task_summary = summarize_run_tasks(run);
+    run.status = recalculate_run_status(run);
+    run.hierarchy_summary = Some(build_hierarchy_summary(run));
+}
+
+fn synchronize_run_hierarchy_snapshots(runs: &mut [SupervisorRun]) {
+    for run in runs.iter_mut() {
+        run.task_summary = summarize_run_tasks(run);
+    }
+
+    let mut child_map = std::collections::HashMap::<String, Vec<ChildSupervisorRunSummary>>::new();
+    for run in runs.iter() {
+        if let Some(parent) = run.parent_run.as_ref() {
+            child_map
+                .entry(parent.parent_run_id.clone())
+                .or_default()
+                .push(build_child_run_summary(run));
+        }
+    }
+
+    for run in runs.iter_mut() {
+        run.child_runs = child_map.remove(&run.id).unwrap_or_default();
+        refresh_run_rollups(run);
+    }
+}
+
+fn ensure_parent_run_accepts_child(parent: &SupervisorRun) -> Result<(), String> {
+    if parent.hierarchy_depth >= parent.max_hierarchy_depth {
+        return Err(format!(
+            "Supervisor run '{}' is already at the maximum hierarchy depth of {}",
+            parent.id, parent.max_hierarchy_depth
+        ));
+    }
+    if parent.parent_run.is_some() {
+        return Err(format!(
+            "Supervisor run '{}' is already a child run and cannot delegate another child supervisor",
+            parent.id
+        ));
+    }
+    if matches!(
+        parent.status,
+        SupervisorRunStatus::Completed | SupervisorRunStatus::Cancelled
+    ) {
+        return Err(format!(
+            "Supervisor run '{}' is terminal and cannot accept a child supervisor",
+            parent.id
+        ));
+    }
+    Ok(())
 }
 
 fn collect_ready_tasks(run: &mut SupervisorRun) -> Vec<DelegatedTask> {
@@ -2316,6 +4241,103 @@ fn approval_scope_for_state(state: SupervisorTaskState) -> Option<ApprovalScope>
     }
 }
 
+fn collaboration_request_kind_for_scope(scope: ApprovalScope) -> CollaborationRequestKind {
+    match scope {
+        ApprovalScope::PreExecution => CollaborationRequestKind::ApprovalRequest,
+        ApprovalScope::Review => CollaborationRequestKind::ReviewRequest,
+        ApprovalScope::TestValidation => CollaborationRequestKind::TestValidationRequest,
+    }
+}
+
+fn team_message_kind_for_scope(scope: ApprovalScope) -> TeamMessageKind {
+    match scope {
+        ApprovalScope::PreExecution => TeamMessageKind::ApprovalRequest,
+        ApprovalScope::Review => TeamMessageKind::ReviewRequest,
+        ApprovalScope::TestValidation => TeamMessageKind::TestValidationRequest,
+    }
+}
+
+fn gate_request_message_content(record: &SupervisorTaskRecord, scope: ApprovalScope) -> String {
+    let task_summary = record
+        .task
+        .name
+        .as_deref()
+        .unwrap_or(record.task.prompt.as_str());
+    match scope {
+        ApprovalScope::PreExecution => {
+            format!("Pre-execution approval requested for: {task_summary}")
+        }
+        ApprovalScope::Review => format!("Review requested for: {task_summary}"),
+        ApprovalScope::TestValidation => format!("Test validation requested for: {task_summary}"),
+    }
+}
+
+fn build_gate_request_message(
+    run_id: &str,
+    record: &SupervisorTaskRecord,
+    scope: ApprovalScope,
+) -> TeamMessage {
+    let note = record.approval.note.clone();
+    let mut action_request = TeamActionRequest::new(
+        collaboration_request_kind_for_scope(scope),
+        Some("orchestrator".to_string()),
+        note.clone(),
+    );
+    action_request.approval_scope = Some(scope);
+    action_request.requested_for_actor_kinds = record.approval.allowed_actor_kinds(scope).to_vec();
+
+    let mut message = TeamMessage::new(
+        run_id.to_string(),
+        Some(record.task.id.clone()),
+        team_message_kind_for_scope(scope),
+        Some("orchestrator".to_string()),
+        None,
+        gate_request_message_content(record, scope),
+    )
+    .with_action_request(action_request);
+
+    if let Some(result) = record.result.as_ref() {
+        message = message.with_result_reference(TeamResultReference::from_task_result(result));
+        message = message.with_artifact_references(
+            result
+                .artifacts
+                .iter()
+                .map(|artifact| {
+                    TeamArtifactReference::from_task_artifact(
+                        Some(record.task.id.clone()),
+                        artifact,
+                    )
+                })
+                .collect(),
+        );
+    }
+
+    message
+}
+
+fn resolve_open_gate_request(
+    record: &mut SupervisorTaskRecord,
+    scope: ApprovalScope,
+    actor_id: &str,
+    status: CollaborationActionStatus,
+    note: Option<String>,
+) -> Option<(String, String)> {
+    let message = record.messages.iter_mut().rev().find(|message| {
+        message.action_request.as_ref().is_some_and(|request| {
+            request.approval_scope == Some(scope) && request.requires_attention()
+        })
+    })?;
+
+    if let Some(request) = message.action_request.as_mut() {
+        request.resolve(status, Some(actor_id.to_string()), note);
+    }
+    message.unread_by_agent_ids.clear();
+    Some((
+        message.effective_thread_id().to_string(),
+        message.id.clone(),
+    ))
+}
+
 fn format_approval_decision_message(decision: &ApprovalDecision) -> String {
     format!(
         "{:?} gate {:?} by {} ({:?}){}",
@@ -2377,6 +4399,7 @@ fn orchestrator_knowledge_settings() -> &'static crate::KnowledgeSettingsManager
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::create_gestura_agent_card;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -2396,6 +4419,30 @@ mod tests {
             recovery_action: None,
             failure: None,
             cleanup_result: None,
+        }
+    }
+
+    fn empty_supervisor_run(id: &str, workspace_dir: PathBuf) -> SupervisorRun {
+        SupervisorRun {
+            id: id.to_string(),
+            name: Some(id.to_string()),
+            session_id: None,
+            workspace_dir: Some(workspace_dir),
+            lead_agent_id: Some("supervisor-root".to_string()),
+            parent_run: None,
+            child_runs: Vec::new(),
+            hierarchy_depth: 0,
+            max_hierarchy_depth: MAX_CHILD_SUPERVISOR_DEPTH,
+            inherited_policy: None,
+            status: SupervisorRunStatus::Draft,
+            task_summary: SupervisorRunTaskSummary::default(),
+            hierarchy_summary: None,
+            tasks: Vec::new(),
+            messages: Vec::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            completed_at: None,
+            metadata: None,
         }
     }
 
@@ -2446,6 +4493,7 @@ mod tests {
             attempts: 0,
             blocked_reasons: vec![],
             result: None,
+            remote_execution: None,
             messages: vec![],
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -2455,9 +4503,17 @@ mod tests {
 
         let run = SupervisorRun {
             id: "run-approval".into(),
+            name: Some("approval-run".into()),
             session_id: None,
             workspace_dir: Some(workspace_dir),
             lead_agent_id: None,
+            parent_run: None,
+            child_runs: Vec::new(),
+            hierarchy_depth: 0,
+            max_hierarchy_depth: MAX_CHILD_SUPERVISOR_DEPTH,
+            inherited_policy: None,
+            task_summary: SupervisorRunTaskSummary::default(),
+            hierarchy_summary: None,
             metadata: None,
             status: SupervisorRunStatus::Waiting,
             tasks: vec![record],
@@ -2682,6 +4738,708 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_delegate_task_creates_pre_execution_collaboration_request() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("collaboration-request.db"));
+        let orchestrator = AgentOrchestrator::new(manager, AppConfig::default());
+
+        orchestrator
+            .delegate_task(DelegatedTask {
+                id: "task-collab".into(),
+                agent_id: "agent-impl".into(),
+                prompt: "Implement the feature".into(),
+                context: None,
+                required_tools: vec![],
+                priority: 1,
+                session_id: None,
+                directive_id: None,
+                tracking_task_id: None,
+                run_id: Some("run-collab".into()),
+                parent_task_id: None,
+                depends_on: vec![],
+                role: Some(AgentRole::Implementer),
+                delegation_brief: None,
+                planning_only: false,
+                approval_required: true,
+                reviewer_required: false,
+                test_required: false,
+                workspace_dir: Some(tmp.path().to_path_buf()),
+                execution_mode: AgentExecutionMode::SharedWorkspace,
+                environment_id: Some("env-collab".into()),
+                remote_target: None,
+                memory_tags: vec![],
+                name: Some("Implement the feature".into()),
+            })
+            .await
+            .unwrap();
+
+        let run = orchestrator.get_supervisor_run("run-collab").await.unwrap();
+        let record = run.tasks.first().unwrap();
+        let message = record.messages.first().unwrap();
+
+        assert_eq!(record.state, SupervisorTaskState::PendingApproval);
+        assert_eq!(message.kind, TeamMessageKind::ApprovalRequest);
+        assert_eq!(
+            message
+                .action_request
+                .as_ref()
+                .and_then(|request| request.approval_scope),
+            Some(ApprovalScope::PreExecution)
+        );
+        assert_eq!(
+            message
+                .action_request
+                .as_ref()
+                .map(|request| request.status),
+            Some(CollaborationActionStatus::Open)
+        );
+
+        let threads = orchestrator.list_team_threads("run-collab").await;
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].status, CollaborationThreadStatus::ActionRequired);
+        assert!(threads[0].requires_attention);
+    }
+
+    #[tokio::test]
+    async fn test_thread_actions_can_be_acknowledged_resolved_and_archived() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("thread-actions.db"));
+        let orchestrator = AgentOrchestrator::new(manager, AppConfig::default());
+
+        orchestrator
+            .delegate_task(DelegatedTask {
+                id: "task-thread-actions".into(),
+                agent_id: "agent-impl".into(),
+                prompt: "Implement the feature".into(),
+                context: None,
+                required_tools: vec![],
+                priority: 1,
+                session_id: None,
+                directive_id: None,
+                tracking_task_id: None,
+                run_id: Some("run-thread-actions".into()),
+                parent_task_id: None,
+                depends_on: vec![],
+                role: Some(AgentRole::Implementer),
+                delegation_brief: None,
+                planning_only: false,
+                approval_required: true,
+                reviewer_required: false,
+                test_required: false,
+                workspace_dir: Some(tmp.path().to_path_buf()),
+                execution_mode: AgentExecutionMode::SharedWorkspace,
+                environment_id: Some("env-thread-actions".into()),
+                remote_target: None,
+                memory_tags: vec![],
+                name: Some("Implement the feature".into()),
+            })
+            .await
+            .unwrap();
+
+        let thread_id = orchestrator
+            .list_team_threads("run-thread-actions")
+            .await
+            .first()
+            .unwrap()
+            .id
+            .clone();
+
+        let acknowledged = orchestrator
+            .update_team_thread_action(
+                "run-thread-actions",
+                &thread_id,
+                CollaborationActionStatus::Acknowledged,
+                Some("reviewer-1".to_string()),
+                Some("Looking now".to_string()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            acknowledged.status,
+            CollaborationThreadStatus::ActionRequired
+        );
+        assert_eq!(
+            acknowledged
+                .latest_action_request
+                .as_ref()
+                .map(|request| request.status),
+            Some(CollaborationActionStatus::Acknowledged)
+        );
+
+        let resolved = orchestrator
+            .update_team_thread_action(
+                "run-thread-actions",
+                &thread_id,
+                CollaborationActionStatus::Resolved,
+                Some("reviewer-1".to_string()),
+                Some("Approved after review".to_string()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resolved.status, CollaborationThreadStatus::Resolved);
+        assert!(!resolved.requires_attention);
+
+        let archived = orchestrator
+            .archive_team_thread(
+                "run-thread-actions",
+                &thread_id,
+                Some("reviewer-1".to_string()),
+                Some("Archive resolved thread".to_string()),
+            )
+            .await
+            .unwrap();
+        assert!(archived.archived);
+        assert!(
+            orchestrator
+                .list_team_threads("run-thread-actions")
+                .await
+                .is_empty()
+        );
+        assert_eq!(
+            orchestrator
+                .list_team_threads_with_options("run-thread-actions", true)
+                .await
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_blocker_collaboration_marks_task_blocked_until_resolved() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("thread-blocker.db"));
+        let orchestrator = AgentOrchestrator::new(manager, AppConfig::default());
+
+        orchestrator
+            .delegate_task(DelegatedTask {
+                id: "task-blocker".into(),
+                agent_id: "agent-impl".into(),
+                prompt: "Implement the feature".into(),
+                context: None,
+                required_tools: vec![],
+                priority: 1,
+                session_id: None,
+                directive_id: None,
+                tracking_task_id: None,
+                run_id: Some("run-blocker".into()),
+                parent_task_id: None,
+                depends_on: vec![],
+                role: Some(AgentRole::Implementer),
+                delegation_brief: None,
+                planning_only: false,
+                approval_required: false,
+                reviewer_required: false,
+                test_required: false,
+                workspace_dir: Some(tmp.path().to_path_buf()),
+                execution_mode: AgentExecutionMode::SharedWorkspace,
+                environment_id: Some("env-blocker".into()),
+                remote_target: None,
+                memory_tags: vec![],
+                name: Some("Implement the feature".into()),
+            })
+            .await
+            .unwrap();
+
+        let blocker = orchestrator
+            .send_team_message_draft(
+                "run-blocker",
+                TeamMessageDraft {
+                    task_id: Some("task-blocker".to_string()),
+                    kind: TeamMessageKind::Blocker,
+                    sender_agent_id: Some("agent-impl".to_string()),
+                    recipient_agent_id: None,
+                    content: "Waiting on credentials".to_string(),
+                    thread_id: None,
+                    reply_to_message_id: None,
+                    action_request: Some(TeamActionRequestDraft {
+                        kind: CollaborationRequestKind::BlockerEscalation,
+                        requested_for_agent_ids: Vec::new(),
+                        requested_for_roles: vec![AgentRole::Supervisor],
+                        requested_for_actor_kinds: Vec::new(),
+                        approval_scope: None,
+                        note: Some("Need credentials".to_string()),
+                    }),
+                    escalation: Some(TeamEscalationDraft {
+                        level: CollaborationEscalationLevel::Warning,
+                        escalated_by_agent_id: Some("agent-impl".to_string()),
+                        target_role: Some(AgentRole::Supervisor),
+                        note: Some("Credentials missing".to_string()),
+                    }),
+                    unread_by_agent_ids: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let run = orchestrator
+            .get_supervisor_run("run-blocker")
+            .await
+            .unwrap();
+        let record = run.tasks.first().unwrap();
+        assert_eq!(record.state, SupervisorTaskState::Blocked);
+        assert!(
+            record
+                .blocked_reasons
+                .iter()
+                .any(|reason| reason == "Waiting on credentials")
+        );
+
+        orchestrator
+            .update_team_thread_action(
+                "run-blocker",
+                blocker.effective_thread_id(),
+                CollaborationActionStatus::Resolved,
+                Some("supervisor-1".to_string()),
+                Some("Credentials delivered".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let resolved_run = orchestrator
+            .get_supervisor_run("run-blocker")
+            .await
+            .unwrap();
+        let resolved_record = resolved_run.tasks.first().unwrap();
+        assert!(resolved_record.blocked_reasons.is_empty());
+        assert_eq!(resolved_record.state, SupervisorTaskState::Queued);
+    }
+
+    #[tokio::test]
+    async fn test_child_supervisor_run_inherits_policy_and_task_defaults() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("child-hierarchy.db"));
+        let orchestrator = AgentOrchestrator::new(manager, AppConfig::default());
+
+        let mut parent_run = empty_supervisor_run("run-parent", tmp.path().to_path_buf());
+        parent_run.inherited_policy = Some(SupervisorInheritancePolicy {
+            approval_required: true,
+            reviewer_required: false,
+            test_required: false,
+            execution_mode: Some(AgentExecutionMode::GitWorktree),
+            workspace_dir: Some(tmp.path().to_path_buf()),
+            memory_tags: vec!["root-tag".to_string()],
+            constraint_notes: vec!["Stay within app scope".to_string()],
+        });
+        orchestrator
+            .supervisor_runs
+            .lock()
+            .await
+            .insert(parent_run.id.clone(), parent_run);
+
+        let child_run = orchestrator
+            .create_child_supervisor_run(ChildSupervisorRunRequest {
+                parent_run_id: "run-parent".to_string(),
+                run_id: Some("run-child".to_string()),
+                lead_agent_id: "supervisor-frontend".to_string(),
+                objective: "Own frontend delivery".to_string(),
+                name: Some("Frontend pod".to_string()),
+                parent_task_id: None,
+                session_id: None,
+                workspace_dir: None,
+                approval_required: false,
+                reviewer_required: true,
+                test_required: false,
+                execution_mode: AgentExecutionMode::GitWorktree,
+                memory_tags: vec!["child-tag".to_string()],
+                constraint_notes: vec!["Escalate API changes".to_string()],
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(child_run.hierarchy_depth, 1);
+        assert_eq!(
+            child_run.parent_run.as_ref().unwrap().parent_run_id,
+            "run-parent"
+        );
+        let inherited = child_run.inherited_policy.as_ref().unwrap();
+        assert!(inherited.approval_required);
+        assert!(inherited.reviewer_required);
+        assert!(inherited.memory_tags.contains(&"root-tag".to_string()));
+        assert!(inherited.memory_tags.contains(&"child-tag".to_string()));
+
+        orchestrator
+            .delegate_task(DelegatedTask {
+                id: "task-child".into(),
+                agent_id: "implementer-1".into(),
+                prompt: "Implement frontend flow".into(),
+                context: None,
+                required_tools: vec![],
+                priority: 2,
+                session_id: None,
+                directive_id: None,
+                tracking_task_id: None,
+                run_id: Some("run-child".into()),
+                parent_task_id: None,
+                depends_on: vec![],
+                role: Some(AgentRole::Implementer),
+                delegation_brief: None,
+                planning_only: false,
+                approval_required: false,
+                reviewer_required: false,
+                test_required: false,
+                workspace_dir: None,
+                execution_mode: AgentExecutionMode::SharedWorkspace,
+                environment_id: None,
+                remote_target: None,
+                memory_tags: vec![],
+                name: Some("Frontend implementation".into()),
+            })
+            .await
+            .unwrap();
+
+        let child_run = orchestrator.get_supervisor_run("run-child").await.unwrap();
+        let record = child_run.tasks.first().unwrap();
+        assert_eq!(record.state, SupervisorTaskState::PendingApproval);
+        assert_eq!(record.task.execution_mode, AgentExecutionMode::GitWorktree);
+        assert!(record.task.memory_tags.contains(&"root-tag".to_string()));
+        assert!(record.task.memory_tags.contains(&"child-tag".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_child_supervisor_run_updates_parent_rollup_status() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("child-rollup.db"));
+        let orchestrator = AgentOrchestrator::new(manager, AppConfig::default());
+
+        orchestrator.supervisor_runs.lock().await.insert(
+            "run-parent".to_string(),
+            empty_supervisor_run("run-parent", tmp.path().to_path_buf()),
+        );
+
+        orchestrator
+            .create_child_supervisor_run(ChildSupervisorRunRequest {
+                parent_run_id: "run-parent".to_string(),
+                run_id: Some("run-child".to_string()),
+                lead_agent_id: "supervisor-child".to_string(),
+                objective: "Handle the frontend pod".to_string(),
+                name: Some("Frontend pod".to_string()),
+                parent_task_id: None,
+                session_id: None,
+                workspace_dir: None,
+                approval_required: true,
+                reviewer_required: false,
+                test_required: false,
+                execution_mode: AgentExecutionMode::SharedWorkspace,
+                memory_tags: vec![],
+                constraint_notes: vec![],
+            })
+            .await
+            .unwrap();
+
+        orchestrator
+            .delegate_task(DelegatedTask {
+                id: "task-child-rollup".into(),
+                agent_id: "implementer-rollup".into(),
+                prompt: "Build the assigned scope".into(),
+                context: None,
+                required_tools: vec![],
+                priority: 1,
+                session_id: None,
+                directive_id: None,
+                tracking_task_id: None,
+                run_id: Some("run-child".into()),
+                parent_task_id: None,
+                depends_on: vec![],
+                role: Some(AgentRole::Implementer),
+                delegation_brief: None,
+                planning_only: false,
+                approval_required: false,
+                reviewer_required: false,
+                test_required: false,
+                workspace_dir: None,
+                execution_mode: AgentExecutionMode::SharedWorkspace,
+                environment_id: None,
+                remote_target: None,
+                memory_tags: vec![],
+                name: Some("Build child scope".into()),
+            })
+            .await
+            .unwrap();
+
+        let parent_waiting = orchestrator.get_supervisor_run("run-parent").await.unwrap();
+        assert_eq!(parent_waiting.status, SupervisorRunStatus::Waiting);
+        assert_eq!(parent_waiting.child_runs.len(), 1);
+        assert_eq!(
+            parent_waiting.child_runs[0].status,
+            SupervisorRunStatus::Waiting
+        );
+
+        orchestrator
+            .approve_task(
+                "task-child-rollup",
+                ApprovalActor::new(ApprovalActorKind::Supervisor, "supervisor-root"),
+                Some("Proceed".into()),
+            )
+            .await
+            .unwrap();
+
+        let child_task = orchestrator
+            .get_supervisor_run("run-child")
+            .await
+            .unwrap()
+            .tasks
+            .first()
+            .unwrap()
+            .task
+            .clone();
+        orchestrator
+            .complete_task_execution(
+                child_task,
+                TaskResult {
+                    task_id: "task-child-rollup".to_string(),
+                    agent_id: "implementer-rollup".to_string(),
+                    run_id: Some("run-child".to_string()),
+                    tracking_task_id: None,
+                    success: true,
+                    output: "Completed child work".to_string(),
+                    summary: Some("Completed child work".to_string()),
+                    tool_calls: Vec::new(),
+                    artifacts: Vec::new(),
+                    terminal_state_hint: Some(TaskTerminalStateHint::Completed),
+                    duration_ms: 10,
+                },
+            )
+            .await
+            .unwrap();
+
+        let parent_completed = orchestrator.get_supervisor_run("run-parent").await.unwrap();
+        assert_eq!(parent_completed.status, SupervisorRunStatus::Completed);
+        assert_eq!(
+            parent_completed.child_runs[0].status,
+            SupervisorRunStatus::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn test_child_supervisor_run_cannot_create_grandchild() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("grandchild-block.db"));
+        let orchestrator = AgentOrchestrator::new(manager, AppConfig::default());
+
+        orchestrator.supervisor_runs.lock().await.insert(
+            "run-parent".to_string(),
+            empty_supervisor_run("run-parent", tmp.path().to_path_buf()),
+        );
+
+        orchestrator
+            .create_child_supervisor_run(ChildSupervisorRunRequest {
+                parent_run_id: "run-parent".to_string(),
+                run_id: Some("run-child".to_string()),
+                lead_agent_id: "supervisor-child".to_string(),
+                objective: "Manage sub-scope".to_string(),
+                name: None,
+                parent_task_id: None,
+                session_id: None,
+                workspace_dir: None,
+                approval_required: false,
+                reviewer_required: false,
+                test_required: false,
+                execution_mode: AgentExecutionMode::SharedWorkspace,
+                memory_tags: vec![],
+                constraint_notes: vec![],
+            })
+            .await
+            .unwrap();
+
+        let error = orchestrator
+            .create_child_supervisor_run(ChildSupervisorRunRequest {
+                parent_run_id: "run-child".to_string(),
+                run_id: Some("run-grandchild".to_string()),
+                lead_agent_id: "supervisor-grandchild".to_string(),
+                objective: "Forbidden depth".to_string(),
+                name: None,
+                parent_task_id: None,
+                session_id: None,
+                workspace_dir: None,
+                approval_required: false,
+                reviewer_required: false,
+                test_required: false,
+                execution_mode: AgentExecutionMode::SharedWorkspace,
+                memory_tags: vec![],
+                constraint_notes: vec![],
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("maximum hierarchy depth") || error.contains("child run"));
+    }
+
+    #[tokio::test]
+    async fn test_hierarchy_query_apis_return_ancestry_descendants_and_leaf_tasks() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("hierarchy-queries.db"));
+        let orchestrator = AgentOrchestrator::new(manager, AppConfig::default());
+
+        orchestrator.supervisor_runs.lock().await.insert(
+            "run-parent".to_string(),
+            empty_supervisor_run("run-parent", tmp.path().to_path_buf()),
+        );
+        orchestrator
+            .create_child_supervisor_run(ChildSupervisorRunRequest {
+                parent_run_id: "run-parent".to_string(),
+                run_id: Some("run-child".to_string()),
+                lead_agent_id: "supervisor-child".to_string(),
+                objective: "Own sub-scope".to_string(),
+                name: None,
+                parent_task_id: None,
+                session_id: None,
+                workspace_dir: None,
+                approval_required: false,
+                reviewer_required: false,
+                test_required: false,
+                execution_mode: AgentExecutionMode::SharedWorkspace,
+                memory_tags: vec![],
+                constraint_notes: vec![],
+            })
+            .await
+            .unwrap();
+        orchestrator
+            .delegate_task(DelegatedTask {
+                id: "task-parent".into(),
+                agent_id: "agent-parent".into(),
+                prompt: "Root task".into(),
+                context: None,
+                required_tools: vec![],
+                priority: 1,
+                session_id: None,
+                directive_id: None,
+                tracking_task_id: None,
+                run_id: Some("run-parent".into()),
+                parent_task_id: None,
+                depends_on: vec![],
+                role: Some(AgentRole::Implementer),
+                delegation_brief: None,
+                planning_only: false,
+                approval_required: false,
+                reviewer_required: false,
+                test_required: false,
+                workspace_dir: None,
+                execution_mode: AgentExecutionMode::SharedWorkspace,
+                environment_id: None,
+                remote_target: None,
+                memory_tags: vec![],
+                name: Some("Root task".into()),
+            })
+            .await
+            .unwrap();
+        orchestrator
+            .delegate_task(DelegatedTask {
+                id: "task-child-query".into(),
+                agent_id: "agent-child".into(),
+                prompt: "Child task".into(),
+                context: None,
+                required_tools: vec![],
+                priority: 1,
+                session_id: None,
+                directive_id: None,
+                tracking_task_id: None,
+                run_id: Some("run-child".into()),
+                parent_task_id: None,
+                depends_on: vec![],
+                role: Some(AgentRole::Implementer),
+                delegation_brief: None,
+                planning_only: false,
+                approval_required: false,
+                reviewer_required: false,
+                test_required: false,
+                workspace_dir: None,
+                execution_mode: AgentExecutionMode::SharedWorkspace,
+                environment_id: None,
+                remote_target: None,
+                memory_tags: vec![],
+                name: Some("Child task".into()),
+            })
+            .await
+            .unwrap();
+
+        let ancestry = orchestrator.get_supervisor_run_ancestry("run-child").await;
+        assert_eq!(ancestry.len(), 1);
+        assert_eq!(ancestry[0].id, "run-parent");
+
+        let descendants = orchestrator
+            .get_supervisor_run_descendants("run-parent")
+            .await;
+        assert_eq!(descendants.len(), 1);
+        assert_eq!(descendants[0].id, "run-child");
+
+        let leaf_tasks = orchestrator.list_supervisor_leaf_tasks("run-parent").await;
+        let leaf_ids = leaf_tasks
+            .into_iter()
+            .map(|record| record.task.id)
+            .collect::<Vec<_>>();
+        assert!(leaf_ids.contains(&"task-parent".to_string()));
+        assert!(leaf_ids.contains(&"task-child-query".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_child_run_cancellation_and_retry_roll_up_to_parent() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("child-cancel-retry.db"));
+        let orchestrator = AgentOrchestrator::new(manager, AppConfig::default());
+
+        orchestrator.supervisor_runs.lock().await.insert(
+            "run-parent".to_string(),
+            empty_supervisor_run("run-parent", tmp.path().to_path_buf()),
+        );
+        orchestrator
+            .create_child_supervisor_run(ChildSupervisorRunRequest {
+                parent_run_id: "run-parent".to_string(),
+                run_id: Some("run-child".to_string()),
+                lead_agent_id: "supervisor-child".to_string(),
+                objective: "Handle retryable sub-scope".to_string(),
+                name: None,
+                parent_task_id: None,
+                session_id: None,
+                workspace_dir: None,
+                approval_required: false,
+                reviewer_required: false,
+                test_required: false,
+                execution_mode: AgentExecutionMode::SharedWorkspace,
+                memory_tags: vec![],
+                constraint_notes: vec![],
+            })
+            .await
+            .unwrap();
+        orchestrator
+            .delegate_task(DelegatedTask {
+                id: "task-child-retry".into(),
+                agent_id: "agent-child-retry".into(),
+                prompt: "Retryable child task".into(),
+                context: None,
+                required_tools: vec![],
+                priority: 1,
+                session_id: None,
+                directive_id: None,
+                tracking_task_id: None,
+                run_id: Some("run-child".into()),
+                parent_task_id: None,
+                depends_on: vec![],
+                role: Some(AgentRole::Implementer),
+                delegation_brief: None,
+                planning_only: false,
+                approval_required: false,
+                reviewer_required: false,
+                test_required: false,
+                workspace_dir: None,
+                execution_mode: AgentExecutionMode::SharedWorkspace,
+                environment_id: None,
+                remote_target: None,
+                memory_tags: vec![],
+                name: Some("Retryable child task".into()),
+            })
+            .await
+            .unwrap();
+
+        orchestrator.cancel_task("task-child-retry").await.unwrap();
+        let parent_cancelled = orchestrator.get_supervisor_run("run-parent").await.unwrap();
+        assert_eq!(parent_cancelled.status, SupervisorRunStatus::Cancelled);
+
+        orchestrator.retry_task("task-child-retry").await.unwrap();
+        let parent_retried = orchestrator.get_supervisor_run("run-parent").await.unwrap();
+        assert_eq!(parent_retried.status, SupervisorRunStatus::Running);
+    }
+
     #[test]
     fn test_approval_record_deserializes_from_legacy_shape() {
         let legacy = serde_json::json!({
@@ -2697,5 +5455,170 @@ mod tests {
         assert!(record.requests.is_empty());
         assert!(record.decisions.is_empty());
         assert!(record.active_request.is_none());
+    }
+
+    #[test]
+    fn test_compatibility_from_card_warns_for_missing_auth_and_remote_features() {
+        let mut card = create_gestura_agent_card("http://localhost:32145");
+        card.authentication = Some(crate::AuthenticationInfo {
+            schemes: vec!["bearer".to_string()],
+            oauth2: None,
+        });
+        card.supported_task_features = vec!["artifacts".to_string()];
+        card.supported_rpc_methods
+            .retain(|method| method != "task/artifacts");
+        let remote_target = RemoteAgentTarget {
+            url: card.url.clone(),
+            name: Some("legacy-peer".to_string()),
+            auth_token: None,
+            capabilities: vec!["shell".to_string()],
+        };
+
+        let compatibility = compatibility_from_card(&card, &remote_target);
+
+        assert!(
+            compatibility
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("no auth token"))
+        );
+        assert!(
+            compatibility
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("authenticated mutation enforcement"))
+        );
+        assert!(
+            compatibility
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("provenance support"))
+        );
+        assert!(
+            compatibility
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("lease support"))
+        );
+        assert!(
+            compatibility
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("idempotency support"))
+        );
+        assert!(
+            compatibility
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("artifact manifest support"))
+        );
+    }
+
+    #[test]
+    fn test_build_remote_task_request_omits_unsupported_lease_and_idempotency() {
+        let task = DelegatedTask {
+            id: "task-remote-compat".to_string(),
+            agent_id: "agent-remote".to_string(),
+            prompt: "Inspect the codebase".to_string(),
+            context: None,
+            required_tools: vec!["shell".to_string()],
+            priority: 1,
+            session_id: None,
+            directive_id: None,
+            tracking_task_id: None,
+            run_id: Some("run-remote-compat".to_string()),
+            parent_task_id: None,
+            depends_on: vec![],
+            role: Some(AgentRole::Implementer),
+            delegation_brief: None,
+            planning_only: false,
+            approval_required: true,
+            reviewer_required: true,
+            test_required: false,
+            workspace_dir: None,
+            execution_mode: AgentExecutionMode::Remote,
+            environment_id: None,
+            remote_target: Some(RemoteAgentTarget {
+                url: "http://localhost:32145/a2a".to_string(),
+                name: Some("legacy-peer".to_string()),
+                auth_token: Some("token".to_string()),
+                capabilities: vec!["shell".to_string()],
+            }),
+            memory_tags: vec!["integration".to_string()],
+            name: Some("Compatibility task".to_string()),
+        };
+        let record = SupervisorTaskRecord {
+            task: task.clone(),
+            state: SupervisorTaskState::Queued,
+            approval: TaskApprovalRecord::default(),
+            environment_id: "env-compat".to_string(),
+            environment: test_environment("env-compat", PathBuf::from("/tmp")),
+            claimed_by: None,
+            attempts: 2,
+            blocked_reasons: vec![],
+            result: None,
+            remote_execution: None,
+            messages: vec![],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+        };
+        let compatibility = RemoteExecutionCompatibility {
+            protocol_version: Some("0.2.0".to_string()),
+            supported_features: vec!["artifacts".to_string(), "provenance".to_string()],
+            warnings: vec![],
+        };
+
+        let request = build_remote_task_request(&task, &record, &compatibility);
+
+        assert!(request.idempotency_key.is_none());
+        assert!(request.lease_request.is_none());
+        assert_eq!(
+            request
+                .metadata
+                .get("approvalRequired")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            request
+                .metadata
+                .get("reviewerRequired")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn test_provenance_from_metadata_restores_authenticated_caller_context() {
+        let provenance = provenance_from_metadata(&HashMap::from([
+            (
+                "caller_agent_id".to_string(),
+                serde_json::json!("remote-caller"),
+            ),
+            (
+                "caller_name".to_string(),
+                serde_json::json!("Remote Caller"),
+            ),
+            ("caller_version".to_string(), serde_json::json!("1.2.3")),
+            (
+                "caller_capabilities".to_string(),
+                serde_json::json!(["shell", "file"]),
+            ),
+            ("caller_authenticated".to_string(), serde_json::json!(true)),
+            (
+                "caller_auth_scheme".to_string(),
+                serde_json::json!("bearer"),
+            ),
+        ]))
+        .expect("metadata should restore provenance");
+
+        assert_eq!(provenance.caller_agent_id.as_deref(), Some("remote-caller"));
+        assert_eq!(provenance.caller_name.as_deref(), Some("Remote Caller"));
+        assert_eq!(provenance.caller_version.as_deref(), Some("1.2.3"));
+        assert_eq!(provenance.caller_capabilities, vec!["shell", "file"]);
+        assert!(provenance.authenticated);
+        assert_eq!(provenance.auth_scheme.as_deref(), Some("bearer"));
     }
 }

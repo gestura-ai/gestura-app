@@ -14,8 +14,11 @@ use gestura_core::{
     hooks::{HookCommandTemplate, HookDefinition, HookEvent},
     memory_bank::MemoryBankEntry,
     orchestrator::{
-        AgentOrchestrator, ApprovalActor, ApprovalActorKind, ApprovalScope, ApprovalState,
-        SupervisorRun, SupervisorTaskRecord, SupervisorTaskState,
+        AgentExecutionMode, AgentOrchestrator, AgentRole, ApprovalActor, ApprovalActorKind,
+        ApprovalScope, ApprovalState, ChildSupervisorRunRequest, CollaborationActionStatus,
+        CollaborationEscalationLevel, CollaborationRequestKind, SupervisorRun, SupervisorRunStatus,
+        SupervisorTaskRecord, SupervisorTaskState, TeamActionRequestDraft, TeamEscalationDraft,
+        TeamMessageDraft, TeamMessageKind, TeamThread,
     },
     tasks::{Task, TaskManager, TaskStatus},
     tools::permissions::PermissionScope,
@@ -649,9 +652,18 @@ pub(crate) struct TasksOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TasksLiveAction {
+    ListHierarchy {
+        session_id: String,
+        workspace_dir: PathBuf,
+    },
     ListApprovals {
         session_id: String,
         workspace_dir: PathBuf,
+    },
+    ListThreads {
+        session_id: String,
+        workspace_dir: PathBuf,
+        include_archived: bool,
     },
     DecideApproval {
         session_id: String,
@@ -660,6 +672,36 @@ pub(crate) enum TasksLiveAction {
         actor_kind: ApprovalActorKind,
         decision: TaskApprovalCliDecision,
         note: Option<String>,
+    },
+    CreateCollaboration {
+        session_id: String,
+        workspace_dir: PathBuf,
+        target_spec: String,
+        kind: TeamMessageKind,
+        note: String,
+    },
+    UpdateThread {
+        session_id: String,
+        workspace_dir: PathBuf,
+        thread_id: String,
+        status: Option<CollaborationActionStatus>,
+        archive: bool,
+        escalate: bool,
+        note: Option<String>,
+    },
+    CreateChildSupervisorRun {
+        session_id: String,
+        workspace_dir: PathBuf,
+        parent_run_spec: String,
+        lead_agent_id: String,
+        objective: String,
+        name: Option<String>,
+        approval_required: bool,
+        reviewer_required: bool,
+        test_required: bool,
+        execution_mode: AgentExecutionMode,
+        memory_tags: Vec<String>,
+        constraint_notes: Vec<String>,
     },
 }
 
@@ -932,6 +974,166 @@ pub(crate) fn run_tasks_subcommand(
                 live_action: None,
             })
         }
+        "tree" | "workflow-tree" | "runs" => {
+            let workspace_dir = workspace_dir
+                .ok_or_else(|| {
+                    "No workspace directory configured. Cannot inspect workflow hierarchy."
+                        .to_string()
+                })?
+                .to_path_buf();
+            Ok(TasksOutcome {
+                lines: vec!["Listing workflow hierarchy…".to_string()],
+                changed: false,
+                live_action: Some(TasksLiveAction::ListHierarchy {
+                    session_id: session_id.to_string(),
+                    workspace_dir,
+                }),
+            })
+        }
+        "child-run" | "child" => {
+            let workspace_dir = workspace_dir
+                .ok_or_else(|| {
+                    "No workspace directory configured. Cannot create child supervisor runs."
+                        .to_string()
+                })?
+                .to_path_buf();
+            let child_request = parse_child_supervisor_run_command(args)?;
+            Ok(TasksOutcome {
+                lines: vec![format!(
+                    "Creating child supervisor run under {} with lead {}…",
+                    child_request.parent_run_spec, child_request.lead_agent_id
+                )],
+                changed: true,
+                live_action: Some(TasksLiveAction::CreateChildSupervisorRun {
+                    session_id: session_id.to_string(),
+                    workspace_dir,
+                    parent_run_spec: child_request.parent_run_spec,
+                    lead_agent_id: child_request.lead_agent_id,
+                    objective: child_request.objective,
+                    name: child_request.name,
+                    approval_required: child_request.approval_required,
+                    reviewer_required: child_request.reviewer_required,
+                    test_required: child_request.test_required,
+                    execution_mode: child_request.execution_mode,
+                    memory_tags: child_request.memory_tags,
+                    constraint_notes: child_request.constraint_notes,
+                }),
+            })
+        }
+        "threads" | "collaboration" => {
+            let workspace_dir = workspace_dir
+                .ok_or_else(|| {
+                    "No workspace directory configured. Cannot inspect workflow collaboration threads."
+                        .to_string()
+                })?
+                .to_path_buf();
+            let include_archived = args
+                .iter()
+                .skip(1)
+                .any(|arg| matches!((*arg).to_ascii_lowercase().as_str(), "--all" | "--archived"));
+            Ok(TasksOutcome {
+                lines: vec!["Listing workflow collaboration threads…".to_string()],
+                changed: false,
+                live_action: Some(TasksLiveAction::ListThreads {
+                    session_id: session_id.to_string(),
+                    workspace_dir,
+                    include_archived,
+                }),
+            })
+        }
+        "message" | "collab" => {
+            let workspace_dir = workspace_dir
+                .ok_or_else(|| {
+                    "No workspace directory configured. Cannot create workflow collaboration messages."
+                        .to_string()
+                })?
+                .to_path_buf();
+            let Some(target_spec) = args.get(1).copied() else {
+                return Err(
+                    "Usage: /task message <run_id|task_id> <status_update|clarification|blocker|handoff|review_request|approval_request|test_validation_request> <note...>"
+                        .to_string(),
+                );
+            };
+            let Some(kind_raw) = args.get(2).copied() else {
+                return Err(
+                    "Usage: /task message <run_id|task_id> <status_update|clarification|blocker|handoff|review_request|approval_request|test_validation_request> <note...>"
+                        .to_string(),
+                );
+            };
+            let kind = parse_team_message_kind(kind_raw)?;
+            let note = args.get(3..).unwrap_or_default().join(" ");
+            if note.trim().is_empty() {
+                return Err("Collaboration message note cannot be empty.".to_string());
+            }
+            Ok(TasksOutcome {
+                lines: vec![format!(
+                    "Queueing workflow collaboration message ({kind_raw})…"
+                )],
+                changed: true,
+                live_action: Some(TasksLiveAction::CreateCollaboration {
+                    session_id: session_id.to_string(),
+                    workspace_dir,
+                    target_spec: target_spec.to_string(),
+                    kind,
+                    note,
+                }),
+            })
+        }
+        "thread" => {
+            let workspace_dir = workspace_dir
+                .ok_or_else(|| {
+                    "No workspace directory configured. Cannot update workflow collaboration threads."
+                        .to_string()
+                })?
+                .to_path_buf();
+            let Some(action) = args.get(1).copied() else {
+                return Err(
+                    "Usage: /task thread <ack|resolve|revise|archive|escalate> <thread_id> [note...]"
+                        .to_string(),
+                );
+            };
+            let Some(thread_id) = args.get(2).copied() else {
+                return Err(
+                    "Usage: /task thread <ack|resolve|revise|archive|escalate> <thread_id> [note...]"
+                        .to_string(),
+                );
+            };
+            let note = args
+                .get(3..)
+                .map(|parts| parts.join(" "))
+                .filter(|note| !note.trim().is_empty());
+            let (status, archive, escalate) = match action.to_ascii_lowercase().as_str() {
+                "ack" | "acknowledge" => (Some(CollaborationActionStatus::Acknowledged), false, false),
+                "resolve" | "resolved" => (Some(CollaborationActionStatus::Resolved), false, false),
+                "revise" | "needs-revision" | "revision" => {
+                    (Some(CollaborationActionStatus::NeedsRevision), false, false)
+                }
+                "archive" => (None, true, false),
+                "escalate" => (None, false, true),
+                _ => {
+                    return Err(
+                        "Usage: /task thread <ack|resolve|revise|archive|escalate> <thread_id> [note...]"
+                            .to_string(),
+                    )
+                }
+            };
+            Ok(TasksOutcome {
+                lines: vec![format!(
+                    "Queueing workflow thread action '{}' for {}…",
+                    action, thread_id
+                )],
+                changed: true,
+                live_action: Some(TasksLiveAction::UpdateThread {
+                    session_id: session_id.to_string(),
+                    workspace_dir,
+                    thread_id: thread_id.to_string(),
+                    status,
+                    archive,
+                    escalate,
+                    note,
+                }),
+            })
+        }
         "approvals" | "approval" | "pending-approvals" => {
             let workspace_dir = workspace_dir
                 .ok_or_else(|| {
@@ -1003,12 +1205,172 @@ fn tasks_usage_lines() -> Vec<String> {
         "  /task current set <id>".to_string(),
         "  /task current clear".to_string(),
         "  /task dep add <task_id> <blocked_by_id>".to_string(),
+        "  /task tree".to_string(),
+        "  /task child-run <parent_run_id> <lead_agent_id> --objective <text...> [--name <display>] [--mode <shared_workspace|isolated_workspace|git_worktree|remote>] [--approval] [--review] [--test] [--tags <comma,separated>] [--constraint <note>]...".to_string(),
+        "  /task threads [--archived]".to_string(),
+        "  /task message <run_id|task_id> <kind> <note...>".to_string(),
+        "  /task thread <ack|resolve|revise|archive|escalate> <thread_id> [note...]".to_string(),
         "  /task approvals".to_string(),
         "  /task approve <workflow_task_id> [--actor <supervisor|reviewer|tester|user>] [note...]".to_string(),
         "  /task reject <workflow_task_id> [--actor <supervisor|reviewer|tester|user>] [note...]".to_string(),
         "IDs can be full UUIDs or unique prefixes. Use '.' to refer to current task.".to_string(),
         "Approval commands use delegated workflow task IDs/prefixes and default to actor=supervisor.".to_string(),
     ]
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedChildSupervisorRunCommand {
+    parent_run_spec: String,
+    lead_agent_id: String,
+    objective: String,
+    name: Option<String>,
+    approval_required: bool,
+    reviewer_required: bool,
+    test_required: bool,
+    execution_mode: AgentExecutionMode,
+    memory_tags: Vec<String>,
+    constraint_notes: Vec<String>,
+}
+
+fn parse_child_supervisor_run_command(
+    args: &[&str],
+) -> std::result::Result<ParsedChildSupervisorRunCommand, String> {
+    let usage = "Usage: /task child-run <parent_run_id> <lead_agent_id> --objective <text...> [--name <display>] [--mode <shared_workspace|isolated_workspace|git_worktree|remote>] [--approval] [--review] [--test] [--tags <comma,separated>] [--constraint <note>]...";
+    let Some(parent_run_spec) = args.get(1).copied() else {
+        return Err(usage.to_string());
+    };
+    let Some(lead_agent_id) = args.get(2).copied() else {
+        return Err(usage.to_string());
+    };
+
+    let mut index = 3;
+    let mut name = None;
+    let mut approval_required = false;
+    let mut reviewer_required = false;
+    let mut test_required = false;
+    let mut execution_mode = AgentExecutionMode::SharedWorkspace;
+    let mut memory_tags = Vec::new();
+    let mut constraint_notes = Vec::new();
+    let mut objective: Option<String> = None;
+
+    while index < args.len() {
+        match args[index] {
+            "--objective" => {
+                index += 1;
+                let start = index;
+                while index < args.len() && !args[index].starts_with("--") {
+                    index += 1;
+                }
+                let value = args[start..index].join(" ");
+                if value.trim().is_empty() {
+                    return Err("Child supervisor objective cannot be empty.".to_string());
+                }
+                objective = Some(value);
+            }
+            "--name" => {
+                index += 1;
+                let start = index;
+                while index < args.len() && !args[index].starts_with("--") {
+                    index += 1;
+                }
+                let value = args[start..index].join(" ");
+                if value.trim().is_empty() {
+                    return Err("Child supervisor name cannot be empty.".to_string());
+                }
+                name = Some(value);
+            }
+            "--mode" => {
+                let Some(raw_mode) = args.get(index + 1).copied() else {
+                    return Err(usage.to_string());
+                };
+                execution_mode = parse_agent_execution_mode(raw_mode)?;
+                index += 2;
+            }
+            "--approval" => {
+                approval_required = true;
+                index += 1;
+            }
+            "--review" => {
+                reviewer_required = true;
+                index += 1;
+            }
+            "--test" => {
+                test_required = true;
+                index += 1;
+            }
+            "--tags" => {
+                let Some(raw_tags) = args.get(index + 1).copied() else {
+                    return Err(usage.to_string());
+                };
+                memory_tags = raw_tags
+                    .split(',')
+                    .map(|entry| entry.trim())
+                    .filter(|entry| !entry.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                index += 2;
+            }
+            "--constraint" => {
+                index += 1;
+                let start = index;
+                while index < args.len() && !args[index].starts_with("--") {
+                    index += 1;
+                }
+                let value = args[start..index].join(" ");
+                if value.trim().is_empty() {
+                    return Err("Constraint note cannot be empty.".to_string());
+                }
+                constraint_notes.push(value);
+            }
+            _ => return Err(usage.to_string()),
+        }
+    }
+
+    let Some(objective) = objective else {
+        return Err(format!("{usage} Missing required --objective flag."));
+    };
+
+    Ok(ParsedChildSupervisorRunCommand {
+        parent_run_spec: parent_run_spec.to_string(),
+        lead_agent_id: lead_agent_id.to_string(),
+        objective,
+        name,
+        approval_required,
+        reviewer_required,
+        test_required,
+        execution_mode,
+        memory_tags,
+        constraint_notes,
+    })
+}
+
+fn parse_agent_execution_mode(raw: &str) -> std::result::Result<AgentExecutionMode, String> {
+    match raw.to_ascii_lowercase().as_str() {
+        "shared_workspace" | "shared" => Ok(AgentExecutionMode::SharedWorkspace),
+        "isolated_workspace" | "isolated" => Ok(AgentExecutionMode::IsolatedWorkspace),
+        "git_worktree" | "worktree" => Ok(AgentExecutionMode::GitWorktree),
+        "remote" => Ok(AgentExecutionMode::Remote),
+        _ => Err(format!(
+            "Unknown execution mode '{raw}'. Use shared_workspace, isolated_workspace, git_worktree, or remote."
+        )),
+    }
+}
+
+fn parse_team_message_kind(kind: &str) -> std::result::Result<TeamMessageKind, String> {
+    match kind.to_ascii_lowercase().as_str() {
+        "status" | "status_update" => Ok(TeamMessageKind::StatusUpdate),
+        "clarification" | "clarify" => Ok(TeamMessageKind::Clarification),
+        "blocker" => Ok(TeamMessageKind::Blocker),
+        "handoff" => Ok(TeamMessageKind::Handoff),
+        "review" | "review_request" => Ok(TeamMessageKind::ReviewRequest),
+        "approval" | "approval_request" => Ok(TeamMessageKind::ApprovalRequest),
+        "test" | "test_validation" | "test_validation_request" => {
+            Ok(TeamMessageKind::TestValidationRequest)
+        }
+        other => Err(format!(
+            "Unknown collaboration kind '{other}'. Use status_update, clarification, blocker, handoff, review_request, approval_request, or test_validation_request."
+        )),
+    }
 }
 
 fn parse_task_approval_command(
@@ -1128,12 +1490,27 @@ pub(crate) fn execute_tasks_live_action(
     let orchestrator = build_cli_orchestrator(action.workspace_dir());
 
     match action {
+        TasksLiveAction::ListHierarchy {
+            session_id,
+            workspace_dir,
+        } => rt.block_on(async move {
+            let runs = scoped_supervisor_runs(&orchestrator, &session_id, &workspace_dir).await;
+            Ok(format_supervisor_run_tree_lines(&runs))
+        }),
         TasksLiveAction::ListApprovals {
             session_id,
             workspace_dir,
         } => rt.block_on(async move {
             let runs = scoped_supervisor_runs(&orchestrator, &session_id, &workspace_dir).await;
             Ok(format_pending_approval_lines(&runs))
+        }),
+        TasksLiveAction::ListThreads {
+            session_id,
+            workspace_dir,
+            include_archived,
+        } => rt.block_on(async move {
+            let runs = scoped_supervisor_runs(&orchestrator, &session_id, &workspace_dir).await;
+            Ok(format_collaboration_thread_lines(&orchestrator, &runs, include_archived).await)
         }),
         TasksLiveAction::DecideApproval {
             session_id,
@@ -1183,14 +1560,176 @@ pub(crate) fn execute_tasks_live_action(
                 note.as_deref(),
             ))
         }),
+        TasksLiveAction::CreateCollaboration {
+            session_id,
+            workspace_dir,
+            target_spec,
+            kind,
+            note,
+        } => rt.block_on(async move {
+            let runs = scoped_supervisor_runs(&orchestrator, &session_id, &workspace_dir).await;
+            let (run_id, task_id) = resolve_workflow_run_or_task_spec(&target_spec, &runs)?;
+            let message = orchestrator
+                .send_team_message_draft(
+                    &run_id,
+                    build_cli_collaboration_draft(&session_id, task_id, kind, note),
+                )
+                .await?;
+            Ok(vec![format!(
+                "Recorded {} collaboration message in thread {}",
+                format_team_message_kind(message.kind),
+                message.effective_thread_id()
+            )])
+        }),
+        TasksLiveAction::UpdateThread {
+            session_id,
+            workspace_dir,
+            thread_id,
+            status,
+            archive,
+            escalate,
+            note,
+        } => rt.block_on(async move {
+            let runs = scoped_supervisor_runs(&orchestrator, &session_id, &workspace_dir).await;
+            let run_id = resolve_workflow_thread_run_id(&thread_id, &runs)?;
+            let lines = if archive {
+                let thread = orchestrator
+                    .archive_team_thread(
+                        &run_id,
+                        &thread_id,
+                        Some(format!("cli:{session_id}")),
+                        note.clone(),
+                    )
+                    .await?;
+                vec![format!(
+                    "Archived collaboration thread {} ({:?})",
+                    thread.id, thread.status
+                )]
+            } else if escalate {
+                let thread = orchestrator
+                    .list_team_threads_with_options(&run_id, true)
+                    .await
+                    .into_iter()
+                    .find(|thread| thread.id == thread_id)
+                    .ok_or_else(|| format!("Workflow thread '{}' no longer exists", thread_id))?;
+                let latest_message = thread.messages.last().cloned();
+                let message = orchestrator
+                    .send_team_message_draft(
+                        &run_id,
+                        TeamMessageDraft {
+                            task_id: thread.task_id.clone(),
+                            kind: TeamMessageKind::Blocker,
+                            sender_agent_id: Some(format!("cli:{session_id}")),
+                            recipient_agent_id: None,
+                            content: note.clone().unwrap_or_else(|| {
+                                format!(
+                                    "Escalated collaboration thread {} from the CLI.",
+                                    thread_id
+                                )
+                            }),
+                            thread_id: Some(thread.id.clone()),
+                            reply_to_message_id: latest_message.map(|message| message.id),
+                            action_request: Some(TeamActionRequestDraft {
+                                kind: CollaborationRequestKind::BlockerEscalation,
+                                requested_for_agent_ids: Vec::new(),
+                                requested_for_roles: vec![AgentRole::Supervisor],
+                                requested_for_actor_kinds: Vec::new(),
+                                approval_scope: None,
+                                note: note.clone(),
+                            }),
+                            escalation: Some(TeamEscalationDraft {
+                                level: CollaborationEscalationLevel::Warning,
+                                escalated_by_agent_id: Some(format!("cli:{session_id}")),
+                                target_role: Some(AgentRole::Supervisor),
+                                note: note.clone(),
+                            }),
+                            unread_by_agent_ids: Vec::new(),
+                        },
+                    )
+                    .await?;
+                vec![format!(
+                    "Escalated collaboration thread {} with message {}",
+                    thread_id,
+                    short_id(&message.id)
+                )]
+            } else {
+                let status =
+                    status.ok_or_else(|| "Thread action is missing a status".to_string())?;
+                let thread = orchestrator
+                    .update_team_thread_action(
+                        &run_id,
+                        &thread_id,
+                        status,
+                        Some(format!("cli:{session_id}")),
+                        note.clone(),
+                    )
+                    .await?;
+                vec![format!(
+                    "Updated collaboration thread {} -> {:?}",
+                    thread.id, thread.status
+                )]
+            };
+            Ok(lines)
+        }),
+        TasksLiveAction::CreateChildSupervisorRun {
+            session_id,
+            workspace_dir,
+            parent_run_spec,
+            lead_agent_id,
+            objective,
+            name,
+            approval_required,
+            reviewer_required,
+            test_required,
+            execution_mode,
+            memory_tags,
+            constraint_notes,
+        } => rt.block_on(async move {
+            let runs = scoped_supervisor_runs(&orchestrator, &session_id, &workspace_dir).await;
+            let parent_run = resolve_supervisor_run_spec(&parent_run_spec, &runs)?;
+            let child_run = orchestrator
+                .create_child_supervisor_run(ChildSupervisorRunRequest {
+                    parent_run_id: parent_run.id.clone(),
+                    run_id: None,
+                    lead_agent_id,
+                    objective,
+                    name,
+                    parent_task_id: None,
+                    session_id: parent_run.session_id.clone(),
+                    workspace_dir: parent_run.workspace_dir.clone(),
+                    approval_required,
+                    reviewer_required,
+                    test_required,
+                    execution_mode,
+                    memory_tags,
+                    constraint_notes,
+                })
+                .await?;
+            Ok(vec![
+                format!(
+                    "Created child supervisor run {} under {}",
+                    child_run.id, parent_run.id
+                ),
+                format!(
+                    "Lead: {} · Status: {}",
+                    child_run.lead_agent_id.as_deref().unwrap_or("unknown"),
+                    format_supervisor_run_status(child_run.status)
+                ),
+            ])
+        }),
     }
 }
 
 impl TasksLiveAction {
     fn workspace_dir(&self) -> &Path {
         match self {
-            Self::ListApprovals { workspace_dir, .. }
-            | Self::DecideApproval { workspace_dir, .. } => workspace_dir.as_path(),
+            Self::ListHierarchy { workspace_dir, .. }
+            | Self::ListApprovals { workspace_dir, .. }
+            | Self::ListThreads { workspace_dir, .. }
+            | Self::DecideApproval { workspace_dir, .. }
+            | Self::CreateCollaboration { workspace_dir, .. }
+            | Self::UpdateThread { workspace_dir, .. }
+            | Self::CreateChildSupervisorRun { workspace_dir, .. } => workspace_dir.as_path(),
         }
     }
 }
@@ -1272,6 +1811,232 @@ fn resolve_pending_workflow_task_spec(
             ))
         }
     }
+}
+
+fn resolve_workflow_run_or_task_spec(
+    spec: &str,
+    runs: &[SupervisorRun],
+) -> std::result::Result<(String, Option<String>), String> {
+    let spec = spec.trim();
+    if let Some(run) = runs
+        .iter()
+        .find(|run| run.id == spec || run.id.starts_with(spec))
+    {
+        return Ok((run.id.clone(), None));
+    }
+
+    let matches = runs
+        .iter()
+        .flat_map(|run| {
+            run.tasks.iter().filter_map(move |record| {
+                if record.task.id == spec || record.task.id.starts_with(spec) {
+                    Some((run.id.clone(), record.task.id.clone()))
+                } else {
+                    None
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    match matches.as_slice() {
+        [] => Err(format!("No workflow run or task matched '{spec}'")),
+        [(run_id, task_id)] => Ok((run_id.clone(), Some(task_id.clone()))),
+        _ => Err(format!(
+            "Workflow task id '{spec}' matched multiple runs/tasks"
+        )),
+    }
+}
+
+fn resolve_supervisor_run_spec<'a>(
+    spec: &str,
+    runs: &'a [SupervisorRun],
+) -> std::result::Result<&'a SupervisorRun, String> {
+    let spec = spec.trim();
+    let matches = runs
+        .iter()
+        .filter(|run| run.id == spec || run.id.starts_with(spec))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => Err(format!("No workflow run matched '{spec}'")),
+        [run] => Ok(*run),
+        _ => Err(format!("Workflow run id '{spec}' matched multiple runs")),
+    }
+}
+
+fn resolve_workflow_thread_run_id(
+    thread_id: &str,
+    runs: &[SupervisorRun],
+) -> std::result::Result<String, String> {
+    let matches = runs
+        .iter()
+        .filter(|run| {
+            run.messages
+                .iter()
+                .any(|message| message.effective_thread_id() == thread_id)
+                || run.tasks.iter().any(|record| {
+                    record
+                        .messages
+                        .iter()
+                        .any(|message| message.effective_thread_id() == thread_id)
+                })
+        })
+        .map(|run| run.id.clone())
+        .collect::<Vec<_>>();
+
+    match matches.as_slice() {
+        [] => Err(format!("No workflow thread matched '{thread_id}'")),
+        [run_id] => Ok(run_id.clone()),
+        _ => Err(format!(
+            "Workflow thread '{thread_id}' matched multiple runs"
+        )),
+    }
+}
+
+fn build_cli_collaboration_draft(
+    session_id: &str,
+    task_id: Option<String>,
+    kind: TeamMessageKind,
+    note: String,
+) -> TeamMessageDraft {
+    TeamMessageDraft {
+        task_id,
+        kind,
+        sender_agent_id: Some(format!("cli:{session_id}")),
+        recipient_agent_id: None,
+        content: note.clone(),
+        thread_id: None,
+        reply_to_message_id: None,
+        action_request: collaboration_request_kind_for_message_kind(kind).map(|request_kind| {
+            TeamActionRequestDraft {
+                kind: request_kind,
+                requested_for_agent_ids: Vec::new(),
+                requested_for_roles: default_requested_roles_for_message_kind(kind),
+                requested_for_actor_kinds: Vec::new(),
+                approval_scope: None,
+                note: Some(note.clone()),
+            }
+        }),
+        escalation: if matches!(kind, TeamMessageKind::Blocker) {
+            Some(TeamEscalationDraft {
+                level: CollaborationEscalationLevel::Warning,
+                escalated_by_agent_id: Some(format!("cli:{session_id}")),
+                target_role: Some(AgentRole::Supervisor),
+                note: Some(note.clone()),
+            })
+        } else {
+            None
+        },
+        unread_by_agent_ids: Vec::new(),
+    }
+}
+
+fn collaboration_request_kind_for_message_kind(
+    kind: TeamMessageKind,
+) -> Option<CollaborationRequestKind> {
+    match kind {
+        TeamMessageKind::Clarification => Some(CollaborationRequestKind::Clarification),
+        TeamMessageKind::Blocker => Some(CollaborationRequestKind::BlockerEscalation),
+        TeamMessageKind::Handoff => Some(CollaborationRequestKind::Handoff),
+        TeamMessageKind::ReviewRequest => Some(CollaborationRequestKind::ReviewRequest),
+        TeamMessageKind::ApprovalRequest => Some(CollaborationRequestKind::ApprovalRequest),
+        TeamMessageKind::TestValidationRequest => {
+            Some(CollaborationRequestKind::TestValidationRequest)
+        }
+        TeamMessageKind::StatusUpdate
+        | TeamMessageKind::ApprovalDecision
+        | TeamMessageKind::ReviewFeedback => None,
+    }
+}
+
+fn default_requested_roles_for_message_kind(kind: TeamMessageKind) -> Vec<AgentRole> {
+    match kind {
+        TeamMessageKind::ReviewRequest => vec![AgentRole::Reviewer],
+        TeamMessageKind::ApprovalRequest => vec![AgentRole::Supervisor],
+        TeamMessageKind::TestValidationRequest => vec![AgentRole::Tester],
+        _ => Vec::new(),
+    }
+}
+
+fn format_team_message_kind(kind: TeamMessageKind) -> &'static str {
+    match kind {
+        TeamMessageKind::StatusUpdate => "status update",
+        TeamMessageKind::ApprovalRequest => "approval request",
+        TeamMessageKind::ApprovalDecision => "approval decision",
+        TeamMessageKind::ReviewRequest => "review request",
+        TeamMessageKind::ReviewFeedback => "review feedback",
+        TeamMessageKind::TestValidationRequest => "test validation request",
+        TeamMessageKind::Clarification => "clarification",
+        TeamMessageKind::Blocker => "blocker",
+        TeamMessageKind::Handoff => "handoff",
+    }
+}
+
+async fn format_collaboration_thread_lines(
+    orchestrator: &AgentOrchestrator<AgentManager>,
+    runs: &[SupervisorRun],
+    include_archived: bool,
+) -> Vec<String> {
+    let mut lines = vec!["Workflow collaboration threads:".to_string()];
+    let mut any = false;
+
+    for run in runs {
+        let threads = orchestrator
+            .list_team_threads_with_options(&run.id, include_archived)
+            .await;
+        if threads.is_empty() {
+            continue;
+        }
+        any = true;
+        lines.push(format!("- Run {}", short_id(&run.id)));
+        for thread in threads {
+            lines.extend(format_collaboration_thread_summary(&thread));
+        }
+    }
+
+    if !any {
+        lines.push("- No collaboration threads found in the current workflow scope.".to_string());
+    }
+    lines
+}
+
+fn format_collaboration_thread_summary(thread: &TeamThread) -> Vec<String> {
+    let latest_message = thread.messages.last();
+    let mut lines = vec![format!(
+        "  - {} [{:?}]{}{}",
+        short_id(&thread.id),
+        thread.status,
+        thread
+            .task_id
+            .as_deref()
+            .map(|task_id| format!(" task={}", short_id(task_id)))
+            .unwrap_or_default(),
+        if thread.archived { " archived" } else { "" },
+    )];
+    if let Some(message) = latest_message {
+        lines.push(format!(
+            "    latest: {} — {}",
+            format_team_message_kind(message.kind),
+            message.content
+        ));
+    }
+    if let Some(request) = thread.latest_action_request.as_ref() {
+        lines.push(format!(
+            "    request: {:?} ({:?})",
+            request.kind, request.status
+        ));
+    }
+    if !thread.artifact_references.is_empty() {
+        lines.push(format!(
+            "    artifacts: {}",
+            thread
+                .artifact_references
+                .iter()
+                .map(|artifact| artifact.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    lines
 }
 
 fn format_pending_approval_lines(runs: &[SupervisorRun]) -> Vec<String> {
@@ -1453,6 +2218,84 @@ fn format_supervisor_task_state(state: SupervisorTaskState) -> &'static str {
         SupervisorTaskState::Failed => "failed",
         SupervisorTaskState::Blocked => "blocked",
     }
+}
+
+fn format_supervisor_run_status(status: SupervisorRunStatus) -> &'static str {
+    match status {
+        SupervisorRunStatus::Draft => "draft",
+        SupervisorRunStatus::Running => "running",
+        SupervisorRunStatus::Waiting => "waiting",
+        SupervisorRunStatus::Completed => "completed",
+        SupervisorRunStatus::Failed => "failed",
+        SupervisorRunStatus::Cancelled => "cancelled",
+    }
+}
+
+fn format_supervisor_run_tree_lines(runs: &[SupervisorRun]) -> Vec<String> {
+    if runs.is_empty() {
+        return vec![
+            "No workflow runs yet. Create one with /task create or /task child-run.".to_string(),
+        ];
+    }
+
+    let mut lines = vec!["━━━ Workflow Hierarchy ━━━".to_string(), String::new()];
+    let mut roots = runs
+        .iter()
+        .filter(|run| run.parent_run.is_none())
+        .collect::<Vec<_>>();
+    roots.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+
+    for root in roots {
+        lines.push(format!(
+            "◆ {} {} [{}] · tasks={} children={} attention={}",
+            short_id(&root.id),
+            root.name.as_deref().unwrap_or(root.id.as_str()),
+            format_supervisor_run_status(
+                root.hierarchy_summary
+                    .as_ref()
+                    .map(|summary| summary.rollup_status)
+                    .unwrap_or(root.status)
+            ),
+            root.task_summary.total,
+            root.child_runs.len(),
+            root.hierarchy_summary
+                .as_ref()
+                .map(|summary| summary.action_required_child_count)
+                .unwrap_or_default()
+        ));
+        if let Some(summary) = root.hierarchy_summary.as_ref()
+            && summary.descendant_task_count > 0
+        {
+            lines.push(format!(
+                "  descendant tasks: {} · blocked signals: {}",
+                summary.descendant_task_count,
+                summary.blocked_reasons.join(", ")
+            ));
+        }
+        for child in runs.iter().filter(|run| {
+            run.parent_run
+                .as_ref()
+                .is_some_and(|parent| parent.parent_run_id == root.id)
+        }) {
+            let objective = child
+                .parent_run
+                .as_ref()
+                .map(|parent| parent.objective.as_str())
+                .unwrap_or("(no objective)");
+            lines.push(format!(
+                "  └─ {} {} [{}] · lead={} · tasks={} · objective={}",
+                short_id(&child.id),
+                child.name.as_deref().unwrap_or(child.id.as_str()),
+                format_supervisor_run_status(child.status),
+                child.lead_agent_id.as_deref().unwrap_or("unknown"),
+                child.task_summary.total,
+                objective
+            ));
+        }
+        lines.push(String::new());
+    }
+
+    lines
 }
 
 fn format_task_hierarchy(hierarchy: &[(Task, Vec<Task>)]) -> Vec<String> {
@@ -2719,11 +3562,19 @@ mod tests {
         );
         let run = SupervisorRun {
             id: "run-approval".to_string(),
+            name: Some("approval-run".to_string()),
             session_id: Some("session-approval".to_string()),
             workspace_dir: Some(workspace_dir.clone()),
             lead_agent_id: Some("lead-1".to_string()),
+            parent_run: None,
+            child_runs: vec![],
+            hierarchy_depth: 0,
+            max_hierarchy_depth: 1,
+            inherited_policy: None,
             metadata: None,
             status: SupervisorRunStatus::Waiting,
+            task_summary: Default::default(),
+            hierarchy_summary: None,
             tasks: vec![SupervisorTaskRecord {
                 task,
                 state: SupervisorTaskState::ReviewPending,
@@ -2749,6 +3600,7 @@ mod tests {
                 attempts: 0,
                 blocked_reasons: vec![],
                 result: None,
+                remote_execution: None,
                 messages: vec![],
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
@@ -2766,6 +3618,137 @@ mod tests {
         assert!(joined.contains("task-review-1 [review]"));
         assert!(joined.contains("Requested by: orchestrator"));
         assert!(joined.contains("Allowed actors: reviewer, supervisor"));
+    }
+
+    #[test]
+    fn collaboration_commands_require_workspace_and_parse_live_actions() {
+        use gestura_core::tasks::TaskManager;
+
+        let base = std::env::temp_dir()
+            .join("gestura-slash-tests")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&base).unwrap();
+
+        let manager = TaskManager::new(&base);
+        let err = run_tasks_subcommand(&["threads"], &manager, "session-1", None).unwrap_err();
+        assert!(err.contains("workspace directory"));
+
+        let threads = run_tasks_subcommand(
+            &["threads", "--archived"],
+            &manager,
+            "session-1",
+            Some(&base),
+        )
+        .unwrap();
+        assert_eq!(
+            threads.live_action,
+            Some(TasksLiveAction::ListThreads {
+                session_id: "session-1".to_string(),
+                workspace_dir: base.clone(),
+                include_archived: true,
+            })
+        );
+
+        let tree = run_tasks_subcommand(&["tree"], &manager, "session-1", Some(&base)).unwrap();
+        assert_eq!(
+            tree.live_action,
+            Some(TasksLiveAction::ListHierarchy {
+                session_id: "session-1".to_string(),
+                workspace_dir: base.clone(),
+            })
+        );
+
+        let message = run_tasks_subcommand(
+            &[
+                "message",
+                "task-123",
+                "blocker",
+                "Waiting",
+                "on",
+                "credentials",
+            ],
+            &manager,
+            "session-1",
+            Some(&base),
+        )
+        .unwrap();
+        assert_eq!(
+            message.live_action,
+            Some(TasksLiveAction::CreateCollaboration {
+                session_id: "session-1".to_string(),
+                workspace_dir: base.clone(),
+                target_spec: "task-123".to_string(),
+                kind: TeamMessageKind::Blocker,
+                note: "Waiting on credentials".to_string(),
+            })
+        );
+
+        let child = run_tasks_subcommand(
+            &[
+                "child-run",
+                "run-parent",
+                "supervisor-alpha",
+                "--objective",
+                "Coordinate",
+                "frontend",
+                "delivery",
+                "--name",
+                "Frontend",
+                "pod",
+                "--mode",
+                "git_worktree",
+                "--approval",
+                "--review",
+                "--test",
+                "--tags",
+                "frontend,delivery",
+                "--constraint",
+                "Escalate",
+                "API",
+                "changes",
+            ],
+            &manager,
+            "session-1",
+            Some(&base),
+        )
+        .unwrap();
+        assert_eq!(
+            child.live_action,
+            Some(TasksLiveAction::CreateChildSupervisorRun {
+                session_id: "session-1".to_string(),
+                workspace_dir: base.clone(),
+                parent_run_spec: "run-parent".to_string(),
+                lead_agent_id: "supervisor-alpha".to_string(),
+                objective: "Coordinate frontend delivery".to_string(),
+                name: Some("Frontend pod".to_string()),
+                approval_required: true,
+                reviewer_required: true,
+                test_required: true,
+                execution_mode: AgentExecutionMode::GitWorktree,
+                memory_tags: vec!["frontend".to_string(), "delivery".to_string()],
+                constraint_notes: vec!["Escalate API changes".to_string()],
+            })
+        );
+
+        let thread = run_tasks_subcommand(
+            &["thread", "resolve", "thread-123", "Fixed"],
+            &manager,
+            "session-1",
+            Some(&base),
+        )
+        .unwrap();
+        assert_eq!(
+            thread.live_action,
+            Some(TasksLiveAction::UpdateThread {
+                session_id: "session-1".to_string(),
+                workspace_dir: base,
+                thread_id: "thread-123".to_string(),
+                status: Some(CollaborationActionStatus::Resolved),
+                archive: false,
+                escalate: false,
+                note: Some("Fixed".to_string()),
+            })
+        );
     }
 
     #[test]

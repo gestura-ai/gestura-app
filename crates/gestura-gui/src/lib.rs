@@ -71,6 +71,7 @@ pub mod security;
 
 // Agent-to-agent protocol (A2A)
 pub mod a2a;
+pub mod a2a_runtime;
 
 // Automated testing
 pub mod automated_testing;

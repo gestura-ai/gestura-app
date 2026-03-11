@@ -466,3 +466,391 @@ fn recovery_message(environment: &EnvironmentRecord) -> String {
         _ => format!("environment {} reconciled", environment.id),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::AppConfig;
+    use gestura_core_agents::{AgentManager, AgentRole};
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    fn test_orchestrator(workspace_root: &Path) -> AgentOrchestrator<AgentManager> {
+        AgentOrchestrator::new_with_workspace_root(
+            AgentManager::new(workspace_root.join("recovery-tests.db")),
+            AppConfig::default(),
+            Some(workspace_root.to_path_buf()),
+        )
+    }
+
+    fn test_task(
+        workspace_root: &Path,
+        run_id: &str,
+        task_id: &str,
+        agent_id: &str,
+        execution_mode: AgentExecutionMode,
+    ) -> DelegatedTask {
+        DelegatedTask {
+            id: task_id.to_string(),
+            agent_id: agent_id.to_string(),
+            prompt: format!("Execute {task_id}"),
+            context: None,
+            required_tools: vec![],
+            priority: 1,
+            session_id: Some("session-recovery".to_string()),
+            directive_id: None,
+            tracking_task_id: None,
+            run_id: Some(run_id.to_string()),
+            parent_task_id: None,
+            depends_on: vec![],
+            role: Some(AgentRole::Implementer),
+            delegation_brief: None,
+            planning_only: false,
+            approval_required: false,
+            reviewer_required: false,
+            test_required: false,
+            workspace_dir: Some(workspace_root.to_path_buf()),
+            execution_mode,
+            environment_id: None,
+            remote_target: None,
+            memory_tags: vec!["recovery-test".to_string()],
+            name: Some(task_id.to_string()),
+        }
+    }
+
+    fn test_task_record(
+        task: DelegatedTask,
+        environment: &EnvironmentRecord,
+        state: SupervisorTaskState,
+    ) -> SupervisorTaskRecord {
+        let now = Utc::now();
+        SupervisorTaskRecord {
+            task,
+            state,
+            approval: TaskApprovalRecord::default(),
+            environment_id: environment.id.clone(),
+            environment: environment.summary(),
+            claimed_by: None,
+            attempts: 0,
+            blocked_reasons: vec![],
+            result: None,
+            remote_execution: None,
+            messages: vec![],
+            created_at: now,
+            updated_at: now,
+            started_at: None,
+            completed_at: None,
+        }
+    }
+
+    fn test_run(
+        run_id: &str,
+        workspace_root: &Path,
+        task_record: SupervisorTaskRecord,
+    ) -> SupervisorRun {
+        let now = Utc::now();
+        SupervisorRun {
+            id: run_id.to_string(),
+            name: Some(format!("Run {run_id}")),
+            session_id: Some("session-recovery".to_string()),
+            workspace_dir: Some(workspace_root.to_path_buf()),
+            lead_agent_id: Some("supervisor-1".to_string()),
+            parent_run: None,
+            child_runs: vec![],
+            hierarchy_depth: 0,
+            max_hierarchy_depth: default_max_child_supervisor_depth(),
+            inherited_policy: None,
+            status: SupervisorRunStatus::Running,
+            task_summary: SupervisorRunTaskSummary {
+                total: 1,
+                running: 1,
+                ..SupervisorRunTaskSummary::default()
+            },
+            hierarchy_summary: None,
+            tasks: vec![task_record],
+            messages: vec![],
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+            metadata: None,
+        }
+    }
+
+    fn test_environment_record(
+        workspace_root: &Path,
+        prepared_path: PathBuf,
+        execution_mode: AgentExecutionMode,
+        git_worktree: Option<GitWorktreeSpec>,
+    ) -> EnvironmentRecord {
+        let now = Utc::now();
+        EnvironmentRecord {
+            id: format!(
+                "env-{}",
+                sanitize_component(prepared_path.to_string_lossy().as_ref())
+            ),
+            spec: EnvironmentSpec {
+                id: "env-spec".to_string(),
+                execution_mode,
+                workspace_root: workspace_root.to_path_buf(),
+                prepared_path: prepared_path.clone(),
+                session_id: Some("session-recovery".to_string()),
+                run_id: "run-recovery".to_string(),
+                task_id: "task-recovery".to_string(),
+                agent_id: "agent-recovery".to_string(),
+                cleanup_policy: CleanupPolicy::RemoveWhenCleanOtherwiseArchive,
+                write_access: true,
+                git_worktree,
+                remote_url: None,
+            },
+            state: EnvironmentState::Ready,
+            health: EnvironmentHealth::Unknown,
+            prepared_path,
+            lease: None,
+            cleanup_result: None,
+            recovery_status: RecoveryStatus::NotRequired,
+            recovery_action: None,
+            failure: None,
+            created_at: now,
+            updated_at: now,
+            last_verified_at: None,
+            metadata: None,
+        }
+    }
+
+    fn run_git(repo_root: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .current_dir(repo_root)
+            .args(args)
+            .status()
+            .expect("run git command");
+        assert!(
+            status.success(),
+            "git command failed: git {}",
+            args.join(" ")
+        );
+    }
+
+    fn init_git_repo(repo_root: &Path) {
+        run_git(repo_root, &["init", "--initial-branch=main"]);
+        run_git(
+            repo_root,
+            &["config", "user.email", "gestura-tests@example.com"],
+        );
+        run_git(repo_root, &["config", "user.name", "Gestura Tests"]);
+        std::fs::write(repo_root.join("README.md"), "seed\n").expect("write seed file");
+        run_git(repo_root, &["add", "README.md"]);
+        run_git(repo_root, &["commit", "-m", "Initial commit"]);
+    }
+
+    #[test]
+    fn test_reconcile_environment_record_blocks_missing_shared_workspace() {
+        let temp = tempdir().expect("tempdir");
+        let mut environment = test_environment_record(
+            temp.path(),
+            temp.path().join("missing-shared"),
+            AgentExecutionMode::SharedWorkspace,
+            None,
+        );
+        let task = test_task(
+            temp.path(),
+            "run-shared-missing",
+            "task-shared-missing",
+            "agent-shared",
+            AgentExecutionMode::SharedWorkspace,
+        );
+        let mut task_record = test_task_record(task, &environment, SupervisorTaskState::Queued);
+
+        reconcile_environment_record(&mut environment, Some(&mut task_record));
+
+        assert_eq!(environment.health, EnvironmentHealth::Missing);
+        assert_eq!(
+            environment.recovery_status,
+            RecoveryStatus::NeedsOperatorAction
+        );
+        assert_eq!(
+            environment.recovery_action,
+            Some(RecoveryAction::MarkTaskBlocked)
+        );
+        assert_eq!(task_record.state, SupervisorTaskState::Blocked);
+        assert!(
+            task_record
+                .blocked_reasons
+                .iter()
+                .any(|reason| reason.contains("blocked"))
+        );
+    }
+
+    #[test]
+    fn test_reconcile_environment_record_marks_missing_isolated_workspace_for_recreation() {
+        let temp = tempdir().expect("tempdir");
+        let mut environment = test_environment_record(
+            temp.path(),
+            temp.path().join("missing-isolated"),
+            AgentExecutionMode::IsolatedWorkspace,
+            None,
+        );
+        let task = test_task(
+            temp.path(),
+            "run-isolated-missing",
+            "task-isolated-missing",
+            "agent-isolated",
+            AgentExecutionMode::IsolatedWorkspace,
+        );
+        let mut task_record = test_task_record(task, &environment, SupervisorTaskState::Queued);
+
+        reconcile_environment_record(&mut environment, Some(&mut task_record));
+
+        assert_eq!(environment.health, EnvironmentHealth::Missing);
+        assert_eq!(environment.recovery_status, RecoveryStatus::Pending);
+        assert_eq!(
+            environment.recovery_action,
+            Some(RecoveryAction::RecreateMissingEnvironment)
+        );
+        assert_eq!(task_record.state, SupervisorTaskState::Blocked);
+        assert!(
+            task_record
+                .blocked_reasons
+                .iter()
+                .any(|reason| reason.contains("must be recreated"))
+        );
+    }
+
+    #[test]
+    fn test_reconcile_environment_record_marks_unregistered_worktree_as_drifted() {
+        let temp = tempdir().expect("tempdir");
+        init_git_repo(temp.path());
+        let drifted_path = temp.path().join(".gestura").join("drifted-worktree");
+        std::fs::create_dir_all(&drifted_path).expect("create drifted worktree path");
+        let git_worktree = GitWorktreeSpec {
+            repo_root: temp.path().to_path_buf(),
+            base_branch: "main".to_string(),
+            worktree_branch: "gestura/session-recovery/run/agent/task".to_string(),
+            worktree_path: drifted_path.clone(),
+            create_branch_if_missing: true,
+        };
+        let mut environment = test_environment_record(
+            temp.path(),
+            drifted_path,
+            AgentExecutionMode::GitWorktree,
+            Some(git_worktree),
+        );
+        let task = test_task(
+            temp.path(),
+            "run-worktree-drifted",
+            "task-worktree-drifted",
+            "agent-worktree",
+            AgentExecutionMode::GitWorktree,
+        );
+        let mut task_record = test_task_record(task, &environment, SupervisorTaskState::Queued);
+
+        reconcile_environment_record(&mut environment, Some(&mut task_record));
+
+        assert_eq!(environment.health, EnvironmentHealth::Drifted);
+        assert_eq!(
+            environment.recovery_status,
+            RecoveryStatus::NeedsOperatorAction
+        );
+        assert_eq!(
+            environment.recovery_action,
+            Some(RecoveryAction::MarkTaskBlocked)
+        );
+        assert_eq!(task_record.state, SupervisorTaskState::Blocked);
+        assert!(
+            task_record
+                .blocked_reasons
+                .iter()
+                .any(|reason| reason.contains("drifted"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_persisted_state_reconciles_restart_and_orphaned_environments() {
+        let temp = tempdir().expect("tempdir");
+        let orchestrator = test_orchestrator(temp.path());
+
+        let task = test_task(
+            temp.path(),
+            "run-restart",
+            "task-restart",
+            "agent-restart",
+            AgentExecutionMode::IsolatedWorkspace,
+        );
+        let environment = orchestrator
+            .prepare_environment(&task)
+            .await
+            .expect("prepare restart environment");
+        let leased = orchestrator
+            .acquire_environment_lease(&environment.id, &task.id, &task.agent_id)
+            .await
+            .expect("acquire environment lease");
+
+        let run = test_run(
+            "run-restart",
+            temp.path(),
+            test_task_record(task.clone(), &leased, SupervisorTaskState::Running),
+        );
+        orchestrator.persist_run(&run).expect("persist run");
+
+        let orphan = orchestrator
+            .prepare_environment(&test_task(
+                temp.path(),
+                "run-orphan",
+                "task-orphan",
+                "agent-orphan",
+                AgentExecutionMode::IsolatedWorkspace,
+            ))
+            .await
+            .expect("prepare orphan environment");
+
+        let recovered = test_orchestrator(temp.path());
+        let environments = recovered.environments.lock().await;
+        let recovered_environment = environments
+            .get(&leased.id)
+            .expect("recovered environment should exist");
+        let orphan_environment = environments
+            .get(&orphan.id)
+            .expect("orphan environment should exist");
+
+        assert_eq!(
+            recovered_environment.recovery_status,
+            RecoveryStatus::Reconciled
+        );
+        assert_eq!(
+            recovered_environment.recovery_action,
+            Some(RecoveryAction::ReleaseStaleLease)
+        );
+        assert_eq!(recovered_environment.state, EnvironmentState::Ready);
+        assert!(
+            recovered_environment
+                .lease
+                .as_ref()
+                .and_then(|lease| lease.released_at)
+                .is_some()
+        );
+
+        assert_eq!(orphan_environment.health, EnvironmentHealth::Orphaned);
+        assert_eq!(orphan_environment.recovery_status, RecoveryStatus::Pending);
+        assert_eq!(
+            orphan_environment.recovery_action,
+            Some(RecoveryAction::QueueCleanup)
+        );
+        drop(environments);
+
+        let runs = recovered.supervisor_runs.lock().await;
+        let run = runs.get("run-restart").expect("recovered run should exist");
+        let record = run.tasks.first().expect("recovered task should exist");
+        assert_eq!(record.state, SupervisorTaskState::Blocked);
+        assert!(
+            record
+                .blocked_reasons
+                .iter()
+                .any(|reason| reason == "execution interrupted during restart")
+        );
+        assert!(
+            record
+                .blocked_reasons
+                .iter()
+                .any(|reason| reason.contains("stale lease released"))
+        );
+    }
+}

@@ -167,6 +167,90 @@ impl A2AClient {
         })
     }
 
+    /// Send a heartbeat/update for a leased remote task.
+    pub async fn heartbeat_task(
+        &self,
+        url: &str,
+        heartbeat: TaskHeartbeatRequest,
+    ) -> Result<A2ATask> {
+        let params = serde_json::to_value(heartbeat).map_err(|e| {
+            AppError::Io(std::io::Error::other(format!(
+                "Failed to serialize A2A heartbeat request: {e}"
+            )))
+        })?;
+        let request = A2ARequest::new("task/heartbeat", params);
+        let response = self.send_request(url, request).await?;
+
+        if let Some(error) = response.error {
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "A2A error {}: {}",
+                error.code, error.message
+            ))));
+        }
+
+        let result = response
+            .result
+            .ok_or_else(|| AppError::Io(std::io::Error::other("No result in A2A response")))?;
+
+        serde_json::from_value(result).map_err(|e| {
+            AppError::Io(std::io::Error::other(format!(
+                "Failed to parse A2ATask: {e}"
+            )))
+        })
+    }
+
+    /// List artifact manifests for a task.
+    pub async fn list_task_artifacts(
+        &self,
+        url: &str,
+        task_id: &str,
+    ) -> Result<Vec<ArtifactManifestEntry>> {
+        let request = A2ARequest::new("task/artifacts", serde_json::json!({ "taskId": task_id }));
+        let response = self.send_request(url, request).await?;
+        if let Some(error) = response.error {
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "A2A error {}: {}",
+                error.code, error.message
+            ))));
+        }
+        let result = response
+            .result
+            .ok_or_else(|| AppError::Io(std::io::Error::other("No result in A2A response")))?;
+        serde_json::from_value(result).map_err(|e| {
+            AppError::Io(std::io::Error::other(format!(
+                "Failed to parse artifact manifest: {e}"
+            )))
+        })
+    }
+
+    /// Fetch a specific artifact payload for a task.
+    pub async fn fetch_task_artifact(
+        &self,
+        url: &str,
+        task_id: &str,
+        artifact_name: &str,
+    ) -> Result<Artifact> {
+        let request = A2ARequest::new(
+            "task/artifact",
+            serde_json::json!({ "taskId": task_id, "artifactName": artifact_name }),
+        );
+        let response = self.send_request(url, request).await?;
+        if let Some(error) = response.error {
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "A2A error {}: {}",
+                error.code, error.message
+            ))));
+        }
+        let result = response
+            .result
+            .ok_or_else(|| AppError::Io(std::io::Error::other("No result in A2A response")))?;
+        serde_json::from_value(result).map_err(|e| {
+            AppError::Io(std::io::Error::other(format!(
+                "Failed to parse artifact payload: {e}"
+            )))
+        })
+    }
+
     /// Get task status
     pub async fn get_task_status(&self, url: &str, task_id: &str) -> Result<A2ATask> {
         let params = serde_json::json!({"taskId": task_id});

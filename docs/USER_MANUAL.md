@@ -499,6 +499,72 @@ Press **Cmd/Ctrl+E** to toggle between the two modes.
 | **Cmd/Ctrl+K** (message box) | Enhance prompt with AI suggestions |
 | **Cmd/Ctrl+Z** (after enhance) | Undo prompt enhancement |
 
+#### Workflow Collaboration Panel
+
+When a supervisor workflow is active, the Workflows panel shows collaboration threads for approvals, reviews, test validation, clarifications, handoffs, and blockers.
+
+- **Action required threads** stay visible near the top of the workflow card.
+- Each thread shows the latest message, unread count, task association, and whether it still needs attention.
+- Use **Reply** to continue an existing thread instead of creating a disconnected note.
+- Use **Acknowledge**, **Resolve**, or **Request revision** to update the latest actionable request on a thread.
+- Use **Escalate** to turn a thread into an explicit blocker/escalation for supervisor attention.
+- Use **Archive** on resolved threads to hide them from the default view while keeping them available for later inspection.
+
+#### Workflow Collaboration from the CLI
+
+If you prefer terminal-first operation in the Agent window, the `/task` slash command exposes the same collaboration controls:
+
+- `/task threads [--archived]` — list collaboration threads for the current workflow scope
+- `/task message <run_id|task_id> <kind> <note...>` — create a collaboration message or actionable request
+- `/task thread <ack|resolve|revise|archive|escalate> <thread_id> [note...]` — act on an existing thread
+
+`<kind>` can be `status_update`, `clarification`, `blocker`, `handoff`, `review_request`, `approval_request`, or `test_validation_request`.
+
+#### Child Supervisor Runs
+
+Workflow runs can now delegate a bounded child supervisor for a sub-mission.
+
+- In the **Workflows** panel, root runs show a **Create child supervisor** action.
+- Child runs inherit the root run’s workflow context and can add their own approval/review/test defaults, execution mode, memory tags, and constraint notes.
+- The panel displays root and child runs together, with child cards labeled by parent run and root cards showing direct child summaries.
+- Hierarchy is intentionally shallow: child supervisor runs cannot create another child supervisor.
+
+#### Workflow Hierarchy from the CLI
+
+- `/task tree` — show the root/child workflow hierarchy with roll-up status
+- `/task child-run <parent_run_id> <lead_agent_id> --objective <text...> [--name <display>] [--mode <...>] [--approval] [--review] [--test] [--tags <comma,separated>] [--constraint <note>]...`
+
+Use child runs when a root supervisor needs a clearly scoped sub-lead instead of another flat task.
+
+#### Workflow Execution Environments
+
+Each workflow task is bound to an execution environment. Open the **Environments** tab in the Workflows panel to inspect where work is running, whether the environment is healthy, and what recovery or cleanup action is recommended.
+
+- **Shared workspace** — runs directly in the current project root. Gestura will never delete the shared workspace during cleanup.
+- **Isolated workspace** — creates a dedicated directory under `.gestura/environments/...` for the task.
+- **Git worktree** — creates a dedicated git worktree under `.gestura/worktrees/...` with a task-specific branch.
+- **Remote** — shows the remote execution surface instead of a local writable directory.
+
+#### Environment Actions
+
+- **Reconcile** — re-scan persisted runs/environments after a restart or filesystem drift. Use this first if the app was interrupted or a worktree/directory was changed outside Gestura.
+- **Retry prep** — recreate or re-prepare a missing/failed isolated workspace or git worktree.
+- **Cleanup** — apply the environment cleanup policy. Shared workspaces are kept; isolated/worktree environments are removed when clean and archived when dirty.
+
+#### What to Expect After a Restart
+
+- Tasks that were actively running are moved to a blocked state with an **execution interrupted during restart** reason.
+- Stale environment leases are released automatically.
+- Missing isolated environments usually show a **recreate missing environment** recovery action and can be repaired with **Retry prep**.
+- Missing shared workspaces or drifted git worktrees require operator attention before retrying the task.
+
+#### Reading Environment Status
+
+- **State** tells you the lifecycle stage (`ready`, `in_use`, `archived`, `removed`, etc.)
+- **Health** tells you what Gestura found on disk (`clean`, `dirty`, `missing`, `drifted`, `orphaned`)
+- **Recovery** appears when Gestura detected a restart/drift issue and is recommending or has taken a recovery action
+- **Cleanup** shows the last cleanup disposition and summary so you can tell whether the environment was kept, archived, or removed
+
 ### Automation & Scripting
 
 #### Workflow Automation

@@ -32,6 +32,10 @@ pub fn run(action: &A2aAction) -> Result<()> {
 
 /// Show A2A protocol status
 fn show_a2a_status() -> Result<()> {
+    let embedded_port = std::env::var("GESTURA_A2A_PORT")
+        .ok()
+        .unwrap_or_else(|| "32145".to_string());
+    let embedded_url = format!("http://127.0.0.1:{embedded_port}/a2a");
     println!("{}", "A2A Protocol Status".bold().cyan());
     println!("{}", "═".repeat(50));
     println!();
@@ -49,6 +53,10 @@ fn show_a2a_status() -> Result<()> {
     println!("  {} Bearer token authentication", "✓".green());
     println!("  {} Profile propagation", "✓".green());
     println!("  {} SSE streaming support", "✓".green());
+    println!("  {} Artifact manifest + fetch", "✓".green());
+    println!("  {} Lease heartbeats + progress", "✓".green());
+    println!("  {} Authenticated task mutations", "✓".green());
+    println!("  {} Embedded GUI runtime @ {}", "✓".green(), embedded_url);
     println!();
 
     println!("{}", "Endpoints".bold().yellow());
@@ -56,6 +64,10 @@ fn show_a2a_status() -> Result<()> {
     println!("  {} task/create", "•".cyan());
     println!("  {} task/status", "•".cyan());
     println!("  {} task/cancel", "•".cyan());
+    println!("  {} task/retry", "•".cyan());
+    println!("  {} task/heartbeat", "•".cyan());
+    println!("  {} task/artifacts", "•".cyan());
+    println!("  {} task/artifact", "•".cyan());
     println!("  {} profile/register", "•".cyan());
     println!("  {} profile/validate", "•".cyan());
 
@@ -146,6 +158,20 @@ fn print_agent_card(card: &AgentCard) {
         "Output Modes".bold(),
         card.default_output_modes.join(", ")
     );
+    if !card.supported_task_features.is_empty() {
+        println!(
+            "{}: {}",
+            "Task Features".bold(),
+            card.supported_task_features.join(", ")
+        );
+    }
+    if !card.supported_rpc_methods.is_empty() {
+        println!(
+            "{}: {}",
+            "RPC Methods".bold(),
+            card.supported_rpc_methods.join(", ")
+        );
+    }
 }
 
 /// Register a new agent profile
@@ -280,6 +306,8 @@ fn send_task(url: &str, message: &str) -> Result<()> {
             deliverables: vec!["Remote result summary".to_string()],
             output_format: Some("text".to_string()),
         }),
+        idempotency_key: None,
+        lease_request: None,
         metadata: std::collections::HashMap::new(),
     };
 

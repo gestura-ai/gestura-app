@@ -21,6 +21,15 @@ the protocol logic only.
 | `AgentCard` | Agent capability advertisement |
 | `A2AMessage` / `A2AResponse` | Protocol message types |
 
+## Operational remote-task semantics
+
+`A2ATask` and `CreateTaskRequest` also carry the reliability metadata needed for remote execution parity:
+
+- `idempotencyKey` for replay-safe `task/create`
+- `leaseRequest` / `lease` for bounded execution ownership
+- `progress` for worker-reported stage + percent snapshots
+- `task/heartbeat` for renewing leases and reporting progress/status
+
 ## Stable import paths
 
 Most code should import through the facade:

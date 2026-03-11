@@ -103,12 +103,6 @@ pub(super) fn load_persisted_runs(root: &Path) -> Vec<SupervisorRun> {
     runs
 }
 
-pub(super) fn load_persisted_run_by_id(root: &Path, run_id: &str) -> Option<SupervisorRun> {
-    load_persisted_runs(root)
-        .into_iter()
-        .find(|run| run.id == run_id)
-}
-
 pub(super) fn load_persisted_environments(root: &Path) -> Vec<EnvironmentRecord> {
     let Ok(session_dirs) = fs::read_dir(base_dir(root)) else {
         return Vec::new();

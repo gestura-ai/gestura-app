@@ -632,3 +632,341 @@ fn is_directory_effectively_empty(path: &PathBuf) -> Result<bool, String> {
         .map_err(|error| format!("Failed to inspect directory {}: {error}", path.display()))?;
     Ok(entries.next().is_none())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::AppConfig;
+    use gestura_core_agents::{AgentManager, AgentRole};
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    fn test_orchestrator(workspace_root: &Path) -> AgentOrchestrator<AgentManager> {
+        AgentOrchestrator::new_with_workspace_root(
+            AgentManager::new(workspace_root.join("environment-tests.db")),
+            AppConfig::default(),
+            Some(workspace_root.to_path_buf()),
+        )
+    }
+
+    fn test_task(
+        workspace_root: &Path,
+        run_id: &str,
+        task_id: &str,
+        agent_id: &str,
+        execution_mode: AgentExecutionMode,
+    ) -> DelegatedTask {
+        DelegatedTask {
+            id: task_id.to_string(),
+            agent_id: agent_id.to_string(),
+            prompt: format!("Execute {task_id}"),
+            context: None,
+            required_tools: vec![],
+            priority: 1,
+            session_id: Some("session-env".to_string()),
+            directive_id: None,
+            tracking_task_id: None,
+            run_id: Some(run_id.to_string()),
+            parent_task_id: None,
+            depends_on: vec![],
+            role: Some(AgentRole::Implementer),
+            delegation_brief: None,
+            planning_only: false,
+            approval_required: false,
+            reviewer_required: false,
+            test_required: false,
+            workspace_dir: Some(workspace_root.to_path_buf()),
+            execution_mode,
+            environment_id: None,
+            remote_target: None,
+            memory_tags: vec!["env-test".to_string()],
+            name: Some(task_id.to_string()),
+        }
+    }
+
+    fn test_task_record(
+        task: DelegatedTask,
+        environment: &EnvironmentRecord,
+    ) -> SupervisorTaskRecord {
+        let now = Utc::now();
+        SupervisorTaskRecord {
+            task,
+            state: SupervisorTaskState::Queued,
+            approval: TaskApprovalRecord::default(),
+            environment_id: environment.id.clone(),
+            environment: environment.summary(),
+            claimed_by: None,
+            attempts: 0,
+            blocked_reasons: vec![],
+            result: None,
+            remote_execution: None,
+            messages: vec![],
+            created_at: now,
+            updated_at: now,
+            started_at: None,
+            completed_at: None,
+        }
+    }
+
+    fn test_run(
+        run_id: &str,
+        workspace_root: &Path,
+        task_record: SupervisorTaskRecord,
+    ) -> SupervisorRun {
+        let now = Utc::now();
+        SupervisorRun {
+            id: run_id.to_string(),
+            name: Some(format!("Run {run_id}")),
+            session_id: Some("session-env".to_string()),
+            workspace_dir: Some(workspace_root.to_path_buf()),
+            lead_agent_id: Some("supervisor-1".to_string()),
+            parent_run: None,
+            child_runs: vec![],
+            hierarchy_depth: 0,
+            max_hierarchy_depth: default_max_child_supervisor_depth(),
+            inherited_policy: None,
+            status: SupervisorRunStatus::Draft,
+            task_summary: SupervisorRunTaskSummary {
+                total: 1,
+                queued: 1,
+                ..SupervisorRunTaskSummary::default()
+            },
+            hierarchy_summary: None,
+            tasks: vec![task_record],
+            messages: vec![],
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+            metadata: None,
+        }
+    }
+
+    fn run_git(repo_root: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .current_dir(repo_root)
+            .args(args)
+            .status()
+            .expect("run git command");
+        assert!(
+            status.success(),
+            "git command failed: git {}",
+            args.join(" ")
+        );
+    }
+
+    fn init_git_repo(repo_root: &Path) {
+        run_git(repo_root, &["init", "--initial-branch=main"]);
+        run_git(
+            repo_root,
+            &["config", "user.email", "gestura-tests@example.com"],
+        );
+        run_git(repo_root, &["config", "user.name", "Gestura Tests"]);
+        fs::write(repo_root.join("README.md"), "seed\n").expect("write seed file");
+        run_git(repo_root, &["add", "README.md"]);
+        run_git(repo_root, &["commit", "-m", "Initial commit"]);
+    }
+
+    #[tokio::test]
+    async fn test_prepare_environment_supports_shared_isolated_and_git_worktree_modes() {
+        let temp = tempdir().expect("tempdir");
+        init_git_repo(temp.path());
+        let orchestrator = test_orchestrator(temp.path());
+
+        let shared = orchestrator
+            .prepare_environment(&test_task(
+                temp.path(),
+                "run-shared",
+                "task-shared",
+                "agent-shared",
+                AgentExecutionMode::SharedWorkspace,
+            ))
+            .await
+            .expect("prepare shared environment");
+        assert_eq!(shared.state, EnvironmentState::Ready);
+        assert_eq!(shared.health, EnvironmentHealth::Clean);
+        assert_eq!(shared.prepared_path, temp.path());
+        assert_eq!(shared.spec.cleanup_policy, CleanupPolicy::KeepAlways);
+
+        let isolated = orchestrator
+            .prepare_environment(&test_task(
+                temp.path(),
+                "run-isolated",
+                "task-isolated",
+                "agent-isolated",
+                AgentExecutionMode::IsolatedWorkspace,
+            ))
+            .await
+            .expect("prepare isolated environment");
+        assert_eq!(isolated.state, EnvironmentState::Ready);
+        assert!(isolated.prepared_path.exists());
+        assert!(isolated.prepared_path != temp.path());
+        assert!(
+            isolated
+                .prepared_path
+                .to_string_lossy()
+                .contains(".gestura/environments")
+        );
+        assert_eq!(
+            isolated.spec.cleanup_policy,
+            CleanupPolicy::RemoveWhenCleanOtherwiseArchive
+        );
+
+        let worktree = orchestrator
+            .prepare_environment(&test_task(
+                temp.path(),
+                "run-worktree",
+                "task-worktree",
+                "agent-worktree",
+                AgentExecutionMode::GitWorktree,
+            ))
+            .await
+            .expect("prepare git worktree environment");
+        let worktree_spec = worktree
+            .spec
+            .git_worktree
+            .as_ref()
+            .expect("git worktree spec present");
+        assert_eq!(worktree.state, EnvironmentState::Ready);
+        assert_eq!(worktree.health, EnvironmentHealth::Clean);
+        assert!(worktree.prepared_path.exists());
+        assert_eq!(worktree.prepared_path, worktree_spec.worktree_path);
+        assert!(
+            worktree
+                .prepared_path
+                .to_string_lossy()
+                .contains(".gestura/worktrees")
+        );
+        assert!(
+            worktree_spec
+                .worktree_branch
+                .starts_with("gestura/session-env/")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_retry_environment_preparation_recreates_missing_isolated_environment() {
+        let temp = tempdir().expect("tempdir");
+        let orchestrator = test_orchestrator(temp.path());
+        let task = test_task(
+            temp.path(),
+            "run-retry",
+            "task-retry",
+            "agent-retry",
+            AgentExecutionMode::IsolatedWorkspace,
+        );
+        let mut environment = orchestrator
+            .prepare_environment(&task)
+            .await
+            .expect("prepare isolated environment");
+        environment.spec.cleanup_policy = CleanupPolicy::ArchiveAlways;
+        orchestrator
+            .persist_environment_record(&environment)
+            .await
+            .expect("persist customized environment");
+
+        let run = test_run(
+            "run-retry",
+            temp.path(),
+            test_task_record(task.clone(), &environment),
+        );
+        orchestrator
+            .supervisor_runs
+            .lock()
+            .await
+            .insert(run.id.clone(), run);
+
+        fs::remove_dir_all(&environment.prepared_path).expect("remove isolated environment");
+        assert!(!environment.prepared_path.exists());
+
+        let retried = orchestrator
+            .retry_environment_preparation(&environment.id)
+            .await
+            .expect("retry isolated environment preparation");
+
+        assert!(retried.prepared_path.exists());
+        assert_eq!(retried.state, EnvironmentState::Ready);
+        assert_eq!(retried.health, EnvironmentHealth::Clean);
+        assert_eq!(retried.spec.cleanup_policy, CleanupPolicy::ArchiveAlways);
+
+        let runs = orchestrator.supervisor_runs.lock().await;
+        let run = runs.get("run-retry").expect("run should exist");
+        let record = run.tasks.first().expect("task record should exist");
+        assert_eq!(record.environment_id, retried.id);
+        assert_eq!(
+            record.environment.cleanup_policy,
+            CleanupPolicy::ArchiveAlways
+        );
+        assert_eq!(record.environment.state, EnvironmentState::Ready);
+    }
+
+    #[tokio::test]
+    async fn test_finalize_environment_for_task_removes_clean_isolated_workspace() {
+        let temp = tempdir().expect("tempdir");
+        let orchestrator = test_orchestrator(temp.path());
+        let environment = orchestrator
+            .prepare_environment(&test_task(
+                temp.path(),
+                "run-cleanup-isolated",
+                "task-cleanup-isolated",
+                "agent-cleanup",
+                AgentExecutionMode::IsolatedWorkspace,
+            ))
+            .await
+            .expect("prepare isolated environment");
+
+        let finalized = orchestrator
+            .finalize_environment_for_task(&environment.id, true, false)
+            .await
+            .expect("finalize environment")
+            .expect("environment should exist");
+
+        assert_eq!(finalized.state, EnvironmentState::Removed);
+        assert_eq!(
+            finalized
+                .cleanup_result
+                .as_ref()
+                .map(|result| result.disposition),
+            Some(CleanupDisposition::Removed)
+        );
+        assert!(!environment.prepared_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_finalize_environment_for_task_archives_dirty_git_worktree() {
+        let temp = tempdir().expect("tempdir");
+        init_git_repo(temp.path());
+        let orchestrator = test_orchestrator(temp.path());
+        let environment = orchestrator
+            .prepare_environment(&test_task(
+                temp.path(),
+                "run-cleanup-worktree",
+                "task-cleanup-worktree",
+                "agent-worktree-cleanup",
+                AgentExecutionMode::GitWorktree,
+            ))
+            .await
+            .expect("prepare worktree environment");
+
+        fs::write(
+            environment.prepared_path.join("dirty.txt"),
+            "pending work\n",
+        )
+        .expect("write dirty worktree marker");
+
+        let finalized = orchestrator
+            .finalize_environment_for_task(&environment.id, true, false)
+            .await
+            .expect("finalize worktree environment")
+            .expect("environment should exist");
+
+        assert_eq!(finalized.state, EnvironmentState::Archived);
+        assert_eq!(
+            finalized
+                .cleanup_result
+                .as_ref()
+                .map(|result| result.disposition),
+            Some(CleanupDisposition::Archived)
+        );
+        assert!(environment.prepared_path.exists());
+    }
+}

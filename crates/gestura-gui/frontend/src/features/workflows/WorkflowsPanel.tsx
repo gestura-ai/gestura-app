@@ -1,12 +1,17 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { Agent, listAgents } from '../../services/tauri/agents';
 import {
   ApprovalActor,
   ApprovalActorKind,
   ApprovalScope,
+  archiveWorkflowThread,
   approveWorkflowTask,
   cancelTask,
+  createChildSupervisorRun,
   claimWorkflowTask,
+  CollaborationActionStatus,
+  CollaborationEscalationLevel,
   DelegatedTask,
   delegateTask,
   EnvironmentRecord,
@@ -14,14 +19,19 @@ import {
   listActiveTasks,
   listSupervisorRuns,
   listWorkflowEnvironments,
+  listWorkflowThreads,
   reconcileWorkflowState,
   rejectWorkflowTask,
   retryWorkflowEnvironment,
   retryWorkflowTask,
+  sendWorkflowCollaborationMessage,
   sendWorkflowMessage,
   spawnSubagent,
   SupervisorRun,
   SupervisorTaskRecord,
+  TeamMessageKind,
+  TeamThread,
+  updateWorkflowThreadAction,
 } from '../../services/tauri/workflows';
 import { Button } from '../../shared/components/Button';
 import { FormGroup } from '../../shared/components/FormGroup';
@@ -86,10 +96,99 @@ const buildApprovalActor = (record: SupervisorTaskRecord, kind: ApprovalActorKin
   display_name: `Workflow Panel (${formatApprovalActorLabel(kind)})`,
 });
 
+const collectRunMessages = (run: SupervisorRun) =>
+  [...run.messages, ...run.tasks.flatMap((task) => task.messages ?? [])].sort((left, right) =>
+    left.created_at.localeCompare(right.created_at)
+  );
+
+const summarizeCollaboration = (run: SupervisorRun, threads: TeamThread[] = []) => {
+  const messages = collectRunMessages(run);
+  const threadIds = new Set(messages.map((message) => message.thread_id ?? message.id));
+  const actionRequiredCount = messages.filter((message) => {
+    const status = message.action_request?.status;
+    return status === 'open' || status === 'acknowledged';
+  }).length;
+  const latestThreadMessage = threads[0]?.messages[threads[0].messages.length - 1] ?? null;
+  return {
+    latestMessage: latestThreadMessage ?? messages[messages.length - 1] ?? null,
+    threadCount: threads.length > 0 ? threads.length : threadIds.size,
+    actionRequiredCount: threads.length > 0 ? threads.filter((thread) => thread.requires_attention).length : actionRequiredCount,
+  };
+};
+
+const collaborationRequestKindForMessageKind = (kind: TeamMessageKind) => {
+  switch (kind) {
+    case 'clarification':
+      return 'clarification' as const;
+    case 'blocker':
+      return 'blocker_escalation' as const;
+    case 'handoff':
+      return 'handoff' as const;
+    case 'review_request':
+      return 'review_request' as const;
+    case 'approval_request':
+      return 'approval_request' as const;
+    case 'test_validation_request':
+      return 'test_validation_request' as const;
+    default:
+      return null;
+  }
+};
+
+const defaultRequestedRolesForKind = (kind: TeamMessageKind) => {
+  switch (kind) {
+    case 'review_request':
+      return ['reviewer'];
+    case 'approval_request':
+      return ['supervisor'];
+    case 'test_validation_request':
+      return ['tester'];
+    default:
+      return [];
+  }
+};
+
+const defaultThreadActionNote = (status: CollaborationActionStatus) => {
+  switch (status) {
+    case 'acknowledged':
+      return 'Acknowledged from the workflows panel.';
+    case 'resolved':
+      return 'Resolved from the workflows panel.';
+    case 'needs_revision':
+      return 'Revision requested from the workflows panel.';
+    case 'cancelled':
+      return 'Cancelled from the workflows panel.';
+    default:
+      return 'Updated from the workflows panel.';
+  }
+};
+
+const buildDefaultChildRunDraft = (run: SupervisorRun) => ({
+  name: '',
+  objective: '',
+  leadAgentId: '',
+  approvalRequired: run.inherited_policy?.approval_required ?? false,
+  reviewerRequired: run.inherited_policy?.reviewer_required ?? false,
+  testRequired: run.inherited_policy?.test_required ?? false,
+  executionMode: (run.inherited_policy?.execution_mode ?? 'shared_workspace') as DelegatedTask['execution_mode'],
+  memoryTags: (run.inherited_policy?.memory_tags ?? []).join(', '),
+  constraintNotes: (run.inherited_policy?.constraint_notes ?? []).join('\n'),
+});
+
+const splitCommaSeparated = (value: string) =>
+  value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
 const WorkflowsPanel: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'runs' | 'environments'>('runs');
   const [showNewTask, setShowNewTask] = useState(false);
   const [messageDrafts, setMessageDrafts] = useState<Record<string, string>>({});
+  const [messageKinds, setMessageKinds] = useState<Record<string, TeamMessageKind>>({});
+  const [messageTaskSelections, setMessageTaskSelections] = useState<Record<string, string>>({});
+  const [replyTargets, setReplyTargets] = useState<Record<string, string>>({});
+  const [escalationSelections, setEscalationSelections] = useState<Record<string, CollaborationEscalationLevel>>({});
   const [claimSelections, setClaimSelections] = useState<Record<string, string>>({});
   const [approvalActorSelections, setApprovalActorSelections] = useState<Record<string, ApprovalActorKind>>({});
   const [newTask, setNewTask] = useState({
@@ -103,6 +202,8 @@ const WorkflowsPanel: React.FC = () => {
     planningOnly: false,
     executionMode: 'shared_workspace',
   });
+  const [childRunDrafts, setChildRunDrafts] = useState<Record<string, ReturnType<typeof buildDefaultChildRunDraft>>>({});
+  const [expandedChildForms, setExpandedChildForms] = useState<Record<string, boolean>>({});
 
   const workflowsState = useAsyncState(
     async () => {
@@ -112,11 +213,15 @@ const WorkflowsPanel: React.FC = () => {
         listWorkflowEnvironments(),
         listAgents(),
       ]);
+      const threadEntries = await Promise.all(
+        runs.map(async (run) => [run.id, await listWorkflowThreads(run.id)] as const)
+      );
       return {
         activeTasks: tasks,
         runs,
         environments,
         agents: (Array.isArray(agentRes?.agents) ? agentRes.agents : []) as Agent[],
+        threadsByRun: Object.fromEntries(threadEntries) as Record<string, TeamThread[]>,
       };
     },
     { errorMessage: 'Failed to load workflow data:' }
@@ -126,11 +231,33 @@ const WorkflowsPanel: React.FC = () => {
   const runs = workflowsState.data?.runs ?? [];
   const environments = workflowsState.data?.environments ?? [];
   const agents = workflowsState.data?.agents ?? [];
+  const threadsByRun = workflowsState.data?.threadsByRun ?? {};
 
   const sortedRuns = useMemo(
     () => [...runs].sort((left, right) => right.updated_at.localeCompare(left.updated_at)),
     [runs]
   );
+  const childRunsByParent = useMemo(() => {
+    return sortedRuns.reduce<Record<string, SupervisorRun[]>>((acc, run) => {
+      const parentRunId = run.parent_run?.parent_run_id;
+      if (parentRunId) {
+        acc[parentRunId] = [...(acc[parentRunId] ?? []), run];
+      }
+      return acc;
+    }, {});
+  }, [sortedRuns]);
+  const hierarchicalRuns = useMemo(() => {
+    const roots = sortedRuns.filter((run) => !run.parent_run);
+    const children = sortedRuns.filter((run) => Boolean(run.parent_run));
+    const ordered = roots.flatMap((root) => [root, ...(childRunsByParent[root.id] ?? [])]);
+    const seen = new Set(ordered.map((run) => run.id));
+    for (const orphanChild of children) {
+      if (!seen.has(orphanChild.id)) {
+        ordered.push(orphanChild);
+      }
+    }
+    return ordered;
+  }, [childRunsByParent, sortedRuns]);
   const sortedEnvironments = useMemo(
     () => [...environments].sort((left, right) => right.updated_at.localeCompare(left.updated_at)),
     [environments]
@@ -140,7 +267,76 @@ const WorkflowsPanel: React.FC = () => {
     void workflowsState.reload({ showLoading: false });
   }, 4000);
 
+  useEffect(() => {
+    let unlisten: Array<() => void> = [];
+
+    const bindWorkflowEvents = async () => {
+      try {
+        const appWindow = getCurrentWebviewWindow();
+        unlisten = await Promise.all(
+          [
+            'orchestrator-run-updated',
+            'orchestrator-team-message',
+            'orchestrator-team-thread-updated',
+            'orchestrator-environment-updated',
+          ].map((eventName) => appWindow.listen(eventName, () => void workflowsState.reload({ showLoading: false })))
+        );
+      } catch (error) {
+        console.debug('Workflow event listener unavailable:', error);
+      }
+    };
+
+    void bindWorkflowEvents();
+    return () => {
+      unlisten.forEach((dispose) => dispose());
+    };
+  }, [workflowsState.reload]);
+
   const refresh = () => workflowsState.reload({ showLoading: false });
+
+  const childRunDraftFor = (run: SupervisorRun) => childRunDrafts[run.id] ?? buildDefaultChildRunDraft(run);
+
+  const updateChildRunDraft = (
+    run: SupervisorRun,
+    patch: Partial<ReturnType<typeof buildDefaultChildRunDraft>>
+  ) => {
+    setChildRunDrafts((current) => ({
+      ...current,
+      [run.id]: {
+        ...childRunDraftFor(run),
+        ...patch,
+      },
+    }));
+  };
+
+  const handleCreateChildRun = async (run: SupervisorRun) => {
+    const draft = childRunDraftFor(run);
+    if (!draft.objective.trim() || !draft.leadAgentId.trim()) return;
+    try {
+      await createChildSupervisorRun({
+        parent_run_id: run.id,
+        name: draft.name.trim() || undefined,
+        objective: draft.objective.trim(),
+        lead_agent_id: draft.leadAgentId.trim(),
+        session_id: run.session_id ?? undefined,
+        workspace_dir: run.workspace_dir ?? undefined,
+        approval_required: draft.approvalRequired,
+        reviewer_required: draft.reviewerRequired,
+        test_required: draft.testRequired,
+        execution_mode: draft.executionMode,
+        memory_tags: splitCommaSeparated(draft.memoryTags),
+        constraint_notes: draft.constraintNotes
+          .split('\n')
+          .map((entry) => entry.trim())
+          .filter(Boolean),
+      });
+      setChildRunDrafts((current) => ({ ...current, [run.id]: buildDefaultChildRunDraft(run) }));
+      setExpandedChildForms((current) => ({ ...current, [run.id]: false }));
+      await refresh();
+    } catch (error) {
+      console.error('Failed to create child supervisor run:', error);
+    }
+  };
 
   const handleCreateTask = async () => {
     if (!newTask.description.trim()) return;
@@ -215,11 +411,90 @@ const WorkflowsPanel: React.FC = () => {
     const content = messageDrafts[runId]?.trim();
     if (!content) return;
     try {
-      await sendWorkflowMessage(runId, content);
+      const kind = messageKinds[runId] ?? 'status_update';
+      const replyTargetId = replyTargets[runId];
+      const replyThread = threadsByRun[runId]?.find((thread) => thread.id === replyTargetId);
+      const requestKind = collaborationRequestKindForMessageKind(kind);
+      if (kind === 'status_update' && !replyThread) {
+        await sendWorkflowMessage(runId, content, kind, messageTaskSelections[runId] || undefined);
+      } else {
+        await sendWorkflowCollaborationMessage(runId, {
+          task_id: replyThread?.task_id ?? messageTaskSelections[runId] ?? undefined,
+          kind,
+          content,
+          thread_id: replyThread?.id,
+          reply_to_message_id: replyThread?.messages[replyThread.messages.length - 1]?.id,
+          action_request: requestKind
+            ? {
+              kind: requestKind,
+              requested_for_roles: defaultRequestedRolesForKind(kind),
+              note: content,
+            }
+            : undefined,
+          escalation:
+            kind === 'blocker'
+              ? {
+                level: escalationSelections[runId] ?? 'warning',
+                escalated_by_agent_id: 'workflow-panel',
+                note: 'Escalated from the workflows panel',
+              }
+              : undefined,
+        });
+      }
       setMessageDrafts((current) => ({ ...current, [runId]: '' }));
+      setReplyTargets((current) => ({ ...current, [runId]: '' }));
       await refresh();
     } catch (error) {
       console.error('Failed to send workflow message:', error);
+    }
+  };
+
+  const handleThreadAction = async (
+    runId: string,
+    threadId: string,
+    status: CollaborationActionStatus
+  ) => {
+    try {
+      await updateWorkflowThreadAction(runId, threadId, status, 'workflow-panel', defaultThreadActionNote(status));
+      await refresh();
+    } catch (error) {
+      console.error('Failed to update workflow thread:', error);
+    }
+  };
+
+  const handleArchiveThread = async (runId: string, threadId: string) => {
+    try {
+      await archiveWorkflowThread(runId, threadId, 'workflow-panel', 'Archived from the workflows panel.');
+      setReplyTargets((current) => ({ ...current, [runId]: current[runId] === threadId ? '' : current[runId] }));
+      await refresh();
+    } catch (error) {
+      console.error('Failed to archive workflow thread:', error);
+    }
+  };
+
+  const handleEscalateThread = async (run: SupervisorRun, thread: TeamThread) => {
+    try {
+      const latestMessage = thread.messages[thread.messages.length - 1];
+      await sendWorkflowCollaborationMessage(run.id, {
+        task_id: thread.task_id ?? undefined,
+        kind: 'blocker',
+        content: `Escalated thread ${thread.id} for operator attention.`,
+        thread_id: thread.id,
+        reply_to_message_id: latestMessage?.id,
+        escalation: {
+          level: 'warning',
+          escalated_by_agent_id: 'workflow-panel',
+          note: 'Escalated from the workflows panel',
+        },
+        action_request: {
+          kind: 'blocker_escalation',
+          requested_for_roles: ['supervisor'],
+          note: 'Operator escalation requested from the workflows panel.',
+        },
+      });
+      await refresh();
+    } catch (error) {
+      console.error('Failed to escalate workflow thread:', error);
     }
   };
 
@@ -257,7 +532,7 @@ const WorkflowsPanel: React.FC = () => {
 
       <div className="workflow-tabs" style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         <Button tone={activeTab === 'runs' ? 'primary' : 'secondary'} onClick={() => setActiveTab('runs')}>
-          Runs ({sortedRuns.length})
+          Runs ({hierarchicalRuns.length})
         </Button>
         <Button tone={activeTab === 'environments' ? 'primary' : 'secondary'} onClick={() => setActiveTab('environments')}>
           Environments ({sortedEnvironments.length})
@@ -309,172 +584,454 @@ const WorkflowsPanel: React.FC = () => {
 
         {activeTab === 'runs' ? (
           <div className="workflows-section">
-            <h3>Supervisor Runs ({sortedRuns.length})</h3>
-            {sortedRuns.length === 0 ? (
+            <h3>Supervisor Runs ({hierarchicalRuns.length})</h3>
+            {hierarchicalRuns.length === 0 ? (
               <p className="empty-state">No supervisor runs yet. Create a workflow task to start one.</p>
             ) : (
               <div className="task-list">
-                {sortedRuns.map((run: SupervisorRun) => (
-                  <div key={run.id} className="task-card">
-                    <div className="task-header">
-                      <span className="task-id">{run.id}</span>
-                      <span className="task-priority">{run.status}</span>
-                    </div>
-                    <div className="task-footer">
-                      <span>{run.tasks.length} tasks</span>
-                      <span>Updated {new Date(run.updated_at).toLocaleString()}</span>
-                    </div>
+                {hierarchicalRuns.map((run: SupervisorRun) => {
+                  const collaborationThreads = threadsByRun[run.id] ?? [];
+                  const collaboration = summarizeCollaboration(run, collaborationThreads);
+                  const selectedMessageKind = messageKinds[run.id] ?? 'status_update';
+                  const selectedReplyThreadId = replyTargets[run.id] ?? '';
+                  const isChildRun = Boolean(run.parent_run);
+                  const childDraft = childRunDraftFor(run);
+                  return (
+                    <div
+                      key={run.id}
+                      className="task-card"
+                      style={isChildRun ? { marginLeft: 24, borderLeft: '3px solid rgba(91, 141, 239, 0.65)' } : undefined}
+                    >
+                      <div className="task-header">
+                        <span className="task-id">{run.name ?? run.id}</span>
+                        <span className="task-priority">{run.hierarchy_summary?.rollup_status ?? run.status}</span>
+                      </div>
+                      <div className="task-description">
+                        Run: {run.id}
+                        {run.parent_run ? ` • Child of ${run.parent_run.parent_run_id}` : ' • Root workflow'}
+                        {run.parent_run?.objective ? ` • Objective: ${run.parent_run.objective}` : ''}
+                      </div>
+                      <div className="task-footer">
+                        <span>
+                          {run.task_summary.total || run.tasks.length} tasks
+                          {run.child_runs.length > 0 ? ` • ${run.child_runs.length} child runs` : ''}
+                        </span>
+                        <span>Updated {new Date(run.updated_at).toLocaleString()}</span>
+                      </div>
+                      {run.hierarchy_summary ? (
+                        <div className="task-description">
+                          Depth {run.hierarchy_summary.depth}/{run.hierarchy_summary.max_depth + 1}
+                          {run.hierarchy_summary.descendant_task_count > 0
+                            ? ` • Descendant tasks ${run.hierarchy_summary.descendant_task_count}`
+                            : ''}
+                          {run.hierarchy_summary.action_required_child_count > 0
+                            ? ` • Child attention ${run.hierarchy_summary.action_required_child_count}`
+                            : ''}
+                        </div>
+                      ) : null}
+                      {run.child_runs.length > 0 ? (
+                        <div className="task-description">
+                          Child runs:{' '}
+                          {run.child_runs
+                            .map((child) => `${child.name ?? child.run_id} (${child.status}, ${child.task_summary.total} tasks)`)
+                            .join(' • ')}
+                        </div>
+                      ) : null}
+                      {!isChildRun && run.hierarchy_depth < run.max_hierarchy_depth ? (
+                        <>
+                          <div className="modal-actions" style={{ marginTop: 8 }}>
+                            <Button
+                              tone="secondary"
+                              size="small"
+                              onClick={() =>
+                                setExpandedChildForms((current) => ({ ...current, [run.id]: !current[run.id] }))
+                              }
+                            >
+                              {expandedChildForms[run.id] ? 'Hide child supervisor form' : 'Create child supervisor'}
+                            </Button>
+                          </div>
+                          {expandedChildForms[run.id] ? (
+                            <div className="task-card" style={{ marginTop: 12 }}>
+                              <FormGroup label="Child supervisor objective">
+                                <textarea
+                                  value={childDraft.objective}
+                                  onChange={(event) => updateChildRunDraft(run, { objective: event.target.value })}
+                                  placeholder="Delegate a bounded sub-supervisor mission..."
+                                  rows={2}
+                                />
+                              </FormGroup>
+                              <FormGroup label="Lead agent id">
+                                <input
+                                  value={childDraft.leadAgentId}
+                                  onChange={(event) => updateChildRunDraft(run, { leadAgentId: event.target.value })}
+                                  placeholder="supervisor-subteam-a"
+                                />
+                              </FormGroup>
+                              <FormGroup label="Display name (optional)">
+                                <input
+                                  value={childDraft.name}
+                                  onChange={(event) => updateChildRunDraft(run, { name: event.target.value })}
+                                  placeholder="Frontend delivery pod"
+                                />
+                              </FormGroup>
+                              <div className="modal-actions" style={{ marginBottom: 8 }}>
+                                <label><input type="checkbox" checked={childDraft.approvalRequired} onChange={(event) => updateChildRunDraft(run, { approvalRequired: event.target.checked })} /> Approval gate</label>
+                                <label><input type="checkbox" checked={childDraft.reviewerRequired} onChange={(event) => updateChildRunDraft(run, { reviewerRequired: event.target.checked })} /> Review gate</label>
+                                <label><input type="checkbox" checked={childDraft.testRequired} onChange={(event) => updateChildRunDraft(run, { testRequired: event.target.checked })} /> Test gate</label>
+                              </div>
+                              <div className="modal-actions" style={{ marginBottom: 8 }}>
+                                <select
+                                  value={childDraft.executionMode}
+                                  onChange={(event) =>
+                                    updateChildRunDraft(run, { executionMode: event.target.value as DelegatedTask['execution_mode'] })
+                                  }
+                                >
+                                  <option value="shared_workspace">Shared workspace</option>
+                                  <option value="isolated_workspace">Isolated workspace</option>
+                                  <option value="git_worktree">Git worktree</option>
+                                  <option value="remote">Remote</option>
+                                </select>
+                              </div>
+                              <FormGroup label="Memory tags (comma separated)">
+                                <input
+                                  value={childDraft.memoryTags}
+                                  onChange={(event) => updateChildRunDraft(run, { memoryTags: event.target.value })}
+                                  placeholder="workflow-panel, child-supervision"
+                                />
+                              </FormGroup>
+                              <FormGroup label="Constraint notes (one per line)">
+                                <textarea
+                                  value={childDraft.constraintNotes}
+                                  onChange={(event) => updateChildRunDraft(run, { constraintNotes: event.target.value })}
+                                  placeholder="Stay within frontend scope\nEscalate blocking API changes"
+                                  rows={2}
+                                />
+                              </FormGroup>
+                              <div className="modal-actions">
+                                <Button size="small" onClick={() => handleCreateChildRun(run)}>
+                                  Create child run
+                                </Button>
+                              </div>
+                            </div>
+                          ) : null}
+                        </>
+                      ) : null}
 
-                    <div className="task-list">
-                      {run.tasks.map((record) => {
-                        const claimAgent = claimSelections[record.task.id] ?? record.task.agent_id;
-                        const approvalScope = approvalScopeForState(record.state);
-                        const approvalActorOptions = approvalActorOptionsForRecord(record);
-                        const approvalActorKind =
-                          approvalActorSelections[record.task.id] ?? approvalActorOptions[0] ?? defaultApprovalActorKind(record.state);
-                        const latestDecision = record.approval.decisions[record.approval.decisions.length - 1];
-                        return (
-                          <div key={record.task.id} className="task-card">
-                            <div className="task-header">
-                              <span className="task-id">{record.task.id}</span>
-                              <span className="task-priority">{record.state}</span>
-                            </div>
-                            <div className="task-description">{summarizeTask(record)}</div>
-                            <div className="task-footer">
-                              <span>Role: {record.task.role ?? 'implementer'}</span>
-                              <span>Approval: {record.approval.state}</span>
-                            </div>
-                            {approvalScope ? (
-                              <div className="task-description">
-                                Gate: {approvalScope} · Requested by{' '}
-                                {record.approval.active_request?.requested_by.display_name ?? record.approval.active_request?.requested_by.id ?? 'system'}
+                      <div className="task-list">
+                        {run.tasks.map((record) => {
+                          const claimAgent = claimSelections[record.task.id] ?? record.task.agent_id;
+                          const approvalScope = approvalScopeForState(record.state);
+                          const approvalActorOptions = approvalActorOptionsForRecord(record);
+                          const approvalActorKind =
+                            approvalActorSelections[record.task.id] ?? approvalActorOptions[0] ?? defaultApprovalActorKind(record.state);
+                          const latestDecision = record.approval.decisions[record.approval.decisions.length - 1];
+                          return (
+                            <div key={record.task.id} className="task-card">
+                              <div className="task-header">
+                                <span className="task-id">{record.task.id}</span>
+                                <span className="task-priority">{record.state}</span>
                               </div>
-                            ) : null}
-                            {approvalScope && approvalActorOptions.length > 0 ? (
-                              <div className="task-description">
-                                Allowed approvers: {approvalActorOptions.map(formatApprovalActorLabel).join(', ')}
+                              <div className="task-description">{summarizeTask(record)}</div>
+                              <div className="task-footer">
+                                <span>Role: {record.task.role ?? 'implementer'}</span>
+                                <span>Approval: {record.approval.state}</span>
                               </div>
-                            ) : null}
-                            {latestDecision ? (
-                              <div className="task-description">
-                                Last decision: {latestDecision.decision} by {latestDecision.actor.display_name ?? latestDecision.actor.id}
-                              </div>
-                            ) : null}
-                            {record.blocked_reasons.length > 0 ? (
-                              <div className="task-description">Blocked by: {record.blocked_reasons.join('; ')}</div>
-                            ) : null}
-                            <div className="task-footer">
-                              <span>
-                                Env: {record.environment.execution_mode} · {record.environment.state}/{record.environment.health}
-                              </span>
-                              <span>Owner: {record.claimed_by ?? record.task.agent_id}</span>
-                            </div>
-                            <div className="modal-actions">
-                              {gatedStates.has(record.state) ? (
+                              {approvalScope ? (
+                                <div className="task-description">
+                                  Gate: {approvalScope} · Requested by{' '}
+                                  {record.approval.active_request?.requested_by.display_name ?? record.approval.active_request?.requested_by.id ?? 'system'}
+                                </div>
+                              ) : null}
+                              {approvalScope && approvalActorOptions.length > 0 ? (
+                                <div className="task-description">
+                                  Allowed approvers: {approvalActorOptions.map(formatApprovalActorLabel).join(', ')}
+                                </div>
+                              ) : null}
+                              {latestDecision ? (
+                                <div className="task-description">
+                                  Last decision: {latestDecision.decision} by {latestDecision.actor.display_name ?? latestDecision.actor.id}
+                                </div>
+                              ) : null}
+                              {record.blocked_reasons.length > 0 ? (
+                                <div className="task-description">Blocked by: {record.blocked_reasons.join('; ')}</div>
+                              ) : null}
+                              {record.remote_execution ? (
                                 <>
-                                  <select
-                                    value={approvalActorKind}
-                                    onChange={(event) =>
-                                      setApprovalActorSelections((current) => ({
-                                        ...current,
-                                        [record.task.id]: event.target.value as ApprovalActorKind,
-                                      }))
-                                    }
-                                  >
-                                    {approvalActorOptions.map((kind) => (
-                                      <option key={kind} value={kind}>
-                                        {formatApprovalActorLabel(kind)}
-                                      </option>
-                                    ))}
-                                  </select>
-                                  <Button
-                                    size="small"
-                                    onClick={() =>
-                                      handleTaskAction(() =>
-                                        approveWorkflowTask(
-                                          record.task.id,
-                                          buildApprovalActor(record, approvalActorKind),
-                                          approvalScope ? `Approved ${approvalScope} gate.` : undefined
-                                        )
-                                      )
-                                    }
-                                  >
-                                    Approve
-                                  </Button>
-                                  <Button
-                                    tone="secondary"
-                                    size="small"
-                                    onClick={() =>
-                                      handleTaskAction(() =>
-                                        rejectWorkflowTask(
-                                          record.task.id,
-                                          buildApprovalActor(record, approvalActorKind),
-                                          approvalScope ? `Revision requested for ${approvalScope} gate.` : 'Needs revision'
-                                        )
-                                      )
-                                    }
-                                  >
-                                    Request revision
-                                  </Button>
+                                  <div className="task-description">
+                                    Remote: {record.remote_execution.target.name ?? record.remote_execution.target.url} · {record.remote_execution.status}
+                                    {record.remote_execution.status_reason ? ` · ${record.remote_execution.status_reason}` : ''}
+                                  </div>
+                                  {record.remote_execution.progress ? (
+                                    <div className="task-description">
+                                      Progress:
+                                      {record.remote_execution.progress.percent != null
+                                        ? ` ${record.remote_execution.progress.percent}%`
+                                        : ''}
+                                      {record.remote_execution.progress.stage
+                                        ? ` · ${record.remote_execution.progress.stage}`
+                                        : ''}
+                                      {record.remote_execution.progress.message
+                                        ? ` · ${record.remote_execution.progress.message}`
+                                        : ''}
+                                    </div>
+                                  ) : null}
+                                  {record.remote_execution.provenance?.caller_name || record.remote_execution.provenance?.caller_agent_id ? (
+                                    <div className="task-description">
+                                      Provenance: {record.remote_execution.provenance.caller_name ?? record.remote_execution.provenance.caller_agent_id}
+                                    </div>
+                                  ) : null}
+                                  {record.remote_execution.artifacts.length > 0 ? (
+                                    <div className="task-description">
+                                      Remote artifacts: {record.remote_execution.artifacts.map((artifact) => artifact.name).join(', ')}
+                                    </div>
+                                  ) : null}
+                                  {record.remote_execution.compatibility.warnings.length > 0 ? (
+                                    <div className="task-description">
+                                      Compatibility: {record.remote_execution.compatibility.warnings.join('; ')}
+                                    </div>
+                                  ) : null}
                                 </>
                               ) : null}
-                              {retryableStates.has(record.state) ? (
-                                <Button size="small" onClick={() => handleTaskAction(() => retryWorkflowTask(record.task.id))}>
-                                  Retry
-                                </Button>
+                              {record.result?.artifacts?.length ? (
+                                <div className="task-description">
+                                  Result artifacts: {record.result.artifacts.map((artifact) => artifact.name).join(', ')}
+                                </div>
                               ) : null}
-                              <Button tone="secondary" size="small" onClick={() => setActiveTab('environments')}>
-                                Open env
-                              </Button>
-                              <select
-                                value={claimAgent}
-                                onChange={(event) =>
-                                  setClaimSelections((current) => ({ ...current, [record.task.id]: event.target.value }))
-                                }
-                              >
-                                {agents.map((agent) => (
-                                  <option key={agent.id} value={agent.id}>
-                                    {agent.name}
-                                  </option>
-                                ))}
-                              </select>
-                              <Button
-                                tone="secondary"
-                                size="small"
-                                disabled={!claimAgent}
-                                onClick={() => handleTaskAction(() => claimWorkflowTask(record.task.id, claimAgent))}
-                              >
-                                Claim
-                              </Button>
-                              {record.state === 'running' ? (
-                                <Button tone="danger" size="small" onClick={() => handleTaskAction(() => cancelTask(record.task.id))}>
-                                  Cancel
+                              <div className="task-footer">
+                                <span>
+                                  Env: {record.environment.execution_mode} · {record.environment.state}/{record.environment.health}
+                                </span>
+                                <span>Owner: {record.claimed_by ?? record.task.agent_id}</span>
+                              </div>
+                              <div className="modal-actions">
+                                {gatedStates.has(record.state) ? (
+                                  <>
+                                    <select
+                                      value={approvalActorKind}
+                                      onChange={(event) =>
+                                        setApprovalActorSelections((current) => ({
+                                          ...current,
+                                          [record.task.id]: event.target.value as ApprovalActorKind,
+                                        }))
+                                      }
+                                    >
+                                      {approvalActorOptions.map((kind) => (
+                                        <option key={kind} value={kind}>
+                                          {formatApprovalActorLabel(kind)}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <Button
+                                      size="small"
+                                      onClick={() =>
+                                        handleTaskAction(() =>
+                                          approveWorkflowTask(
+                                            record.task.id,
+                                            buildApprovalActor(record, approvalActorKind),
+                                            approvalScope ? `Approved ${approvalScope} gate.` : undefined
+                                          )
+                                        )
+                                      }
+                                    >
+                                      Approve
+                                    </Button>
+                                    <Button
+                                      tone="secondary"
+                                      size="small"
+                                      onClick={() =>
+                                        handleTaskAction(() =>
+                                          rejectWorkflowTask(
+                                            record.task.id,
+                                            buildApprovalActor(record, approvalActorKind),
+                                            approvalScope ? `Revision requested for ${approvalScope} gate.` : 'Needs revision'
+                                          )
+                                        )
+                                      }
+                                    >
+                                      Request revision
+                                    </Button>
+                                  </>
+                                ) : null}
+                                {retryableStates.has(record.state) ? (
+                                  <Button size="small" onClick={() => handleTaskAction(() => retryWorkflowTask(record.task.id))}>
+                                    Retry
+                                  </Button>
+                                ) : null}
+                                <Button tone="secondary" size="small" onClick={() => setActiveTab('environments')}>
+                                  Open env
                                 </Button>
-                              ) : null}
+                                <select
+                                  value={claimAgent}
+                                  onChange={(event) =>
+                                    setClaimSelections((current) => ({ ...current, [record.task.id]: event.target.value }))
+                                  }
+                                >
+                                  {agents.map((agent) => (
+                                    <option key={agent.id} value={agent.id}>
+                                      {agent.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                <Button
+                                  tone="secondary"
+                                  size="small"
+                                  disabled={!claimAgent}
+                                  onClick={() => handleTaskAction(() => claimWorkflowTask(record.task.id, claimAgent))}
+                                >
+                                  Claim
+                                </Button>
+                                {record.state === 'running' ? (
+                                  <Button tone="danger" size="small" onClick={() => handleTaskAction(() => cancelTask(record.task.id))}>
+                                    Cancel
+                                  </Button>
+                                ) : null}
+                              </div>
                             </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                          );
+                        })}
+                      </div>
 
-                    <FormGroup label="Team message">
-                      <textarea
-                        value={messageDrafts[run.id] ?? ''}
-                        onChange={(event) => setMessageDrafts((current) => ({ ...current, [run.id]: event.target.value }))}
-                        placeholder="Share a blocker, handoff, or review note..."
-                        rows={2}
-                      />
-                    </FormGroup>
-                    <div className="modal-actions">
-                      <Button tone="secondary" onClick={() => handleSendMessage(run.id)}>
-                        Send message
-                      </Button>
+                      <FormGroup label="Team message">
+                        <div className="modal-actions" style={{ marginBottom: 8 }}>
+                          <select
+                            value={selectedMessageKind}
+                            onChange={(event) =>
+                              setMessageKinds((current) => ({
+                                ...current,
+                                [run.id]: event.target.value as TeamMessageKind,
+                              }))
+                            }
+                          >
+                            <option value="status_update">Status update</option>
+                            <option value="clarification">Clarification</option>
+                            <option value="blocker">Blocker</option>
+                            <option value="handoff">Handoff</option>
+                            <option value="review_request">Review request</option>
+                            <option value="approval_request">Approval request</option>
+                            <option value="test_validation_request">Test validation request</option>
+                          </select>
+                          <select
+                            value={messageTaskSelections[run.id] ?? ''}
+                            onChange={(event) =>
+                              setMessageTaskSelections((current) => ({ ...current, [run.id]: event.target.value }))
+                            }
+                          >
+                            <option value="">Run-level thread</option>
+                            {run.tasks.map((record) => (
+                              <option key={record.task.id} value={record.task.id}>
+                                {record.task.id}
+                              </option>
+                            ))}
+                          </select>
+                          {selectedMessageKind === 'blocker' ? (
+                            <select
+                              value={escalationSelections[run.id] ?? 'warning'}
+                              onChange={(event) =>
+                                setEscalationSelections((current) => ({
+                                  ...current,
+                                  [run.id]: event.target.value as CollaborationEscalationLevel,
+                                }))
+                              }
+                            >
+                              <option value="info">Info</option>
+                              <option value="warning">Warning</option>
+                              <option value="critical">Critical</option>
+                            </select>
+                          ) : null}
+                        </div>
+                        {selectedReplyThreadId ? (
+                          <div className="task-description" style={{ marginBottom: 8 }}>
+                            Replying to thread {selectedReplyThreadId}
+                            <Button tone="secondary" size="small" onClick={() => setReplyTargets((current) => ({ ...current, [run.id]: '' }))}>
+                              Clear
+                            </Button>
+                          </div>
+                        ) : null}
+                        <textarea
+                          value={messageDrafts[run.id] ?? ''}
+                          onChange={(event) => setMessageDrafts((current) => ({ ...current, [run.id]: event.target.value }))}
+                          placeholder="Share a blocker, handoff, or review note..."
+                          rows={2}
+                        />
+                      </FormGroup>
+                      <div className="modal-actions">
+                        <Button tone="secondary" onClick={() => handleSendMessage(run.id)}>
+                          Send message
+                        </Button>
+                      </div>
+                      {collaboration.threadCount > 0 ? (
+                        <>
+                          <div className="task-description">
+                            Threads: {collaboration.threadCount}
+                            {collaboration.actionRequiredCount > 0 ? ` • Action required: ${collaboration.actionRequiredCount}` : ''}
+                            {collaboration.latestMessage ? ` • Latest: ${collaboration.latestMessage.content}` : ''}
+                          </div>
+                          <div className="task-list">
+                            {collaborationThreads.map((thread) => {
+                              const latestMessage = thread.messages[thread.messages.length - 1];
+                              const requestStatus = thread.latest_action_request?.status;
+                              return (
+                                <div key={thread.id} className="task-card">
+                                  <div className="task-header">
+                                    <span className="task-id">{thread.id}</span>
+                                    <span className="task-priority">{thread.status}</span>
+                                  </div>
+                                  <div className="task-description">
+                                    {thread.kind}
+                                    {thread.task_id ? ` • Task ${thread.task_id}` : ''}
+                                    {thread.requires_attention ? ' • Needs attention' : ''}
+                                    {thread.unread_count > 0 ? ` • Unread ${thread.unread_count}` : ''}
+                                  </div>
+                                  <div className="task-description">{latestMessage?.content ?? 'No messages yet.'}</div>
+                                  <div className="task-footer">
+                                    <span>{thread.message_count} messages</span>
+                                    <span>{new Date(thread.updated_at).toLocaleString()}</span>
+                                  </div>
+                                  <div className="modal-actions">
+                                    <Button
+                                      tone="secondary"
+                                      size="small"
+                                      onClick={() => setReplyTargets((current) => ({ ...current, [run.id]: thread.id }))}
+                                    >
+                                      Reply
+                                    </Button>
+                                    {requestStatus === 'open' ? (
+                                      <Button size="small" onClick={() => handleThreadAction(run.id, thread.id, 'acknowledged')}>
+                                        Acknowledge
+                                      </Button>
+                                    ) : null}
+                                    {thread.requires_attention || requestStatus === 'acknowledged' ? (
+                                      <Button size="small" onClick={() => handleThreadAction(run.id, thread.id, 'resolved')}>
+                                        Resolve
+                                      </Button>
+                                    ) : null}
+                                    {thread.requires_attention ? (
+                                      <Button
+                                        tone="secondary"
+                                        size="small"
+                                        onClick={() => handleThreadAction(run.id, thread.id, 'needs_revision')}
+                                      >
+                                        Request revision
+                                      </Button>
+                                    ) : null}
+                                    <Button tone="secondary" size="small" onClick={() => handleEscalateThread(run, thread)}>
+                                      Escalate
+                                    </Button>
+                                    {thread.status === 'resolved' ? (
+                                      <Button tone="secondary" size="small" onClick={() => handleArchiveThread(run.id, thread.id)}>
+                                        Archive
+                                      </Button>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      ) : null}
                     </div>
-                    {run.messages.length > 0 ? (
-                      <div className="task-description">Latest: {run.messages[run.messages.length - 1]?.content}</div>
-                    ) : null}
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </div>

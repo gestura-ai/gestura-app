@@ -17,10 +17,13 @@ pub use gestura_core::agents::{
 pub use gestura_core::orchestrator::{
     AgentOrchestrator, ApprovalActor, ApprovalActorKind, ApprovalDecision, ApprovalDecisionKind,
     ApprovalPolicy, ApprovalRequest, ApprovalRequirement, ApprovalScope, ApprovalState,
-    CleanupResult, EnvironmentHealth, EnvironmentRecord, EnvironmentState, ExecutionEnvironment,
-    OrchestratorAgentManager, OrchestratorObserver, RecoveryAction, RecoveryStatus, SupervisorRun,
-    SupervisorRunStatus, SupervisorTaskRecord, SupervisorTaskState, TaskApprovalRecord,
-    TeamMessage, TeamMessageKind,
+    CleanupResult, CollaborationActionStatus, CollaborationEscalationLevel,
+    CollaborationRequestKind, CollaborationThreadStatus, EnvironmentHealth, EnvironmentRecord,
+    EnvironmentState, ExecutionEnvironment, OrchestratorAgentManager, OrchestratorObserver,
+    RecoveryAction, RecoveryStatus, SupervisorRun, SupervisorRunStatus, SupervisorTaskRecord,
+    SupervisorTaskState, TaskApprovalRecord, TeamActionRequest, TeamActionRequestDraft,
+    TeamArtifactReference, TeamEscalation, TeamEscalationDraft, TeamMessage, TeamMessageDraft,
+    TeamMessageKind, TeamResultReference, TeamThread,
 };
 
 /// A Tauri-backed observer that mirrors orchestrator task lifecycle events into the
@@ -127,6 +130,10 @@ impl OrchestratorObserver for TauriTaskObserver {
 
     async fn on_team_message(&self, message: TeamMessage) {
         let _ = self.app.emit("orchestrator-team-message", &message);
+    }
+
+    async fn on_team_thread_updated(&self, thread: TeamThread) {
+        let _ = self.app.emit("orchestrator-team-thread-updated", &thread);
     }
 
     async fn on_environment_updated(&self, environment: EnvironmentRecord) {

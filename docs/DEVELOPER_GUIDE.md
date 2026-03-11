@@ -144,6 +144,139 @@ Approval CLI commands operate on delegated workflow task IDs (full ID or unique 
 
 When adding new approval-adjacent features, update the policy in core first, expose the resulting state through stable API models, and only then add controls in CLI/GUI layers.
 
+### Workflow Collaboration Threads
+
+Structured team messaging is now a first-class collaboration layer, not a loose log of status strings. The source of truth lives in `gestura_core::orchestrator` and is persisted inside each supervisor run/task record alongside approvals and execution state.
+
+#### Collaboration model
+
+- `TeamMessage` stores the durable message record, sender/recipient, thread/reply links, unread state, artifact/result references, and archive metadata
+- `TeamActionRequest` stores the actionable request attached to a message (approval, review, clarification, blocker escalation, handoff, test validation)
+- `TeamThread` is the synthesized inbox/view model produced from persisted messages, with status, unread counts, latest actionable request, and participant summaries
+
+#### State transition rules
+
+- approval, review, and test gates auto-create actionable collaboration threads
+- thread actions (`acknowledged`, `resolved`, `needs_revision`, `cancelled`) must flow through orchestrator helpers, not UI-local mutations
+- blocker threads are coupled to task visibility: opening a blocker can mark the task `blocked`, and resolving the blocker clears the matching blocked reason
+- resolved threads can be archived; archived threads are hidden from default thread listings but remain queryable with explicit include-archived paths
+
+#### Operator surfaces
+
+- GUI workflow panel shows threaded collaboration cards with reply, acknowledge, resolve, revise, escalate, and archive controls
+- Tauri commands expose thread listing/filtering plus structured thread/message actions:
+  - `send_workflow_collaboration_message`
+  - `list_workflow_threads`
+  - `update_workflow_thread_action`
+  - `archive_workflow_thread`
+- CLI slash commands expose the same collaboration controls for the active workflow scope:
+  - `/task threads [--archived]`
+  - `/task message <run_id|task_id> <kind> <note...>`
+  - `/task thread <ack|resolve|revise|archive|escalate> <thread_id> [note...]`
+
+#### Contributor guardrails
+
+- keep lifecycle logic in core (`send_team_message_draft`, `update_team_thread_action`, `archive_team_thread`) so GUI/CLI cannot drift from persisted behavior
+- when adding new collaboration kinds, update the draft/request/thread types and all stable surfaces together (Rust, Tauri, TypeScript, CLI help, tests)
+- preserve backward-compatible deserialization defaults for older persisted messages that may lack thread/archive/action metadata
+
+### Bounded Hierarchical Supervision
+
+Iteration 4 adds direct child-supervisor runs for one additional layer of delegation. This is intentionally **bounded**: root supervisor runs may create child supervisor runs, but child runs may not create grandchildren.
+
+#### Hierarchy model
+
+- `SupervisorRun.parent_run` stores the durable parent reference for child runs
+- `SupervisorRun.child_runs` stores synthesized direct-child summaries on the parent run
+- `SupervisorRun.inherited_policy` stores approval/review/test defaults, execution mode, workspace inheritance, memory tags, and constraint notes for tasks created inside that run
+- `SupervisorRun.hierarchy_summary` stores roll-up status, direct child counts, descendant task counts, and child attention/blocker signals
+
+#### Lifecycle rules
+
+- create child runs only through `AgentOrchestrator::create_child_supervisor_run`
+- enforce `MAX_CHILD_SUPERVISOR_DEPTH` in core, not in adapters
+- when a child run changes, refresh the parent summary/status before notifying Tauri/CLI observers
+- treat parent run status as a roll-up over both local tasks and direct child run state
+
+#### Operator surfaces
+
+- GUI workflow panel renders root and child runs in one ordered hierarchy, including child summaries and a root-only “Create child supervisor” form
+- Tauri exposes `create_child_supervisor_run` with the core-owned `ChildSupervisorRunRequest` payload
+- CLI exposes:
+  - `/task tree`
+  - `/task child-run <parent_run_id> <lead_agent_id> --objective <text...> ...`
+
+#### Contributor guardrails
+
+- keep hierarchy persistence/backfill serde-safe: new run fields must deserialize from older persisted runs with sensible defaults
+- do not let GUI/CLI invent their own parent-child roll-up logic; consume the run model and core summaries instead
+- if you extend depth or inheritance semantics later, update roll-up tests, CLI tree rendering, workflow panel types, and docs together
+
+### Workflow Execution Environments and Recovery
+
+Iteration 1 of Phase 8 promotes execution environments from metadata into a durable subsystem. The source of truth lives in `gestura_core::orchestrator` (`environment.rs`, `recovery.rs`, `persistence.rs`) and is mirrored through Tauri/frontend surfaces without adapter-local lifecycle logic.
+
+#### Persistence layout
+
+- Supervisor runs persist to `.gestura/orchestrator/<session>/runs/<run-id>.json`
+- Environment records persist to `.gestura/orchestrator/<session>/environments/<environment-id>.json`
+- Isolated workspaces are created under `.gestura/environments/<session>/<run>/<agent>/<task>`
+- Git worktrees are created under `.gestura/worktrees/<session>/<run>/<agent>/<task>` with branches named `gestura/<session>/<run>/<agent>/<task>`
+
+#### Lifecycle state model
+
+```mermaid
+stateDiagram-v2
+    [*] --> Requested
+    Requested --> Provisioning
+    Provisioning --> Ready
+    Ready --> InUse
+    InUse --> Ready: lease released
+    Ready --> Cleaning: cleanup requested
+    Cleaning --> Removed
+    Cleaning --> Archived
+    Ready --> Recovering: restart/reconcile
+    InUse --> Recovering: process restart
+    Recovering --> Ready: reconciled
+    Recovering --> CleanupQueued: orphaned env
+    Recovering --> Failed: unrecoverable prep drift
+```
+
+#### Operator expectations
+
+- `shared_workspace`
+  - executes directly in the user workspace
+  - is **never** auto-deleted by cleanup operations
+  - if missing at reconciliation time, the owning task is blocked and requires operator attention
+- `isolated_workspace`
+  - creates a dedicated directory inside `.gestura/environments/...`
+  - defaults to `remove_when_clean_otherwise_archive`
+  - missing isolated environments are marked `pending` with `recreate_missing_environment`, and `retry_environment_preparation` is the intended repair path
+- `git_worktree`
+  - requires the workspace root to be a valid git repository
+  - creates/validates a real registered worktree, not a metadata placeholder
+  - dirty worktrees archive on cleanup; drifted/unregistered worktrees block the owning task for operator review
+- orphaned environments are marked `queue_cleanup` during reconciliation; they are surfaced for inspection instead of being silently destroyed
+
+#### Restart/recovery rules
+
+- Any task persisted as `running` is converted to `blocked` with `execution interrupted during restart`
+- Active environment leases are released during reconciliation and surfaced as `release_stale_lease`
+- Shared-workspace loss and worktree drift require operator attention; isolated-workspace loss is eligible for recreation
+- Recovery must be **idempotent**: repeated `reconcile_orchestrator_state` calls should converge on the same durable state, not stack duplicate blocked reasons or mutate unrelated runs
+
+#### Stable operator/API surfaces
+
+- Core: `list_environments`, `get_environment`, `retry_environment_preparation`, `cleanup_environment`, `reconcile_orchestrator_state`
+- Tauri: `list_workflow_environments`, `get_workflow_environment`, `retry_workflow_environment`, `cleanup_workflow_environment`, `reconcile_workflow_state`
+- GUI: Workflows panel → **Environments** tab with state/health/recovery/cleanup summaries plus **Reconcile**, **Retry prep**, and **Cleanup** controls
+
+#### Contributor guardrails
+
+- keep lifecycle decisions in core; GUI/CLI may trigger actions but must not infer cleanup/recovery outcomes locally
+- when adding new environment fields, update Rust models, Tauri command docs, TypeScript wrappers, workflow panel rendering, and focused tests together
+- verify both creation and restart paths: add/adjust tests in `environment.rs`, `recovery.rs`, and relevant GUI workflow tests before widening validation scope
+
 ### Re-export Pattern
 
 The facade and presentation layers should stay thin over the owning core domain:

@@ -222,6 +222,9 @@ pub struct RemoteAgentTarget {
     /// Optional remote agent display name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Optional bearer token for authenticated remote calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_token: Option<String>,
     /// Capability tags requested from the remote agent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
@@ -437,8 +440,21 @@ pub struct TaskResult {
     /// Produced artifacts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<TaskArtifactRecord>,
+    /// Optional hint for the final local task state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_state_hint: Option<TaskTerminalStateHint>,
     /// Execution duration in milliseconds
     pub duration_ms: u64,
+}
+
+/// Optional terminal-state mapping returned by delegated execution.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskTerminalStateHint {
+    Completed,
+    Failed,
+    Cancelled,
+    Blocked,
 }
 
 /// Record of a tool call during orchestrated task execution
@@ -767,6 +783,7 @@ mod tests {
             remote_target: Some(RemoteAgentTarget {
                 url: "https://remote.example".into(),
                 name: Some("Remote Reviewer".into()),
+                auth_token: None,
                 capabilities: vec!["review".into()],
             }),
             memory_tags: vec!["memory".into(), "delegation".into()],
@@ -801,6 +818,7 @@ mod tests {
                 uri: Some("memory://summary".into()),
                 summary: Some("Delegation summary".into()),
             }],
+            terminal_state_hint: Some(TaskTerminalStateHint::Completed),
             duration_ms: 100,
         };
 

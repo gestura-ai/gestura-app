@@ -59,6 +59,10 @@ async fn main() {
         ring_manager,
     };
 
+    if let Err(error) = gestura_gui::a2a_runtime::start_a2a_runtime(config.clone()).await {
+        tracing::warn!(%error, "Failed to initialize embedded A2A runtime");
+    }
+
     // Initialize event dispatcher and subscribe to NATS events
     #[cfg(feature = "nats")]
     if let Some(nc) = &state.nats {
@@ -198,17 +202,28 @@ async fn main() {
             gestura_gui::api::list_agents,
             // Orchestrator commands
             gestura_gui::api::delegate_task,
+            gestura_gui::api::get_a2a_runtime_status,
             gestura_gui::api::spawn_subagent,
             gestura_gui::api::list_active_tasks,
             gestura_gui::api::cancel_task,
             gestura_gui::api::list_supervisor_runs,
+            gestura_gui::api::list_root_supervisor_runs,
+            gestura_gui::api::list_child_supervisor_runs,
             gestura_gui::api::get_supervisor_run,
+            gestura_gui::api::get_supervisor_run_ancestry,
+            gestura_gui::api::get_supervisor_run_descendants,
+            gestura_gui::api::list_supervisor_leaf_tasks,
+            gestura_gui::api::create_child_supervisor_run,
             gestura_gui::api::approve_workflow_task,
             gestura_gui::api::reject_workflow_task,
             gestura_gui::api::retry_workflow_task,
             gestura_gui::api::claim_workflow_task,
             gestura_gui::api::send_workflow_message,
+            gestura_gui::api::send_workflow_collaboration_message,
             gestura_gui::api::list_workflow_messages,
+            gestura_gui::api::list_workflow_threads,
+            gestura_gui::api::update_workflow_thread_action,
+            gestura_gui::api::archive_workflow_thread,
             gestura_gui::api::list_workflow_environments,
             gestura_gui::api::get_workflow_environment,
             gestura_gui::api::retry_workflow_environment,

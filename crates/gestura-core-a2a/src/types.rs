@@ -6,6 +6,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// A2A JSON-RPC Request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct A2ARequest {
@@ -59,6 +63,10 @@ pub struct AgentCard {
     pub authentication: Option<AuthenticationInfo>,
     pub default_input_modes: Vec<String>,
     pub default_output_modes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_rpc_methods: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_task_features: Vec<String>,
 }
 
 /// Skill definition
@@ -119,6 +127,12 @@ pub struct A2ATask {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contract: Option<RemoteTaskContract>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease: Option<RemoteTaskLease>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<RemoteTaskProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub provenance: Option<TaskProvenance>,
     #[serde(default)]
     pub audit_log: Vec<TaskAuditEvent>,
@@ -143,6 +157,10 @@ pub struct CreateTaskRequest {
     pub requested_capabilities: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contract: Option<RemoteTaskContract>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_request: Option<RemoteTaskLeaseRequest>,
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
 }
@@ -156,6 +174,8 @@ impl CreateTaskRequest {
             role: None,
             requested_capabilities: Vec::new(),
             contract: None,
+            idempotency_key: None,
+            lease_request: None,
             metadata: HashMap::new(),
         }
     }
@@ -176,16 +196,97 @@ pub struct RemoteTaskContract {
     pub output_format: Option<String>,
 }
 
+/// Requested lease semantics for a remote task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTaskLeaseRequest {
+    /// Requested lease time-to-live in seconds.
+    pub ttl_secs: u64,
+    /// Expected heartbeat cadence in seconds.
+    pub heartbeat_interval_secs: u64,
+}
+
+/// Active lease state for a remote task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTaskLease {
+    /// Stable lease identifier.
+    pub lease_id: String,
+    /// Agent currently holding the lease.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holder_agent_id: Option<String>,
+    /// When the lease was acquired.
+    pub acquired_at: DateTime<Utc>,
+    /// Most recent heartbeat timestamp.
+    pub last_heartbeat_at: DateTime<Utc>,
+    /// Lease expiry timestamp.
+    pub expires_at: DateTime<Utc>,
+    /// Configured heartbeat interval in seconds.
+    pub heartbeat_interval_secs: u64,
+}
+
+/// Progress snapshot reported by a remote worker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTaskProgress {
+    /// Optional current stage or step name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// Optional human-readable message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Percent complete from 0-100.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub percent: Option<u8>,
+    /// Snapshot timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Heartbeat/update request for a remote task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskHeartbeatRequest {
+    /// Task identifier to update.
+    pub task_id: String,
+    /// Optional status transition reported by the worker.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<TaskStatus>,
+    /// Optional status reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_reason: Option<String>,
+    /// Optional progress snapshot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<RemoteTaskProgress>,
+    /// Optional artifacts produced since the last heartbeat.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<Artifact>,
+    /// Optional new lease ttl in seconds; if absent, reuse the prior ttl window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extend_lease_secs: Option<u64>,
+}
+
 /// Remote provenance metadata for a task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskProvenance {
+    /// Authenticated caller identifier if one was established.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caller_agent_id: Option<String>,
+    /// Human-friendly caller name if known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caller_name: Option<String>,
+    /// Caller software version if known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caller_version: Option<String>,
+    /// Caller-advertised capabilities.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caller_capabilities: Vec<String>,
+    /// Whether the caller was authenticated when the task was accepted.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub authenticated: bool,
+    /// Authentication scheme used to authenticate the caller.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_scheme: Option<String>,
 }
 
 /// Audit entry recorded for task lifecycle changes.
@@ -242,4 +343,44 @@ pub struct Artifact {
     pub parts: Vec<MessagePart>,
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
+}
+
+/// Summary metadata for an artifact without its full payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactManifestEntry {
+    pub name: String,
+    #[serde(default)]
+    pub part_count: usize,
+    #[serde(default)]
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+/// Request to fetch a specific artifact for a task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskArtifactFetchRequest {
+    pub task_id: String,
+    pub artifact_name: String,
+}
+
+/// Event emitted when an A2A task changes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum A2ATaskEventKind {
+    Created,
+    Updated,
+    Completed,
+    Failed,
+    Cancelled,
+    ArtifactAdded,
+}
+
+/// Streamable task event payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct A2ATaskEvent {
+    pub kind: A2ATaskEventKind,
+    pub task: A2ATask,
+    pub emitted_at: DateTime<Utc>,
 }

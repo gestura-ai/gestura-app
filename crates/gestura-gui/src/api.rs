@@ -3323,6 +3323,12 @@ pub async fn delegate_task(
     state.orchestrator.delegate_task(task).await
 }
 
+/// Get embedded A2A runtime status.
+#[tauri::command]
+pub fn get_a2a_runtime_status() -> Result<crate::a2a_runtime::A2ARuntimeStatus, String> {
+    Ok(crate::a2a_runtime::a2a_runtime_status())
+}
+
 /// Spawn a new subagent
 #[tauri::command]
 pub async fn spawn_subagent(
@@ -3377,6 +3383,26 @@ pub async fn list_supervisor_runs(
     Ok(state.orchestrator.list_supervisor_runs().await)
 }
 
+/// List only root supervisor runs.
+#[tauri::command]
+pub async fn list_root_supervisor_runs(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Vec<crate::orchestrator::SupervisorRun>, String> {
+    Ok(state.orchestrator.list_root_supervisor_runs().await)
+}
+
+/// List direct child supervisor runs for a parent run.
+#[tauri::command]
+pub async fn list_child_supervisor_runs(
+    parent_run_id: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Vec<crate::orchestrator::SupervisorRun>, String> {
+    Ok(state
+        .orchestrator
+        .list_child_supervisor_runs(&parent_run_id)
+        .await)
+}
+
 /// Fetch a specific supervisor run.
 #[tauri::command]
 pub async fn get_supervisor_run(
@@ -3384,6 +3410,51 @@ pub async fn get_supervisor_run(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Option<crate::orchestrator::SupervisorRun>, String> {
     Ok(state.orchestrator.get_supervisor_run(&run_id).await)
+}
+
+/// Fetch the ancestor chain for a supervisor run.
+#[tauri::command]
+pub async fn get_supervisor_run_ancestry(
+    run_id: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Vec<crate::orchestrator::SupervisorRun>, String> {
+    Ok(state
+        .orchestrator
+        .get_supervisor_run_ancestry(&run_id)
+        .await)
+}
+
+/// Fetch direct descendants for a supervisor run.
+#[tauri::command]
+pub async fn get_supervisor_run_descendants(
+    run_id: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Vec<crate::orchestrator::SupervisorRun>, String> {
+    Ok(state
+        .orchestrator
+        .get_supervisor_run_descendants(&run_id)
+        .await)
+}
+
+/// List leaf tasks under a supervisor run subtree.
+#[tauri::command]
+pub async fn list_supervisor_leaf_tasks(
+    run_id: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Vec<crate::orchestrator::SupervisorTaskRecord>, String> {
+    Ok(state.orchestrator.list_supervisor_leaf_tasks(&run_id).await)
+}
+
+/// Create a direct child supervisor run under an existing workflow run.
+#[tauri::command]
+pub async fn create_child_supervisor_run(
+    request: gestura_core::orchestrator::ChildSupervisorRunRequest,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<crate::orchestrator::SupervisorRun, String> {
+    state
+        .orchestrator
+        .create_child_supervisor_run(request)
+        .await
 }
 
 /// Approve a delegated task.
@@ -3451,6 +3522,19 @@ pub async fn send_workflow_message(
         .await
 }
 
+/// Send a structured collaboration draft message.
+#[tauri::command]
+pub async fn send_workflow_collaboration_message(
+    run_id: String,
+    draft: crate::orchestrator::TeamMessageDraft,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<crate::orchestrator::TeamMessage, String> {
+    state
+        .orchestrator
+        .send_team_message_draft(&run_id, draft)
+        .await
+}
+
 /// List workflow messages for a supervisor run.
 #[tauri::command]
 pub async fn list_workflow_messages(
@@ -3458,6 +3542,50 @@ pub async fn list_workflow_messages(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Vec<crate::orchestrator::TeamMessage>, String> {
     Ok(state.orchestrator.list_team_messages(&run_id).await)
+}
+
+/// List grouped workflow collaboration threads for a supervisor run.
+#[tauri::command]
+pub async fn list_workflow_threads(
+    run_id: String,
+    include_archived: Option<bool>,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Vec<crate::orchestrator::TeamThread>, String> {
+    Ok(state
+        .orchestrator
+        .list_team_threads_with_options(&run_id, include_archived.unwrap_or(false))
+        .await)
+}
+
+/// Update the latest actionable request in a workflow collaboration thread.
+#[tauri::command]
+pub async fn update_workflow_thread_action(
+    run_id: String,
+    thread_id: String,
+    status: crate::orchestrator::CollaborationActionStatus,
+    actor_id: Option<String>,
+    note: Option<String>,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<crate::orchestrator::TeamThread, String> {
+    state
+        .orchestrator
+        .update_team_thread_action(&run_id, &thread_id, status, actor_id, note)
+        .await
+}
+
+/// Archive a workflow collaboration thread.
+#[tauri::command]
+pub async fn archive_workflow_thread(
+    run_id: String,
+    thread_id: String,
+    actor_id: Option<String>,
+    note: Option<String>,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<crate::orchestrator::TeamThread, String> {
+    state
+        .orchestrator
+        .archive_team_thread(&run_id, &thread_id, actor_id, note)
+        .await
 }
 
 /// List durable workflow execution environments.
