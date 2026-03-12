@@ -2,28 +2,1208 @@
 
 use std::path::{Path, PathBuf};
 
+use super::tui::{ManagedCommandAction, ManagedCommandEntry};
 use crate::commands::tools::permissions::permission_manager;
+use chrono::{Local, Utc};
 
 use gestura_core::{
     AppConfig, AppConfigSecurityExt,
-    agent_sessions::{AgentSession, SessionPermissionLevel},
+    agent_sessions::{AgentSession, SessionFilter, SessionInfo, SessionPermissionLevel},
     agents::AgentManager,
     config::{McpScope, McpServerEntry, McpTransportType, infer_transport_from_endpoint},
-    context::ContextManager,
+    config_env::{is_secret_key, redact_secret},
+    context::{ContextCategory, ContextManager, ContextManagerStats, RequestAnalysis},
     find_tool,
     hooks::{HookCommandTemplate, HookDefinition, HookEvent},
+    knowledge::{KnowledgeItem, KnowledgeMatch},
     memory_bank::MemoryBankEntry,
     orchestrator::{
         AgentExecutionMode, AgentOrchestrator, AgentRole, ApprovalActor, ApprovalActorKind,
         ApprovalScope, ApprovalState, ChildSupervisorRunRequest, CollaborationActionStatus,
         CollaborationEscalationLevel, CollaborationRequestKind, DelegatedCheckpointAction,
-        DelegatedCheckpointStage, DelegatedReplaySafety, DelegatedResumeDisposition, SupervisorRun,
+        DelegatedCheckpointStage, DelegatedReplaySafety, DelegatedResumeDisposition,
+        LocalExecutionPhase, LocalExecutionWaitingReason, SharedCognitionKind, SupervisorRun,
         SupervisorRunStatus, SupervisorTaskRecord, SupervisorTaskState, TeamActionRequestDraft,
         TeamEscalationDraft, TeamMessageDraft, TeamMessageKind, TeamThread,
     },
     tasks::{Task, TaskManager, TaskStatus},
     tools::permissions::PermissionScope,
 };
+
+fn short_session_id(session: &AgentSession) -> String {
+    session.id[..session.id.len().min(8)].to_string()
+}
+
+fn has_openai_configured(config: &AppConfig) -> bool {
+    std::env::var("OPENAI_API_KEY").is_ok()
+        || config
+            .llm
+            .openai
+            .as_ref()
+            .is_some_and(|o| !o.api_key.is_empty())
+}
+
+fn has_anthropic_configured(config: &AppConfig) -> bool {
+    std::env::var("ANTHROPIC_API_KEY").is_ok()
+        || config
+            .llm
+            .anthropic
+            .as_ref()
+            .is_some_and(|a| !a.api_key.is_empty())
+}
+
+fn has_grok_configured(config: &AppConfig) -> bool {
+    std::env::var("XAI_API_KEY").is_ok()
+        || config
+            .llm
+            .grok
+            .as_ref()
+            .is_some_and(|g| !g.api_key.is_empty())
+}
+
+fn has_gemini_configured(config: &AppConfig) -> bool {
+    std::env::var("GEMINI_API_KEY").is_ok()
+        || config
+            .llm
+            .gemini
+            .as_ref()
+            .is_some_and(|g| !g.api_key.is_empty())
+}
+
+fn has_ollama_configured(config: &AppConfig) -> bool {
+    config.llm.ollama.is_some()
+}
+
+fn managed_entry(
+    title: impl Into<String>,
+    summary: impl Into<String>,
+    command: impl Into<String>,
+    detail: Vec<String>,
+    action: ManagedCommandAction,
+) -> ManagedCommandEntry {
+    ManagedCommandEntry {
+        title: title.into(),
+        summary: summary.into(),
+        command: command.into(),
+        detail,
+        action,
+    }
+}
+
+fn current_model_label(config: &AppConfig, session: &AgentSession) -> String {
+    if let Some(model) = session.model.as_deref() {
+        return model.to_string();
+    }
+
+    match config.llm.primary.as_str() {
+        "openai" => config
+            .llm
+            .openai
+            .as_ref()
+            .map(|cfg| cfg.model.clone())
+            .unwrap_or_else(|| "(default)".to_string()),
+        "anthropic" => config
+            .llm
+            .anthropic
+            .as_ref()
+            .map(|cfg| cfg.model.clone())
+            .unwrap_or_else(|| "(default)".to_string()),
+        "gemini" => config
+            .llm
+            .gemini
+            .as_ref()
+            .map(|cfg| cfg.model.clone())
+            .unwrap_or_else(|| "(default)".to_string()),
+        "grok" => config
+            .llm
+            .grok
+            .as_ref()
+            .map(|cfg| cfg.model.clone())
+            .unwrap_or_else(|| "(default)".to_string()),
+        "ollama" => config
+            .llm
+            .ollama
+            .as_ref()
+            .map(|cfg| cfg.model.clone())
+            .unwrap_or_else(|| "(default)".to_string()),
+        _ => "(default)".to_string(),
+    }
+}
+
+fn provider_status_rows(config: &AppConfig) -> Vec<String> {
+    let mut rows = vec![format!(
+        "  {} OpenAI{}",
+        if has_openai_configured(config) {
+            "✓"
+        } else {
+            "○"
+        },
+        config
+            .llm
+            .openai
+            .as_ref()
+            .map(|cfg| format!(" — {}", cfg.model))
+            .unwrap_or_default()
+    )];
+    rows.push(format!(
+        "  {} Anthropic{}",
+        if has_anthropic_configured(config) {
+            "✓"
+        } else {
+            "○"
+        },
+        config
+            .llm
+            .anthropic
+            .as_ref()
+            .map(|cfg| format!(" — {}", cfg.model))
+            .unwrap_or_default()
+    ));
+    rows.push(format!(
+        "  {} Gemini{}",
+        if has_gemini_configured(config) {
+            "✓"
+        } else {
+            "○"
+        },
+        config
+            .llm
+            .gemini
+            .as_ref()
+            .map(|cfg| format!(" — {}", cfg.model))
+            .unwrap_or_default()
+    ));
+    rows.push(format!(
+        "  {} Grok{}",
+        if has_grok_configured(config) {
+            "✓"
+        } else {
+            "○"
+        },
+        config
+            .llm
+            .grok
+            .as_ref()
+            .map(|cfg| format!(" — {}", cfg.model))
+            .unwrap_or_default()
+    ));
+    rows.push(format!(
+        "  {} Ollama{}",
+        if has_ollama_configured(config) {
+            "✓"
+        } else {
+            "○"
+        },
+        config
+            .llm
+            .ollama
+            .as_ref()
+            .map(|cfg| format!(" — {} @ {}", cfg.model, cfg.base_url))
+            .unwrap_or_default()
+    ));
+    rows
+}
+
+pub(crate) fn agent_browser_entries(
+    config: &AppConfig,
+    session: &AgentSession,
+) -> Vec<ManagedCommandEntry> {
+    let current_model = current_model_label(config, session);
+    let provider_rows = provider_status_rows(config);
+    let configured_providers = [
+        has_openai_configured(config),
+        has_anthropic_configured(config),
+        has_gemini_configured(config),
+        has_grok_configured(config),
+        has_ollama_configured(config),
+    ]
+    .into_iter()
+    .filter(|configured| *configured)
+    .count();
+
+    vec![
+        managed_entry(
+            "Agent Overview",
+            format!("{} · {}", config.llm.primary, current_model),
+            "/agent status",
+            vec![
+                format!("Version: {}", gestura_core::VERSION),
+                format!("Primary provider: {}", config.llm.primary),
+                format!("Active model: {}", current_model),
+                format!("Session: {}", short_session_id(session)),
+                format!("Messages: {}", session.message_count()),
+                format!(
+                    "Fallback provider: {}",
+                    config.llm.fallback.as_deref().unwrap_or("(none)")
+                ),
+            ],
+            ManagedCommandAction::Execute("/agent status".to_string()),
+        ),
+        managed_entry(
+            "Provider Readiness",
+            format!("{configured_providers}/5 providers configured"),
+            "/agent status",
+            {
+                let mut detail = vec![
+                    "Configured providers and current defaults:".to_string(),
+                    String::new(),
+                ];
+                detail.extend(provider_rows.clone());
+                detail
+            },
+            ManagedCommandAction::Execute("/agent status".to_string()),
+        ),
+        managed_entry(
+            "Session Model Override",
+            session.model.as_deref().unwrap_or("using config default"),
+            "/model ",
+            vec![
+                format!("Current effective model: {}", current_model),
+                format!(
+                    "Session override: {}",
+                    session.model.as_deref().unwrap_or("(none)")
+                ),
+                "Use /model to choose a different model for this session.".to_string(),
+            ],
+            ManagedCommandAction::Prefill("/model ".to_string()),
+        ),
+        managed_entry(
+            "LLM Config Drilldown",
+            format!(
+                "primary={} fallback={}",
+                config.llm.primary,
+                config.llm.fallback.as_deref().unwrap_or("none")
+            ),
+            "/config get llm.primary",
+            vec![
+                "Quick drill-down commands:".to_string(),
+                "  /config get llm.primary".to_string(),
+                "  /config get llm.fallback".to_string(),
+                format!("  /config get llm.{}.model", config.llm.primary),
+            ],
+            ManagedCommandAction::Prefill("/config get llm.primary".to_string()),
+        ),
+    ]
+}
+
+pub(crate) fn run_agent_subcommand(
+    args: &[&str],
+    config: &AppConfig,
+    session: &AgentSession,
+) -> std::result::Result<Vec<String>, String> {
+    let subcommand = args
+        .first()
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    match subcommand.as_str() {
+        "" | "status" => {
+            let mut lines = vec![
+                "━━━ Agent Status ━━━".to_string(),
+                String::new(),
+                format!("Version: {}", gestura_core::VERSION),
+                format!("Primary LLM: {}", config.llm.primary),
+                format!("Model: {}", current_model_label(config, session)),
+                format!("Session: {}", short_session_id(session)),
+                format!("Messages: {}", session.message_count()),
+                format!(
+                    "Fallback: {}",
+                    config.llm.fallback.as_deref().unwrap_or("(none)")
+                ),
+                String::new(),
+                "Provider Status:".to_string(),
+            ];
+            lines.extend(provider_status_rows(config));
+            Ok(lines)
+        }
+        "config" => {
+            let mut lines = vec!["━━━ Agent Configuration ━━━".to_string(), String::new()];
+            lines.push(format!("Primary: {}", config.llm.primary));
+            lines.push(format!(
+                "Fallback: {}",
+                config.llm.fallback.as_deref().unwrap_or("(none)")
+            ));
+            if let Some(ref openai) = config.llm.openai {
+                lines.push(format!("OpenAI model: {}", openai.model));
+            }
+            if let Some(ref anthropic) = config.llm.anthropic {
+                lines.push(format!("Anthropic model: {}", anthropic.model));
+            }
+            if let Some(ref gemini) = config.llm.gemini {
+                lines.push(format!("Gemini model: {}", gemini.model));
+            }
+            if let Some(ref grok) = config.llm.grok {
+                lines.push(format!("Grok model: {}", grok.model));
+            }
+            if let Some(ref ollama) = config.llm.ollama {
+                lines.push(format!("Ollama model: {}", ollama.model));
+                lines.push(format!("Ollama base URL: {}", ollama.base_url));
+            }
+            Ok(lines)
+        }
+        other => Err(format!(
+            "Unknown /agent subcommand: {}. Try: status, config",
+            other
+        )),
+    }
+}
+
+fn knowledge_store_with_session(_session_id: &str) -> gestura_core::knowledge::KnowledgeStore {
+    let store = gestura_core::knowledge::KnowledgeStore::new(
+        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
+    );
+    gestura_core::knowledge::register_builtin_knowledge(&store);
+    store
+}
+
+pub(crate) fn load_session_knowledge_items(session_id: &str) -> Vec<KnowledgeItem> {
+    let mut items = knowledge_store_with_session(session_id).list();
+    let settings_mgr = gestura_core::knowledge::KnowledgeSettingsManager::new(
+        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
+    );
+    if let Ok(enabled_ids) = settings_mgr.get_enabled_knowledge(session_id) {
+        for item in &mut items {
+            item.enabled = enabled_ids.contains(&item.id);
+        }
+    }
+    items.sort_by(|left, right| {
+        left.category
+            .cmp(&right.category)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    items
+}
+
+pub(crate) fn knowledge_show_usage() -> &'static str {
+    "Usage: /knowledge show <id>"
+}
+
+pub(crate) fn knowledge_not_found_message(id: &str) -> String {
+    format!("Knowledge item '{id}' not found.")
+}
+
+pub(crate) fn knowledge_detail_lines(item: &KnowledgeItem, show_full_content: bool) -> Vec<String> {
+    let mut lines = vec![
+        format!("━━━ {} [{}] ━━━", item.name, item.id),
+        String::new(),
+        format!("Category: {}", item.category),
+        format!("Enabled: {}", if item.enabled { "yes" } else { "no" }),
+        format!("Priority: {}", item.priority),
+        format!(
+            "Origin: {}",
+            item.metadata
+                .get("origin")
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string())
+        ),
+    ];
+
+    if let Some(repo) = item.metadata.get("source_repo") {
+        lines.push(format!("Source repo: {repo}"));
+    }
+    if let Some(path) = item.metadata.get("source_path") {
+        lines.push(format!("Source path: {path}"));
+    }
+    if let Some(url) = item.metadata.get("source_url") {
+        lines.push(format!("Source URL: {url}"));
+    }
+
+    lines.push(String::new());
+    lines.push(format!("Description: {}", item.description));
+
+    if !item.triggers.is_empty() {
+        lines.push(format!("Triggers: {}", item.triggers.join(", ")));
+    }
+
+    if !item.references.is_empty() {
+        lines.push("References:".to_string());
+        for reference in &item.references {
+            lines.push(format!("  • {} — {}", reference.topic, reference.path));
+        }
+    }
+
+    if !item.core_content.trim().is_empty() {
+        lines.push(String::new());
+        lines.push("Content:".to_string());
+        let content_lines: Vec<&str> = item.core_content.lines().collect();
+        let visible = if show_full_content {
+            content_lines.len()
+        } else {
+            content_lines.len().min(12)
+        };
+        for line in content_lines.into_iter().take(visible) {
+            lines.push(line.to_string());
+        }
+        if !show_full_content && item.core_content.lines().count() > visible {
+            lines.push("… (truncated; use /knowledge show <id> for full content)".to_string());
+        }
+    }
+
+    lines
+}
+
+pub(crate) fn run_knowledge_subcommand(
+    args: &[&str],
+    session: &AgentSession,
+) -> std::result::Result<Vec<String>, String> {
+    let subcommand = args
+        .first()
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let store = knowledge_store_with_session(&session.id);
+
+    match subcommand.as_str() {
+        "" | "list" => {
+            let items = load_session_knowledge_items(&session.id);
+            if items.is_empty() {
+                Ok(vec![knowledge_empty_message().to_string()])
+            } else {
+                Ok(knowledge_list_lines(&items))
+            }
+        }
+        "search" => {
+            let query_text = args.get(1..).unwrap_or_default().join(" ");
+            if query_text.is_empty() {
+                Err(knowledge_search_usage().to_string())
+            } else {
+                let query = gestura_core::knowledge::KnowledgeQuery {
+                    query: query_text.clone(),
+                    limit: Some(10),
+                    min_score: Some(0.15),
+                    ..Default::default()
+                };
+                let matches = store.find(&query);
+                if matches.is_empty() {
+                    Ok(vec![knowledge_no_results_message(&query_text)])
+                } else {
+                    Ok(knowledge_search_lines(&query_text, &matches))
+                }
+            }
+        }
+        "categories" => {
+            let cats = store.categories();
+            if cats.is_empty() {
+                Ok(vec![knowledge_no_categories_message().to_string()])
+            } else {
+                let category_counts: Vec<(String, usize)> = cats
+                    .iter()
+                    .map(|cat| (cat.clone(), store.list_by_category(cat).len()))
+                    .collect();
+                Ok(knowledge_categories_lines(&category_counts))
+            }
+        }
+        "status" => Ok(knowledge_status_lines(
+            store.count(),
+            store.categories().len(),
+            store.base_dir(),
+        )),
+        "show" => {
+            let Some(id) = args.get(1) else {
+                return Err(knowledge_show_usage().to_string());
+            };
+            let items = load_session_knowledge_items(&session.id);
+            let Some(item) = items.into_iter().find(|item| item.id == *id) else {
+                return Err(knowledge_not_found_message(id));
+            };
+            Ok(knowledge_detail_lines(&item, true))
+        }
+        other => Err(format!(
+            "Unknown /knowledge subcommand: {}. Try: list, search, categories, status, show",
+            other
+        )),
+    }
+}
+
+pub(crate) fn run_device_subcommand(args: &[&str]) -> std::result::Result<Vec<String>, String> {
+    let subcommand = args
+        .first()
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    match subcommand.as_str() {
+        "" | "list" | "scan" => {
+            let devices = gestura_core::list_audio_input_devices();
+            let mic_available = gestura_core::is_microphone_available();
+
+            let mut lines = vec!["━━━ Audio Devices ━━━".to_string(), String::new()];
+            lines.push(format!(
+                "Microphone available: {}",
+                if mic_available { "✓ yes" } else { "✗ no" }
+            ));
+            lines.push(String::new());
+
+            if devices.is_empty() {
+                lines.push("No audio input devices found.".to_string());
+            } else {
+                lines.push(format!("{} device(s) detected:", devices.len()));
+                for dev in &devices {
+                    let marker = if dev.is_default { " (default)" } else { "" };
+                    lines.push(format!("  • {}{}", dev.name, marker));
+                }
+            }
+
+            Ok(lines)
+        }
+        other => Err(format!(
+            "Unknown /device subcommand: {}. Try: list, scan",
+            other
+        )),
+    }
+}
+
+pub(crate) fn device_browser_entries(config: &AppConfig) -> Vec<ManagedCommandEntry> {
+    let devices = gestura_core::list_audio_input_devices();
+    let mic_available = gestura_core::is_microphone_available();
+    let configured_device = config.voice.audio_device.as_deref();
+    let default_device = devices.iter().find(|device| device.is_default);
+
+    let mut entries = vec![managed_entry(
+        "Microphone Readiness",
+        if mic_available {
+            format!("{} input device(s) available", devices.len())
+        } else {
+            "No microphone input detected".to_string()
+        },
+        "/device scan",
+        vec![
+            format!(
+                "Microphone available: {}",
+                if mic_available { "yes" } else { "no" }
+            ),
+            format!("Detected input devices: {}", devices.len()),
+            format!(
+                "Configured voice.audio_device: {}",
+                configured_device.unwrap_or("(system default)")
+            ),
+        ],
+        ManagedCommandAction::Execute("/device scan".to_string()),
+    )];
+
+    entries.push(managed_entry(
+        "Default Input Device",
+        default_device
+            .map(|device| device.name.clone())
+            .unwrap_or_else(|| "(none)".to_string()),
+        "/device list",
+        vec![
+            format!(
+                "Default device: {}",
+                default_device
+                    .map(|device| device.name.as_str())
+                    .unwrap_or("(none)")
+            ),
+            format!(
+                "Configured voice.audio_device: {}",
+                configured_device.unwrap_or("(system default)")
+            ),
+            "Use /config get voice.audio_device to inspect or /config update voice.audio_device <name> to change it.".to_string(),
+        ],
+        ManagedCommandAction::Execute("/device list".to_string()),
+    ));
+
+    for device in devices {
+        let summary = if device.is_default {
+            "default input".to_string()
+        } else {
+            "available input".to_string()
+        };
+        let is_configured = configured_device.is_some_and(|name| name == device.name);
+        entries.push(managed_entry(
+            format!("Device: {}", device.name),
+            summary,
+            "/device list",
+            vec![
+                format!("Name: {}", device.name),
+                format!(
+                    "Default device: {}",
+                    if device.is_default { "yes" } else { "no" }
+                ),
+                format!(
+                    "Selected in config: {}",
+                    if is_configured { "yes" } else { "no" }
+                ),
+                "Use /config update voice.audio_device <name> to pin this input device."
+                    .to_string(),
+            ],
+            ManagedCommandAction::Prefill(format!(
+                "/config update voice.audio_device \"{}\"",
+                device.name
+            )),
+        ));
+    }
+
+    entries
+}
+
+pub(crate) fn health_diagnostic_lines(config: &AppConfig) -> Vec<String> {
+    let config_path = AppConfig::default_path();
+    let config_ok = config_path.exists();
+    let devices = gestura_core::list_audio_input_devices();
+    let mic_available = gestura_core::is_microphone_available();
+    let mcp_count = config.mcp_servers.len();
+    let mcp_enabled = config
+        .mcp_servers
+        .iter()
+        .filter(|server| server.enabled)
+        .count();
+
+    vec![
+        "━━━ System Health ━━━".to_string(),
+        String::new(),
+        format!("✓ Gestura v{}", gestura_core::VERSION),
+        format!(
+            "{} Config: {}",
+            if config_ok { "✓" } else { "○" },
+            config_path.display()
+        ),
+        String::new(),
+        "LLM Providers:".to_string(),
+        format!(
+            "  {} OpenAI",
+            if has_openai_configured(config) {
+                "✓"
+            } else {
+                "○"
+            }
+        ),
+        format!(
+            "  {} Anthropic",
+            if has_anthropic_configured(config) {
+                "✓"
+            } else {
+                "○"
+            }
+        ),
+        format!(
+            "  {} Grok",
+            if has_grok_configured(config) {
+                "✓"
+            } else {
+                "○"
+            }
+        ),
+        format!(
+            "  {} Ollama",
+            if has_ollama_configured(config) {
+                "✓"
+            } else {
+                "○"
+            }
+        ),
+        String::new(),
+        "Audio:".to_string(),
+        format!("  {} Microphone", if mic_available { "✓" } else { "○" }),
+        format!("  {} device(s) detected", devices.len()),
+        String::new(),
+        "MCP:".to_string(),
+        format!(
+            "  {} server(s) configured ({} enabled)",
+            mcp_count, mcp_enabled
+        ),
+    ]
+}
+
+pub(crate) fn privacy_policy_lines() -> Vec<String> {
+    vec![
+        "━━━ Data Retention Policy ━━━".to_string(),
+        String::new(),
+        "Gestura respects user privacy and GDPR compliance:".to_string(),
+        String::new(),
+        "• Voice recordings: Temporary only, deleted after transcription".to_string(),
+        "• Agent sessions: Stored locally in workspace".to_string(),
+        "• API keys: Stored in local config file only".to_string(),
+        "• Memory bank: Stored locally in .gestura/memory/".to_string(),
+        "• No data is sent to third parties except configured LLM providers".to_string(),
+        String::new(),
+        "Use 'gestura privacy export' for a full GDPR data export.".to_string(),
+        "Use 'gestura privacy delete' to exercise right to erasure.".to_string(),
+    ]
+}
+
+pub(crate) fn privacy_report_lines(pretty_report: String) -> Vec<String> {
+    vec![
+        "━━━ Privacy Report ━━━".to_string(),
+        String::new(),
+        pretty_report,
+    ]
+}
+
+pub(crate) fn a2a_status_lines() -> Vec<String> {
+    vec![
+        "━━━ A2A Protocol Status ━━━".to_string(),
+        String::new(),
+        "Protocol: Agent2Agent (A2A)".to_string(),
+        "Version: 0.3.0".to_string(),
+        "Governance: Linux Foundation".to_string(),
+        "License: Apache 2.0".to_string(),
+        String::new(),
+        "Features:".to_string(),
+        "  ✓ Agent discovery via Agent Cards".to_string(),
+        "  ✓ Task-based communication".to_string(),
+        "  ✓ JSON-RPC 2.0 protocol".to_string(),
+        "  ✓ Bearer token authentication".to_string(),
+        "  ✓ Profile propagation".to_string(),
+        "  ✓ SSE streaming support".to_string(),
+        String::new(),
+        "Endpoints:".to_string(),
+        "  • agent/discover".to_string(),
+        "  • task/create".to_string(),
+        "  • task/status".to_string(),
+        "  • task/cancel".to_string(),
+        "  • profile/register".to_string(),
+        "  • profile/validate".to_string(),
+    ]
+}
+
+pub(crate) fn a2a_profiles_lines() -> Vec<String> {
+    vec![
+        "━━━ A2A Profiles ━━━".to_string(),
+        String::new(),
+        "Local profile persistence is not wired up yet in the interactive surfaces.".to_string(),
+        "Use /a2a register <agent_id> <name> [cap1,cap2] to generate the registration summary."
+            .to_string(),
+    ]
+}
+
+pub(crate) fn a2a_agents_lines() -> Vec<String> {
+    vec![
+        "━━━ A2A Agents ━━━".to_string(),
+        String::new(),
+        "No remote agents cached yet.".to_string(),
+        "Use /a2a discover <url> to inspect one.".to_string(),
+    ]
+}
+
+pub(crate) fn context_category_icon(cat: ContextCategory) -> &'static str {
+    match cat {
+        ContextCategory::FileSystem => "📁",
+        ContextCategory::Shell => "🖥️",
+        ContextCategory::Git => "🔀",
+        ContextCategory::Code => "💻",
+        ContextCategory::Web => "🌐",
+        ContextCategory::Voice => "🎤",
+        ContextCategory::Config => "⚙️",
+        ContextCategory::Session => "📜",
+        ContextCategory::Tools => "🔧",
+        ContextCategory::Agent => "🤖",
+        ContextCategory::Mcp => "🔌",
+        ContextCategory::A2a => "🔗",
+        ContextCategory::Task => "✅",
+        ContextCategory::Screen => "🎥",
+        ContextCategory::General => "💬",
+    }
+}
+
+fn context_categories() -> Vec<(ContextCategory, &'static str)> {
+    vec![
+        (
+            ContextCategory::FileSystem,
+            "File system operations (read, write, edit)",
+        ),
+        (ContextCategory::Shell, "Shell command execution"),
+        (ContextCategory::Git, "Git version control operations"),
+        (ContextCategory::Code, "Code analysis (symbols, references)"),
+        (ContextCategory::Web, "Web fetching and search"),
+        (ContextCategory::Voice, "Voice and audio processing"),
+        (ContextCategory::Config, "Configuration management"),
+        (ContextCategory::Session, "Session and history"),
+        (ContextCategory::Tools, "Tool introspection"),
+        (ContextCategory::Agent, "Agent orchestration"),
+        (ContextCategory::Mcp, "MCP protocol operations"),
+        (ContextCategory::A2a, "A2A protocol operations"),
+        (ContextCategory::Task, "Task management for current session"),
+        (
+            ContextCategory::Screen,
+            "Screen capture and recording (screenshot, screen_record)",
+        ),
+        (ContextCategory::General, "General conversation (no tools)"),
+    ]
+}
+
+pub(crate) fn context_status_lines(stats: &ContextManagerStats) -> Vec<String> {
+    vec![
+        "━━━ Context Manager Status ━━━".to_string(),
+        String::new(),
+        "Cache Statistics".to_string(),
+        format!(
+            "  Context Cache: {} / {} entries",
+            stats.context_cache.size, stats.context_cache.max_size
+        ),
+        format!(
+            "  File Cache:    {} / {} entries",
+            stats.file_cache.size, stats.file_cache.max_size
+        ),
+        format!(
+            "  History Cache: {} / {} entries",
+            stats.history_cache.size, stats.history_cache.max_size
+        ),
+        String::new(),
+        "Features".to_string(),
+        "  ✓ Request analysis without LLM".to_string(),
+        "  ✓ Category-based tool filtering".to_string(),
+        "  ✓ Smart context caching with TTL".to_string(),
+        "  ✓ Entity extraction (paths, URLs)".to_string(),
+        "  ✓ Follow-up detection".to_string(),
+    ]
+}
+
+pub(crate) fn context_analysis_lines(request: &str, analysis: &RequestAnalysis) -> Vec<String> {
+    let mut lines = vec![
+        "━━━ Request Analysis ━━━".to_string(),
+        String::new(),
+        format!("Request: {}", request),
+        String::new(),
+        "Detected Categories".to_string(),
+    ];
+
+    if analysis.categories.is_empty() {
+        lines.push("  (none)".to_string());
+    } else {
+        for cat in &analysis.categories {
+            lines.push(format!("  {} {:?}", context_category_icon(*cat), cat));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Suggested Tools".to_string());
+    if analysis.suggested_tools.is_empty() {
+        lines.push("  (none — general conversation)".to_string());
+    } else {
+        for tool in &analysis.suggested_tools {
+            lines.push(format!("  • {}", tool));
+        }
+    }
+
+    if !analysis.entities.is_empty() {
+        lines.push(String::new());
+        lines.push("Extracted Entities".to_string());
+        for entity in &analysis.entities {
+            lines.push(format!("  → [{:?}] {}", entity.entity_type, entity.value));
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Analysis Flags".to_string());
+    lines.push(format!(
+        "  Needs Tools: {}",
+        if analysis.needs_tools { "✓" } else { "✗" }
+    ));
+    lines.push(format!(
+        "  Is Follow-up: {}",
+        if analysis.is_followup { "✓" } else { "✗" }
+    ));
+    lines.push(format!(
+        "  Confidence: {}%",
+        (analysis.confidence * 100.0) as u32
+    ));
+
+    lines
+}
+
+pub(crate) fn context_categories_lines() -> Vec<String> {
+    let mut lines = vec!["━━━ Context Categories ━━━".to_string(), String::new()];
+    for (category, description) in context_categories() {
+        lines.push(format!(
+            "{} {:?} — {}",
+            context_category_icon(category),
+            category,
+            description
+        ));
+    }
+    lines
+}
+
+pub(crate) fn context_clear_message() -> &'static str {
+    "Context caches cleared"
+}
+
+const FEATURED_CONFIG_KEYS: &[&str] = &[
+    "llm.primary",
+    "voice.provider",
+    "voice.local_model_path",
+    "voice.audio_device",
+    "ui.theme_mode",
+    "hotkey_listen",
+    "nats_url",
+    "pipeline.max_history_messages",
+    "pipeline.auto_compact_threshold_percent",
+    "pipeline.compaction_strategy",
+    "pipeline.max_context_tokens",
+    "pipeline.log_token_usage",
+];
+
+pub(crate) fn config_lookup_value(config: &AppConfig, key: &str) -> Option<String> {
+    match key {
+        "llm.openai.api_key" => config
+            .llm
+            .openai
+            .as_ref()
+            .map(|c| redact_secret(&c.api_key)),
+        "llm.anthropic.api_key" => config
+            .llm
+            .anthropic
+            .as_ref()
+            .map(|c| redact_secret(&c.api_key)),
+        "llm.grok.api_key" => config.llm.grok.as_ref().map(|c| redact_secret(&c.api_key)),
+        _ => config.get(key),
+    }
+}
+
+pub(crate) fn config_list_lines(config: &AppConfig) -> Vec<String> {
+    let mut lines = vec!["━━━ Configuration ━━━".to_string(), String::new()];
+    for key in FEATURED_CONFIG_KEYS {
+        let value = config_lookup_value(config, key).unwrap_or_else(|| "(unset)".to_string());
+        lines.push(format!("  {key:<42} {value}"));
+    }
+    lines.push(String::new());
+    lines.push(config_path_line());
+    lines.push(String::new());
+    lines.push("Use /config get <key> for a specific value".to_string());
+    lines.push("Use /config keys to list all available keys".to_string());
+    lines
+}
+
+pub(crate) fn config_get_line(config: &AppConfig, key: &str) -> Option<String> {
+    config_lookup_value(config, key).map(|value| format!("{key} = {value}"))
+}
+
+pub(crate) fn config_keys_lines() -> Vec<String> {
+    let mut lines = vec!["━━━ Available Config Keys ━━━".to_string(), String::new()];
+    lines.extend(AppConfig::list_keys().into_iter().map(str::to_string));
+    lines.push(String::new());
+    lines.push("Use /config get <key> to view a value".to_string());
+    lines
+}
+
+pub(crate) fn config_updated_message(key: &str, value: &str) -> String {
+    let display_value = if is_secret_key(key) {
+        redact_secret(value)
+    } else {
+        value.to_string()
+    };
+    format!("Updated config: {key} = {display_value}")
+}
+
+pub(crate) fn config_path_line() -> String {
+    format!("Config file: {}", AppConfig::default_path().display())
+}
+
+pub(crate) fn config_reset_message() -> &'static str {
+    "Configuration reset to defaults"
+}
+
+pub(crate) fn parse_session_list_filter(value: Option<&str>) -> (SessionFilter, String) {
+    match value.map(str::to_ascii_lowercase).as_deref() {
+        Some("today") => (SessionFilter::Today, " (today)".to_string()),
+        Some("week") | Some("thisweek") => (SessionFilter::ThisWeek, " (this week)".to_string()),
+        Some("month") | Some("thismonth") => {
+            (SessionFilter::ThisMonth, " (this month)".to_string())
+        }
+        _ => (SessionFilter::All, String::new()),
+    }
+}
+
+pub(crate) fn session_empty_message(filter_label: &str) -> String {
+    format!("No saved sessions found{filter_label}")
+}
+
+fn session_relative_time(last_active: chrono::DateTime<Utc>) -> String {
+    let elapsed = Utc::now().signed_duration_since(last_active);
+    let secs = elapsed.num_seconds();
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        format!("{} min ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{} hours ago", secs / 3600)
+    } else {
+        format!("{} days ago", secs / 86_400)
+    }
+}
+
+pub(crate) fn session_list_lines(
+    sessions: &[SessionInfo],
+    current_id: &str,
+    filter_label: &str,
+    max_items: usize,
+    include_hints: bool,
+) -> Vec<String> {
+    let mut lines = vec![
+        format!("━━━ Saved Sessions{filter_label} ━━━"),
+        String::new(),
+    ];
+
+    for (i, session) in sessions.iter().take(max_items).enumerate() {
+        let is_current = session.id == current_id;
+        let marker = if is_current { "▶ " } else { "  " };
+        let model_info = session.model.as_deref().unwrap_or("default");
+        lines.push(format!(
+            "{marker}{}. {} ({} msgs, {model_info})",
+            i + 1,
+            &session.id[..session.id.len().min(8)],
+            session.message_count,
+        ));
+        if !session.title.trim().is_empty() {
+            lines.push(format!("   Title: {}", session.title));
+        }
+        lines.push(format!(
+            "   Created: {} | Updated: {} ({})",
+            session
+                .created_at
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M"),
+            session
+                .last_active
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M"),
+            session_relative_time(session.last_active)
+        ));
+        lines.push(String::new());
+    }
+
+    if sessions.len() > max_items {
+        lines.push(format!(
+            "… and {} more session(s)",
+            sessions.len() - max_items
+        ));
+        lines.push(String::new());
+    }
+
+    lines.push(format!("Total: {} session(s)", sessions.len()));
+    if include_hints {
+        lines.push(String::new());
+        lines.push("Filters: /session list today|week|month".to_string());
+        lines.push(
+            "Commands: /session load <id> | /session delete <id> | /session export [id]"
+                .to_string(),
+        );
+    }
+    lines
+}
+
+pub(crate) fn session_info_lines(session: &AgentSession) -> Vec<String> {
+    let user_count = session
+        .state
+        .messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .count();
+    let assistant_count = session
+        .state
+        .messages
+        .iter()
+        .filter(|m| m.role == "assistant")
+        .count();
+    let system_count = session
+        .state
+        .messages
+        .iter()
+        .filter(|m| m.role == "system")
+        .count();
+
+    let mut lines = vec![
+        "━━━ Current Session ━━━".to_string(),
+        String::new(),
+        format!("ID: {}", session.id),
+        format!("Title: {}", session.title),
+        format!(
+            "Created: {}",
+            session
+                .created_at
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S")
+        ),
+        format!(
+            "Updated: {}",
+            session
+                .last_active
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S")
+        ),
+        format!("Model: {}", session.model.as_deref().unwrap_or("default")),
+        format!(
+            "Messages: {} (you: {}, assistant: {}, system: {})",
+            session.message_count(),
+            user_count,
+            assistant_count,
+            system_count
+        ),
+    ];
+
+    if let Some(workspace) = &session.state.workspace_dir {
+        lines.push(format!("Workspace: {}", workspace.display()));
+    }
+
+    lines
+}
+
+pub(crate) fn knowledge_empty_message() -> &'static str {
+    "No knowledge items registered."
+}
+
+pub(crate) fn knowledge_search_usage() -> &'static str {
+    "Usage: /knowledge search <query>"
+}
+
+pub(crate) fn knowledge_no_results_message(query: &str) -> String {
+    format!("No knowledge items match '{query}'.")
+}
+
+pub(crate) fn knowledge_no_categories_message() -> &'static str {
+    "No knowledge categories found."
+}
+
+pub(crate) fn knowledge_list_lines(items: &[KnowledgeItem]) -> Vec<String> {
+    let mut lines = vec![
+        format!("━━━ Knowledge Base ({} items) ━━━", items.len()),
+        String::new(),
+    ];
+    for item in items {
+        lines.push(format!(
+            "  • [{}] {} — {}",
+            item.category, item.name, item.description
+        ));
+    }
+    lines
+}
+
+pub(crate) fn knowledge_search_lines(query: &str, matches: &[KnowledgeMatch]) -> Vec<String> {
+    let mut lines = vec![
+        format!("━━━ Knowledge Search: '{query}' ━━━"),
+        String::new(),
+    ];
+    for matched in matches {
+        lines.push(format!(
+            "  • {} (score: {:.2}) — {}",
+            matched.item.name, matched.score, matched.item.description
+        ));
+    }
+    lines.push(String::new());
+    lines.push(format!("{} result(s)", matches.len()));
+    lines
+}
+
+pub(crate) fn knowledge_categories_lines(category_counts: &[(String, usize)]) -> Vec<String> {
+    let mut lines = vec!["━━━ Knowledge Categories ━━━".to_string(), String::new()];
+    for (category, count) in category_counts {
+        lines.push(format!("  • {} ({} items)", category, count));
+    }
+    lines
+}
+
+pub(crate) fn knowledge_status_lines(
+    total_items: usize,
+    category_count: usize,
+    base_dir: &Path,
+) -> Vec<String> {
+    vec![
+        "━━━ Knowledge Base Status ━━━".to_string(),
+        String::new(),
+        format!("Total items: {}", total_items),
+        format!("Categories: {}", category_count),
+        format!("Base directory: {}", base_dir.display()),
+    ]
+}
 
 // ===================== /hooks =====================
 
@@ -300,7 +1480,7 @@ pub(crate) fn apply_hooks_subcommand(
 fn hooks_usage_lines() -> Vec<String> {
     vec![
         "Hooks commands:".to_string(),
-        "  /hooks                     (interactive browser)".to_string(),
+        "  /hooks                     (managed shell in TUI/basic mode)".to_string(),
         "  /hooks show                (print config)".to_string(),
         "  /hooks enable|disable".to_string(),
         "  /hooks allow list".to_string(),
@@ -523,7 +1703,7 @@ pub(crate) fn run_permissions_subcommand(
 fn permissions_usage_lines() -> Vec<String> {
     vec![
         "Permissions commands:".to_string(),
-        "  /permissions                    (interactive browser/overlay)".to_string(),
+        "  /permissions                    (managed shell in TUI/basic mode)".to_string(),
         "  /permissions list".to_string(),
         "  /permissions grant <tool.action> [scope]".to_string(),
         "  /permissions grant <tool> <action> [scope]".to_string(),
@@ -673,6 +1853,16 @@ pub(crate) enum TasksLiveAction {
         actor_kind: ApprovalActorKind,
         decision: TaskApprovalCliDecision,
         note: Option<String>,
+    },
+    PauseWorkflowTask {
+        session_id: String,
+        workspace_dir: PathBuf,
+        task_spec: String,
+    },
+    CancelWorkflowTask {
+        session_id: String,
+        workspace_dir: PathBuf,
+        task_spec: String,
     },
     ResumeWorkflowTask {
         session_id: String,
@@ -1201,6 +2391,47 @@ pub(crate) fn run_tasks_subcommand(
                 }),
             })
         }
+        "pause" => {
+            let workspace_dir = workspace_dir
+                .ok_or_else(|| {
+                    "No workspace directory configured. Cannot pause workflow tasks.".to_string()
+                })?
+                .to_path_buf();
+            let Some(task_spec) = args.get(1).copied() else {
+                return Err("Usage: /task pause <workflow_task_id>".to_string());
+            };
+            Ok(TasksOutcome {
+                lines: vec![format!(
+                    "Pausing workflow task {} at the next safe boundary…",
+                    task_spec
+                )],
+                changed: true,
+                live_action: Some(TasksLiveAction::PauseWorkflowTask {
+                    session_id: session_id.to_string(),
+                    workspace_dir,
+                    task_spec: task_spec.to_string(),
+                }),
+            })
+        }
+        "cancel" => {
+            let workspace_dir = workspace_dir
+                .ok_or_else(|| {
+                    "No workspace directory configured. Cannot cancel workflow tasks.".to_string()
+                })?
+                .to_path_buf();
+            let Some(task_spec) = args.get(1).copied() else {
+                return Err("Usage: /task cancel <workflow_task_id>".to_string());
+            };
+            Ok(TasksOutcome {
+                lines: vec![format!("Cancelling workflow task {}…", task_spec)],
+                changed: true,
+                live_action: Some(TasksLiveAction::CancelWorkflowTask {
+                    session_id: session_id.to_string(),
+                    workspace_dir,
+                    task_spec: task_spec.to_string(),
+                }),
+            })
+        }
         "resume" => {
             let workspace_dir = workspace_dir
                 .ok_or_else(|| {
@@ -1280,7 +2511,7 @@ pub(crate) fn run_tasks_subcommand(
 fn tasks_usage_lines() -> Vec<String> {
     vec![
         "Task commands:".to_string(),
-        "  /tasks                    (interactive browser in TUI / basic mode)".to_string(),
+        "  /tasks                    (managed shell in TUI/basic mode)".to_string(),
         "  /task                     (alias for /tasks when no args)".to_string(),
         "  /task list".to_string(),
         "  /task create <name> [description...]".to_string(),
@@ -1302,6 +2533,8 @@ fn tasks_usage_lines() -> Vec<String> {
         "  /task approvals".to_string(),
         "  /task approve <workflow_task_id> [--actor <supervisor|reviewer|tester|user>] [note...]".to_string(),
         "  /task reject <workflow_task_id> [--actor <supervisor|reviewer|tester|user>] [note...]".to_string(),
+        "  /task pause <workflow_task_id>".to_string(),
+        "  /task cancel <workflow_task_id>".to_string(),
         "  /task resume <workflow_task_id>".to_string(),
         "  /task restart <workflow_task_id>".to_string(),
         "  /task ack-blocked <workflow_task_id> [note...]".to_string(),
@@ -1652,6 +2885,32 @@ pub(crate) fn execute_tasks_live_action(
                 note.as_deref(),
             ))
         }),
+        TasksLiveAction::PauseWorkflowTask {
+            session_id,
+            workspace_dir,
+            task_spec,
+        } => rt.block_on(async move {
+            let runs = scoped_supervisor_runs(&orchestrator, &session_id, &workspace_dir).await;
+            let (_run_id, task_id) = resolve_workflow_task_spec(&task_spec, &runs)?;
+            orchestrator.pause_task(&task_id).await?;
+            Ok(vec![format!(
+                "Requested pause for workflow task {}. It will stop at the next safe checkpoint and remain resumable.",
+                task_id
+            )])
+        }),
+        TasksLiveAction::CancelWorkflowTask {
+            session_id,
+            workspace_dir,
+            task_spec,
+        } => rt.block_on(async move {
+            let runs = scoped_supervisor_runs(&orchestrator, &session_id, &workspace_dir).await;
+            let (_run_id, task_id) = resolve_workflow_task_spec(&task_spec, &runs)?;
+            orchestrator.cancel_task(&task_id).await?;
+            Ok(vec![format!(
+                "Requested cancellation for workflow task {}.",
+                task_id
+            )])
+        }),
         TasksLiveAction::ResumeWorkflowTask {
             session_id,
             workspace_dir,
@@ -1888,6 +3147,8 @@ impl TasksLiveAction {
             | Self::ListApprovals { workspace_dir, .. }
             | Self::ListThreads { workspace_dir, .. }
             | Self::DecideApproval { workspace_dir, .. }
+            | Self::PauseWorkflowTask { workspace_dir, .. }
+            | Self::CancelWorkflowTask { workspace_dir, .. }
             | Self::ResumeWorkflowTask { workspace_dir, .. }
             | Self::RestartWorkflowTask { workspace_dir, .. }
             | Self::AcknowledgeBlockedTask { workspace_dir, .. }
@@ -2375,6 +3636,15 @@ fn format_workflow_checkpoint_action_lines(
             lines.push(format!("Checkpoint note: {note}"));
         }
     }
+    if let Some(line) = local_execution_tree_line(record) {
+        lines.push(line.trim_start().to_string());
+    }
+    if let Some(line) = remote_execution_tree_line(record) {
+        lines.push(line.trim_start().to_string());
+    }
+    if let Some(line) = result_tool_trace_tree_line(record) {
+        lines.push(line.trim_start().to_string());
+    }
     lines
 }
 
@@ -2492,6 +3762,123 @@ fn format_supervisor_run_status(status: SupervisorRunStatus) -> &'static str {
     }
 }
 
+fn format_local_execution_phase(phase: LocalExecutionPhase) -> &'static str {
+    match phase {
+        LocalExecutionPhase::Queued => "queued",
+        LocalExecutionPhase::Running => "running",
+        LocalExecutionPhase::Waiting => "waiting",
+        LocalExecutionPhase::Blocked => "blocked",
+        LocalExecutionPhase::Failed => "failed",
+        LocalExecutionPhase::Completed => "completed",
+        LocalExecutionPhase::Cancelled => "cancelled",
+    }
+}
+
+fn format_local_execution_waiting_reason(reason: LocalExecutionWaitingReason) -> &'static str {
+    match reason {
+        LocalExecutionWaitingReason::ToolConfirmation => "tool_confirmation",
+        LocalExecutionWaitingReason::ShellProcess => "shell_process",
+        LocalExecutionWaitingReason::Reflection => "reflection",
+        LocalExecutionWaitingReason::EnvironmentTransition => "environment_transition",
+    }
+}
+
+fn local_execution_tree_line(record: &SupervisorTaskRecord) -> Option<String> {
+    let progress = record.local_execution.as_ref()?.progress.as_ref()?;
+    let mut parts = vec![format!(
+        "  • task {} [{}] · local={}",
+        short_id(&record.task.id),
+        format_supervisor_task_state(record.state),
+        format_local_execution_phase(progress.phase)
+    )];
+    if let Some(reason) = progress.waiting_reason {
+        parts.push(format!(
+            "waiting={}",
+            format_local_execution_waiting_reason(reason)
+        ));
+    }
+    if let Some(stage) = progress.stage.as_deref() {
+        parts.push(format!("stage={stage}"));
+    }
+    if let Some(percent) = progress.percent {
+        parts.push(format!("progress={percent}%"));
+    }
+    if progress.iteration > 0 {
+        parts.push(format!("iteration={}", progress.iteration));
+    }
+    if let Some(tool) = progress.current_tool_name.as_deref() {
+        parts.push(format!("current_tool={tool}"));
+    }
+    if let Some(tool) = progress.last_completed_tool_name.as_deref() {
+        parts.push(match progress.last_completed_tool_duration_ms {
+            Some(duration_ms) => format!("last_tool={tool}({duration_ms}ms)"),
+            None => format!("last_tool={tool}"),
+        });
+    }
+    if progress.completed_tool_call_count > 0 {
+        parts.push(format!(
+            "completed_calls={}",
+            progress.completed_tool_call_count
+        ));
+    }
+    if let Some(message) = progress.message.as_deref() {
+        parts.push(format!("message={message}"));
+    }
+    Some(parts.join(" · "))
+}
+
+fn result_tool_trace_tree_line(record: &SupervisorTaskRecord) -> Option<String> {
+    let tool_calls = &record.result.as_ref()?.tool_calls;
+    if tool_calls.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "  • task {} [{}] · tool_trace={}",
+        short_id(&record.task.id),
+        format_supervisor_task_state(record.state),
+        tool_calls
+            .iter()
+            .take(3)
+            .map(|tool_call| format!(
+                "{}:{}({}ms)",
+                tool_call.tool_name,
+                if tool_call.success { "ok" } else { "err" },
+                tool_call.duration_ms
+            ))
+            .collect::<Vec<_>>()
+            .join(",")
+    ))
+}
+
+fn remote_execution_tree_line(record: &SupervisorTaskRecord) -> Option<String> {
+    let remote = record.remote_execution.as_ref()?;
+    let mut parts = vec![format!(
+        "  • task {} [{}] · remote={}",
+        short_id(&record.task.id),
+        format_supervisor_task_state(record.state),
+        remote.status
+    )];
+    if let Some(reason) = remote.status_reason.as_deref() {
+        parts.push(format!("reason={reason}"));
+    }
+    if let Some(progress) = remote.progress.as_ref() {
+        if let Some(percent) = progress.percent {
+            parts.push(format!("progress={percent}%"));
+        }
+        if let Some(stage) = progress.stage.as_deref() {
+            parts.push(format!("stage={stage}"));
+        }
+        if let Some(message) = progress.message.as_deref() {
+            parts.push(format!("message={message}"));
+        }
+    }
+    if !remote.artifacts.is_empty() {
+        parts.push(format!("artifacts={}", remote.artifacts.len()));
+    }
+    Some(parts.join(" · "))
+}
+
 fn checkpoint_tree_line(record: &SupervisorTaskRecord) -> Option<String> {
     let checkpoint = record.checkpoint.as_ref()?;
     Some(format!(
@@ -2515,6 +3902,45 @@ fn checkpoint_tree_line(record: &SupervisorTaskRecord) -> Option<String> {
             )
         }
     ))
+}
+
+fn format_shared_cognition_kind(kind: SharedCognitionKind) -> &'static str {
+    match kind {
+        SharedCognitionKind::Discovery => "discovery",
+        SharedCognitionKind::Hypothesis => "hypothesis",
+        SharedCognitionKind::Steering => "steering",
+        SharedCognitionKind::Blocker => "blocker",
+        SharedCognitionKind::Decision => "decision",
+        SharedCognitionKind::Handoff => "handoff",
+    }
+}
+
+fn format_shared_cognition_tree_line(run: &SupervisorRun, indent: &str) -> Option<String> {
+    if run.shared_cognition.is_empty() {
+        return None;
+    }
+
+    let latest = run
+        .shared_cognition
+        .iter()
+        .max_by_key(|note| note.created_at)?;
+    let hypothesis_count = run
+        .shared_cognition
+        .iter()
+        .filter(|note| matches!(note.kind, SharedCognitionKind::Hypothesis))
+        .count();
+    let sender = latest.sender_agent_id.as_deref().unwrap_or("unknown");
+    let mut summary = format!(
+        "{indent}shared cognition: {} notes · latest={} by {} · confidence={}%",
+        run.shared_cognition.len(),
+        format_shared_cognition_kind(latest.kind),
+        sender,
+        (latest.confidence * 100.0).round() as u32,
+    );
+    if hypothesis_count > 0 {
+        summary.push_str(&format!(" · open hypotheses={hypothesis_count}"));
+    }
+    Some(summary)
 }
 
 fn format_supervisor_run_tree_lines(runs: &[SupervisorRun]) -> Vec<String> {
@@ -2558,12 +3984,28 @@ fn format_supervisor_run_tree_lines(runs: &[SupervisorRun]) -> Vec<String> {
                 summary.blocked_reasons.join(", ")
             ));
         }
-        for record in root
-            .tasks
-            .iter()
-            .filter(|record| record.checkpoint.is_some())
-        {
+        if let Some(line) = format_shared_cognition_tree_line(root, "  ") {
+            lines.push(line);
+        }
+        for record in root.tasks.iter().filter(|record| {
+            record.checkpoint.is_some()
+                || record.local_execution.is_some()
+                || record.remote_execution.is_some()
+                || record
+                    .result
+                    .as_ref()
+                    .is_some_and(|result| !result.tool_calls.is_empty())
+        }) {
+            if let Some(line) = local_execution_tree_line(record) {
+                lines.push(line);
+            }
+            if let Some(line) = remote_execution_tree_line(record) {
+                lines.push(line);
+            }
             if let Some(line) = checkpoint_tree_line(record) {
+                lines.push(line);
+            }
+            if let Some(line) = result_tool_trace_tree_line(record) {
                 lines.push(line);
             }
         }
@@ -2586,12 +4028,28 @@ fn format_supervisor_run_tree_lines(runs: &[SupervisorRun]) -> Vec<String> {
                 child.task_summary.total,
                 objective
             ));
-            for record in child
-                .tasks
-                .iter()
-                .filter(|record| record.checkpoint.is_some())
-            {
+            if let Some(line) = format_shared_cognition_tree_line(child, "    ") {
+                lines.push(line);
+            }
+            for record in child.tasks.iter().filter(|record| {
+                record.checkpoint.is_some()
+                    || record.local_execution.is_some()
+                    || record.remote_execution.is_some()
+                    || record
+                        .result
+                        .as_ref()
+                        .is_some_and(|result| !result.tool_calls.is_empty())
+            }) {
+                if let Some(line) = local_execution_tree_line(record) {
+                    lines.push(format!("  {line}"));
+                }
+                if let Some(line) = remote_execution_tree_line(record) {
+                    lines.push(format!("  {line}"));
+                }
                 if let Some(line) = checkpoint_tree_line(record) {
+                    lines.push(format!("  {line}"));
+                }
+                if let Some(line) = result_tool_trace_tree_line(record) {
                     lines.push(format!("  {line}"));
                 }
             }
@@ -2975,7 +4433,7 @@ fn memory_usage_lines() -> Vec<String> {
     vec![
         "━━━ /memory ━━━".to_string(),
         String::new(),
-        "Interactive memory console: /memory".to_string(),
+        "Managed memory shell: /memory".to_string(),
         String::new(),
         "Quick commands:".to_string(),
         "  /memory list".to_string(),
@@ -3194,7 +4652,7 @@ pub(crate) fn run_mcp_subcommand(
 fn mcp_usage_lines() -> Vec<String> {
     vec![
         "MCP commands:".to_string(),
-        "  /mcp                     (interactive browser/overlay)".to_string(),
+        "  /mcp                     (managed shell in TUI/basic mode)".to_string(),
         "  /mcp list".to_string(),
         "  /mcp get <name>".to_string(),
         "  /mcp add <name> [endpoint] [flags...]".to_string(),
@@ -3232,7 +4690,7 @@ fn mcp_list_lines(config: &AppConfig) -> Vec<String> {
     if config.mcp_servers.is_empty() {
         return vec![
             "No MCP servers configured.".to_string(),
-            "Add one with: /mcp (interactive)".to_string(),
+            "Add one with: /mcp (managed shell)".to_string(),
         ];
     }
     let mut lines = vec!["━━━ MCP Servers ━━━".to_string(), String::new()];
@@ -3626,6 +5084,266 @@ mod tests {
     }
 
     #[test]
+    fn agent_browser_entries_expose_drill_down_console_items() {
+        let config = AppConfig::default();
+        let session = new_test_session();
+
+        let entries = agent_browser_entries(&config, &session);
+
+        assert!(entries.iter().any(|entry| entry.title == "Agent Overview"));
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.title == "Provider Readiness")
+        );
+        assert!(entries.iter().any(|entry| entry.command == "/model "));
+    }
+
+    #[test]
+    fn agent_subcommand_status_includes_provider_section() {
+        let config = AppConfig::default();
+        let session = new_test_session();
+
+        let lines = run_agent_subcommand(&["status"], &config, &session).unwrap();
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("Agent Status"));
+        assert!(joined.contains("Primary LLM"));
+        assert!(joined.contains("Provider Status"));
+    }
+
+    #[test]
+    fn device_subcommand_accepts_list_and_scan() {
+        let list_lines = run_device_subcommand(&["list"]).unwrap();
+        let scan_lines = run_device_subcommand(&["scan"]).unwrap();
+
+        assert!(list_lines.join("\n").contains("Audio Devices"));
+        assert!(scan_lines.join("\n").contains("Microphone available:"));
+    }
+
+    #[test]
+    fn device_browser_entries_include_readiness_and_default_device_views() {
+        let entries = device_browser_entries(&AppConfig::default());
+
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.title == "Microphone Readiness")
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.title == "Default Input Device")
+        );
+    }
+
+    #[test]
+    fn knowledge_show_returns_rich_detail_lines() {
+        let session = new_test_session();
+        let item = load_session_knowledge_items(&session.id)
+            .into_iter()
+            .next()
+            .expect("knowledge item");
+
+        let lines = run_knowledge_subcommand(&["show", item.id.as_str()], &session).unwrap();
+        let joined = lines.join("\n");
+
+        assert!(joined.contains(&format!("[{}]", item.id)));
+        assert!(joined.contains("Category:"));
+        assert!(joined.contains("Origin:"));
+        assert!(joined.contains("Content:"));
+    }
+
+    #[test]
+    fn health_diagnostic_lines_include_audio_and_mcp_sections() {
+        let lines = health_diagnostic_lines(&AppConfig::default());
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("System Health"));
+        assert!(joined.contains("Audio:"));
+        assert!(joined.contains("MCP:"));
+    }
+
+    #[test]
+    fn privacy_helpers_render_policy_and_report_sections() {
+        let policy = privacy_policy_lines().join("\n");
+        let report = privacy_report_lines("{\n  \"ok\": true\n}".to_string()).join("\n");
+
+        assert!(policy.contains("Data Retention Policy"));
+        assert!(policy.contains("gestura privacy export"));
+        assert!(report.contains("Privacy Report"));
+        assert!(report.contains("\"ok\": true"));
+    }
+
+    #[test]
+    fn a2a_helper_lines_cover_status_profiles_and_agents() {
+        let status = a2a_status_lines().join("\n");
+        let profiles = a2a_profiles_lines().join("\n");
+        let agents = a2a_agents_lines().join("\n");
+
+        assert!(status.contains("A2A Protocol Status"));
+        assert!(status.contains("profile/register"));
+        assert!(profiles.contains("A2A Profiles"));
+        assert!(profiles.contains("/a2a register"));
+        assert!(agents.contains("A2A Agents"));
+        assert!(agents.contains("/a2a discover <url>"));
+    }
+
+    #[test]
+    fn context_helpers_render_status_analysis_and_categories() {
+        let stats = ContextManager::new().cache_stats();
+        let status = context_status_lines(&stats).join("\n");
+
+        let analyzer = gestura_core::context::RequestAnalyzer::new();
+        let analysis = analyzer.analyze("read src/main.rs and inspect https://example.com");
+        let analyzed = context_analysis_lines(
+            "read src/main.rs and inspect https://example.com",
+            &analysis,
+        )
+        .join("\n");
+
+        let categories = context_categories_lines().join("\n");
+
+        assert!(status.contains("Context Manager Status"));
+        assert!(status.contains("Context Cache:"));
+        assert!(analyzed.contains("Request Analysis"));
+        assert!(analyzed.contains("Suggested Tools"));
+        assert!(analyzed.contains("Analysis Flags"));
+        assert!(categories.contains("Context Categories"));
+        assert!(categories.contains("FileSystem"));
+        assert_eq!(context_clear_message(), "Context caches cleared");
+    }
+
+    #[test]
+    fn config_helpers_render_list_keys_and_redacted_secret_values() {
+        let mut config = AppConfig::default();
+        config.llm.primary = "anthropic".to_string();
+        config.llm.openai.get_or_insert(Default::default()).api_key = "sk-secret-123".to_string();
+
+        let list = config_list_lines(&config).join("\n");
+        let keys = config_keys_lines().join("\n");
+        let get_secret = config_get_line(&config, "llm.openai.api_key").expect("secret key line");
+        let update_secret = config_updated_message("llm.openai.api_key", "sk-secret-123");
+
+        assert!(list.contains("Configuration"));
+        assert!(list.contains("llm.primary"));
+        assert!(list.contains("Config file:"));
+        assert!(keys.contains("Available Config Keys"));
+        assert!(keys.contains("llm.primary"));
+        assert!(get_secret.contains("llm.openai.api_key = "));
+        assert!(!get_secret.contains("sk-secret-123"));
+        assert!(!update_secret.contains("sk-secret-123"));
+        assert!(config_path_line().contains("Config file:"));
+        assert_eq!(config_reset_message(), "Configuration reset to defaults");
+    }
+
+    #[test]
+    fn session_helpers_render_filters_list_and_info() {
+        let mut current = new_test_session();
+        current.title = "Current test session".to_string();
+        current.model = Some("anthropic/claude-test".to_string());
+        current.add_user_message("hello", MessageSource::Text);
+        current.add_assistant_message("hi", None);
+
+        let other = SessionInfo {
+            id: "12345678-abcdef00-session".to_string(),
+            title: "Other session".to_string(),
+            created_at: chrono::Utc::now() - chrono::Duration::hours(3),
+            last_active: chrono::Utc::now() - chrono::Duration::hours(2),
+            message_count: 4,
+            model: Some("openai/gpt-test".to_string()),
+        };
+
+        let (filter, filter_label) = parse_session_list_filter(Some("week"));
+        assert!(matches!(filter, SessionFilter::ThisWeek));
+        assert_eq!(filter_label, " (this week)");
+
+        let list = session_list_lines(
+            &[
+                SessionInfo {
+                    id: current.id.clone(),
+                    title: current.title.clone(),
+                    created_at: current.created_at,
+                    last_active: current.last_active,
+                    message_count: current.message_count(),
+                    model: current.model.clone(),
+                },
+                other,
+            ],
+            &current.id,
+            &filter_label,
+            10,
+            true,
+        )
+        .join("\n");
+        let info = session_info_lines(&current).join("\n");
+
+        assert!(list.contains("Saved Sessions (this week)"));
+        assert!(list.contains("Filters: /session list today|week|month"));
+        assert!(list.contains("Commands: /session load <id>"));
+        assert!(list.contains(&current.id[..8]));
+        assert_eq!(
+            session_empty_message(" (today)"),
+            "No saved sessions found (today)"
+        );
+        assert!(info.contains("Current Session"));
+        assert!(info.contains("Current test session"));
+        assert!(info.contains("Messages: 2 (you: 1, assistant: 1, system: 0)"));
+    }
+
+    #[test]
+    fn knowledge_helpers_render_list_search_categories_and_status() {
+        let items = vec![
+            gestura_core::KnowledgeItem::new(
+                "rust-expert",
+                "Rust Expert",
+                "Expert Rust programming knowledge",
+            )
+            .with_category("language"),
+            gestura_core::KnowledgeItem::new(
+                "tauri-expert",
+                "Tauri Expert",
+                "Desktop app guidance",
+            )
+            .with_category("framework"),
+        ];
+        let matches = vec![gestura_core::KnowledgeMatch {
+            item: items[0].clone(),
+            score: 0.82,
+            matched_triggers: vec!["rust".to_string()],
+            suggested_references: vec![],
+        }];
+        let category_counts = vec![
+            ("framework".to_string(), 1usize),
+            ("language".to_string(), 1usize),
+        ];
+
+        let list = knowledge_list_lines(&items).join("\n");
+        let search = knowledge_search_lines("rust ownership", &matches).join("\n");
+        let categories = knowledge_categories_lines(&category_counts).join("\n");
+        let status = knowledge_status_lines(2, 2, Path::new("/tmp/knowledge")).join("\n");
+
+        assert!(list.contains("Knowledge Base (2 items)"));
+        assert!(list.contains("[language] Rust Expert"));
+        assert!(search.contains("Knowledge Search: 'rust ownership'"));
+        assert!(search.contains("Rust Expert (score: 0.82)"));
+        assert!(categories.contains("Knowledge Categories"));
+        assert!(categories.contains("framework (1 items)"));
+        assert!(status.contains("Knowledge Base Status"));
+        assert!(status.contains("Base directory: /tmp/knowledge"));
+        assert_eq!(knowledge_empty_message(), "No knowledge items registered.");
+        assert_eq!(knowledge_search_usage(), "Usage: /knowledge search <query>");
+        assert_eq!(
+            knowledge_no_results_message("rust"),
+            "No knowledge items match 'rust'."
+        );
+        assert_eq!(
+            knowledge_no_categories_message(),
+            "No knowledge categories found."
+        );
+    }
+
+    #[test]
     fn memory_help_does_not_require_workspace() {
         let mut session = new_test_session();
         session.state.workspace_dir = None;
@@ -3905,6 +5623,7 @@ mod tests {
                 blocked_reasons: vec![],
                 result: None,
                 remote_execution: None,
+                local_execution: None,
                 messages: vec![],
                 checkpoint: None,
                 created_at: Utc::now(),
@@ -3913,6 +5632,7 @@ mod tests {
                 completed_at: None,
             }],
             messages: vec![],
+            shared_cognition: vec![],
             created_at: Utc::now(),
             updated_at: Utc::now(),
             completed_at: None,
@@ -3923,6 +5643,402 @@ mod tests {
         assert!(joined.contains("task-review-1 [review]"));
         assert!(joined.contains("Requested by: orchestrator"));
         assert!(joined.contains("Allowed actors: reviewer, supervisor"));
+    }
+
+    #[test]
+    fn workflow_tree_lines_include_checkpoint_resumability_details() {
+        use chrono::Utc;
+        use gestura_core::agents::{
+            AgentExecutionMode, AgentRole, DelegatedTask, OrchestratorToolCall, TaskResult,
+            TaskTerminalStateHint,
+        };
+        use gestura_core::orchestrator::{
+            CleanupPolicy, DelegatedCheckpointAction, DelegatedCheckpointStage,
+            DelegatedCheckpointSummary, DelegatedReplaySafety, DelegatedResumeDisposition,
+            EnvironmentHealth, EnvironmentState, ExecutionEnvironment, LocalExecutionPhase,
+            LocalExecutionProgress, LocalExecutionRecord, LocalExecutionWaitingReason,
+            RecoveryStatus, SupervisorRun, SupervisorRunStatus, SupervisorRunTaskSummary,
+            SupervisorTaskRecord, SupervisorTaskState, TaskApprovalRecord,
+        };
+
+        let workspace_dir = std::env::temp_dir().join("gestura-cli-checkpoint-lines");
+        let run = SupervisorRun {
+            id: "run-checkpoint-tree".to_string(),
+            name: Some("checkpoint-run".to_string()),
+            session_id: Some("session-tree".to_string()),
+            workspace_dir: Some(workspace_dir.clone()),
+            lead_agent_id: Some("lead-1".to_string()),
+            parent_run: None,
+            child_runs: vec![],
+            hierarchy_depth: 0,
+            max_hierarchy_depth: 1,
+            inherited_policy: None,
+            metadata: None,
+            status: SupervisorRunStatus::Waiting,
+            task_summary: SupervisorRunTaskSummary {
+                total: 1,
+                blocked: 1,
+                ..SupervisorRunTaskSummary::default()
+            },
+            hierarchy_summary: None,
+            tasks: vec![SupervisorTaskRecord {
+                task: DelegatedTask {
+                    id: "task-checkpoint-tree".to_string(),
+                    agent_id: "agent-tree".to_string(),
+                    prompt: "Resume work".to_string(),
+                    context: None,
+                    required_tools: vec![],
+                    priority: 1,
+                    session_id: Some("session-tree".to_string()),
+                    directive_id: None,
+                    tracking_task_id: None,
+                    run_id: Some("run-checkpoint-tree".to_string()),
+                    parent_task_id: None,
+                    depends_on: vec![],
+                    role: Some(AgentRole::Implementer),
+                    delegation_brief: None,
+                    planning_only: false,
+                    approval_required: false,
+                    reviewer_required: false,
+                    test_required: false,
+                    workspace_dir: Some(workspace_dir.clone()),
+                    execution_mode: AgentExecutionMode::SharedWorkspace,
+                    environment_id: Some("env-tree".to_string()),
+                    remote_target: None,
+                    memory_tags: vec![],
+                    name: Some("Resume work".to_string()),
+                },
+                state: SupervisorTaskState::Blocked,
+                approval: TaskApprovalRecord::default(),
+                environment_id: "env-tree".to_string(),
+                environment: ExecutionEnvironment {
+                    id: "env-tree".to_string(),
+                    execution_mode: AgentExecutionMode::SharedWorkspace,
+                    root_dir: workspace_dir,
+                    write_access: true,
+                    branch_name: None,
+                    worktree_path: None,
+                    remote_url: None,
+                    state: EnvironmentState::Ready,
+                    health: EnvironmentHealth::Clean,
+                    cleanup_policy: CleanupPolicy::KeepAlways,
+                    recovery_status: RecoveryStatus::NotRequired,
+                    recovery_action: None,
+                    failure: None,
+                    cleanup_result: None,
+                },
+                claimed_by: Some("agent-tree".to_string()),
+                attempts: 1,
+                blocked_reasons: vec!["execution interrupted during restart".to_string()],
+                result: Some(TaskResult {
+                    task_id: "task-checkpoint-tree".to_string(),
+                    agent_id: "agent-tree".to_string(),
+                    success: true,
+                    run_id: Some("run-checkpoint-tree".to_string()),
+                    tracking_task_id: None,
+                    output: "done".to_string(),
+                    summary: Some("Resume work".to_string()),
+                    tool_calls: vec![OrchestratorToolCall {
+                        tool_name: "file".to_string(),
+                        input: serde_json::json!({ "path": "README.md" }),
+                        output: serde_json::json!({ "ok": true }),
+                        success: true,
+                        duration_ms: 12,
+                    }],
+                    artifacts: vec![],
+                    terminal_state_hint: Some(TaskTerminalStateHint::Blocked),
+                    duration_ms: 42,
+                }),
+                remote_execution: None,
+                local_execution: Some(LocalExecutionRecord {
+                    status: "running".to_string(),
+                    status_reason: None,
+                    progress: Some(LocalExecutionProgress {
+                        phase: LocalExecutionPhase::Waiting,
+                        waiting_reason: Some(LocalExecutionWaitingReason::ShellProcess),
+                        stage: Some("shell_running".to_string()),
+                        message: Some("Streaming shell output".to_string()),
+                        percent: Some(45),
+                        iteration: 2,
+                        current_tool_name: Some("shell".to_string()),
+                        last_completed_tool_name: Some("file".to_string()),
+                        last_completed_tool_duration_ms: Some(12),
+                        completed_tool_call_count: 1,
+                        has_partial_content: true,
+                        partial_content_chars: 48,
+                        has_partial_thinking: false,
+                        partial_thinking_chars: 0,
+                        token_usage: None,
+                        environment: None,
+                        updated_at: Utc::now(),
+                    }),
+                    last_synced_at: Utc::now(),
+                }),
+                messages: vec![],
+                checkpoint: Some(DelegatedCheckpointSummary {
+                    stage: DelegatedCheckpointStage::Blocked,
+                    replay_safety: DelegatedReplaySafety::CheckpointResumable,
+                    resume_disposition: DelegatedResumeDisposition::ResumeFromCheckpoint,
+                    safe_boundary_label: "after tool 'file' result".to_string(),
+                    available_actions: vec![
+                        DelegatedCheckpointAction::ResumeFromCheckpoint,
+                        DelegatedCheckpointAction::RestartFromScratch,
+                        DelegatedCheckpointAction::AcknowledgeBlocked,
+                    ],
+                    note: Some("resume available after restart".to_string()),
+                    completed_tool_call_count: 1,
+                    has_resume_state: true,
+                    result_published: false,
+                    updated_at: Utc::now(),
+                }),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                started_at: None,
+                completed_at: None,
+            }],
+            messages: vec![],
+            shared_cognition: vec![],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            completed_at: None,
+        };
+
+        let joined = format_supervisor_run_tree_lines(&[run]).join("\n");
+        assert!(joined.contains("after tool 'file' result"));
+        assert!(joined.contains("resume_from_checkpoint"));
+        assert!(joined.contains("local=waiting"));
+        assert!(joined.contains("current_tool=shell"));
+        assert!(joined.contains("tool_trace=file:ok(12ms)"));
+        assert!(
+            joined.contains(
+                "actions=resume_from_checkpoint,restart_from_scratch,acknowledge_blocked"
+            )
+        );
+    }
+
+    #[test]
+    fn workflow_tree_lines_include_remote_progress_details() {
+        use chrono::Utc;
+        use gestura_core::agents::{
+            AgentExecutionMode, AgentRole, DelegatedTask, RemoteAgentTarget,
+        };
+        use gestura_core::orchestrator::{
+            CleanupPolicy, EnvironmentHealth, EnvironmentState, ExecutionEnvironment,
+            RecoveryStatus, RemoteExecutionArtifact, RemoteExecutionCompatibility,
+            RemoteExecutionProgress, RemoteExecutionRecord, SupervisorRun, SupervisorRunStatus,
+            SupervisorRunTaskSummary, SupervisorTaskRecord, SupervisorTaskState,
+            TaskApprovalRecord,
+        };
+
+        let workspace_dir = std::env::temp_dir().join("gestura-cli-remote-lines");
+        let remote_target = RemoteAgentTarget {
+            url: "http://localhost:32145/a2a".to_string(),
+            name: Some("remote-peer".to_string()),
+            auth_token: None,
+            capabilities: vec!["shell".to_string()],
+        };
+        let run = SupervisorRun {
+            id: "run-remote-tree".to_string(),
+            name: Some("remote-run".to_string()),
+            session_id: Some("session-tree".to_string()),
+            workspace_dir: Some(workspace_dir.clone()),
+            lead_agent_id: Some("lead-1".to_string()),
+            parent_run: None,
+            child_runs: vec![],
+            hierarchy_depth: 0,
+            max_hierarchy_depth: 1,
+            inherited_policy: None,
+            metadata: None,
+            status: SupervisorRunStatus::Running,
+            task_summary: SupervisorRunTaskSummary {
+                total: 1,
+                running: 1,
+                ..SupervisorRunTaskSummary::default()
+            },
+            hierarchy_summary: None,
+            tasks: vec![SupervisorTaskRecord {
+                task: DelegatedTask {
+                    id: "task-remote-tree".to_string(),
+                    agent_id: "agent-remote".to_string(),
+                    prompt: "Inspect remote status".to_string(),
+                    context: None,
+                    required_tools: vec![],
+                    priority: 1,
+                    session_id: Some("session-tree".to_string()),
+                    directive_id: None,
+                    tracking_task_id: None,
+                    run_id: Some("run-remote-tree".to_string()),
+                    parent_task_id: None,
+                    depends_on: vec![],
+                    role: Some(AgentRole::Implementer),
+                    delegation_brief: None,
+                    planning_only: false,
+                    approval_required: false,
+                    reviewer_required: false,
+                    test_required: false,
+                    workspace_dir: None,
+                    execution_mode: AgentExecutionMode::Remote,
+                    environment_id: None,
+                    remote_target: Some(remote_target.clone()),
+                    memory_tags: vec![],
+                    name: Some("Remote parity work".to_string()),
+                },
+                state: SupervisorTaskState::Running,
+                approval: TaskApprovalRecord::default(),
+                environment_id: "env-tree".to_string(),
+                environment: ExecutionEnvironment {
+                    id: "env-tree".to_string(),
+                    execution_mode: AgentExecutionMode::Remote,
+                    root_dir: workspace_dir,
+                    write_access: true,
+                    branch_name: None,
+                    worktree_path: None,
+                    remote_url: None,
+                    state: EnvironmentState::Ready,
+                    health: EnvironmentHealth::Clean,
+                    cleanup_policy: CleanupPolicy::KeepAlways,
+                    recovery_status: RecoveryStatus::NotRequired,
+                    recovery_action: None,
+                    failure: None,
+                    cleanup_result: None,
+                },
+                claimed_by: Some("agent-remote".to_string()),
+                attempts: 1,
+                blocked_reasons: vec![],
+                result: None,
+                remote_execution: Some(RemoteExecutionRecord {
+                    target: remote_target,
+                    remote_task_id: "remote-task-1".to_string(),
+                    status: "running".to_string(),
+                    status_reason: Some("Awaiting remote shell completion".to_string()),
+                    lease: None,
+                    progress: Some(RemoteExecutionProgress {
+                        stage: Some("shell_running".to_string()),
+                        message: Some("Remote shell still streaming".to_string()),
+                        percent: Some(60),
+                        updated_at: Utc::now(),
+                    }),
+                    artifacts: vec![RemoteExecutionArtifact {
+                        name: "result.txt".to_string(),
+                        part_count: 1,
+                        metadata: std::collections::HashMap::new(),
+                    }],
+                    provenance: None,
+                    compatibility: RemoteExecutionCompatibility {
+                        supported_features: vec!["artifacts".to_string()],
+                        warnings: vec![],
+                        protocol_version: Some("2025-11-25".to_string()),
+                    },
+                    last_synced_at: Utc::now(),
+                }),
+                local_execution: None,
+                messages: vec![],
+                checkpoint: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                started_at: Some(Utc::now()),
+                completed_at: None,
+            }],
+            messages: vec![],
+            shared_cognition: vec![],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            completed_at: None,
+        };
+
+        let joined = format_supervisor_run_tree_lines(&[run]).join("\n");
+        assert!(joined.contains("remote=running"));
+        assert!(joined.contains("reason=Awaiting remote shell completion"));
+        assert!(joined.contains("progress=60%"));
+        assert!(joined.contains("stage=shell_running"));
+        assert!(joined.contains("artifacts=1"));
+    }
+
+    #[test]
+    fn workflow_tree_lines_include_shared_cognition_summary() {
+        use chrono::Utc;
+        use gestura_core::orchestrator::{
+            SharedCognitionKind, SharedCognitionNote, SupervisorRun, SupervisorRunStatus,
+            SupervisorRunTaskSummary, TeamMessageKind,
+        };
+
+        let now = Utc::now();
+        let run = SupervisorRun {
+            id: "run-cognition-tree".to_string(),
+            name: Some("cognition-run".to_string()),
+            session_id: Some("session-tree".to_string()),
+            workspace_dir: Some(std::env::temp_dir()),
+            lead_agent_id: Some("lead-1".to_string()),
+            parent_run: None,
+            child_runs: vec![],
+            hierarchy_depth: 0,
+            max_hierarchy_depth: 1,
+            inherited_policy: None,
+            metadata: None,
+            status: SupervisorRunStatus::Running,
+            task_summary: SupervisorRunTaskSummary::default(),
+            hierarchy_summary: None,
+            tasks: vec![],
+            messages: vec![],
+            shared_cognition: vec![
+                SharedCognitionNote {
+                    id: "note-1".to_string(),
+                    run_id: "run-cognition-tree".to_string(),
+                    task_id: Some("task-1".to_string()),
+                    directive_id: Some("directive-1".to_string()),
+                    kind: SharedCognitionKind::Hypothesis,
+                    message_kind: TeamMessageKind::Clarification,
+                    summary: "Need to verify whether the shim already normalizes ownership".to_string(),
+                    detail: "Conflicting evidence in the ownership shim path; verify before widening scope.".to_string(),
+                    sender_agent_id: Some("agent-alpha".to_string()),
+                    recipient_agent_id: Some("supervisor".to_string()),
+                    tags: vec!["shared-cognition".to_string(), "ownership".to_string()],
+                    confidence: 0.64,
+                    source_message_id: "msg-1".to_string(),
+                    created_at: now,
+                },
+                SharedCognitionNote {
+                    id: "note-2".to_string(),
+                    run_id: "run-cognition-tree".to_string(),
+                    task_id: Some("task-1".to_string()),
+                    directive_id: Some("directive-1".to_string()),
+                    kind: SharedCognitionKind::Steering,
+                    message_kind: TeamMessageKind::StatusUpdate,
+                    summary: "Keep execution limited to the ownership shim".to_string(),
+                    detail: "Supervisor narrowed the active task to the ownership shim only.".to_string(),
+                    sender_agent_id: Some("supervisor".to_string()),
+                    recipient_agent_id: Some("agent-alpha".to_string()),
+                    tags: vec!["shared-cognition".to_string(), "steering".to_string()],
+                    confidence: 0.82,
+                    source_message_id: "msg-2".to_string(),
+                    created_at: now + chrono::Duration::seconds(5),
+                },
+            ],
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+        };
+
+        let joined = format_supervisor_run_tree_lines(&[run]).join("\n");
+        assert!(joined.contains("shared cognition: 2 notes"));
+        assert!(joined.contains("latest=steering by supervisor"));
+        assert!(joined.contains("confidence=82%"));
+        assert!(joined.contains("open hypotheses=1"));
+    }
+
+    #[test]
+    fn usage_lines_describe_root_commands_as_managed_shells() {
+        let hooks = hooks_usage_lines().join("\n");
+        let permissions = permissions_usage_lines().join("\n");
+        let tasks = tasks_usage_lines().join("\n");
+        let memory = memory_usage_lines().join("\n");
+        let mcp = mcp_usage_lines().join("\n");
+
+        assert!(hooks.contains("managed shell"));
+        assert!(permissions.contains("managed shell"));
+        assert!(tasks.contains("managed shell"));
+        assert!(memory.contains("Managed memory shell"));
+        assert!(mcp.contains("managed shell"));
     }
 
     #[test]
@@ -3960,6 +6076,30 @@ mod tests {
             Some(TasksLiveAction::ListHierarchy {
                 session_id: "session-1".to_string(),
                 workspace_dir: base.clone(),
+            })
+        );
+
+        let pause =
+            run_tasks_subcommand(&["pause", "task-123"], &manager, "session-1", Some(&base))
+                .unwrap();
+        assert_eq!(
+            pause.live_action,
+            Some(TasksLiveAction::PauseWorkflowTask {
+                session_id: "session-1".to_string(),
+                workspace_dir: base.clone(),
+                task_spec: "task-123".to_string(),
+            })
+        );
+
+        let cancel =
+            run_tasks_subcommand(&["cancel", "task-123"], &manager, "session-1", Some(&base))
+                .unwrap();
+        assert_eq!(
+            cancel.live_action,
+            Some(TasksLiveAction::CancelWorkflowTask {
+                session_id: "session-1".to_string(),
+                workspace_dir: base.clone(),
+                task_spec: "task-123".to_string(),
             })
         );
 

@@ -12,6 +12,7 @@ use gestura_core::platform::detect_system_dark_mode;
 use ratatui::style::Color;
 use ratatui::widgets::ListState;
 
+use super::super::catalog;
 use super::super::{AgentMessage, AgentSession};
 
 /// Theme configuration for the TUI
@@ -603,6 +604,14 @@ pub enum TuiMode {
     Mcp,
     /// Knowledge browser overlay — interactive list of knowledge items
     Knowledge,
+    /// Config browser overlay — interactive configuration shell
+    Config,
+    /// Context browser overlay — interactive context shell
+    Context,
+    /// A2A browser overlay — interactive agent-to-agent shell
+    A2a,
+    /// Privacy browser overlay — interactive privacy shell
+    Privacy,
     /// Hooks browser overlay — interactive hooks management
     Hooks,
     /// Agent browser overlay — agent status and configuration
@@ -737,101 +746,18 @@ impl From<&AgentMessage> for TuiMessage {
     }
 }
 
-/// Available slash commands
-pub const COMMANDS: &[(&str, &str)] = &[
-    ("/help", "Show help information"),
-    ("/tools", "List available tools"),
-    ("/tools <name>", "Show tool details"),
-    ("/clear", "Clear message history"),
-    ("/save", "Save current session"),
-    ("/new", "Start a new session"),
-    ("/history", "Show session statistics"),
-    ("/quit", "Exit the application"),
+/// Extra TUI-only slash commands layered on top of the shared interactive catalog.
+const TUI_ONLY_COMMANDS: &[(&str, &str)] = &[
     ("/settings", "Switch to settings tab"),
     ("/capabilities", "Show AI capabilities"),
-    ("/model", "Select active model (interactive picker)"),
-    (
-        "/model <provider:model|model>",
-        "Set session model (e.g. openai:gpt-4o or claude-3-5-sonnet)",
-    ),
     ("/activity", "Toggle agent activity view"),
-    ("/theme", "List available themes"),
-    (
-        "/theme <name>",
-        "Change theme (catppuccin-mocha, light, high-contrast, dracula, gestura, pro)",
-    ),
     ("/search", "Enter interactive search mode"),
     ("/search <query>", "Search messages for query"),
-    ("/sessions", "List all saved sessions"),
-    ("/session list", "List all saved sessions"),
-    ("/session load <id>", "Load/switch to a session"),
-    ("/session delete <id>", "Delete a session"),
-    ("/session export", "Export current session to file"),
-    ("/session export <id>", "Export a session to file"),
-    ("/session info", "Show current session details"),
-    // --- Claude Code parity commands ---
+    ("/sessions", "Alias for /session list"),
     ("/rewind", "List session checkpoints"),
     ("/rewind <id>", "Restore session to a checkpoint"),
-    ("/tasks", "Open tasks browser (or: /tasks <subcommand>)"),
-    ("/task", "Manage tasks (try: /task help)"),
-    ("/hooks", "Open hooks browser (or: /hooks <subcommand>)"),
-    ("/permissions", "List granted tool permissions"),
+    ("/task", "Alias for /tasks"),
     ("/permissions audit", "Show permission audit log"),
-    ("/context", "Show context manager status"),
-    ("/context status", "Show context cache statistics"),
-    (
-        "/context analyze <request>",
-        "Analyze a request (categories, tools, entities)",
-    ),
-    ("/context categories", "List all context categories"),
-    ("/context clear", "Clear all context caches"),
-    // --- CLI command parity (gestura -h) ---
-    ("/mcp", "Show MCP server status"),
-    ("/mcp list", "List configured MCP servers"),
-    ("/mcp status", "Show MCP protocol status"),
-    ("/mcp tools", "List tools from connected MCP servers"),
-    ("/mcp get <name>", "Show details for an MCP server"),
-    ("/mcp enable <name>", "Enable an MCP server"),
-    ("/mcp disable <name>", "Disable an MCP server"),
-    (
-        "/mcp add <name> <cmd_or_url>",
-        "Add a new MCP server (options: --transport, --scope)",
-    ),
-    ("/mcp remove <name>", "Remove an MCP server"),
-    ("/mcp connect <name>", "Connect to an MCP server"),
-    ("/mcp disconnect <name>", "Disconnect from an MCP server"),
-    ("/config", "List configuration settings"),
-    ("/config list", "List all configuration settings"),
-    ("/config get <key>", "Get a configuration value"),
-    ("/config set <key> <value>", "Set a configuration value"),
-    ("/config path", "Show configuration file path"),
-    ("/config reset", "Reset configuration to defaults"),
-    ("/a2a", "Show A2A protocol status"),
-    ("/a2a profiles", "List registered agent profiles"),
-    ("/a2a agents", "List known remote agents"),
-    ("/knowledge", "List knowledge items"),
-    ("/knowledge search <query>", "Search knowledge items"),
-    ("/knowledge categories", "List knowledge categories"),
-    ("/knowledge status", "Show knowledge system status"),
-    ("/agent", "Show agent status"),
-    ("/agent list", "List available agents"),
-    ("/agent config <name>", "Show agent configuration"),
-    ("/device", "List audio input devices"),
-    ("/device scan", "Scan for audio devices"),
-    ("/health", "Show system health diagnostics"),
-    ("/privacy", "Show data retention policy"),
-    ("/privacy export", "Export all user data (GDPR)"),
-    ("/memory", "List memory bank entries"),
-    ("/memory save", "Save conversation to memory bank"),
-    ("/memory clear", "Clear all memory bank entries"),
-    ("/summarize", "Summarize conversation history"),
-    (
-        "/listen",
-        "Toggle listening mode (Enter on empty prompt to record)",
-    ),
-    ("/voice", "Record one voice message"),
-    ("/exec <prompt>", "Execute a single prompt inline"),
-    ("/continue", "Resume a paused session"),
 ];
 
 /// TUI application state
@@ -950,6 +876,22 @@ pub struct TuiApp {
     pub mcp_browser_state: McpBrowserState,
     /// Interactive knowledge browser state (overlay).
     pub knowledge_browser_state: KnowledgeBrowserState,
+    /// Config browser state (overlay).
+    pub config_browser_state: GenericBrowserState,
+    /// Config browser cached entries.
+    pub config_browser_entries: Vec<ManagedCommandEntry>,
+    /// Context browser state (overlay).
+    pub context_browser_state: GenericBrowserState,
+    /// Context browser cached entries.
+    pub context_browser_entries: Vec<ManagedCommandEntry>,
+    /// A2A browser state (overlay).
+    pub a2a_browser_state: GenericBrowserState,
+    /// A2A browser cached entries.
+    pub a2a_browser_entries: Vec<ManagedCommandEntry>,
+    /// Privacy browser state (overlay).
+    pub privacy_browser_state: GenericBrowserState,
+    /// Privacy browser cached entries.
+    pub privacy_browser_entries: Vec<ManagedCommandEntry>,
     /// Hooks browser state (overlay).
     pub hooks_browser_state: GenericBrowserState,
     /// Hooks browser cached data.
@@ -965,7 +907,7 @@ pub struct TuiApp {
     /// Devices browser state (overlay).
     pub devices_browser_state: GenericBrowserState,
     /// Devices browser cached entries.
-    pub devices_browser_entries: Vec<DeviceBrowserEntry>,
+    pub devices_browser_entries: Vec<ManagedCommandEntry>,
     /// Permissions browser state (overlay).
     pub permissions_browser_state: GenericBrowserState,
     /// Permissions browser cached entries.
@@ -1182,6 +1124,8 @@ impl McpBrowserState {
 pub struct KnowledgeBrowserState {
     /// Cached list of knowledge items (populated when overlay opens).
     pub items: Vec<gestura_core::knowledge::KnowledgeItem>,
+    /// Active category filter (None = all categories).
+    pub category_filter: Option<String>,
     /// Currently selected index in the list.
     pub selected_index: usize,
     /// Whether we are viewing the detail pane for the selected item.
@@ -1191,28 +1135,101 @@ pub struct KnowledgeBrowserState {
 }
 
 impl KnowledgeBrowserState {
-    /// Move the selection up.
-    pub fn select_prev(&mut self) {
-        let count = self.items.len();
-        if count == 0 {
+    /// Return the available categories in sorted order.
+    pub fn categories(&self) -> Vec<String> {
+        let mut categories: Vec<String> = self
+            .items
+            .iter()
+            .map(|item| item.category.clone())
+            .collect();
+        categories.sort();
+        categories.dedup();
+        categories
+    }
+
+    /// Return the indices of items visible under the current filter.
+    pub fn filtered_indices(&self) -> Vec<usize> {
+        self.items
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, item)| {
+                self.category_filter
+                    .as_deref()
+                    .is_none_or(|category| item.category == category)
+                    .then_some(idx)
+            })
+            .collect()
+    }
+
+    /// Ensure the selected index and list state remain valid for the current filter.
+    pub fn sync_selection(&mut self) {
+        let filtered = self.filtered_indices();
+        if filtered.is_empty() {
+            self.selected_index = 0;
+            self.list_state.select(None);
             return;
         }
-        self.selected_index = if self.selected_index == 0 {
-            count - 1
-        } else {
-            self.selected_index - 1
+
+        if !filtered.contains(&self.selected_index) {
+            self.selected_index = filtered[0];
+        }
+
+        let visible_index = filtered
+            .iter()
+            .position(|idx| *idx == self.selected_index)
+            .unwrap_or(0);
+        self.list_state.select(Some(visible_index));
+    }
+
+    /// Advance the category filter, cycling back to "all" at the end.
+    pub fn cycle_category_filter(&mut self) -> Option<String> {
+        let categories = self.categories();
+        let next_filter = match self.category_filter.as_deref() {
+            None => categories.first().cloned(),
+            Some(current) => categories
+                .iter()
+                .position(|category| category == current)
+                .and_then(|idx| categories.get(idx + 1).cloned()),
         };
-        self.list_state.select(Some(self.selected_index));
+        self.category_filter = next_filter.clone();
+        self.sync_selection();
+        next_filter
+    }
+
+    /// Move the selection up.
+    pub fn select_prev(&mut self) {
+        let filtered = self.filtered_indices();
+        if filtered.is_empty() {
+            return;
+        }
+
+        let current = filtered
+            .iter()
+            .position(|idx| *idx == self.selected_index)
+            .unwrap_or(0);
+        let next = if current == 0 {
+            filtered.len() - 1
+        } else {
+            current - 1
+        };
+        self.selected_index = filtered[next];
+        self.list_state.select(Some(next));
     }
 
     /// Move the selection down.
     pub fn select_next(&mut self) {
-        let count = self.items.len();
-        if count == 0 {
+        let filtered = self.filtered_indices();
+        if filtered.is_empty() {
             return;
         }
-        self.selected_index = (self.selected_index + 1) % count;
-        self.list_state.select(Some(self.selected_index));
+
+        let current = filtered
+            .iter()
+            .position(|idx| *idx == self.selected_index)
+            .unwrap_or(0);
+        let next = (current + 1) % filtered.len();
+        self.selected_index = filtered[next];
+        self.list_state.select(Some(next));
     }
 }
 
@@ -1269,6 +1286,29 @@ impl GenericBrowserState {
     }
 }
 
+/// Action bound to an entry inside a managed root shell.
+#[allow(clippy::enum_variant_names)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagedCommandAction {
+    Execute(String),
+    Prefill(String),
+    Confirm {
+        title: String,
+        message: String,
+        command: String,
+    },
+}
+
+/// Shared list/detail entry used by the lightweight managed shells.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedCommandEntry {
+    pub title: String,
+    pub summary: String,
+    pub command: String,
+    pub detail: Vec<String>,
+    pub action: ManagedCommandAction,
+}
+
 /// Cached hooks data for the hooks browser overlay.
 #[derive(Debug, Clone, Default)]
 pub struct HooksBrowserData {
@@ -1284,11 +1324,11 @@ pub struct HooksBrowserData {
     pub hooks: Vec<(String, String, String, String)>,
 }
 
-/// Cached agent data for the agent browser overlay.
+/// Cached agent entries for the agent browser overlay.
 #[derive(Debug, Clone, Default)]
 pub struct AgentBrowserData {
-    /// Display rows for the agent dashboard: (label, value).
-    pub rows: Vec<(String, String)>,
+    /// Managed shell entries for the agent console.
+    pub entries: Vec<ManagedCommandEntry>,
 }
 
 /// Cached memory entries for the memory browser overlay.
@@ -1308,15 +1348,6 @@ pub struct MemoryBrowserEntry {
     ///
     /// This is used for safe delete operations via `/memory delete`.
     pub file_path: Option<String>,
-}
-
-/// Cached device data for the device browser overlay.
-#[derive(Debug, Clone)]
-pub struct DeviceBrowserEntry {
-    /// Device name.
-    pub name: String,
-    /// Whether this is the default device.
-    pub is_default: bool,
 }
 
 /// Cached permission data for the permissions browser overlay.
@@ -1572,6 +1603,14 @@ impl TuiApp {
             tools_state: ToolsState::default(),
             mcp_browser_state: McpBrowserState::default(),
             knowledge_browser_state: KnowledgeBrowserState::default(),
+            config_browser_state: GenericBrowserState::default(),
+            config_browser_entries: Vec::new(),
+            context_browser_state: GenericBrowserState::default(),
+            context_browser_entries: Vec::new(),
+            a2a_browser_state: GenericBrowserState::default(),
+            a2a_browser_entries: Vec::new(),
+            privacy_browser_state: GenericBrowserState::default(),
+            privacy_browser_entries: Vec::new(),
             hooks_browser_state: GenericBrowserState::default(),
             hooks_browser_data: HooksBrowserData::default(),
             agent_browser_state: GenericBrowserState::default(),
@@ -1751,14 +1790,13 @@ impl TuiApp {
         let show_all = query_no_slash.is_empty();
 
         let mut scored: Vec<(i32, String, String)> = Vec::new();
-        for (cmd, desc) in COMMANDS.iter() {
+        let mut collect_match = |cmd: &str, desc: &str| {
             let cmd_token = Self::command_token(cmd).to_lowercase();
             let desc_lc = desc.to_lowercase();
 
             let score = if show_all || cmd_token == query {
                 Some(0)
             } else if cmd_token.starts_with(&query) {
-                // Prefer shorter completions when both are prefix matches.
                 Some(10 + (cmd_token.len().saturating_sub(query.len()) as i32))
             } else if let Some(pos) = cmd_token.find(&query) {
                 Some(100 + (pos as i32))
@@ -1769,8 +1807,15 @@ impl TuiApp {
             };
 
             if let Some(score) = score {
-                scored.push((score, (*cmd).to_string(), (*desc).to_string()));
+                scored.push((score, cmd.to_string(), desc.to_string()));
             }
+        };
+
+        for spec in catalog::SLASH_COMMANDS {
+            collect_match(spec.command, spec.description);
+        }
+        for (cmd, desc) in TUI_ONLY_COMMANDS {
+            collect_match(cmd, desc);
         }
 
         scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
@@ -3039,6 +3084,48 @@ mod tests {
     }
 
     #[test]
+    fn test_command_suggestions_include_workflow_shell() {
+        let mut app = create_test_app();
+
+        app.input = "/wo".to_string();
+        app.update_command_suggestions();
+
+        assert!(
+            app.command_suggestions
+                .iter()
+                .any(|(cmd, _)| cmd.starts_with("/workflow"))
+        );
+    }
+
+    #[test]
+    fn test_command_suggestions_include_init_command() {
+        let mut app = create_test_app();
+
+        app.input = "/in".to_string();
+        app.update_command_suggestions();
+
+        assert!(
+            app.command_suggestions
+                .iter()
+                .any(|(cmd, _)| cmd.starts_with("/init"))
+        );
+    }
+
+    #[test]
+    fn test_command_suggestions_include_agent_shell() {
+        let mut app = create_test_app();
+
+        app.input = "/ag".to_string();
+        app.update_command_suggestions();
+
+        assert!(
+            app.command_suggestions
+                .iter()
+                .any(|(cmd, _)| cmd.starts_with("/agent"))
+        );
+    }
+
+    #[test]
     fn test_command_suggestions_hide_when_typing_args() {
         let mut app = create_test_app();
         app.input = "/tools ".to_string();
@@ -3058,8 +3145,8 @@ mod tests {
         let idx = app
             .command_suggestions
             .iter()
-            .position(|(cmd, _)| cmd.contains("/tools <name>"))
-            .expect("expected /tools <name> to be suggested");
+            .position(|(cmd, _)| cmd.contains("/tools [name]"))
+            .expect("expected /tools [name] to be suggested");
         app.command_selection = idx;
 
         app.apply_command_suggestion();

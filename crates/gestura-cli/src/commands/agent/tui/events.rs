@@ -7,7 +7,9 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, Mouse
 
 use gestura_core::tool_confirmation::{TOOL_CONFIRMATIONS, ToolConfirmationDecision};
 
-use super::app::{Action, ConfirmAction, PendingToolConfirmation, TuiApp, TuiMode};
+use super::app::{
+    Action, ConfirmAction, ManagedCommandAction, PendingToolConfirmation, TuiApp, TuiMode,
+};
 
 /// Handle an event and return the appropriate action
 pub fn handle_event(app: &mut TuiApp, event: Event) -> Action {
@@ -100,6 +102,10 @@ fn handle_key_event(app: &mut TuiApp, key: KeyEvent) -> Action {
         TuiMode::Capabilities => handle_capabilities_mode(app, key),
         TuiMode::Mcp => handle_mcp_browser_mode(app, key),
         TuiMode::Knowledge => handle_knowledge_browser_mode(app, key),
+        TuiMode::Config => handle_config_browser_mode(app, key),
+        TuiMode::Context => handle_context_browser_mode(app, key),
+        TuiMode::A2a => handle_a2a_browser_mode(app, key),
+        TuiMode::Privacy => handle_privacy_browser_mode(app, key),
         TuiMode::Hooks => handle_hooks_browser_mode(app, key),
         TuiMode::Agent => handle_agent_browser_mode(app, key),
         TuiMode::Memory => handle_memory_browser_mode(app, key),
@@ -778,6 +784,10 @@ fn handle_mouse_event(app: &mut TuiApp, mouse: MouseEvent) -> Action {
                 TuiMode::ModelPicker => app.model_picker_state.select_prev(),
                 TuiMode::Mcp => app.mcp_browser_state.select_prev(),
                 TuiMode::Knowledge => app.knowledge_browser_state.select_prev(),
+                TuiMode::Config => app.config_browser_state.select_prev(),
+                TuiMode::Context => app.context_browser_state.select_prev(),
+                TuiMode::A2a => app.a2a_browser_state.select_prev(),
+                TuiMode::Privacy => app.privacy_browser_state.select_prev(),
                 TuiMode::Hooks => app.hooks_browser_state.select_prev(),
                 TuiMode::Agent => app.agent_browser_state.select_prev(),
                 TuiMode::Memory => app.memory_browser_state.select_prev(),
@@ -799,6 +809,10 @@ fn handle_mouse_event(app: &mut TuiApp, mouse: MouseEvent) -> Action {
                 TuiMode::ModelPicker => app.model_picker_state.select_next(),
                 TuiMode::Mcp => app.mcp_browser_state.select_next(),
                 TuiMode::Knowledge => app.knowledge_browser_state.select_next(),
+                TuiMode::Config => app.config_browser_state.select_next(),
+                TuiMode::Context => app.context_browser_state.select_next(),
+                TuiMode::A2a => app.a2a_browser_state.select_next(),
+                TuiMode::Privacy => app.privacy_browser_state.select_next(),
                 TuiMode::Hooks => app.hooks_browser_state.select_next(),
                 TuiMode::Agent => app.agent_browser_state.select_next(),
                 TuiMode::Memory => app.memory_browser_state.select_next(),
@@ -1084,9 +1098,9 @@ fn handle_workflows_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         KeyCode::Down | KeyCode::Char('j') => Action::ScrollDown,
         KeyCode::Up | KeyCode::Char('k') => Action::ScrollUp,
         KeyCode::Enter => {
-            // TODO: Implement workflow selection and execution
-            // For now, just show a message
-            app.set_status("Workflow execution not yet implemented in modal mode");
+            app.set_status(
+                "Workflow list is read-only here. Use /workflow run <name> from the command bar.",
+            );
             Action::Continue
         }
         _ => Action::Continue,
@@ -1282,11 +1296,32 @@ fn handle_knowledge_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
                 app.knowledge_browser_state.detail_mode = false;
-                app.set_status("Knowledge: ↑/↓ navigate  Enter details  Space toggle  Esc close");
+                app.set_status(
+                    "Knowledge: ↑/↓ navigate  Enter details  Space toggle  f filter  s search  Esc close",
+                );
                 Action::Continue
             }
             KeyCode::Char(' ') => {
                 toggle_selected_knowledge(app);
+                Action::Continue
+            }
+            KeyCode::Char('f') => {
+                app.knowledge_browser_state.detail_mode = false;
+                let filter = app
+                    .knowledge_browser_state
+                    .cycle_category_filter()
+                    .unwrap_or_else(|| "all".to_string());
+                app.set_status(format!(
+                    "Knowledge filter: {filter} — ↑/↓ navigate  Enter details  Space toggle"
+                ));
+                Action::Continue
+            }
+            KeyCode::Char('s') => {
+                app.knowledge_browser_state.detail_mode = false;
+                app.input = "/knowledge search ".to_string();
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Knowledge search: enter query and press Enter");
                 Action::Continue
             }
             _ => Action::Continue,
@@ -1321,6 +1356,23 @@ fn handle_knowledge_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
                 toggle_selected_knowledge(app);
                 Action::Continue
             }
+            KeyCode::Char('f') => {
+                let filter = app
+                    .knowledge_browser_state
+                    .cycle_category_filter()
+                    .unwrap_or_else(|| "all".to_string());
+                app.set_status(format!(
+                    "Knowledge filter: {filter} — ↑/↓ navigate  Enter details  Space toggle"
+                ));
+                Action::Continue
+            }
+            KeyCode::Char('s') => {
+                app.input = "/knowledge search ".to_string();
+                app.cursor_pos = app.input.len();
+                app.mode = TuiMode::Command;
+                app.set_status("Knowledge search: enter query and press Enter");
+                Action::Continue
+            }
             _ => Action::Continue,
         }
     }
@@ -1349,9 +1401,235 @@ fn toggle_selected_knowledge(app: &mut TuiApp) {
     if let Some(item) = app.knowledge_browser_state.items.get_mut(idx) {
         item.enabled = new_enabled;
     }
+    app.knowledge_browser_state.sync_selection();
 
     let label = if new_enabled { "enabled" } else { "disabled" };
     app.set_status(format!("Knowledge '{}' {}", id, label));
+}
+
+fn execute_managed_shell_action(app: &mut TuiApp, action: &ManagedCommandAction) -> Action {
+    match action {
+        ManagedCommandAction::Execute(command) => Action::ExecuteCommand(command.clone()),
+        ManagedCommandAction::Prefill(command) => {
+            app.input = command.clone();
+            app.cursor_pos = app.input.len();
+            app.mode = TuiMode::Command;
+            app.set_status("Command inserted. Complete it if needed, then press Enter.");
+            Action::Continue
+        }
+        ManagedCommandAction::Confirm {
+            title,
+            message,
+            command,
+        } => {
+            app.show_confirm(ConfirmAction::ExecuteCommand {
+                title: title.clone(),
+                message: message.clone(),
+                command: command.clone(),
+            });
+            Action::Continue
+        }
+    }
+}
+
+fn handle_config_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    if app.config_browser_state.detail_mode {
+        match key.code {
+            KeyCode::Esc => {
+                app.config_browser_state.detail_mode = false;
+                app.set_status("Config: ↑/↓ navigate  Enter details/action  Esc close");
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                let action = app
+                    .config_browser_entries
+                    .get(app.config_browser_state.selected_index)
+                    .map(|entry| entry.action.clone());
+                app.config_browser_state.detail_mode = false;
+                action.as_ref().map_or(Action::Continue, |action| {
+                    execute_managed_shell_action(app, action)
+                })
+            }
+            _ => Action::Continue,
+        }
+    } else {
+        match key.code {
+            KeyCode::Esc => {
+                app.mode = TuiMode::Insert;
+                app.set_status("Returned to agent");
+                Action::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.config_browser_state.select_next();
+                Action::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.config_browser_state.select_prev();
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                if let Some(entry) = app
+                    .config_browser_entries
+                    .get(app.config_browser_state.selected_index)
+                {
+                    app.set_status(format!("{} — Enter action, Esc back", entry.title));
+                }
+                app.config_browser_state.detail_mode = true;
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    }
+}
+
+fn handle_context_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    if app.context_browser_state.detail_mode {
+        match key.code {
+            KeyCode::Esc => {
+                app.context_browser_state.detail_mode = false;
+                app.set_status("Context: ↑/↓ navigate  Enter details/action  Esc close");
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                let action = app
+                    .context_browser_entries
+                    .get(app.context_browser_state.selected_index)
+                    .map(|entry| entry.action.clone());
+                app.context_browser_state.detail_mode = false;
+                action.as_ref().map_or(Action::Continue, |action| {
+                    execute_managed_shell_action(app, action)
+                })
+            }
+            _ => Action::Continue,
+        }
+    } else {
+        match key.code {
+            KeyCode::Esc => {
+                app.mode = TuiMode::Insert;
+                app.set_status("Returned to agent");
+                Action::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.context_browser_state.select_next();
+                Action::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.context_browser_state.select_prev();
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                if let Some(entry) = app
+                    .context_browser_entries
+                    .get(app.context_browser_state.selected_index)
+                {
+                    app.set_status(format!("{} — Enter action, Esc back", entry.title));
+                }
+                app.context_browser_state.detail_mode = true;
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    }
+}
+
+fn handle_a2a_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    if app.a2a_browser_state.detail_mode {
+        match key.code {
+            KeyCode::Esc => {
+                app.a2a_browser_state.detail_mode = false;
+                app.set_status("A2A: ↑/↓ navigate  Enter details/action  Esc close");
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                let action = app
+                    .a2a_browser_entries
+                    .get(app.a2a_browser_state.selected_index)
+                    .map(|entry| entry.action.clone());
+                app.a2a_browser_state.detail_mode = false;
+                action.as_ref().map_or(Action::Continue, |action| {
+                    execute_managed_shell_action(app, action)
+                })
+            }
+            _ => Action::Continue,
+        }
+    } else {
+        match key.code {
+            KeyCode::Esc => {
+                app.mode = TuiMode::Insert;
+                app.set_status("Returned to agent");
+                Action::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.a2a_browser_state.select_next();
+                Action::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.a2a_browser_state.select_prev();
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                if let Some(entry) = app
+                    .a2a_browser_entries
+                    .get(app.a2a_browser_state.selected_index)
+                {
+                    app.set_status(format!("{} — Enter action, Esc back", entry.title));
+                }
+                app.a2a_browser_state.detail_mode = true;
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    }
+}
+
+fn handle_privacy_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
+    if app.privacy_browser_state.detail_mode {
+        match key.code {
+            KeyCode::Esc => {
+                app.privacy_browser_state.detail_mode = false;
+                app.set_status("Privacy: ↑/↓ navigate  Enter details/action  Esc close");
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                let action = app
+                    .privacy_browser_entries
+                    .get(app.privacy_browser_state.selected_index)
+                    .map(|entry| entry.action.clone());
+                app.privacy_browser_state.detail_mode = false;
+                action.as_ref().map_or(Action::Continue, |action| {
+                    execute_managed_shell_action(app, action)
+                })
+            }
+            _ => Action::Continue,
+        }
+    } else {
+        match key.code {
+            KeyCode::Esc => {
+                app.mode = TuiMode::Insert;
+                app.set_status("Returned to agent");
+                Action::Continue
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.privacy_browser_state.select_next();
+                Action::Continue
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.privacy_browser_state.select_prev();
+                Action::Continue
+            }
+            KeyCode::Enter => {
+                if let Some(entry) = app
+                    .privacy_browser_entries
+                    .get(app.privacy_browser_state.selected_index)
+                {
+                    app.set_status(format!("{} — Enter action, Esc back", entry.title));
+                }
+                app.privacy_browser_state.detail_mode = true;
+                Action::Continue
+            }
+            _ => Action::Continue,
+        }
+    }
 }
 
 /// Toggle the enabled/disabled state of the currently selected tool in session settings.
@@ -1678,8 +1956,19 @@ fn handle_agent_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
                 app.agent_browser_state.detail_mode = false;
-                app.set_status("Agent: ↑/↓ navigate  Enter details  Esc close");
+                app.set_status("Agent: ↑/↓ navigate  Enter details/action  Esc close");
                 Action::Continue
+            }
+            KeyCode::Enter => {
+                let action = app
+                    .agent_browser_data
+                    .entries
+                    .get(app.agent_browser_state.selected_index)
+                    .map(|entry| entry.action.clone());
+                app.agent_browser_state.detail_mode = false;
+                action.as_ref().map_or(Action::Continue, |action| {
+                    execute_managed_shell_action(app, action)
+                })
             }
             _ => Action::Continue,
         }
@@ -1699,6 +1988,13 @@ fn handle_agent_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
                 Action::Continue
             }
             KeyCode::Enter => {
+                if let Some(entry) = app
+                    .agent_browser_data
+                    .entries
+                    .get(app.agent_browser_state.selected_index)
+                {
+                    app.set_status(format!("{} — Enter action, Esc back", entry.title));
+                }
                 app.agent_browser_state.detail_mode = true;
                 Action::Continue
             }
@@ -1832,8 +2128,18 @@ fn handle_devices_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
                 app.devices_browser_state.detail_mode = false;
-                app.set_status("Devices: ↑/↓ navigate  Enter details  Esc close");
+                app.set_status("Devices: ↑/↓ navigate  Enter details/action  Esc close");
                 Action::Continue
+            }
+            KeyCode::Enter => {
+                let action = app
+                    .devices_browser_entries
+                    .get(app.devices_browser_state.selected_index)
+                    .map(|entry| entry.action.clone());
+                app.devices_browser_state.detail_mode = false;
+                action.as_ref().map_or(Action::Continue, |action| {
+                    execute_managed_shell_action(app, action)
+                })
             }
             _ => Action::Continue,
         }
@@ -1853,6 +2159,12 @@ fn handle_devices_browser_mode(app: &mut TuiApp, key: KeyEvent) -> Action {
                 Action::Continue
             }
             KeyCode::Enter => {
+                if let Some(entry) = app
+                    .devices_browser_entries
+                    .get(app.devices_browser_state.selected_index)
+                {
+                    app.set_status(format!("{} — Enter action, Esc back", entry.title));
+                }
                 app.devices_browser_state.detail_mode = true;
                 Action::Continue
             }
@@ -2358,7 +2670,7 @@ mod tests {
     use crate::commands::agent::new_cli_session;
     use ratatui::layout::Rect;
 
-    use super::super::app::CopyButtonHit;
+    use super::super::app::{CopyButtonHit, ManagedCommandAction, ManagedCommandEntry};
     use gestura_core::AppConfig;
 
     /// Helper to create a test app instance for event handling tests.
@@ -2924,5 +3236,208 @@ mod tests {
             }
             other => panic!("unexpected confirm action: {other:?}"),
         }
+    }
+
+    #[test]
+    fn config_shell_enter_runs_selected_execute_action() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Config;
+        app.config_browser_entries = vec![ManagedCommandEntry {
+            title: "Overview".to_string(),
+            summary: "Show config summary".to_string(),
+            command: "/config list".to_string(),
+            detail: vec!["detail".to_string()],
+            action: ManagedCommandAction::Execute("/config list".to_string()),
+        }];
+        app.config_browser_state.reset(1);
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        assert_eq!(action, Action::Continue);
+        assert!(app.config_browser_state.detail_mode);
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        assert_eq!(action, Action::ExecuteCommand("/config list".to_string()));
+        assert!(!app.config_browser_state.detail_mode);
+    }
+
+    #[test]
+    fn context_shell_enter_prefills_selected_command() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Context;
+        app.context_browser_entries = vec![ManagedCommandEntry {
+            title: "Analyze request".to_string(),
+            summary: "Prefill analyze command".to_string(),
+            command: "/context analyze ".to_string(),
+            detail: vec!["detail".to_string()],
+            action: ManagedCommandAction::Prefill("/context analyze ".to_string()),
+        }];
+        app.context_browser_state.reset(1);
+
+        let _ = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Command);
+        assert_eq!(app.input, "/context analyze ");
+    }
+
+    #[test]
+    fn a2a_shell_enter_prefills_selected_command() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::A2a;
+        app.a2a_browser_entries = vec![ManagedCommandEntry {
+            title: "Send task".to_string(),
+            summary: "Prefill send command".to_string(),
+            command: "/a2a send ".to_string(),
+            detail: vec!["detail".to_string()],
+            action: ManagedCommandAction::Prefill("/a2a send ".to_string()),
+        }];
+        app.a2a_browser_state.reset(1);
+
+        let _ = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Command);
+        assert_eq!(app.input, "/a2a send ");
+    }
+
+    #[test]
+    fn privacy_shell_enter_on_confirm_action_shows_confirm() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Privacy;
+        app.privacy_browser_entries = vec![ManagedCommandEntry {
+            title: "Delete data".to_string(),
+            summary: "Confirm delete".to_string(),
+            command: "/privacy delete --confirmed".to_string(),
+            detail: vec!["detail".to_string()],
+            action: ManagedCommandAction::Confirm {
+                title: "Delete all local user data?".to_string(),
+                message: "Are you sure?".to_string(),
+                command: "/privacy delete --confirmed".to_string(),
+            },
+        }];
+        app.privacy_browser_state.reset(1);
+
+        let _ = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Confirm);
+        assert_eq!(app.confirm_return_mode, Some(TuiMode::Privacy));
+        match app.pending_confirm.as_ref().expect("pending confirm") {
+            ConfirmAction::ExecuteCommand { command, .. } => {
+                assert_eq!(command, "/privacy delete --confirmed");
+            }
+            other => panic!("unexpected confirm action: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn knowledge_browser_filter_and_search_shortcuts_work() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Knowledge;
+        app.knowledge_browser_state.items =
+            super::super::super::slash::load_session_knowledge_items(&app.session.id);
+        app.knowledge_browser_state.sync_selection();
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE)),
+        );
+        assert_eq!(action, Action::Continue);
+        assert!(app.knowledge_browser_state.category_filter.is_some());
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)),
+        );
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Command);
+        assert_eq!(app.input, "/knowledge search ");
+    }
+
+    #[test]
+    fn agent_shell_enter_runs_selected_execute_action() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Agent;
+        app.agent_browser_data.entries = vec![ManagedCommandEntry {
+            title: "Agent Overview".to_string(),
+            summary: "Run status".to_string(),
+            command: "/agent status".to_string(),
+            detail: vec!["detail".to_string()],
+            action: ManagedCommandAction::Execute("/agent status".to_string()),
+        }];
+        app.agent_browser_state.reset(1);
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        assert_eq!(action, Action::Continue);
+        assert!(app.agent_browser_state.detail_mode);
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        assert_eq!(action, Action::ExecuteCommand("/agent status".to_string()));
+        assert!(!app.agent_browser_state.detail_mode);
+    }
+
+    #[test]
+    fn device_shell_enter_prefills_selected_command() {
+        let mut app = create_test_app();
+        app.mode = TuiMode::Devices;
+        app.devices_browser_entries = vec![ManagedCommandEntry {
+            title: "Device".to_string(),
+            summary: "Prefill config update".to_string(),
+            command: "/config update voice.audio_device \"Mic\"".to_string(),
+            detail: vec!["detail".to_string()],
+            action: ManagedCommandAction::Prefill(
+                "/config update voice.audio_device \"Mic\"".to_string(),
+            ),
+        }];
+        app.devices_browser_state.reset(1);
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        assert_eq!(action, Action::Continue);
+        assert!(app.devices_browser_state.detail_mode);
+
+        let action = handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        );
+        assert_eq!(action, Action::Continue);
+        assert_eq!(app.mode, TuiMode::Command);
+        assert_eq!(app.input, "/config update voice.audio_device \"Mic\"");
+        assert!(!app.devices_browser_state.detail_mode);
     }
 }
