@@ -162,19 +162,33 @@ collect_artifacts() {
   local out_dir
   out_dir="$(ensure_fresh_dist_dir "$DIST_DIR")"
 
-  local bundle_root1="${GUI_DIR}/target/${TARGET_TRIPLE}/release/bundle"
-  local bundle_root2="${GUI_DIR}/target/release/bundle"
+  local bundle_root1="target/${TARGET_TRIPLE}/release/bundle"
+  local bundle_root2="target/release/bundle"
+  local bundle_root3="${GUI_DIR}/target/${TARGET_TRIPLE}/release/bundle"
+  local bundle_root4="${GUI_DIR}/target/release/bundle"
 
   local deb_src
   deb_src="$(ls -1 "${bundle_root1}/deb/"*.deb 2>/dev/null | head -1 || true)"
   if [ -z "$deb_src" ]; then
     deb_src="$(ls -1 "${bundle_root2}/deb/"*.deb 2>/dev/null | head -1 || true)"
   fi
+  if [ -z "$deb_src" ]; then
+    deb_src="$(ls -1 "${bundle_root3}/deb/"*.deb 2>/dev/null | head -1 || true)"
+  fi
+  if [ -z "$deb_src" ]; then
+    deb_src="$(ls -1 "${bundle_root4}/deb/"*.deb 2>/dev/null | head -1 || true)"
+  fi
 
   local rpm_src
   rpm_src="$(ls -1 "${bundle_root1}/rpm/"*.rpm 2>/dev/null | head -1 || true)"
   if [ -z "$rpm_src" ]; then
     rpm_src="$(ls -1 "${bundle_root2}/rpm/"*.rpm 2>/dev/null | head -1 || true)"
+  fi
+  if [ -z "$rpm_src" ]; then
+    rpm_src="$(ls -1 "${bundle_root3}/rpm/"*.rpm 2>/dev/null | head -1 || true)"
+  fi
+  if [ -z "$rpm_src" ]; then
+    rpm_src="$(ls -1 "${bundle_root4}/rpm/"*.rpm 2>/dev/null | head -1 || true)"
   fi
 
   if [ -n "$deb_src" ]; then

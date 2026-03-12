@@ -18,9 +18,19 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        # Pin macOS to macos-14 (ARM/Sonoma) and Windows to windows-2022 for reproducibility
-        os: [ubuntu-latest, windows-2022, macos-14]
-        rust: [stable]
+        include:
+          # Pin macOS to macos-14 (ARM/Sonoma) and Windows to windows-2022 for reproducibility.
+          # Non-Linux runners exclude gestura-gui from Rust test targets because GUI compilation
+          # is covered by the dedicated build matrix and release pipeline.
+          - os: ubuntu-latest
+            rust: stable
+            test_flags: --workspace
+          - os: windows-2022
+            rust: stable
+            test_flags: --workspace --exclude gestura-gui
+          - os: macos-14
+            rust: stable
+            test_flags: --workspace --exclude gestura-gui
 
     steps:
     - uses: actions/checkout@v4
@@ -79,72 +89,63 @@ jobs:
         # Also cache ~/.cargo/bin for installed tools
         cache-all-crates: true
 
-    - name: Configure test scope
-      shell: bash
-      run: |
-        if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
-          echo "TEST_FLAGS=--workspace" >> $GITHUB_ENV
-        else
-          echo "TEST_FLAGS=--workspace --exclude gestura-gui" >> $GITHUB_ENV
-        fi
-
     - name: Check formatting
       run: cargo fmt --all -- --check
 
     # Use --no-default-features to avoid building whisper-rs (voice-local) which requires
     # complex native dependencies. We test voice-local separately where it's known to work.
     - name: Run clippy
-      run: cargo clippy ${{ env.TEST_FLAGS }} --all-targets --no-default-features -- -D warnings
+      run: cargo clippy ${{ matrix.test_flags }} --all-targets --no-default-features -- -D warnings
 
     - name: Run tests (no default features)
-      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features
+      run: cargo test ${{ matrix.test_flags }} --no-default-features
 
     - name: Run tests (nats feature)
-      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features nats
+      run: cargo test ${{ matrix.test_flags }} --no-default-features --features nats
 
     # voice-local requires whisper.cpp build which needs cmake and native libs
     # All platforms now have required dependencies installed (cmake, LLVM/clang)
     - name: Run tests (voice-local feature)
-      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features voice-local
+      run: cargo test ${{ matrix.test_flags }} --no-default-features --features voice-local
 
     # Test macos-permissions feature on macOS only (uses objc/cocoa bindings)
     # CRITICAL: This feature was previously untested - now validated on macOS CI
     - name: Run tests (macos-permissions feature)
       if: matrix.os == 'macos-14'
-      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features macos-permissions
+      run: cargo test ${{ matrix.test_flags }} --no-default-features --features macos-permissions
 
     # Test linux-permissions feature on Linux only (xdg-desktop-portal, D-Bus)
     - name: Run tests (linux-permissions feature)
       if: matrix.os == 'ubuntu-latest'
-      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features linux-permissions
+      run: cargo test ${{ matrix.test_flags }} --no-default-features --features linux-permissions
 
     # Test windows-permissions feature on Windows only (WinRT APIs)
     - name: Run tests (windows-permissions feature)
       if: matrix.os == 'windows-2022'
-      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features windows-permissions
+      run: cargo test ${{ matrix.test_flags }} --no-default-features --features windows-permissions
 
     # Test security feature (ring + keyring for encryption and keychain)
     - name: Run tests (security feature)
-      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features security
+      run: cargo test ${{ matrix.test_flags }} --no-default-features --features security
 
     # Test json-ld feature (JSON-LD processing for MDH)
     - name: Run tests (json-ld feature)
-      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features json-ld
+      run: cargo test ${{ matrix.test_flags }} --no-default-features --features json-ld
 
     # Test with multiple features enabled (combined coverage)
     # Each platform includes its native permission feature for complete coverage
     - name: Run tests (combined features - Ubuntu)
       if: matrix.os == 'ubuntu-latest'
-      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features "voice-local,nats,security,json-ld,linux-permissions"
+      run: cargo test ${{ matrix.test_flags }} --no-default-features --features "voice-local,nats,security,json-ld,linux-permissions"
 
     - name: Run tests (combined features - macOS)
       if: matrix.os == 'macos-14'
-      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features "voice-local,nats,security,json-ld,macos-permissions"
+      run: cargo test ${{ matrix.test_flags }} --no-default-features --features "voice-local,nats,security,json-ld,macos-permissions"
 
     # Windows combined features test (includes windows-permissions)
     - name: Run tests (combined features - Windows)
       if: matrix.os == 'windows-2022'
-      run: cargo test ${{ env.TEST_FLAGS }} --no-default-features --features "voice-local,nats,security,json-ld,windows-permissions"
+      run: cargo test ${{ matrix.test_flags }} --no-default-features --features "voice-local,nats,security,json-ld,windows-permissions"
 
 
   frontend:

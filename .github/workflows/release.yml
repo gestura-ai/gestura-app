@@ -6,414 +6,473 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Tag to release (e.g., v1.0.0)'
-        required: true
+      ref:
+        description: 'Git ref to build (branch, tag, or SHA). Defaults to main.'
+        required: false
+        default: 'main'
         type: string
+      publish:
+        description: 'Create or update the GitHub release after a successful build.'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref_name || github.run_id }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  NODE_VERSION: '20'
+  RUST_VERSION: stable
 
 jobs:
-  create-release:
+  prepare:
+    name: Prepare release metadata
     runs-on: ubuntu-latest
     outputs:
-      release_id: ${{ steps.create-release.outputs.release_id }}
-      tag: ${{ steps.get_tag.outputs.TAG }}
+      publish: ${{ steps.metadata.outputs.publish }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
+      release_sha: ${{ steps.metadata.outputs.release_sha }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      version: ${{ steps.metadata.outputs.version }}
+      has_macos_signing: ${{ steps.signing.outputs.has_macos_signing }}
+      has_windows_signing: ${{ steps.signing.outputs.has_windows_signing }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout requested ref
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref }}
 
-      - name: Resolve tag
-        id: get_tag
+      - name: Resolve version and release metadata
+        id: metadata
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PUBLISH: ${{ github.event.inputs.publish }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "TAG=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-          else
-            echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import tomllib
+
+          root = pathlib.Path('.')
+          cargo = tomllib.loads((root / 'Cargo.toml').read_text(encoding='utf-8'))
+          workspace_version = cargo['workspace']['package']['version']
+          tauri_version = json.loads((root / 'crates/gestura-gui/tauri.conf.json').read_text(encoding='utf-8'))['version']
+          frontend_version = json.loads((root / 'crates/gestura-gui/frontend/package.json').read_text(encoding='utf-8'))['version']
+
+          versions = {
+              'Cargo.toml': workspace_version,
+              'crates/gestura-gui/tauri.conf.json': tauri_version,
+              'crates/gestura-gui/frontend/package.json': frontend_version,
+          }
+          unique_versions = set(versions.values())
+          if len(unique_versions) != 1:
+              raise SystemExit(f'Version drift detected across release metadata: {versions}')
+
+          semver = re.compile(r'^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$')
+          if not semver.fullmatch(workspace_version):
+              raise SystemExit(f'Workspace version is not valid semver: {workspace_version}')
+
+          expected_tag = f'v{workspace_version}'
+          event_name = os.environ['EVENT_NAME']
+          publish = event_name == 'push' or os.environ.get('INPUT_PUBLISH', '').lower() == 'true'
+          ref_name = os.environ.get('REF_NAME', '')
+
+          if event_name == 'push' and ref_name != expected_tag:
+              raise SystemExit(
+                  f'Tag/version mismatch: workflow triggered for {ref_name}, '
+                  f'but repository version resolves to {expected_tag}'
+              )
+
+          release_sha = subprocess.check_output(
+              ['git', 'rev-parse', 'HEAD'], text=True
+          ).strip()
+          prerelease = 'true' if '-' in workspace_version else 'false'
+
+          output_path = pathlib.Path(os.environ['GITHUB_OUTPUT'])
+          with output_path.open('a', encoding='utf-8') as fh:
+              print(f'publish={str(publish).lower()}', file=fh)
+              print(f'prerelease={prerelease}', file=fh)
+              print(f'release_sha={release_sha}', file=fh)
+              print(f'tag={expected_tag}', file=fh)
+              print(f'version={workspace_version}', file=fh)
+          PY
+
+      - name: Resolve signing availability
+        id: signing
+        run: |
+          echo "has_macos_signing=${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_INSTALLER_CERTIFICATE != '' && secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_INSTALLER_IDENTITY != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.KEYCHAIN_PASSWORD != '' }}" >> "$GITHUB_OUTPUT"
+          echo "has_windows_signing=${{ secrets.WINDOWS_CERTIFICATE != '' && secrets.WINDOWS_CERTIFICATE_PASSWORD != '' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Enforce release signing prerequisites
+        if: steps.metadata.outputs.publish == 'true'
+        run: |
+          if [ "${{ steps.signing.outputs.has_macos_signing }}" != "true" ]; then
+            echo "macOS signing secrets are incomplete; refusing to publish an unsigned release." >&2
+            exit 1
           fi
 
-      - name: Create release
-        id: create-release
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const { data } = await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: '${{ steps.get_tag.outputs.TAG }}',
-              name: 'Gestura ${{ steps.get_tag.outputs.TAG }}',
-              body: 'Release ${{ steps.get_tag.outputs.TAG }}',
-              draft: true,
-              prerelease: false
-            });
-            core.setOutput('release_id', data.id);
-            
+          if [ "${{ steps.signing.outputs.has_windows_signing }}" != "true" ]; then
+            echo "Windows signing secrets are incomplete; refusing to publish an unsigned release." >&2
+            exit 1
+          fi
 
-  build-release:
-    needs: create-release
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Pin macOS to macos-14 (ARM/Sonoma) and Windows to windows-2022 for reproducibility
-          # Each platform includes voice-local plus its native permission feature
-          - platform: 'macos-14'
-            tauri_args: '--target universal-apple-darwin'
-            features: 'voice-local,macos-permissions'
-          - platform: 'ubuntu-latest'
-            tauri_args: ''
-            features: 'voice-local,linux-permissions'
-          - platform: 'windows-2022'
-            tauri_args: ''
-            features: 'voice-local,windows-permissions'
-
-    runs-on: ${{ matrix.platform }}
+  build-macos:
+    name: Build macOS release artifacts
+    needs: prepare
+    runs-on: ${{ fromJSON(vars.RELEASE_MACOS_RUNNER != '' && vars.RELEASE_MACOS_RUNNER || '["macos-14"]') }}
+    timeout-minutes: 120
     env:
-      TAG: ${{ needs.create-release.outputs.tag }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_INSTALLER_CERTIFICATE: ${{ secrets.APPLE_INSTALLER_CERTIFICATE }}
+      APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
+      APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      MACOSX_DEPLOYMENT_TARGET: '10.15'
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-14' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - name: Install system dependencies (Ubuntu)
-        if: matrix.platform == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          # Ubuntu 24.04+ uses webkit2gtk-4.1, older versions use 4.0
-          # Try 4.1 first (Ubuntu 24.04+), fall back to 4.0 (Ubuntu 22.04)
-          # CRITICAL: libasound2-dev (ALSA audio) and libclang-dev (bindgen for whisper-rs) are required
-          sudo apt-get install -y build-essential cmake pkg-config libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libclang-dev
-          sudo apt-get install -y libwebkit2gtk-4.1-dev 2>/dev/null || sudo apt-get install -y libwebkit2gtk-4.0-dev
-
-      - name: Install system dependencies (macOS)
-        if: matrix.platform == 'macos-14'
-        run: |
-          # cmake: Required for whisper-rs (whisper.cpp) compilation
-          # pkg-config: Required for locating system libraries
-          brew install cmake pkg-config
-
-      - name: Install system dependencies (Windows)
-        if: matrix.platform == 'windows-2022'
-        shell: pwsh
-        run: |
-          # Install cmake and LLVM via Chocolatey (pre-installed on GitHub Windows runners)
-          # cmake: Required for whisper-rs (whisper.cpp) compilation
-          # llvm: Required for bindgen to generate FFI bindings for whisper-rs
-          choco install cmake llvm -y
-          # Add to PATH for subsequent steps
-          $cmakePath = "C:\Program Files\CMake\bin"
-          $llvmPath = "C:\Program Files\LLVM\bin"
-          echo "$cmakePath" >> $env:GITHUB_PATH
-          echo "$llvmPath" >> $env:GITHUB_PATH
-          # Set LIBCLANG_PATH for bindgen
-          echo "LIBCLANG_PATH=$llvmPath" >> $env:GITHUB_ENV
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v2-release-macos
+          cache-targets: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: 'crates/gestura-gui/frontend/package-lock.json'
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: crates/gestura-gui/frontend/package-lock.json
 
-      - name: Install frontend dependencies
-        working-directory: crates/gestura-gui/frontend
-        run: npm ci
+      - name: Install macOS build dependencies
+        run: brew install cmake pkg-config
 
-      - name: Build frontend
-        working-directory: crates/gestura-gui/frontend
-        run: npm run build
-
-      - name: Build CLI binary (macOS universal)
-        if: matrix.platform == 'macos-14'
-        run: |
-          cargo build --release -p gestura-cli --features voice-local --target aarch64-apple-darwin
-          cargo build --release -p gestura-cli --features voice-local --target x86_64-apple-darwin
-          mkdir -p target/universal-apple-darwin/release
-          lipo -create \
-            target/aarch64-apple-darwin/release/gestura \
-            target/x86_64-apple-darwin/release/gestura \
-            -output target/universal-apple-darwin/release/gestura
-
-      - name: Stage CLI for Tauri bundling (macOS)
-        if: matrix.platform == 'macos-14'
-        run: |
-          mkdir -p crates/gestura-gui/binaries
-          cp target/aarch64-apple-darwin/release/gestura crates/gestura-gui/binaries/gestura-aarch64-apple-darwin
-          cp target/x86_64-apple-darwin/release/gestura crates/gestura-gui/binaries/gestura-x86_64-apple-darwin
-          cp target/universal-apple-darwin/release/gestura crates/gestura-gui/binaries/gestura-universal-apple-darwin
-          chmod +x \
-            crates/gestura-gui/binaries/gestura-aarch64-apple-darwin \
-            crates/gestura-gui/binaries/gestura-x86_64-apple-darwin \
-            crates/gestura-gui/binaries/gestura-universal-apple-darwin
-
-      - name: Build CLI binary (Linux/Windows)
-        if: matrix.platform != 'macos-14'
-        run: cargo build --release -p gestura-cli --features voice-local
-
-      - name: Stage CLI for Tauri bundling (Linux)
-        if: matrix.platform == 'ubuntu-latest'
-        run: |
-          mkdir -p crates/gestura-gui/binaries
-          cp target/release/gestura crates/gestura-gui/binaries/gestura-x86_64-unknown-linux-gnu
-          chmod +x crates/gestura-gui/binaries/gestura-x86_64-unknown-linux-gnu
-
-      - name: Stage CLI for Tauri bundling (Windows)
-        if: matrix.platform == 'windows-2022'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path crates/gestura-gui/binaries | Out-Null
-          Copy-Item -Force target/release/gestura.exe crates/gestura-gui/binaries/gestura-x86_64-pc-windows-msvc.exe
-
-      - name: Import Apple certificates (macOS)
-        if: matrix.platform == 'macos-14'
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_INSTALLER_CERTIFICATE: ${{ secrets.APPLE_INSTALLER_CERTIFICATE }}
-          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          # Create temporary keychain
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-
-          # Import Developer ID Application certificate
-          if [ -n "$APPLE_CERTIFICATE" ]; then
-            echo "$APPLE_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/certificate.p12
-            security import $RUNNER_TEMP/certificate.p12 -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-          fi
-
-          # Import Developer ID Installer certificate (for PKG signing)
-          if [ -n "$APPLE_INSTALLER_CERTIFICATE" ]; then
-            echo "$APPLE_INSTALLER_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/installer_certificate.p12
-            security import $RUNNER_TEMP/installer_certificate.p12 -P "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-          fi
-
-          security list-keychain -d user -s $KEYCHAIN_PATH
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-
-      - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MACOSX_DEPLOYMENT_TARGET: '10.15'
-          # macOS signing environment variables
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
-        with:
-          projectPath: crates/gestura-gui
-          # Each platform uses voice-local plus its native permission feature from the matrix
-          args: '--features ${{ matrix.features }} ${{ matrix.tauri_args }}'
-
-      - name: Sign CLI binary (macOS)
-        if: matrix.platform == 'macos-14' && env.APPLE_SIGNING_IDENTITY != ''
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: |
-          codesign --force --options runtime --timestamp \
-            --sign "$APPLE_SIGNING_IDENTITY" \
-            target/universal-apple-darwin/release/gestura
-          codesign --verify --deep --strict target/universal-apple-darwin/release/gestura
-
-      # Verify notarization and code signing of the built app bundle
-      - name: Verify notarization (macOS)
-        if: matrix.platform == 'macos-14'
-        run: |
-          # Find the app bundle
-          APP_PATH="crates/gestura-gui/target/universal-apple-darwin/release/bundle/macos/Gestura.app"
-          if [ ! -d "$APP_PATH" ]; then
-            APP_PATH="crates/gestura-gui/target/release/bundle/macos/Gestura.app"
-          fi
-
-          if [ -d "$APP_PATH" ]; then
-            echo "Verifying app bundle: $APP_PATH"
-
-            # Verify code signature
-            echo "Checking code signature..."
-            codesign --verify --deep --strict --verbose=2 "$APP_PATH" || echo "⚠️ Warning: Code signature verification failed"
-
-            # Check Gatekeeper approval (notarization)
-            echo "Checking Gatekeeper approval..."
-            spctl --assess --type exec --verbose=2 "$APP_PATH" 2>&1 || echo "⚠️ Warning: Gatekeeper check failed (app may not be notarized)"
-
-            # Check for stapled notarization ticket
-            echo "Checking stapled ticket..."
-            xcrun stapler validate "$APP_PATH" 2>&1 || echo "⚠️ Warning: No stapled ticket found"
-          else
-            echo "⚠️ App bundle not found at expected paths"
-          fi
-
-          # Also check DMG if it exists
-          DMG_PATH=$(find crates/gestura-gui/target -name "*.dmg" 2>/dev/null | head -1)
-          if [ -n "$DMG_PATH" ] && [ -f "$DMG_PATH" ]; then
-            echo "Verifying DMG: $DMG_PATH"
-            xcrun stapler validate "$DMG_PATH" 2>&1 || echo "⚠️ Warning: DMG not stapled"
-          fi
-
-      - name: Create Full installer (PKG) (macOS)
-        if: matrix.platform == 'macos-14'
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
-        run: |
-          VERSION_NUM="${TAG#v}"
-          DIST_DIR="dist/release"
-          PKGROOT_DIR="${DIST_DIR}/pkgroot"
-
-          # Find the app bundle
-          APP_PATH="crates/gestura-gui/target/universal-apple-darwin/release/bundle/macos/Gestura.app"
-          if [ ! -d "$APP_PATH" ]; then
-            APP_PATH="crates/gestura-gui/target/release/bundle/macos/Gestura.app"
-          fi
-
-          # Create package root
-          mkdir -p "${PKGROOT_DIR}/Applications"
-          mkdir -p "${PKGROOT_DIR}/usr/local/bin"
-
-          # Copy app and CLI
-          cp -R "$APP_PATH" "${PKGROOT_DIR}/Applications/"
-          cp target/universal-apple-darwin/release/gestura "${PKGROOT_DIR}/usr/local/bin/"
-
-          # Create unsigned PKG
-          pkgbuild \
-            --root "${PKGROOT_DIR}" \
-            --identifier "ai.gestura.desktop" \
-            --version "${VERSION_NUM}" \
-            --install-location "/" \
-            "${DIST_DIR}/Gestura-${TAG}-unsigned.pkg"
-
-          # Sign PKG if installer identity is available
-          if [ -n "$APPLE_INSTALLER_IDENTITY" ]; then
-            productsign --sign "$APPLE_INSTALLER_IDENTITY" \
-              "${DIST_DIR}/Gestura-${TAG}-unsigned.pkg" \
-              "${DIST_DIR}/Gestura-${TAG}-universal.pkg"
-            rm -f "${DIST_DIR}/Gestura-${TAG}-unsigned.pkg"
-          else
-            mv "${DIST_DIR}/Gestura-${TAG}-unsigned.pkg" "${DIST_DIR}/Gestura-${TAG}-universal.pkg"
-          fi
-
-      - name: Package CLI-only archive (macOS)
-        if: matrix.platform == 'macos-14'
-        run: |
-          mkdir -p dist/release
-          tar -C target/universal-apple-darwin/release -czf "dist/release/gestura-cli-${TAG}-macos-universal.tar.gz" gestura
-
-      - name: Package CLI-only archive (Linux)
-        if: matrix.platform == 'ubuntu-latest'
-        run: |
-          mkdir -p dist/release
-          tar -C target/release -czf "dist/release/gestura-cli-${TAG}-linux-x86_64.tar.gz" gestura
-
-      - name: Package CLI-only archive (Windows)
-        if: matrix.platform == 'windows-2022'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist/release | Out-Null
-          Compress-Archive -Path target/release/gestura.exe -DestinationPath ("dist/release/gestura-cli-{0}-windows-x86_64.zip" -f $env:TAG) -Force
-
-      - name: Collect Full installer artifacts (Linux)
-        if: matrix.platform == 'ubuntu-latest'
+      - name: Import Apple signing certificates
+        if: needs.prepare.outputs.has_macos_signing == 'true'
         run: |
           set -euo pipefail
-          mkdir -p dist/release
-          deb_src="$(ls -1 crates/gestura-gui/target/release/bundle/deb/*.deb 2>/dev/null | head -1 || true)"
-          rpm_src="$(ls -1 crates/gestura-gui/target/release/bundle/rpm/*.rpm 2>/dev/null | head -1 || true)"
-          if [ -z "$deb_src" ]; then
-            deb_src="$(find crates/gestura-gui/target -type f -path '*/release/bundle/deb/*.deb' | head -1 || true)"
-          fi
-          if [ -z "$rpm_src" ]; then
-            rpm_src="$(find crates/gestura-gui/target -type f -path '*/release/bundle/rpm/*.rpm' | head -1 || true)"
-          fi
-          [ -n "$deb_src" ] || (echo "deb not found" && exit 1)
-          [ -n "$rpm_src" ] || (echo "rpm not found" && exit 1)
-          cp "$deb_src" "dist/release/gestura-${TAG}-linux-x86_64.deb"
-          cp "$rpm_src" "dist/release/gestura-${TAG}-linux-x86_64.rpm"
+          keychain_path="$RUNNER_TEMP/app-signing.keychain-db"
 
-      # Import Windows code signing certificate
-      - name: Import Windows code signing certificate
-        if: matrix.platform == 'windows-2022' && env.WINDOWS_CERTIFICATE != ''
-        env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          Path(os.environ['RUNNER_TEMP'], 'apple-signing-cert.p12').write_bytes(
+              base64.b64decode(os.environ['APPLE_CERTIFICATE'])
+          )
+          Path(os.environ['RUNNER_TEMP'], 'apple-installer-cert.p12').write_bytes(
+              base64.b64decode(os.environ['APPLE_INSTALLER_CERTIFICATE'])
+          )
+          PY
+
+          security import "$RUNNER_TEMP/apple-signing-cert.p12" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$keychain_path"
+
+          security import "$RUNNER_TEMP/apple-installer-cert.p12" \
+            -P "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$keychain_path"
+
+          security list-keychain -d user -s "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$keychain_path"
+
+      - name: Build signed macOS PKG
+        run: |
+          ./scripts/package-mac.sh \
+            --tag "$TAG" \
+            --dist dist/release \
+            --features 'voice-local,macos-permissions'
+
+      - name: Package signed macOS CLI archive
+        run: |
+          mkdir -p dist/release
+          tar -C target/universal-apple-darwin/release \
+            -czf "dist/release/gestura-cli-${TAG}-macos-universal.tar.gz" \
+            gestura
+
+      - name: Remove per-platform checksum manifest
+        run: rm -f "dist/release/gestura-${TAG}-SHA256SUMS.txt"
+
+      - name: Verify macOS signing and notarization
+        if: needs.prepare.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          app_path="target/universal-apple-darwin/release/bundle/macos/Gestura.app"
+          pkg_path="dist/release/Gestura-${TAG}-universal.pkg"
+          cli_path="target/universal-apple-darwin/release/gestura"
+
+          if [ ! -d "$app_path" ]; then
+            app_path="crates/gestura-gui/target/universal-apple-darwin/release/bundle/macos/Gestura.app"
+          fi
+
+          [ -d "$app_path" ]
+          [ -f "$pkg_path" ]
+          [ -f "$cli_path" ]
+
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          spctl --assess --type exec --verbose=2 "$app_path"
+          xcrun stapler validate "$app_path"
+          codesign --verify --deep --strict --verbose=2 "$cli_path"
+          xcrun stapler validate "$pkg_path"
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-macos
+          path: dist/release/*
+          if-no-files-found: error
+
+  build-linux:
+    name: Build Linux release artifacts
+    needs: prepare
+    runs-on: ${{ fromJSON(vars.RELEASE_LINUX_RUNNER != '' && vars.RELEASE_LINUX_RUNNER || '["ubuntu-22.04"]') }}
+    timeout-minutes: 90
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v2-release-linux
+          cache-targets: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: crates/gestura-gui/frontend/package-lock.json
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            libasound2-dev \
+            libayatana-appindicator3-dev \
+            libclang-dev \
+            libdbus-1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            pkg-config \
+            rpm
+          sudo apt-get install -y libwebkit2gtk-4.1-dev 2>/dev/null || sudo apt-get install -y libwebkit2gtk-4.0-dev
+
+      - name: Build Linux packages
+        run: |
+          ./scripts/package-linux.sh \
+            --tag "$TAG" \
+            --dist dist/release \
+            --features 'voice-local,linux-permissions'
+
+      - name: Package Linux CLI archive
+        run: |
+          mkdir -p dist/release
+          tar -C target/x86_64-unknown-linux-gnu/release \
+            -czf "dist/release/gestura-cli-${TAG}-linux-x86_64.tar.gz" \
+            gestura
+
+      - name: Remove per-platform checksum manifest
+        run: rm -f "dist/release/gestura-${TAG}-SHA256SUMS.txt"
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-linux
+          path: dist/release/*
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows release artifacts
+    needs: prepare
+    runs-on: ${{ fromJSON(vars.RELEASE_WINDOWS_RUNNER != '' && vars.RELEASE_WINDOWS_RUNNER || '["windows-2022"]') }}
+    timeout-minutes: 120
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v2-release-windows
+          cache-targets: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: crates/gestura-gui/frontend/package-lock.json
+
+      - name: Install Windows build dependencies
         shell: pwsh
         run: |
-          # Decode and import the certificate
+          choco install cmake llvm -y
+          "C:\Program Files\CMake\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Import Windows signing certificate
+        id: import-cert
+        if: needs.prepare.outputs.has_windows_signing == 'true'
+        shell: pwsh
+        run: |
           $certBytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
-          $certPath = "$env:RUNNER_TEMP\certificate.pfx"
+          $certPath = Join-Path $env:RUNNER_TEMP 'gestura-release-signing.pfx'
           [IO.File]::WriteAllBytes($certPath, $certBytes)
 
-          # Import to certificate store
           $securePassword = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText
-          Import-PfxCertificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword
+          Import-PfxCertificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword | Out-Null
 
-          # Get certificate thumbprint for Tauri signing
           $cert = Get-PfxCertificate -FilePath $certPath
-          echo "WINDOWS_CERT_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
-
-          # Clean up
+          "thumbprint=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Remove-Item $certPath -Force
 
-      - name: Collect Full installer artifacts (Windows)
-        if: matrix.platform == 'windows-2022'
+      - name: Build Windows MSI
+        shell: bash
+        env:
+          WINDOWS_CERT_THUMBPRINT: ${{ steps.import-cert.outputs.thumbprint }}
+        run: |
+          ./scripts/package-windows.sh \
+            --tag "$TAG" \
+            --dist dist/release \
+            --features 'voice-local,windows-permissions'
+
+      - name: Sign Windows CLI executable
+        if: needs.prepare.outputs.publish == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERT_THUMBPRINT: ${{ steps.import-cert.outputs.thumbprint }}
+        run: |
+          $cliPath = 'target\x86_64-pc-windows-msvc\release\gestura.exe'
+          if (-not (Test-Path $cliPath)) {
+            throw "CLI executable not found at $cliPath"
+          }
+
+          $signtool = (Get-Command signtool.exe -ErrorAction Stop).Source
+
+          & $signtool sign `
+            /sha1 $env:WINDOWS_CERT_THUMBPRINT `
+            /fd SHA256 `
+            /tr http://timestamp.digicert.com `
+            /td SHA256 `
+            $cliPath
+
+      - name: Package Windows CLI archive
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist/release | Out-Null
-          $msi = Get-ChildItem -Path crates/gestura-gui/target -Recurse -Filter *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $msi) { throw "MSI not found" }
-          Copy-Item -Force $msi.FullName ("dist/release/Gestura-{0}-windows-x86_64.msi" -f $env:TAG)
+          Compress-Archive `
+            -Path target/x86_64-pc-windows-msvc/release/gestura.exe `
+            -DestinationPath ("dist/release/gestura-cli-{0}-windows-x86_64.zip" -f $env:TAG) `
+            -Force
 
-      # Verify Windows code signature
-      - name: Verify Windows code signature
-        if: matrix.platform == 'windows-2022'
+      - name: Remove per-platform checksum manifest
         shell: pwsh
         run: |
-          $msi = Get-ChildItem -Path dist/release -Filter *.msi -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($msi) {
-            Write-Host "Verifying MSI signature: $($msi.FullName)"
-            $sig = Get-AuthenticodeSignature $msi.FullName
-            Write-Host "Signature Status: $($sig.Status)"
-            Write-Host "Signer: $($sig.SignerCertificate.Subject)"
-            if ($sig.Status -eq "Valid") {
-              Write-Host "✅ MSI is properly signed"
-            } elseif ($sig.Status -eq "NotSigned") {
-              Write-Host "⚠️ MSI is not signed (WINDOWS_CERTIFICATE secret may not be configured)"
-            } else {
-              Write-Host "⚠️ MSI signature status: $($sig.StatusMessage)"
+          Remove-Item -Path ("dist/release/gestura-{0}-SHA256SUMS.txt" -f $env:TAG) -Force -ErrorAction SilentlyContinue
+
+      - name: Verify Windows signatures
+        shell: pwsh
+        env:
+          REQUIRE_SIGNATURE: ${{ needs.prepare.outputs.publish }}
+        run: |
+          $msi = Get-ChildItem -Path dist/release -Filter *.msi -ErrorAction Stop | Select-Object -First 1
+          $cli = Get-Item 'target\x86_64-pc-windows-msvc\release\gestura.exe'
+
+          $msiSig = Get-AuthenticodeSignature $msi.FullName
+          $cliSig = Get-AuthenticodeSignature $cli.FullName
+
+          Write-Host "MSI signature status: $($msiSig.Status)"
+          Write-Host "CLI signature status: $($cliSig.Status)"
+
+          if ($env:REQUIRE_SIGNATURE -eq 'true') {
+            if ($msiSig.Status -ne 'Valid') {
+              throw "MSI is not validly signed: $($msiSig.StatusMessage)"
             }
-          } else {
-            Write-Host "⚠️ No MSI found to verify"
+            if ($cliSig.Status -ne 'Valid') {
+              throw "CLI executable is not validly signed: $($cliSig.StatusMessage)"
+            }
           }
 
-          # Also check the CLI executable
-          $exe = Get-ChildItem -Path target/release -Filter gestura.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($exe) {
-            Write-Host "Verifying CLI signature: $($exe.FullName)"
-            $sig = Get-AuthenticodeSignature $exe.FullName
-            Write-Host "CLI Signature Status: $($sig.Status)"
-          }
-
-      - name: Upload release artifacts (workflow artifact)
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-assets-${{ matrix.platform }}
+          name: release-assets-windows
           path: dist/release/*
           if-no-files-found: error
 
   publish-release:
-    needs: [create-release, build-release]
+    name: Publish GitHub release
+    needs: [prepare, build-macos, build-linux, build-windows]
+    if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
 
-      - name: Download build artifacts
+      - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: release-assets-*
@@ -421,68 +480,30 @@ jobs:
           merge-multiple: true
 
       - name: Generate unified SHA256SUMS manifest
-        env:
-          TAG: ${{ needs.create-release.outputs.tag }}
         run: |
           set -euo pipefail
           source scripts/packaging/common.sh
           write_sha256sums dist/release "gestura-${TAG}-SHA256SUMS.txt"
 
-      - name: Upload assets to GitHub release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.create-release.outputs.tag }}
+      - name: Create or update GitHub release
         run: |
           set -euo pipefail
-          gh release upload "$TAG" dist/release/* --clobber
 
-      - name: Publish release (undraft)
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.repos.updateRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: ${{ needs.create-release.outputs.release_id }},
-              draft: false
-            });
-
-  deploy-docs:
-    needs: publish-release
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check for package-lock.json
-        id: check-npm
-        run: |
-          if [ -f "package-lock.json" ]; then
-            echo "has_npm=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_npm=false" >> $GITHUB_OUTPUT
+          title="Gestura ${TAG}"
+          prerelease_flag=()
+          if [ "$PRERELEASE" = "true" ]; then
+            prerelease_flag+=(--prerelease)
           fi
 
-      - name: Setup Node.js
-        if: steps.check-npm.outputs.has_npm == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
-
-      - name: Install dependencies
-        if: steps.check-npm.outputs.has_npm == 'true'
-        run: npm ci
-
-      - name: Build documentation
-        run: |
-          mkdir -p docs
-          cp README.md docs/
-          cp CHANGELOG.md docs/
-          cp TODO.md docs/
-
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/release/* --clobber
+            gh release edit "$TAG" --title "$title" --draft=false "${prerelease_flag[@]}"
+          else
+            gh release create "$TAG" dist/release/* \
+              --target "$RELEASE_SHA" \
+              --title "$title" \
+              --generate-notes \
+              --draft \
+              "${prerelease_flag[@]}"
+            gh release edit "$TAG" --draft=false
+          fi

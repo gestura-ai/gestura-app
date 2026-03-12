@@ -28,6 +28,7 @@ APP_DISPLAY_NAME="Gestura"
 GUI_DIR="crates/gestura-gui"
 FRONTEND_DIR="${GUI_DIR}/frontend"
 CLI_PACKAGE="gestura-cli"
+CLI_DIR="crates/gestura-cli"
 
 DIST_DIR_DEFAULT="dist/macos"
 FEATURES_DEFAULT="voice-local"
@@ -37,6 +38,7 @@ TARGET_X86_64="x86_64-apple-darwin"
 TARGET_UNIVERSAL="universal-apple-darwin"
 
 INSTALLER_IDENTITY="${APPLE_INSTALLER_IDENTITY:-}"
+SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
 
 # usage prints CLI help.
 usage() {
@@ -53,7 +55,12 @@ Options:
   -h, --help          Show this help
 
 Env:
+  APPLE_SIGNING_IDENTITY    If set, the universal CLI is codesigned and the app
+                            bundle is expected to be signed/notarized by Tauri.
   APPLE_INSTALLER_IDENTITY  If set, productsign will be used to sign the PKG.
+  APPLE_ID / APPLE_TEAM_ID / APPLE_PASSWORD
+                            If set (or APPLE_PASSWORD uses @keychain:profile),
+                            the PKG will be notarized and stapled after signing.
 EOF
 }
 
@@ -80,8 +87,15 @@ check_prerequisites() {
   require_cmd lipo
   require_cmd pkgbuild
 
+  if [ -n "$SIGNING_IDENTITY" ]; then
+    require_cmd codesign
+    require_cmd spctl
+    require_cmd xcrun
+  fi
+
   if [ -n "$INSTALLER_IDENTITY" ]; then
     require_cmd productsign
+    require_cmd xcrun
   fi
 }
 
@@ -163,37 +177,71 @@ stage_ffmpeg() {
 # build_cli_universal builds the CLI for both macOS arch targets and produces a
 # universal binary at target/universal-apple-darwin/release/gestura.
 build_cli_universal() {
+  local arm64_target_dir="target/build-arm64"
+  local x86_64_target_dir="target/build-x86"
+
   log_info "Building CLI (${CLI_PACKAGE}) for ${TARGET_AARCH64}"
-  cargo build --release -p "$CLI_PACKAGE" --features "$FEATURES" --target "$TARGET_AARCH64"
+  CARGO_TARGET_DIR="$arm64_target_dir" \
+    cargo build --release -p "$CLI_PACKAGE" --features "$FEATURES" --target "$TARGET_AARCH64"
 
   log_info "Building CLI (${CLI_PACKAGE}) for ${TARGET_X86_64}"
-  cargo build --release -p "$CLI_PACKAGE" --features "$FEATURES" --target "$TARGET_X86_64"
+  CARGO_TARGET_DIR="$x86_64_target_dir" \
+    cargo build --release -p "$CLI_PACKAGE" --features "$FEATURES" --target "$TARGET_X86_64"
 
   local out_dir="target/${TARGET_UNIVERSAL}/release"
   mkdir -p "$out_dir"
 
   lipo -create \
-    "target/${TARGET_AARCH64}/release/${APP_NAME}" \
-    "target/${TARGET_X86_64}/release/${APP_NAME}" \
+    "${arm64_target_dir}/${TARGET_AARCH64}/release/${APP_NAME}" \
+    "${x86_64_target_dir}/${TARGET_X86_64}/release/${APP_NAME}" \
     -output "${out_dir}/${APP_NAME}"
   chmod +x "${out_dir}/${APP_NAME}"
 
   log_info "Wrote universal CLI: ${out_dir}/${APP_NAME}"
 }
 
-# stage_cli copies the universal CLI into the Tauri externalBin staging dir.
-stage_cli() {
-  local src="target/${TARGET_UNIVERSAL}/release/${APP_NAME}"
-  [ -f "$src" ] || die "CLI binary not found at ${src}"
+# sign_cli_universal codesigns the universal CLI binary when an Apple signing
+# identity is configured.
+sign_cli_universal() {
+  if [ -z "$SIGNING_IDENTITY" ]; then
+    log_info "APPLE_SIGNING_IDENTITY not set; skipping CLI codesign"
+    return 0
+  fi
 
+  local cli_path="target/${TARGET_UNIVERSAL}/release/${APP_NAME}"
+  [ -f "$cli_path" ] || die "CLI binary not found at ${cli_path}"
+
+  codesign --force --options runtime --timestamp \
+    --entitlements "${CLI_DIR}/entitlements.plist" \
+    --sign "$SIGNING_IDENTITY" \
+    "$cli_path"
+
+  codesign --verify --deep --strict --verbose=2 "$cli_path"
+  log_info "Signed universal CLI: ${cli_path}"
+}
+
+# stage_cli copies the per-arch and universal CLI binaries into the Tauri
+# externalBin staging dir. Universal Tauri builds validate the per-arch names.
+stage_cli() {
   local dst_dir="${GUI_DIR}/binaries"
   mkdir -p "$dst_dir"
-  local dst="${dst_dir}/${APP_NAME}-${TARGET_UNIVERSAL}"
+  local arm64_src="target/build-arm64/${TARGET_AARCH64}/release/${APP_NAME}"
+  local x86_64_src="target/build-x86/${TARGET_X86_64}/release/${APP_NAME}"
+  local universal_src="target/${TARGET_UNIVERSAL}/release/${APP_NAME}"
 
-  cp "$src" "$dst"
-  chmod +x "$dst"
+  [ -f "$arm64_src" ] || die "CLI binary not found at ${arm64_src}"
+  [ -f "$x86_64_src" ] || die "CLI binary not found at ${x86_64_src}"
+  [ -f "$universal_src" ] || die "CLI binary not found at ${universal_src}"
 
-  log_info "Staged CLI for bundling: ${dst}"
+  cp "$arm64_src" "${dst_dir}/${APP_NAME}-${TARGET_AARCH64}"
+  cp "$x86_64_src" "${dst_dir}/${APP_NAME}-${TARGET_X86_64}"
+  cp "$universal_src" "${dst_dir}/${APP_NAME}-${TARGET_UNIVERSAL}"
+  chmod +x \
+    "${dst_dir}/${APP_NAME}-${TARGET_AARCH64}" \
+    "${dst_dir}/${APP_NAME}-${TARGET_X86_64}" \
+    "${dst_dir}/${APP_NAME}-${TARGET_UNIVERSAL}"
+
+  log_info "Staged CLI binaries for bundling: ${dst_dir}"
 }
 
 # build_gui runs the Tauri bundler to produce the .app.
@@ -202,10 +250,66 @@ build_gui() {
   (cd "$GUI_DIR" && cargo tauri build --features "$FEATURES" --target "$TARGET_UNIVERSAL")
 }
 
+# notarization_credentials_configured returns success when either direct Apple
+# credentials or a notarytool keychain profile is available.
+notarization_credentials_configured() {
+  if [ -z "${APPLE_PASSWORD:-}" ]; then
+    return 1
+  fi
+
+  if [[ "${APPLE_PASSWORD}" == @keychain:* ]]; then
+    return 0
+  fi
+
+  [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]
+}
+
+# submit_for_notarization submits a signed artifact with notarytool and waits.
+submit_for_notarization() {
+  local artifact_path="$1"
+
+  if ! notarization_credentials_configured; then
+    log_warn "Apple notarization credentials are not configured; skipping notarization for ${artifact_path}"
+    return 0
+  fi
+
+  if [[ "${APPLE_PASSWORD}" == @keychain:* ]]; then
+    local profile_name="${APPLE_PASSWORD#@keychain:}"
+    xcrun notarytool submit "$artifact_path" \
+      --keychain-profile "$profile_name" \
+      --wait
+  else
+    xcrun notarytool submit "$artifact_path" \
+      --apple-id "$APPLE_ID" \
+      --team-id "$APPLE_TEAM_ID" \
+      --password "$APPLE_PASSWORD" \
+      --wait
+  fi
+}
+
+# verify_app_bundle checks that a signed macOS app bundle is accepted by the OS.
+verify_app_bundle() {
+  if [ -z "$SIGNING_IDENTITY" ]; then
+    log_info "APPLE_SIGNING_IDENTITY not set; skipping app signature verification"
+    return 0
+  fi
+
+  local app_path
+  app_path="$(find_app_bundle)"
+
+  codesign --verify --deep --strict --verbose=2 "$app_path"
+  spctl --assess --type exec --verbose=2 "$app_path"
+  xcrun stapler validate "$app_path"
+
+  log_info "Verified signed and notarized app bundle: ${app_path}"
+}
+
 # find_app_bundle locates the built Gestura.app.
 find_app_bundle() {
-  local universal_path="${GUI_DIR}/target/${TARGET_UNIVERSAL}/release/bundle/macos/${APP_DISPLAY_NAME}.app"
-  local regular_path="${GUI_DIR}/target/release/bundle/macos/${APP_DISPLAY_NAME}.app"
+  local universal_path="target/${TARGET_UNIVERSAL}/release/bundle/macos/${APP_DISPLAY_NAME}.app"
+  local regular_path="target/release/bundle/macos/${APP_DISPLAY_NAME}.app"
+  local universal_path_legacy="${GUI_DIR}/target/${TARGET_UNIVERSAL}/release/bundle/macos/${APP_DISPLAY_NAME}.app"
+  local regular_path_legacy="${GUI_DIR}/target/release/bundle/macos/${APP_DISPLAY_NAME}.app"
 
   if [ -d "$universal_path" ]; then
     printf "%s" "$universal_path"
@@ -215,8 +319,16 @@ find_app_bundle() {
     printf "%s" "$regular_path"
     return 0
   fi
+  if [ -d "$universal_path_legacy" ]; then
+    printf "%s" "$universal_path_legacy"
+    return 0
+  fi
+  if [ -d "$regular_path_legacy" ]; then
+    printf "%s" "$regular_path_legacy"
+    return 0
+  fi
 
-  die "App bundle not found (expected ${universal_path} or ${regular_path})"
+  die "App bundle not found (expected ${universal_path}, ${regular_path}, ${universal_path_legacy}, or ${regular_path_legacy})"
 }
 
 # create_pkg builds a PKG that installs the GUI + CLI.
@@ -248,6 +360,10 @@ create_pkg() {
   if [ -n "$INSTALLER_IDENTITY" ]; then
     productsign --sign "$INSTALLER_IDENTITY" "$unsigned_pkg" "$final_pkg"
     rm -f "$unsigned_pkg"
+
+    submit_for_notarization "$final_pkg"
+    xcrun stapler staple "$final_pkg"
+    xcrun stapler validate "$final_pkg"
   else
     mv "$unsigned_pkg" "$final_pkg"
   fi
@@ -260,9 +376,11 @@ main() {
   check_prerequisites
   build_frontend
   build_cli_universal
+  sign_cli_universal
   stage_cli
   stage_ffmpeg
   build_gui
+  verify_app_bundle
 
   local out_dir
   out_dir="$(ensure_fresh_dist_dir "$DIST_DIR")"

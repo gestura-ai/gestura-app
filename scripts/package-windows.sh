@@ -31,6 +31,8 @@ TARGET_TRIPLE_DEFAULT="x86_64-pc-windows-msvc"
 ARCH_LABEL_DEFAULT="x86_64"
 DIST_DIR_DEFAULT="dist/windows"
 FEATURES_DEFAULT="voice-local"
+TAURI_CONF_PATH="${GUI_DIR}/tauri.conf.json"
+TAURI_CONF_BACKUP=""
 
 # usage prints CLI help.
 usage() {
@@ -47,6 +49,10 @@ Options:
   --arch-label LABEL   Label used in artifact name (default: x86_64)
   --features FEATURES  Cargo feature set (default: voice-local)
   -h, --help           Show this help
+
+Env:
+  WINDOWS_CERT_THUMBPRINT  If set, patches tauri.conf.json so Tauri signs the
+                           MSI during the build.
 EOF
 }
 
@@ -79,6 +85,45 @@ check_prerequisites() {
     msys*|cygwin*) ;;
     *) log_warn "OSTYPE=${OSTYPE:-} (expected msys/cygwin). Continuing, but build may fail if not on Windows." ;;
   esac
+
+  if [ -n "${WINDOWS_CERT_THUMBPRINT:-}" ]; then
+    require_cmd node
+  fi
+}
+
+# patch_tauri_windows_signing injects the certificate thumbprint into the Tauri
+# config for the duration of the packaging run.
+patch_tauri_windows_signing() {
+  if [ -z "${WINDOWS_CERT_THUMBPRINT:-}" ]; then
+    return 0
+  fi
+
+  TAURI_CONF_BACKUP="${TAURI_CONF_PATH}.release-backup"
+  cp "$TAURI_CONF_PATH" "$TAURI_CONF_BACKUP"
+
+  node - "$TAURI_CONF_PATH" <<'NODE'
+const fs = require('fs');
+
+const confPath = process.argv[2];
+const thumbprint = process.env.WINDOWS_CERT_THUMBPRINT;
+const config = JSON.parse(fs.readFileSync(confPath, 'utf8'));
+
+config.bundle ??= {};
+config.bundle.windows ??= {};
+config.bundle.windows.certificateThumbprint = thumbprint;
+
+fs.writeFileSync(confPath, `${JSON.stringify(config, null, 2)}\n`);
+NODE
+
+  log_info "Injected Windows certificate thumbprint into ${TAURI_CONF_PATH}"
+}
+
+# restore_tauri_windows_signing restores the original Tauri config after patching.
+restore_tauri_windows_signing() {
+  if [ -n "$TAURI_CONF_BACKUP" ] && [ -f "$TAURI_CONF_BACKUP" ]; then
+    mv "$TAURI_CONF_BACKUP" "$TAURI_CONF_PATH"
+    log_info "Restored original ${TAURI_CONF_PATH}"
+  fi
 }
 
 # build_frontend builds the GUI frontend.
@@ -164,8 +209,10 @@ collect_artifacts() {
   local out_dir
   out_dir="$(ensure_fresh_dist_dir "$DIST_DIR")"
 
-  local bundle_root1="${GUI_DIR}/target/${TARGET_TRIPLE}/release/bundle"
-  local bundle_root2="${GUI_DIR}/target/release/bundle"
+  local bundle_root1="target/${TARGET_TRIPLE}/release/bundle"
+  local bundle_root2="target/release/bundle"
+  local bundle_root3="${GUI_DIR}/target/${TARGET_TRIPLE}/release/bundle"
+  local bundle_root4="${GUI_DIR}/target/release/bundle"
 
   local msi_src
   msi_src="$(ls -1 "${bundle_root1}/msi/"*.msi 2>/dev/null | head -1 || true)"
@@ -177,6 +224,18 @@ collect_artifacts() {
   fi
   if [ -z "$msi_src" ]; then
     msi_src="$(ls -1 "${bundle_root2}/wix/"*.msi 2>/dev/null | head -1 || true)"
+  fi
+  if [ -z "$msi_src" ]; then
+    msi_src="$(ls -1 "${bundle_root3}/msi/"*.msi 2>/dev/null | head -1 || true)"
+  fi
+  if [ -z "$msi_src" ]; then
+    msi_src="$(ls -1 "${bundle_root3}/wix/"*.msi 2>/dev/null | head -1 || true)"
+  fi
+  if [ -z "$msi_src" ]; then
+    msi_src="$(ls -1 "${bundle_root4}/msi/"*.msi 2>/dev/null | head -1 || true)"
+  fi
+  if [ -z "$msi_src" ]; then
+    msi_src="$(ls -1 "${bundle_root4}/wix/"*.msi 2>/dev/null | head -1 || true)"
   fi
 
   if [ -n "$msi_src" ]; then
@@ -194,10 +253,13 @@ collect_artifacts() {
 
 # main is the entrypoint.
 main() {
+  trap restore_tauri_windows_signing EXIT
+
   check_prerequisites
   build_frontend
   stage_cli
   stage_ffmpeg
+  patch_tauri_windows_signing
   build_gui
   collect_artifacts
 }

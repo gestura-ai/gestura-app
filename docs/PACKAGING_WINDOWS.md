@@ -131,7 +131,7 @@ The signing configuration in `crates/gestura-gui/tauri.conf.json`:
 }
 ```
 
-- `certificateThumbprint`: Set automatically by CI after certificate import
+- `certificateThumbprint`: Injected automatically during CI after the PFX is imported, then restored after the build
 - `timestampUrl`: Ensures signature remains valid after certificate expiry
 
 ---
@@ -142,12 +142,12 @@ The signing configuration in `crates/gestura-gui/tauri.conf.json`:
 
 The release workflow (`.github/workflows/release.yml`) handles Windows builds:
 
-1. **Install dependencies**: cmake, LLVM via Chocolatey
-2. **Build CLI**: With `voice-local` feature enabled
-3. **Build GUI**: Using Tauri action
-4. **Import certificate**: Decode and import PFX to cert store
-5. **Sign artifacts**: Automatic via Tauri when thumbprint is set
-6. **Verify signature**: PowerShell `Get-AuthenticodeSignature`
+1. **Runner**: Defaults to `windows-2022`, but can be overridden with the `RELEASE_WINDOWS_RUNNER` repo/org variable
+2. **Install dependencies**: cmake and LLVM via Chocolatey
+3. **Import certificate**: Decode the PFX, import it to `Cert:\CurrentUser\My`, and capture the thumbprint
+4. **MSI signing**: Inject the thumbprint into `tauri.conf.json` only for the packaging run, so Tauri signs the MSI
+5. **CLI signing**: Sign the standalone `gestura.exe` with `signtool.exe` before zipping it
+6. **Verification**: Hard-fails published releases if `Get-AuthenticodeSignature` is not `Valid`
 
 ### Secrets Required
 

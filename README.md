@@ -51,13 +51,22 @@ canonical architecture and API reference for the project.
 
 ### Generated Docs Quick Start
 
-If you want a single generated-doc entry point, start with the public facade:
+Hosted Rustdoc publishes from GitHub Actions to:
+
+- `https://gestura-ai.github.io/gestura-app/`
+- Primary facade entry point: `https://gestura-ai.github.io/gestura-app/gestura_core/index.html`
+
+The Pages workflow lives at `.github/workflows/rustdoc-pages.yml`.
+For the first deployment, make sure the repository Pages settings are configured
+to **Build and deployment → Source: GitHub Actions**.
+
+If you want a single local generated-doc entry point, start with the public facade:
 
 ```bash
 cargo doc -p gestura-core --no-deps --open
 ```
 
-If you want the full workspace reference:
+If you want the full workspace reference locally:
 
 ```bash
 cargo doc --workspace --no-deps
@@ -69,8 +78,10 @@ If you do not use `--open`, the main facade landing page is:
 
 - Primary API and architecture docs should live in `crates/*/src/lib.rs` and
   public module docs.
-- `cargo doc --workspace --no-deps` should produce a useful entry point for the
-  workspace libraries.
+- Hosted Rustdoc should remain the canonical public API destination for the
+  core-library surface.
+- `cargo doc --workspace --no-deps` should still produce a useful entry point for the
+  full local workspace.
 - The `docs/` directory should gradually shrink toward operational content such
   as install, packaging, release, and troubleshooting guides.
 
@@ -128,6 +139,10 @@ High-signal generated-doc crate entry points:
   - Streaming responses with real-time token display
   - Vim-style modal editing (optional)
   - Syntax highlighting for code blocks
+- **Interactive slash UX**:
+  - Quick actions like `/help`, `/clear`, `/save`, `/history`, `/summarize`, `/listen`, `/voice`, `/init`
+  - Managed root shells like `/config`, `/context`, `/a2a`, `/privacy`, `/agent`, `/workflow`, `/mcp`, `/tasks`, `/hooks`, `/memory`, `/session`, `/knowledge`
+  - Root shells open navigable browsers in TUI/basic mode; explicit subcommands still work directly (for example `/config get llm.primary`)
 - **Commands**: agent, exec, listen, config, model, device, mcp, a2a, knowledge, context, session, agent-info, tools, privacy, health, completion, init
 
 ### Built-in Tools (12)

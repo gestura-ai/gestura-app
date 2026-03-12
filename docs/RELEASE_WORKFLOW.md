@@ -1,225 +1,143 @@
-# Release Workflow - Main Branch Triggered
+# Release Workflow
 
 ## Overview
 
-The release system has been updated to trigger **only on merges to the main branch**, automatically creating releases with compressed executable bundles.
+Gestura’s canonical release pipeline lives in `.github/workflows/release.yml` and is now **tag-and-version validated**, **signed on macOS and Windows**, and **configurable for higher-capacity runners** when GitHub-hosted resources are not enough.
 
-## Workflow Triggers
+## Triggers
 
-### Release Workflow (`.github/workflows/release.yml`)
-**Triggers:**
-- ✅ Push to `main` branch (merges)
-- ✅ Manual dispatch (workflow_dispatch)
-- ❌ ~~Git tags~~ (removed)
+### Automatic publish
 
-### Package Manager Publishing (`.github/workflows/package-managers.yml`)
-**Triggers:**
-- ✅ After successful Release workflow completion
-- ✅ Manual dispatch (workflow_dispatch)
+- `push` to a tag matching `v*`
+- The tag **must** match the in-repo version (`v<workspace version>`)
 
-## Release Process
+### Manual dispatch
 
-### 1. **Automatic Version Detection**
-- Extracts version from `Cargo.toml`
-- Creates release tag automatically (e.g., `v0.1.0`)
-- Checks if release already exists to avoid duplicates
+- `workflow_dispatch`
+- Inputs:
+  - `ref`: branch, tag, or SHA to build
+  - `publish`: whether to create/update the GitHub release after the build
 
-### 2. **Multi-Platform Builds**
-Builds for all supported platforms:
+Manual dispatch is useful for dry runs on a release candidate commit before pushing the final tag.
 
-#### macOS
-- **Intel (x64)**: `x86_64-apple-darwin`
-- **Apple Silicon (ARM64)**: `aarch64-apple-darwin`
+## Version and tag rules
 
-#### Linux
-- **Intel (x64)**: `x86_64-unknown-linux-gnu`
-- **ARM64**: `aarch64-unknown-linux-gnu`
+The workflow reads and compares these files before any platform build starts:
 
-#### Windows
-- **Intel (x64)**: `x86_64-pc-windows-msvc`
-- **ARM64**: `aarch64-pc-windows-msvc`
+- `Cargo.toml` → `workspace.package.version`
+- `crates/gestura-gui/tauri.conf.json` → `version`
+- `crates/gestura-gui/frontend/package.json` → `version`
 
-### 3. **Compressed Executable Bundles**
-All binaries are automatically compressed:
+The workflow fails immediately if:
 
-#### Archive Formats
-- **Linux/macOS**: `.tar.gz` archives
-- **Windows**: `.zip` archives
+- any version differs
+- the version is not valid semver
+- a tag-triggered run is not for `v<version>`
 
-#### Naming Convention
-```
-haptic-harmony-simulator-{os}-{arch}.{ext}
-```
+## Release job layout
+
+1. **Prepare**
+   - validates versions and tags
+   - resolves the exact release commit SHA
+   - checks whether macOS and Windows signing secrets are present
+2. **Build macOS**
+   - builds a universal CLI with separate target dirs
+   - stages per-arch sidecars for Tauri universal bundling
+   - signs the CLI, app, and PKG
+   - verifies notarization and stapled tickets
+3. **Build Linux**
+   - builds `.deb` / `.rpm` installers and CLI tarball
+4. **Build Windows**
+   - imports the PFX certificate
+   - injects the certificate thumbprint into `tauri.conf.json` during the build
+   - signs the MSI and standalone CLI executable
+   - verifies signatures with `Get-AuthenticodeSignature`
+5. **Publish release**
+   - downloads all artifacts
+   - generates a unified SHA256 manifest
+   - creates or updates the GitHub release and uploads assets
+
+## Canonical release assets
+
+The workflow publishes these OS release packages and companion CLI archives:
+
+- macOS
+  - `Gestura-vX.Y.Z-universal.pkg`
+  - `gestura-cli-vX.Y.Z-macos-universal.tar.gz`
+- Linux
+  - `gestura-vX.Y.Z-linux-x86_64.deb`
+  - `gestura-vX.Y.Z-linux-x86_64.rpm`
+  - `gestura-cli-vX.Y.Z-linux-x86_64.tar.gz`
+- Windows
+  - `Gestura-vX.Y.Z-windows-x86_64.msi`
+  - `gestura-cli-vX.Y.Z-windows-x86_64.zip`
+- Checksums
+  - `gestura-vX.Y.Z-SHA256SUMS.txt`
+
+## Required secrets for signed releases
+
+### macOS
+
+- `APPLE_CERTIFICATE`
+- `APPLE_CERTIFICATE_PASSWORD`
+- `APPLE_INSTALLER_CERTIFICATE`
+- `APPLE_INSTALLER_CERTIFICATE_PASSWORD`
+- `APPLE_SIGNING_IDENTITY`
+- `APPLE_INSTALLER_IDENTITY`
+- `APPLE_TEAM_ID`
+- `APPLE_ID`
+- `APPLE_PASSWORD`
+- `KEYCHAIN_PASSWORD`
+
+### Windows
+
+- `WINDOWS_CERTIFICATE`
+- `WINDOWS_CERTIFICATE_PASSWORD`
+
+If `publish=true` (or the workflow is tag-triggered), the workflow **fails early** when these signing secrets are incomplete.
+
+## Runner overrides for resource pressure
+
+The release workflow supports repository/org variables so Windows and macOS can move to larger or self-hosted runners without changing YAML again.
+
+Supported variables:
+
+- `RELEASE_MACOS_RUNNER`
+- `RELEASE_WINDOWS_RUNNER`
+- `RELEASE_LINUX_RUNNER`
+
+Each variable must be valid JSON for `runs-on`.
 
 Examples:
-- `haptic-harmony-simulator-macos-x64.tar.gz`
-- `haptic-harmony-simulator-macos-arm64.tar.gz`
-- `haptic-harmony-simulator-linux-x64.tar.gz`
-- `haptic-harmony-simulator-linux-arm64.tar.gz`
-- `haptic-harmony-simulator-windows-x64.zip`
-- `haptic-harmony-simulator-windows-arm64.zip`
 
-### 4. **Release Creation**
-- Creates GitHub release automatically
-- Uploads all compressed bundles
-- Generates release notes with download links
-- Includes both CLI and GUI versions
+- GitHub-hosted default: `["macos-14"]`
+- macOS self-hosted: `["self-hosted", "macOS", "arm64", "gestura-release"]`
+- Windows self-hosted: `["self-hosted", "Windows", "x64", "gestura-release"]`
 
-### 5. **Package Manager Publishing**
-After successful release creation:
-- Updates Homebrew formula
-- Publishes to Chocolatey
-- Submits to Winget
-- Publishes Snap package
-- Creates AppImage for Linux
+## Recommended release process
 
-## How to Release
+1. Update the version consistently in:
+   - `Cargo.toml`
+   - `crates/gestura-gui/tauri.conf.json`
+   - `crates/gestura-gui/frontend/package.json`
+2. Run validation locally:
+   - `cargo fmt`
+   - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+   - `cargo test --workspace --all-features`
+3. Merge the release commit
+4. Push the release tag:
+   - `git tag vX.Y.Z`
+   - `git push origin vX.Y.Z`
+5. Monitor the GitHub Actions run and verify uploaded assets
 
-### Method 1: Merge to Main (Recommended)
+## Manual dry-run example
+
 ```bash
-# 1. Update version in Cargo.toml
-vim Cargo.toml  # Update version = "1.0.0"
-
-# 2. Commit and push to feature branch
-git add Cargo.toml
-git commit -m "Bump version to 1.0.0"
-git push origin feature/version-bump
-
-# 3. Create PR and merge to main
-# This automatically triggers the release workflow
+gh workflow run release.yml -f ref=main -f publish=false
 ```
 
-### Method 2: Direct Push to Main
-```bash
-# 1. Update version in Cargo.toml
-vim Cargo.toml  # Update version = "1.0.0"
+## Notes
 
-# 2. Commit and push directly to main
-git add Cargo.toml
-git commit -m "Release v1.0.0"
-git push origin main
-
-# This automatically triggers the release workflow
-```
-
-### Method 3: Manual Dispatch
-```bash
-# Use GitHub CLI or web interface
-gh workflow run release.yml -f version=v1.0.0
-```
-
-## What Happens Automatically
-
-### On Main Branch Merge:
-1. **Version Detection**: Reads version from `Cargo.toml`
-2. **Release Creation**: Creates GitHub release with tag
-3. **Multi-Platform Build**: Builds for all 6 platform/arch combinations
-4. **Compression**: Creates compressed archives for all binaries
-5. **Upload**: Uploads all archives to the GitHub release
-6. **Package Publishing**: Triggers package manager publishing workflow
-
-### Release Assets Created:
-- `haptic-harmony-simulator-macos-x64.tar.gz`
-- `haptic-harmony-simulator-macos-arm64.tar.gz`
-- `haptic-harmony-simulator-linux-x64.tar.gz`
-- `haptic-harmony-simulator-linux-arm64.tar.gz`
-- `haptic-harmony-simulator-windows-x64.zip`
-- `haptic-harmony-simulator-windows-arm64.zip`
-- `haptic-harmony-simulator-x86_64.AppImage` (Linux portable)
-- Tauri-generated platform-specific installers (DMG, MSI, DEB, etc.)
-
-## Monitoring Releases
-
-### GitHub Actions
-- Monitor workflow runs in the Actions tab
-- Check for build failures or upload issues
-- Review release creation and asset uploads
-
-### Release Page
-- Verify all expected assets are uploaded
-- Check release notes are generated correctly
-- Confirm download links work
-
-### Package Managers
-- Homebrew: Check formula updates
-- Chocolatey: Verify package publication
-- Winget: Confirm submission success
-- Snap: Check store publication
-
-## Troubleshooting
-
-### Build Failures
-- Check GitHub Actions logs
-- Verify Cargo.toml version format
-- Ensure all dependencies are available
-
-### Missing Assets
-- Check if compression step completed
-- Verify upload permissions
-- Review GitHub token permissions
-
-### Package Manager Issues
-- Check API keys in GitHub secrets
-- Verify package configurations
-- Review submission logs
-
-## Version Management
-
-### Semantic Versioning
-Follow semantic versioning (semver):
-- `MAJOR.MINOR.PATCH` (e.g., `1.2.3`)
-- Breaking changes: increment MAJOR
-- New features: increment MINOR
-- Bug fixes: increment PATCH
-
-### Pre-release Versions
-For pre-releases, use:
-- `1.0.0-alpha.1`
-- `1.0.0-beta.1`
-- `1.0.0-rc.1`
-
-### Version in Cargo.toml
-```toml
-[package]
-name = "haptic-harmony-simulation"
-version = "1.0.0"  # Update this to trigger release
-```
-
-## Security Considerations
-
-### Required Secrets
-Ensure these secrets are set in GitHub repository settings:
-- `GITHUB_TOKEN` (automatically provided)
-- `HOMEBREW_TAP_TOKEN` (for Homebrew updates)
-- `CHOCOLATEY_API_KEY` (for Chocolatey publishing)
-- `WINGET_TOKEN` (for Winget submissions)
-- `SNAPCRAFT_TOKEN` (for Snap store)
-
-### Permissions
-- Workflows have write access to releases
-- Package manager tokens have appropriate scopes
-- Cross-compilation tools are securely installed
-
-## Benefits of This Approach
-
-### Automated
-- No manual tag creation required
-- Automatic version detection
-- Compressed bundles without manual steps
-
-### Consistent
-- Every main branch merge creates a release
-- Standardized naming conventions
-- Reliable compression and upload
-
-### Comprehensive
-- All platforms and architectures
-- Multiple package managers
-- Both CLI and GUI versions
-
-### Traceable
-- Clear workflow logs
-- Version tied to commits
-- Automated release notes
-
-This workflow ensures that every merge to main creates a complete, professional release with compressed executables ready for distribution across all supported platforms and package managers.
+- macOS and Windows signing are enforced for published releases.
+- Linux packages are built and checksummed but do not use platform code signing.
+- Release publication is intentionally separate from docs/package-manager publishing so unrelated jobs cannot block installer creation.

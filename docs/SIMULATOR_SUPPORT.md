@@ -13,7 +13,7 @@ Gestura.app provides extensive support for Haptic Harmony Ring simulators, enabl
 - **Automatic Recognition**: Detects devices with "Simulator" in the name
 - **Visual Indicators**: UI clearly distinguishes simulators from real rings
 - **Developer Mode**: Toggle for simulator-specific features and debugging tools
-- **Auto-Discovery**: Automatically discovers simulators on localhost
+- **Managed Runtime Discovery**: Automatically discovers simulator devices through the shared app runtime
 
 ### 2. Enhanced Debugging Support
 
@@ -24,7 +24,7 @@ Gestura.app provides extensive support for Haptic Harmony Ring simulators, enabl
 
 ### 3. Development Workflow Integration
 
-- **Localhost Discovery**: Auto-discovery on configurable port ranges
+- **Shared Runtime Integration**: Simulator commands operate against one persistent ring/simulator manager instance
 - **Reset/Reconnect**: Easy simulator reset and reconnection functionality
 - **Configuration Options**: Simulator-specific settings and preferences
 - **Health Monitoring**: Automated health checks with configurable intervals
@@ -70,7 +70,19 @@ The simulator support is configured through the `DeveloperSettings` in the appli
 - **auto_connect**: Automatically connect to discovered simulators
 - **health_check_interval**: Interval (seconds) for health monitoring
 - **enable_metrics**: Collect and display performance metrics
-- **discovery_port_range**: Port range for localhost discovery
+- **discovery_port_range**: Reserved for future external bridge discovery flows
+
+## Current runtime model
+
+`gestura.app` now keeps a single shared ring manager and simulator manager in Tauri app state.
+That means ring scans, pairing, simulator tests, health checks, and notification haptics all use the same live runtime instead of creating throwaway mock managers per command.
+
+Today the shared runtime is hybrid:
+
+- it prefers the real external BLE central adapter in `gestura.app` when matching peripherals are available
+- it falls back to the built-in simulated ring manager when no external BLE adapter or matching device is present
+
+At the time of writing, `haptic-harmony-simulator` still models BLE internally rather than advertising a real OS BLE peripheral, so end-to-end validation of the external path remains blocked on simulator-side advertising support.
 
 ## Canonical API / IPC Reference
 

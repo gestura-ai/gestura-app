@@ -336,12 +336,12 @@ The app is signed but not notarized:
 
 The release workflow (`.github/workflows/release.yml`) handles macOS builds automatically:
 
-1. **Runner**: Uses `macos-14` (ARM/Sonoma) for reproducibility
+1. **Runner**: Defaults to `macos-14`, but can be overridden with the `RELEASE_MACOS_RUNNER` repo/org variable
 2. **Dependencies**: Installs `cmake` and `pkg-config` via Homebrew
-3. **Universal Binary**: Builds for both `aarch64-apple-darwin` and `x86_64-apple-darwin`, then combines with `lipo`
-4. **Code Signing**: Imports certificates from GitHub Secrets
-5. **Notarization**: Handled by `tauri-apps/tauri-action@v0`
-6. **Verification**: Validates signature and notarization after build
+3. **Universal CLI Build**: Builds `aarch64-apple-darwin` and `x86_64-apple-darwin` in separate target dirs, then combines them with `lipo`
+4. **Bundling**: Uses `scripts/package-mac.sh` so the same staging logic is shared by local packaging and CI
+5. **Signing + Notarization**: Imports Developer ID Application + Installer certificates, signs the CLI/app/PKG, submits the PKG to `notarytool`, and staples the results
+6. **Verification**: Hard-fails published releases if signature or notarization validation fails
 
 ### Required GitHub Secrets
 
