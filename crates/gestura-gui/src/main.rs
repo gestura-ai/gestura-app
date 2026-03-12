@@ -41,9 +41,44 @@ async fn main() {
         manager.attach_kv(KvStore::new(&config.nats_url, "agents_state"));
     }
 
-    // Create ring manager
-    let ring_manager: Option<std::sync::Arc<dyn gestura_gui::ble::RingManager>> =
-        Some(std::sync::Arc::from(gestura_gui::ble::create_ring_manager()));
+    // Create a shared simulated ring runtime. This replaces the previous
+    // throwaway per-command mock manager and gives the app one persistent
+    // manager instance that all simulator/ring commands can use.
+    let (device_simulator, mut simulator_event_rx) =
+        gestura_gui::device_simulator::create_test_simulator().await;
+    let internal_ring_manager: std::sync::Arc<dyn gestura_gui::ble::RingManager> =
+        std::sync::Arc::new(gestura_gui::device_simulator::SimulatedRingManager::new(
+            device_simulator,
+        ));
+    let external_ring_manager = match gestura_gui::ble_central::ExternalBleRingManager::new().await
+    {
+        Ok(manager) => Some(std::sync::Arc::new(manager)),
+        Err(error) => {
+            tracing::warn!(%error, "Failed to initialize external BLE adapter; using internal simulator runtime only");
+            None
+        }
+    };
+    let ring_manager: std::sync::Arc<dyn gestura_gui::ble::RingManager> =
+        std::sync::Arc::new(gestura_gui::ble_central::HybridRingManager::new(
+            external_ring_manager,
+            internal_ring_manager,
+        ));
+    let (ble_event_tx, _) = tokio::sync::broadcast::channel(256);
+    let ble_event_forwarder = ble_event_tx.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Ok(event) = simulator_event_rx.recv().await {
+            let _ = ble_event_forwarder.send(event);
+        }
+    });
+    let simulator_settings = Arc::new(tokio::sync::RwLock::new(config.developer.clone()));
+    let simulator_manager = Arc::new(gestura_gui::simulator::SimulatorManager::new(
+        simulator_settings,
+        ring_manager.clone(),
+        ble_event_tx.clone(),
+    ));
+    if let Err(error) = simulator_manager.start().await {
+        tracing::warn!(%error, "Failed to start simulator manager");
+    }
 
     // Build shared state and wire event forwarding
     let orchestrator = Arc::new(gestura_gui::orchestrator::AgentOrchestrator::new(
@@ -57,6 +92,8 @@ async fn main() {
         config: config.clone(),
         orchestrator,
         ring_manager,
+        simulator_manager,
+        ble_event_tx,
     };
 
     if let Err(error) = gestura_gui::a2a_runtime::start_a2a_runtime(config.clone()).await {
@@ -206,6 +243,7 @@ async fn main() {
             gestura_gui::api::spawn_subagent,
             gestura_gui::api::list_active_tasks,
             gestura_gui::api::cancel_task,
+            gestura_gui::api::pause_workflow_task,
             gestura_gui::api::list_supervisor_runs,
             gestura_gui::api::list_root_supervisor_runs,
             gestura_gui::api::list_child_supervisor_runs,
@@ -284,6 +322,7 @@ async fn main() {
             gestura_gui::api::get_memory_entry_detail,
             gestura_gui::api::promote_memory_candidate_entry,
             gestura_gui::api::update_memory_entry_detail,
+            gestura_gui::api::refresh_memory_console_governance,
             gestura_gui::api::set_memory_entry_archived,
             gestura_gui::api::delete_memory_entry,
             gestura_gui::api::clear_memory_console_entries,

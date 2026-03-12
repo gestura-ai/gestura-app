@@ -3,11 +3,14 @@ use crate::ble::{BleEvent, RingManager, SimulatorStatus, TestHapticPattern};
 ///
 /// This module provides enhanced support for Haptic Harmony Ring simulators,
 /// including auto-discovery, health monitoring, and development workflow integration.
-use crate::{AppError, config::DeveloperSettings};
+use crate::{
+    AppError,
+    config::{DeveloperSettings, SimulatorSettings},
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{Mutex, RwLock, broadcast};
 
 /// Simulator discovery and management service
 pub struct SimulatorManager {
@@ -20,7 +23,7 @@ pub struct SimulatorManager {
     /// Event broadcaster
     event_tx: broadcast::Sender<BleEvent>,
     /// Health check task handle
-    health_check_handle: Option<tokio::task::JoinHandle<()>>,
+    health_check_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 /// Information about a connected simulator
@@ -68,12 +71,12 @@ impl SimulatorManager {
             simulators: Arc::new(RwLock::new(HashMap::new())),
             ring_manager,
             event_tx,
-            health_check_handle: None,
+            health_check_handle: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Start the simulator manager
-    pub async fn start(&mut self) -> Result<(), AppError> {
+    pub async fn start(&self) -> Result<(), AppError> {
         let (enable_simulators, auto_discover) = {
             let settings = self.settings.read().await;
             (
@@ -101,8 +104,8 @@ impl SimulatorManager {
     }
 
     /// Stop the simulator manager
-    pub async fn stop(&mut self) {
-        if let Some(handle) = self.health_check_handle.take() {
+    pub async fn stop(&self) {
+        if let Some(handle) = self.health_check_handle.lock().await.take() {
             handle.abort();
         }
         tracing::info!("Simulator manager stopped");
@@ -119,18 +122,15 @@ impl SimulatorManager {
             end_port
         );
 
-        // Scan for simulators
-        let simulators = self.ring_manager.scan_for_simulators().await?;
-
-        for simulator_id in simulators {
-            self.register_simulator(simulator_id).await?;
-        }
-
-        Ok(())
+        self.scan_for_simulators().await.map(|_| ())
     }
 
     /// Register a new simulator
     async fn register_simulator(&self, device_id: String) -> Result<(), AppError> {
+        if self.simulators.read().await.contains_key(&device_id) {
+            return Ok(());
+        }
+
         let settings = self.settings.read().await;
 
         let simulator_info = SimulatorInfo {
@@ -165,7 +165,15 @@ impl SimulatorManager {
     }
 
     /// Start health check task
-    async fn start_health_check_task(&mut self) {
+    async fn start_health_check_task(&self) {
+        let mut handle_guard = self.health_check_handle.lock().await;
+        if handle_guard
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
+        {
+            return;
+        }
+
         let settings = self.settings.clone();
         let simulators = self.simulators.clone();
         let ring_manager = self.ring_manager.clone();
@@ -210,7 +218,16 @@ impl SimulatorManager {
             }
         });
 
-        self.health_check_handle = Some(handle);
+        *handle_guard = Some(handle);
+    }
+
+    /// Scan for simulators and register newly discovered instances.
+    pub async fn scan_for_simulators(&self) -> Result<Vec<String>, AppError> {
+        let simulator_ids = self.ring_manager.scan_for_simulators().await?;
+        for simulator_id in &simulator_ids {
+            self.register_simulator(simulator_id.clone()).await?;
+        }
+        Ok(simulator_ids)
     }
 
     /// Get all connected simulators
@@ -256,9 +273,68 @@ impl SimulatorManager {
         self.ring_manager.get_connection_logs(device_id).await
     }
 
+    /// Get simulator health status.
+    pub async fn get_simulator_health(&self, device_id: &str) -> Result<SimulatorStatus, AppError> {
+        self.ring_manager.get_simulator_health(device_id).await
+    }
+
     /// Check if developer mode is enabled
     pub async fn is_developer_mode_enabled(&self) -> bool {
         self.settings.read().await.developer_mode
+    }
+
+    /// Return the current simulator settings snapshot.
+    pub async fn get_simulator_config(&self) -> SimulatorSettings {
+        self.settings.read().await.simulator.clone()
+    }
+
+    /// Return the current developer settings snapshot.
+    pub async fn get_settings(&self) -> DeveloperSettings {
+        self.settings.read().await.clone()
+    }
+
+    /// Update simulator settings used by the runtime manager.
+    pub async fn update_simulator_config(&self, config: SimulatorSettings) {
+        self.settings.write().await.simulator = config;
+    }
+
+    /// Update the developer mode flag used by simulator features.
+    pub async fn set_developer_mode(&self, enabled: bool) {
+        self.settings.write().await.developer_mode = enabled;
+    }
+
+    /// Enable or disable simulator support at runtime.
+    pub async fn set_simulator_support(&self, enabled: bool) -> Result<(), AppError> {
+        {
+            let mut settings = self.settings.write().await;
+            settings.enable_simulators = enabled;
+        }
+
+        if enabled {
+            self.start().await
+        } else {
+            self.stop().await;
+            self.simulators.write().await.clear();
+            Ok(())
+        }
+    }
+
+    /// Update the health monitoring interval for future checks.
+    pub async fn set_health_check_interval(&self, interval_seconds: u32) {
+        self.settings.write().await.simulator.health_check_interval = interval_seconds;
+    }
+
+    /// Get current metrics for a simulator.
+    pub async fn get_simulator_metrics(
+        &self,
+        device_id: &str,
+    ) -> Result<SimulatorMetrics, AppError> {
+        self.simulators
+            .read()
+            .await
+            .get(device_id)
+            .map(|info| info.metrics.clone())
+            .ok_or_else(|| AppError::Ble(format!("Simulator not found: {device_id}")))
     }
 
     /// Update simulator metrics
@@ -380,6 +456,53 @@ pub struct TestResults {
     pub connectivity: bool,
     pub latency_ms: f64,
     pub haptic_tests: Vec<HapticTestResult>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ble::RingManager;
+    use crate::device_simulator::{SimulatedRingManager, create_test_simulator};
+
+    async fn build_manager() -> Arc<SimulatorManager> {
+        let (device_simulator, _event_rx) = create_test_simulator().await;
+        let ring_manager: Arc<dyn RingManager> =
+            Arc::new(SimulatedRingManager::new(device_simulator));
+        let (event_tx, _) = broadcast::channel(32);
+        Arc::new(SimulatorManager::new(
+            Arc::new(RwLock::new(DeveloperSettings::default())),
+            ring_manager,
+            event_tx,
+        ))
+    }
+
+    #[tokio::test]
+    async fn scan_for_simulators_registers_runtime_devices() {
+        let manager = build_manager().await;
+
+        let discovered = manager.scan_for_simulators().await.unwrap();
+        let simulators = manager.get_simulators().await;
+
+        assert!(!discovered.is_empty());
+        assert_eq!(discovered.len(), simulators.len());
+        assert!(
+            discovered
+                .iter()
+                .all(|device_id| simulators.contains_key(device_id))
+        );
+    }
+
+    #[tokio::test]
+    async fn update_simulator_config_changes_runtime_settings() {
+        let manager = build_manager().await;
+        let mut updated = manager.get_simulator_config().await;
+        updated.health_check_interval = 5;
+        updated.enable_metrics = false;
+
+        manager.update_simulator_config(updated.clone()).await;
+
+        assert_eq!(manager.get_simulator_config().await, updated);
+    }
 }
 
 impl Default for TestResults {

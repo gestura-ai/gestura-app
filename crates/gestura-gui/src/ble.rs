@@ -290,6 +290,8 @@ pub mod ring_constants {
     pub const GESTURE_EVENT_UUID: &str = "12345678-1234-5678-9abc-123456789abe";
     /// Characteristic UUID for battery level
     pub const BATTERY_LEVEL_UUID: &str = "12345678-1234-5678-9abc-123456789abf";
+    /// Characteristic UUID for shared state snapshots
+    pub const STATE_SNAPSHOT_UUID: &str = "12345678-1234-5678-9abc-123456789ac1";
     /// Characteristic UUID for OTA updates
     pub const OTA_UPDATE_UUID: &str = "12345678-1234-5678-9abc-123456789ac0";
 }

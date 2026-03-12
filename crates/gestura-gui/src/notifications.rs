@@ -4,11 +4,10 @@
 //! - LLM response completes
 //! - MCP tool requests feedback from user
 
-use crate::ble::create_ring_manager;
 use crate::haptics::{HapticPattern, HapticRequest};
 use gestura_core::config::{AppConfig, AppConfigSecurityExt, NotificationSettings};
 use std::sync::OnceLock;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Global notification manager instance
 static NOTIFICATION_MANAGER: OnceLock<NotificationManager> = OnceLock::new();
@@ -71,7 +70,7 @@ impl NotificationManager {
 
         // Send haptic notification
         if settings.haptic_enabled {
-            self.send_haptic(notification_type, settings).await;
+            self.send_haptic(notification_type, settings, app).await;
         }
 
         // Handle MCP feedback special behavior
@@ -180,6 +179,7 @@ impl NotificationManager {
         &self,
         notification_type: NotificationType,
         settings: &NotificationSettings,
+        app: Option<&AppHandle>,
     ) {
         let device_id = match self.get_connected_ring() {
             Some(id) => id,
@@ -229,7 +229,12 @@ impl NotificationManager {
             },
         };
 
-        let ring_manager = create_ring_manager();
+        let Some(app_handle) = app else {
+            tracing::debug!("No app handle available, skipping haptic notification");
+            return;
+        };
+
+        let ring_manager = app_handle.state::<crate::AppState>().ring_manager.clone();
         if let Err(e) = ring_manager.send_haptic(&device_id, request).await {
             tracing::warn!("Failed to send haptic notification: {}", e);
         }

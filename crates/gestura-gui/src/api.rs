@@ -3,7 +3,7 @@ use crate::AppConfig;
 use crate::AppConfigSecurityExt;
 
 use gestura_core::pipeline::{AgentPipeline, AgentRequest, RequestSource};
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, State};
 
 /// Try to get an API key from the keychain (synchronous, for use in config creation).
 /// Returns empty string if not found or keychain unavailable.
@@ -1410,9 +1410,9 @@ pub async fn run_voice_once() -> Result<String, String> {
 
 /// Scan for available Haptic Harmony rings
 #[tauri::command]
-pub async fn scan_for_rings() -> Result<Vec<String>, String> {
-    let ring_manager = crate::ble::create_ring_manager();
-    ring_manager
+pub async fn scan_for_rings(state: State<'_, crate::AppState>) -> Result<Vec<String>, String> {
+    state
+        .ring_manager
         .scan_for_rings()
         .await
         .map_err(|e| e.to_string())
@@ -1420,9 +1420,12 @@ pub async fn scan_for_rings() -> Result<Vec<String>, String> {
 
 /// Get ring status by device ID
 #[tauri::command(rename_all = "snake_case")]
-pub async fn get_ring_status(device_id: String) -> Result<Option<crate::ble::RingStatus>, String> {
-    let ring_manager = crate::ble::create_ring_manager();
-    ring_manager
+pub async fn get_ring_status(
+    device_id: String,
+    state: State<'_, crate::AppState>,
+) -> Result<Option<crate::ble::RingStatus>, String> {
+    state
+        .ring_manager
         .get_ring_status(&device_id)
         .await
         .map_err(|e| e.to_string())
@@ -1430,9 +1433,9 @@ pub async fn get_ring_status(device_id: String) -> Result<Option<crate::ble::Rin
 
 /// Pair with a ring
 #[tauri::command(rename_all = "snake_case")]
-pub async fn pair_ring(device_id: String) -> Result<(), String> {
-    let ring_manager = crate::ble::create_ring_manager();
-    ring_manager
+pub async fn pair_ring(device_id: String, state: State<'_, crate::AppState>) -> Result<(), String> {
+    state
+        .ring_manager
         .pair_ring(&device_id)
         .await
         .map_err(|e| e.to_string())
@@ -1445,6 +1448,7 @@ pub async fn send_haptic_feedback(
     pattern: String,
     intensity: f32,
     duration_ms: u32,
+    state: State<'_, crate::AppState>,
 ) -> Result<(), String> {
     let haptic_pattern = match pattern.as_str() {
         "click" => crate::haptics::HapticPattern::Click,
@@ -1461,8 +1465,8 @@ pub async fn send_haptic_feedback(
         repeat_delay_ms: 0,
     };
 
-    let ring_manager = crate::ble::create_ring_manager();
-    ring_manager
+    state
+        .ring_manager
         .send_haptic(&device_id, request)
         .await
         .map_err(|e| e.to_string())
@@ -1470,10 +1474,13 @@ pub async fn send_haptic_feedback(
 
 /// Start gesture monitoring for a ring
 #[tauri::command(rename_all = "snake_case")]
-pub async fn start_gesture_monitoring(device_id: String) -> Result<(), String> {
-    let ring_manager = crate::ble::create_ring_manager();
-    let (event_tx, _) = tokio::sync::broadcast::channel(100);
-    ring_manager
+pub async fn start_gesture_monitoring(
+    device_id: String,
+    state: State<'_, crate::AppState>,
+) -> Result<(), String> {
+    let event_tx = state.ble_event_tx.clone();
+    state
+        .ring_manager
         .start_gesture_monitoring(&device_id, event_tx)
         .await
         .map_err(|e| e.to_string())
@@ -1481,9 +1488,12 @@ pub async fn start_gesture_monitoring(device_id: String) -> Result<(), String> {
 
 /// Stop gesture monitoring for a ring
 #[tauri::command(rename_all = "snake_case")]
-pub async fn stop_gesture_monitoring(device_id: String) -> Result<(), String> {
-    let ring_manager = crate::ble::create_ring_manager();
-    ring_manager
+pub async fn stop_gesture_monitoring(
+    device_id: String,
+    state: State<'_, crate::AppState>,
+) -> Result<(), String> {
+    state
+        .ring_manager
         .stop_gesture_monitoring(&device_id)
         .await
         .map_err(|e| e.to_string())
@@ -3362,8 +3372,8 @@ pub async fn spawn_subagent(
 #[tauri::command]
 pub async fn list_active_tasks(
     state: tauri::State<'_, crate::AppState>,
-) -> Result<Vec<crate::orchestrator::DelegatedTask>, String> {
-    Ok(state.orchestrator.list_active_tasks().await)
+) -> Result<Vec<crate::orchestrator::ActiveTaskSnapshot>, String> {
+    Ok(state.orchestrator.list_active_task_snapshots().await)
 }
 
 /// Cancel a running task
@@ -3373,6 +3383,15 @@ pub async fn cancel_task(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<(), String> {
     state.orchestrator.cancel_task(&task_id).await
+}
+
+/// Pause a running local workflow task and preserve resumable checkpoint state.
+#[tauri::command]
+pub async fn pause_workflow_task(
+    task_id: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<(), String> {
+    state.orchestrator.pause_task(&task_id).await
 }
 
 /// List supervisor runs tracked by the orchestrator.
@@ -4490,6 +4509,18 @@ pub async fn update_memory_entry_detail(
 ) -> Result<gestura_core::memory_console::MemoryConsoleEntryDetail, String> {
     let (_, workspace_dir) = resolve_memory_console_context(session_id.as_deref(), workspace_dir)?;
     gestura_core::memory_console::update_memory_entry_detail(&workspace_dir, &entry_id, request)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Refresh persisted durable-memory governance suggestions.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn refresh_memory_console_governance(
+    session_id: Option<String>,
+    workspace_dir: Option<String>,
+) -> Result<gestura_core::memory_bank::MemoryGovernanceRefreshReport, String> {
+    let (_, workspace_dir) = resolve_memory_console_context(session_id.as_deref(), workspace_dir)?;
+    gestura_core::memory_console::refresh_memory_console_governance(&workspace_dir)
         .await
         .map_err(|e| e.to_string())
 }

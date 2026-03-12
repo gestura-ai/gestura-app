@@ -93,6 +93,7 @@ tower-http = { version = "0.6.8", features = ["cors"] }
 # Linux specific (optional) - xdg-desktop-portal integration
 ashpd = { version = "0.10", optional = true }
 zbus = { version = "5", optional = true }
+btleplug = { version = "0.12.0", features = ["serde"] }
 
 
 

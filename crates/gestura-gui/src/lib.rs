@@ -52,6 +52,7 @@ pub mod tray;
 
 // Hardware and device features
 pub mod ble;
+pub mod ble_central;
 pub mod haptics;
 pub mod simulator;
 
@@ -151,6 +152,10 @@ pub struct AppState {
     /// The GUI attaches a Tauri-backed observer at runtime to mirror task lifecycle
     /// updates into the UI task panel.
     pub orchestrator: std::sync::Arc<crate::orchestrator::AgentOrchestrator<agents::AgentManager>>,
-    /// Ring manager for BLE operations (optional)
-    pub ring_manager: Option<std::sync::Arc<dyn ble::RingManager>>,
+    /// Ring manager for BLE and simulator operations.
+    pub ring_manager: std::sync::Arc<dyn ble::RingManager>,
+    /// Simulator manager for developer workflows and metrics.
+    pub simulator_manager: std::sync::Arc<crate::simulator::SimulatorManager>,
+    /// Shared BLE/simulator event broadcaster.
+    pub ble_event_tx: tokio::sync::broadcast::Sender<crate::ble::BleEvent>,
 }
