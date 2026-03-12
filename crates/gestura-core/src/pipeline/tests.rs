@@ -98,6 +98,163 @@ fn build_prompt_includes_memory_sections() {
     assert!(prompt.contains("Shared directive summary"));
 }
 
+#[tokio::test]
+async fn enrich_resolved_context_includes_shared_coordination_memory() {
+    let temp = tempdir().unwrap();
+    let pipeline = AgentPipeline::new(AppConfig::default());
+
+    let entry = crate::MemoryBankEntry::new(
+        "session-shared".to_string(),
+        "Supervisor steering note".to_string(),
+        "Use ripgrep first and keep the worktree clean before editing.".to_string(),
+    )
+    .with_memory_type(crate::MemoryType::Procedural)
+    .with_scope(crate::MemoryScope::Task)
+    .with_category(crate::orchestrator::SHARED_COGNITION_CATEGORY)
+    .with_provenance(
+        Some("task-shared".to_string()),
+        Some("directive-shared".to_string()),
+        Some("supervisor".to_string()),
+    )
+    .with_tags(vec![
+        crate::orchestrator::SHARED_COGNITION_TAG.to_string(),
+        "workflow-run:run-shared".to_string(),
+    ])
+    .with_confidence(0.9);
+    crate::save_to_memory_bank(temp.path(), &entry)
+        .await
+        .unwrap();
+
+    let metadata = RequestMetadata {
+        session_id: Some("session-shared".to_string()),
+        task_id: Some("task-shared".to_string()),
+        directive_id: Some("directive-shared".to_string()),
+        agent_id: Some("agent-impl".to_string()),
+        memory_tags: vec!["workflow-run:run-shared".to_string()],
+        ..Default::default()
+    };
+    let mut context = crate::context::ResolvedContext::default();
+
+    pipeline
+        .enrich_resolved_context(
+            &mut context,
+            Some(temp.path()),
+            "continue implementing the workflow",
+            &metadata,
+        )
+        .await;
+
+    assert!(
+        context
+            .memory_sections
+            .iter()
+            .any(|section| section.contains("### Shared Coordination Memory"))
+    );
+    assert!(
+        context
+            .memory_sections
+            .iter()
+            .any(|section| section.contains("Use ripgrep first and keep the worktree clean"))
+    );
+}
+
+#[tokio::test]
+async fn enrich_resolved_context_bounds_shared_coordination_memory_to_three_entries() {
+    let temp = tempdir().unwrap();
+    let pipeline = AgentPipeline::new(AppConfig::default());
+
+    for index in 0..5 {
+        let entry = crate::MemoryBankEntry::new(
+            "session-shared".to_string(),
+            format!("Shared note {index}"),
+            format!("Shared coordination detail {index}"),
+        )
+        .with_memory_type(crate::MemoryType::Procedural)
+        .with_scope(crate::MemoryScope::Directive)
+        .with_category(crate::orchestrator::SHARED_COGNITION_CATEGORY)
+        .with_provenance(
+            Some(format!("task-{index}")),
+            Some("directive-shared".to_string()),
+            Some(format!("agent-{index}")),
+        )
+        .with_tags(vec![
+            crate::orchestrator::SHARED_COGNITION_TAG.to_string(),
+            "workflow-run:run-shared".to_string(),
+        ])
+        .with_confidence(0.7 + (index as f32 * 0.02));
+        crate::save_to_memory_bank(temp.path(), &entry)
+            .await
+            .unwrap();
+    }
+
+    let metadata = RequestMetadata {
+        session_id: Some("session-shared".to_string()),
+        directive_id: Some("directive-shared".to_string()),
+        memory_tags: vec!["workflow-run:run-shared".to_string()],
+        ..Default::default()
+    };
+    let mut context = crate::context::ResolvedContext::default();
+
+    pipeline
+        .enrich_resolved_context(
+            &mut context,
+            Some(temp.path()),
+            "continue implementing the workflow",
+            &metadata,
+        )
+        .await;
+
+    let shared_sections = context
+        .memory_sections
+        .iter()
+        .filter(|section| section.contains("### Shared Coordination Memory"))
+        .count();
+    assert!(shared_sections >= 1);
+    assert!(shared_sections <= 3);
+}
+
+#[tokio::test]
+async fn enrich_resolved_context_skips_shared_coordination_without_scope_hints() {
+    let temp = tempdir().unwrap();
+    let pipeline = AgentPipeline::new(AppConfig::default());
+
+    let entry = crate::MemoryBankEntry::new(
+        "session-shared".to_string(),
+        "Shared note".to_string(),
+        "This should not be loaded without a task, directive, or tag hint.".to_string(),
+    )
+    .with_memory_type(crate::MemoryType::Procedural)
+    .with_scope(crate::MemoryScope::Directive)
+    .with_category(crate::orchestrator::SHARED_COGNITION_CATEGORY)
+    .with_provenance(
+        Some("task-shared".to_string()),
+        Some("directive-shared".to_string()),
+        Some("supervisor".to_string()),
+    )
+    .with_tags(vec![crate::orchestrator::SHARED_COGNITION_TAG.to_string()])
+    .with_confidence(0.9);
+    crate::save_to_memory_bank(temp.path(), &entry)
+        .await
+        .unwrap();
+
+    let mut context = crate::context::ResolvedContext::default();
+    pipeline
+        .enrich_resolved_context(
+            &mut context,
+            Some(temp.path()),
+            "continue implementing the workflow",
+            &RequestMetadata::default(),
+        )
+        .await;
+
+    assert!(
+        context
+            .memory_sections
+            .iter()
+            .all(|section| !section.contains("### Shared Coordination Memory"))
+    );
+}
+
 #[test]
 fn test_pipeline_config_defaults() {
     let config = PipelineConfig::default();

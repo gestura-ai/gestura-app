@@ -237,6 +237,21 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             for task_record in &mut run.tasks {
                 if task_record.environment_id == environment.id {
                     task_record.environment = environment.summary();
+                    if let Some(local_execution) = task_record.local_execution.as_mut()
+                        && let Some(progress) = local_execution.progress.as_mut()
+                    {
+                        progress.environment = Some(environment_snapshot_from_execution(
+                            &task_record.environment,
+                        ));
+                        progress.waiting_reason = match progress.phase {
+                            LocalExecutionPhase::Waiting => {
+                                Some(LocalExecutionWaitingReason::EnvironmentTransition)
+                            }
+                            _ => progress.waiting_reason,
+                        };
+                        progress.updated_at = Utc::now();
+                        local_execution.last_synced_at = progress.updated_at;
+                    }
                     task_record.updated_at = Utc::now();
                     changed = true;
                 }
@@ -700,6 +715,7 @@ mod tests {
             blocked_reasons: vec![],
             result: None,
             remote_execution: None,
+            local_execution: None,
             messages: vec![],
             checkpoint: None,
             created_at: now,
@@ -735,6 +751,7 @@ mod tests {
             hierarchy_summary: None,
             tasks: vec![task_record],
             messages: vec![],
+            shared_cognition: vec![],
             created_at: now,
             updated_at: now,
             completed_at: None,
@@ -969,5 +986,89 @@ mod tests {
             Some(CleanupDisposition::Archived)
         );
         assert!(environment.prepared_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_update_environment_in_runs_refreshes_local_execution_snapshot() {
+        let temp = tempdir().expect("tempdir");
+        let orchestrator = test_orchestrator(temp.path());
+        let task = test_task(
+            temp.path(),
+            "run-local-env-sync",
+            "task-local-env-sync",
+            "agent-local-env-sync",
+            AgentExecutionMode::IsolatedWorkspace,
+        );
+        let environment = orchestrator
+            .prepare_environment(&task)
+            .await
+            .expect("prepare environment");
+
+        let mut record = test_task_record(task.clone(), &environment);
+        record.state = SupervisorTaskState::Running;
+        record.local_execution = Some(LocalExecutionRecord {
+            status: "running".to_string(),
+            status_reason: None,
+            progress: Some(LocalExecutionProgress {
+                phase: LocalExecutionPhase::Waiting,
+                waiting_reason: Some(LocalExecutionWaitingReason::ShellProcess),
+                stage: Some("shell".to_string()),
+                message: Some("Shell started".to_string()),
+                percent: None,
+                iteration: 1,
+                current_tool_name: Some("shell".to_string()),
+                last_completed_tool_name: None,
+                last_completed_tool_duration_ms: None,
+                completed_tool_call_count: 0,
+                has_partial_content: false,
+                partial_content_chars: 0,
+                has_partial_thinking: false,
+                partial_thinking_chars: 0,
+                token_usage: None,
+                environment: Some(environment_snapshot_from_execution(&record.environment)),
+                updated_at: Utc::now(),
+            }),
+            last_synced_at: Utc::now(),
+        });
+
+        let run = test_run("run-local-env-sync", temp.path(), record);
+        orchestrator
+            .supervisor_runs
+            .lock()
+            .await
+            .insert(run.id.clone(), run.clone());
+
+        let mut updated = environment.clone();
+        updated.state = EnvironmentState::Recovering;
+        updated.health = EnvironmentHealth::Dirty;
+        updated.recovery_status = RecoveryStatus::Pending;
+        orchestrator
+            .update_environment_in_runs(&updated)
+            .await
+            .expect("update run environment snapshot");
+
+        let run = orchestrator
+            .supervisor_runs
+            .lock()
+            .await
+            .get("run-local-env-sync")
+            .cloned()
+            .expect("run should exist");
+        let progress = run
+            .tasks
+            .first()
+            .and_then(|record| record.local_execution.as_ref())
+            .and_then(|local| local.progress.as_ref())
+            .expect("local execution progress should remain attached");
+        let environment_snapshot = progress
+            .environment
+            .as_ref()
+            .expect("environment snapshot should be refreshed");
+        assert_eq!(environment_snapshot.state, EnvironmentState::Recovering);
+        assert_eq!(environment_snapshot.health, EnvironmentHealth::Dirty);
+        assert_eq!(
+            progress.waiting_reason,
+            Some(LocalExecutionWaitingReason::EnvironmentTransition)
+        );
     }
 }

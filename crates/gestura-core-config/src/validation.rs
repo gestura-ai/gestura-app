@@ -256,7 +256,7 @@ fn validate_pipeline_config(config: &AppConfig, result: &mut ConfigValidationRes
     if reflection.max_retry_attempts > 1 {
         result.add_warning(
             "pipeline.reflection.max_retry_attempts",
-            "Only one reflection-guided revision is currently applied per turn; values above 1 are clamped",
+            "Only one reflection-guided corrective retry is currently applied per turn; values above 1 are clamped",
         );
     }
 

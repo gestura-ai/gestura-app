@@ -9,7 +9,7 @@ use gestura_core_foundation::AppError;
 use gestura_core_llm::TokenUsage;
 use gestura_core_tools::schemas::ProviderToolSchemas;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -456,25 +456,73 @@ async fn forward_attempt_stream(
 /// Cancellation token for streaming requests
 #[derive(Clone, Debug)]
 pub struct CancellationToken {
-    cancelled: Arc<AtomicBool>,
+    disposition: Arc<AtomicU8>,
+}
+
+/// Requested interruption disposition for a streaming request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum CancellationDisposition {
+    Running = 0,
+    Cancelled = 1,
+    Paused = 2,
 }
 
 impl CancellationToken {
     /// Create a new cancellation token
     pub fn new() -> Self {
         Self {
-            cancelled: Arc::new(AtomicBool::new(false)),
+            disposition: Arc::new(AtomicU8::new(CancellationDisposition::Running as u8)),
         }
     }
 
     /// Cancel the streaming request
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
+        self.disposition
+            .store(CancellationDisposition::Cancelled as u8, Ordering::SeqCst);
+    }
+
+    /// Pause the streaming request with the intent to resume later.
+    pub fn pause(&self) {
+        let _ = self.disposition.compare_exchange(
+            CancellationDisposition::Running as u8,
+            CancellationDisposition::Paused as u8,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
     }
 
     /// Check if cancellation has been requested
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::SeqCst)
+        !matches!(self.disposition(), CancellationDisposition::Running)
+    }
+
+    /// Returns `true` when the request should be treated as resumably paused.
+    pub fn is_pause_requested(&self) -> bool {
+        matches!(self.disposition(), CancellationDisposition::Paused)
+    }
+
+    /// Returns the requested interruption disposition.
+    pub fn disposition(&self) -> CancellationDisposition {
+        match self.disposition.load(Ordering::SeqCst) {
+            value if value == CancellationDisposition::Paused as u8 => {
+                CancellationDisposition::Paused
+            }
+            value if value == CancellationDisposition::Cancelled as u8 => {
+                CancellationDisposition::Cancelled
+            }
+            _ => CancellationDisposition::Running,
+        }
+    }
+
+    /// Terminal streaming chunk matching the currently requested interruption.
+    pub fn interruption_chunk(&self) -> StreamChunk {
+        match self.disposition() {
+            CancellationDisposition::Paused => StreamChunk::Paused,
+            CancellationDisposition::Cancelled | CancellationDisposition::Running => {
+                StreamChunk::Cancelled
+            }
+        }
     }
 }
 
@@ -701,7 +749,7 @@ pub async fn stream_openai(
 
     while let Some(chunk_result) = stream.next().await {
         if cancel_token.is_cancelled() {
-            let _ = tx.send(StreamChunk::Cancelled).await;
+            let _ = tx.send(cancel_token.interruption_chunk()).await;
             return Ok(());
         }
 
@@ -875,7 +923,7 @@ pub async fn stream_anthropic(req: AnthropicStreamRequest<'_>) -> Result<(), App
 
     while let Some(chunk_result) = stream.next().await {
         if cancel_token.is_cancelled() {
-            let _ = tx.send(StreamChunk::Cancelled).await;
+            let _ = tx.send(cancel_token.interruption_chunk()).await;
             return Ok(());
         }
 
@@ -1020,7 +1068,7 @@ pub async fn stream_gemini(
 
     while let Some(chunk_result) = stream.next().await {
         if cancel_token.is_cancelled() {
-            let _ = tx.send(StreamChunk::Cancelled).await;
+            let _ = tx.send(cancel_token.interruption_chunk()).await;
             return Ok(());
         }
 
@@ -1213,7 +1261,7 @@ pub async fn stream_ollama(
                 };
 
                 if cancel_token.is_cancelled() {
-                    let _ = tx.send(StreamChunk::Cancelled).await;
+                    let _ = tx.send(cancel_token.interruption_chunk()).await;
                     return Ok(());
                 }
 
@@ -1305,7 +1353,7 @@ pub async fn stream_ollama(
             //      90 s on a local large model.
             () = &mut keepalive_sleep => {
                 if cancel_token.is_cancelled() {
-                    let _ = tx.send(StreamChunk::Cancelled).await;
+                    let _ = tx.send(cancel_token.interruption_chunk()).await;
                     return Ok(());
                 }
                 tracing::debug!(model = model, "[Ollama] Keepalive firing — sending Status chunk");
@@ -1481,7 +1529,7 @@ pub async fn start_streaming_with_fallback(
 
     for (attempt, delay) in retry_delays.iter().enumerate() {
         if cancel_token.is_cancelled() {
-            let _ = tx.send(StreamChunk::Cancelled).await;
+            let _ = tx.send(cancel_token.interruption_chunk()).await;
             return Ok(());
         }
 
@@ -1652,6 +1700,23 @@ mod tests {
         assert!(!token.is_cancelled());
         token.cancel();
         assert!(token.is_cancelled());
+        assert!(!token.is_pause_requested());
+        assert!(matches!(token.interruption_chunk(), StreamChunk::Cancelled));
+    }
+
+    #[test]
+    fn test_cancellation_token_pause_intent() {
+        let token = CancellationToken::new();
+        token.pause();
+
+        assert!(token.is_cancelled());
+        assert!(token.is_pause_requested());
+        assert!(matches!(token.interruption_chunk(), StreamChunk::Paused));
+
+        token.cancel();
+        assert!(token.is_cancelled());
+        assert!(!token.is_pause_requested());
+        assert!(matches!(token.interruption_chunk(), StreamChunk::Cancelled));
     }
 
     #[test]

@@ -19,6 +19,7 @@ mod reflection;
 mod tool_dispatch;
 mod tool_router;
 pub mod types;
+pub(crate) use reflection::sync_task_reflection_outcomes;
 
 use std::path::Path;
 use std::time::Instant;
@@ -630,11 +631,14 @@ impl AgentPipeline {
 
         // 5. Execute the agentic loop with workspace sandboxing.
         // 6. If experiential reflection is enabled, evaluate the completed turn,
-        //    optionally generate a structured reflection, attempt a safe
-        //    text-only revision, and consolidate the result into memory before
-        //    running PostPipeline hooks.
+        //    optionally generate a structured reflection, attempt one bounded
+        //    corrective retry (text revision or safe re-execution), and
+        //    consolidate the result into memory before running PostPipeline hooks.
         let reflection_tx = tx.clone();
         let reflection_cancel_token = cancel_token.clone();
+        let reflection_retry_prompt = prompt.clone();
+        let reflection_retry_tools = relevant_tools.clone();
+        let reflection_retry_context = resolved_context.clone();
         let mut response = self
             .execute_agentic_loop_streaming(
                 prompt,
@@ -666,28 +670,65 @@ impl AgentPipeline {
             )
             .await
         {
-            let retry = self
-                .maybe_run_reflection_retry(
+            let retry = if self.should_attempt_reflection_reexecution(
+                &response,
+                &generated_reflection.reflection,
+                !reflection_retry_tools.is_empty(),
+            ) {
+                let _ = reflection_tx
+                    .send(StreamChunk::Status {
+                        message: "Low-confidence answer detected; running one safe reflection-guided retry with sandboxed tool access...".to_string(),
+                    })
+                    .await;
+                self.maybe_run_reflection_reexecution(
+                    &response,
+                    &generated_reflection.reflection,
+                    generated_reflection.initial_quality_score,
+                    reflection::ReflectionReexecutionContext {
+                        base_prompt: &reflection_retry_prompt,
+                        tools: reflection_retry_tools.clone(),
+                        context: reflection_retry_context.clone(),
+                        workspace: workspace.as_ref(),
+                    },
+                )
+                .await
+            } else {
+                self.maybe_run_reflection_retry(
                     &request.input,
                     &response,
                     &generated_reflection.reflection,
                     generated_reflection.initial_quality_score,
                     Some(&reflection_tx),
                 )
-                .await;
+                .await
+            };
 
             if let Some(retry) = retry.as_ref() {
-                merge_token_usage(&mut response.usage, &retry.usage);
+                if let Some(usage) = retry.usage.as_ref() {
+                    merge_token_usage(&mut response.usage, usage);
+                }
                 generated_reflection.reflection.improvement_score = Some(retry.improvement_score);
+                response.tool_calls.extend(retry.tool_calls.clone());
+                response.iterations += retry.iterations;
 
                 if retry.improved {
+                    let status_message = match retry.mode {
+                        reflection::ReflectionRetryMode::TextRevision => format!(
+                            "Reflection-guided revision improved quality from {:.0}% to {:.0}%",
+                            generated_reflection.initial_quality_score * 100.0,
+                            retry.retry_quality_score * 100.0,
+                        ),
+                        reflection::ReflectionRetryMode::CorrectiveReexecution => format!(
+                            "Reflection-guided safe retry improved quality from {:.0}% to {:.0}% using {} tool calls across {} iterations",
+                            generated_reflection.initial_quality_score * 100.0,
+                            retry.retry_quality_score * 100.0,
+                            retry.tool_calls.len(),
+                            retry.iterations,
+                        ),
+                    };
                     let _ = reflection_tx
                         .send(StreamChunk::Status {
-                            message: format!(
-                                "Reflection-guided revision improved quality from {:.0}% to {:.0}%",
-                                generated_reflection.initial_quality_score * 100.0,
-                                retry.retry_quality_score * 100.0,
-                            ),
+                            message: status_message,
                         })
                         .await;
 
@@ -700,13 +741,22 @@ impl AgentPipeline {
                     self.emit_reflection_retry_text(&reflection_tx, &revised_block)
                         .await;
                 } else {
+                    let status_message = match retry.mode {
+                        reflection::ReflectionRetryMode::TextRevision => format!(
+                            "Reflection-guided revision did not materially improve quality ({:.0}% → {:.0}%)",
+                            generated_reflection.initial_quality_score * 100.0,
+                            retry.retry_quality_score * 100.0,
+                        ),
+                        reflection::ReflectionRetryMode::CorrectiveReexecution => format!(
+                            "Reflection-guided safe retry did not materially improve quality ({:.0}% → {:.0}%, {} tool calls)",
+                            generated_reflection.initial_quality_score * 100.0,
+                            retry.retry_quality_score * 100.0,
+                            retry.tool_calls.len(),
+                        ),
+                    };
                     let _ = reflection_tx
                         .send(StreamChunk::Status {
-                            message: format!(
-                                "Reflection-guided revision did not materially improve quality ({:.0}% → {:.0}%)",
-                                generated_reflection.initial_quality_score * 100.0,
-                                retry.retry_quality_score * 100.0,
-                            ),
+                            message: status_message,
                         })
                         .await;
                 }
@@ -1253,6 +1303,9 @@ impl AgentPipeline {
             )
             .ok()
         });
+        let reflection_retry_prompt = prompt.clone();
+        let reflection_retry_tools = relevant_tools.clone();
+        let reflection_retry_context = resolved_context.clone();
 
         let mut response = self
             .execute_agentic_loop_blocking(
@@ -1277,19 +1330,41 @@ impl AgentPipeline {
             )
             .await
         {
-            let retry = self
-                .maybe_run_reflection_retry(
+            let retry = if self.should_attempt_reflection_reexecution(
+                &response,
+                &generated_reflection.reflection,
+                !reflection_retry_tools.is_empty(),
+            ) {
+                self.maybe_run_reflection_reexecution(
+                    &response,
+                    &generated_reflection.reflection,
+                    generated_reflection.initial_quality_score,
+                    reflection::ReflectionReexecutionContext {
+                        base_prompt: &reflection_retry_prompt,
+                        tools: reflection_retry_tools,
+                        context: reflection_retry_context,
+                        workspace: workspace.as_ref(),
+                    },
+                )
+                .await
+            } else {
+                self.maybe_run_reflection_retry(
                     &request.input,
                     &response,
                     &generated_reflection.reflection,
                     generated_reflection.initial_quality_score,
                     None,
                 )
-                .await;
+                .await
+            };
 
             if let Some(retry) = retry.as_ref() {
-                merge_token_usage(&mut response.usage, &retry.usage);
+                if let Some(usage) = retry.usage.as_ref() {
+                    merge_token_usage(&mut response.usage, usage);
+                }
                 generated_reflection.reflection.improvement_score = Some(retry.improvement_score);
+                response.tool_calls.extend(retry.tool_calls.clone());
+                response.iterations += retry.iterations;
 
                 if retry.improved {
                     response.content = retry.revised_content.clone();
@@ -1604,6 +1679,19 @@ impl AgentPipeline {
                 "Added session working memory to request"
             );
             resolved_context.memory_sections.extend(short_term_sections);
+        }
+
+        if let Some(workspace_dir) = workspace_dir
+            && let Some(shared_coordination) = self
+                .load_shared_coordination_memory(workspace_dir, metadata, 3)
+                .await
+            && !shared_coordination.is_empty()
+        {
+            tracing::debug!(
+                shared_coordination_len = shared_coordination.len(),
+                "Added shared coordination memory to request"
+            );
+            resolved_context.memory_sections.extend(shared_coordination);
         }
 
         // 3.2 Long-term memory bank — only available when workspace_dir is known.

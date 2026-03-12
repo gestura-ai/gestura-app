@@ -6,6 +6,7 @@
 
 use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -142,6 +143,152 @@ impl std::str::FromStr for MemoryScope {
     }
 }
 
+/// Retrieval state for reflection-derived durable memories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReflectionMemoryState {
+    /// Reflection is healthy and can be injected normally.
+    Active,
+    /// Reflection has repeated negative evidence and should be downranked.
+    Decayed,
+    /// Reflection conflicts with observed evidence and needs review.
+    NeedsReview,
+    /// Reflection should no longer be retrieved for prompt injection.
+    Archived,
+}
+
+impl std::fmt::Display for ReflectionMemoryState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Active => write!(f, "active"),
+            Self::Decayed => write!(f, "decayed"),
+            Self::NeedsReview => write!(f, "needs_review"),
+            Self::Archived => write!(f, "archived"),
+        }
+    }
+}
+
+impl std::str::FromStr for ReflectionMemoryState {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "active" => Ok(Self::Active),
+            "decayed" => Ok(Self::Decayed),
+            "needs_review" | "needs-review" | "needs review" => Ok(Self::NeedsReview),
+            "archived" => Ok(Self::Archived),
+            _ => Err(format!("Unknown reflection memory state: {value}")),
+        }
+    }
+}
+
+/// General governance state for durable memory curation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryGovernanceState {
+    /// Entry is healthy and retrieved normally.
+    #[default]
+    Active,
+    /// Entry was explicitly pinned by an operator and should be preferred.
+    Pinned,
+    /// Entry needs operator review before it should be trusted broadly.
+    NeedsReview,
+    /// Entry is retained for auditability but has been superseded by a stronger record.
+    Superseded,
+    /// Entry is removed from normal retrieval.
+    Archived,
+}
+
+impl std::fmt::Display for MemoryGovernanceState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Active => write!(f, "active"),
+            Self::Pinned => write!(f, "pinned"),
+            Self::NeedsReview => write!(f, "needs_review"),
+            Self::Superseded => write!(f, "superseded"),
+            Self::Archived => write!(f, "archived"),
+        }
+    }
+}
+
+impl std::str::FromStr for MemoryGovernanceState {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "active" => Ok(Self::Active),
+            "pinned" => Ok(Self::Pinned),
+            "needs_review" | "needs-review" | "needs review" => Ok(Self::NeedsReview),
+            "superseded" | "supersede" => Ok(Self::Superseded),
+            "archived" => Ok(Self::Archived),
+            _ => Err(format!("Unknown memory governance state: {value}")),
+        }
+    }
+}
+
+/// Relationship produced by the governance-analysis pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryGovernanceRelationship {
+    /// Two entries appear to represent the same durable knowledge.
+    Duplicate,
+    /// Two entries carry contradictory durable knowledge.
+    ConflictsWith,
+    /// This entry appears weaker than a newer/better replacement.
+    SupersededBy,
+}
+
+impl std::fmt::Display for MemoryGovernanceRelationship {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Duplicate => write!(f, "duplicate"),
+            Self::ConflictsWith => write!(f, "conflicts_with"),
+            Self::SupersededBy => write!(f, "superseded_by"),
+        }
+    }
+}
+
+impl std::str::FromStr for MemoryGovernanceRelationship {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "duplicate" => Ok(Self::Duplicate),
+            "conflicts_with" | "conflicts-with" | "conflict" => Ok(Self::ConflictsWith),
+            "superseded_by" | "superseded-by" | "superseded" => Ok(Self::SupersededBy),
+            _ => Err(format!("Unknown governance relationship: {value}")),
+        }
+    }
+}
+
+/// Persisted governance suggestion for operator review.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MemoryGovernanceSuggestion {
+    /// Related entry id (workspace-relative path when available).
+    pub entry_id: String,
+    /// Relationship between the current entry and the related entry.
+    pub relationship: MemoryGovernanceRelationship,
+    /// Confidence score for the suggestion.
+    pub confidence: f32,
+    /// Human-readable rationale shown in operator tooling.
+    pub rationale: String,
+}
+
+/// Summary of a governance refresh pass.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryGovernanceRefreshReport {
+    /// Number of entries examined.
+    pub entries_scanned: usize,
+    /// Number of entries that changed on disk.
+    pub updated_entries: usize,
+    /// Number of duplicate suggestions persisted.
+    pub duplicate_suggestions: usize,
+    /// Number of conflict suggestions persisted.
+    pub conflict_suggestions: usize,
+    /// Number of supersession suggestions persisted.
+    pub superseded_suggestions: usize,
+}
+
 /// Filter options for targeted memory-bank retrieval.
 #[derive(Debug, Clone)]
 pub struct MemoryBankQuery {
@@ -169,6 +316,8 @@ pub struct MemoryBankQuery {
     pub tags: Vec<String>,
     /// Optional minimum confidence threshold.
     pub min_confidence: Option<f32>,
+    /// Whether archived entries should be returned.
+    pub include_archived: bool,
 }
 
 impl Default for MemoryBankQuery {
@@ -186,6 +335,7 @@ impl Default for MemoryBankQuery {
             category: None,
             tags: Vec::new(),
             min_confidence: None,
+            include_archived: false,
         }
     }
 }
@@ -256,6 +406,12 @@ impl MemoryBankQuery {
     /// Require a minimum confidence value.
     pub fn with_min_confidence(mut self, confidence: f32) -> Self {
         self.min_confidence = Some(confidence);
+        self
+    }
+
+    /// Include archived entries in results.
+    pub fn include_archived(mut self) -> Self {
+        self.include_archived = true;
         self
     }
 }
@@ -356,12 +512,36 @@ pub struct MemoryBankEntry {
     /// Optional task identifier associated with the memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    /// Optional stable reflection identifier linked to the memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reflection_id: Option<String>,
+    /// Optional normalized strategy key for reflection-derived memories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy_key: Option<String>,
+    /// Reflection retrieval state derived from downstream outcomes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reflection_state: Option<ReflectionMemoryState>,
+    /// Count of positive downstream outcomes associated with the reflection.
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub success_count: u16,
+    /// Count of negative downstream outcomes associated with the reflection.
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub failure_count: u16,
     /// Optional higher-level directive identifier associated with the memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directive_id: Option<String>,
     /// Optional agent identifier that produced or owns the memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    /// General governance state for the durable memory entry.
+    #[serde(default, skip_serializing_if = "is_default_governance_state")]
+    pub governance_state: MemoryGovernanceState,
+    /// Optional operator note describing curation intent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub governance_note: Option<String>,
+    /// Persisted governance suggestions produced by automated analysis.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub governance_suggestions: Vec<MemoryGovernanceSuggestion>,
     /// Tags used for targeted retrieval.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
@@ -371,6 +551,12 @@ pub struct MemoryBankEntry {
     /// Optional explanation of why the record was promoted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promotion_reason: Option<String>,
+    /// Optional human-readable outcome summary linked to this memory's provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_summary: Option<String>,
+    /// Stable outcome labels linked to this memory's provenance.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outcome_labels: Vec<String>,
     /// Confidence score for retrieval/ranking.
     #[serde(default = "default_memory_confidence")]
     pub confidence: f32,
@@ -394,11 +580,21 @@ impl PartialEq for MemoryBankEntry {
             && self.session_id == other.session_id
             && self.category == other.category
             && self.task_id == other.task_id
+            && self.reflection_id == other.reflection_id
+            && self.strategy_key == other.strategy_key
+            && self.reflection_state == other.reflection_state
+            && self.success_count == other.success_count
+            && self.failure_count == other.failure_count
             && self.directive_id == other.directive_id
             && self.agent_id == other.agent_id
+            && self.governance_state == other.governance_state
+            && self.governance_note == other.governance_note
+            && self.governance_suggestions == other.governance_suggestions
             && self.tags == other.tags
             && self.promoted_from_session_id == other.promoted_from_session_id
             && self.promotion_reason == other.promotion_reason
+            && self.outcome_summary == other.outcome_summary
+            && self.outcome_labels == other.outcome_labels
             && (self.confidence - other.confidence).abs() < f32::EPSILON
             && self.summary == other.summary
             && self.content == other.content
@@ -436,11 +632,21 @@ impl MemoryBankEntry {
             session_id,
             category: None,
             task_id: None,
+            reflection_id: None,
+            strategy_key: None,
+            reflection_state: None,
+            success_count: 0,
+            failure_count: 0,
             directive_id: None,
             agent_id: None,
+            governance_state: MemoryGovernanceState::Active,
+            governance_note: None,
+            governance_suggestions: Vec::new(),
             tags: Vec::new(),
             promoted_from_session_id: None,
             promotion_reason: None,
+            outcome_summary: None,
+            outcome_labels: Vec::new(),
             confidence: default_memory_confidence(),
             summary,
             content,
@@ -479,9 +685,51 @@ impl MemoryBankEntry {
         self
     }
 
+    /// Attach a stable reflection identifier to the entry.
+    pub fn with_reflection_id(mut self, reflection_id: impl Into<String>) -> Self {
+        self.reflection_id = Some(reflection_id.into());
+        self
+    }
+
+    /// Attach reflection-learning metadata used for ranking and governance.
+    pub fn with_reflection_learning(
+        mut self,
+        strategy_key: impl Into<String>,
+        reflection_state: ReflectionMemoryState,
+        success_count: u16,
+        failure_count: u16,
+    ) -> Self {
+        self.strategy_key = Some(strategy_key.into());
+        self.reflection_state = Some(reflection_state);
+        self.success_count = success_count;
+        self.failure_count = failure_count;
+        self
+    }
+
     /// Attach retrieval tags to the entry.
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.tags = tags;
+        self
+    }
+
+    /// Set the general governance state.
+    pub fn with_governance_state(mut self, state: MemoryGovernanceState) -> Self {
+        self.governance_state = state;
+        self
+    }
+
+    /// Attach an operator note describing memory curation context.
+    pub fn with_governance_note(mut self, note: impl Into<String>) -> Self {
+        self.governance_note = Some(note.into());
+        self
+    }
+
+    /// Replace automated governance suggestions.
+    pub fn with_governance_suggestions(
+        mut self,
+        suggestions: Vec<MemoryGovernanceSuggestion>,
+    ) -> Self {
+        self.governance_suggestions = suggestions;
         self
     }
 
@@ -496,10 +744,39 @@ impl MemoryBankEntry {
         self
     }
 
+    /// Attach durable outcome provenance to the entry.
+    pub fn with_outcome_provenance(
+        mut self,
+        outcome_summary: Option<String>,
+        outcome_labels: Vec<String>,
+    ) -> Self {
+        self.outcome_summary = outcome_summary.filter(|value| !value.trim().is_empty());
+        self.outcome_labels = outcome_labels;
+        self
+    }
+
     /// Override the retrieval confidence for this entry.
     pub fn with_confidence(mut self, confidence: f32) -> Self {
         self.confidence = confidence.clamp(0.0, 1.0);
         self
+    }
+
+    /// Returns true when the memory has been archived from retrieval.
+    pub fn is_archived(&self) -> bool {
+        self.governance_state == MemoryGovernanceState::Archived
+            || self.reflection_state == Some(ReflectionMemoryState::Archived)
+            || self
+                .tags
+                .iter()
+                .any(|tag| tag.eq_ignore_ascii_case("archived"))
+    }
+
+    /// Returns true when the reflection can safely be injected into prompts.
+    pub fn is_prompt_eligible_reflection(&self) -> bool {
+        !matches!(
+            self.reflection_state,
+            Some(ReflectionMemoryState::NeedsReview | ReflectionMemoryState::Archived)
+        )
     }
 
     /// Convert entry to markdown format for file storage
@@ -528,6 +805,30 @@ impl MemoryBankEntry {
             .as_deref()
             .map(|value| format!("**Task ID**: {}\n", value))
             .unwrap_or_default();
+        let reflection_id_line = self
+            .reflection_id
+            .as_deref()
+            .map(|value| format!("**Reflection ID**: {}\n", value))
+            .unwrap_or_default();
+        let strategy_key_line = self
+            .strategy_key
+            .as_deref()
+            .map(|value| format!("**Strategy Key**: {}\n", value))
+            .unwrap_or_default();
+        let reflection_state_line = self
+            .reflection_state
+            .map(|value| format!("**Reflection State**: {}\n", value))
+            .unwrap_or_default();
+        let success_count_line = if self.success_count > 0 {
+            format!("**Success Count**: {}\n", self.success_count)
+        } else {
+            String::new()
+        };
+        let failure_count_line = if self.failure_count > 0 {
+            format!("**Failure Count**: {}\n", self.failure_count)
+        } else {
+            String::new()
+        };
         let directive_id_line = self
             .directive_id
             .as_deref()
@@ -538,6 +839,34 @@ impl MemoryBankEntry {
             .as_deref()
             .map(|value| format!("**Agent ID**: {}\n", value))
             .unwrap_or_default();
+        let governance_state_line = if self.governance_state == MemoryGovernanceState::Active {
+            String::new()
+        } else {
+            format!("**Governance State**: {}\n", self.governance_state)
+        };
+        let governance_note_line = self
+            .governance_note
+            .as_deref()
+            .map(|value| format!("**Governance Note**: {}\n", value))
+            .unwrap_or_default();
+        let governance_suggestions_line = if self.governance_suggestions.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "**Governance Suggestions**: {}\n",
+                self.governance_suggestions
+                    .iter()
+                    .map(|suggestion| format!(
+                        "{}|{}|{:.2}|{}",
+                        suggestion.relationship,
+                        suggestion.entry_id,
+                        suggestion.confidence.clamp(0.0, 1.0),
+                        suggestion.rationale.replace('|', "/")
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(" ; ")
+            )
+        };
         let tags_line = if self.tags.is_empty() {
             String::new()
         } else {
@@ -553,6 +882,16 @@ impl MemoryBankEntry {
             .as_deref()
             .map(|value| format!("**Promotion Reason**: {}\n", value))
             .unwrap_or_default();
+        let outcome_summary_line = self
+            .outcome_summary
+            .as_deref()
+            .map(|value| format!("**Outcome Summary**: {}\n", value))
+            .unwrap_or_default();
+        let outcome_labels_line = if self.outcome_labels.is_empty() {
+            String::new()
+        } else {
+            format!("**Outcome Labels**: {}\n", self.outcome_labels.join(", "))
+        };
         format!(
             "# Memory Bank Entry\n\n\
              **Timestamp**: {}\n\
@@ -560,6 +899,16 @@ impl MemoryBankEntry {
              **Memory Type**: {}\n\
              **Scope**: {}\n\
              **Session ID**: {}\n\
+             {}\
+             {}\
+             {}\
+             {}\
+             {}\
+             {}\
+             {}\
+             {}\
+             {}\
+             {}\
              {}\
              {}\
              {}\
@@ -578,11 +927,21 @@ impl MemoryBankEntry {
             self.session_id,
             category_line,
             task_id_line,
+            reflection_id_line,
+            strategy_key_line,
+            reflection_state_line,
+            success_count_line,
+            failure_count_line,
             directive_id_line,
             agent_id_line,
+            governance_state_line,
+            governance_note_line,
+            governance_suggestions_line,
             tags_line,
             promoted_from_line,
             promotion_reason_line,
+            outcome_summary_line,
+            outcome_labels_line,
             self.confidence,
             self.summary,
             self.content
@@ -616,11 +975,21 @@ impl MemoryBankEntry {
         let mut session_id = None;
         let mut category: Option<String> = None;
         let mut task_id: Option<String> = None;
+        let mut reflection_id: Option<String> = None;
+        let mut strategy_key: Option<String> = None;
+        let mut reflection_state: Option<ReflectionMemoryState> = None;
+        let mut success_count = 0;
+        let mut failure_count = 0;
         let mut directive_id: Option<String> = None;
         let mut agent_id: Option<String> = None;
+        let mut governance_state = MemoryGovernanceState::Active;
+        let mut governance_note: Option<String> = None;
+        let mut governance_suggestions: Vec<MemoryGovernanceSuggestion> = Vec::new();
         let mut tags: Vec<String> = Vec::new();
         let mut promoted_from_session_id: Option<String> = None;
         let mut promotion_reason: Option<String> = None;
+        let mut outcome_summary: Option<String> = None;
+        let mut outcome_labels: Vec<String> = Vec::new();
         let mut confidence = default_memory_confidence();
         let mut summary = None;
         let mut content_start = None;
@@ -665,6 +1034,27 @@ impl MemoryBankEntry {
                 if !v.is_empty() {
                     task_id = Some(v.to_string());
                 }
+            } else if line.starts_with("**Reflection ID**:") {
+                let v = line.trim_start_matches("**Reflection ID**:").trim();
+                if !v.is_empty() {
+                    reflection_id = Some(v.to_string());
+                }
+            } else if line.starts_with("**Strategy Key**:") {
+                let v = line.trim_start_matches("**Strategy Key**:").trim();
+                if !v.is_empty() {
+                    strategy_key = Some(v.to_string());
+                }
+            } else if line.starts_with("**Reflection State**:") {
+                let v = line.trim_start_matches("**Reflection State**:").trim();
+                if !v.is_empty() {
+                    reflection_state = v.parse().ok();
+                }
+            } else if line.starts_with("**Success Count**:") {
+                let v = line.trim_start_matches("**Success Count**:").trim();
+                success_count = v.parse().unwrap_or(0);
+            } else if line.starts_with("**Failure Count**:") {
+                let v = line.trim_start_matches("**Failure Count**:").trim();
+                failure_count = v.parse().unwrap_or(0);
             } else if line.starts_with("**Directive ID**:") {
                 let v = line.trim_start_matches("**Directive ID**:").trim();
                 if !v.is_empty() {
@@ -674,6 +1064,38 @@ impl MemoryBankEntry {
                 let v = line.trim_start_matches("**Agent ID**:").trim();
                 if !v.is_empty() {
                     agent_id = Some(v.to_string());
+                }
+            } else if line.starts_with("**Governance State**:") {
+                let v = line.trim_start_matches("**Governance State**:").trim();
+                if !v.is_empty() {
+                    governance_state = v.parse().unwrap_or(MemoryGovernanceState::Active);
+                }
+            } else if line.starts_with("**Governance Note**:") {
+                let v = line.trim_start_matches("**Governance Note**:").trim();
+                if !v.is_empty() {
+                    governance_note = Some(v.to_string());
+                }
+            } else if line.starts_with("**Governance Suggestions**:") {
+                let raw = line
+                    .trim_start_matches("**Governance Suggestions**:")
+                    .trim();
+                if !raw.is_empty() {
+                    governance_suggestions = raw
+                        .split(" ; ")
+                        .filter_map(|part| {
+                            let mut pieces = part.splitn(4, '|');
+                            let relationship = pieces.next()?.parse().ok()?;
+                            let entry_id = pieces.next()?.trim().to_string();
+                            let confidence = pieces.next()?.trim().parse::<f32>().ok()?;
+                            let rationale = pieces.next()?.trim().to_string();
+                            Some(MemoryGovernanceSuggestion {
+                                entry_id,
+                                relationship,
+                                confidence: confidence.clamp(0.0, 1.0),
+                                rationale,
+                            })
+                        })
+                        .collect();
                 }
             } else if line.starts_with("**Tags**:") {
                 let raw = line.trim_start_matches("**Tags**:").trim();
@@ -696,6 +1118,21 @@ impl MemoryBankEntry {
                 let v = line.trim_start_matches("**Promotion Reason**:").trim();
                 if !v.is_empty() {
                     promotion_reason = Some(v.to_string());
+                }
+            } else if line.starts_with("**Outcome Summary**:") {
+                let v = line.trim_start_matches("**Outcome Summary**:").trim();
+                if !v.is_empty() {
+                    outcome_summary = Some(v.to_string());
+                }
+            } else if line.starts_with("**Outcome Labels**:") {
+                let raw = line.trim_start_matches("**Outcome Labels**:").trim();
+                if !raw.is_empty() {
+                    outcome_labels = raw
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToString::to_string)
+                        .collect();
                 }
             } else if line.starts_with("**Confidence**:") {
                 let value = line.trim_start_matches("**Confidence**:").trim();
@@ -729,11 +1166,27 @@ impl MemoryBankEntry {
             session_id,
             category,
             task_id,
+            reflection_id,
+            strategy_key,
+            reflection_state,
+            success_count,
+            failure_count,
             directive_id,
             agent_id,
+            governance_state: if governance_state == MemoryGovernanceState::Active
+                && tags.iter().any(|tag| tag.eq_ignore_ascii_case("archived"))
+            {
+                MemoryGovernanceState::Archived
+            } else {
+                governance_state
+            },
+            governance_note,
+            governance_suggestions,
             tags,
             promoted_from_session_id,
             promotion_reason,
+            outcome_summary,
+            outcome_labels,
             confidence,
             summary,
             content,
@@ -771,6 +1224,9 @@ impl MemoryBankEntry {
 
     /// Return true when the entry satisfies the supplied filter.
     pub fn matches_query(&self, query: &MemoryBankQuery) -> bool {
+        if !query.include_archived && self.is_archived() {
+            return false;
+        }
         if !query.kinds.is_empty() && !query.kinds.contains(&self.memory_kind) {
             return false;
         }
@@ -850,6 +1306,14 @@ impl MemoryBankEntry {
         let terms = query_terms(&text);
         let mut score = self.confidence.clamp(0.0, 1.0) * 2.0;
         let mut matched_fields = Vec::new();
+
+        if let Some(strategy_key) = self.strategy_key.as_deref()
+            && !text.is_empty()
+            && strategy_key.to_ascii_lowercase().contains(&text)
+        {
+            score += 2.0;
+            matched_fields.push("strategy_key".to_string());
+        }
 
         if !text.is_empty() {
             if self.summary.to_ascii_lowercase().contains(&text) {
@@ -952,12 +1416,31 @@ impl MemoryBankEntry {
             }
         }
 
+        if let Some(task_id) = query.task_id.as_deref()
+            && self.task_id.as_deref() == Some(task_id)
+        {
+            score += 1.25;
+            matched_fields.push("task_id".to_string());
+        }
+        if let Some(directive_id) = query.directive_id.as_deref()
+            && self.directive_id.as_deref() == Some(directive_id)
+        {
+            score += 1.15;
+            matched_fields.push("directive_id".to_string());
+        }
+        if let Some(agent_id) = query.agent_id.as_deref()
+            && self.agent_id.as_deref() == Some(agent_id)
+        {
+            score += 0.75;
+            matched_fields.push("agent_id".to_string());
+        }
+
         score += match self.scope {
+            MemoryScope::Task => 1.15,
             MemoryScope::Directive => 1.0,
-            MemoryScope::Repository => 0.9,
             MemoryScope::Workspace => 0.7,
-            MemoryScope::Session => 0.5,
-            MemoryScope::Task => 0.4,
+            MemoryScope::Repository => 0.55,
+            MemoryScope::Session => 0.35,
         };
 
         score += match self.memory_type {
@@ -967,6 +1450,31 @@ impl MemoryBankEntry {
             MemoryType::Blocker | MemoryType::Resource => 0.4,
             MemoryType::Episodic => 0.3,
         };
+
+        score += match self.reflection_state {
+            Some(ReflectionMemoryState::Active) => 0.8,
+            Some(ReflectionMemoryState::Decayed) => -1.8,
+            Some(ReflectionMemoryState::NeedsReview) => -4.0,
+            Some(ReflectionMemoryState::Archived) => -8.0,
+            None => 0.0,
+        };
+        score += match self.governance_state {
+            MemoryGovernanceState::Active => 0.0,
+            MemoryGovernanceState::Pinned => 2.4,
+            MemoryGovernanceState::NeedsReview => -3.4,
+            MemoryGovernanceState::Superseded => -2.2,
+            MemoryGovernanceState::Archived => -8.0,
+        };
+        for suggestion in &self.governance_suggestions {
+            score += match suggestion.relationship {
+                MemoryGovernanceRelationship::Duplicate => -0.25,
+                MemoryGovernanceRelationship::ConflictsWith => -0.85,
+                MemoryGovernanceRelationship::SupersededBy => -0.65,
+            } * suggestion.confidence.clamp(0.0, 1.0);
+        }
+        score += self.success_count as f32 * 0.35;
+        score -= self.failure_count as f32 * 0.55;
+        score += self.outcome_labels.len() as f32 * 0.08;
 
         let age_hours = (Utc::now() - self.timestamp).num_hours().max(0) as f32;
         let recency_boost = (72.0 - age_hours.min(72.0)) / 72.0;
@@ -981,13 +1489,15 @@ impl MemoryBankEntry {
 
     fn searchable_text(&self) -> String {
         format!(
-            "{} {} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {} {} {}",
             self.summary,
             self.content,
             self.category.as_deref().unwrap_or_default(),
             self.directive_id.as_deref().unwrap_or_default(),
             self.task_id.as_deref().unwrap_or_default(),
             self.agent_id.as_deref().unwrap_or_default(),
+            self.strategy_key.as_deref().unwrap_or_default(),
+            self.governance_note.as_deref().unwrap_or_default(),
             self.promotion_reason.as_deref().unwrap_or_default(),
             self.tags.join(" "),
         )
@@ -1020,6 +1530,15 @@ impl MemoryBankEntry {
         if let Some(agent_id) = self.agent_id.as_deref() {
             header_parts.push(format!("agent {agent_id}"));
         }
+        if let Some(state) = self.reflection_state {
+            header_parts.push(format!("state {state}"));
+        }
+        if self.success_count > 0 || self.failure_count > 0 {
+            header_parts.push(format!(
+                "success {} | failure {}",
+                self.success_count, self.failure_count
+            ));
+        }
 
         format!(
             "### Memory Entry ({})\n**Summary**: {}\n**Metadata**: {}\n\n{}\n",
@@ -1033,6 +1552,10 @@ impl MemoryBankEntry {
 
 fn default_memory_confidence() -> f32 {
     0.70
+}
+
+fn is_zero_u16(value: &u16) -> bool {
+    *value == 0
 }
 
 fn query_terms(text: &str) -> Vec<String> {
@@ -1396,6 +1919,347 @@ pub async fn search_memory_bank_with_query(
     Ok(matching_entries)
 }
 
+/// Refresh persisted governance suggestions for durable memory entries.
+pub async fn refresh_memory_bank_governance(
+    workspace_dir: &Path,
+) -> Result<MemoryGovernanceRefreshReport, MemoryBankError> {
+    let mut entries = list_memory_bank(workspace_dir).await?;
+    let mut suggestions_by_index: Vec<Vec<MemoryGovernanceSuggestion>> =
+        vec![Vec::new(); entries.len()];
+
+    for left in 0..entries.len() {
+        if entries[left].is_archived() {
+            continue;
+        }
+
+        for right in (left + 1)..entries.len() {
+            if entries[right].is_archived() {
+                continue;
+            }
+
+            if let Some((confidence, rationale)) =
+                duplicate_suggestion(&entries[left], &entries[right])
+            {
+                let left_id = memory_entry_identifier(&entries[left]);
+                let right_id = memory_entry_identifier(&entries[right]);
+                suggestions_by_index[left].push(MemoryGovernanceSuggestion {
+                    entry_id: right_id.clone(),
+                    relationship: MemoryGovernanceRelationship::Duplicate,
+                    confidence,
+                    rationale: rationale.clone(),
+                });
+                suggestions_by_index[right].push(MemoryGovernanceSuggestion {
+                    entry_id: left_id,
+                    relationship: MemoryGovernanceRelationship::Duplicate,
+                    confidence,
+                    rationale,
+                });
+
+                if let Some((older, newer, supersession_confidence, supersession_reason)) =
+                    supersession_suggestion(
+                        left,
+                        right,
+                        &entries[left],
+                        &entries[right],
+                        confidence,
+                    )
+                {
+                    suggestions_by_index[older].push(MemoryGovernanceSuggestion {
+                        entry_id: memory_entry_identifier(&entries[newer]),
+                        relationship: MemoryGovernanceRelationship::SupersededBy,
+                        confidence: supersession_confidence,
+                        rationale: supersession_reason,
+                    });
+                }
+            }
+
+            if let Some((confidence, rationale)) =
+                conflict_suggestion(&entries[left], &entries[right])
+            {
+                let left_id = memory_entry_identifier(&entries[left]);
+                let right_id = memory_entry_identifier(&entries[right]);
+                suggestions_by_index[left].push(MemoryGovernanceSuggestion {
+                    entry_id: right_id.clone(),
+                    relationship: MemoryGovernanceRelationship::ConflictsWith,
+                    confidence,
+                    rationale: rationale.clone(),
+                });
+                suggestions_by_index[right].push(MemoryGovernanceSuggestion {
+                    entry_id: left_id,
+                    relationship: MemoryGovernanceRelationship::ConflictsWith,
+                    confidence,
+                    rationale,
+                });
+            }
+        }
+    }
+
+    let mut report = MemoryGovernanceRefreshReport {
+        entries_scanned: entries.len(),
+        ..MemoryGovernanceRefreshReport::default()
+    };
+
+    for (index, entry) in entries.iter_mut().enumerate() {
+        let Some(path) = entry.file_path.clone() else {
+            continue;
+        };
+        let next =
+            deduplicate_governance_suggestions(std::mem::take(&mut suggestions_by_index[index]));
+        report.duplicate_suggestions += next
+            .iter()
+            .filter(|suggestion| suggestion.relationship == MemoryGovernanceRelationship::Duplicate)
+            .count();
+        report.conflict_suggestions += next
+            .iter()
+            .filter(|suggestion| {
+                suggestion.relationship == MemoryGovernanceRelationship::ConflictsWith
+            })
+            .count();
+        report.superseded_suggestions += next
+            .iter()
+            .filter(|suggestion| {
+                suggestion.relationship == MemoryGovernanceRelationship::SupersededBy
+            })
+            .count();
+
+        if entry.governance_suggestions != next {
+            entry.governance_suggestions = next;
+            update_memory_bank_entry(workspace_dir, &path, entry).await?;
+            report.updated_entries += 1;
+        }
+    }
+
+    Ok(report)
+}
+
+fn deduplicate_governance_suggestions(
+    suggestions: Vec<MemoryGovernanceSuggestion>,
+) -> Vec<MemoryGovernanceSuggestion> {
+    let mut seen = BTreeSet::new();
+    let mut unique = Vec::new();
+    let mut sorted = suggestions;
+    sorted.sort_by(|left, right| {
+        right
+            .confidence
+            .total_cmp(&left.confidence)
+            .then_with(|| left.entry_id.cmp(&right.entry_id))
+            .then_with(|| {
+                left.relationship
+                    .to_string()
+                    .cmp(&right.relationship.to_string())
+            })
+    });
+
+    for suggestion in sorted {
+        let key = format!(
+            "{}::{}",
+            suggestion.relationship,
+            suggestion.entry_id.to_ascii_lowercase()
+        );
+        if seen.insert(key) {
+            unique.push(suggestion);
+        }
+    }
+
+    unique.truncate(6);
+    unique
+}
+
+fn duplicate_suggestion(left: &MemoryBankEntry, right: &MemoryBankEntry) -> Option<(f32, String)> {
+    if left.memory_type != right.memory_type {
+        return None;
+    }
+
+    let same_strategy = left.strategy_key.is_some() && left.strategy_key == right.strategy_key;
+    let summary_similarity = similarity_ratio(&left.summary, &right.summary);
+    let content_similarity = similarity_ratio(&left.content, &right.content);
+    let shared_context = shares_governance_context(left, right);
+
+    if same_strategy {
+        return Some((
+            0.96,
+            "Same normalized reflection strategy key points to overlapping corrective guidance"
+                .to_string(),
+        ));
+    }
+    if summary_similarity >= 0.96 {
+        return Some((
+            0.93,
+            "Nearly identical durable-memory summary suggests a duplicate record".to_string(),
+        ));
+    }
+    if shared_context && summary_similarity >= 0.82 && content_similarity >= 0.55 {
+        return Some((
+            ((summary_similarity + content_similarity) / 2.0).clamp(0.0, 0.9),
+            "Overlapping scope/provenance plus similar summary/content suggests duplicate durable memory"
+                .to_string(),
+        ));
+    }
+
+    None
+}
+
+fn conflict_suggestion(left: &MemoryBankEntry, right: &MemoryBankEntry) -> Option<(f32, String)> {
+    let same_strategy = left.strategy_key.is_some() && left.strategy_key == right.strategy_key;
+    let same_summary = similarity_ratio(&left.summary, &right.summary) >= 0.9;
+    if !(same_strategy || same_summary) {
+        return None;
+    }
+
+    let left_polarity = outcome_polarity(left);
+    let right_polarity = outcome_polarity(right);
+    if left_polarity == 0 || right_polarity == 0 || left_polarity == right_polarity {
+        return None;
+    }
+
+    Some((
+        0.92,
+        "Downstream outcome evidence points in opposite directions for otherwise similar durable guidance"
+            .to_string(),
+    ))
+}
+
+fn supersession_suggestion(
+    left_index: usize,
+    right_index: usize,
+    left: &MemoryBankEntry,
+    right: &MemoryBankEntry,
+    duplicate_confidence: f32,
+) -> Option<(usize, usize, f32, String)> {
+    if duplicate_confidence < 0.82 {
+        return None;
+    }
+
+    let left_strength = entry_strength(left);
+    let right_strength = entry_strength(right);
+    let stronger = right_strength.total_cmp(&left_strength);
+    if stronger == std::cmp::Ordering::Equal {
+        return None;
+    }
+
+    let (older, newer, _older_entry, newer_entry, strength_gap) = if stronger.is_gt() {
+        (
+            left_index,
+            right_index,
+            left,
+            right,
+            right_strength - left_strength,
+        )
+    } else {
+        (
+            right_index,
+            left_index,
+            right,
+            left,
+            left_strength - right_strength,
+        )
+    };
+
+    if strength_gap < 0.35 {
+        return None;
+    }
+
+    Some((
+        older,
+        newer,
+        (0.7 + strength_gap.min(1.0) * 0.15).clamp(0.0, 0.95),
+        format!(
+            "A newer/stronger entry ('{}') appears to supersede this durable memory",
+            newer_entry.summary
+        ),
+    ))
+}
+
+fn entry_strength(entry: &MemoryBankEntry) -> f32 {
+    let recency_hours = (Utc::now() - entry.timestamp).num_hours().max(0) as f32;
+    let recency = (168.0 - recency_hours.min(168.0)) / 168.0;
+    entry.confidence + recency * 0.35 + entry.success_count as f32 * 0.08
+        - entry.failure_count as f32 * 0.12
+        + match entry.governance_state {
+            MemoryGovernanceState::Pinned => 0.45,
+            MemoryGovernanceState::Superseded => -0.25,
+            MemoryGovernanceState::NeedsReview => -0.35,
+            MemoryGovernanceState::Archived => -0.75,
+            MemoryGovernanceState::Active => 0.0,
+        }
+}
+
+fn shares_governance_context(left: &MemoryBankEntry, right: &MemoryBankEntry) -> bool {
+    (left.task_id.is_some() && left.task_id == right.task_id)
+        || (left.directive_id.is_some() && left.directive_id == right.directive_id)
+        || (left.category.is_some() && left.category == right.category)
+        || left.scope == right.scope
+}
+
+fn similarity_ratio(left: &str, right: &str) -> f32 {
+    let left_tokens = tokenize_for_similarity(left);
+    let right_tokens = tokenize_for_similarity(right);
+    if left_tokens.is_empty() || right_tokens.is_empty() {
+        return 0.0;
+    }
+
+    let intersection = left_tokens.intersection(&right_tokens).count() as f32;
+    let union = left_tokens.union(&right_tokens).count() as f32;
+    if union == 0.0 {
+        0.0
+    } else {
+        intersection / union
+    }
+}
+
+fn tokenize_for_similarity(text: &str) -> BTreeSet<String> {
+    text.to_ascii_lowercase()
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .map(str::trim)
+        .filter(|token| token.len() >= 3)
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn outcome_polarity(entry: &MemoryBankEntry) -> i8 {
+    if entry.success_count > entry.failure_count {
+        return 1;
+    }
+    if entry.failure_count > entry.success_count {
+        return -1;
+    }
+
+    let labels = entry
+        .outcome_labels
+        .iter()
+        .map(|label| label.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let positive = labels.iter().any(|label| {
+        label.contains("approved")
+            || label.contains("completed")
+            || label.contains("passed")
+            || label.contains("success")
+    });
+    let negative = labels.iter().any(|label| {
+        label.contains("failed")
+            || label.contains("rejected")
+            || label.contains("blocked")
+            || label.contains("error")
+    });
+    match (positive, negative) {
+        (true, false) => 1,
+        (false, true) => -1,
+        _ => 0,
+    }
+}
+
+fn memory_entry_identifier(entry: &MemoryBankEntry) -> String {
+    entry
+        .file_path
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| entry.generate_filename())
+}
+
+fn is_default_governance_state(value: &MemoryGovernanceState) -> bool {
+    *value == MemoryGovernanceState::Active
+}
+
 /// Clear all memory bank entries in a workspace
 ///
 /// Deletes all markdown files in the `.gestura/memory/` directory. This operation
@@ -1647,10 +2511,20 @@ mod tests {
             Some("directive-memory".to_string()),
             Some("supervisor-agent".to_string()),
         )
+        .with_reflection_id("reflection-42")
+        .with_reflection_learning("inspect-files-first", ReflectionMemoryState::Active, 2, 0)
         .with_tags(vec!["memory".to_string(), "coordination".to_string()])
         .with_promotion(
             "session-short-1",
             "Promoted after reflection because it applies across agents",
+        )
+        .with_outcome_provenance(
+            Some("task_completed; review_approved; test_validation_approved".to_string()),
+            vec![
+                "task_completed".to_string(),
+                "review_approved".to_string(),
+                "test_validation_approved".to_string(),
+            ],
         )
         .with_confidence(0.92);
 
@@ -1661,10 +2535,27 @@ mod tests {
         assert_eq!(loaded.scope, MemoryScope::Directive);
         assert_eq!(loaded.directive_id.as_deref(), Some("directive-memory"));
         assert_eq!(loaded.task_id.as_deref(), Some("task-42"));
+        assert_eq!(loaded.reflection_id.as_deref(), Some("reflection-42"));
+        assert_eq!(loaded.strategy_key.as_deref(), Some("inspect-files-first"));
+        assert_eq!(loaded.reflection_state, Some(ReflectionMemoryState::Active));
+        assert_eq!(loaded.success_count, 2);
+        assert_eq!(loaded.failure_count, 0);
         assert_eq!(loaded.agent_id.as_deref(), Some("supervisor-agent"));
         assert_eq!(
             loaded.promoted_from_session_id.as_deref(),
             Some("session-short-1")
+        );
+        assert_eq!(
+            loaded.outcome_summary.as_deref(),
+            Some("task_completed; review_approved; test_validation_approved")
+        );
+        assert_eq!(
+            loaded.outcome_labels,
+            vec![
+                "task_completed",
+                "review_approved",
+                "test_validation_approved"
+            ]
         );
         assert_eq!(loaded.tags, vec!["memory", "coordination"]);
         assert!((loaded.confidence - 0.92).abs() < f32::EPSILON);
@@ -1727,6 +2618,199 @@ mod tests {
                 .matched_fields
                 .iter()
                 .any(|field| field == "summary")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reflection_learning_state_filters_and_ranks() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+
+        let active_entry = MemoryBankEntry::new(
+            "session-reflection-a".to_string(),
+            "Reflection: inspect files first".to_string(),
+            "Inspect the relevant files before concluding behavior.".to_string(),
+        )
+        .with_memory_type(MemoryType::Reflection)
+        .with_scope(MemoryScope::Workspace)
+        .with_reflection_id("reflection-active")
+        .with_reflection_learning("inspect-files-first", ReflectionMemoryState::Active, 2, 0)
+        .with_confidence(0.92);
+        save_to_memory_bank(workspace_path, &active_entry)
+            .await
+            .unwrap();
+
+        let decayed_entry = MemoryBankEntry::new(
+            "session-reflection-b".to_string(),
+            "Reflection: inspect files first".to_string(),
+            "Inspect the relevant files before concluding behavior.".to_string(),
+        )
+        .with_memory_type(MemoryType::Reflection)
+        .with_scope(MemoryScope::Workspace)
+        .with_reflection_id("reflection-decayed")
+        .with_reflection_learning("inspect-files-first", ReflectionMemoryState::Decayed, 0, 2)
+        .with_confidence(0.92);
+        save_to_memory_bank(workspace_path, &decayed_entry)
+            .await
+            .unwrap();
+
+        let archived_entry = MemoryBankEntry::new(
+            "session-reflection-c".to_string(),
+            "Reflection: inspect files first".to_string(),
+            "Inspect the relevant files before concluding behavior.".to_string(),
+        )
+        .with_memory_type(MemoryType::Reflection)
+        .with_scope(MemoryScope::Workspace)
+        .with_reflection_id("reflection-archived")
+        .with_reflection_learning("inspect-files-first", ReflectionMemoryState::Archived, 0, 3)
+        .with_confidence(0.92);
+        save_to_memory_bank(workspace_path, &archived_entry)
+            .await
+            .unwrap();
+
+        let results = search_memory_bank_with_query(
+            workspace_path,
+            &MemoryBankQuery::text("inspect files first")
+                .with_limit(10)
+                .with_memory_type(MemoryType::Reflection),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results[0].entry.reflection_id.as_deref(),
+            Some("reflection-active")
+        );
+        assert_eq!(
+            results[1].entry.reflection_id.as_deref(),
+            Some("reflection-decayed")
+        );
+        assert!(results[0].score > results[1].score);
+        assert!(results[0].entry.is_prompt_eligible_reflection());
+        assert!(results[1].entry.is_prompt_eligible_reflection());
+        assert!(!archived_entry.matches_query(&MemoryBankQuery::text("inspect files first")));
+    }
+
+    #[tokio::test]
+    async fn test_refresh_memory_bank_governance_persists_suggestions_and_ranks_entries() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_path = temp_dir.path();
+
+        let weaker_duplicate = MemoryBankEntry::new(
+            "session-governance-a".to_string(),
+            "Directive memory handoff policy".to_string(),
+            "Store concise directive-scoped handoff notes for subagent reuse.".to_string(),
+        )
+        .with_memory_type(MemoryType::Procedural)
+        .with_scope(MemoryScope::Directive)
+        .with_provenance(
+            Some("task-governance".to_string()),
+            Some("directive-governance".to_string()),
+            Some("agent-a".to_string()),
+        )
+        .with_confidence(0.62);
+        let weaker_path = save_to_memory_bank(workspace_path, &weaker_duplicate)
+            .await
+            .unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        let pinned_duplicate = MemoryBankEntry::new(
+            "session-governance-b".to_string(),
+            "Directive memory handoff policy".to_string(),
+            "Store concise directive-scoped handoff notes for subagent reuse and supervisor retrieval."
+                .to_string(),
+        )
+        .with_memory_type(MemoryType::Procedural)
+        .with_scope(MemoryScope::Directive)
+        .with_provenance(
+            Some("task-governance".to_string()),
+            Some("directive-governance".to_string()),
+            Some("agent-b".to_string()),
+        )
+        .with_governance_state(MemoryGovernanceState::Pinned)
+        .with_confidence(0.95);
+        save_to_memory_bank(workspace_path, &pinned_duplicate)
+            .await
+            .unwrap();
+
+        let successful_reflection = MemoryBankEntry::new(
+            "session-governance-c".to_string(),
+            "Reflection: inspect files first".to_string(),
+            "Inspect the code before making assumptions about behavior.".to_string(),
+        )
+        .with_memory_type(MemoryType::Reflection)
+        .with_scope(MemoryScope::Workspace)
+        .with_reflection_learning("inspect-files-first", ReflectionMemoryState::Active, 3, 0)
+        .with_outcome_provenance(
+            Some("Approved after inspection".to_string()),
+            vec!["approved".to_string()],
+        );
+        save_to_memory_bank(workspace_path, &successful_reflection)
+            .await
+            .unwrap();
+
+        let failed_reflection = MemoryBankEntry::new(
+            "session-governance-d".to_string(),
+            "Reflection: inspect files first".to_string(),
+            "Inspect the code before making assumptions about behavior.".to_string(),
+        )
+        .with_memory_type(MemoryType::Reflection)
+        .with_scope(MemoryScope::Workspace)
+        .with_reflection_learning(
+            "inspect-files-first",
+            ReflectionMemoryState::NeedsReview,
+            0,
+            3,
+        )
+        .with_outcome_provenance(
+            Some("Rejected without inspection".to_string()),
+            vec!["failed".to_string()],
+        );
+        save_to_memory_bank(workspace_path, &failed_reflection)
+            .await
+            .unwrap();
+
+        let report = refresh_memory_bank_governance(workspace_path)
+            .await
+            .unwrap();
+        assert!(report.updated_entries >= 4);
+        assert!(report.duplicate_suggestions >= 2);
+        assert!(report.conflict_suggestions >= 2);
+        assert!(report.superseded_suggestions >= 1);
+
+        let reloaded_weaker = load_from_memory_bank(&weaker_path).await.unwrap();
+        assert!(
+            reloaded_weaker
+                .governance_suggestions
+                .iter()
+                .any(|suggestion| {
+                    suggestion.relationship == MemoryGovernanceRelationship::Duplicate
+                })
+        );
+        assert!(
+            reloaded_weaker
+                .governance_suggestions
+                .iter()
+                .any(|suggestion| {
+                    suggestion.relationship == MemoryGovernanceRelationship::SupersededBy
+                })
+        );
+
+        let ranked = search_memory_bank_with_query(
+            workspace_path,
+            &MemoryBankQuery::text("directive memory handoff policy")
+                .with_limit(5)
+                .with_directive("directive-governance")
+                .with_memory_type(MemoryType::Procedural),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(
+            ranked[0].entry.governance_state,
+            MemoryGovernanceState::Pinned
         );
     }
 

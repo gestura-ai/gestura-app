@@ -135,6 +135,10 @@ pub mod tools;
 pub mod error {
     pub use gestura_core_foundation::error::*;
 }
+/// Outcome-linked learning signals re-exported from `gestura-core-foundation`.
+pub mod outcomes {
+    pub use gestura_core_foundation::outcomes::*;
+}
 /// Cross-cutting event types re-exported from `gestura-core-foundation`.
 pub mod events {
     pub use gestura_core_foundation::events::*;
@@ -430,9 +434,12 @@ pub use mcp::{
     get_mcp_client_registry, list_popular_mcp_servers, mdh_translate, normalize_mcp_server_name,
 };
 pub use memory_bank::{
-    MemoryBankEntry, MemoryBankError, MemoryBankQuery, MemoryKind, MemoryScope, MemorySearchResult,
-    MemoryType, clear_memory_bank, ensure_memory_bank_dir, get_memory_bank_dir, list_memory_bank,
-    load_from_memory_bank, save_to_memory_bank, search_memory_bank, search_memory_bank_with_query,
+    MemoryBankEntry, MemoryBankError, MemoryBankQuery, MemoryGovernanceRefreshReport,
+    MemoryGovernanceRelationship, MemoryGovernanceState, MemoryGovernanceSuggestion, MemoryKind,
+    MemoryScope, MemorySearchResult, MemoryType, ReflectionMemoryState, clear_memory_bank,
+    ensure_memory_bank_dir, get_memory_bank_dir, list_memory_bank, load_from_memory_bank,
+    refresh_memory_bank_governance, save_to_memory_bank, search_memory_bank,
+    search_memory_bank_with_query,
 };
 pub use model_display::{
     format_anthropic_model_name, format_gemini_model_name, format_grok_model_name,

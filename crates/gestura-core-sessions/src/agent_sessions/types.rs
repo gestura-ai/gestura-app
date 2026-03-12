@@ -121,6 +121,9 @@ pub struct SessionMemoryResource {
 pub struct SessionMemoryDecision {
     /// Stable local identifier.
     pub id: String,
+    /// Optional external linkage identifier for durable learning records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_id: Option<String>,
     /// Short decision summary.
     pub summary: String,
     /// Optional rationale or supporting detail.
@@ -339,14 +342,28 @@ impl SessionWorkingMemory {
         rationale: Option<String>,
         tags: Vec<String>,
     ) {
+        self.remember_linked_decision(summary, rationale, tags, None);
+    }
+
+    /// Track a decision with an optional durable linkage identifier.
+    pub fn remember_linked_decision(
+        &mut self,
+        summary: impl Into<String>,
+        rationale: Option<String>,
+        tags: Vec<String>,
+        reference_id: Option<String>,
+    ) {
         let now = Utc::now();
         let summary = Self::truncate_text(&summary.into(), 180);
 
-        if let Some(existing) = self
-            .decisions
-            .iter_mut()
-            .find(|decision| decision.summary == summary)
-        {
+        if let Some(existing) = self.decisions.iter_mut().find(|decision| {
+            reference_id
+                .as_ref()
+                .zip(decision.reference_id.as_ref())
+                .is_some_and(|(expected, current)| expected == current)
+                || decision.summary == summary
+        }) {
+            existing.reference_id = reference_id;
             existing.rationale = rationale;
             existing.tags = tags;
             existing.updated_at = now;
@@ -357,6 +374,7 @@ impl SessionWorkingMemory {
             &mut self.decisions,
             SessionMemoryDecision {
                 id: Self::new_id(),
+                reference_id,
                 summary,
                 rationale,
                 tags,
@@ -1158,6 +1176,38 @@ mod tests {
             candidates
                 .iter()
                 .any(|candidate| { candidate.source == SessionMemoryPromotionSource::Blocker })
+        );
+    }
+
+    #[test]
+    fn remember_linked_decision_updates_existing_reference() {
+        let mut working_memory = SessionWorkingMemory::default();
+        working_memory.remember_linked_decision(
+            "Reflection: verify assumptions first",
+            Some("Initial rationale".to_string()),
+            vec!["reflection".to_string()],
+            Some("reflection-1".to_string()),
+        );
+        working_memory.remember_linked_decision(
+            "Reflection: verify assumptions first",
+            Some("Updated rationale".to_string()),
+            vec!["reflection".to_string(), "review_approved".to_string()],
+            Some("reflection-1".to_string()),
+        );
+
+        assert_eq!(working_memory.decisions.len(), 1);
+        assert_eq!(
+            working_memory.decisions[0].reference_id.as_deref(),
+            Some("reflection-1")
+        );
+        assert_eq!(
+            working_memory.decisions[0].rationale.as_deref(),
+            Some("Updated rationale")
+        );
+        assert!(
+            working_memory.decisions[0]
+                .tags
+                .contains(&"review_approved".to_string())
         );
     }
 

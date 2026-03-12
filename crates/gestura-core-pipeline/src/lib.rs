@@ -45,6 +45,7 @@ pub mod reflection_eval;
 pub mod types;
 
 // Re-export key types at crate root for convenience.
+pub use gestura_core_foundation::outcomes::{OutcomeSignal, OutcomeSignalKind};
 pub use persona::default_system_prompt;
 pub use reflection::{AgentReflection, QualitySignals, ReflectionConfig};
 pub use reflection_eval::{

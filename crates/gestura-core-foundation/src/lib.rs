@@ -28,6 +28,7 @@ pub mod events;
 pub mod execution_mode;
 pub mod interaction;
 pub mod model_display;
+pub mod outcomes;
 pub mod permissions;
 pub mod platform;
 pub mod secrets;
@@ -44,4 +45,5 @@ pub use error::{AppError, Result};
 pub use execution_mode::{
     ExecutionMode, ModeConfig, ModeManager, ToolCategory, ToolExecutionCheck, ToolPermission,
 };
+pub use outcomes::{OutcomeSignal, OutcomeSignalKind};
 pub use permissions::PermissionLevel;

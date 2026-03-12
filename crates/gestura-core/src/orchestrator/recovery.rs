@@ -639,6 +639,7 @@ mod tests {
             blocked_reasons: vec![],
             result: None,
             remote_execution: None,
+            local_execution: None,
             messages: vec![],
             checkpoint: None,
             created_at: now,
@@ -698,6 +699,7 @@ mod tests {
             hierarchy_summary: None,
             tasks: vec![task_record],
             messages: vec![],
+            shared_cognition: vec![],
             created_at: now,
             updated_at: now,
             completed_at: None,
@@ -1038,6 +1040,88 @@ mod tests {
         assert_eq!(
             checkpoint.note.as_deref(),
             Some("execution interrupted during restart")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_persisted_state_keeps_operator_gated_checkpoint_blocked() {
+        let temp = tempdir().expect("tempdir");
+        let orchestrator = test_orchestrator(temp.path());
+
+        let task = test_task(
+            temp.path(),
+            "run-operator-gated",
+            "task-operator-gated",
+            "agent-operator-gated",
+            AgentExecutionMode::IsolatedWorkspace,
+        );
+        let environment = orchestrator
+            .prepare_environment(&task)
+            .await
+            .expect("prepare operator-gated environment");
+        let leased = orchestrator
+            .acquire_environment_lease(&environment.id, &task.id, &task.agent_id)
+            .await
+            .expect("acquire environment lease");
+
+        let run = test_run(
+            "run-operator-gated",
+            temp.path(),
+            test_task_record(task.clone(), &leased, SupervisorTaskState::Running),
+        );
+        orchestrator.persist_run(&run).expect("persist run");
+
+        let mut checkpoint = test_checkpoint(&task);
+        checkpoint.replay_safety = DelegatedReplaySafety::OperatorGated;
+        checkpoint.resume_disposition = DelegatedResumeDisposition::OperatorInterventionRequired;
+        checkpoint.safe_boundary_label = "before tool 'shell' execution".to_string();
+        checkpoint.note = Some("awaiting operator review after restart".to_string());
+        persist_checkpoint_to_disk(temp.path(), &checkpoint).expect("persist checkpoint");
+
+        let recovered = test_orchestrator(temp.path());
+        let run = recovered
+            .get_supervisor_run("run-operator-gated")
+            .await
+            .expect("recovered run should exist");
+        let record = run.tasks.first().expect("recovered task should exist");
+        assert_eq!(record.state, SupervisorTaskState::Blocked);
+        assert!(record.blocked_reasons.iter().any(|reason| {
+            reason.contains("operator action required")
+                && reason.contains("before tool 'shell' execution")
+        }));
+
+        let checkpoint_summary = record
+            .checkpoint
+            .as_ref()
+            .expect("checkpoint summary should be attached after reload");
+        assert_eq!(checkpoint_summary.stage, DelegatedCheckpointStage::Blocked);
+        assert_eq!(
+            checkpoint_summary.replay_safety,
+            DelegatedReplaySafety::OperatorGated
+        );
+        assert_eq!(
+            checkpoint_summary.resume_disposition,
+            DelegatedResumeDisposition::OperatorInterventionRequired
+        );
+        assert_eq!(
+            checkpoint_summary.safe_boundary_label,
+            "before tool 'shell' execution"
+        );
+        assert!(!checkpoint_summary.has_resume_state);
+        assert!(
+            !checkpoint_summary
+                .available_actions
+                .contains(&DelegatedCheckpointAction::ResumeFromCheckpoint)
+        );
+        assert!(
+            checkpoint_summary
+                .available_actions
+                .contains(&DelegatedCheckpointAction::RestartFromScratch)
+        );
+        assert!(
+            checkpoint_summary
+                .available_actions
+                .contains(&DelegatedCheckpointAction::AcknowledgeBlocked)
         );
     }
 

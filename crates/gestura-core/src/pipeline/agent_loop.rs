@@ -66,7 +66,7 @@ impl AgentPipeline {
         // Agentic loop - continue until no more tool calls or max iterations
         for iteration in 0..self.pipeline_config.max_iterations {
             if cancel_token.is_cancelled() {
-                let _ = tx.send(StreamChunk::Cancelled).await;
+                let _ = tx.send(cancel_token.interruption_chunk()).await;
                 return Ok(response);
             }
 

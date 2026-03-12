@@ -198,6 +198,70 @@ impl AgentPipeline {
         }
     }
 
+    pub(super) async fn load_shared_coordination_memory(
+        &self,
+        workspace_dir: &std::path::Path,
+        metadata: &RequestMetadata,
+        max_entries: usize,
+    ) -> Option<Vec<String>> {
+        if metadata.task_id.is_none()
+            && metadata.directive_id.is_none()
+            && metadata.memory_tags.is_empty()
+        {
+            return None;
+        }
+
+        let mut memory_query = crate::memory_bank::MemoryBankQuery::default()
+            .with_limit(max_entries)
+            .with_category(crate::orchestrator::SHARED_COGNITION_CATEGORY)
+            .with_min_confidence(0.55);
+        memory_query.kinds = vec![crate::memory_bank::MemoryKind::LongTerm];
+        memory_query.scopes = vec![
+            crate::memory_bank::MemoryScope::Task,
+            crate::memory_bank::MemoryScope::Directive,
+            crate::memory_bank::MemoryScope::Session,
+            crate::memory_bank::MemoryScope::Workspace,
+        ];
+
+        if let Some(session_id) = metadata.session_id.as_deref() {
+            memory_query.session_id = Some(session_id.to_string());
+        }
+        if let Some(task_id) = metadata.task_id.as_deref() {
+            memory_query = memory_query.with_task(task_id.to_string());
+        }
+        if let Some(directive_id) = metadata.directive_id.as_deref() {
+            memory_query = memory_query.with_directive(directive_id.to_string());
+        }
+        if !metadata.memory_tags.is_empty() {
+            memory_query = memory_query.with_tags(metadata.memory_tags.clone());
+        }
+
+        match crate::memory_bank::search_memory_bank_with_query(workspace_dir, &memory_query).await
+        {
+            Ok(results) if !results.is_empty() => Some(
+                results
+                    .into_iter()
+                    .map(|result| {
+                        let mut section = String::from("### Shared Coordination Memory\n");
+                        section.push_str(&result.entry.to_prompt_section(320));
+                        if !result.matched_fields.is_empty() {
+                            section.push_str(&format!(
+                                "Matched via: {}\n",
+                                result.matched_fields.join(", ")
+                            ));
+                        }
+                        section
+                    })
+                    .collect(),
+            ),
+            Ok(_) => None,
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to load shared coordination memory");
+                None
+            }
+        }
+    }
+
     pub(super) async fn search_and_load_memory_bank(
         &self,
         workspace_dir: &std::path::Path,

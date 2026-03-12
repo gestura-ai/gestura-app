@@ -206,8 +206,8 @@ impl PipelineSettings {
 /// Settings for ERL-inspired experiential reflection.
 ///
 /// When enabled, the agent generates structured reflections on suboptimal
-/// turns, may attempt a same-turn text-only revision, and stores the resulting
-/// corrective knowledge for future context injection.
+/// turns, may attempt one bounded same-turn corrective retry, and stores the
+/// resulting corrective knowledge for future context injection.
 ///
 /// The feature defaults to disabled because it introduces at least one extra
 /// model call on weak turns and therefore affects latency/cost.
@@ -221,7 +221,7 @@ pub struct ReflectionSettings {
     pub quality_threshold_percent: u8,
     /// Maximum number of past reflections to inject into prompt context.
     pub max_injected: usize,
-    /// Maximum number of text-only reflection-guided revision attempts.
+    /// Maximum number of bounded reflection-guided corrective retries.
     pub max_retry_attempts: usize,
     /// Minimum confidence percentage (0–100) for promoting a reflection
     /// to long-term memory.

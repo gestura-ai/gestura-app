@@ -24,6 +24,7 @@
 //! agent loop, streaming events, session storage, and memory-bank promotion.
 
 use chrono::{DateTime, Utc};
+use gestura_core_foundation::OutcomeSignal;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{AgentResponse, ToolResult};
@@ -38,8 +39,9 @@ use crate::types::{AgentResponse, ToolResult};
 ///   poor enough to merit reflection.
 /// - `max_injected_reflections` limits how much cross-episode corrective memory
 ///   can be injected back into future prompts.
-/// - `max_retry_attempts` bounds same-turn, text-only revision attempts so the
-///   pipeline can improve wording without replaying tool side effects.
+/// - `max_retry_attempts` bounds same-turn corrective retries. A retry may be a
+///   text-only revision or one safe read-only re-execution driven by the
+///   reflection strategy, but the runtime still caps it to a single retry.
 /// - `promotion_confidence` gates whether a reflection is strong enough to move
 ///   from short-term/session memory into long-term memory-bank storage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,11 +54,11 @@ pub struct ReflectionConfig {
     pub quality_threshold: f32,
     /// Maximum number of past reflections to inject into prompt context.
     pub max_injected_reflections: usize,
-    /// Maximum number of reflection-guided revision attempts per turn.
+    /// Maximum number of reflection-guided corrective retries per turn.
     ///
-    /// These retries are text-only revisions (no additional tool execution)
-    /// so the agent can safely improve a weak answer without replaying
-    /// side-effectful actions.
+    /// The runtime currently applies at most one bounded retry. That retry may
+    /// be a text-only revision or one safe re-execution with read-only tool
+    /// policy.
     pub max_retry_attempts: usize,
     /// Minimum confidence for a reflection to be promoted to long-term memory.
     pub promotion_confidence: f32,
@@ -87,6 +89,8 @@ impl Default for ReflectionConfig {
 /// - promote it into `MemoryType::Reflection` for retrieval in future turns.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentReflection {
+    /// Stable identifier so downstream outcomes can update the same reflection.
+    pub reflection_id: String,
     /// What the agent attempted.
     pub attempt_summary: String,
     /// What went wrong or was suboptimal.
@@ -97,7 +101,11 @@ pub struct AgentReflection {
     /// Set after a subsequent attempt to measure improvement.
     pub improvement_score: Option<f32>,
     /// Tags for retrieval (tool names, error categories, task types).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Durable outcome signals linked back from retries, gates, and task outcomes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outcome_signals: Vec<OutcomeSignal>,
     /// Session context.
     pub session_id: String,
     /// Task ID if available.
@@ -114,13 +122,16 @@ impl AgentReflection {
         failure_analysis: impl Into<String>,
         corrective_strategy: impl Into<String>,
     ) -> Self {
+        let session_id = session_id.into();
         Self {
+            reflection_id: build_reflection_id(&session_id),
             attempt_summary: attempt_summary.into(),
             failure_analysis: failure_analysis.into(),
             corrective_strategy: corrective_strategy.into(),
             improvement_score: None,
             tags: Vec::new(),
-            session_id: session_id.into(),
+            outcome_signals: Vec::new(),
+            session_id,
             task_id: None,
             timestamp: Utc::now(),
         }
@@ -138,6 +149,24 @@ impl AgentReflection {
         self
     }
 
+    /// Attach durable outcome signals for corrective-learning provenance.
+    #[must_use]
+    pub fn with_outcome_signals(mut self, outcome_signals: Vec<OutcomeSignal>) -> Self {
+        self.outcome_signals = outcome_signals;
+        self
+    }
+
+    /// Record a single durable outcome signal.
+    pub fn push_outcome_signal(&mut self, signal: OutcomeSignal) {
+        self.outcome_signals = merge_outcome_signals(&self.outcome_signals, &[signal]);
+    }
+
+    /// Score how strongly this reflection should be promoted into durable memory.
+    #[must_use]
+    pub fn promotion_confidence(&self) -> f32 {
+        reflection_promotion_confidence(self.improvement_score, &self.outcome_signals)
+    }
+
     /// Format as a prompt section for context injection.
     pub fn to_prompt_section(&self) -> String {
         let improvement = self.improvement_score.map(|score| {
@@ -146,19 +175,85 @@ impl AgentReflection {
                 score * 100.0
             )
         });
+        let outcomes = if self.outcome_signals.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "             - Outcomes: {}\n",
+                self.outcome_signals
+                    .iter()
+                    .map(|signal| signal.kind.label())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
 
         format!(
             "**Reflection** ({})\n\
              - Attempted: {}\n\
              - Issue: {}\n\
-             - Strategy: {}\n{}",
+             - Strategy: {}\n{}{}",
             self.timestamp.format("%Y-%m-%d %H:%M UTC"),
             self.attempt_summary,
             self.failure_analysis,
             self.corrective_strategy,
             improvement.unwrap_or_default(),
+            outcomes,
         )
     }
+}
+
+fn build_reflection_id(session_id: &str) -> String {
+    let nanos = Utc::now()
+        .timestamp_nanos_opt()
+        .unwrap_or_else(|| Utc::now().timestamp_micros() * 1_000);
+    let session_fragment = session_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .take(12)
+        .collect::<String>();
+    if session_fragment.is_empty() {
+        format!("reflection-{nanos}")
+    } else {
+        format!("reflection-{session_fragment}-{nanos}")
+    }
+}
+
+/// Score how strongly a reflection should be promoted into durable memory.
+#[must_use]
+pub fn reflection_promotion_confidence(
+    improvement_score: Option<f32>,
+    outcome_signals: &[OutcomeSignal],
+) -> f32 {
+    let base = improvement_score
+        .map(|score| (0.55 + (score * 0.35)).clamp(0.55, 0.90))
+        .unwrap_or(0.62);
+    let delta: f32 = outcome_signals
+        .iter()
+        .map(|signal| signal.kind.confidence_delta())
+        .sum();
+    (base + delta).clamp(0.30, 0.97)
+}
+
+/// Merge outcome signals, replacing older entries of the same kind with the newest.
+#[must_use]
+pub fn merge_outcome_signals(
+    existing: &[OutcomeSignal],
+    incoming: &[OutcomeSignal],
+) -> Vec<OutcomeSignal> {
+    let mut merged = existing.to_vec();
+    for signal in incoming {
+        if let Some(slot) = merged
+            .iter_mut()
+            .find(|current| current.kind == signal.kind)
+        {
+            *slot = signal.clone();
+        } else {
+            merged.push(signal.clone());
+        }
+    }
+    merged.sort_by_key(|signal| signal.observed_at);
+    merged
 }
 
 /// Score how much a reflection-guided retry improved quality.
@@ -368,6 +463,7 @@ pub fn parse_reflection_response(response: &str, session_id: &str) -> Option<Age
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gestura_core_foundation::OutcomeSignalKind;
 
     #[test]
     fn test_quality_scoring_high_quality_response() {
@@ -515,11 +611,16 @@ mod tests {
             "Read missing file",
             "File did not exist",
             "Check file existence first",
-        );
+        )
+        .with_outcome_signals(vec![
+            OutcomeSignal::new(OutcomeSignalKind::RetryImproved)
+                .with_summary("The revised answer used the correct path."),
+        ]);
         let section = reflection.to_prompt_section();
         assert!(section.contains("Read missing file"));
         assert!(section.contains("File did not exist"));
         assert!(section.contains("Check file existence first"));
+        assert!(section.contains("Retry improved"));
     }
 
     #[test]
@@ -535,5 +636,39 @@ mod tests {
     fn test_reflection_improvement_score_zero_when_retry_is_not_better() {
         assert_eq!(score_reflection_improvement(0.65, 0.65), 0.0);
         assert_eq!(score_reflection_improvement(0.65, 0.52), 0.0);
+    }
+
+    #[test]
+    fn test_promotion_confidence_uses_outcome_signals() {
+        let baseline = AgentReflection::new(
+            "s1",
+            "Attempted a retry",
+            "The first answer was weak",
+            "Revise with the missing evidence",
+        );
+        let stronger = baseline.clone().with_outcome_signals(vec![
+            OutcomeSignal::new(OutcomeSignalKind::RetryImproved),
+            OutcomeSignal::new(OutcomeSignalKind::ReviewApproved),
+        ]);
+        let weaker = baseline.with_outcome_signals(vec![
+            OutcomeSignal::new(OutcomeSignalKind::RetryDidNotImprove),
+            OutcomeSignal::new(OutcomeSignalKind::ReviewNeedsRevision),
+        ]);
+
+        assert!(stronger.promotion_confidence() > 0.70);
+        assert!(weaker.promotion_confidence() < 0.50);
+    }
+
+    #[test]
+    fn test_merge_outcome_signals_replaces_existing_kind() {
+        let first = OutcomeSignal::new(OutcomeSignalKind::ReviewApproved)
+            .with_summary("Initial approval note");
+        let replacement = OutcomeSignal::new(OutcomeSignalKind::ReviewApproved)
+            .with_summary("Final approval note");
+
+        let merged = merge_outcome_signals(&[first], std::slice::from_ref(&replacement));
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].summary.as_deref(), replacement.summary.as_deref());
     }
 }
