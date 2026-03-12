@@ -38,6 +38,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Commands {
     /// Interactive AI agent session
     Agent {
@@ -610,6 +611,17 @@ pub enum MemoryAction {
         tags: Option<Vec<String>>,
         #[arg(long)]
         confidence: Option<f32>,
+        #[arg(long = "governance-state")]
+        governance_state: Option<String>,
+        #[arg(long = "governance-note")]
+        governance_note: Option<String>,
+        #[arg(long = "clear-governance-note")]
+        clear_governance_note: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Refresh durable-memory governance suggestions
+    RefreshGovernance {
         #[arg(long)]
         json: bool,
     },

@@ -14,6 +14,7 @@ mod environment;
 mod persistence;
 mod recovery;
 
+use crate::pipeline::sync_task_reflection_outcomes;
 use crate::tasks::{TaskBackgroundJob, TaskBackgroundStatus};
 use crate::tools::PermissionManager;
 use crate::{
@@ -28,6 +29,7 @@ use gestura_core_a2a::{
     CreateTaskRequest, MessagePart, RemoteTaskContract, RemoteTaskLease, RemoteTaskLeaseRequest,
     RemoteTaskProgress as A2ARemoteTaskProgress, TaskProvenance, TaskStatus as A2ATaskStatus,
 };
+use gestura_core_foundation::{OutcomeSignal, OutcomeSignalKind};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -247,9 +249,175 @@ pub enum SupervisorRunStatus {
 
 /// Maximum allowed parent -> child supervisor depth.
 pub const MAX_CHILD_SUPERVISOR_DEPTH: u8 = 1;
+/// Durable memory-bank category used for run/task shared cognition.
+pub const SHARED_COGNITION_CATEGORY: &str = "shared_cognition";
+/// Stable tag applied to shared-cognition memory entries.
+pub const SHARED_COGNITION_TAG: &str = "shared-cognition";
 
 fn default_max_child_supervisor_depth() -> u8 {
     MAX_CHILD_SUPERVISOR_DEPTH
+}
+
+fn workflow_run_memory_tag(run_id: &str) -> String {
+    format!("workflow-run:{run_id}")
+}
+
+fn push_unique_tag(tags: &mut Vec<String>, tag: impl Into<String>) {
+    let tag = tag.into();
+    if !tags.iter().any(|existing| existing == &tag) {
+        tags.push(tag);
+    }
+}
+
+fn summarize_shared_cognition(content: &str) -> String {
+    let collapsed = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= 96 {
+        return collapsed;
+    }
+
+    format!(
+        "{}…",
+        collapsed.chars().take(95).collect::<String>().trim_end()
+    )
+}
+
+fn shared_cognition_kind_tag(kind: SharedCognitionKind) -> &'static str {
+    match kind {
+        SharedCognitionKind::Discovery => "shared-cognition:discovery",
+        SharedCognitionKind::Blocker => "shared-cognition:blocker",
+        SharedCognitionKind::Hypothesis => "shared-cognition:hypothesis",
+        SharedCognitionKind::Steering => "shared-cognition:steering",
+        SharedCognitionKind::Decision => "shared-cognition:decision",
+        SharedCognitionKind::Handoff => "shared-cognition:handoff",
+    }
+}
+
+fn shared_cognition_memory_type(kind: SharedCognitionKind) -> MemoryType {
+    match kind {
+        SharedCognitionKind::Blocker => MemoryType::Blocker,
+        SharedCognitionKind::Decision => MemoryType::Decision,
+        SharedCognitionKind::Handoff => MemoryType::Handoff,
+        SharedCognitionKind::Discovery
+        | SharedCognitionKind::Hypothesis
+        | SharedCognitionKind::Steering => MemoryType::Procedural,
+    }
+}
+
+fn shared_cognition_confidence(kind: SharedCognitionKind) -> f32 {
+    match kind {
+        SharedCognitionKind::Blocker => 0.92,
+        SharedCognitionKind::Decision => 0.88,
+        SharedCognitionKind::Handoff => 0.86,
+        SharedCognitionKind::Steering => 0.82,
+        SharedCognitionKind::Discovery => 0.78,
+        SharedCognitionKind::Hypothesis => 0.74,
+    }
+}
+
+fn common_directive_id_for_run(run: &SupervisorRun) -> Option<String> {
+    let mut directives = run
+        .tasks
+        .iter()
+        .filter_map(|record| record.task.directive_id.as_deref())
+        .collect::<Vec<_>>();
+    directives.sort_unstable();
+    directives.dedup();
+    if directives.len() == 1 {
+        Some(directives[0].to_string())
+    } else {
+        None
+    }
+}
+
+fn shared_cognition_kind_for_message(
+    run: &SupervisorRun,
+    message: &TeamMessage,
+) -> Option<SharedCognitionKind> {
+    match message.kind {
+        TeamMessageKind::Blocker => Some(SharedCognitionKind::Blocker),
+        TeamMessageKind::Handoff => Some(SharedCognitionKind::Handoff),
+        TeamMessageKind::ReviewFeedback | TeamMessageKind::ApprovalDecision => {
+            Some(SharedCognitionKind::Decision)
+        }
+        TeamMessageKind::StatusUpdate => {
+            if message.sender_agent_id.as_deref() == run.lead_agent_id.as_deref() {
+                Some(SharedCognitionKind::Steering)
+            } else {
+                Some(SharedCognitionKind::Discovery)
+            }
+        }
+        TeamMessageKind::Clarification => {
+            if message.sender_agent_id.as_deref() == run.lead_agent_id.as_deref() {
+                Some(SharedCognitionKind::Steering)
+            } else {
+                Some(SharedCognitionKind::Hypothesis)
+            }
+        }
+        TeamMessageKind::ReviewRequest
+        | TeamMessageKind::ApprovalRequest
+        | TeamMessageKind::TestValidationRequest => None,
+    }
+}
+
+fn ensure_shared_memory_tags(task: &mut DelegatedTask, run_id: &str) {
+    push_unique_tag(&mut task.memory_tags, SHARED_COGNITION_TAG);
+    push_unique_tag(&mut task.memory_tags, workflow_run_memory_tag(run_id));
+}
+
+/// Structured shared-cognition note persisted on a supervisor run and projected into durable memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedCognitionKind {
+    /// Partial discovery or intermediate finding.
+    Discovery,
+    /// Blocker or impediment that should influence later work.
+    Blocker,
+    /// Hypothesis or clarification from an executing agent.
+    Hypothesis,
+    /// Steering or direction from the supervisor.
+    Steering,
+    /// Decision or review outcome that changes downstream execution.
+    Decision,
+    /// Handoff note summarizing what the next task should continue from.
+    Handoff,
+}
+
+/// Durable run-scoped collaboration memory surfaced to workflows and prompt enrichment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SharedCognitionNote {
+    /// Stable note identifier.
+    pub id: String,
+    /// Owning supervisor run identifier.
+    pub run_id: String,
+    /// Related delegated task if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    /// Related directive if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directive_id: Option<String>,
+    /// Shared-cognition classification.
+    pub kind: SharedCognitionKind,
+    /// Original collaboration message kind that produced this note.
+    pub message_kind: TeamMessageKind,
+    /// Short summary for operator-facing lists.
+    pub summary: String,
+    /// Full detail persisted for prompt reuse.
+    pub detail: String,
+    /// Agent that authored the source message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_agent_id: Option<String>,
+    /// Optional intended recipient agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient_agent_id: Option<String>,
+    /// Retrieval tags propagated into durable memory.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Heuristic confidence used for durable retrieval ranking.
+    pub confidence: f32,
+    /// Source collaboration message identifier.
+    pub source_message_id: String,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
 }
 
 /// Task-state counts for a supervisor run.
@@ -806,6 +974,178 @@ pub struct RemoteExecutionProgress {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Local delegated execution progress mirrored from the streaming agent loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalExecutionPhase {
+    /// Task is queued locally but not yet executing.
+    Queued,
+    /// Task is actively running.
+    Running,
+    /// Task is waiting on a sub-phase such as shell execution or reflection.
+    Waiting,
+    /// Task is blocked and needs intervention.
+    Blocked,
+    /// Task completed successfully.
+    Completed,
+    /// Task failed.
+    Failed,
+    /// Task was cancelled.
+    Cancelled,
+}
+
+/// Structured waiting reason for local delegated execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalExecutionWaitingReason {
+    /// Waiting for a shell process to finish streaming.
+    ShellProcess,
+    /// Waiting for reflection/review to finish.
+    Reflection,
+    /// Waiting for user or policy confirmation before tool execution.
+    ToolConfirmation,
+    /// Waiting for an environment transition.
+    EnvironmentTransition,
+}
+
+/// Token usage telemetry captured during local delegated execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalExecutionTokenUsageSnapshot {
+    /// Estimated prompt tokens for the current request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_tokens: Option<usize>,
+    /// Estimated input-token limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    /// Estimated utilization percentage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percentage: Option<u8>,
+    /// Estimated token-usage status label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Estimated input cost in USD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_cost_usd: Option<f64>,
+    /// Final reported input tokens when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u32>,
+    /// Final reported output tokens when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u32>,
+    /// Final reported total tokens when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u32>,
+    /// Model name when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Provider name when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+}
+
+/// Environment snapshot carried alongside local delegated telemetry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalExecutionEnvironmentSnapshot {
+    /// Current environment state.
+    pub state: EnvironmentState,
+    /// Current environment health.
+    pub health: EnvironmentHealth,
+    /// Current recovery status.
+    pub recovery_status: RecoveryStatus,
+    /// Snapshot timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Local delegated execution progress mirrored from the streaming agent loop.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalExecutionProgress {
+    /// High-level local execution phase.
+    pub phase: LocalExecutionPhase,
+    /// Optional structured waiting reason while in a waiting phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_reason: Option<LocalExecutionWaitingReason>,
+    /// Optional current stage label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// Optional human-readable status message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Percent completion when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percent: Option<u8>,
+    /// Current agent-loop iteration.
+    #[serde(default)]
+    pub iteration: u32,
+    /// Active tool name when the local agent is inside a tool call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_tool_name: Option<String>,
+    /// Most recently completed tool name, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_completed_tool_name: Option<String>,
+    /// Duration in milliseconds for the most recently completed tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_completed_tool_duration_ms: Option<u64>,
+    /// Number of completed tool calls captured so far.
+    #[serde(default)]
+    pub completed_tool_call_count: usize,
+    /// Whether partial user-visible content has been emitted.
+    #[serde(default)]
+    pub has_partial_content: bool,
+    /// Partial content character count emitted so far.
+    #[serde(default)]
+    pub partial_content_chars: usize,
+    /// Whether partial thinking content has been emitted.
+    #[serde(default)]
+    pub has_partial_thinking: bool,
+    /// Partial thinking character count emitted so far.
+    #[serde(default)]
+    pub partial_thinking_chars: usize,
+    /// Token-usage accounting when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<LocalExecutionTokenUsageSnapshot>,
+    /// Environment snapshot at the time of this progress update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<LocalExecutionEnvironmentSnapshot>,
+    /// Last local update time.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Mirrored local execution state for a workflow task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalExecutionRecord {
+    /// Latest local execution status.
+    pub status: String,
+    /// Optional status reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_reason: Option<String>,
+    /// Latest local progress snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<LocalExecutionProgress>,
+    /// Last sync timestamp.
+    pub last_synced_at: DateTime<Utc>,
+}
+
+/// Active workflow-task snapshot surfaced to adapters for live operator views.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveTaskSnapshot {
+    /// The original delegated task definition.
+    pub task: DelegatedTask,
+    /// Current supervisor state when known.
+    pub state: SupervisorTaskState,
+    /// Latest mirrored remote execution state, if task runs remotely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_execution: Option<RemoteExecutionRecord>,
+    /// Latest mirrored local execution state, if task runs locally.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_execution: Option<LocalExecutionRecord>,
+    /// Current blocked reasons, if any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_reasons: Vec<String>,
+    /// Delegated checkpoint metadata surfaced for operator workflows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<DelegatedCheckpointSummary>,
+}
+
 /// Summary of a remote artifact available for a task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteExecutionArtifact {
@@ -893,6 +1233,9 @@ pub struct SupervisorTaskRecord {
     /// Latest mirrored remote execution state, if task runs remotely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_execution: Option<RemoteExecutionRecord>,
+    /// Latest mirrored local execution state, if task runs locally.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_execution: Option<LocalExecutionRecord>,
     /// Task-scoped coordination messages.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<TeamMessage>,
@@ -957,6 +1300,9 @@ pub struct SupervisorRun {
     /// Run-wide messages.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<TeamMessage>,
+    /// Durable supervisor/subagent shared cognition captured during execution.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared_cognition: Vec<SharedCognitionNote>,
     /// Run creation timestamp.
     pub created_at: DateTime<Utc>,
     /// Last update timestamp.
@@ -1022,6 +1368,38 @@ pub trait OrchestratorObserver: Send + Sync {
     async fn on_environment_cleanup(&self, _environment_id: String, _result: CleanupResult) {}
 }
 
+#[derive(Clone, Debug)]
+struct ActiveTaskControl {
+    task: DelegatedTask,
+    local_cancel_token: Option<CancellationToken>,
+}
+
+#[derive(Debug)]
+struct LocalDelegatedExecutionOutcome {
+    result: Result<String, String>,
+    tool_calls: Vec<OrchestratorToolCall>,
+    terminal_state_hint: TaskTerminalStateHint,
+    preserve_existing_checkpoint: bool,
+}
+
+impl LocalDelegatedExecutionOutcome {
+    fn into_task_result(self, task: &DelegatedTask, duration_ms: u64) -> TaskResult {
+        TaskResult {
+            task_id: task.id.clone(),
+            agent_id: task.agent_id.clone(),
+            success: self.result.is_ok(),
+            run_id: task.run_id.clone(),
+            tracking_task_id: task.tracking_task_id.clone(),
+            output: self.result.unwrap_or_else(|error| error),
+            summary: task.name.clone(),
+            tool_calls: self.tool_calls,
+            artifacts: Vec::new(),
+            terminal_state_hint: Some(self.terminal_state_hint),
+            duration_ms,
+        }
+    }
+}
+
 /// Orchestrator for coordinating subagents and delegated task execution.
 ///
 /// The orchestrator is core-owned and does not depend on Tauri. GUI/CLI layers can
@@ -1030,7 +1408,7 @@ pub trait OrchestratorObserver: Send + Sync {
 pub struct AgentOrchestrator<M: OrchestratorAgentManager> {
     agent_manager: M,
     permission_manager: Arc<PermissionManager>,
-    active_tasks: Arc<Mutex<HashMap<String, DelegatedTask>>>,
+    active_tasks: Arc<Mutex<HashMap<String, ActiveTaskControl>>>,
     supervisor_runs: Arc<Mutex<HashMap<String, SupervisorRun>>>,
     environments: Arc<Mutex<HashMap<String, EnvironmentRecord>>>,
     task_run_index: Arc<Mutex<HashMap<String, String>>>,
@@ -1186,6 +1564,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 hierarchy_summary: None,
                 tasks: Vec::new(),
                 messages: Vec::new(),
+                shared_cognition: Vec::new(),
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 completed_at: None,
@@ -1207,6 +1586,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             if let Some(policy) = run.inherited_policy.as_ref() {
                 policy.apply_to_task(&mut task);
             }
+            ensure_shared_memory_tags(&mut task, &run.id);
 
             let blocked_reasons = unresolved_dependency_reasons(run, &task);
             let approval = if task.approval_required {
@@ -1247,6 +1627,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 blocked_reasons,
                 result: None,
                 remote_execution: None,
+                local_execution: None,
                 messages: Vec::new(),
                 checkpoint: None,
                 created_at: now,
@@ -1411,6 +1792,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 }),
                 tasks: Vec::new(),
                 messages: Vec::new(),
+                shared_cognition: Vec::new(),
                 created_at: now,
                 updated_at: now,
                 completed_at: None,
@@ -1473,7 +1855,47 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
     /// Get list of currently active tasks.
     pub async fn list_active_tasks(&self) -> Vec<DelegatedTask> {
         let active = self.active_tasks.lock().await;
-        active.values().cloned().collect()
+        active.values().map(|entry| entry.task.clone()).collect()
+    }
+
+    /// Get live active-task snapshots enriched with mirrored execution telemetry.
+    pub async fn list_active_task_snapshots(&self) -> Vec<ActiveTaskSnapshot> {
+        let active = self
+            .active_tasks
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        if active.is_empty() {
+            return Vec::new();
+        }
+
+        let runs = self.list_supervisor_runs().await;
+        let task_run_index = self.task_run_index.lock().await.clone();
+
+        let mut snapshots = active
+            .into_iter()
+            .map(|entry| {
+                let record = task_run_index
+                    .get(&entry.task.id)
+                    .and_then(|run_id| runs.iter().find(|run| run.id == *run_id))
+                    .and_then(|run| {
+                        run.tasks
+                            .iter()
+                            .find(|record| record.task.id == entry.task.id)
+                    });
+                active_task_snapshot(entry.task, record)
+            })
+            .collect::<Vec<_>>();
+        snapshots.sort_by(|left, right| {
+            right
+                .task
+                .priority
+                .cmp(&left.task.priority)
+                .then_with(|| left.task.id.cmp(&right.task.id))
+        });
+        snapshots
     }
 
     /// List live and persisted supervisor runs known to the orchestrator.
@@ -1666,7 +2088,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
 
         let mut queued_to_start = None;
         let mut completion_environment_id = None;
-        let (mut run_snapshot, collaboration_messages) = {
+        let (mut run_snapshot, collaboration_messages, reflection_sync) = {
             let mut runs = self.supervisor_runs.lock().await;
             let run = runs
                 .get_mut(&run_id)
@@ -1780,12 +2202,24 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 }
             }
 
-            record.messages.push(approval_message.clone());
-            run.messages.push(approval_message.clone());
+            let reflection_sync = {
+                record.messages.push(approval_message.clone());
+                task_reflection_sync_context(&record.task).map(
+                    |(workspace_dir, session_id, tracking_task_id)| {
+                        (
+                            workspace_dir,
+                            session_id,
+                            tracking_task_id,
+                            task_record_outcome_signals(record),
+                        )
+                    },
+                )
+            };
 
+            run.messages.push(approval_message.clone());
             run.updated_at = Utc::now();
             run.status = recalculate_run_status(run);
-            (run.clone(), collaboration_messages)
+            (run.clone(), collaboration_messages, reflection_sync)
         };
 
         if let Some(environment_id) = completion_environment_id
@@ -1802,6 +2236,15 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         self.persist_run_with_hierarchy_sync(run_snapshot).await?;
         for message in collaboration_messages {
             self.notify_team_message(message).await;
+        }
+        if let Some((workspace_dir, session_id, tracking_task_id, signals)) = reflection_sync {
+            let _ = sync_task_reflection_outcomes(
+                &workspace_dir,
+                &session_id,
+                &tracking_task_id,
+                &signals,
+            )
+            .await;
         }
 
         if let Some(task) = queued_to_start {
@@ -1826,7 +2269,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             .cloned()
             .ok_or_else(|| format!("Task '{}' not found", task_id))?;
 
-        let (mut run_snapshot, approval_message) = {
+        let (mut run_snapshot, approval_message, reflection_sync) = {
             let mut runs = self.supervisor_runs.lock().await;
             let run = runs
                 .get_mut(&run_id)
@@ -1886,11 +2329,23 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             }
             record.state = SupervisorTaskState::Failed;
             record.updated_at = Utc::now();
-            record.messages.push(approval_message.clone());
+            let reflection_sync = {
+                record.messages.push(approval_message.clone());
+                task_reflection_sync_context(&record.task).map(
+                    |(workspace_dir, session_id, tracking_task_id)| {
+                        (
+                            workspace_dir,
+                            session_id,
+                            tracking_task_id,
+                            task_record_outcome_signals(record),
+                        )
+                    },
+                )
+            };
             run.messages.push(approval_message.clone());
             run.updated_at = Utc::now();
             run.status = recalculate_run_status(run);
-            (run.clone(), Some(approval_message))
+            (run.clone(), Some(approval_message), reflection_sync)
         };
 
         if let Some(environment_id) = run_snapshot
@@ -1911,6 +2366,15 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         self.persist_run_with_hierarchy_sync(run_snapshot).await?;
         if let Some(message) = approval_message {
             self.notify_team_message(message).await;
+        }
+        if let Some((workspace_dir, session_id, tracking_task_id, signals)) = reflection_sync {
+            let _ = sync_task_reflection_outcomes(
+                &workspace_dir,
+                &session_id,
+                &tracking_task_id,
+                &signals,
+            )
+            .await;
         }
         Ok(())
     }
@@ -1957,6 +2421,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             record.attempts += 1;
             record.result = None;
             record.remote_execution = None;
+            record.local_execution = None;
             record.completed_at = None;
             record.started_at = None;
             record.updated_at = Utc::now();
@@ -2093,6 +2558,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
 
             record.state = SupervisorTaskState::Queued;
             record.result = None;
+            record.local_execution = None;
             record.completed_at = None;
             record.started_at = None;
             record.updated_at = Utc::now();
@@ -2303,6 +2769,49 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         Ok(())
     }
 
+    async fn sync_local_execution_progress(
+        &self,
+        task: &DelegatedTask,
+        mut progress: LocalExecutionProgress,
+    ) -> Result<(), String> {
+        let run_id = task
+            .run_id
+            .clone()
+            .ok_or_else(|| format!("Task '{}' missing run_id", task.id))?;
+        let (run_snapshot, task_snapshot) = {
+            let mut runs = self.supervisor_runs.lock().await;
+            let run = runs
+                .get_mut(&run_id)
+                .ok_or_else(|| format!("Run '{}' not found", run_id))?;
+            let task_index = run
+                .tasks
+                .iter()
+                .position(|record| record.task.id == task.id)
+                .ok_or_else(|| format!("Task '{}' not found in run", task.id))?;
+            let now = Utc::now();
+            {
+                let record = &mut run.tasks[task_index];
+                progress.environment =
+                    Some(environment_snapshot_from_execution(&record.environment));
+                let local_execution = record
+                    .local_execution
+                    .get_or_insert_with(local_execution_record_for_start);
+                local_execution.status = local_execution_status_label(record.state).to_string();
+                local_execution.status_reason = None;
+                local_execution.progress = Some(progress);
+                local_execution.last_synced_at = now;
+                record.updated_at = now;
+            }
+            run.updated_at = now;
+            run.status = recalculate_run_status(run);
+            (run.clone(), run.tasks[task_index].clone())
+        };
+
+        record_task_progress(task, &task_snapshot, &run_snapshot);
+        self.persist_run_with_hierarchy_sync(run_snapshot).await?;
+        Ok(())
+    }
+
     /// Record a structured team message.
     pub async fn send_team_message(
         &self,
@@ -2356,8 +2865,188 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             .ok_or_else(|| format!("Thread '{}' not found after recording message", thread_id))?;
 
         self.persist_run_with_hierarchy_sync(run_snapshot).await?;
+        self.capture_shared_cognition_from_message(run_id, &message)
+            .await;
         self.notify_team_message(message.clone()).await;
         Ok(message)
+    }
+
+    async fn capture_shared_cognition_from_message(&self, run_id: &str, message: &TeamMessage) {
+        let run_snapshot = {
+            let runs = self.supervisor_runs.lock().await;
+            runs.get(run_id).cloned()
+        };
+
+        let Some(run_snapshot) = run_snapshot else {
+            return;
+        };
+        let Some(kind) = shared_cognition_kind_for_message(&run_snapshot, message) else {
+            return;
+        };
+
+        let task_record = message.task_id.as_deref().and_then(|task_id| {
+            run_snapshot
+                .tasks
+                .iter()
+                .find(|record| record.task.id == task_id)
+        });
+        let directive_id = task_record
+            .and_then(|record| record.task.directive_id.clone())
+            .or_else(|| common_directive_id_for_run(&run_snapshot));
+        let mut tags = task_record
+            .map(|record| record.task.memory_tags.clone())
+            .unwrap_or_default();
+        push_unique_tag(&mut tags, SHARED_COGNITION_TAG);
+        push_unique_tag(&mut tags, workflow_run_memory_tag(run_id));
+        push_unique_tag(&mut tags, shared_cognition_kind_tag(kind));
+
+        let summary = summarize_shared_cognition(&message.content);
+        let detail = message.content.trim().to_string();
+        let confidence = shared_cognition_confidence(kind);
+
+        let note = SharedCognitionNote {
+            id: Uuid::new_v4().to_string(),
+            run_id: run_id.to_string(),
+            task_id: message.task_id.clone(),
+            directive_id: directive_id.clone(),
+            kind,
+            message_kind: message.kind,
+            summary: summary.clone(),
+            detail: detail.clone(),
+            sender_agent_id: message.sender_agent_id.clone(),
+            recipient_agent_id: message.recipient_agent_id.clone(),
+            tags: tags.clone(),
+            confidence,
+            source_message_id: message.id.clone(),
+            created_at: message.created_at,
+        };
+
+        let memory_path = if let Some(workspace_dir) = run_snapshot.workspace_dir.as_deref() {
+            let scope = if note.task_id.is_some() {
+                MemoryScope::Task
+            } else if note.directive_id.is_some() {
+                MemoryScope::Directive
+            } else if run_snapshot.session_id.is_some() {
+                MemoryScope::Session
+            } else {
+                MemoryScope::Workspace
+            };
+
+            let mut content_lines = vec![
+                format!(
+                    "Shared cognition ({:?}) for workflow run {}",
+                    note.kind, run_snapshot.id
+                ),
+                format!("Source message kind: {:?}", note.message_kind),
+            ];
+            if let Some(task_id) = note.task_id.as_deref() {
+                content_lines.push(format!("Task: {task_id}"));
+            }
+            if let Some(directive_id) = note.directive_id.as_deref() {
+                content_lines.push(format!("Directive: {directive_id}"));
+            }
+            if let Some(sender) = note.sender_agent_id.as_deref() {
+                content_lines.push(format!("Sender: {sender}"));
+            }
+            if let Some(recipient) = note.recipient_agent_id.as_deref() {
+                content_lines.push(format!("Recipient: {recipient}"));
+            }
+            content_lines.push(String::new());
+            content_lines.push(detail.clone());
+
+            let mut entry = MemoryBankEntry::new(
+                run_snapshot
+                    .session_id
+                    .clone()
+                    .unwrap_or_else(|| format!("workflow-run-{}", run_snapshot.id)),
+                summary,
+                content_lines.join("\n"),
+            )
+            .with_memory_type(shared_cognition_memory_type(kind))
+            .with_scope(scope)
+            .with_confidence(confidence)
+            .with_provenance(
+                note.task_id.clone(),
+                note.directive_id.clone(),
+                note.sender_agent_id.clone(),
+            )
+            .with_tags(tags);
+            entry.category = Some(SHARED_COGNITION_CATEGORY.to_string());
+
+            match crate::save_to_memory_bank(workspace_dir, &entry).await {
+                Ok(path) => Some(path),
+                Err(error) => {
+                    tracing::warn!(
+                        run_id = %run_snapshot.id,
+                        message_id = %message.id,
+                        error = %error,
+                        "Failed to persist shared cognition memory"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if let Some(task_record) = task_record
+            && let (Some(session_id), Some(tracking_task_id)) = (
+                task_record.task.session_id.as_deref(),
+                task_record.task.tracking_task_id.as_deref(),
+            )
+            && let Some(workspace_dir) = task_record
+                .task
+                .workspace_dir
+                .as_deref()
+                .or(run_snapshot.workspace_dir.as_deref())
+        {
+            let phase = match kind {
+                SharedCognitionKind::Blocker => crate::tasks::TaskMemoryPhase::Blocked,
+                SharedCognitionKind::Handoff => crate::tasks::TaskMemoryPhase::Handoff,
+                SharedCognitionKind::Discovery
+                | SharedCognitionKind::Hypothesis
+                | SharedCognitionKind::Steering
+                | SharedCognitionKind::Decision => crate::tasks::TaskMemoryPhase::Promoted,
+            };
+            let manager = TaskManager::new(workspace_dir);
+            let _ = manager.record_memory_event(
+                session_id,
+                tracking_task_id,
+                crate::tasks::TaskMemoryEvent::new(
+                    phase,
+                    format!("Shared cognition: {}", note.summary),
+                    Some(format!("{:?}", kind).to_lowercase()),
+                    Some(format!("{:?}", shared_cognition_memory_type(kind)).to_lowercase()),
+                    memory_path.as_ref().map(|path| path.display().to_string()),
+                ),
+            );
+        }
+
+        let updated_run = {
+            let mut runs = self.supervisor_runs.lock().await;
+            let Some(run) = runs.get_mut(run_id) else {
+                return;
+            };
+            if run
+                .shared_cognition
+                .iter()
+                .any(|existing| existing.source_message_id == note.source_message_id)
+            {
+                return;
+            }
+            run.shared_cognition.push(note);
+            run.updated_at = Utc::now();
+            run.clone()
+        };
+
+        if let Err(error) = self.persist_run_with_hierarchy_sync(updated_run).await {
+            tracing::warn!(
+                run_id = %run_id,
+                message_id = %message.id,
+                error = %error,
+                "Failed to persist shared cognition note on supervisor run"
+            );
+        }
     }
 
     /// Update the latest actionable request in a collaboration thread.
@@ -2445,14 +3134,13 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
 
     /// Cancel a running task.
     pub async fn cancel_task(&self, task_id: &str) -> Result<(), String> {
-        let task_opt = {
-            let mut active = self.active_tasks.lock().await;
-            active.remove(task_id)
-        };
+        let task_control = { self.active_tasks.lock().await.get(task_id).cloned() };
 
-        if let Some(task) = task_opt {
+        if let Some(task_control) = task_control {
+            let task = task_control.task.clone();
             tracing::info!(task_id = %task_id, agent_id = %task.agent_id, "Cancelling task");
             if matches!(task.execution_mode, AgentExecutionMode::Remote) {
+                self.active_tasks.lock().await.remove(task_id);
                 if let (Some(remote_target), Some(remote_execution)) = (
                     task.remote_target.clone(),
                     self.remote_execution_for_task(task_id).await,
@@ -2468,10 +3156,16 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                         tracing::warn!(task_id = %task_id, error = %error, "Failed to cancel remote A2A task");
                     }
                 }
-            } else {
+            } else if let Some(cancel_token) = task_control.local_cancel_token {
+                cancel_token.cancel();
                 self.agent_manager
                     .send_event(&task.agent_id, format!("cancel:{}", task_id))
                     .await;
+            } else {
+                return Err(format!(
+                    "Task '{}' is active locally but missing a cancellation handle",
+                    task_id
+                ));
             }
 
             if let Some(run_id) = self.task_run_index.lock().await.get(task_id).cloned() {
@@ -2513,6 +3207,42 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         } else {
             Err(format!("Task '{}' not found", task_id))
         }
+    }
+
+    /// Pause a running local delegated task and preserve resumable checkpoint state.
+    pub async fn pause_task(&self, task_id: &str) -> Result<(), String> {
+        let task_control = self
+            .active_tasks
+            .lock()
+            .await
+            .get(task_id)
+            .cloned()
+            .ok_or_else(|| format!("Task '{}' not found", task_id))?;
+
+        if matches!(task_control.task.execution_mode, AgentExecutionMode::Remote) {
+            return Err(format!(
+                "Task '{}' is running remotely and cannot be paused locally",
+                task_id
+            ));
+        }
+
+        let cancel_token = task_control.local_cancel_token.ok_or_else(|| {
+            format!(
+                "Task '{}' is active locally but missing a pause control handle",
+                task_id
+            )
+        })?;
+
+        tracing::info!(
+            task_id = %task_id,
+            agent_id = %task_control.task.agent_id,
+            "Pausing local delegated task"
+        );
+        cancel_token.pause();
+        self.agent_manager
+            .send_event(&task_control.task.agent_id, format!("pause:{}", task_id))
+            .await;
+        Ok(())
     }
 
     /// Shutdown all subagents gracefully.
@@ -2586,9 +3316,18 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             .acquire_environment_lease(&environment_id, &task.id, &task.agent_id)
             .await?;
 
+        let local_cancel_token = (!matches!(task.execution_mode, AgentExecutionMode::Remote))
+            .then(CancellationToken::new);
+
         let (run_snapshot, task_snapshot) = {
             let mut active = self.active_tasks.lock().await;
-            active.insert(task.id.clone(), task.clone());
+            active.insert(
+                task.id.clone(),
+                ActiveTaskControl {
+                    task: task.clone(),
+                    local_cancel_token: local_cancel_token.clone(),
+                },
+            );
             drop(active);
 
             let mut runs = self.supervisor_runs.lock().await;
@@ -2607,6 +3346,12 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 record.updated_at = Utc::now();
                 record.blocked_reasons.clear();
                 record.environment = leased_environment.summary();
+                record.local_execution =
+                    if matches!(task.execution_mode, AgentExecutionMode::Remote) {
+                        None
+                    } else {
+                        Some(local_execution_record_for_start())
+                    };
                 record.clone()
             };
 
@@ -2631,32 +3376,28 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         let orchestrator = self.clone();
         tokio::spawn(async move {
             let start = std::time::Instant::now();
-            let task_result = if matches!(task.execution_mode, AgentExecutionMode::Remote) {
-                orchestrator.execute_remote_task(&task, start).await
-            } else {
-                let (result, tool_calls) = execute_delegated_task(&orchestrator, &task).await;
-                let duration_ms = start.elapsed().as_millis() as u64;
-                TaskResult {
-                    task_id: task.id.clone(),
-                    agent_id: task.agent_id.clone(),
-                    success: result.is_ok(),
-                    run_id: task.run_id.clone(),
-                    tracking_task_id: task.tracking_task_id.clone(),
-                    output: result.clone().unwrap_or_else(|error| error),
-                    summary: task.name.clone(),
-                    tool_calls,
-                    artifacts: Vec::new(),
-                    terminal_state_hint: Some(if result.is_ok() {
-                        TaskTerminalStateHint::Completed
-                    } else {
-                        TaskTerminalStateHint::Failed
-                    }),
-                    duration_ms,
-                }
-            };
+            let (task_result, preserve_existing_checkpoint) =
+                if matches!(task.execution_mode, AgentExecutionMode::Remote) {
+                    (orchestrator.execute_remote_task(&task, start).await, false)
+                } else {
+                    let execution = execute_delegated_task(
+                        &orchestrator,
+                        &task,
+                        local_cancel_token
+                            .clone()
+                            .expect("local delegated task missing cancellation token"),
+                    )
+                    .await;
+                    let duration_ms = start.elapsed().as_millis() as u64;
+                    let preserve_existing_checkpoint = execution.preserve_existing_checkpoint;
+                    (
+                        execution.into_task_result(&task, duration_ms),
+                        preserve_existing_checkpoint,
+                    )
+                };
 
             if let Err(error) = orchestrator
-                .complete_task_execution(task, task_result)
+                .complete_task_execution(task, task_result, preserve_existing_checkpoint)
                 .await
             {
                 tracing::error!(error = %error, "Failed to finalize delegated task execution");
@@ -2889,6 +3630,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         &self,
         task: DelegatedTask,
         task_result: TaskResult,
+        preserve_existing_checkpoint: bool,
     ) -> Result<(), String> {
         let run_id = task_result
             .run_id
@@ -2896,7 +3638,6 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             .or_else(|| task.run_id.clone())
             .ok_or_else(|| "Completed task result is missing run_id".to_string())?;
 
-        let memory_file_path = persist_delegated_task_memory(&task, &task_result).await;
         let (
             mut run_snapshot,
             task_snapshot,
@@ -2920,6 +3661,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             record.result = Some(task_result.clone());
             record.completed_at = Some(Utc::now());
             record.updated_at = Utc::now();
+            let previous_local_execution = record.local_execution.clone();
             let mut gate_message = None;
             let hinted_terminal_state = task_result.terminal_state_hint.map(|hint| match hint {
                 TaskTerminalStateHint::Completed => SupervisorTaskState::Completed,
@@ -2976,9 +3718,25 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 }
             }
 
+            if matches!(task.execution_mode, AgentExecutionMode::Remote) {
+                record.local_execution = None;
+            } else {
+                record.local_execution = Some(local_execution_record_for_terminal(
+                    &task_result,
+                    record.state,
+                    previous_local_execution.as_ref(),
+                ));
+            }
+
             let (task_snapshot, environment_id, finalized_state) =
                 (record.clone(), record.environment_id.clone(), record.state);
-            let ready_to_start = collect_ready_tasks(run);
+            let ready_to_start = if preserve_existing_checkpoint
+                && matches!(record.state, SupervisorTaskState::Blocked)
+            {
+                collect_ready_tasks_except(run, Some(&task.id))
+            } else {
+                collect_ready_tasks(run)
+            };
             run.updated_at = Utc::now();
             run.status = recalculate_run_status(run);
             (
@@ -2990,6 +3748,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 gate_message,
             )
         };
+        let memory_file_path = persist_delegated_task_memory(&task_snapshot).await;
 
         let updated_environment = match finalized_state {
             SupervisorTaskState::Completed => {
@@ -3017,7 +3776,23 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             &run_snapshot,
         );
         self.persist_run_with_hierarchy_sync(run_snapshot).await?;
-        if !matches!(task.execution_mode, AgentExecutionMode::Remote) {
+        if let Some((workspace_dir, session_id, tracking_task_id)) =
+            task_reflection_sync_context(&task_snapshot.task)
+        {
+            let signals = task_record_outcome_signals(&task_snapshot);
+            let _ = sync_task_reflection_outcomes(
+                &workspace_dir,
+                &session_id,
+                &tracking_task_id,
+                &signals,
+            )
+            .await;
+        }
+        let should_preserve_blocked_checkpoint =
+            preserve_existing_checkpoint && matches!(finalized_state, SupervisorTaskState::Blocked);
+        if !matches!(task.execution_mode, AgentExecutionMode::Remote)
+            && !should_preserve_blocked_checkpoint
+        {
             self.persist_delegated_checkpoint(&delegated_terminal_checkpoint(&task, &task_result))?;
         }
         if let Some(message) = gate_message {
@@ -3434,7 +4209,8 @@ fn collaboration_status_message(status: CollaborationActionStatus, note: Option<
 async fn execute_delegated_task<M: OrchestratorAgentManager>(
     orchestrator: &AgentOrchestrator<M>,
     task: &DelegatedTask,
-) -> (Result<String, String>, Vec<OrchestratorToolCall>) {
+    cancel_token: CancellationToken,
+) -> LocalDelegatedExecutionOutcome {
     let role = task.role.clone().unwrap_or_default();
     let mut prompt_sections = vec![role.prompt_preamble().to_string()];
 
@@ -3502,7 +4278,6 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
             orchestrator_knowledge_settings(),
         );
     let (tx, mut rx) = mpsc::channel(256);
-    let cancel_token = CancellationToken::new();
     let pipeline_handle =
         tokio::spawn(async move { pipeline.process_streaming(request, tx, cancel_token).await });
 
@@ -3519,24 +4294,53 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
     let mut pending_tool_call: Option<PendingDelegatedToolCall> = None;
     let mut completed_resume_tool_calls: Vec<ToolCallRecord> = Vec::new();
     let mut completed_orchestrator_tool_calls: Vec<OrchestratorToolCall> = Vec::new();
+    let mut telemetry_context = LocalExecutionTelemetryContext {
+        iteration: current_iteration,
+        completed_tool_call_count: 0,
+        ..LocalExecutionTelemetryContext::default()
+    };
 
     while let Some(chunk) = rx.recv().await {
-        match chunk {
+        match &chunk {
             StreamChunk::AgentLoopIteration { iteration } => {
-                current_iteration = iteration;
+                current_iteration = *iteration;
+                telemetry_context.iteration = current_iteration;
+                if let Some(progress) =
+                    local_execution_progress_from_chunk(&chunk, &telemetry_context)
+                {
+                    let _ = orchestrator
+                        .sync_local_execution_progress(task, progress)
+                        .await;
+                }
             }
-            StreamChunk::Text(text) => partial_content.push_str(&text),
-            StreamChunk::Thinking(thinking) => partial_thinking.push_str(&thinking),
+            StreamChunk::Text(text) => {
+                partial_content.push_str(text);
+                telemetry_context.has_partial_content = !partial_content.is_empty();
+                telemetry_context.partial_content_chars = partial_content.chars().count();
+            }
+            StreamChunk::Thinking(thinking) => {
+                partial_thinking.push_str(thinking);
+                telemetry_context.has_partial_thinking = !partial_thinking.is_empty();
+                telemetry_context.partial_thinking_chars = partial_thinking.chars().count();
+            }
             StreamChunk::ToolCallStart { id, name } => {
                 pending_tool_call = Some(PendingDelegatedToolCall {
-                    id,
-                    name,
+                    id: id.clone(),
+                    name: name.clone(),
                     arguments: String::new(),
                 });
+                telemetry_context.current_tool_name = Some(name.clone());
+                if let Some(progress) =
+                    local_execution_progress_from_chunk(&chunk, &telemetry_context)
+                {
+                    let _ = orchestrator
+                        .sync_local_execution_progress(task, progress)
+                        .await;
+                }
             }
             StreamChunk::ToolCallArgs(args) => {
                 if let Some(pending) = pending_tool_call.as_mut() {
-                    pending.arguments.push_str(&args);
+                    pending.arguments.push_str(args);
                 }
             }
             StreamChunk::ToolCallEnd => {
@@ -3576,22 +4380,26 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
                     .take()
                     .unwrap_or(PendingDelegatedToolCall {
                         id: format!("delegated-tool-{}", completed_resume_tool_calls.len() + 1),
-                        name,
+                        name: name.clone(),
                         arguments: String::new(),
                     });
                 let record = ToolCallRecord {
                     id: pending.id.clone(),
                     name: pending.name.clone(),
                     arguments: pending.arguments.clone(),
-                    result: if success {
+                    result: if *success {
                         crate::ToolResult::Success(output.clone())
                     } else {
                         crate::ToolResult::Error(output.clone())
                     },
-                    duration_ms,
+                    duration_ms: *duration_ms,
                 };
                 completed_orchestrator_tool_calls.push(orchestrator_tool_call_from_record(&record));
                 completed_resume_tool_calls.push(record);
+                telemetry_context.current_tool_name = None;
+                telemetry_context.last_completed_tool_name = Some(name.clone());
+                telemetry_context.last_completed_tool_duration_ms = Some(*duration_ms);
+                telemetry_context.completed_tool_call_count = completed_resume_tool_calls.len();
                 let checkpoint = delegated_running_checkpoint(
                     task,
                     completed_orchestrator_tool_calls.clone(),
@@ -3612,8 +4420,155 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
                     )),
                 );
                 let _ = orchestrator.persist_delegated_checkpoint(&checkpoint);
+                if let Some(progress) =
+                    local_execution_progress_from_chunk(&chunk, &telemetry_context)
+                {
+                    let _ = orchestrator
+                        .sync_local_execution_progress(task, progress)
+                        .await;
+                }
             }
-            _ => {}
+            StreamChunk::Paused => {
+                telemetry_context.current_tool_name = None;
+                if let Some(progress) =
+                    local_execution_progress_from_chunk(&chunk, &telemetry_context)
+                {
+                    let _ = orchestrator
+                        .sync_local_execution_progress(task, progress)
+                        .await;
+                }
+
+                let safe_boundary_label = pending_tool_call
+                    .as_ref()
+                    .map(|pending| format!("before tool '{}' execution", pending.name))
+                    .unwrap_or_else(|| {
+                        format!("operator pause during iteration {}", current_iteration)
+                    });
+                let pause_note = pending_tool_call
+                    .as_ref()
+                    .map(|pending| {
+                        format!(
+                            "Paused by operator before tool '{}' execution completed; resumable checkpoint preserved.",
+                            pending.name
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        "Paused by operator; resumable checkpoint preserved for local delegated task."
+                            .to_string()
+                    });
+                let checkpoint = DelegatedTaskCheckpoint {
+                    id: delegated_checkpoint_id(&task.id),
+                    task_id: task.id.clone(),
+                    run_id: task.run_id.clone(),
+                    session_id: task.session_id.clone(),
+                    agent_id: task.agent_id.clone(),
+                    environment_id: task.environment_id.clone(),
+                    execution_mode: task.execution_mode.clone(),
+                    stage: DelegatedCheckpointStage::Blocked,
+                    replay_safety: DelegatedReplaySafety::CheckpointResumable,
+                    resume_disposition: DelegatedResumeDisposition::ResumeFromCheckpoint,
+                    safe_boundary_label,
+                    workspace_dir: task.workspace_dir.clone(),
+                    completed_tool_calls: completed_orchestrator_tool_calls.clone(),
+                    result_published: false,
+                    note: Some(pause_note.clone()),
+                    resume_state: Some(build_delegated_resume_state(
+                        task,
+                        &full_prompt,
+                        &partial_content,
+                        &partial_thinking,
+                        &completed_resume_tool_calls,
+                        current_iteration,
+                    )),
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                };
+                let _ = orchestrator.persist_delegated_checkpoint(&checkpoint);
+                let _ = pipeline_handle.await;
+
+                return LocalDelegatedExecutionOutcome {
+                    result: Err(pause_note),
+                    tool_calls: completed_orchestrator_tool_calls,
+                    terminal_state_hint: TaskTerminalStateHint::Blocked,
+                    preserve_existing_checkpoint: true,
+                };
+            }
+            StreamChunk::Cancelled => {
+                telemetry_context.current_tool_name = None;
+                if let Some(progress) =
+                    local_execution_progress_from_chunk(&chunk, &telemetry_context)
+                {
+                    let _ = orchestrator
+                        .sync_local_execution_progress(task, progress)
+                        .await;
+                }
+                let _ = pipeline_handle.await;
+
+                return LocalDelegatedExecutionOutcome {
+                    result: Err("Local delegated task cancelled by operator.".to_string()),
+                    tool_calls: completed_orchestrator_tool_calls,
+                    terminal_state_hint: TaskTerminalStateHint::Cancelled,
+                    preserve_existing_checkpoint: false,
+                };
+            }
+            other => {
+                if let StreamChunk::TokenUsageUpdate {
+                    estimated,
+                    limit,
+                    percentage,
+                    status,
+                    estimated_cost,
+                } = other
+                {
+                    telemetry_context.token_usage = Some(LocalExecutionTokenUsageSnapshot {
+                        estimated_tokens: Some(*estimated),
+                        limit: Some(*limit),
+                        percentage: Some(*percentage),
+                        status: Some(token_usage_status_label(*status).to_string()),
+                        estimated_cost_usd: Some(*estimated_cost),
+                        input_tokens: telemetry_context
+                            .token_usage
+                            .as_ref()
+                            .and_then(|usage| usage.input_tokens),
+                        output_tokens: telemetry_context
+                            .token_usage
+                            .as_ref()
+                            .and_then(|usage| usage.output_tokens),
+                        total_tokens: telemetry_context
+                            .token_usage
+                            .as_ref()
+                            .and_then(|usage| usage.total_tokens),
+                        model: telemetry_context
+                            .token_usage
+                            .as_ref()
+                            .and_then(|usage| usage.model.clone()),
+                        provider: telemetry_context
+                            .token_usage
+                            .as_ref()
+                            .and_then(|usage| usage.provider.clone()),
+                    });
+                }
+                if let StreamChunk::Done(usage) = other {
+                    telemetry_context.token_usage = Some(token_usage_snapshot_from_done(
+                        usage.as_ref(),
+                        telemetry_context.token_usage.as_ref(),
+                    ));
+                    telemetry_context.current_tool_name = None;
+                }
+                if let StreamChunk::ToolConfirmationRequired { tool_name, .. } = other {
+                    telemetry_context.current_tool_name = Some(tool_name.clone());
+                }
+                if let StreamChunk::ToolBlocked { tool_name, .. } = other {
+                    telemetry_context.current_tool_name = Some(tool_name.clone());
+                }
+                if let Some(progress) =
+                    local_execution_progress_from_chunk(other, &telemetry_context)
+                {
+                    let _ = orchestrator
+                        .sync_local_execution_progress(task, progress)
+                        .await;
+                }
+            }
         }
     }
 
@@ -3626,10 +4581,12 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
                 error = %error,
                 "Delegated task pipeline worker panicked"
             );
-            return (
-                Err(format!("Delegated pipeline task failed: {error}")),
-                completed_orchestrator_tool_calls,
-            );
+            return LocalDelegatedExecutionOutcome {
+                result: Err(format!("Delegated pipeline task failed: {error}")),
+                tool_calls: completed_orchestrator_tool_calls,
+                terminal_state_hint: TaskTerminalStateHint::Failed,
+                preserve_existing_checkpoint: false,
+            };
         }
     };
 
@@ -3653,7 +4610,12 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
                 "Task completed via AgentPipeline"
             );
 
-            (Ok(response.content), tool_calls)
+            LocalDelegatedExecutionOutcome {
+                result: Ok(response.content),
+                tool_calls,
+                terminal_state_hint: TaskTerminalStateHint::Completed,
+                preserve_existing_checkpoint: false,
+            }
         }
         Err(e) => {
             tracing::error!(
@@ -3663,20 +4625,30 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
                 tool_calls_count = completed_orchestrator_tool_calls.len(),
                 "Task failed"
             );
-            (Err(e.to_string()), completed_orchestrator_tool_calls)
+            LocalDelegatedExecutionOutcome {
+                result: Err(e.to_string()),
+                tool_calls: completed_orchestrator_tool_calls,
+                terminal_state_hint: TaskTerminalStateHint::Failed,
+                preserve_existing_checkpoint: false,
+            }
         }
     }
 }
 
-async fn persist_delegated_task_memory(
-    task: &DelegatedTask,
-    task_result: &TaskResult,
-) -> Option<PathBuf> {
+async fn persist_delegated_task_memory(record: &SupervisorTaskRecord) -> Option<PathBuf> {
+    let task = &record.task;
+    let task_result = record.result.as_ref()?;
     let workspace_dir = task.workspace_dir.as_deref()?;
     let session_id = task.session_id.as_deref()?;
 
+    let outcome_signals = task_record_outcome_signals(record);
     let mut tags = task.memory_tags.clone();
     tags.extend(["delegation".to_string(), "subagent".to_string()]);
+    tags.extend(
+        outcome_signal_labels(&outcome_signals)
+            .into_iter()
+            .map(|label| format!("outcome:{label}")),
+    );
     tags.sort();
     tags.dedup();
 
@@ -3705,9 +4677,25 @@ async fn persist_delegated_task_memory(
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let outcome_lines = if outcome_signals.is_empty() {
+        "- No durable outcome signals recorded yet".to_string()
+    } else {
+        outcome_signals
+            .iter()
+            .map(|signal| {
+                let detail = signal
+                    .summary
+                    .as_deref()
+                    .map(|summary| format!(": {summary}"))
+                    .unwrap_or_default();
+                format!("- {}{}", signal.kind.label(), detail)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
 
     let content = format!(
-        "## Delegated Task\n- Orchestrator Task ID: {}\n- Tracking Task ID: {}\n- Agent ID: {}\n- Directive ID: {}\n\n## Prompt\n{}\n\n## Result\n{}\n\n## Tool Calls\n{}\n",
+        "## Delegated Task\n- Orchestrator Task ID: {}\n- Tracking Task ID: {}\n- Agent ID: {}\n- Directive ID: {}\n\n## Prompt\n{}\n\n## Result\n{}\n\n## Tool Calls\n{}\n\n## Outcome Signals\n{}\n",
         task.id,
         task.tracking_task_id.as_deref().unwrap_or("n/a"),
         task.agent_id,
@@ -3715,6 +4703,7 @@ async fn persist_delegated_task_memory(
         task.prompt,
         task_result.output,
         tool_calls,
+        outcome_lines,
     );
 
     let entry = MemoryBankEntry::new(session_id.to_string(), summary, content)
@@ -3738,12 +4727,28 @@ async fn persist_delegated_task_memory(
             task.directive_id.clone(),
             Some(task.agent_id.clone()),
         )
+        .with_outcome_provenance(
+            outcome_signal_summary(&outcome_signals),
+            outcome_signal_labels(&outcome_signals),
+        )
         .with_tags(tags)
         .with_promotion(
             session_id.to_string(),
             "Delegated subagent result promoted for supervisor retrieval",
         )
-        .with_confidence(if task_result.success { 0.88 } else { 0.65 });
+        .with_confidence(match record.state {
+            SupervisorTaskState::Completed => 0.90,
+            SupervisorTaskState::ReviewPending | SupervisorTaskState::TestPending => 0.82,
+            SupervisorTaskState::Cancelled => 0.55,
+            SupervisorTaskState::Failed | SupervisorTaskState::Blocked => 0.65,
+            _ => {
+                if task_result.success {
+                    0.80
+                } else {
+                    0.65
+                }
+            }
+        });
 
     match crate::save_to_memory_bank(workspace_dir, &entry).await {
         Ok(path) => Some(path),
@@ -3757,6 +4762,129 @@ async fn persist_delegated_task_memory(
             None
         }
     }
+}
+
+fn task_record_outcome_signals(record: &SupervisorTaskRecord) -> Vec<OutcomeSignal> {
+    let mut signals = Vec::new();
+
+    match record.state {
+        SupervisorTaskState::ReviewPending => signals.push(
+            OutcomeSignal::new(OutcomeSignalKind::ExecutionAwaitingReview)
+                .with_summary("Execution finished and is waiting for review approval."),
+        ),
+        SupervisorTaskState::TestPending => signals.push(
+            OutcomeSignal::new(OutcomeSignalKind::ExecutionAwaitingTestValidation)
+                .with_summary("Execution finished and is waiting for explicit test validation."),
+        ),
+        SupervisorTaskState::Completed => {
+            signals.push(OutcomeSignal::new(OutcomeSignalKind::TaskCompleted));
+        }
+        SupervisorTaskState::Failed => {
+            let summary = record
+                .result
+                .as_ref()
+                .map(|result| result.output.clone())
+                .filter(|value| !value.trim().is_empty());
+            signals.push(summary.map_or_else(
+                || OutcomeSignal::new(OutcomeSignalKind::TaskFailed),
+                |summary| OutcomeSignal::new(OutcomeSignalKind::TaskFailed).with_summary(summary),
+            ));
+        }
+        SupervisorTaskState::Blocked => {
+            let summary = record.blocked_reasons.first().cloned();
+            signals.push(summary.map_or_else(
+                || OutcomeSignal::new(OutcomeSignalKind::TaskBlocked),
+                |summary| OutcomeSignal::new(OutcomeSignalKind::TaskBlocked).with_summary(summary),
+            ));
+        }
+        SupervisorTaskState::Cancelled => {
+            signals.push(OutcomeSignal::new(OutcomeSignalKind::TaskCancelled));
+        }
+        SupervisorTaskState::Queued
+        | SupervisorTaskState::PendingApproval
+        | SupervisorTaskState::Running => {}
+    }
+
+    for scope in [
+        ApprovalScope::PreExecution,
+        ApprovalScope::Review,
+        ApprovalScope::TestValidation,
+    ] {
+        if let Some(decision) = latest_approval_decision_for_scope(&record.approval, scope) {
+            let kind = match (scope, decision.decision) {
+                (ApprovalScope::PreExecution, ApprovalDecisionKind::Approved) => {
+                    OutcomeSignalKind::PreExecutionApproved
+                }
+                (ApprovalScope::PreExecution, ApprovalDecisionKind::Rejected) => {
+                    OutcomeSignalKind::PreExecutionRejected
+                }
+                (ApprovalScope::PreExecution, ApprovalDecisionKind::NeedsRevision) => {
+                    OutcomeSignalKind::PreExecutionNeedsRevision
+                }
+                (ApprovalScope::Review, ApprovalDecisionKind::Approved) => {
+                    OutcomeSignalKind::ReviewApproved
+                }
+                (ApprovalScope::Review, ApprovalDecisionKind::Rejected) => {
+                    OutcomeSignalKind::ReviewRejected
+                }
+                (ApprovalScope::Review, ApprovalDecisionKind::NeedsRevision) => {
+                    OutcomeSignalKind::ReviewNeedsRevision
+                }
+                (ApprovalScope::TestValidation, ApprovalDecisionKind::Approved) => {
+                    OutcomeSignalKind::TestValidationApproved
+                }
+                (ApprovalScope::TestValidation, ApprovalDecisionKind::Rejected) => {
+                    OutcomeSignalKind::TestValidationRejected
+                }
+                (ApprovalScope::TestValidation, ApprovalDecisionKind::NeedsRevision) => {
+                    OutcomeSignalKind::TestValidationNeedsRevision
+                }
+            };
+            signals.push(decision.note.clone().map_or_else(
+                || OutcomeSignal::new(kind),
+                |note| OutcomeSignal::new(kind).with_summary(note),
+            ));
+        }
+    }
+
+    signals
+}
+
+fn latest_approval_decision_for_scope(
+    approval: &TaskApprovalRecord,
+    scope: ApprovalScope,
+) -> Option<&ApprovalDecision> {
+    approval
+        .decisions
+        .iter()
+        .rev()
+        .find(|decision| decision.scope == scope)
+}
+
+fn outcome_signal_summary(signals: &[OutcomeSignal]) -> Option<String> {
+    if signals.is_empty() {
+        return None;
+    }
+
+    Some(
+        signals
+            .iter()
+            .map(|signal| {
+                signal
+                    .summary
+                    .clone()
+                    .unwrap_or_else(|| signal.kind.label().to_string())
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+    )
+}
+
+fn outcome_signal_labels(signals: &[OutcomeSignal]) -> Vec<String> {
+    signals
+        .iter()
+        .map(|signal| signal.durable_label().to_string())
+        .collect()
 }
 
 fn delegated_checkpoint_id(task_id: &str) -> String {
@@ -4138,6 +5266,53 @@ fn record_task_dispatch(task: &DelegatedTask, record: &SupervisorTaskRecord, run
     );
 }
 
+fn record_task_progress(task: &DelegatedTask, record: &SupervisorTaskRecord, run: &SupervisorRun) {
+    let Some(workspace_dir) = task.workspace_dir.as_deref() else {
+        return;
+    };
+    let Some(session_id) = task.session_id.as_deref() else {
+        return;
+    };
+    let Some(tracking_task_id) = task.tracking_task_id.as_deref() else {
+        return;
+    };
+
+    let manager = TaskManager::new(workspace_dir);
+    let task_status = match record.state {
+        SupervisorTaskState::Blocked
+        | SupervisorTaskState::PendingApproval
+        | SupervisorTaskState::ReviewPending
+        | SupervisorTaskState::TestPending => TaskStatus::Blocked,
+        SupervisorTaskState::Running => TaskStatus::InProgress,
+        SupervisorTaskState::Completed => TaskStatus::Completed,
+        SupervisorTaskState::Cancelled | SupervisorTaskState::Failed => TaskStatus::Cancelled,
+        _ => TaskStatus::NotStarted,
+    };
+    let _ = manager.update_task_status(session_id, tracking_task_id, task_status);
+    let _ = manager.set_task_background_job(
+        session_id,
+        tracking_task_id,
+        Some(TaskBackgroundJob::new(
+            background_status_for_state(record.state),
+            Some(task.id.clone()),
+            Some(background_message_for_record(record)),
+        )),
+    );
+    merge_task_metadata(
+        &manager,
+        session_id,
+        tracking_task_id,
+        json!({
+            "delegation": {
+                "state": format!("{:?}", record.state).to_lowercase(),
+                "run_status": format!("{:?}", run.status).to_lowercase(),
+                "local_execution": record.local_execution.as_ref(),
+                "remote_execution": record.remote_execution.as_ref(),
+            }
+        }),
+    );
+}
+
 fn record_task_completion(
     task: &DelegatedTask,
     task_result: &TaskResult,
@@ -4296,6 +5471,14 @@ fn background_message_for_record(record: &SupervisorTaskRecord) -> String {
     {
         return remote;
     }
+    if let Some(local) = local_background_message(record)
+        && matches!(
+            record.state,
+            SupervisorTaskState::Running | SupervisorTaskState::Blocked
+        )
+    {
+        return local;
+    }
     match record.state {
         SupervisorTaskState::Queued => "Queued for execution".to_string(),
         SupervisorTaskState::Blocked => {
@@ -4313,6 +5496,53 @@ fn background_message_for_record(record: &SupervisorTaskRecord) -> String {
         SupervisorTaskState::Failed => "Failed".to_string(),
         SupervisorTaskState::Cancelled => "Cancelled".to_string(),
     }
+}
+
+fn local_background_message(record: &SupervisorTaskRecord) -> Option<String> {
+    let local = record.local_execution.as_ref()?;
+    let mut parts = vec![format!("Local {}", local.status)];
+    if let Some(reason) = local.status_reason.as_deref() {
+        parts.push(reason.to_string());
+    }
+    if let Some(progress) = local.progress.as_ref() {
+        parts.push(format!("phase {:?}", progress.phase).to_lowercase());
+        if let Some(waiting_reason) = progress.waiting_reason {
+            parts.push(format!("waiting {:?}", waiting_reason).to_lowercase());
+        }
+        if let Some(percent) = progress.percent {
+            parts.push(format!("{percent}%"));
+        }
+        if let Some(stage) = progress.stage.as_deref() {
+            parts.push(stage.to_string());
+        }
+        if let Some(tool) = progress.current_tool_name.as_deref() {
+            parts.push(format!("tool {tool}"));
+        }
+        if progress.completed_tool_call_count > 0 {
+            parts.push(format!(
+                "{} tool call(s)",
+                progress.completed_tool_call_count
+            ));
+        }
+        if let Some(token_usage) = progress.token_usage.as_ref() {
+            if let (Some(estimated_tokens), Some(limit), Some(percentage)) = (
+                token_usage.estimated_tokens,
+                token_usage.limit,
+                token_usage.percentage,
+            ) {
+                parts.push(format!("tokens {estimated_tokens}/{limit} ({percentage}%)"));
+            } else if let Some(total_tokens) = token_usage.total_tokens {
+                parts.push(format!("tokens {total_tokens}"));
+            }
+        }
+        if let Some(environment) = progress.environment.as_ref() {
+            parts.push(format!("env {:?}", environment.state).to_lowercase());
+        }
+        if let Some(message) = progress.message.as_deref() {
+            parts.push(message.to_string());
+        }
+    }
+    Some(parts.join(" • "))
 }
 
 fn remote_background_message(record: &SupervisorTaskRecord) -> Option<String> {
@@ -4363,6 +5593,522 @@ fn progress_from_remote(
         percent: progress.percent,
         updated_at: progress.updated_at,
     })
+}
+
+#[derive(Debug, Clone, Default)]
+struct LocalExecutionTelemetryContext {
+    iteration: u32,
+    current_tool_name: Option<String>,
+    last_completed_tool_name: Option<String>,
+    last_completed_tool_duration_ms: Option<u64>,
+    completed_tool_call_count: usize,
+    partial_content_chars: usize,
+    partial_thinking_chars: usize,
+    has_partial_content: bool,
+    has_partial_thinking: bool,
+    token_usage: Option<LocalExecutionTokenUsageSnapshot>,
+    environment: Option<LocalExecutionEnvironmentSnapshot>,
+}
+
+fn local_execution_record_for_start() -> LocalExecutionRecord {
+    let now = Utc::now();
+    let context = LocalExecutionTelemetryContext::default();
+    LocalExecutionRecord {
+        status: "running".to_string(),
+        status_reason: None,
+        progress: Some(LocalExecutionProgress {
+            phase: LocalExecutionPhase::Running,
+            waiting_reason: None,
+            stage: Some("starting".to_string()),
+            message: Some("Delegated task dispatched to local agent".to_string()),
+            percent: None,
+            iteration: context.iteration,
+            current_tool_name: None,
+            last_completed_tool_name: None,
+            last_completed_tool_duration_ms: None,
+            completed_tool_call_count: context.completed_tool_call_count,
+            has_partial_content: context.has_partial_content,
+            partial_content_chars: context.partial_content_chars,
+            has_partial_thinking: context.has_partial_thinking,
+            partial_thinking_chars: context.partial_thinking_chars,
+            token_usage: None,
+            environment: None,
+            updated_at: now,
+        }),
+        last_synced_at: now,
+    }
+}
+
+fn local_execution_record_for_terminal(
+    task_result: &TaskResult,
+    state: SupervisorTaskState,
+    previous: Option<&LocalExecutionRecord>,
+) -> LocalExecutionRecord {
+    let now = Utc::now();
+    let previous_progress = previous.and_then(|local| local.progress.as_ref());
+    LocalExecutionRecord {
+        status: local_execution_status_label(state).to_string(),
+        status_reason: if task_result.success {
+            None
+        } else {
+            Some(task_result.output.clone())
+        },
+        progress: Some(LocalExecutionProgress {
+            phase: local_execution_phase_for_terminal_state(state),
+            waiting_reason: None,
+            stage: Some(local_execution_stage_for_terminal_state(state).to_string()),
+            message: Some(if task_result.success {
+                format!(
+                    "Local delegated task completed after {} tool call(s)",
+                    task_result.tool_calls.len()
+                )
+            } else {
+                format!(
+                    "Local delegated task ended as {}: {}",
+                    local_execution_status_label(state),
+                    task_result.output
+                )
+            }),
+            percent: Some(if matches!(state, SupervisorTaskState::Completed) {
+                100
+            } else {
+                previous_progress
+                    .and_then(|progress| progress.percent)
+                    .unwrap_or(100)
+            }),
+            iteration: previous_progress
+                .map(|progress| progress.iteration)
+                .unwrap_or_default(),
+            current_tool_name: None,
+            last_completed_tool_name: previous_progress
+                .and_then(|progress| progress.last_completed_tool_name.clone()),
+            last_completed_tool_duration_ms: previous_progress
+                .and_then(|progress| progress.last_completed_tool_duration_ms),
+            completed_tool_call_count: task_result.tool_calls.len(),
+            has_partial_content: previous_progress
+                .map(|progress| progress.has_partial_content)
+                .unwrap_or(false),
+            partial_content_chars: previous_progress
+                .map(|progress| progress.partial_content_chars)
+                .unwrap_or_default(),
+            has_partial_thinking: previous_progress
+                .map(|progress| progress.has_partial_thinking)
+                .unwrap_or(false),
+            partial_thinking_chars: previous_progress
+                .map(|progress| progress.partial_thinking_chars)
+                .unwrap_or_default(),
+            token_usage: previous_progress.and_then(|progress| progress.token_usage.clone()),
+            environment: previous_progress.and_then(|progress| progress.environment.clone()),
+            updated_at: now,
+        }),
+        last_synced_at: now,
+    }
+}
+
+fn local_execution_progress_from_chunk(
+    chunk: &StreamChunk,
+    context: &LocalExecutionTelemetryContext,
+) -> Option<LocalExecutionProgress> {
+    let now = Utc::now();
+    match chunk {
+        StreamChunk::Status { message } => Some(LocalExecutionProgress {
+            phase: LocalExecutionPhase::Running,
+            waiting_reason: None,
+            stage: Some("status".to_string()),
+            message: Some(message.clone()),
+            percent: None,
+            iteration: context.iteration,
+            current_tool_name: context.current_tool_name.clone(),
+            last_completed_tool_name: context.last_completed_tool_name.clone(),
+            last_completed_tool_duration_ms: context.last_completed_tool_duration_ms,
+            completed_tool_call_count: context.completed_tool_call_count,
+            has_partial_content: context.has_partial_content,
+            partial_content_chars: context.partial_content_chars,
+            has_partial_thinking: context.has_partial_thinking,
+            partial_thinking_chars: context.partial_thinking_chars,
+            token_usage: context.token_usage.clone(),
+            environment: context.environment.clone(),
+            updated_at: now,
+        }),
+        StreamChunk::AgentLoopIteration { iteration } => Some(LocalExecutionProgress {
+            phase: LocalExecutionPhase::Running,
+            waiting_reason: None,
+            stage: Some("agent_loop".to_string()),
+            message: Some(format!("Agent loop iteration {}", iteration + 1)),
+            percent: None,
+            iteration: *iteration,
+            current_tool_name: None,
+            last_completed_tool_name: context.last_completed_tool_name.clone(),
+            last_completed_tool_duration_ms: context.last_completed_tool_duration_ms,
+            completed_tool_call_count: context.completed_tool_call_count,
+            has_partial_content: context.has_partial_content,
+            partial_content_chars: context.partial_content_chars,
+            has_partial_thinking: context.has_partial_thinking,
+            partial_thinking_chars: context.partial_thinking_chars,
+            token_usage: context.token_usage.clone(),
+            environment: context.environment.clone(),
+            updated_at: now,
+        }),
+        StreamChunk::ToolCallStart { name, .. } => Some(LocalExecutionProgress {
+            phase: LocalExecutionPhase::Running,
+            waiting_reason: None,
+            stage: Some("executing_tools".to_string()),
+            message: Some(format!("Running tool '{name}'")),
+            percent: None,
+            iteration: context.iteration,
+            current_tool_name: Some(name.clone()),
+            last_completed_tool_name: context.last_completed_tool_name.clone(),
+            last_completed_tool_duration_ms: context.last_completed_tool_duration_ms,
+            completed_tool_call_count: context.completed_tool_call_count,
+            has_partial_content: context.has_partial_content,
+            partial_content_chars: context.partial_content_chars,
+            has_partial_thinking: context.has_partial_thinking,
+            partial_thinking_chars: context.partial_thinking_chars,
+            token_usage: context.token_usage.clone(),
+            environment: context.environment.clone(),
+            updated_at: now,
+        }),
+        StreamChunk::ToolCallResult {
+            name,
+            success,
+            duration_ms,
+            ..
+        } => Some(LocalExecutionProgress {
+            phase: LocalExecutionPhase::Running,
+            waiting_reason: None,
+            stage: Some("executing_tools".to_string()),
+            message: Some(if *success {
+                format!("Tool '{name}' completed successfully")
+            } else {
+                format!("Tool '{name}' failed")
+            }),
+            percent: None,
+            iteration: context.iteration,
+            current_tool_name: None,
+            last_completed_tool_name: Some(name.clone()),
+            last_completed_tool_duration_ms: Some(*duration_ms),
+            completed_tool_call_count: context.completed_tool_call_count,
+            has_partial_content: context.has_partial_content,
+            partial_content_chars: context.partial_content_chars,
+            has_partial_thinking: context.has_partial_thinking,
+            partial_thinking_chars: context.partial_thinking_chars,
+            token_usage: context.token_usage.clone(),
+            environment: context.environment.clone(),
+            updated_at: now,
+        }),
+        StreamChunk::ShellLifecycle { state, command, .. } => Some(LocalExecutionProgress {
+            phase: if matches!(
+                state,
+                crate::streaming::ShellProcessState::Started
+                    | crate::streaming::ShellProcessState::Paused
+                    | crate::streaming::ShellProcessState::Resumed
+            ) {
+                LocalExecutionPhase::Waiting
+            } else {
+                LocalExecutionPhase::Running
+            },
+            waiting_reason: if matches!(
+                state,
+                crate::streaming::ShellProcessState::Started
+                    | crate::streaming::ShellProcessState::Paused
+                    | crate::streaming::ShellProcessState::Resumed
+            ) {
+                Some(LocalExecutionWaitingReason::ShellProcess)
+            } else {
+                None
+            },
+            stage: Some("shell".to_string()),
+            message: Some(format!("Shell {:?}: {command}", state).to_lowercase()),
+            percent: None,
+            iteration: context.iteration,
+            current_tool_name: Some("shell".to_string()),
+            last_completed_tool_name: context.last_completed_tool_name.clone(),
+            last_completed_tool_duration_ms: context.last_completed_tool_duration_ms,
+            completed_tool_call_count: context.completed_tool_call_count,
+            has_partial_content: context.has_partial_content,
+            partial_content_chars: context.partial_content_chars,
+            has_partial_thinking: context.has_partial_thinking,
+            partial_thinking_chars: context.partial_thinking_chars,
+            token_usage: context.token_usage.clone(),
+            environment: context.environment.clone(),
+            updated_at: now,
+        }),
+        StreamChunk::TokenUsageUpdate {
+            estimated,
+            limit,
+            percentage,
+            status,
+            estimated_cost,
+        } => Some(LocalExecutionProgress {
+            phase: LocalExecutionPhase::Running,
+            waiting_reason: None,
+            stage: Some("token_usage".to_string()),
+            message: Some(format!(
+                "Estimated token usage {estimated}/{limit} ({percentage}%)"
+            )),
+            percent: Some(*percentage),
+            iteration: context.iteration,
+            current_tool_name: context.current_tool_name.clone(),
+            last_completed_tool_name: context.last_completed_tool_name.clone(),
+            last_completed_tool_duration_ms: context.last_completed_tool_duration_ms,
+            completed_tool_call_count: context.completed_tool_call_count,
+            has_partial_content: context.has_partial_content,
+            partial_content_chars: context.partial_content_chars,
+            has_partial_thinking: context.has_partial_thinking,
+            partial_thinking_chars: context.partial_thinking_chars,
+            token_usage: Some(LocalExecutionTokenUsageSnapshot {
+                estimated_tokens: Some(*estimated),
+                limit: Some(*limit),
+                percentage: Some(*percentage),
+                status: Some(token_usage_status_label(*status).to_string()),
+                estimated_cost_usd: Some(*estimated_cost),
+                input_tokens: context
+                    .token_usage
+                    .as_ref()
+                    .and_then(|usage| usage.input_tokens),
+                output_tokens: context
+                    .token_usage
+                    .as_ref()
+                    .and_then(|usage| usage.output_tokens),
+                total_tokens: context
+                    .token_usage
+                    .as_ref()
+                    .and_then(|usage| usage.total_tokens),
+                model: context
+                    .token_usage
+                    .as_ref()
+                    .and_then(|usage| usage.model.clone()),
+                provider: context
+                    .token_usage
+                    .as_ref()
+                    .and_then(|usage| usage.provider.clone()),
+            }),
+            environment: context.environment.clone(),
+            updated_at: now,
+        }),
+        StreamChunk::ReflectionStarted { reason } => Some(LocalExecutionProgress {
+            phase: LocalExecutionPhase::Waiting,
+            waiting_reason: Some(LocalExecutionWaitingReason::Reflection),
+            stage: Some("reflection".to_string()),
+            message: Some(reason.clone()),
+            percent: None,
+            iteration: context.iteration,
+            current_tool_name: context.current_tool_name.clone(),
+            last_completed_tool_name: context.last_completed_tool_name.clone(),
+            last_completed_tool_duration_ms: context.last_completed_tool_duration_ms,
+            completed_tool_call_count: context.completed_tool_call_count,
+            has_partial_content: context.has_partial_content,
+            partial_content_chars: context.partial_content_chars,
+            has_partial_thinking: context.has_partial_thinking,
+            partial_thinking_chars: context.partial_thinking_chars,
+            token_usage: context.token_usage.clone(),
+            environment: context.environment.clone(),
+            updated_at: now,
+        }),
+        StreamChunk::ReflectionComplete { summary, .. } => Some(LocalExecutionProgress {
+            phase: LocalExecutionPhase::Running,
+            waiting_reason: None,
+            stage: Some("reflection".to_string()),
+            message: Some(summary.clone()),
+            percent: None,
+            iteration: context.iteration,
+            current_tool_name: context.current_tool_name.clone(),
+            last_completed_tool_name: context.last_completed_tool_name.clone(),
+            last_completed_tool_duration_ms: context.last_completed_tool_duration_ms,
+            completed_tool_call_count: context.completed_tool_call_count,
+            has_partial_content: context.has_partial_content,
+            partial_content_chars: context.partial_content_chars,
+            has_partial_thinking: context.has_partial_thinking,
+            partial_thinking_chars: context.partial_thinking_chars,
+            token_usage: context.token_usage.clone(),
+            environment: context.environment.clone(),
+            updated_at: now,
+        }),
+        StreamChunk::ToolConfirmationRequired { tool_name, .. } => Some(LocalExecutionProgress {
+            phase: LocalExecutionPhase::Waiting,
+            waiting_reason: Some(LocalExecutionWaitingReason::ToolConfirmation),
+            stage: Some("tool_confirmation".to_string()),
+            message: Some(format!(
+                "Waiting for confirmation before running '{tool_name}'"
+            )),
+            percent: None,
+            iteration: context.iteration,
+            current_tool_name: Some(tool_name.clone()),
+            last_completed_tool_name: context.last_completed_tool_name.clone(),
+            last_completed_tool_duration_ms: context.last_completed_tool_duration_ms,
+            completed_tool_call_count: context.completed_tool_call_count,
+            has_partial_content: context.has_partial_content,
+            partial_content_chars: context.partial_content_chars,
+            has_partial_thinking: context.has_partial_thinking,
+            partial_thinking_chars: context.partial_thinking_chars,
+            token_usage: context.token_usage.clone(),
+            environment: context.environment.clone(),
+            updated_at: now,
+        }),
+        StreamChunk::ToolBlocked { tool_name, reason } => Some(LocalExecutionProgress {
+            phase: LocalExecutionPhase::Blocked,
+            waiting_reason: None,
+            stage: Some("tool_blocked".to_string()),
+            message: Some(format!("Tool '{tool_name}' blocked: {reason}")),
+            percent: None,
+            iteration: context.iteration,
+            current_tool_name: Some(tool_name.clone()),
+            last_completed_tool_name: context.last_completed_tool_name.clone(),
+            last_completed_tool_duration_ms: context.last_completed_tool_duration_ms,
+            completed_tool_call_count: context.completed_tool_call_count,
+            has_partial_content: context.has_partial_content,
+            partial_content_chars: context.partial_content_chars,
+            has_partial_thinking: context.has_partial_thinking,
+            partial_thinking_chars: context.partial_thinking_chars,
+            token_usage: context.token_usage.clone(),
+            environment: context.environment.clone(),
+            updated_at: now,
+        }),
+        StreamChunk::Done(usage) => Some(LocalExecutionProgress {
+            phase: LocalExecutionPhase::Running,
+            waiting_reason: None,
+            stage: Some("finishing".to_string()),
+            message: Some("Local delegated task finished streaming output".to_string()),
+            percent: Some(100),
+            iteration: context.iteration,
+            current_tool_name: None,
+            last_completed_tool_name: context.last_completed_tool_name.clone(),
+            last_completed_tool_duration_ms: context.last_completed_tool_duration_ms,
+            completed_tool_call_count: context.completed_tool_call_count,
+            has_partial_content: context.has_partial_content,
+            partial_content_chars: context.partial_content_chars,
+            has_partial_thinking: context.has_partial_thinking,
+            partial_thinking_chars: context.partial_thinking_chars,
+            token_usage: Some(token_usage_snapshot_from_done(
+                usage.as_ref(),
+                context.token_usage.as_ref(),
+            )),
+            environment: context.environment.clone(),
+            updated_at: now,
+        }),
+        StreamChunk::Paused => Some(LocalExecutionProgress {
+            phase: LocalExecutionPhase::Blocked,
+            waiting_reason: None,
+            stage: Some("paused".to_string()),
+            message: Some(
+                "Execution paused by operator; resumable checkpoint preserved".to_string(),
+            ),
+            percent: None,
+            iteration: context.iteration,
+            current_tool_name: None,
+            last_completed_tool_name: context.last_completed_tool_name.clone(),
+            last_completed_tool_duration_ms: context.last_completed_tool_duration_ms,
+            completed_tool_call_count: context.completed_tool_call_count,
+            has_partial_content: context.has_partial_content,
+            partial_content_chars: context.partial_content_chars,
+            has_partial_thinking: context.has_partial_thinking,
+            partial_thinking_chars: context.partial_thinking_chars,
+            token_usage: context.token_usage.clone(),
+            environment: context.environment.clone(),
+            updated_at: now,
+        }),
+        StreamChunk::Cancelled => Some(LocalExecutionProgress {
+            phase: LocalExecutionPhase::Cancelled,
+            waiting_reason: None,
+            stage: Some("cancelled".to_string()),
+            message: Some("Execution cancelled by operator".to_string()),
+            percent: None,
+            iteration: context.iteration,
+            current_tool_name: None,
+            last_completed_tool_name: context.last_completed_tool_name.clone(),
+            last_completed_tool_duration_ms: context.last_completed_tool_duration_ms,
+            completed_tool_call_count: context.completed_tool_call_count,
+            has_partial_content: context.has_partial_content,
+            partial_content_chars: context.partial_content_chars,
+            has_partial_thinking: context.has_partial_thinking,
+            partial_thinking_chars: context.partial_thinking_chars,
+            token_usage: context.token_usage.clone(),
+            environment: context.environment.clone(),
+            updated_at: now,
+        }),
+        _ => None,
+    }
+}
+
+fn token_usage_snapshot_from_done(
+    usage: Option<&crate::llm_provider::TokenUsage>,
+    previous: Option<&LocalExecutionTokenUsageSnapshot>,
+) -> LocalExecutionTokenUsageSnapshot {
+    LocalExecutionTokenUsageSnapshot {
+        estimated_tokens: previous.and_then(|usage| usage.estimated_tokens),
+        limit: previous.and_then(|usage| usage.limit),
+        percentage: previous.and_then(|usage| usage.percentage),
+        status: previous.and_then(|usage| usage.status.clone()),
+        estimated_cost_usd: usage
+            .and_then(|usage| usage.estimated_cost_usd)
+            .or_else(|| previous.and_then(|usage| usage.estimated_cost_usd)),
+        input_tokens: usage.map(|usage| usage.input_tokens),
+        output_tokens: usage.map(|usage| usage.output_tokens),
+        total_tokens: usage.map(|usage| usage.total_tokens),
+        model: usage
+            .and_then(|usage| usage.model.clone())
+            .or_else(|| previous.and_then(|usage| usage.model.clone())),
+        provider: usage
+            .and_then(|usage| usage.provider.clone())
+            .or_else(|| previous.and_then(|usage| usage.provider.clone())),
+    }
+}
+
+fn token_usage_status_label(status: crate::streaming::TokenUsageStatus) -> &'static str {
+    match status {
+        crate::streaming::TokenUsageStatus::Green => "green",
+        crate::streaming::TokenUsageStatus::Yellow => "yellow",
+        crate::streaming::TokenUsageStatus::Red => "red",
+    }
+}
+
+fn environment_snapshot_from_execution(
+    environment: &ExecutionEnvironment,
+) -> LocalExecutionEnvironmentSnapshot {
+    LocalExecutionEnvironmentSnapshot {
+        state: environment.state,
+        health: environment.health,
+        recovery_status: environment.recovery_status,
+        updated_at: Utc::now(),
+    }
+}
+
+fn local_execution_status_label(state: SupervisorTaskState) -> &'static str {
+    match state {
+        SupervisorTaskState::Queued => "queued",
+        SupervisorTaskState::PendingApproval => "pending_approval",
+        SupervisorTaskState::Running => "running",
+        SupervisorTaskState::ReviewPending => "review_pending",
+        SupervisorTaskState::TestPending => "test_pending",
+        SupervisorTaskState::Completed => "completed",
+        SupervisorTaskState::Failed => "failed",
+        SupervisorTaskState::Blocked => "blocked",
+        SupervisorTaskState::Cancelled => "cancelled",
+    }
+}
+
+fn local_execution_phase_for_terminal_state(state: SupervisorTaskState) -> LocalExecutionPhase {
+    match state {
+        SupervisorTaskState::Completed => LocalExecutionPhase::Completed,
+        SupervisorTaskState::Cancelled => LocalExecutionPhase::Cancelled,
+        SupervisorTaskState::Blocked => LocalExecutionPhase::Blocked,
+        SupervisorTaskState::Failed => LocalExecutionPhase::Failed,
+        SupervisorTaskState::Queued
+        | SupervisorTaskState::PendingApproval
+        | SupervisorTaskState::Running
+        | SupervisorTaskState::ReviewPending
+        | SupervisorTaskState::TestPending => LocalExecutionPhase::Running,
+    }
+}
+
+fn local_execution_stage_for_terminal_state(state: SupervisorTaskState) -> &'static str {
+    match state {
+        SupervisorTaskState::Completed => "completed",
+        SupervisorTaskState::Cancelled => "cancelled",
+        SupervisorTaskState::Blocked => "blocked",
+        SupervisorTaskState::Failed => "failed",
+        _ => "running",
+    }
 }
 
 fn artifacts_from_manifest(manifest: &[ArtifactManifestEntry]) -> Vec<RemoteExecutionArtifact> {
@@ -4686,6 +6432,31 @@ fn checkpoint_summary_for_record(
         has_resume_state: checkpoint.resume_state.is_some(),
         result_published: checkpoint.result_published,
         updated_at: checkpoint.updated_at,
+    }
+}
+
+fn active_task_snapshot(
+    task: DelegatedTask,
+    record: Option<&SupervisorTaskRecord>,
+) -> ActiveTaskSnapshot {
+    if let Some(record) = record {
+        ActiveTaskSnapshot {
+            task,
+            state: record.state,
+            remote_execution: record.remote_execution.clone(),
+            local_execution: record.local_execution.clone(),
+            blocked_reasons: record.blocked_reasons.clone(),
+            checkpoint: record.checkpoint.clone(),
+        }
+    } else {
+        ActiveTaskSnapshot {
+            task,
+            state: SupervisorTaskState::Running,
+            remote_execution: None,
+            local_execution: None,
+            blocked_reasons: Vec::new(),
+            checkpoint: None,
+        }
     }
 }
 
@@ -5015,6 +6786,13 @@ fn ensure_parent_run_accepts_child(parent: &SupervisorRun) -> Result<(), String>
 }
 
 fn collect_ready_tasks(run: &mut SupervisorRun) -> Vec<DelegatedTask> {
+    collect_ready_tasks_except(run, None)
+}
+
+fn collect_ready_tasks_except(
+    run: &mut SupervisorRun,
+    skip_task_id: Option<&str>,
+) -> Vec<DelegatedTask> {
     let completed_ids = run
         .tasks
         .iter()
@@ -5025,6 +6803,9 @@ fn collect_ready_tasks(run: &mut SupervisorRun) -> Vec<DelegatedTask> {
 
     let mut ready = Vec::new();
     for record in &mut run.tasks {
+        if skip_task_id.is_some_and(|task_id| record.task.id == task_id) {
+            continue;
+        }
         if !matches!(record.state, SupervisorTaskState::Blocked) {
             continue;
         }
@@ -5073,6 +6854,14 @@ fn merge_task_metadata(
 
     let _ =
         manager.update_task_metadata(session_id, task_id, serde_json::Value::Object(existing_map));
+}
+
+fn task_reflection_sync_context(task: &DelegatedTask) -> Option<(PathBuf, String, String)> {
+    Some((
+        task.workspace_dir.clone()?,
+        task.session_id.clone()?,
+        task.tracking_task_id.clone()?,
+    ))
 }
 
 fn approval_scope_for_state(state: SupervisorTaskState) -> Option<ApprovalScope> {
@@ -5244,6 +7033,7 @@ mod tests {
     use super::*;
     use crate::create_gestura_agent_card;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     fn test_environment(id: &str, root_dir: PathBuf) -> ExecutionEnvironment {
@@ -5282,10 +7072,27 @@ mod tests {
             hierarchy_summary: None,
             tasks: Vec::new(),
             messages: Vec::new(),
+            shared_cognition: Vec::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
             completed_at: None,
             metadata: None,
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingObserver {
+        runs: tokio::sync::Mutex<Vec<SupervisorRun>>,
+    }
+
+    #[async_trait::async_trait]
+    impl OrchestratorObserver for RecordingObserver {
+        async fn on_task_started(&self, _task: DelegatedTask) {}
+
+        async fn on_task_completed(&self, _task: DelegatedTask, _result: TaskResult) {}
+
+        async fn on_run_updated(&self, run: SupervisorRun) {
+            self.runs.lock().await.push(run);
         }
     }
 
@@ -5337,6 +7144,7 @@ mod tests {
             blocked_reasons: vec![],
             result: None,
             remote_execution: None,
+            local_execution: None,
             messages: vec![],
             checkpoint: None,
             created_at: Utc::now(),
@@ -5362,6 +7170,7 @@ mod tests {
             status: SupervisorRunStatus::Waiting,
             tasks: vec![record],
             messages: vec![],
+            shared_cognition: vec![],
             created_at: Utc::now(),
             updated_at: Utc::now(),
             completed_at: None,
@@ -5377,6 +7186,76 @@ mod tests {
             .lock()
             .await
             .insert(task.id.clone(), "run-approval".into());
+    }
+
+    fn sample_task_result(success: bool, output: &str) -> TaskResult {
+        TaskResult {
+            task_id: "task-approval".into(),
+            agent_id: "agent-reviewer".into(),
+            success,
+            run_id: Some("run-approval".into()),
+            tracking_task_id: Some("tracking-approval".into()),
+            output: output.into(),
+            summary: None,
+            tool_calls: vec![],
+            artifacts: vec![],
+            terminal_state_hint: None,
+            duration_ms: 125,
+        }
+    }
+
+    fn sample_task_record(
+        workspace_dir: PathBuf,
+        state: SupervisorTaskState,
+        reviewer_required: bool,
+        test_required: bool,
+    ) -> SupervisorTaskRecord {
+        let task = DelegatedTask {
+            id: "task-approval".into(),
+            agent_id: "agent-reviewer".into(),
+            prompt: "Review the patch".into(),
+            context: None,
+            required_tools: vec![],
+            priority: 1,
+            session_id: Some("session-approval".into()),
+            directive_id: Some("directive-approval".into()),
+            tracking_task_id: Some("tracking-approval".into()),
+            run_id: Some("run-approval".into()),
+            parent_task_id: None,
+            depends_on: vec![],
+            role: Some(AgentRole::Reviewer),
+            delegation_brief: None,
+            planning_only: false,
+            approval_required: false,
+            reviewer_required,
+            test_required,
+            workspace_dir: Some(workspace_dir.clone()),
+            execution_mode: AgentExecutionMode::SharedWorkspace,
+            environment_id: Some("env-approval".into()),
+            remote_target: None,
+            memory_tags: vec!["quality".into()],
+            name: Some("Review the patch".into()),
+        };
+
+        SupervisorTaskRecord {
+            task: task.clone(),
+            state,
+            approval: TaskApprovalRecord::not_required(&task),
+            environment_id: "env-approval".into(),
+            environment: test_environment("env-approval", workspace_dir),
+            claimed_by: Some(task.agent_id.clone()),
+            attempts: 1,
+            blocked_reasons: vec![],
+            result: Some(sample_task_result(true, "Patch applied and checks passed.")),
+            remote_execution: None,
+            local_execution: None,
+            messages: vec![],
+            checkpoint: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            started_at: Some(Utc::now()),
+            completed_at: Some(Utc::now()),
+        }
     }
 
     #[tokio::test]
@@ -5580,6 +7459,95 @@ mod tests {
             record.approval.decisions[1].actor.kind,
             ApprovalActorKind::Tester
         );
+    }
+
+    #[test]
+    fn task_record_outcome_signals_include_gate_and_terminal_decisions() {
+        let workspace = tempdir().unwrap();
+        let mut record = sample_task_record(
+            workspace.path().to_path_buf(),
+            SupervisorTaskState::Completed,
+            true,
+            true,
+        );
+        record.approval.decisions.push(ApprovalDecision {
+            id: "decision-review".into(),
+            request_id: "request-review".into(),
+            scope: ApprovalScope::Review,
+            actor: ApprovalActor::new(ApprovalActorKind::Reviewer, "reviewer-1"),
+            decision: ApprovalDecisionKind::Approved,
+            decided_at: Utc::now(),
+            note: Some("Review sign-off recorded.".into()),
+        });
+        record.approval.decisions.push(ApprovalDecision {
+            id: "decision-test".into(),
+            request_id: "request-test".into(),
+            scope: ApprovalScope::TestValidation,
+            actor: ApprovalActor::new(ApprovalActorKind::Tester, "tester-1"),
+            decision: ApprovalDecisionKind::Approved,
+            decided_at: Utc::now(),
+            note: Some("Targeted tests passed.".into()),
+        });
+
+        let signals = task_record_outcome_signals(&record);
+        let labels = outcome_signal_labels(&signals);
+        let summary = outcome_signal_summary(&signals).unwrap();
+
+        assert!(labels.contains(&"task_completed".to_string()));
+        assert!(labels.contains(&"review_approved".to_string()));
+        assert!(labels.contains(&"test_validation_approved".to_string()));
+        assert!(summary.contains("Review sign-off recorded."));
+        assert!(summary.contains("Targeted tests passed."));
+    }
+
+    #[tokio::test]
+    async fn delegated_task_memory_persists_outcome_provenance() {
+        let workspace = tempdir().unwrap();
+        let mut record = sample_task_record(
+            workspace.path().to_path_buf(),
+            SupervisorTaskState::Completed,
+            true,
+            true,
+        );
+        record.approval.decisions.push(ApprovalDecision {
+            id: "decision-review".into(),
+            request_id: "request-review".into(),
+            scope: ApprovalScope::Review,
+            actor: ApprovalActor::new(ApprovalActorKind::Reviewer, "reviewer-1"),
+            decision: ApprovalDecisionKind::Approved,
+            decided_at: Utc::now(),
+            note: Some("Review sign-off recorded.".into()),
+        });
+        record.approval.decisions.push(ApprovalDecision {
+            id: "decision-test".into(),
+            request_id: "request-test".into(),
+            scope: ApprovalScope::TestValidation,
+            actor: ApprovalActor::new(ApprovalActorKind::Tester, "tester-1"),
+            decision: ApprovalDecisionKind::Approved,
+            decided_at: Utc::now(),
+            note: Some("Targeted tests passed.".into()),
+        });
+
+        let path = persist_delegated_task_memory(&record).await.unwrap();
+        let entry = crate::memory_bank::load_from_memory_bank(&path)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            entry.outcome_labels,
+            vec![
+                "task_completed",
+                "review_approved",
+                "test_validation_approved"
+            ]
+        );
+        assert!(
+            entry
+                .outcome_summary
+                .unwrap_or_default()
+                .contains("Review sign-off recorded.")
+        );
+        assert!(entry.content.contains("## Outcome Signals"));
     }
 
     #[tokio::test]
@@ -5850,6 +7818,273 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_team_message_publishes_shared_cognition_to_run_and_memory_bank() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("shared-cognition.db"));
+        let orchestrator = AgentOrchestrator::new(manager, AppConfig::default());
+
+        orchestrator
+            .delegate_task(DelegatedTask {
+                id: "task-shared".into(),
+                agent_id: "agent-impl".into(),
+                prompt: "Implement the feature".into(),
+                context: None,
+                required_tools: vec![],
+                priority: 1,
+                session_id: Some("session-shared".into()),
+                directive_id: Some("directive-shared".into()),
+                tracking_task_id: None,
+                run_id: Some("run-shared".into()),
+                parent_task_id: None,
+                depends_on: vec![],
+                role: Some(AgentRole::Implementer),
+                delegation_brief: None,
+                planning_only: false,
+                approval_required: false,
+                reviewer_required: false,
+                test_required: false,
+                workspace_dir: Some(tmp.path().to_path_buf()),
+                execution_mode: AgentExecutionMode::SharedWorkspace,
+                environment_id: None,
+                remote_target: None,
+                memory_tags: vec!["frontend".to_string()],
+                name: Some("Implement the feature".into()),
+            })
+            .await
+            .unwrap();
+
+        orchestrator
+            .send_team_message(
+                "run-shared",
+                Some("task-shared".to_string()),
+                TeamMessageKind::StatusUpdate,
+                Some("supervisor".to_string()),
+                Some("agent-impl".to_string()),
+                "Use ripgrep first and keep the worktree clean.",
+            )
+            .await
+            .unwrap();
+
+        let run = orchestrator.get_supervisor_run("run-shared").await.unwrap();
+        assert_eq!(run.shared_cognition.len(), 1);
+        let note = &run.shared_cognition[0];
+        assert_eq!(note.kind, SharedCognitionKind::Steering);
+        assert_eq!(note.task_id.as_deref(), Some("task-shared"));
+        assert_eq!(note.directive_id.as_deref(), Some("directive-shared"));
+        assert!(note.tags.contains(&SHARED_COGNITION_TAG.to_string()));
+        assert!(note.tags.contains(&workflow_run_memory_tag("run-shared")));
+
+        let query = crate::memory_bank::MemoryBankQuery::default()
+            .with_category(SHARED_COGNITION_CATEGORY)
+            .with_task("task-shared")
+            .with_directive("directive-shared")
+            .with_tags(vec![workflow_run_memory_tag("run-shared")])
+            .with_limit(5);
+        let results = crate::memory_bank::search_memory_bank_with_query(tmp.path(), &query)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].entry.category.as_deref(),
+            Some(SHARED_COGNITION_CATEGORY)
+        );
+        assert!(
+            results[0]
+                .entry
+                .tags
+                .contains(&workflow_run_memory_tag("run-shared"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_team_message_publishes_partial_discovery_and_blocker_shared_cognition() {
+        let tmp = tempdir().unwrap();
+        let manager =
+            crate::agents::AgentManager::new(tmp.path().join("shared-cognition-partial.db"));
+        let orchestrator = AgentOrchestrator::new(manager, AppConfig::default());
+
+        orchestrator
+            .delegate_task(DelegatedTask {
+                id: "task-partial".into(),
+                agent_id: "agent-impl".into(),
+                prompt: "Investigate the flaky test".into(),
+                context: None,
+                required_tools: vec![],
+                priority: 1,
+                session_id: Some("session-partial".into()),
+                directive_id: Some("directive-partial".into()),
+                tracking_task_id: None,
+                run_id: Some("run-partial".into()),
+                parent_task_id: None,
+                depends_on: vec![],
+                role: Some(AgentRole::Implementer),
+                delegation_brief: None,
+                planning_only: false,
+                approval_required: false,
+                reviewer_required: false,
+                test_required: false,
+                workspace_dir: Some(tmp.path().to_path_buf()),
+                execution_mode: AgentExecutionMode::SharedWorkspace,
+                environment_id: None,
+                remote_target: None,
+                memory_tags: vec!["flaky-test".to_string()],
+                name: Some("Investigate flaky test".into()),
+            })
+            .await
+            .unwrap();
+
+        orchestrator
+            .send_team_message(
+                "run-partial",
+                Some("task-partial".to_string()),
+                TeamMessageKind::StatusUpdate,
+                Some("agent-impl".to_string()),
+                Some("supervisor".to_string()),
+                "Partial finding: the failure appears after the fixture cache is cleared.",
+            )
+            .await
+            .unwrap();
+        orchestrator
+            .send_team_message(
+                "run-partial",
+                Some("task-partial".to_string()),
+                TeamMessageKind::Blocker,
+                Some("agent-impl".to_string()),
+                Some("supervisor".to_string()),
+                "Blocked on reproducing the cleanup timing issue without the CI fixture bundle.",
+            )
+            .await
+            .unwrap();
+
+        let run = orchestrator
+            .get_supervisor_run("run-partial")
+            .await
+            .unwrap();
+        assert_eq!(run.shared_cognition.len(), 2);
+        assert_eq!(run.shared_cognition[0].kind, SharedCognitionKind::Discovery);
+        assert_eq!(run.shared_cognition[1].kind, SharedCognitionKind::Blocker);
+        assert_eq!(
+            run.shared_cognition[0].sender_agent_id.as_deref(),
+            Some("agent-impl")
+        );
+        assert_eq!(
+            run.shared_cognition[1].sender_agent_id.as_deref(),
+            Some("agent-impl")
+        );
+        assert!(run.shared_cognition[0].confidence < run.shared_cognition[1].confidence);
+
+        assert!(run.shared_cognition[0].summary.contains("Partial finding"));
+        assert!(
+            run.shared_cognition[1]
+                .summary
+                .contains("Blocked on reproducing")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_team_message_publishes_conflicting_hypotheses_from_multiple_agents() {
+        let tmp = tempdir().unwrap();
+        let manager =
+            crate::agents::AgentManager::new(tmp.path().join("shared-cognition-hypotheses.db"));
+        let orchestrator = AgentOrchestrator::new(manager, AppConfig::default());
+
+        let make_task = |id: &str, agent_id: &str| DelegatedTask {
+            id: id.to_string(),
+            agent_id: agent_id.to_string(),
+            prompt: "Compare ownership approaches".into(),
+            context: None,
+            required_tools: vec![],
+            priority: 1,
+            session_id: Some("session-hypothesis".into()),
+            directive_id: Some("directive-hypothesis".into()),
+            tracking_task_id: None,
+            run_id: Some("run-hypothesis".into()),
+            parent_task_id: None,
+            depends_on: vec![],
+            role: Some(AgentRole::Implementer),
+            delegation_brief: None,
+            planning_only: false,
+            approval_required: false,
+            reviewer_required: false,
+            test_required: false,
+            workspace_dir: Some(tmp.path().to_path_buf()),
+            execution_mode: AgentExecutionMode::SharedWorkspace,
+            environment_id: None,
+            remote_target: None,
+            memory_tags: vec!["ownership".to_string()],
+            name: Some(format!("Ownership check {agent_id}")),
+        };
+
+        orchestrator
+            .delegate_task(make_task("task-h1", "agent-a"))
+            .await
+            .unwrap();
+        orchestrator
+            .delegate_task(make_task("task-h2", "agent-b"))
+            .await
+            .unwrap();
+        {
+            let mut runs = orchestrator.supervisor_runs.lock().await;
+            runs.get_mut("run-hypothesis").unwrap().lead_agent_id = Some("supervisor".to_string());
+        }
+
+        orchestrator
+            .send_team_message(
+                "run-hypothesis",
+                Some("task-h1".to_string()),
+                TeamMessageKind::Clarification,
+                Some("agent-a".to_string()),
+                Some("supervisor".to_string()),
+                "Hypothesis A: the bug is in ownership normalization before task routing.",
+            )
+            .await
+            .unwrap();
+        orchestrator
+            .send_team_message(
+                "run-hypothesis",
+                Some("task-h2".to_string()),
+                TeamMessageKind::Clarification,
+                Some("agent-b".to_string()),
+                Some("supervisor".to_string()),
+                "Hypothesis B: the bug is downstream in the assignment cache after routing succeeds.",
+            )
+            .await
+            .unwrap();
+
+        let run = orchestrator
+            .get_supervisor_run("run-hypothesis")
+            .await
+            .unwrap();
+        assert_eq!(run.shared_cognition.len(), 2);
+        assert!(
+            run.shared_cognition
+                .iter()
+                .all(|note| note.kind == SharedCognitionKind::Hypothesis)
+        );
+        assert!(
+            run.shared_cognition
+                .iter()
+                .any(|note| note.sender_agent_id.as_deref() == Some("agent-a"))
+        );
+        assert!(
+            run.shared_cognition
+                .iter()
+                .any(|note| note.sender_agent_id.as_deref() == Some("agent-b"))
+        );
+
+        assert!(
+            run.shared_cognition
+                .iter()
+                .any(|note| note.summary.contains("Hypothesis A"))
+        );
+        assert!(
+            run.shared_cognition
+                .iter()
+                .any(|note| note.summary.contains("Hypothesis B"))
+        );
+    }
+
+    #[tokio::test]
     async fn test_child_supervisor_run_inherits_policy_and_task_defaults() {
         let tmp = tempdir().unwrap();
         let manager = crate::agents::AgentManager::new(tmp.path().join("child-hierarchy.db"));
@@ -5938,6 +8173,441 @@ mod tests {
         assert_eq!(record.task.execution_mode, AgentExecutionMode::GitWorktree);
         assert!(record.task.memory_tags.contains(&"root-tag".to_string()));
         assert!(record.task.memory_tags.contains(&"child-tag".to_string()));
+        assert!(
+            record
+                .task
+                .memory_tags
+                .contains(&SHARED_COGNITION_TAG.to_string())
+        );
+        assert!(
+            record
+                .task
+                .memory_tags
+                .contains(&workflow_run_memory_tag("run-child"))
+        );
+    }
+
+    #[test]
+    fn local_execution_progress_from_chunk_tracks_iterations_and_tool_results() {
+        let mut context = LocalExecutionTelemetryContext::default();
+        let iteration_progress = local_execution_progress_from_chunk(
+            &StreamChunk::AgentLoopIteration { iteration: 2 },
+            &context,
+        )
+        .expect("iteration progress should be captured");
+        assert_eq!(iteration_progress.stage.as_deref(), Some("agent_loop"));
+        assert_eq!(iteration_progress.iteration, 2);
+
+        context.iteration = 2;
+        let tool_start = local_execution_progress_from_chunk(
+            &StreamChunk::ToolCallStart {
+                id: "tool-1".to_string(),
+                name: "file".to_string(),
+            },
+            &context,
+        )
+        .expect("tool start progress should be captured");
+        assert_eq!(tool_start.stage.as_deref(), Some("executing_tools"));
+        assert_eq!(tool_start.current_tool_name.as_deref(), Some("file"));
+
+        context.completed_tool_call_count = 1;
+        context.last_completed_tool_duration_ms = Some(14);
+        let tool_result = local_execution_progress_from_chunk(
+            &StreamChunk::ToolCallResult {
+                name: "file".to_string(),
+                success: true,
+                output: "{\"ok\":true}".to_string(),
+                duration_ms: 14,
+            },
+            &context,
+        )
+        .expect("tool result progress should be captured");
+        assert_eq!(tool_result.completed_tool_call_count, 1);
+        assert_eq!(tool_result.last_completed_tool_duration_ms, Some(14));
+        assert_eq!(
+            tool_result.message.as_deref(),
+            Some("Tool 'file' completed successfully")
+        );
+    }
+
+    #[test]
+    fn local_execution_progress_from_chunk_captures_waiting_and_token_usage() {
+        let mut context = LocalExecutionTelemetryContext {
+            iteration: 3,
+            current_tool_name: Some("shell".to_string()),
+            has_partial_content: true,
+            partial_content_chars: 18,
+            ..LocalExecutionTelemetryContext::default()
+        };
+
+        let shell_progress = local_execution_progress_from_chunk(
+            &StreamChunk::ShellLifecycle {
+                process_id: "cmd-1".to_string(),
+                duration_ms: None,
+                command: "cargo test".to_string(),
+                state: crate::streaming::ShellProcessState::Started,
+                exit_code: None,
+                cwd: None,
+            },
+            &context,
+        )
+        .expect("shell lifecycle progress should be captured");
+        assert_eq!(shell_progress.phase, LocalExecutionPhase::Waiting);
+        assert_eq!(
+            shell_progress.waiting_reason,
+            Some(LocalExecutionWaitingReason::ShellProcess)
+        );
+        assert!(shell_progress.has_partial_content);
+
+        context.token_usage = Some(LocalExecutionTokenUsageSnapshot {
+            estimated_tokens: Some(256),
+            limit: Some(4096),
+            percentage: Some(6),
+            status: Some("green".to_string()),
+            estimated_cost_usd: Some(0.0001),
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            model: None,
+            provider: None,
+        });
+        let token_progress = local_execution_progress_from_chunk(
+            &StreamChunk::TokenUsageUpdate {
+                estimated: 512,
+                limit: 4096,
+                percentage: 12,
+                status: crate::streaming::TokenUsageStatus::Green,
+                estimated_cost: 0.0002,
+            },
+            &context,
+        )
+        .expect("token usage progress should be captured");
+        let token_usage = token_progress
+            .token_usage
+            .as_ref()
+            .expect("token usage snapshot should be stored");
+        assert_eq!(token_usage.estimated_tokens, Some(512));
+        assert_eq!(token_usage.limit, Some(4096));
+        assert_eq!(token_usage.percentage, Some(12));
+    }
+
+    #[test]
+    fn background_message_prefers_local_execution_progress_when_available() {
+        let now = Utc::now();
+        let record = SupervisorTaskRecord {
+            task: DelegatedTask {
+                id: "task-local-progress".to_string(),
+                agent_id: "agent-local".to_string(),
+                prompt: "Implement local telemetry".to_string(),
+                context: None,
+                required_tools: vec![],
+                priority: 1,
+                session_id: None,
+                directive_id: None,
+                tracking_task_id: None,
+                run_id: Some("run-local-progress".to_string()),
+                parent_task_id: None,
+                depends_on: vec![],
+                role: Some(AgentRole::Implementer),
+                delegation_brief: None,
+                planning_only: false,
+                approval_required: false,
+                reviewer_required: false,
+                test_required: false,
+                workspace_dir: Some(std::env::temp_dir()),
+                execution_mode: AgentExecutionMode::SharedWorkspace,
+                environment_id: Some("env-local".to_string()),
+                remote_target: None,
+                memory_tags: vec![],
+                name: Some("Local telemetry".to_string()),
+            },
+            state: SupervisorTaskState::Running,
+            approval: TaskApprovalRecord::default(),
+            environment_id: "env-local".to_string(),
+            environment: test_environment("env-local", std::env::temp_dir()),
+            claimed_by: Some("agent-local".to_string()),
+            attempts: 1,
+            blocked_reasons: vec![],
+            result: None,
+            remote_execution: None,
+            local_execution: Some(LocalExecutionRecord {
+                status: "running".to_string(),
+                status_reason: None,
+                progress: Some(LocalExecutionProgress {
+                    phase: LocalExecutionPhase::Running,
+                    waiting_reason: Some(LocalExecutionWaitingReason::ShellProcess),
+                    stage: Some("executing_tools".to_string()),
+                    message: Some("Running tool 'file'".to_string()),
+                    percent: Some(40),
+                    iteration: 2,
+                    current_tool_name: Some("file".to_string()),
+                    last_completed_tool_name: Some("read".to_string()),
+                    last_completed_tool_duration_ms: Some(9),
+                    completed_tool_call_count: 1,
+                    has_partial_content: true,
+                    partial_content_chars: 24,
+                    has_partial_thinking: false,
+                    partial_thinking_chars: 0,
+                    token_usage: Some(LocalExecutionTokenUsageSnapshot {
+                        estimated_tokens: Some(256),
+                        limit: Some(4096),
+                        percentage: Some(6),
+                        status: Some("green".to_string()),
+                        estimated_cost_usd: Some(0.0001),
+                        input_tokens: None,
+                        output_tokens: None,
+                        total_tokens: None,
+                        model: None,
+                        provider: None,
+                    }),
+                    environment: Some(environment_snapshot_from_execution(&test_environment(
+                        "env-local",
+                        std::env::temp_dir(),
+                    ))),
+                    updated_at: now,
+                }),
+                last_synced_at: now,
+            }),
+            messages: vec![],
+            checkpoint: None,
+            created_at: now,
+            updated_at: now,
+            started_at: Some(now),
+            completed_at: None,
+        };
+
+        let message = background_message_for_record(&record);
+        assert!(message.contains("Local running"));
+        assert!(message.contains("phase running"));
+        assert!(message.contains("waiting shellprocess"));
+        assert!(message.contains("executing_tools"));
+        assert!(message.contains("tool file"));
+        assert!(message.contains("1 tool call(s)"));
+        assert!(message.contains("tokens 256/4096 (6%)"));
+        assert!(message.contains("env ready"));
+    }
+
+    #[test]
+    fn background_message_surfaces_remote_progress_and_reason() {
+        let now = Utc::now();
+        let record = SupervisorTaskRecord {
+            task: DelegatedTask {
+                id: "task-remote-progress".to_string(),
+                agent_id: "agent-remote".to_string(),
+                prompt: "Track remote telemetry".to_string(),
+                context: None,
+                required_tools: vec![],
+                priority: 1,
+                session_id: None,
+                directive_id: None,
+                tracking_task_id: None,
+                run_id: Some("run-remote-progress".to_string()),
+                parent_task_id: None,
+                depends_on: vec![],
+                role: Some(AgentRole::Implementer),
+                delegation_brief: None,
+                planning_only: false,
+                approval_required: false,
+                reviewer_required: false,
+                test_required: false,
+                workspace_dir: None,
+                execution_mode: AgentExecutionMode::Remote,
+                environment_id: None,
+                remote_target: Some(RemoteAgentTarget {
+                    url: "http://localhost:32145/a2a".to_string(),
+                    name: Some("remote-peer".to_string()),
+                    auth_token: None,
+                    capabilities: vec!["shell".to_string()],
+                }),
+                memory_tags: vec![],
+                name: Some("Remote telemetry".to_string()),
+            },
+            state: SupervisorTaskState::Blocked,
+            approval: TaskApprovalRecord::default(),
+            environment_id: "env-remote".to_string(),
+            environment: test_environment("env-remote", std::env::temp_dir()),
+            claimed_by: Some("agent-remote".to_string()),
+            attempts: 1,
+            blocked_reasons: vec!["Awaiting remote shell completion".to_string()],
+            result: None,
+            remote_execution: Some(RemoteExecutionRecord {
+                target: RemoteAgentTarget {
+                    url: "http://localhost:32145/a2a".to_string(),
+                    name: Some("remote-peer".to_string()),
+                    auth_token: None,
+                    capabilities: vec!["shell".to_string()],
+                },
+                remote_task_id: "remote-task-1".to_string(),
+                status: "blocked".to_string(),
+                status_reason: Some("Awaiting remote shell completion".to_string()),
+                lease: None,
+                progress: Some(RemoteExecutionProgress {
+                    stage: Some("shell_running".to_string()),
+                    message: Some("Remote shell still streaming".to_string()),
+                    percent: Some(60),
+                    updated_at: now,
+                }),
+                artifacts: vec![RemoteExecutionArtifact {
+                    name: "result.txt".to_string(),
+                    part_count: 1,
+                    metadata: HashMap::new(),
+                }],
+                provenance: None,
+                compatibility: RemoteExecutionCompatibility {
+                    supported_features: vec!["artifacts".to_string()],
+                    warnings: vec![],
+                    protocol_version: Some("2025-11-25".to_string()),
+                },
+                last_synced_at: now,
+            }),
+            local_execution: None,
+            messages: vec![],
+            checkpoint: None,
+            created_at: now,
+            updated_at: now,
+            started_at: Some(now),
+            completed_at: None,
+        };
+
+        let message = background_message_for_record(&record);
+        assert!(message.contains("Remote blocked"));
+        assert!(message.contains("Awaiting remote shell completion"));
+        assert!(message.contains("60%"));
+        assert!(message.contains("shell_running"));
+    }
+
+    #[tokio::test]
+    async fn sync_local_execution_progress_persists_and_notifies_observer() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("local-progress.db"));
+        let orchestrator = AgentOrchestrator::new(manager, AppConfig::default());
+        let observer = Arc::new(RecordingObserver::default());
+        orchestrator.set_observer(observer.clone()).await;
+
+        let task = DelegatedTask {
+            id: "task-local-sync".to_string(),
+            agent_id: "agent-local".to_string(),
+            prompt: "Implement telemetry".to_string(),
+            context: None,
+            required_tools: vec![],
+            priority: 1,
+            session_id: None,
+            directive_id: None,
+            tracking_task_id: None,
+            run_id: Some("run-local-sync".to_string()),
+            parent_task_id: None,
+            depends_on: vec![],
+            role: Some(AgentRole::Implementer),
+            delegation_brief: None,
+            planning_only: false,
+            approval_required: false,
+            reviewer_required: false,
+            test_required: false,
+            workspace_dir: Some(tmp.path().to_path_buf()),
+            execution_mode: AgentExecutionMode::SharedWorkspace,
+            environment_id: Some("env-local-sync".to_string()),
+            remote_target: None,
+            memory_tags: vec![],
+            name: Some("Local sync".to_string()),
+        };
+        let environment = test_environment("env-local-sync", tmp.path().to_path_buf());
+        orchestrator.supervisor_runs.lock().await.insert(
+            "run-local-sync".to_string(),
+            SupervisorRun {
+                status: SupervisorRunStatus::Running,
+                task_summary: SupervisorRunTaskSummary {
+                    total: 1,
+                    running: 1,
+                    ..SupervisorRunTaskSummary::default()
+                },
+                tasks: vec![SupervisorTaskRecord {
+                    task: task.clone(),
+                    state: SupervisorTaskState::Running,
+                    approval: TaskApprovalRecord::default(),
+                    environment_id: environment.id.clone(),
+                    environment,
+                    claimed_by: Some("agent-local".to_string()),
+                    attempts: 1,
+                    blocked_reasons: vec![],
+                    result: None,
+                    remote_execution: None,
+                    local_execution: None,
+                    messages: vec![],
+                    checkpoint: None,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    started_at: Some(Utc::now()),
+                    completed_at: None,
+                }],
+                ..empty_supervisor_run("run-local-sync", tmp.path().to_path_buf())
+            },
+        );
+
+        let progress = LocalExecutionProgress {
+            phase: LocalExecutionPhase::Running,
+            waiting_reason: None,
+            stage: Some("executing_tools".to_string()),
+            message: Some("Running tool 'file'".to_string()),
+            percent: Some(35),
+            iteration: 1,
+            current_tool_name: Some("file".to_string()),
+            last_completed_tool_name: Some("read".to_string()),
+            last_completed_tool_duration_ms: Some(11),
+            completed_tool_call_count: 1,
+            has_partial_content: true,
+            partial_content_chars: 42,
+            has_partial_thinking: true,
+            partial_thinking_chars: 17,
+            token_usage: Some(LocalExecutionTokenUsageSnapshot {
+                estimated_tokens: Some(512),
+                limit: Some(4096),
+                percentage: Some(12),
+                status: Some("green".to_string()),
+                estimated_cost_usd: Some(0.0002),
+                input_tokens: None,
+                output_tokens: None,
+                total_tokens: None,
+                model: None,
+                provider: None,
+            }),
+            environment: None,
+            updated_at: Utc::now(),
+        };
+
+        orchestrator
+            .sync_local_execution_progress(&task, progress.clone())
+            .await
+            .expect("local progress sync should succeed");
+
+        let run = orchestrator
+            .get_supervisor_run("run-local-sync")
+            .await
+            .expect("run should persist");
+        let record = run.tasks.first().expect("task record should persist");
+        let local_execution = record
+            .local_execution
+            .as_ref()
+            .expect("local execution should be stored on the task");
+        assert_eq!(local_execution.status, "running");
+        assert_eq!(
+            local_execution
+                .progress
+                .as_ref()
+                .and_then(|progress| progress.current_tool_name.as_deref()),
+            Some("file")
+        );
+
+        let observed = observer.runs.lock().await;
+        assert!(observed.iter().any(|run| {
+            run.id == "run-local-sync"
+                && run
+                    .tasks
+                    .first()
+                    .and_then(|record| record.local_execution.as_ref())
+                    .and_then(|local| local.progress.as_ref())
+                    .and_then(|progress| progress.stage.as_deref())
+                    == Some("executing_tools")
+        }));
     }
 
     #[tokio::test]
@@ -6043,6 +8713,7 @@ mod tests {
                     terminal_state_hint: Some(TaskTerminalStateHint::Completed),
                     duration_ms: 10,
                 },
+                false,
             )
             .await
             .unwrap();
@@ -6332,6 +9003,7 @@ mod tests {
             blocked_reasons: vec!["Task was running when orchestrator restarted; resumable checkpoint available (before tool 'file').".to_string()],
             result: None,
             remote_execution: None,
+            local_execution: None,
             messages: vec![],
             checkpoint: None,
             created_at: now,
@@ -6365,6 +9037,7 @@ mod tests {
             hierarchy_summary: None,
             tasks: vec![record],
             messages: vec![],
+            shared_cognition: vec![],
             created_at: now,
             updated_at: now,
             completed_at: None,
@@ -6382,6 +9055,20 @@ mod tests {
             .await
             .insert(task.id.clone(), run.id.clone());
 
+        let completed_tool_call_records = vec![ToolCallRecord {
+            id: "tool-file-1".to_string(),
+            name: "file".to_string(),
+            arguments: "{\"path\":\"README.md\"}".to_string(),
+            result: crate::ToolResult::Success("{\"ok\":true}".to_string()),
+            duration_ms: 12,
+        }];
+        let completed_tool_calls = vec![OrchestratorToolCall {
+            tool_name: "file".to_string(),
+            input: json!({ "path": "README.md" }),
+            output: json!({ "ok": true }),
+            success: true,
+            duration_ms: 12,
+        }];
         let checkpoint = DelegatedTaskCheckpoint {
             id: delegated_checkpoint_id(&task.id),
             task_id: task.id.clone(),
@@ -6395,7 +9082,7 @@ mod tests {
             resume_disposition: DelegatedResumeDisposition::ResumeFromCheckpoint,
             safe_boundary_label: "after tool 'file' result".to_string(),
             workspace_dir: task.workspace_dir.clone(),
-            completed_tool_calls: vec![],
+            completed_tool_calls: completed_tool_calls.clone(),
             result_published: false,
             note: Some("resume available after restart".to_string()),
             resume_state: Some(build_delegated_resume_state(
@@ -6403,7 +9090,7 @@ mod tests {
                 "prompt",
                 "partial",
                 "",
-                &[],
+                &completed_tool_call_records,
                 1,
             )),
             created_at: now,
@@ -6422,10 +9109,172 @@ mod tests {
             DelegatedResumeDisposition::ResumeFromCheckpoint
         );
         assert!(checkpoint_summary.has_resume_state);
+        assert_eq!(checkpoint_summary.completed_tool_call_count, 1);
         assert!(
             checkpoint_summary
                 .available_actions
                 .contains(&DelegatedCheckpointAction::ResumeFromCheckpoint)
+        );
+    }
+
+    #[tokio::test]
+    async fn list_active_task_snapshots_attach_local_execution_telemetry() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("active-snapshots.db"));
+        let orchestrator = AgentOrchestrator::new_with_workspace_root(
+            manager,
+            AppConfig::default(),
+            Some(tmp.path().to_path_buf()),
+        );
+
+        let now = Utc::now();
+        let task = DelegatedTask {
+            id: "task-active-snapshot".to_string(),
+            agent_id: "agent-local".to_string(),
+            prompt: "Surface live local telemetry".to_string(),
+            context: None,
+            required_tools: vec!["file".to_string()],
+            priority: 2,
+            session_id: Some("session-active-snapshot".to_string()),
+            directive_id: None,
+            tracking_task_id: None,
+            run_id: Some("run-active-snapshot".to_string()),
+            parent_task_id: None,
+            depends_on: vec![],
+            role: Some(AgentRole::Implementer),
+            delegation_brief: None,
+            planning_only: false,
+            approval_required: false,
+            reviewer_required: false,
+            test_required: false,
+            workspace_dir: Some(tmp.path().to_path_buf()),
+            execution_mode: AgentExecutionMode::SharedWorkspace,
+            environment_id: Some("env-active-snapshot".to_string()),
+            remote_target: None,
+            memory_tags: vec![],
+            name: Some("Active telemetry task".to_string()),
+        };
+        let mut run = empty_supervisor_run("run-active-snapshot", tmp.path().to_path_buf());
+        run.session_id = task.session_id.clone();
+        run.status = SupervisorRunStatus::Running;
+        run.task_summary = SupervisorRunTaskSummary {
+            total: 1,
+            running: 1,
+            ..SupervisorRunTaskSummary::default()
+        };
+        run.tasks.push(SupervisorTaskRecord {
+            task: task.clone(),
+            state: SupervisorTaskState::Running,
+            approval: TaskApprovalRecord::default(),
+            environment_id: "env-active-snapshot".to_string(),
+            environment: test_environment("env-active-snapshot", tmp.path().to_path_buf()),
+            claimed_by: Some(task.agent_id.clone()),
+            attempts: 1,
+            blocked_reasons: vec![],
+            result: None,
+            remote_execution: None,
+            local_execution: Some(LocalExecutionRecord {
+                status: "running".to_string(),
+                status_reason: None,
+                progress: Some(LocalExecutionProgress {
+                    phase: LocalExecutionPhase::Waiting,
+                    waiting_reason: Some(LocalExecutionWaitingReason::ShellProcess),
+                    stage: Some("shell_running".to_string()),
+                    message: Some("Streaming shell output".to_string()),
+                    percent: Some(45),
+                    iteration: 2,
+                    current_tool_name: Some("shell".to_string()),
+                    last_completed_tool_name: Some("file".to_string()),
+                    last_completed_tool_duration_ms: Some(12),
+                    completed_tool_call_count: 1,
+                    has_partial_content: true,
+                    partial_content_chars: 48,
+                    has_partial_thinking: false,
+                    partial_thinking_chars: 0,
+                    token_usage: None,
+                    environment: None,
+                    updated_at: now,
+                }),
+                last_synced_at: now,
+            }),
+            messages: vec![],
+            checkpoint: None,
+            created_at: now,
+            updated_at: now,
+            started_at: Some(now),
+            completed_at: None,
+        });
+        orchestrator
+            .supervisor_runs
+            .lock()
+            .await
+            .insert(run.id.clone(), run);
+        orchestrator
+            .task_run_index
+            .lock()
+            .await
+            .insert(task.id.clone(), "run-active-snapshot".to_string());
+        orchestrator.active_tasks.lock().await.insert(
+            task.id.clone(),
+            ActiveTaskControl {
+                task: task.clone(),
+                local_cancel_token: Some(CancellationToken::new()),
+            },
+        );
+        persist_checkpoint_to_disk(
+            tmp.path(),
+            &DelegatedTaskCheckpoint {
+                id: delegated_checkpoint_id(&task.id),
+                task_id: task.id.clone(),
+                run_id: task.run_id.clone(),
+                session_id: task.session_id.clone(),
+                agent_id: task.agent_id.clone(),
+                environment_id: task.environment_id.clone(),
+                execution_mode: task.execution_mode.clone(),
+                stage: DelegatedCheckpointStage::Running,
+                replay_safety: DelegatedReplaySafety::CheckpointResumable,
+                resume_disposition: DelegatedResumeDisposition::ResumeFromCheckpoint,
+                safe_boundary_label: "after file".to_string(),
+                workspace_dir: task.workspace_dir.clone(),
+                completed_tool_calls: vec![],
+                result_published: false,
+                note: Some("live telemetry checkpoint".to_string()),
+                resume_state: None,
+                created_at: now,
+                updated_at: now,
+            },
+        )
+        .unwrap();
+
+        let snapshots = orchestrator.list_active_task_snapshots().await;
+        let snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.task.id == task.id)
+            .unwrap();
+
+        assert_eq!(snapshot.state, SupervisorTaskState::Running);
+        assert_eq!(
+            snapshot
+                .local_execution
+                .as_ref()
+                .and_then(|local| local.progress.as_ref())
+                .and_then(|progress| progress.current_tool_name.as_deref()),
+            Some("shell")
+        );
+        assert_eq!(
+            snapshot
+                .local_execution
+                .as_ref()
+                .and_then(|local| local.progress.as_ref())
+                .and_then(|progress| progress.waiting_reason),
+            Some(LocalExecutionWaitingReason::ShellProcess)
+        );
+        assert_eq!(
+            snapshot
+                .checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.stage),
+            Some(DelegatedCheckpointStage::Running)
         );
     }
 
@@ -6501,6 +9350,7 @@ mod tests {
                 blocked_reasons: vec!["manual review required".to_string()],
                 result: None,
                 remote_execution: None,
+                local_execution: None,
                 messages: vec![],
                 checkpoint: None,
                 created_at: now,
@@ -6509,6 +9359,7 @@ mod tests {
                 completed_at: None,
             }],
             messages: vec![],
+            shared_cognition: vec![],
             created_at: now,
             updated_at: now,
             completed_at: None,
@@ -6570,6 +9421,299 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn pause_task_requests_local_pause_intent() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("pause-local.db"));
+        let orchestrator = AgentOrchestrator::new_with_workspace_root(
+            manager,
+            AppConfig::default(),
+            Some(tmp.path().to_path_buf()),
+        );
+
+        let task = DelegatedTask {
+            id: "task-local-pause".to_string(),
+            agent_id: "agent-local".to_string(),
+            prompt: "Pause this local task".to_string(),
+            context: None,
+            required_tools: vec![],
+            priority: 1,
+            session_id: None,
+            directive_id: None,
+            tracking_task_id: None,
+            run_id: Some("run-local-pause".to_string()),
+            parent_task_id: None,
+            depends_on: vec![],
+            role: Some(AgentRole::Implementer),
+            delegation_brief: None,
+            planning_only: false,
+            approval_required: false,
+            reviewer_required: false,
+            test_required: false,
+            workspace_dir: Some(tmp.path().to_path_buf()),
+            execution_mode: AgentExecutionMode::SharedWorkspace,
+            environment_id: None,
+            remote_target: None,
+            memory_tags: vec![],
+            name: Some("Local pause test".to_string()),
+        };
+        let token = CancellationToken::new();
+        orchestrator.active_tasks.lock().await.insert(
+            task.id.clone(),
+            ActiveTaskControl {
+                task: task.clone(),
+                local_cancel_token: Some(token.clone()),
+            },
+        );
+
+        orchestrator.pause_task(&task.id).await.unwrap();
+
+        assert!(token.is_cancelled());
+        assert!(token.is_pause_requested());
+        assert!(
+            orchestrator
+                .active_tasks
+                .lock()
+                .await
+                .contains_key(&task.id)
+        );
+    }
+
+    #[tokio::test]
+    async fn pause_task_rejects_remote_execution() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("pause-remote.db"));
+        let orchestrator = AgentOrchestrator::new_with_workspace_root(
+            manager,
+            AppConfig::default(),
+            Some(tmp.path().to_path_buf()),
+        );
+
+        let task = DelegatedTask {
+            id: "task-remote-pause".to_string(),
+            agent_id: "agent-remote".to_string(),
+            prompt: "Attempt remote pause".to_string(),
+            context: None,
+            required_tools: vec![],
+            priority: 1,
+            session_id: None,
+            directive_id: None,
+            tracking_task_id: None,
+            run_id: Some("run-remote-pause".to_string()),
+            parent_task_id: None,
+            depends_on: vec![],
+            role: Some(AgentRole::Implementer),
+            delegation_brief: None,
+            planning_only: false,
+            approval_required: false,
+            reviewer_required: false,
+            test_required: false,
+            workspace_dir: None,
+            execution_mode: AgentExecutionMode::Remote,
+            environment_id: None,
+            remote_target: Some(RemoteAgentTarget {
+                url: "http://localhost:32145/a2a".to_string(),
+                name: Some("remote-peer".to_string()),
+                auth_token: Some("token".to_string()),
+                capabilities: vec!["shell".to_string()],
+            }),
+            memory_tags: vec![],
+            name: Some("Remote pause test".to_string()),
+        };
+        orchestrator.active_tasks.lock().await.insert(
+            task.id.clone(),
+            ActiveTaskControl {
+                task: task.clone(),
+                local_cancel_token: None,
+            },
+        );
+
+        let error = orchestrator.pause_task(&task.id).await.unwrap_err();
+        assert!(error.contains("cannot be paused locally"));
+        assert!(
+            orchestrator
+                .active_tasks
+                .lock()
+                .await
+                .contains_key(&task.id)
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_task_execution_preserves_paused_checkpoint_resume_state() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("pause-checkpoint.db"));
+        let orchestrator = AgentOrchestrator::new_with_workspace_root(
+            manager,
+            AppConfig::default(),
+            Some(tmp.path().to_path_buf()),
+        );
+
+        let task = DelegatedTask {
+            id: "task-paused-checkpoint".to_string(),
+            agent_id: "agent-local".to_string(),
+            prompt: "Resume me later".to_string(),
+            context: None,
+            required_tools: vec![],
+            priority: 1,
+            session_id: Some("session-paused".to_string()),
+            directive_id: None,
+            tracking_task_id: None,
+            run_id: Some("run-paused-checkpoint".to_string()),
+            parent_task_id: None,
+            depends_on: vec![],
+            role: Some(AgentRole::Implementer),
+            delegation_brief: None,
+            planning_only: false,
+            approval_required: false,
+            reviewer_required: false,
+            test_required: false,
+            workspace_dir: Some(tmp.path().to_path_buf()),
+            execution_mode: AgentExecutionMode::SharedWorkspace,
+            environment_id: None,
+            remote_target: None,
+            memory_tags: vec![],
+            name: Some("Paused checkpoint task".to_string()),
+        };
+        let now = Utc::now();
+        let mut run = empty_supervisor_run("run-paused-checkpoint", tmp.path().to_path_buf());
+        run.session_id = task.session_id.clone();
+        run.status = SupervisorRunStatus::Running;
+        run.task_summary = SupervisorRunTaskSummary {
+            total: 1,
+            queued: 0,
+            blocked: 0,
+            pending_approval: 0,
+            running: 1,
+            review_pending: 0,
+            test_pending: 0,
+            completed: 0,
+            failed: 0,
+            cancelled: 0,
+        };
+        run.tasks.push(SupervisorTaskRecord {
+            task: task.clone(),
+            state: SupervisorTaskState::Running,
+            approval: TaskApprovalRecord::default(),
+            environment_id: "env-paused-checkpoint".to_string(),
+            environment: test_environment("env-paused-checkpoint", tmp.path().to_path_buf()),
+            claimed_by: Some(task.agent_id.clone()),
+            attempts: 1,
+            blocked_reasons: vec![],
+            result: None,
+            remote_execution: None,
+            local_execution: Some(local_execution_record_for_start()),
+            messages: vec![],
+            checkpoint: None,
+            created_at: now,
+            updated_at: now,
+            started_at: Some(now),
+            completed_at: None,
+        });
+        orchestrator
+            .supervisor_runs
+            .lock()
+            .await
+            .insert(run.id.clone(), run);
+        orchestrator
+            .task_run_index
+            .lock()
+            .await
+            .insert(task.id.clone(), "run-paused-checkpoint".to_string());
+
+        let completed_tool_call_records = vec![ToolCallRecord {
+            id: "tool-file-1".to_string(),
+            name: "file".to_string(),
+            arguments: "{\"path\":\"README.md\"}".to_string(),
+            result: crate::ToolResult::Success("{\"ok\":true}".to_string()),
+            duration_ms: 12,
+        }];
+        orchestrator
+            .persist_delegated_checkpoint(&DelegatedTaskCheckpoint {
+                id: delegated_checkpoint_id(&task.id),
+                task_id: task.id.clone(),
+                run_id: task.run_id.clone(),
+                session_id: task.session_id.clone(),
+                agent_id: task.agent_id.clone(),
+                environment_id: task.environment_id.clone(),
+                execution_mode: task.execution_mode.clone(),
+                stage: DelegatedCheckpointStage::Blocked,
+                replay_safety: DelegatedReplaySafety::CheckpointResumable,
+                resume_disposition: DelegatedResumeDisposition::ResumeFromCheckpoint,
+                safe_boundary_label: "operator pause during iteration 2".to_string(),
+                workspace_dir: task.workspace_dir.clone(),
+                completed_tool_calls: vec![OrchestratorToolCall {
+                    tool_name: "file".to_string(),
+                    input: serde_json::json!({ "path": "README.md" }),
+                    output: serde_json::json!({ "ok": true }),
+                    success: true,
+                    duration_ms: 12,
+                }],
+                result_published: false,
+                note: Some("Paused by operator; resumable checkpoint preserved.".to_string()),
+                resume_state: Some(build_delegated_resume_state(
+                    &task,
+                    "prompt",
+                    "partial",
+                    "thinking",
+                    &completed_tool_call_records,
+                    2,
+                )),
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+
+        orchestrator
+            .complete_task_execution(
+                task.clone(),
+                TaskResult {
+                    task_id: task.id.clone(),
+                    agent_id: task.agent_id.clone(),
+                    success: false,
+                    run_id: task.run_id.clone(),
+                    tracking_task_id: None,
+                    output: "Paused by operator; resumable checkpoint preserved.".to_string(),
+                    summary: task.name.clone(),
+                    tool_calls: vec![],
+                    artifacts: vec![],
+                    terminal_state_hint: Some(TaskTerminalStateHint::Blocked),
+                    duration_ms: 10,
+                },
+                true,
+            )
+            .await
+            .unwrap();
+
+        let listed = orchestrator
+            .supervisor_runs
+            .lock()
+            .await
+            .get("run-paused-checkpoint")
+            .cloned()
+            .unwrap();
+        let record = &listed.tasks[0];
+        assert_eq!(record.state, SupervisorTaskState::Blocked);
+        assert!(
+            record
+                .blocked_reasons
+                .iter()
+                .any(|reason| reason.contains("Paused by operator"))
+        );
+
+        let persisted_checkpoint = orchestrator.load_delegated_checkpoint(&task).unwrap();
+        assert_eq!(
+            persisted_checkpoint.stage,
+            DelegatedCheckpointStage::Blocked
+        );
+        assert!(!persisted_checkpoint.result_published);
+        assert!(persisted_checkpoint.resume_state.is_some());
+        assert!(
+            checkpoint_available_actions(&persisted_checkpoint, SupervisorTaskState::Blocked,)
+                .contains(&DelegatedCheckpointAction::ResumeFromCheckpoint)
+        );
+    }
+
     #[test]
     fn test_approval_record_deserializes_from_legacy_shape() {
         let legacy = serde_json::json!({
@@ -6585,6 +9729,21 @@ mod tests {
         assert!(record.requests.is_empty());
         assert!(record.decisions.is_empty());
         assert!(record.active_request.is_none());
+    }
+
+    #[test]
+    fn test_supervisor_run_deserializes_legacy_shape_without_shared_cognition() {
+        let mut value = serde_json::to_value(empty_supervisor_run(
+            "run-legacy",
+            PathBuf::from("/tmp/gestura-legacy-run"),
+        ))
+        .unwrap();
+        value.as_object_mut().unwrap().remove("shared_cognition");
+
+        let run: SupervisorRun = serde_json::from_value(value).unwrap();
+
+        assert!(run.shared_cognition.is_empty());
+        assert_eq!(run.id, "run-legacy");
     }
 
     #[test]
@@ -6688,6 +9847,7 @@ mod tests {
             blocked_reasons: vec![],
             result: None,
             remote_execution: None,
+            local_execution: None,
             messages: vec![],
             checkpoint: None,
             created_at: Utc::now(),

@@ -45,6 +45,21 @@ export interface MemoryConsoleCount {
   count: number;
 }
 
+export interface MemoryGovernanceSuggestion {
+  entry_id: string;
+  relationship: 'duplicate' | 'conflicts_with' | 'superseded_by';
+  confidence: number;
+  rationale: string;
+}
+
+export interface MemoryGovernanceRefreshReport {
+  entries_scanned: number;
+  updated_entries: number;
+  duplicate_suggestions: number;
+  conflict_suggestions: number;
+  superseded_suggestions: number;
+}
+
 export interface MemoryConsoleQuery {
   text?: string | null;
   limit?: number;
@@ -89,6 +104,9 @@ export interface MemoryConsoleEntrySummary {
   summary: string;
   file_path?: string | null;
   archived: boolean;
+  governance_state: 'active' | 'pinned' | 'needs_review' | 'superseded' | 'archived';
+  reflection_state?: 'active' | 'decayed' | 'needs_review' | 'archived' | null;
+  governance_issue_count: number;
   score?: number | null;
   matched_fields: string[];
 }
@@ -98,6 +116,14 @@ export interface MemoryConsoleEntryDetail {
   content: string;
   promoted_from_session_id?: string | null;
   promotion_reason?: string | null;
+  governance_note?: string | null;
+  governance_suggestions: MemoryGovernanceSuggestion[];
+  reflection_id?: string | null;
+  strategy_key?: string | null;
+  success_count: number;
+  failure_count: number;
+  outcome_summary?: string | null;
+  outcome_labels: string[];
 }
 
 export interface MemoryConsoleOverview {
@@ -108,11 +134,15 @@ export interface MemoryConsoleOverview {
   promotion_candidate_count: number;
   working_resource_count: number;
   working_decision_count: number;
+  governance_review_count: number;
+  governance_issue_count: number;
   working_summary?: string | null;
   recent_entries: MemoryConsoleEntrySummary[];
   counts_by_kind: MemoryConsoleCount[];
   counts_by_type: MemoryConsoleCount[];
   counts_by_scope: MemoryConsoleCount[];
+  counts_by_category: MemoryConsoleCount[];
+  counts_by_governance: MemoryConsoleCount[];
 }
 
 export interface MemoryConsoleSearchResponse {
@@ -174,6 +204,8 @@ export interface UpdateMemoryEntryRequest {
   agent_id?: string | null;
   tags?: string[];
   confidence?: number;
+  governance_state?: 'active' | 'pinned' | 'needs_review' | 'superseded' | 'archived';
+  governance_note?: string | null;
 }
 
 export const getSessionHistory = (sessionId: string): Promise<HistoryMessage[]> =>
@@ -245,6 +277,15 @@ export const updateMemoryEntryDetail = (
     workspace_dir: workspaceDir ?? null,
     entry_id: entryId,
     request,
+  });
+
+export const refreshMemoryConsoleGovernance = (
+  sessionId?: string | null,
+  workspaceDir?: string | null,
+): Promise<MemoryGovernanceRefreshReport> =>
+  invokeTauri('refresh_memory_console_governance', {
+    session_id: sessionId ?? null,
+    workspace_dir: workspaceDir ?? null,
   });
 
 export const setMemoryEntryArchived = (

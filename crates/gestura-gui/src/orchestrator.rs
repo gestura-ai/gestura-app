@@ -15,9 +15,9 @@ pub use gestura_core::agents::{
     TaskResult,
 };
 pub use gestura_core::orchestrator::{
-    AgentOrchestrator, ApprovalActor, ApprovalActorKind, ApprovalDecision, ApprovalDecisionKind,
-    ApprovalPolicy, ApprovalRequest, ApprovalRequirement, ApprovalScope, ApprovalState,
-    CleanupResult, CollaborationActionStatus, CollaborationEscalationLevel,
+    ActiveTaskSnapshot, AgentOrchestrator, ApprovalActor, ApprovalActorKind, ApprovalDecision,
+    ApprovalDecisionKind, ApprovalPolicy, ApprovalRequest, ApprovalRequirement, ApprovalScope,
+    ApprovalState, CleanupResult, CollaborationActionStatus, CollaborationEscalationLevel,
     CollaborationRequestKind, CollaborationThreadStatus, EnvironmentHealth, EnvironmentRecord,
     EnvironmentState, ExecutionEnvironment, OrchestratorAgentManager, OrchestratorObserver,
     RecoveryAction, RecoveryStatus, SupervisorRun, SupervisorRunStatus, SupervisorTaskRecord,

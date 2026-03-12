@@ -76,6 +76,7 @@ export type TeamMessageKind =
   | 'review_request'
   | 'approval_request'
   | 'test_validation_request';
+export type SharedCognitionKind = 'discovery' | 'blocker' | 'hypothesis' | 'steering' | 'decision' | 'handoff';
 export type CollaborationRequestKind =
   | 'blocker_escalation'
   | 'handoff'
@@ -192,6 +193,64 @@ export interface RemoteExecutionRecord {
   provenance?: RemoteTaskProvenance | null;
   compatibility: RemoteExecutionCompatibility;
   last_synced_at: string;
+}
+
+export type LocalExecutionPhase = 'queued' | 'running' | 'waiting' | 'blocked' | 'failed' | 'completed' | 'cancelled';
+export type LocalExecutionWaitingReason = 'shell_process' | 'reflection' | 'tool_confirmation' | 'environment_transition';
+
+export interface LocalExecutionTokenUsageSnapshot {
+  estimated_tokens?: number | null;
+  limit?: number | null;
+  percentage?: number | null;
+  status?: string | null;
+  estimated_cost_usd?: number | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  total_tokens?: number | null;
+  model?: string | null;
+  provider?: string | null;
+}
+
+export interface LocalExecutionEnvironmentSnapshot {
+  state: EnvironmentState;
+  health: EnvironmentHealth;
+  recovery_status: RecoveryStatus;
+  updated_at: string;
+}
+
+export interface LocalExecutionProgress {
+  phase: LocalExecutionPhase;
+  waiting_reason?: LocalExecutionWaitingReason | null;
+  stage?: string | null;
+  message?: string | null;
+  percent?: number | null;
+  iteration: number;
+  current_tool_name?: string | null;
+  last_completed_tool_name?: string | null;
+  last_completed_tool_duration_ms?: number | null;
+  completed_tool_call_count: number;
+  has_partial_content: boolean;
+  partial_content_chars: number;
+  has_partial_thinking: boolean;
+  partial_thinking_chars: number;
+  token_usage?: LocalExecutionTokenUsageSnapshot | null;
+  environment?: LocalExecutionEnvironmentSnapshot | null;
+  updated_at: string;
+}
+
+export interface LocalExecutionRecord {
+  status: string;
+  status_reason?: string | null;
+  progress?: LocalExecutionProgress | null;
+  last_synced_at: string;
+}
+
+export interface OrchestratorToolCall {
+  tool_name: string;
+  input: Record<string, unknown>;
+  output: Record<string, unknown>;
+  success: boolean;
+  duration_ms: number;
 }
 
 export interface EnvironmentRecord {
@@ -389,6 +448,23 @@ export interface TeamThread {
   messages: TeamMessage[];
 }
 
+export interface SharedCognitionNote {
+  id: string;
+  run_id: string;
+  task_id?: string | null;
+  directive_id?: string | null;
+  kind: SharedCognitionKind;
+  message_kind: TeamMessageKind;
+  summary: string;
+  detail: string;
+  sender_agent_id?: string | null;
+  recipient_agent_id?: string | null;
+  tags: string[];
+  confidence: number;
+  source_message_id: string;
+  created_at: string;
+}
+
 export interface SupervisorTaskRecord {
   task: DelegatedTask;
   state: SupervisorTaskState;
@@ -403,16 +479,27 @@ export interface SupervisorTaskRecord {
     success: boolean;
     duration_ms: number;
     summary?: string | null;
+    tool_calls: OrchestratorToolCall[];
     terminal_state_hint?: 'completed' | 'failed' | 'cancelled' | 'blocked' | null;
     artifacts?: Array<{ name: string; kind: string; uri?: string | null; summary?: string | null }>;
   } | null;
   remote_execution?: RemoteExecutionRecord | null;
+  local_execution?: LocalExecutionRecord | null;
   messages: TeamMessage[];
   checkpoint?: DelegatedCheckpointSummary | null;
   created_at: string;
   updated_at: string;
   started_at?: string | null;
   completed_at?: string | null;
+}
+
+export interface ActiveTaskSnapshot {
+  task: DelegatedTask;
+  state: SupervisorTaskState;
+  remote_execution?: RemoteExecutionRecord | null;
+  local_execution?: LocalExecutionRecord | null;
+  blocked_reasons: string[];
+  checkpoint?: DelegatedCheckpointSummary | null;
 }
 
 export interface DelegatedCheckpointSummary {
@@ -500,6 +587,7 @@ export interface SupervisorRun {
   hierarchy_summary?: SupervisorHierarchySummary | null;
   tasks: SupervisorTaskRecord[];
   messages: TeamMessage[];
+  shared_cognition: SharedCognitionNote[];
   created_at: string;
   updated_at: string;
   completed_at?: string | null;
@@ -522,8 +610,8 @@ export interface ChildSupervisorRunRequest {
   constraint_notes: string[];
 }
 
-export const listActiveTasks = async (): Promise<DelegatedTask[]> => {
-  return await invokeTauri<DelegatedTask[]>('list_active_tasks');
+export const listActiveTasks = async (): Promise<ActiveTaskSnapshot[]> => {
+  return await invokeTauri<ActiveTaskSnapshot[]>('list_active_tasks');
 };
 
 export const listSupervisorRuns = async (): Promise<SupervisorRun[]> => {
@@ -580,6 +668,10 @@ export const rejectWorkflowTask = async (taskId: string, actor: ApprovalActor, n
 
 export const retryWorkflowTask = async (taskId: string): Promise<void> => {
   await invokeTauri('retry_workflow_task', { task_id: taskId });
+};
+
+export const pauseWorkflowTask = async (taskId: string): Promise<void> => {
+  await invokeTauri('pause_workflow_task', { task_id: taskId });
 };
 
 export const resumeWorkflowTask = async (taskId: string): Promise<void> => {

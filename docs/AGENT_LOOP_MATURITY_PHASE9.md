@@ -78,6 +78,15 @@ Phase 9 may claim shared cognition complete only when:
 - partial findings can be promoted into durable memory without losing provenance
 - multi-agent coordination does not flood prompt context with low-signal chatter
 
+### Current implementation checklist
+
+- shared-cognition notes are persisted on `SupervisorRun.shared_cognition` with serde-safe defaults for legacy runs
+- collaboration-message promotion mirrors scoped notes into durable memory under the `shared_cognition` category
+- GUI workflow + memory-console surfaces expose authorship, confidence, task/directive provenance, and quick filtering for shared cognition
+- CLI `/task tree` surfaces compact run-level shared-cognition summaries for steering and unresolved-hypothesis visibility
+- prompt enrichment only injects scoped shared-cognition memory and caps retrieval to three entries per request
+- focused tests cover supervisor steering, partial blocker/discovery publication, and conflicting multi-agent hypotheses
+
 ## Safety invariants
 
 These invariants must hold for every implementation slice.
@@ -271,3 +280,10 @@ Phase 9 is complete only when:
 - workspace-level validation passes after the last slice lands
 - docs explain the operator model and failure modes
 - any remaining non-blocking work is explicitly tracked as a follow-on, not left implicit
+
+Recommended final validation for this slice:
+
+- `cargo fmt --check`
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `cargo test --workspace --all-features`
+- frontend regression coverage for workflow + memory console surfaces (`npm run test:unit` in `crates/gestura-gui/frontend`)

@@ -107,6 +107,16 @@
         "steering change is audited",
         "task continues without hidden state transition"
       ]
+    },
+    {
+      "id": "shared_cognition_conflicting_hypotheses",
+      "category": "shared_cognition",
+      "summary": "Multiple subagents publish conflicting hypotheses for the same directive before final resolution.",
+      "expected": [
+        "both hypotheses remain auditable with authorship preserved",
+        "supervisor can steer using the conflicting context without losing either branch",
+        "prompt retrieval stays bounded to scoped high-signal notes"
+      ]
     }
   ]
 }

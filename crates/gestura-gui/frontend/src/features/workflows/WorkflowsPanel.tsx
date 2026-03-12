@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { Agent, listAgents } from '../../services/tauri/agents';
 import {
+  ActiveTaskSnapshot,
   acknowledgeBlockedWorkflowTask,
   ApprovalActor,
   ApprovalActorKind,
@@ -22,6 +23,9 @@ import {
   listSupervisorRuns,
   listWorkflowEnvironments,
   listWorkflowThreads,
+  LocalExecutionRecord,
+  OrchestratorToolCall,
+  pauseWorkflowTask,
   reconcileWorkflowState,
   rejectWorkflowTask,
   restartWorkflowTaskFromScratch,
@@ -56,9 +60,98 @@ const checkpointHasAction = (
   action: DelegatedCheckpointAction,
 ): boolean => record.checkpoint?.available_actions.includes(action) ?? false;
 
-const summarizeTask = (task: SupervisorTaskRecord | DelegatedTask): string => {
+const summarizeTask = (task: SupervisorTaskRecord | DelegatedTask | ActiveTaskSnapshot): string => {
   const value = 'task' in task ? task.task.name ?? task.task.prompt : task.name ?? task.prompt;
   return value.length > 120 ? `${value.slice(0, 117)}...` : value;
+};
+
+const summarizeLocalExecution = (localExecution?: LocalExecutionRecord | null): string[] => {
+  const progress = localExecution?.progress;
+  if (!progress) {
+    return [];
+  }
+
+  const lines = [
+    [
+      `Local: ${progress.phase}`,
+      progress.stage ? formatCheckpointLabel(progress.stage) : null,
+      progress.percent != null ? `${progress.percent}%` : null,
+      progress.iteration > 0 ? `Iteration ${progress.iteration}` : null,
+    ]
+      .filter(Boolean)
+      .join(' · '),
+  ];
+
+  if (progress.waiting_reason || progress.message) {
+    lines.push(
+      [
+        progress.waiting_reason ? `Waiting: ${formatCheckpointLabel(progress.waiting_reason)}` : null,
+        progress.message ?? null,
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    );
+  }
+
+  const toolSummary = [
+    progress.current_tool_name ? `Current tool: ${progress.current_tool_name}` : null,
+    progress.last_completed_tool_name
+      ? `Last tool: ${progress.last_completed_tool_name}${progress.last_completed_tool_duration_ms != null ? ` (${progress.last_completed_tool_duration_ms}ms)` : ''}`
+      : null,
+    progress.completed_tool_call_count > 0 ? `Completed calls: ${progress.completed_tool_call_count}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  if (toolSummary) {
+    lines.push(toolSummary);
+  }
+
+  if (progress.has_partial_content || progress.has_partial_thinking) {
+    lines.push(
+      [
+        progress.has_partial_content ? `Partial response: ${progress.partial_content_chars} chars` : null,
+        progress.has_partial_thinking ? `Partial thinking: ${progress.partial_thinking_chars} chars` : null,
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    );
+  }
+
+  return lines;
+};
+
+const summarizeRemoteExecution = (
+  remoteExecution?: SupervisorTaskRecord['remote_execution'] | ActiveTaskSnapshot['remote_execution'],
+): string[] => {
+  if (!remoteExecution) {
+    return [];
+  }
+
+  const lines = [[`Remote: ${remoteExecution.status}`, remoteExecution.status_reason ?? null].filter(Boolean).join(' · ')];
+  if (remoteExecution.progress) {
+    lines.push(
+      [
+        remoteExecution.progress.percent != null ? `${remoteExecution.progress.percent}%` : null,
+        remoteExecution.progress.stage ? remoteExecution.progress.stage : null,
+        remoteExecution.progress.message ?? null,
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    );
+  }
+
+  return lines.filter((line) => line.length > 0);
+};
+
+const summarizeToolTrace = (toolCalls?: OrchestratorToolCall[] | null): string | null => {
+  if (!toolCalls?.length) {
+    return null;
+  }
+
+  return toolCalls
+    .slice(0, 3)
+    .map((toolCall) => `${toolCall.tool_name} ${toolCall.success ? '✓' : '✗'}${toolCall.duration_ms > 0 ? ` (${toolCall.duration_ms}ms)` : ''}`)
+    .join(' • ');
 };
 
 const approvalScopeForState = (state: SupervisorTaskRecord['state']): ApprovalScope | null => {
@@ -579,15 +672,42 @@ const WorkflowsPanel: React.FC = () => {
           ) : (
             <div className="task-list">
               {activeTasks.map((task) => (
-                <div key={task.id} className="task-card">
+                <div key={task.task.id} className="task-card">
                   <div className="task-header">
-                    <span className="task-id">{task.id}</span>
-                    <span className="task-priority">P{task.priority}</span>
+                    <span className="task-id">{task.task.id}</span>
+                    <span className="task-priority">{task.state}</span>
                   </div>
                   <div className="task-description">{summarizeTask(task)}</div>
+                  <div className="task-description">
+                    Agent: {task.task.agent_id} · Mode: {task.task.execution_mode} · Priority: P{task.task.priority}
+                  </div>
+                  {summarizeLocalExecution(task.local_execution).map((line) => (
+                    <div key={`${task.task.id}-${line}`} className="task-description">
+                      {line}
+                    </div>
+                  ))}
+                  {summarizeRemoteExecution(task.remote_execution).map((line) => (
+                    <div key={`${task.task.id}-remote-${line}`} className="task-description">
+                      {line}
+                    </div>
+                  ))}
+                  {task.blocked_reasons.length > 0 ? (
+                    <div className="task-description">Blocked by: {task.blocked_reasons.join('; ')}</div>
+                  ) : null}
+                  {task.checkpoint ? (
+                    <div className="task-description">
+                      Checkpoint: {formatCheckpointLabel(task.checkpoint.stage)} · {task.checkpoint.safe_boundary_label} · Resume:{' '}
+                      {task.checkpoint.has_resume_state ? 'available' : 'not captured'}
+                    </div>
+                  ) : null}
                   <div className="task-footer">
-                    <span className="task-agent">Agent: {task.agent_id}</span>
-                    <Button tone="danger" size="small" onClick={() => handleTaskAction(() => cancelTask(task.id))}>
+                    <span className="task-agent">Run: {task.task.run_id ?? 'standalone'}</span>
+                    {task.task.execution_mode !== 'remote' ? (
+                      <Button size="small" onClick={() => handleTaskAction(() => pauseWorkflowTask(task.task.id))}>
+                        Pause
+                      </Button>
+                    ) : null}
+                    <Button tone="danger" size="small" onClick={() => handleTaskAction(() => cancelTask(task.task.id))}>
                       Cancel
                     </Button>
                   </div>
@@ -774,6 +894,16 @@ const WorkflowsPanel: React.FC = () => {
                               {record.blocked_reasons.length > 0 ? (
                                 <div className="task-description">Blocked by: {record.blocked_reasons.join('; ')}</div>
                               ) : null}
+                              {summarizeLocalExecution(record.local_execution).map((line) => (
+                                <div key={`${record.task.id}-${line}`} className="task-description">
+                                  {line}
+                                </div>
+                              ))}
+                              {summarizeRemoteExecution(record.remote_execution).map((line) => (
+                                <div key={`${record.task.id}-remote-${line}`} className="task-description">
+                                  {line}
+                                </div>
+                              ))}
                               {checkpoint ? (
                                 <>
                                   <div className="task-description">
@@ -786,42 +916,23 @@ const WorkflowsPanel: React.FC = () => {
                                   {checkpoint.note ? <div className="task-description">Checkpoint note: {checkpoint.note}</div> : null}
                                 </>
                               ) : null}
-                              {record.remote_execution ? (
-                                <>
-                                  <div className="task-description">
-                                    Remote: {record.remote_execution.target.name ?? record.remote_execution.target.url} · {record.remote_execution.status}
-                                    {record.remote_execution.status_reason ? ` · ${record.remote_execution.status_reason}` : ''}
-                                  </div>
-                                  {record.remote_execution.progress ? (
-                                    <div className="task-description">
-                                      Progress:
-                                      {record.remote_execution.progress.percent != null
-                                        ? ` ${record.remote_execution.progress.percent}%`
-                                        : ''}
-                                      {record.remote_execution.progress.stage
-                                        ? ` · ${record.remote_execution.progress.stage}`
-                                        : ''}
-                                      {record.remote_execution.progress.message
-                                        ? ` · ${record.remote_execution.progress.message}`
-                                        : ''}
-                                    </div>
-                                  ) : null}
-                                  {record.remote_execution.provenance?.caller_name || record.remote_execution.provenance?.caller_agent_id ? (
-                                    <div className="task-description">
-                                      Provenance: {record.remote_execution.provenance.caller_name ?? record.remote_execution.provenance.caller_agent_id}
-                                    </div>
-                                  ) : null}
-                                  {record.remote_execution.artifacts.length > 0 ? (
-                                    <div className="task-description">
-                                      Remote artifacts: {record.remote_execution.artifacts.map((artifact) => artifact.name).join(', ')}
-                                    </div>
-                                  ) : null}
-                                  {record.remote_execution.compatibility.warnings.length > 0 ? (
-                                    <div className="task-description">
-                                      Compatibility: {record.remote_execution.compatibility.warnings.join('; ')}
-                                    </div>
-                                  ) : null}
-                                </>
+                              {record.remote_execution?.provenance?.caller_name || record.remote_execution?.provenance?.caller_agent_id ? (
+                                <div className="task-description">
+                                  Provenance: {record.remote_execution?.provenance?.caller_name ?? record.remote_execution?.provenance?.caller_agent_id}
+                                </div>
+                              ) : null}
+                              {record.remote_execution?.artifacts.length ? (
+                                <div className="task-description">
+                                  Remote artifacts: {record.remote_execution.artifacts.map((artifact) => artifact.name).join(', ')}
+                                </div>
+                              ) : null}
+                              {record.remote_execution?.compatibility.warnings.length ? (
+                                <div className="task-description">
+                                  Compatibility: {record.remote_execution.compatibility.warnings.join('; ')}
+                                </div>
+                              ) : null}
+                              {summarizeToolTrace(record.result?.tool_calls) ? (
+                                <div className="task-description">Tool trace: {summarizeToolTrace(record.result?.tool_calls)}</div>
                               ) : null}
                               {record.result?.artifacts?.length ? (
                                 <div className="task-description">
@@ -1017,6 +1128,40 @@ const WorkflowsPanel: React.FC = () => {
                           Send message
                         </Button>
                       </div>
+                      {(run.shared_cognition ?? []).length > 0 ? (
+                        <>
+                          <div className="task-description">
+                            Shared cognition: {(run.shared_cognition ?? []).length}
+                            {(run.shared_cognition ?? [])[(run.shared_cognition ?? []).length - 1]
+                              ? ` • Latest ${(run.shared_cognition ?? [])[(run.shared_cognition ?? []).length - 1]?.kind}: ${(run.shared_cognition ?? [])[(run.shared_cognition ?? []).length - 1]?.summary}`
+                              : ''}
+                          </div>
+                          <div className="task-list">
+                            {[...(run.shared_cognition ?? [])]
+                              .sort((left, right) => left.created_at.localeCompare(right.created_at))
+                              .slice(-4)
+                              .reverse()
+                              .map((note) => (
+                                <div key={note.id} className="task-card">
+                                  <div className="task-header">
+                                    <span className="task-id">{note.kind}</span>
+                                    <span className="task-priority">{Math.round(note.confidence * 100)}%</span>
+                                  </div>
+                                  <div className="task-description">
+                                    {note.summary}
+                                    {note.task_id ? ` • Task ${note.task_id}` : ''}
+                                    {note.directive_id ? ` • Directive ${note.directive_id}` : ''}
+                                  </div>
+                                  <div className="task-description">{note.detail}</div>
+                                  <div className="task-footer">
+                                    <span>{note.sender_agent_id ?? 'workflow-panel'}</span>
+                                    <span>{new Date(note.created_at).toLocaleString()}</span>
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
+                        </>
+                      ) : null}
                       {collaboration.threadCount > 0 ? (
                         <>
                           <div className="task-description">

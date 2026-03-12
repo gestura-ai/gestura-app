@@ -34,9 +34,11 @@ use crate::agent_sessions::{
 };
 use crate::error::AppError;
 use crate::memory_bank::{
-    MemoryBankEntry, MemoryBankError, MemoryBankQuery, MemoryKind, MemoryScope, MemoryType,
-    clear_memory_bank, delete_memory_bank_entry, list_memory_bank, load_from_memory_bank,
-    save_to_memory_bank, search_memory_bank_with_query, update_memory_bank_entry,
+    MemoryBankEntry, MemoryBankError, MemoryBankQuery, MemoryGovernanceRefreshReport,
+    MemoryGovernanceState, MemoryGovernanceSuggestion, MemoryKind, MemoryScope, MemoryType,
+    ReflectionMemoryState, clear_memory_bank, delete_memory_bank_entry, list_memory_bank,
+    load_from_memory_bank, refresh_memory_bank_governance, save_to_memory_bank,
+    search_memory_bank_with_query, update_memory_bank_entry,
 };
 use crate::tasks::{TaskError, TaskManager, TaskMemoryEvent, TaskMemoryLifecycle, TaskMemoryPhase};
 use chrono::{DateTime, Utc};
@@ -209,6 +211,12 @@ pub struct MemoryConsoleEntrySummary {
     pub file_path: Option<String>,
     /// Whether the entry is archived.
     pub archived: bool,
+    /// Governance state.
+    pub governance_state: MemoryGovernanceState,
+    /// Reflection governance state, when applicable.
+    pub reflection_state: Option<ReflectionMemoryState>,
+    /// Number of unresolved governance suggestions.
+    pub governance_issue_count: usize,
     /// Optional ranking score.
     pub score: Option<f32>,
     /// Optional matched fields.
@@ -227,6 +235,22 @@ pub struct MemoryConsoleEntryDetail {
     pub promoted_from_session_id: Option<String>,
     /// Promotion rationale.
     pub promotion_reason: Option<String>,
+    /// Optional operator governance note.
+    pub governance_note: Option<String>,
+    /// Persisted governance suggestions.
+    pub governance_suggestions: Vec<MemoryGovernanceSuggestion>,
+    /// Optional linked reflection id.
+    pub reflection_id: Option<String>,
+    /// Optional normalized strategy key.
+    pub strategy_key: Option<String>,
+    /// Reflection downstream success count.
+    pub success_count: u16,
+    /// Reflection downstream failure count.
+    pub failure_count: u16,
+    /// Optional downstream outcome summary.
+    pub outcome_summary: Option<String>,
+    /// Stable downstream outcome labels.
+    pub outcome_labels: Vec<String>,
 }
 
 /// Overview payload for the memory console home screen.
@@ -246,6 +270,10 @@ pub struct MemoryConsoleOverview {
     pub working_resource_count: usize,
     /// Count of working-memory decisions.
     pub working_decision_count: usize,
+    /// Count of durable entries that currently need governance review.
+    pub governance_review_count: usize,
+    /// Total number of persisted governance suggestions.
+    pub governance_issue_count: usize,
     /// Working-memory rolling summary.
     pub working_summary: Option<String>,
     /// Recent durable entries.
@@ -256,6 +284,10 @@ pub struct MemoryConsoleOverview {
     pub counts_by_type: Vec<MemoryConsoleCount>,
     /// Facet counts by scope.
     pub counts_by_scope: Vec<MemoryConsoleCount>,
+    /// Facet counts by entry category.
+    pub counts_by_category: Vec<MemoryConsoleCount>,
+    /// Facet counts by governance state.
+    pub counts_by_governance: Vec<MemoryConsoleCount>,
 }
 
 /// Combined search response for working + durable memory.
@@ -323,6 +355,10 @@ pub struct UpdateMemoryEntryRequest {
     pub tags: Option<Vec<String>>,
     /// Replacement confidence.
     pub confidence: Option<f32>,
+    /// Replacement governance state.
+    pub governance_state: Option<MemoryGovernanceState>,
+    /// Replacement governance note.
+    pub governance_note: Option<Option<String>>,
 }
 
 /// Task-memory detail view shared by CLI and GUI.
@@ -387,16 +423,29 @@ pub async fn get_memory_console_overview(
     let entries = list_memory_bank(workspace_dir).await?;
     let filtered_entries: Vec<MemoryBankEntry> = entries
         .into_iter()
-        .filter(|entry| !is_archived(entry))
+        .filter(|entry| !entry.is_archived())
         .collect();
 
     let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
     let mut scopes: BTreeMap<String, usize> = BTreeMap::new();
     let mut types: BTreeMap<String, usize> = BTreeMap::new();
+    let mut categories: BTreeMap<String, usize> = BTreeMap::new();
+    let mut governance: BTreeMap<String, usize> = BTreeMap::new();
     for entry in &filtered_entries {
         *kinds.entry(entry.memory_kind.to_string()).or_default() += 1;
         *scopes.entry(entry.scope.to_string()).or_default() += 1;
         *types.entry(entry.memory_type.to_string()).or_default() += 1;
+        *categories
+            .entry(
+                entry
+                    .category
+                    .clone()
+                    .unwrap_or_else(|| "uncategorized".to_string()),
+            )
+            .or_default() += 1;
+        *governance
+            .entry(entry.governance_state.to_string())
+            .or_default() += 1;
     }
 
     let session_summary = session.map(session_summary_from_session);
@@ -424,11 +473,21 @@ pub async fn get_memory_console_overview(
             .unwrap_or(0),
         working_resource_count: working_memory.map(|wm| wm.resources.len()).unwrap_or(0),
         working_decision_count: working_memory.map(|wm| wm.decisions.len()).unwrap_or(0),
+        governance_review_count: filtered_entries
+            .iter()
+            .filter(|entry| entry.governance_state == MemoryGovernanceState::NeedsReview)
+            .count(),
+        governance_issue_count: filtered_entries
+            .iter()
+            .map(|entry| entry.governance_suggestions.len())
+            .sum(),
         working_summary: working_memory.and_then(|wm| wm.summary.clone()),
         recent_entries,
         counts_by_kind: counts_to_vec(kinds),
         counts_by_type: counts_to_vec(types),
         counts_by_scope: counts_to_vec(scopes),
+        counts_by_category: counts_to_vec(categories),
+        counts_by_governance: counts_to_vec(governance),
     })
 }
 
@@ -490,12 +549,12 @@ pub async fn search_memory_console(
             category: query.category.clone(),
             tags: query.tags.clone(),
             min_confidence: query.min_confidence,
+            include_archived: query.include_archived,
         };
 
         search_memory_bank_with_query(workspace_dir, &bank_query)
             .await?
             .into_iter()
-            .filter(|result| query.include_archived || !is_archived(&result.entry))
             .map(|result| {
                 entry_summary_from_entry(
                     workspace_dir,
@@ -533,6 +592,13 @@ pub fn get_task_memory_console_detail(
     })
 }
 
+/// Refresh persisted governance suggestions for durable memory.
+pub async fn refresh_memory_console_governance(
+    workspace_dir: &Path,
+) -> MemoryConsoleResult<MemoryGovernanceRefreshReport> {
+    Ok(refresh_memory_bank_governance(workspace_dir).await?)
+}
+
 /// Promote a working-memory candidate into durable memory.
 pub async fn promote_memory_candidate(
     workspace_dir: &Path,
@@ -567,6 +633,7 @@ pub async fn promote_memory_candidate(
     entry = entry.with_promotion(session.id.clone(), promotion_reason);
 
     let saved_path = save_to_memory_bank(workspace_dir, &entry).await?;
+    let _ = refresh_memory_bank_governance(workspace_dir).await?;
     let saved = load_from_memory_bank(&saved_path).await?;
 
     if let (Some(manager), Some(task_id)) = (task_manager, request.task_id.as_deref()) {
@@ -633,12 +700,19 @@ pub async fn update_memory_entry_detail(
     if let Some(confidence) = request.confidence {
         entry.confidence = confidence.clamp(0.0, 1.0);
     }
+    if let Some(governance_state) = request.governance_state {
+        entry.governance_state = governance_state;
+    }
+    if let Some(governance_note) = request.governance_note {
+        entry.governance_note = governance_note;
+    }
 
     let Some(file_path) = entry.file_path.clone() else {
         return Err(MemoryConsoleError::MissingFilePath);
     };
     update_memory_bank_entry(workspace_dir, &file_path, &entry).await?;
 
+    let _ = refresh_memory_bank_governance(workspace_dir).await?;
     let reloaded = load_from_memory_bank(&file_path).await?;
     Ok(entry_detail_from_entry(
         workspace_dir,
@@ -656,21 +730,24 @@ pub async fn set_memory_entry_archived(
 ) -> MemoryConsoleResult<MemoryConsoleEntryDetail> {
     let path = resolve_entry_id(workspace_dir, entry_id);
     let mut entry = load_from_memory_bank(&path).await?;
-    let mut tags = entry.tags.clone();
     if archived {
-        if !tags.iter().any(|tag| tag.eq_ignore_ascii_case("archived")) {
-            tags.push("archived".to_string());
-        }
+        entry.governance_state = MemoryGovernanceState::Archived;
     } else {
-        tags.retain(|tag| !tag.eq_ignore_ascii_case("archived"));
+        entry
+            .tags
+            .retain(|tag| !tag.eq_ignore_ascii_case("archived"));
+        if entry.governance_state == MemoryGovernanceState::Archived {
+            entry.governance_state = MemoryGovernanceState::Active;
+        }
     }
-    entry.tags = normalize_tags(tags);
+    entry.tags = normalize_tags(entry.tags);
 
     let Some(file_path) = entry.file_path.clone() else {
         return Err(MemoryConsoleError::MissingFilePath);
     };
     update_memory_bank_entry(workspace_dir, &file_path, &entry).await?;
 
+    let _ = refresh_memory_bank_governance(workspace_dir).await?;
     let reloaded = load_from_memory_bank(&file_path).await?;
     Ok(entry_detail_from_entry(
         workspace_dir,
@@ -686,6 +763,7 @@ pub async fn delete_memory_entry_by_id(
     entry_id: &str,
 ) -> MemoryConsoleResult<()> {
     delete_memory_bank_entry(workspace_dir, &resolve_entry_id(workspace_dir, entry_id)).await?;
+    let _ = refresh_memory_bank_governance(workspace_dir).await?;
     Ok(())
 }
 
@@ -897,7 +975,10 @@ fn entry_summary_from_entry(
             .file_path
             .as_ref()
             .map(|path| path_to_id(workspace_dir, path)),
-        archived: is_archived(entry),
+        archived: entry.is_archived(),
+        governance_state: entry.governance_state,
+        reflection_state: entry.reflection_state,
+        governance_issue_count: entry.governance_suggestions.len(),
         score,
         matched_fields,
     }
@@ -914,6 +995,14 @@ fn entry_detail_from_entry(
         content: entry.content.clone(),
         promoted_from_session_id: entry.promoted_from_session_id.clone(),
         promotion_reason: entry.promotion_reason.clone(),
+        governance_note: entry.governance_note.clone(),
+        governance_suggestions: entry.governance_suggestions.clone(),
+        reflection_id: entry.reflection_id.clone(),
+        strategy_key: entry.strategy_key.clone(),
+        success_count: entry.success_count,
+        failure_count: entry.failure_count,
+        outcome_summary: entry.outcome_summary.clone(),
+        outcome_labels: entry.outcome_labels.clone(),
     }
 }
 
@@ -951,13 +1040,6 @@ fn normalize_tags(tags: Vec<String>) -> Vec<String> {
         }
     }
     normalized
-}
-
-fn is_archived(entry: &MemoryBankEntry) -> bool {
-    entry
-        .tags
-        .iter()
-        .any(|tag| tag.eq_ignore_ascii_case("archived"))
 }
 
 fn memory_entry_id(workspace_dir: &Path, entry: &MemoryBankEntry) -> String {
@@ -1087,5 +1169,129 @@ mod tests {
         .await
         .unwrap();
         assert!(!detail.summary.archived);
+    }
+
+    #[tokio::test]
+    async fn governance_refresh_surfaces_in_overview_and_entry_detail() {
+        let temp = tempdir().unwrap();
+        let session = AgentSession::new_with_workspace(temp.path().to_path_buf(), None).unwrap();
+        let base_time = Utc::now();
+
+        let mut first = MemoryBankEntry::new(
+            session.id.clone(),
+            "Directive memory handoff policy".to_string(),
+            "Store concise directive-scoped handoff notes for subagent reuse.".to_string(),
+        )
+        .with_memory_type(MemoryType::Procedural)
+        .with_scope(MemoryScope::Directive)
+        .with_governance_state(MemoryGovernanceState::Pinned)
+        .with_provenance(
+            Some("task-governance".to_string()),
+            Some("directive-governance".to_string()),
+            Some("agent-a".to_string()),
+        );
+        first.category = Some("shared_cognition".to_string());
+        first.timestamp = base_time;
+        save_to_memory_bank(temp.path(), &first).await.unwrap();
+
+        let mut reflection_a = MemoryBankEntry::new(
+            session.id.clone(),
+            "Reflection: inspect files first".to_string(),
+            "Inspect the code before making assumptions about behavior.".to_string(),
+        )
+        .with_memory_type(MemoryType::Reflection)
+        .with_scope(MemoryScope::Workspace)
+        .with_provenance(
+            Some("task-governance".to_string()),
+            Some("directive-governance".to_string()),
+            Some("agent-b".to_string()),
+        )
+        .with_reflection_learning("inspect-files-first", ReflectionMemoryState::Active, 3, 0)
+        .with_outcome_provenance(
+            Some("Approved after inspection".to_string()),
+            vec!["approved".to_string()],
+        );
+        reflection_a.timestamp = base_time + chrono::Duration::seconds(1);
+        let reflection_a_path = save_to_memory_bank(temp.path(), &reflection_a)
+            .await
+            .unwrap();
+
+        let mut reflection_b = MemoryBankEntry::new(
+            session.id.clone(),
+            "Reflection: inspect files first".to_string(),
+            "Inspect the code before making assumptions about behavior.".to_string(),
+        )
+        .with_memory_type(MemoryType::Reflection)
+        .with_scope(MemoryScope::Workspace)
+        .with_provenance(
+            Some("task-governance".to_string()),
+            Some("directive-governance".to_string()),
+            Some("agent-c".to_string()),
+        )
+        .with_reflection_learning(
+            "inspect-files-first",
+            ReflectionMemoryState::NeedsReview,
+            0,
+            3,
+        )
+        .with_outcome_provenance(
+            Some("Rejected without inspection".to_string()),
+            vec!["failed".to_string()],
+        );
+        reflection_b.timestamp = base_time + chrono::Duration::seconds(2);
+        save_to_memory_bank(temp.path(), &reflection_b)
+            .await
+            .unwrap();
+
+        let _report = refresh_memory_console_governance(temp.path())
+            .await
+            .unwrap();
+
+        let overview = get_memory_console_overview(temp.path(), Some(&session))
+            .await
+            .unwrap();
+        assert_eq!(overview.durable_total, 3);
+        assert!(
+            overview
+                .counts_by_governance
+                .iter()
+                .any(|count| count.key == "pinned" && count.count == 1)
+        );
+        assert!(
+            overview
+                .counts_by_category
+                .iter()
+                .any(|count| count.key == "shared_cognition" && count.count == 1)
+        );
+
+        let first_id = reflection_a_path
+            .strip_prefix(temp.path())
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let detail = get_memory_entry_detail(temp.path(), &first_id)
+            .await
+            .unwrap();
+        assert_eq!(detail.summary.memory_type, MemoryType::Reflection);
+
+        let updated = update_memory_entry_detail(
+            temp.path(),
+            &first_id,
+            UpdateMemoryEntryRequest {
+                governance_state: Some(MemoryGovernanceState::NeedsReview),
+                governance_note: Some(Some("Operator review requested".to_string())),
+                ..UpdateMemoryEntryRequest::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            updated.summary.governance_state,
+            MemoryGovernanceState::NeedsReview
+        );
+        assert_eq!(
+            updated.governance_note.as_deref(),
+            Some("Operator review requested")
+        );
     }
 }

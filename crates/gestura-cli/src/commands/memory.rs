@@ -6,14 +6,14 @@ use gestura_core::agent_sessions::{
     AgentSession, AgentSessionStore, FileAgentSessionStore, SessionMemoryPromotionCandidate,
     SessionMemoryPromotionSource,
 };
-use gestura_core::memory_bank::{MemoryKind, MemoryScope, MemoryType};
+use gestura_core::memory_bank::{MemoryGovernanceState, MemoryKind, MemoryScope, MemoryType};
 use gestura_core::memory_console::{
     MemoryConsoleQuery, PromoteMemoryCandidateRequest, UpdateMemoryEntryRequest,
     clear_memory_console, delete_memory_entry_by_id, get_memory_console_overview,
     get_memory_entry_detail, get_memory_promotion_candidates, get_task_memory_console_detail,
     get_working_memory_snapshot, list_memory_console_sessions, load_memory_console_session,
-    promote_memory_candidate, search_memory_console, set_memory_entry_archived,
-    update_memory_entry_detail,
+    promote_memory_candidate, refresh_memory_console_governance, search_memory_console,
+    set_memory_entry_archived, update_memory_entry_detail,
 };
 use gestura_core::tasks::TaskManager;
 use serde::Serialize;
@@ -173,6 +173,9 @@ async fn run_action(action: MemoryAction, context: &mut MemoryCommandContext) ->
             clear_agent,
             tags,
             confidence,
+            governance_state,
+            governance_note,
+            clear_governance_note,
             json,
         } => {
             let detail = update_memory_entry_detail(
@@ -194,10 +197,20 @@ async fn run_action(action: MemoryAction, context: &mut MemoryCommandContext) ->
                     agent_id: agent.map(Some).or_else(|| clear_agent.then_some(None)),
                     tags,
                     confidence,
+                    governance_state: governance_state
+                        .map(|value| parse_governance_state(&value))
+                        .transpose()?,
+                    governance_note: governance_note
+                        .map(Some)
+                        .or_else(|| clear_governance_note.then_some(None)),
                 },
             )
             .await?;
             print_output(&detail, json);
+        }
+        MemoryAction::RefreshGovernance { json } => {
+            let report = refresh_memory_console_governance(&context.workspace_dir).await?;
+            print_output(&report, json);
         }
         MemoryAction::Archive {
             entry_id,
@@ -278,6 +291,10 @@ async fn show_overview(context: &MemoryCommandContext) -> Result<()> {
     println!(
         "Promotion candidates: {}",
         overview.promotion_candidate_count
+    );
+    println!(
+        "Governance review / issues: {} / {}",
+        overview.governance_review_count, overview.governance_issue_count
     );
     if let Some(summary) = overview.working_summary {
         println!("Working summary: {summary}");
@@ -490,7 +507,12 @@ fn task_memory_browser(context: &MemoryCommandContext) -> Result<()> {
 async fn maintenance_browser(context: &mut MemoryCommandContext) -> Result<()> {
     let selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Maintenance")
-        .items(&["List recent sessions", "Clear durable memory", "Back"])
+        .items(&[
+            "List recent sessions",
+            "Refresh governance suggestions",
+            "Clear durable memory",
+            "Back",
+        ])
         .default(0)
         .interact()?;
     match selection {
@@ -502,6 +524,18 @@ async fn maintenance_browser(context: &mut MemoryCommandContext) -> Result<()> {
             pause()?;
         }
         1 => {
+            let report = refresh_memory_console_governance(&context.workspace_dir).await?;
+            println!(
+                "Refreshed governance: {} scanned, {} updated, {} duplicate, {} conflict, {} superseded suggestions.",
+                report.entries_scanned,
+                report.updated_entries,
+                report.duplicate_suggestions,
+                report.conflict_suggestions,
+                report.superseded_suggestions,
+            );
+            pause()?;
+        }
+        2 => {
             if Confirm::with_theme(&ColorfulTheme::default())
                 .with_prompt("Clear all durable memory entries for this workspace?")
                 .default(false)
@@ -525,18 +559,47 @@ async fn durable_entry_actions(context: &mut MemoryCommandContext, entry_id: &st
             "Type: {} / Scope: {}",
             detail.summary.memory_type, detail.summary.scope
         );
+        println!(
+            "Governance: {}{}",
+            format_governance_state(detail.summary.governance_state),
+            if detail.summary.governance_issue_count == 0 {
+                String::new()
+            } else {
+                format!(" ({} suggestions)", detail.summary.governance_issue_count)
+            }
+        );
+        if let Some(note) = &detail.governance_note {
+            println!("Governance note: {note}");
+        }
         println!("Tags: {}", detail.summary.tags.join(", "));
+        if !detail.governance_suggestions.is_empty() {
+            println!("Suggestions:");
+            for suggestion in &detail.governance_suggestions {
+                println!(
+                    "  - {} {} ({:.0}%): {}",
+                    suggestion.relationship,
+                    suggestion.entry_id,
+                    suggestion.confidence * 100.0,
+                    suggestion.rationale,
+                );
+            }
+        }
         println!("\n{}", detail.content);
 
         let selection = Select::with_theme(&ColorfulTheme::default())
             .with_prompt("Entry actions")
             .items(&[
                 "Edit",
+                "Pin",
+                "Mark needs review",
+                "Mark superseded",
+                "Mark active",
                 if detail.summary.archived {
                     "Restore"
                 } else {
                     "Archive"
                 },
+                "Refresh governance",
                 "Delete",
                 "Back",
             ])
@@ -548,6 +611,50 @@ async fn durable_entry_actions(context: &mut MemoryCommandContext, entry_id: &st
                 update_memory_entry_detail(&context.workspace_dir, entry_id, updated).await?;
             }
             1 => {
+                update_memory_entry_detail(
+                    &context.workspace_dir,
+                    entry_id,
+                    UpdateMemoryEntryRequest {
+                        governance_state: Some(MemoryGovernanceState::Pinned),
+                        ..UpdateMemoryEntryRequest::default()
+                    },
+                )
+                .await?;
+            }
+            2 => {
+                update_memory_entry_detail(
+                    &context.workspace_dir,
+                    entry_id,
+                    UpdateMemoryEntryRequest {
+                        governance_state: Some(MemoryGovernanceState::NeedsReview),
+                        ..UpdateMemoryEntryRequest::default()
+                    },
+                )
+                .await?;
+            }
+            3 => {
+                update_memory_entry_detail(
+                    &context.workspace_dir,
+                    entry_id,
+                    UpdateMemoryEntryRequest {
+                        governance_state: Some(MemoryGovernanceState::Superseded),
+                        ..UpdateMemoryEntryRequest::default()
+                    },
+                )
+                .await?;
+            }
+            4 => {
+                update_memory_entry_detail(
+                    &context.workspace_dir,
+                    entry_id,
+                    UpdateMemoryEntryRequest {
+                        governance_state: Some(MemoryGovernanceState::Active),
+                        ..UpdateMemoryEntryRequest::default()
+                    },
+                )
+                .await?;
+            }
+            5 => {
                 set_memory_entry_archived(
                     &context.workspace_dir,
                     entry_id,
@@ -555,7 +662,15 @@ async fn durable_entry_actions(context: &mut MemoryCommandContext, entry_id: &st
                 )
                 .await?;
             }
-            2 => {
+            6 => {
+                let report = refresh_memory_console_governance(&context.workspace_dir).await?;
+                println!(
+                    "Refreshed governance: {} updated entries.",
+                    report.updated_entries
+                );
+                pause()?;
+            }
+            7 => {
                 if Confirm::with_theme(&ColorfulTheme::default())
                     .with_prompt("Delete this memory entry?")
                     .default(false)
@@ -582,11 +697,18 @@ fn edit_entry_interactively(
     let content = Editor::new()
         .edit(&detail.content)?
         .unwrap_or_else(|| detail.content.clone());
+    let governance_note: String = Input::with_theme(&theme)
+        .with_prompt("Governance note")
+        .with_initial_text(detail.governance_note.clone().unwrap_or_default())
+        .allow_empty(true)
+        .interact_text()?;
     let tags = pick_tags(&detail.summary.tags)?;
     Ok(UpdateMemoryEntryRequest {
         summary: Some(summary),
         content: Some(content),
         tags: Some(tags),
+        governance_state: Some(detail.summary.governance_state),
+        governance_note: Some((!governance_note.trim().is_empty()).then_some(governance_note)),
         ..UpdateMemoryEntryRequest::default()
     })
 }
@@ -707,7 +829,31 @@ fn parse_type(value: &str) -> Result<MemoryType> {
         "decision" => Ok(MemoryType::Decision),
         "blocker" => Ok(MemoryType::Blocker),
         "handoff" => Ok(MemoryType::Handoff),
+        "reflection" => Ok(MemoryType::Reflection),
         other => Err(format!("Unknown memory type: {other}").into()),
+    }
+}
+
+fn parse_governance_state(value: &str) -> Result<MemoryGovernanceState> {
+    match value.to_ascii_lowercase().as_str() {
+        "active" => Ok(MemoryGovernanceState::Active),
+        "pinned" | "pin" => Ok(MemoryGovernanceState::Pinned),
+        "needs_review" | "needs-review" | "needs review" | "review" => {
+            Ok(MemoryGovernanceState::NeedsReview)
+        }
+        "superseded" | "supersede" => Ok(MemoryGovernanceState::Superseded),
+        "archived" | "archive" => Ok(MemoryGovernanceState::Archived),
+        other => Err(format!("Unknown memory governance state: {other}").into()),
+    }
+}
+
+fn format_governance_state(value: MemoryGovernanceState) -> &'static str {
+    match value {
+        MemoryGovernanceState::Active => "active",
+        MemoryGovernanceState::Pinned => "pinned",
+        MemoryGovernanceState::NeedsReview => "needs review",
+        MemoryGovernanceState::Superseded => "superseded",
+        MemoryGovernanceState::Archived => "archived",
     }
 }
 

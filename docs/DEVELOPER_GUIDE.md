@@ -93,6 +93,22 @@ cargo doc --workspace --no-deps
 Use this guide for contributor workflow and operational development practices;
 use crate/module Rustdoc for the source-of-truth architecture and API surface.
 
+### CLI Interactive Slash UX Contract
+
+The interactive `gestura agent` surfaces now use a **shared slash-command catalog** plus a **managed root shell** model.
+
+- Keep shared interactive slash metadata in `crates/gestura-cli/src/commands/agent/catalog.rs`.
+- Treat **direct commands** and **root shells** differently:
+  - direct commands execute immediately (`/help`, `/clear`, `/save`, `/history`, `/summarize`, `/listen`, `/voice`, `/init`)
+  - root shells open an interactive browser/shell when used without args, but explicit subcommands still execute directly (`/config`, `/context`, `/a2a`, `/privacy`, `/agent`, `/workflow`, `/mcp`, `/tasks`, `/hooks`, `/memory`, `/session`, `/knowledge`, `/permissions`, `/tools`, `/theme`, `/model`, `/device`)
+- When you add or rename an interactive slash command, update all of these together:
+  - shared catalog metadata
+  - TUI command suggestions/help
+  - TUI/basic-mode routing
+  - focused regression tests for routing/discoverability
+
+Do not let help text, command suggestions, and actual dispatch drift apart again. If a root command is advertised as a managed shell, bare usage should open a navigable interface and the documented explicit subcommands should remain executable.
+
 ### Design Principles
 
 1. **Single Source of Truth**: Business logic lives in `gestura-core` and the owning `gestura-core-*` domain crates
@@ -179,6 +195,29 @@ Structured team messaging is now a first-class collaboration layer, not a loose 
 - keep lifecycle logic in core (`send_team_message_draft`, `update_team_thread_action`, `archive_team_thread`) so GUI/CLI cannot drift from persisted behavior
 - when adding new collaboration kinds, update the draft/request/thread types and all stable surfaces together (Rust, Tauri, TypeScript, CLI help, tests)
 - preserve backward-compatible deserialization defaults for older persisted messages that may lack thread/archive/action metadata
+
+### Shared Supervisor/Subagent Cognition
+
+Phase 9 shared cognition builds on collaboration threads, but it is **not** just another inbox view. The source of truth remains `gestura_core::orchestrator`, where collaboration messages can be promoted into durable run-scoped cognition notes and mirrored into the memory bank under the `shared_cognition` category.
+
+#### Model
+
+- `SupervisorRun.shared_cognition` stores the durable in-run note log with authorship, timestamps, confidence, source message linkage, task/directive provenance, and retrieval tags
+- collaboration messages map into bounded note kinds such as discovery, blocker, hypothesis, steering, decision, and handoff
+- shared-cognition memory bank entries use the stable `shared_cognition` category plus workflow-run tags so prompt enrichment can retrieve only the scoped notes that matter
+
+#### Operator surfaces
+
+- GUI workflow panel renders run-level shared cognition notes next to collaboration threads so supervisors can see steering, blockers, confidence, and ownership mid-task
+- GUI memory console overview surfaces `shared_cognition` category counts, searchable quick filters, and entry metadata for task/directive/agent/confidence/tag inspection
+- CLI `/task tree` includes compact shared-cognition summaries per run so operators can spot active steering or unresolved hypotheses without opening raw JSON
+
+#### Contributor guardrails
+
+- keep the message → shared-cognition promotion rules in core; do not re-implement classification heuristics in CLI/GUI adapters
+- preserve serde defaults on `SupervisorRun.shared_cognition` and related note fields so older persisted runs remain readable
+- keep prompt enrichment bounded: scope by task/directive/tags and cap shared-cognition injection to a small fixed number of high-signal notes
+- when you change note fields or categories, update core tests, prompt-enrichment tests, benchmark fixtures, CLI/GUI surfaces, and memory console documentation together
 
 ### Bounded Hierarchical Supervision
 

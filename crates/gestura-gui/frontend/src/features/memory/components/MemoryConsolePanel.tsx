@@ -9,11 +9,13 @@ import {
   getMemoryTaskLifecycle,
   getMemoryWorkingSnapshot,
   promoteMemoryCandidateEntry,
+  refreshMemoryConsoleGovernance,
   searchMemoryConsoleEntries,
   setMemoryEntryArchived,
   updateMemoryEntryDetail,
   type MemoryConsoleEntryDetail,
   type MemoryConsoleOverview,
+  type MemoryConsoleQuery,
   type MemoryConsoleSearchResponse,
   type MemoryConsoleSessionSummary,
   type SessionMemoryPromotionCandidate,
@@ -52,6 +54,14 @@ function promotionMemoryType(source: SessionMemoryPromotionCandidate['source']) 
 
 function promotionConfidence(score: number) {
   return Math.min(0.95, Math.max(0.55, score / 5));
+}
+
+function governanceLabel(state: MemoryConsoleEntryDetail['summary']['governance_state']) {
+  return state.replace(/_/g, ' ');
+}
+
+function countForKey(counts: Array<{ key: string; count: number }>, key: string): number {
+  return counts.find((item) => item.key === key)?.count ?? 0;
 }
 
 export function MemoryConsolePanel({
@@ -135,13 +145,15 @@ export function MemoryConsolePanel({
     [overview, searchResults],
   );
 
-  async function runSearch() {
+  const sharedCognitionCount = countForKey(overview?.counts_by_category ?? [], 'shared_cognition');
+
+  async function runSearchWithQuery(query: MemoryConsoleQuery) {
     setBusy(true);
     setError(null);
     try {
       setSearchResults(
         await searchMemoryConsoleEntries(
-          { text: searchText || null, limit: 24, include_archived: true },
+          { include_archived: true, limit: 24, ...query },
           selectedSessionId,
           selectedWorkspaceDir,
         ),
@@ -152,6 +164,10 @@ export function MemoryConsolePanel({
     } finally {
       setBusy(false);
     }
+  }
+
+  async function runSearch() {
+    await runSearchWithQuery({ text: searchText || null });
   }
 
   async function openEntry(entryId: string) {
@@ -169,6 +185,8 @@ export function MemoryConsolePanel({
           content: entryDetail.content,
           tags: entryDetail.summary.tags,
           confidence: entryDetail.summary.confidence,
+          governance_state: entryDetail.summary.governance_state,
+          governance_note: entryDetail.governance_note ?? null,
         },
         selectedSessionId,
         selectedWorkspaceDir,
@@ -225,6 +243,15 @@ export function MemoryConsolePanel({
         ))}
         <input value={searchText} onChange={(e) => setSearchText(e.target.value)} placeholder="Search memory" />
         <button className="task-create-btn" onClick={() => void runSearch()} disabled={busy}>Search</button>
+        {sharedCognitionCount > 0 && (
+          <button
+            className="task-header-btn"
+            onClick={() => void runSearchWithQuery({ category: 'shared_cognition', text: null })}
+            disabled={busy}
+          >
+            Shared cognition
+          </button>
+        )}
       </div>
 
       {error && <div className="task-empty-state">{error}</div>}
@@ -235,6 +262,11 @@ export function MemoryConsolePanel({
           <p><strong>Durable entries:</strong> {overview.durable_total}</p>
           <p><strong>Working resources / decisions:</strong> {overview.working_resource_count} / {overview.working_decision_count}</p>
           <p><strong>Open blockers / promotions:</strong> {overview.open_blocker_count} / {overview.promotion_candidate_count}</p>
+          <p><strong>Governance review / issues:</strong> {overview.governance_review_count} / {overview.governance_issue_count}</p>
+          <p><strong>Shared cognition entries:</strong> {sharedCognitionCount}</p>
+          {overview.counts_by_category.length > 0 && (
+            <p><strong>Categories:</strong> {overview.counts_by_category.map((item) => `${item.key} (${item.count})`).join(', ')}</p>
+          )}
           <p><strong>Summary:</strong> {overview.working_summary || 'No working-memory summary yet.'}</p>
         </div>
       )}
@@ -245,7 +277,16 @@ export function MemoryConsolePanel({
           {searchResults.working_memory.map((item) => <p key={item.id}>{item.section}: {item.summary}</p>)}
           <h4>Durable-memory matches</h4>
           {searchResults.durable_memory.map((item) => (
-            <button key={item.entry_id} className="task-item" onClick={() => void openEntry(item.entry_id)}>{item.summary}</button>
+            <button key={item.entry_id} className="task-item" onClick={() => void openEntry(item.entry_id)}>
+              {item.summary}
+              <span className="task-path-label">
+                {item.scope} · {item.memory_type}
+                {item.category ? ` · ${item.category}` : ''} · {Math.round(item.confidence * 100)}% · {governanceLabel(item.governance_state)}
+                {item.task_id ? ` · task ${item.task_id}` : ''}
+                {item.directive_id ? ` · directive ${item.directive_id}` : ''}
+                {item.governance_issue_count > 0 ? ` · ${item.governance_issue_count} issues` : ''}
+              </span>
+            </button>
           ))}
         </div>
       )}
@@ -264,7 +305,14 @@ export function MemoryConsolePanel({
         <div className="task-section-card">
           {durableEntries.map((item) => (
             <button key={item.entry_id} className="task-item" onClick={() => void openEntry(item.entry_id)}>
-              {item.summary} <span className="task-path-label">{item.scope} · {item.memory_type}</span>
+              {item.summary}{' '}
+              <span className="task-path-label">
+                {item.scope} · {item.memory_type}
+                {item.category ? ` · ${item.category}` : ''} · {Math.round(item.confidence * 100)}% · {governanceLabel(item.governance_state)}
+                {item.task_id ? ` · task ${item.task_id}` : ''}
+                {item.directive_id ? ` · directive ${item.directive_id}` : ''}
+                {item.governance_issue_count > 0 ? ` · ${item.governance_issue_count} issues` : ''}
+              </span>
             </button>
           ))}
         </div>
@@ -321,6 +369,21 @@ export function MemoryConsolePanel({
       {activeTab === 'maintenance' && (
         <div className="task-section-card">
           <button
+            className="task-action-btn"
+            onClick={() => {
+              void refreshMemoryConsoleGovernance(selectedSessionId, selectedWorkspaceDir)
+                .then(async () => {
+                  await refreshOverview();
+                  if (entryDetail) {
+                    setEntryDetail(await getMemoryEntryDetail(entryDetail.summary.entry_id, selectedSessionId, selectedWorkspaceDir));
+                  }
+                })
+                .catch((err) => setError(String(err)));
+            }}
+          >
+            Refresh governance suggestions
+          </button>
+          <button
             className="task-action-btn danger"
             onClick={() => {
               if (window.confirm('Clear all durable memory entries for this workspace?')) {
@@ -336,18 +399,69 @@ export function MemoryConsolePanel({
       {entryDetail && (
         <div className="task-section-card">
           <h4>Entry Detail</h4>
+          <p>
+            <strong>Governance:</strong> {governanceLabel(entryDetail.summary.governance_state)}
+            {entryDetail.summary.governance_issue_count > 0 ? ` · ${entryDetail.summary.governance_issue_count} suggestions` : ''}
+          </p>
+          <p>
+            <strong>Category / scope / type:</strong> {entryDetail.summary.category ?? 'uncategorized'} / {entryDetail.summary.scope} / {entryDetail.summary.memory_type}
+          </p>
+          <p>
+            <strong>Task / directive / agent:</strong> {entryDetail.summary.task_id ?? 'n/a'} / {entryDetail.summary.directive_id ?? 'n/a'} / {entryDetail.summary.agent_id ?? 'n/a'}
+          </p>
+          <p>
+            <strong>Confidence / tags:</strong> {Math.round(entryDetail.summary.confidence * 100)}% / {entryDetail.summary.tags.join(', ') || 'none'}
+          </p>
           <input
             value={entryDetail.summary.summary}
             onChange={(e) => setEntryDetail({ ...entryDetail, summary: { ...entryDetail.summary, summary: e.target.value } })}
           />
+          <select
+            value={entryDetail.summary.governance_state}
+            onChange={(e) => setEntryDetail({
+              ...entryDetail,
+              summary: {
+                ...entryDetail.summary,
+                governance_state: e.target.value as MemoryConsoleEntryDetail['summary']['governance_state'],
+              },
+            })}
+          >
+            <option value="active">active</option>
+            <option value="pinned">pinned</option>
+            <option value="needs_review">needs review</option>
+            <option value="superseded">superseded</option>
+            <option value="archived">archived</option>
+          </select>
           <textarea
             value={entryDetail.content}
             onChange={(e) => setEntryDetail({ ...entryDetail, content: e.target.value })}
             rows={8}
           />
+          <textarea
+            value={entryDetail.governance_note ?? ''}
+            onChange={(e) => setEntryDetail({ ...entryDetail, governance_note: e.target.value || null })}
+            rows={3}
+            placeholder="Governance note"
+          />
+          {entryDetail.governance_suggestions.length > 0 && (
+            <div>
+              <h5>Governance suggestions</h5>
+              {entryDetail.governance_suggestions.map((suggestion) => (
+                <p key={`${suggestion.relationship}-${suggestion.entry_id}`}>
+                  <strong>{suggestion.relationship.replace(/_/g, ' ')}</strong>: {suggestion.rationale} ({Math.round(suggestion.confidence * 100)}%)
+                </p>
+              ))}
+            </div>
+          )}
+          {(entryDetail.strategy_key || entryDetail.outcome_labels.length > 0) && (
+            <div>
+              <p><strong>Strategy:</strong> {entryDetail.strategy_key || 'n/a'}</p>
+              <p><strong>Outcomes:</strong> {entryDetail.outcome_labels.join(', ') || 'none'}</p>
+            </div>
+          )}
           <div className="task-header-actions">
             <button className="task-action-btn" onClick={() => void saveEntry()} disabled={busy}>Save</button>
-            <button className="task-action-btn" onClick={() => void setMemoryEntryArchived(entryDetail.summary.entry_id, !entryDetail.summary.archived, selectedSessionId, selectedWorkspaceDir).then(setEntryDetail)}>
+            <button className="task-action-btn" onClick={() => void setMemoryEntryArchived(entryDetail.summary.entry_id, !entryDetail.summary.archived, selectedSessionId, selectedWorkspaceDir).then(async (next) => { setEntryDetail(next); await refreshOverview(); })}>
               {entryDetail.summary.archived ? 'Restore' : 'Archive'}
             </button>
             <button className="task-action-btn danger" onClick={() => window.confirm('Delete this memory entry?') && void deleteMemoryEntry(entryDetail.summary.entry_id, selectedSessionId, selectedWorkspaceDir).then(() => { setEntryDetail(null); return refreshOverview(); })}>Delete</button>
