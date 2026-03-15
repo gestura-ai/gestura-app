@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
@@ -86,6 +87,15 @@ pub use gestura_core::agent_sessions::{
 fn default_session_tool_settings() -> SessionToolSettings {
     let config = gestura_core::config::AppConfig::load();
     SessionToolSettings::from_global_config(&config)
+}
+
+/// Build a sparse per-session tool-settings override without snapshotting the
+/// global enabled-tools map.
+fn sparse_session_tool_settings(permission_level: SessionPermissionLevel) -> SessionToolSettings {
+    SessionToolSettings {
+        permission_level,
+        enabled_tools: HashMap::new(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -356,6 +366,42 @@ impl WindowManager {
                 .focused(false)
                 .devtools(true)
                 .build()?;
+
+        // Keep the hidden-on-create behavior that avoids a flash before the
+        // React shell applies theme/layout, but do not depend on the frontend as
+        // the only path that can reveal the window. If the agent app fails to
+        // call `window.show()` quickly, all session-entry paths (tray actions,
+        // history restore, and listen-now handoff) appear broken because the
+        // window exists but remains invisible.
+        let fallback_window = window.clone();
+        let fallback_label = window_label.to_string();
+        let fallback_session_id = session_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+
+            match fallback_window.is_visible() {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::warn!(
+                        session_id = %fallback_session_id,
+                        window_label = %fallback_label,
+                        "Agent window stayed hidden during startup; forcing it visible"
+                    );
+                    let _ = fallback_window.show();
+                    let _ = fallback_window.set_focus();
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        session_id = %fallback_session_id,
+                        window_label = %fallback_label,
+                        %error,
+                        "Failed to inspect agent window visibility; forcing it visible"
+                    );
+                    let _ = fallback_window.show();
+                    let _ = fallback_window.set_focus();
+                }
+            }
+        });
 
         // Store window info
         let window_info = WindowInfo {
@@ -1184,7 +1230,7 @@ pub fn set_session_permission_level(session_id: &str, level: SessionPermissionLe
                 let tool_settings = session
                     .state
                     .tool_settings
-                    .get_or_insert_with(SessionToolSettings::default);
+                    .get_or_insert_with(|| sparse_session_tool_settings(level));
                 tool_settings.permission_level = level;
             }
         }
@@ -1201,13 +1247,13 @@ pub fn set_session_permission_level(session_id: &str, level: SessionPermissionLe
 /// the corresponding tool.  Persists to disk immediately.
 pub fn set_session_tool_enabled(session_id: &str, tool_name: &str, enabled: bool) {
     if let Some(manager) = get_window_manager() {
+        let effective_permission_level = get_session_tool_settings(session_id).permission_level;
         {
             let mut sessions = manager.sessions.lock().unwrap();
             if let Some(session) = sessions.get_mut(session_id) {
-                let tool_settings = session
-                    .state
-                    .tool_settings
-                    .get_or_insert_with(SessionToolSettings::default);
+                let tool_settings = session.state.tool_settings.get_or_insert_with(|| {
+                    sparse_session_tool_settings(effective_permission_level)
+                });
                 tool_settings
                     .enabled_tools
                     .insert(tool_name.to_string(), enabled);
@@ -1385,4 +1431,17 @@ fn is_gestura_project(dir: &std::path::Path) -> bool {
     let indicators = [".gestura", "Cargo.toml", "package.json", ".git"];
 
     indicators.iter().any(|ind| dir.join(ind).exists())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sparse_session_tool_settings_keeps_only_permission_override() {
+        let settings = sparse_session_tool_settings(SessionPermissionLevel::Full);
+
+        assert_eq!(settings.permission_level, SessionPermissionLevel::Full);
+        assert!(settings.enabled_tools.is_empty());
+    }
 }

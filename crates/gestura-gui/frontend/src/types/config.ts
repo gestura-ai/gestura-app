@@ -119,10 +119,15 @@ export interface ReflectionSettings {
   promotion_confidence_percent: number;
 }
 
+export type CompactionStrategy = 'Summarize' | 'Truncate' | 'Clear' | 'Prompt' | 'MemoryBank';
+
 export interface PipelineSettings {
   max_history_messages: number;
+  iteration_budget_enabled: boolean;
+  max_iterations: number;
+  tracked_task_max_iterations: number;
   auto_compact_threshold_percent: number;
-  compaction_strategy: string;
+  compaction_strategy: CompactionStrategy;
   max_context_tokens: number;
   log_token_usage: boolean;
   reflection: ReflectionSettings;

@@ -1,5 +1,5 @@
 import React from 'react';
-import { AppConfig, LlmSettings, PipelineSettings, ReflectionSettings, UiSettings } from '../../types/config';
+import { AppConfig, CompactionStrategy, LlmSettings, PipelineSettings, ReflectionSettings, UiSettings } from '../../types/config';
 import { FormGroup } from '../../shared/components/FormGroup';
 import { PanelSection } from '../../shared/components/PanelSection';
 
@@ -131,6 +131,51 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ config, onConfigUpdate })
         </FormGroup>
 
         <FormGroup
+          label={
+            <>
+              <input
+                type="checkbox"
+                aria-label="Enable iteration budgets"
+                checked={config.pipeline.iteration_budget_enabled}
+                onChange={(e) => updatePipelineSettings({ iteration_budget_enabled: e.target.checked })}
+              />{' '}
+              Enable iteration budgets
+            </>
+          }
+          hint="When disabled, agent loops are unbounded and stop only when they naturally finish or are cancelled."
+        >
+          {null}
+        </FormGroup>
+
+        <FormGroup
+          label="Max Iterations (General Requests)"
+          hint="Applied to non-task-bound requests when iteration budgets are enabled."
+        >
+          <input
+            type="number"
+            value={config.pipeline.max_iterations}
+            onChange={(e) => updatePipelineSettings({ max_iterations: parseIntegerOr(e.target.value, 10) })}
+            min="1"
+            max="500"
+            disabled={!config.pipeline.iteration_budget_enabled}
+          />
+        </FormGroup>
+
+        <FormGroup
+          label="Max Iterations (Tracked Task Requests)"
+          hint="Applied to implementation / tracked-task requests when iteration budgets are enabled."
+        >
+          <input
+            type="number"
+            value={config.pipeline.tracked_task_max_iterations}
+            onChange={(e) => updatePipelineSettings({ tracked_task_max_iterations: parseIntegerOr(e.target.value, 30) })}
+            min="1"
+            max="1000"
+            disabled={!config.pipeline.iteration_budget_enabled}
+          />
+        </FormGroup>
+
+        <FormGroup
           label="Auto-Compact Threshold (%)"
           hint="Trigger auto-compaction when context reaches this percentage of limit (0-100%)"
         >
@@ -149,7 +194,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ config, onConfigUpdate })
         >
           <select
             value={config.pipeline.compaction_strategy}
-            onChange={(e) => updatePipelineSettings({ compaction_strategy: e.target.value })}
+            onChange={(e) => updatePipelineSettings({ compaction_strategy: e.target.value as CompactionStrategy })}
           >
             <option value="Summarize">Summarize - Condense older messages</option>
             <option value="Truncate">Truncate - Remove oldest messages</option>

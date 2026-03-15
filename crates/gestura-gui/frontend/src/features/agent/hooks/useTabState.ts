@@ -19,6 +19,15 @@ function loadPersistedTabs(): EditorTab[] {
   return [];
 }
 
+function loadPersistedActiveTabId(): string | null {
+  try {
+    const stored = sessionStorage.getItem(ACTIVE_STORAGE_KEY);
+    return stored || null;
+  } catch {
+    return null;
+  }
+}
+
 function persistTabs(tabs: EditorTab[], activeId: string | null) {
   try {
     sessionStorage.setItem(TABS_STORAGE_KEY, JSON.stringify(tabs));
@@ -38,10 +47,7 @@ function persistTabs(tabs: EditorTab[], activeId: string | null) {
  */
 export function useTabState() {
   const [tabs, setTabs] = useState<EditorTab[]>(() => loadPersistedTabs());
-  const [activeTabId, setActiveTabId] = useState<string | null>(() => {
-    const stored = sessionStorage.getItem(ACTIVE_STORAGE_KEY);
-    return stored || null;
-  });
+  const [activeTabId, setActiveTabId] = useState<string | null>(() => loadPersistedActiveTabId());
 
   const openTab = useCallback(
     (file: Omit<EditorTab, 'id' | 'isDirty' | 'scrollOffset' | 'isDiffView'>) => {

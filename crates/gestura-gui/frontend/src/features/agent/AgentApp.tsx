@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import type { ErrorInfo, ReactNode } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 
@@ -23,6 +24,64 @@ export interface AgentAppProps {
 // ─── Editor window sizes ──────────────────────────────────────────────────────
 const EDITOR_SIZE = new LogicalSize(1200, 800);
 const CHAT_SIZE = new LogicalSize(800, 600);
+const AGENT_BOOT_TIMEOUT_MS = 1500;
+
+const prefersDarkMode = (): boolean =>
+  typeof window.matchMedia === 'function'
+  && window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+interface AgentErrorBoundaryProps {
+  sessionId: string;
+  children: ReactNode;
+}
+
+interface AgentErrorBoundaryState {
+  hasError: boolean;
+}
+
+class AgentErrorBoundary extends React.Component<AgentErrorBoundaryProps, AgentErrorBoundaryState> {
+  public constructor(props: AgentErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  public static getDerivedStateFromError(): AgentErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  public componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    console.error('[AgentApp] render failed:', error, errorInfo);
+  }
+
+  public render(): ReactNode {
+    if (this.state.hasError) {
+      return (
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '12px',
+            minHeight: '100vh',
+            padding: '24px',
+            background: 'var(--bg-base, #0b0f14)',
+            color: 'var(--text-primary, #f5f7fa)',
+            fontFamily: 'Inter, system-ui, sans-serif',
+          }}
+        >
+          <h2 style={{ margin: 0, fontSize: '18px' }}>Agent session failed to load</h2>
+          <p style={{ margin: 0, color: 'var(--text-secondary, #a6b0bf)' }}>
+            The agent UI hit a startup error. Please close this window and try again.
+          </p>
+          <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-secondary, #a6b0bf)' }}>
+            Session: {this.props.sessionId || 'unknown'}
+          </p>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 // ─── Root shell ───────────────────────────────────────────────────────────────
 const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
@@ -42,16 +101,36 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
   // Load theme configuration on mount. When the IPC resolves (or fails), mark
   // the app as ready so the window-show effect can fire in the next commit.
   useEffect(() => {
+    let cancelled = false;
+    let readyMarked = false;
+
+    const markReady = () => {
+      if (cancelled || readyMarked) return;
+      readyMarked = true;
+      setIsReady(true);
+    };
+
+    const timer = window.setTimeout(() => {
+      console.warn('[AgentApp] config load timed out — revealing window with default UI settings');
+      markReady();
+    }, AGENT_BOOT_TIMEOUT_MS);
+
     getConfig()
       .then((cfg) => {
+        if (cancelled) return;
         setUiSettings(cfg.ui);
-        setIsReady(true);
+        markReady();
       })
       .catch((err) => {
+        if (cancelled) return;
         console.warn('[AgentApp] config load failed — using defaults:', err);
-        // Still reveal the window so the user is not left staring at nothing.
-        setIsReady(true);
+        markReady();
       });
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, []);
 
   // Once isReady is true, ThemeController will have already committed its
@@ -61,12 +140,13 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
     if (!isReady) return;
     const win = getCurrentWindow();
     // Set the correct initial size for the current view mode before revealing.
-    win
-      .setSize(viewMode === 'editor' ? EDITOR_SIZE : CHAT_SIZE)
+    Promise.resolve(
+      win.setSize(viewMode === 'editor' ? EDITOR_SIZE : CHAT_SIZE)
+    )
       .catch((err) => console.warn('[AgentApp] initial resize failed:', err))
       .finally(() => {
-        win.show().catch((err) => console.warn('[AgentApp] window show failed:', err));
-        win.setFocus().catch(() => { });
+        Promise.resolve(win.show()).catch((err) => console.warn('[AgentApp] window show failed:', err));
+        Promise.resolve(win.setFocus()).catch(() => { });
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isReady]);
@@ -75,7 +155,7 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
   useEffect(() => {
     if (!isReady) return;
     const win = getCurrentWindow();
-    win.setSize(viewMode === 'editor' ? EDITOR_SIZE : CHAT_SIZE).catch((err) =>
+    Promise.resolve(win.setSize(viewMode === 'editor' ? EDITOR_SIZE : CHAT_SIZE)).catch((err) =>
       console.warn('[AgentApp] window resize failed:', err)
     );
   }, [viewMode, isReady]);
@@ -84,7 +164,7 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
   const isDark = useMemo(() => {
     if (uiSettings.theme_mode === 'dark') return true;
     if (uiSettings.theme_mode === 'light') return false;
-    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    return prefersDarkMode();
   }, [uiSettings.theme_mode]);
 
   // Queued rel path to open after EditorArea mounts (race fix).
@@ -201,7 +281,7 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
     : {};
 
   return (
-    <>
+    <AgentErrorBoundary sessionId={sessionId}>
       <ThemeController uiSettings={uiSettings} onUpdate={setUiSettings} />
       <div
         className={[
@@ -255,7 +335,7 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
         )}
         <ChatPanel sessionId={sessionId} onToggleEditor={toggleViewMode} viewMode={viewMode} style={chatStyle} />
       </div>
-    </>
+    </AgentErrorBoundary>
   );
 };
 

@@ -3,6 +3,25 @@ import type { ViewMode } from '../types';
 
 const STORAGE_KEY = 'gestura:agent:viewMode';
 
+function readViewMode(): ViewMode {
+  try {
+    const stored = sessionStorage.getItem(STORAGE_KEY);
+    return stored === 'editor' ? 'editor' : 'message-only';
+  } catch {
+    return 'message-only';
+  }
+}
+
+function persistViewMode(mode: ViewMode): void {
+  try {
+    sessionStorage.setItem(STORAGE_KEY, mode);
+  } catch {
+    // Some native webview environments can throw when sessionStorage is
+    // unavailable. Treat persistence as best-effort so the agent window can
+    // still boot.
+  }
+}
+
 /**
  * Manages the agent window's two-mode layout state.
  *
@@ -13,20 +32,17 @@ const STORAGE_KEY = 'gestura:agent:viewMode';
  * but resets when the window is closed.
  */
 export function useViewMode() {
-  const [viewMode, setViewModeState] = useState<ViewMode>(() => {
-    const stored = sessionStorage.getItem(STORAGE_KEY);
-    return stored === 'editor' ? 'editor' : 'message-only';
-  });
+  const [viewMode, setViewModeState] = useState<ViewMode>(() => readViewMode());
 
   const setViewMode = useCallback((mode: ViewMode) => {
-    sessionStorage.setItem(STORAGE_KEY, mode);
+    persistViewMode(mode);
     setViewModeState(mode);
   }, []);
 
   const toggleViewMode = useCallback(() => {
     setViewModeState((prev) => {
       const next: ViewMode = prev === 'message-only' ? 'editor' : 'message-only';
-      sessionStorage.setItem(STORAGE_KEY, next);
+      persistViewMode(next);
       return next;
     });
   }, []);

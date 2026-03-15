@@ -10,6 +10,50 @@ interface ThemeControllerProps {
   onUpdate: (settings: UiSettings) => void;
 }
 
+type MediaQueryListLegacy = MediaQueryList & {
+  addListener?: (listener: (event: MediaQueryListEvent) => void) => void;
+  removeListener?: (listener: (event: MediaQueryListEvent) => void) => void;
+};
+
+const getSystemDarkPreference = (): boolean => {
+  if (typeof window.matchMedia !== 'function') {
+    return false;
+  }
+
+  try {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  } catch {
+    return false;
+  }
+};
+
+const subscribeToSystemTheme = (
+  listener: (event: MediaQueryListEvent) => void
+): (() => void) => {
+  if (typeof window.matchMedia !== 'function') {
+    return () => { };
+  }
+
+  let mediaQuery: MediaQueryListLegacy;
+  try {
+    mediaQuery = window.matchMedia('(prefers-color-scheme: dark)') as MediaQueryListLegacy;
+  } catch {
+    return () => { };
+  }
+
+  if (typeof mediaQuery.addEventListener === 'function') {
+    mediaQuery.addEventListener('change', listener);
+    return () => mediaQuery.removeEventListener?.('change', listener);
+  }
+
+  if (typeof mediaQuery.addListener === 'function') {
+    mediaQuery.addListener(listener);
+    return () => mediaQuery.removeListener?.(listener);
+  }
+
+  return () => { };
+};
+
 const hexToRgb = (hex: string): string | null => {
   const cleaned = hex.trim().replace(/^#/, '');
   if (cleaned.length !== 6) return null;
@@ -22,7 +66,7 @@ const hexToRgb = (hex: string): string | null => {
 
 const applyTheme = (mode: string, accent: string) => {
   const isDark = mode === 'system'
-    ? window.matchMedia('(prefers-color-scheme: dark)').matches
+    ? getSystemDarkPreference()
     : mode === 'dark';
 
   document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
@@ -52,21 +96,19 @@ const applyTheme = (mode: string, accent: string) => {
   }
 };
 
-const ThemeController: React.FC<ThemeControllerProps> = ({ uiSettings }) => {
+const ThemeController: React.FC<ThemeControllerProps> = ({ uiSettings, onUpdate: _onUpdate }) => {
   useEffect(() => {
     // Apply theme on mount and when settings change
     applyTheme(uiSettings.theme_mode, uiSettings.accent || 'blue');
 
     // Listen for system theme changes
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const handleChange = () => {
       if (uiSettings.theme_mode === 'system') {
         applyTheme('system', uiSettings.accent || 'blue');
       }
     };
 
-    mediaQuery.addEventListener('change', handleChange);
-    return () => mediaQuery.removeEventListener('change', handleChange);
+    return subscribeToSystemTheme(handleChange);
   }, [uiSettings.theme_mode, uiSettings.accent]);
 
   return null; // This component only manages theme, no UI

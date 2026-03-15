@@ -5,6 +5,7 @@ import {
   setSessionPermissionLevel,
   setSessionToolEnabled,
 } from "../../../services/tauri/agent";
+import { getConfig, saveConfig } from "../../../services/tauri/config";
 import { listBuiltinTools } from "../../../services/tauri/tools";
 import type { ToolInfo } from "../../../services/tauri/tools";
 import {
@@ -14,6 +15,7 @@ import {
   listMcpTools,
 } from "../../../services/tauri/mcp";
 import type { McpServer, McpClientTool } from "../../../services/tauri/mcp";
+import type { AppConfig } from "../../../types/config";
 import type { ToastKind } from "../hooks/useToast";
 
 interface SessionSettingsPanelProps {
@@ -48,6 +50,8 @@ export function SessionSettingsPanel({
   const [connectedServers, setConnectedServers] = useState<string[]>([]);
   const [serverOpen, setServerOpen] = useState<Set<string>>(new Set());
   const [isAutoConnecting, setIsAutoConnecting] = useState(false);
+  const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
+  const [isSavingPipelineSettings, setIsSavingPipelineSettings] = useState(false);
 
   // Collapsible section states
   const [builtinOpen, setBuiltinOpen] = useState(true);
@@ -66,6 +70,11 @@ export function SessionSettingsPanel({
   useEffect(() => {
     if (isOpen) void loadWorkspace();
   }, [isOpen, loadWorkspace]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    void getConfig().then(setAppConfig).catch(() => { /* ignore */ });
+  }, [isOpen]);
 
   // Load permission level from settings
   useEffect(() => {
@@ -157,6 +166,76 @@ export function SessionSettingsPanel({
     [sessionId, togglingTool, onRefreshToolSettings, onShowToast],
   );
 
+  const updateGlobalPipelineSettings = useCallback(
+    async (
+      updates: Partial<AppConfig["pipeline"]>,
+      successMessage: string,
+      failureLabel: string,
+    ) => {
+      if (!appConfig) return;
+      const previous = appConfig;
+      const next: AppConfig = {
+        ...appConfig,
+        pipeline: {
+          ...appConfig.pipeline,
+          ...updates,
+        },
+      };
+
+      setAppConfig(next);
+      setIsSavingPipelineSettings(true);
+      try {
+        await saveConfig(next);
+        onShowToast(successMessage, "success");
+      } catch (e) {
+        setAppConfig(previous);
+        onShowToast(`Failed to update ${failureLabel}: ${e}`, "error");
+      } finally {
+        setIsSavingPipelineSettings(false);
+      }
+    },
+    [appConfig, onShowToast],
+  );
+
+  const handleReflectionToggle = useCallback(
+    async (enabled: boolean) => {
+      if (!appConfig) return;
+      await updateGlobalPipelineSettings(
+        {
+          reflection: {
+            ...appConfig.pipeline.reflection,
+            enabled,
+          },
+        },
+        enabled ? "Experiential reflection enabled" : "Experiential reflection disabled",
+        "reflection settings",
+      );
+    },
+    [appConfig, updateGlobalPipelineSettings],
+  );
+
+  const handleIterationBudgetToggle = useCallback(
+    async (enabled: boolean) => {
+      await updateGlobalPipelineSettings(
+        { iteration_budget_enabled: enabled },
+        enabled ? "Iteration budgets enabled" : "Iteration budgets disabled",
+        "iteration budget settings",
+      );
+    },
+    [updateGlobalPipelineSettings],
+  );
+
+  const handleIterationBudgetValue = useCallback(
+    async (field: "max_iterations" | "tracked_task_max_iterations", value: number) => {
+      await updateGlobalPipelineSettings(
+        { [field]: value },
+        "Iteration budget updated",
+        "iteration budget settings",
+      );
+    },
+    [updateGlobalPipelineSettings],
+  );
+
   return (
     <>
       <div
@@ -205,6 +284,68 @@ export function SessionSettingsPanel({
                 </option>
               ))}
             </select>
+          </div>
+
+          <div className="session-divider" />
+
+          <div className="session-field">
+            <label>Experiential Reflection (Global)</label>
+            <label className="tool-checkbox">
+              <input
+                type="checkbox"
+                checked={appConfig?.pipeline.reflection.enabled ?? false}
+                disabled={!appConfig || isSavingPipelineSettings}
+                onChange={(e) => void handleReflectionToggle(e.target.checked)}
+              />
+              <div className="tool-details">
+                <span className="tool-name">Enable reflection for low-quality turns</span>
+                <span className="tool-summary">
+                  Reflection only runs when enabled and a turn scores below the configured quality threshold.
+                </span>
+              </div>
+            </label>
+          </div>
+
+          <div className="session-field">
+            <label>Iteration Budgets (Global)</label>
+            <label className="tool-checkbox">
+              <input
+                type="checkbox"
+                checked={appConfig?.pipeline.iteration_budget_enabled ?? false}
+                disabled={!appConfig || isSavingPipelineSettings}
+                onChange={(e) => void handleIterationBudgetToggle(e.target.checked)}
+              />
+              <div className="tool-details">
+                <span className="tool-name">Enable explicit agent iteration budgets</span>
+                <span className="tool-summary">
+                  When disabled, requests run unbounded until they finish naturally or you cancel them.
+                </span>
+              </div>
+            </label>
+          </div>
+
+          <div className="session-field">
+            <label>General Request Iteration Budget</label>
+            <input
+              type="number"
+              min="1"
+              max="500"
+              value={appConfig?.pipeline.max_iterations ?? 10}
+              disabled={!appConfig || isSavingPipelineSettings || !appConfig.pipeline.iteration_budget_enabled}
+              onChange={(e) => void handleIterationBudgetValue("max_iterations", Number.parseInt(e.target.value, 10) || 10)}
+            />
+          </div>
+
+          <div className="session-field">
+            <label>Tracked Task Iteration Budget</label>
+            <input
+              type="number"
+              min="1"
+              max="1000"
+              value={appConfig?.pipeline.tracked_task_max_iterations ?? 30}
+              disabled={!appConfig || isSavingPipelineSettings || !appConfig.pipeline.iteration_budget_enabled}
+              onChange={(e) => void handleIterationBudgetValue("tracked_task_max_iterations", Number.parseInt(e.target.value, 10) || 30)}
+            />
           </div>
 
           <div className="session-divider" />

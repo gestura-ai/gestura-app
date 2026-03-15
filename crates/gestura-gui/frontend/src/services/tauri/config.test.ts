@@ -33,8 +33,11 @@ const makeConfig = (): AppConfig => ({
   },
   pipeline: {
     max_history_messages: 10,
+    iteration_budget_enabled: false,
+    max_iterations: 10,
+    tracked_task_max_iterations: 30,
     auto_compact_threshold_percent: 75,
-    compaction_strategy: 'none',
+    compaction_strategy: 'Summarize',
     max_context_tokens: 4096,
     log_token_usage: false,
     reflection: {
@@ -53,9 +56,38 @@ describe('config IPC wrappers', () => {
     const cfg = makeConfig();
     mock.mockResolvedValueOnce(cfg);
 
-    await expect(getConfig()).resolves.toEqual(cfg);
+    await expect(getConfig()).resolves.toMatchObject({
+      ...cfg,
+      ui: { accent: 'blue', ...cfg.ui },
+    });
     // getConfig intentionally passes no args object.
     expect(mock).toHaveBeenCalledWith('get_config');
+  });
+
+  it('getConfig fills in omitted default sections from Rust IPC', async () => {
+    const mock = vi.mocked(invokeTauri);
+    mock.mockResolvedValueOnce({
+      hotkey_listen: 'Ctrl+Shift+G',
+      grace_period_secs: 1,
+      voice: { provider: 'local' },
+      llm: { primary: 'openai' },
+      mcp_servers: [],
+      mdh_pointers: {},
+      nats_url: 'nats://127.0.0.1:4222',
+    });
+
+    await expect(getConfig()).resolves.toMatchObject({
+      ui: { theme_mode: 'system', accent: 'blue' },
+      developer: {
+        developer_mode: false,
+        enable_simulators: false,
+      },
+      pipeline: {
+        reflection: {
+          enabled: false,
+        },
+      },
+    });
   });
 
   it('saveConfig invokes save_config with { cfg }', async () => {
@@ -65,6 +97,42 @@ describe('config IPC wrappers', () => {
 
     await saveConfig(cfg);
     expect(mock).toHaveBeenCalledWith('save_config', { cfg });
+  });
+
+  it('saveConfig normalizes legacy compaction strategies before IPC', async () => {
+    const mock = vi.mocked(invokeTauri);
+    const cfg = makeConfig();
+    cfg.pipeline.compaction_strategy = 'message_count' as never;
+    mock.mockResolvedValueOnce(undefined);
+
+    await saveConfig(cfg);
+    expect(mock).toHaveBeenCalledWith('save_config', {
+      cfg: {
+        ...cfg,
+        pipeline: {
+          ...cfg.pipeline,
+          compaction_strategy: 'Summarize',
+        },
+      },
+    });
+  });
+
+  it('getConfig normalizes invalid compaction strategies from Rust IPC payloads', async () => {
+    const mock = vi.mocked(invokeTauri);
+    const cfg = makeConfig();
+    mock.mockResolvedValueOnce({
+      ...cfg,
+      pipeline: {
+        ...cfg.pipeline,
+        compaction_strategy: 'message_count',
+      },
+    });
+
+    await expect(getConfig()).resolves.toMatchObject({
+      pipeline: {
+        compaction_strategy: 'Summarize',
+      },
+    });
   });
 
   it('setUiPrefs invokes set_ui_prefs with { ui }', async () => {

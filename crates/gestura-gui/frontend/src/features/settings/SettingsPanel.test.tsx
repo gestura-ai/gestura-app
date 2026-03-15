@@ -29,6 +29,9 @@ function makeConfig(): AppConfig {
     },
     pipeline: {
       max_history_messages: 10,
+      iteration_budget_enabled: false,
+      max_iterations: 10,
+      tracked_task_max_iterations: 30,
       auto_compact_threshold_percent: 80,
       compaction_strategy: 'Summarize',
       max_context_tokens: 0,
@@ -99,6 +102,30 @@ describe('SettingsPanel reflection controls', () => {
       expect.objectContaining({
         pipeline: expect.objectContaining({
           reflection: expect.objectContaining({ promotion_confidence_percent: 88 }),
+        }),
+      })
+    );
+  });
+
+  it('updates iteration budget settings without dropping sibling pipeline config', () => {
+    const onConfigUpdate = vi.fn().mockResolvedValue(undefined);
+    const { container } = render(
+      <SettingsPanel config={makeConfig()} onConfigUpdate={onConfigUpdate} />
+    );
+
+    const budgetCheckbox = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Enable iteration budgets"]'
+    );
+
+    expect(budgetCheckbox).not.toBeNull();
+
+    fireEvent.click(budgetCheckbox!);
+
+    expect(onConfigUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pipeline: expect.objectContaining({
+          iteration_budget_enabled: true,
+          max_history_messages: 10,
         }),
       })
     );
