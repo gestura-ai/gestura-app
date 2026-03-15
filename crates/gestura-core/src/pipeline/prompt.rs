@@ -77,6 +77,8 @@ impl AgentPipeline {
             }
         }
 
+        self.append_tracked_task_context(&mut prompt, &request.metadata);
+
         // Add history summary if available (for older context)
         if let Some(ref summary) = context.history_summary {
             prompt.push_str(&format!("Conversation summary: {}\n\n", summary));
@@ -162,6 +164,100 @@ impl AgentPipeline {
             prompt.push('\n');
         }
         prompt.push('\n');
+    }
+
+    /// Append the tracked task tree so the model can reference exact task IDs.
+    fn append_tracked_task_context(&self, prompt: &mut String, metadata: &RequestMetadata) {
+        let Some(section) = Self::build_tracked_task_context_with_manager(
+            crate::get_global_task_manager(),
+            metadata,
+        ) else {
+            return;
+        };
+
+        prompt.push_str(&section);
+        if !section.ends_with('\n') {
+            prompt.push('\n');
+        }
+        prompt.push('\n');
+    }
+
+    fn build_tracked_task_context_with_manager(
+        manager: &crate::TaskManager,
+        metadata: &RequestMetadata,
+    ) -> Option<String> {
+        let session_id = metadata.session_id.as_deref()?;
+        let task_id = metadata.task_id.as_deref()?;
+        let tracked_task = manager.get_task(session_id, task_id).ok().flatten()?;
+
+        let mut section = String::from("Tracked task context:\n");
+        section.push_str(
+            "Use these exact task IDs when calling the task tool to update progress. Keep the tracked root task in progress until every planned descendant is completed or cancelled.\n",
+        );
+
+        let mut remaining = 12usize;
+        if let Some(node) = manager
+            .get_task_tree(session_id)
+            .ok()
+            .and_then(|nodes| Self::find_task_tree_node(&nodes, task_id).cloned())
+        {
+            Self::append_task_tree_node_prompt(&mut section, &node, 0, &mut remaining);
+        } else {
+            section.push_str(&format!(
+                "- {} (ID: {}, Status: {:?})\n",
+                tracked_task.name, tracked_task.id, tracked_task.status
+            ));
+            remaining = remaining.saturating_sub(1);
+        }
+
+        if remaining == 0 {
+            section.push_str("- … additional subtasks omitted for brevity\n");
+        }
+
+        Some(section)
+    }
+
+    fn find_task_tree_node<'a>(
+        nodes: &'a [crate::tasks::TaskTreeNode],
+        task_id: &str,
+    ) -> Option<&'a crate::tasks::TaskTreeNode> {
+        for node in nodes {
+            if node.task.id == task_id {
+                return Some(node);
+            }
+
+            if let Some(found) = Self::find_task_tree_node(&node.children, task_id) {
+                return Some(found);
+            }
+        }
+
+        None
+    }
+
+    fn append_task_tree_node_prompt(
+        section: &mut String,
+        node: &crate::tasks::TaskTreeNode,
+        depth: usize,
+        remaining: &mut usize,
+    ) {
+        if *remaining == 0 {
+            return;
+        }
+
+        let indent = "  ".repeat(depth);
+        section.push_str(&format!(
+            "{}- {} (ID: {}, Status: {:?})\n",
+            indent, node.task.name, node.task.id, node.task.status
+        ));
+        *remaining = remaining.saturating_sub(1);
+
+        for child in &node.children {
+            if *remaining == 0 {
+                break;
+            }
+
+            Self::append_task_tree_node_prompt(section, child, depth + 1, remaining);
+        }
     }
 
     /// Search memory bank for relevant entries and load them into context
@@ -398,5 +494,53 @@ impl AgentPipeline {
         }
 
         Some(context)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TaskStatus;
+
+    #[test]
+    fn tracked_task_context_includes_exact_ids_for_nested_subtasks() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let manager = crate::TaskManager::new(temp_dir.path());
+        let session_id = format!("prompt-task-context-{}", uuid::Uuid::new_v4());
+
+        let root = manager
+            .create_task(&session_id, "Build hello app", "desc", None)
+            .expect("root task");
+        let child = manager
+            .create_task(&session_id, "Implement UI", "desc", Some(root.id.clone()))
+            .expect("child task");
+        let grandchild = manager
+            .create_task(&session_id, "Run build", "desc", Some(child.id.clone()))
+            .expect("grandchild task");
+
+        manager
+            .update_task_status(&session_id, &root.id, TaskStatus::InProgress)
+            .expect("root in progress");
+        manager
+            .update_task_status(&session_id, &child.id, TaskStatus::InProgress)
+            .expect("child in progress");
+
+        let metadata = RequestMetadata {
+            session_id: Some(session_id),
+            task_id: Some(root.id.clone()),
+            ..Default::default()
+        };
+
+        let section = AgentPipeline::build_tracked_task_context_with_manager(&manager, &metadata)
+            .expect("tracked task context");
+
+        assert!(section.contains("Tracked task context:"));
+        assert!(section.contains("Use these exact task IDs"));
+        assert!(section.contains(root.id.as_str()));
+        assert!(section.contains(child.id.as_str()));
+        assert!(section.contains(grandchild.id.as_str()));
+        assert!(section.contains("Build hello app"));
+        assert!(section.contains("Implement UI"));
+        assert!(section.contains("Run build"));
     }
 }

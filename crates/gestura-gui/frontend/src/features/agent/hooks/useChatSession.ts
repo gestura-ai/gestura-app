@@ -212,6 +212,7 @@ export function useChatSession(sessionId: string): ChatSessionState {
   const triggerSendRef = useRef<((text: string, taskId: string | null) => Promise<void>) | null>(null);
   /** Tracks the most recently started/completed tool for contextual iteration markers. */
   const lastToolContextRef = useRef<LastToolContext | null>(null);
+  const lastReflectionNoticeRef = useRef<string | null>(null);
 
   // ── Finalize streaming ──────────────────────────────────────────────────────
   const finalizeStream = useCallback((msg?: AgentMessage | null) => {
@@ -226,6 +227,7 @@ export function useChatSession(sessionId: string): ChatSessionState {
     currentThinkingIdRef.current = null;
     currentTextBlockIdRef.current = null;
     currentToolBlockIdRef.current = null;
+    lastReflectionNoticeRef.current = null;
     setStatus({ text: 'Ready', kind: 'ready' });
 
     // Advance queue
@@ -459,6 +461,19 @@ export function useChatSession(sessionId: string): ChatSessionState {
 
       case 'status':
         setStatus({ text: action.text, kind: action.kind as StatusState['kind'] });
+        if (action.kind === 'reflection' && lastReflectionNoticeRef.current !== action.text) {
+          lastReflectionNoticeRef.current = action.text;
+          const id = nanoid();
+          const notice: TextBlock = { kind: 'text', id, content: `*${action.text}*` };
+          setMessages((prev) => [...prev, {
+            id: nanoid(),
+            role: 'assistant',
+            rawMarkdown: action.text,
+            blocks: [notice],
+            isStreaming: false,
+            timestamp: Date.now(),
+          }]);
+        }
         break;
 
       case 'retry':
@@ -618,12 +633,21 @@ export function useChatSession(sessionId: string): ChatSessionState {
   const resolveConfirmation = useCallback(async (decision: ToolConfirmationDecision) => {
     const conf = pendingConfirmationRef.current;
     if (!conf) return;
-    try { await resolveToolConfirmationDecision(conf.confirmation_id, decision); } catch { /* ignore */ }
+    try {
+      await resolveToolConfirmationDecision(
+        conf.confirmation_id,
+        decision,
+        conf.session_id ?? sessionId,
+      );
+    } catch (e) {
+      console.warn('[useChatSession] failed to resolve tool confirmation:', e);
+      return;
+    }
     pendingConfirmationRef.current = null;
     setPendingConfirmation(null);
     const next = confirmationQueueRef.current.shift();
     if (next) { pendingConfirmationRef.current = next; setPendingConfirmation(next); }
-  }, []);
+  }, [sessionId]);
 
   // ── Voice ────────────────────────────────────────────────────────────────────
   const toggleVoice = useCallback(async () => {

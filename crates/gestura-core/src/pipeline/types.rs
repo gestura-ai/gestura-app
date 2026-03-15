@@ -45,6 +45,9 @@ pub trait PipelineConfigExt {
 impl PipelineConfigExt for PipelineConfig {
     fn with_user_settings(mut self, settings: &crate::config::PipelineSettings) -> Self {
         self.max_history_messages = settings.max_history_messages;
+        self.iteration_budget_enabled = settings.iteration_budget_enabled;
+        self.max_iterations = settings.max_iterations;
+        self.tracked_task_max_iterations = settings.tracked_task_max_iterations;
         self.auto_compact_threshold = settings.auto_compact_threshold();
         self.compaction_strategy = settings.compaction_strategy;
         self.log_token_usage = settings.log_token_usage;

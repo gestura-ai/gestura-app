@@ -13,7 +13,7 @@ interface TaskPanelProps {
   sessionId: string;
   tasks: TaskHierarchy;
   onRefreshTasks: () => Promise<void>;
-  onSendMessage: (text: string) => Promise<void>;
+  onSendMessage: (text: string, taskId?: string | null) => Promise<void>;
   onShowToast: (msg: string, kind?: "success" | "error" | "warning" | "info") => void;
 }
 
@@ -74,7 +74,10 @@ export function TaskPanel({
   }, [sessionId, onRefreshTasks, onShowToast]);
 
   const handlePlay = useCallback(async (task: Task) => {
-    await onSendMessage(`Please work on this task: ${task.name}${task.description ? "\n" + task.description : ""}`);
+    await onSendMessage(
+      `Please work on this task: ${task.name}${task.description ? "\n" + task.description : ""}`,
+      task.id,
+    );
     onShowToast(`Started task: ${task.name}`, "info");
     onClose();
   }, [onSendMessage, onShowToast, onClose]);
@@ -90,7 +93,7 @@ export function TaskPanel({
 
   const handleCleanup = useCallback(async () => {
     const done = allTasks.filter(t => t.status === "Completed" || t.status === "Cancelled");
-    await Promise.all(done.map(t => deleteTask(sessionId, t.id).catch(() => {})));
+    await Promise.all(done.map(t => deleteTask(sessionId, t.id).catch(() => { })));
     await onRefreshTasks();
     onShowToast(`Cleaned up ${done.length} finished task(s)`, "success");
   }, [allTasks, sessionId, onRefreshTasks, onShowToast]);

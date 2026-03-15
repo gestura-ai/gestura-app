@@ -226,7 +226,7 @@ export interface StreamHealthPayload {
 
 // ─── Status bar ───────────────────────────────────────────────────────────────
 
-export type StatusKind = 'ready' | 'busy' | 'listening' | 'error';
+export type StatusKind = 'ready' | 'busy' | 'listening' | 'error' | 'reflection';
 
 export interface StatusState {
   text: string;

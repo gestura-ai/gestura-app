@@ -106,8 +106,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ sessionId, onToggleEditor,
 
   const badgeClass =
     status.kind === 'busy' ? ' busy' :
-      status.kind === 'listening' ? ' active' :
-        status.kind === 'error' ? ' error' : '';
+      status.kind === 'reflection' ? ' busy' :
+        status.kind === 'listening' ? ' active' :
+          status.kind === 'error' ? ' error' : '';
 
   return (
     <div className="agent-panel agent-panel--chat" style={style}>

@@ -6,11 +6,64 @@ use tempfile::tempdir;
 fn test_agent_request_builder() {
     let request = AgentRequest::new("Hello world")
         .with_streaming(true)
+        .with_max_iterations(24)
         .with_source(RequestSource::CliTui);
 
     assert_eq!(request.input, "Hello world");
     assert!(request.streaming);
+    assert_eq!(request.max_iterations, Some(24));
     assert_eq!(request.metadata.source, RequestSource::CliTui);
+}
+
+#[test]
+fn test_pipeline_new_honors_user_reflection_settings() {
+    let mut config = AppConfig::default();
+    config.pipeline.reflection.enabled = true;
+    config.pipeline.reflection.quality_threshold_percent = 42;
+
+    let pipeline = AgentPipeline::new(config);
+
+    assert!(pipeline.pipeline_config.reflection.enabled);
+    assert!((pipeline.pipeline_config.reflection.quality_threshold - 0.42).abs() < f32::EPSILON);
+}
+
+#[test]
+fn test_pipeline_new_honors_user_iteration_budget_settings() {
+    let mut config = AppConfig::default();
+    config.pipeline.iteration_budget_enabled = true;
+    config.pipeline.max_iterations = 21;
+    config.pipeline.tracked_task_max_iterations = 84;
+
+    let pipeline = AgentPipeline::new(config);
+
+    assert!(pipeline.pipeline_config.iteration_budget_enabled);
+    assert_eq!(pipeline.pipeline_config.max_iterations, 21);
+    assert_eq!(pipeline.pipeline_config.tracked_task_max_iterations, 84);
+}
+
+#[test]
+fn test_effective_request_max_iterations_is_unbounded_when_budget_disabled() {
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let request = AgentRequest::new("keep going");
+
+    assert_eq!(pipeline.effective_request_max_iterations(&request), None);
+}
+
+#[test]
+fn test_effective_request_max_iterations_uses_tracked_task_budget() {
+    let mut config = AppConfig::default();
+    config.pipeline.iteration_budget_enabled = true;
+    config.pipeline.max_iterations = 12;
+    config.pipeline.tracked_task_max_iterations = 48;
+    let pipeline = AgentPipeline::new(config);
+    let request = AgentRequest::new("finish the implementation")
+        .with_session("session-1")
+        .with_task("task-1");
+
+    assert_eq!(
+        pipeline.effective_request_max_iterations(&request),
+        Some(48)
+    );
 }
 
 #[test]
@@ -258,7 +311,9 @@ async fn enrich_resolved_context_skips_shared_coordination_without_scope_hints()
 #[test]
 fn test_pipeline_config_defaults() {
     let config = PipelineConfig::default();
+    assert!(!config.iteration_budget_enabled);
     assert_eq!(config.max_iterations, 10);
+    assert_eq!(config.tracked_task_max_iterations, 30);
     assert!(config.enable_tools);
     assert!(config.enable_context_reduction);
 }
@@ -455,14 +510,19 @@ async fn restricted_mode_write_tool_denied_emits_tool_call_result_and_skips() {
     use std::sync::Arc;
     use tempfile::tempdir;
     use tokio::sync::mpsc;
+    use uuid::Uuid;
 
     use crate::session_workspace::SessionWorkspace;
     use crate::tool_confirmation::{TOOL_CONFIRMATIONS, ToolConfirmationDecision};
 
-    let pipeline = AgentPipeline::new(AppConfig::default());
     let temp = tempdir().unwrap();
+    let session_id = format!("restricted-denied-{}", Uuid::new_v4());
+    let mut pipeline = AgentPipeline::new(AppConfig::default());
+    pipeline.permission_manager =
+        PermissionManager::from_config_path(temp.path().join("permissions.json"));
     let workspace = Arc::new(
-        SessionWorkspace::from_directory("s1", temp.path().to_path_buf()).expect("workspace"),
+        SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace"),
     );
 
     let (tx, mut rx) = mpsc::channel(32);
@@ -480,6 +540,7 @@ async fn restricted_mode_write_tool_denied_emits_tool_call_result_and_skips() {
         start_time: Instant::now(),
     };
 
+    let spawned_session_id = session_id.clone();
     let handle = tokio::spawn({
         let workspace = workspace.clone();
         async move {
@@ -491,7 +552,7 @@ async fn restricted_mode_write_tool_denied_emits_tool_call_result_and_skips() {
                     pending,
                     FinalizePendingToolCallCtx {
                         workspace: Some(workspace.as_ref()),
-                        session_id: Some("s1".to_string()),
+                        session_id: Some(spawned_session_id.clone()),
                         permission_level: PermissionLevel::Restricted,
                         cancel_token: &cancel,
                         tool_calls_in_iteration: &mut tool_calls_in_iteration,
@@ -522,7 +583,7 @@ async fn restricted_mode_write_tool_denied_emits_tool_call_result_and_skips() {
     TOOL_CONFIRMATIONS
         .resolve_decision(
             &confirmation_id,
-            Some("s1"),
+            Some(&session_id),
             ToolConfirmationDecision::DenyOnce,
         )
         .expect("resolve should succeed");
@@ -548,7 +609,7 @@ async fn restricted_mode_write_tool_denied_emits_tool_call_result_and_skips() {
     let err = TOOL_CONFIRMATIONS
         .resolve_decision(
             &confirmation_id,
-            Some("s1"),
+            Some(&session_id),
             ToolConfirmationDecision::AllowOnce,
         )
         .unwrap_err();
@@ -577,14 +638,19 @@ async fn restricted_mode_write_tool_times_out_and_emits_tool_call_result() {
     use std::time::Duration;
     use tempfile::tempdir;
     use tokio::sync::mpsc;
+    use uuid::Uuid;
 
     use crate::session_workspace::SessionWorkspace;
     use crate::tool_confirmation::{TOOL_CONFIRMATIONS, ToolConfirmationDecision};
 
-    let pipeline = AgentPipeline::new(AppConfig::default());
     let temp = tempdir().unwrap();
+    let session_id = format!("restricted-timeout-{}", Uuid::new_v4());
+    let mut pipeline = AgentPipeline::new(AppConfig::default());
+    pipeline.permission_manager =
+        PermissionManager::from_config_path(temp.path().join("permissions.json"));
     let workspace = Arc::new(
-        SessionWorkspace::from_directory("s1", temp.path().to_path_buf()).expect("workspace"),
+        SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace"),
     );
 
     let (tx, mut rx) = mpsc::channel(32);
@@ -602,6 +668,7 @@ async fn restricted_mode_write_tool_times_out_and_emits_tool_call_result() {
         start_time: Instant::now(),
     };
 
+    let spawned_session_id = session_id.clone();
     let handle = tokio::spawn({
         let workspace = workspace.clone();
         async move {
@@ -613,7 +680,7 @@ async fn restricted_mode_write_tool_times_out_and_emits_tool_call_result() {
                     pending,
                     FinalizePendingToolCallCtx {
                         workspace: Some(workspace.as_ref()),
-                        session_id: Some("s1".to_string()),
+                        session_id: Some(spawned_session_id.clone()),
                         permission_level: PermissionLevel::Restricted,
                         cancel_token: &cancel,
                         tool_calls_in_iteration: &mut tool_calls_in_iteration,
@@ -665,7 +732,7 @@ async fn restricted_mode_write_tool_times_out_and_emits_tool_call_result() {
     let err = TOOL_CONFIRMATIONS
         .resolve_decision(
             &confirmation_id,
-            Some("s1"),
+            Some(&session_id),
             ToolConfirmationDecision::AllowOnce,
         )
         .unwrap_err();

@@ -118,8 +118,11 @@ pub struct AgentRequest {
     pub system_prompt: Option<String>,
     /// Whether to use streaming response
     pub streaming: bool,
-    /// Maximum tool execution iterations (default: 10)
-    pub max_iterations: usize,
+    /// Optional override for the maximum tool execution iterations.
+    ///
+    /// When `None`, the pipeline uses its configured default (or runs unbounded
+    /// when iteration budgeting is disabled).
+    pub max_iterations: Option<usize>,
     /// Request metadata
     pub metadata: RequestMetadata,
     /// Optional paused execution state to resume from.
@@ -338,8 +341,12 @@ pub struct PipelineConfig {
     pub max_output_tokens: usize,
     /// Enable tool execution
     pub enable_tools: bool,
-    /// Maximum agentic loop iterations
+    /// Whether to enforce an iteration budget for agentic loops.
+    pub iteration_budget_enabled: bool,
+    /// Maximum agentic loop iterations for general requests when budgeting is enabled.
     pub max_iterations: usize,
+    /// Maximum agentic loop iterations for tracked-task requests when budgeting is enabled.
+    pub tracked_task_max_iterations: usize,
     /// Enable context reduction
     pub enable_context_reduction: bool,
     /// Enable fallback to secondary provider
@@ -386,7 +393,9 @@ impl Default for PipelineConfig {
             max_context_tokens: 128_000, // Default for modern models
             max_output_tokens: 4_096,
             enable_tools: true,
+            iteration_budget_enabled: false,
             max_iterations: 10,
+            tracked_task_max_iterations: 30,
             enable_context_reduction: true,
             enable_fallback: true,
             always_include_categories: vec![ContextCategory::General],
@@ -438,7 +447,7 @@ impl AgentRequest {
             history: Vec::new(),
             system_prompt: None,
             streaming: true,
-            max_iterations: 10,
+            max_iterations: None,
             metadata: RequestMetadata::default(),
             resume_from: None,
         }
@@ -459,6 +468,12 @@ impl AgentRequest {
     /// Set streaming mode
     pub fn with_streaming(mut self, streaming: bool) -> Self {
         self.streaming = streaming;
+        self
+    }
+
+    /// Override the maximum number of agentic-loop iterations for this request.
+    pub fn with_max_iterations(mut self, max_iterations: usize) -> Self {
+        self.max_iterations = Some(max_iterations);
         self
     }
 

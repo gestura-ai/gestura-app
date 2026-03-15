@@ -147,6 +147,16 @@ impl Default for GlobalPermissionSettings {
 pub struct PipelineSettings {
     /// Maximum number of history messages to include in prompt.
     pub max_history_messages: usize,
+    /// Whether to enforce an iteration budget for agent loops.
+    ///
+    /// When disabled, agent requests run until they reach a natural stopping
+    /// point or are cancelled by the operator.
+    pub iteration_budget_enabled: bool,
+    /// Maximum agent-loop iterations for general requests when budgeting is enabled.
+    pub max_iterations: usize,
+    /// Maximum agent-loop iterations for tracked-task / implementation requests
+    /// when budgeting is enabled.
+    pub tracked_task_max_iterations: usize,
     /// Auto-compaction threshold as percentage (0-100).
     pub auto_compact_threshold_percent: u8,
     /// Strategy to use when auto-compaction is triggered.
@@ -186,6 +196,9 @@ impl Default for PipelineSettings {
     fn default() -> Self {
         Self {
             max_history_messages: 10,
+            iteration_budget_enabled: false,
+            max_iterations: 10,
+            tracked_task_max_iterations: 30,
             auto_compact_threshold_percent: 80,
             compaction_strategy: CompactionStrategy::default(),
             max_context_tokens: 0,
@@ -930,6 +943,13 @@ impl AppConfig {
 
             // Pipeline settings
             "pipeline.max_history_messages" => Some(self.pipeline.max_history_messages.to_string()),
+            "pipeline.iteration_budget_enabled" => {
+                Some(self.pipeline.iteration_budget_enabled.to_string())
+            }
+            "pipeline.max_iterations" => Some(self.pipeline.max_iterations.to_string()),
+            "pipeline.tracked_task_max_iterations" => {
+                Some(self.pipeline.tracked_task_max_iterations.to_string())
+            }
             "pipeline.auto_compact_threshold_percent" => {
                 Some(self.pipeline.auto_compact_threshold_percent.to_string())
             }
@@ -972,6 +992,9 @@ impl AppConfig {
             "ui.theme_mode",
             "ui.accent",
             "pipeline.max_history_messages",
+            "pipeline.iteration_budget_enabled",
+            "pipeline.max_iterations",
+            "pipeline.tracked_task_max_iterations",
             "pipeline.auto_compact_threshold_percent",
             "pipeline.compaction_strategy",
             "pipeline.max_context_tokens",

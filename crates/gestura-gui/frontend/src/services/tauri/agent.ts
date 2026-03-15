@@ -470,14 +470,31 @@ export const listDiscoveredMcpTools = (sessionId: string): Promise<unknown[]> =>
 export const resolveToolConfirmationDecision = (
   confirmationId: string,
   decision: ToolConfirmationDecision,
+  sessionId?: string | null,
 ): Promise<void> =>
-  invokeTauri('resolve_tool_confirmation_decision', { confirmation_id: confirmationId, decision });
+  invokeTauri('resolve_tool_confirmation_decision', {
+    confirmation_id: confirmationId,
+    decision,
+    session_id: sessionId ?? null,
+  });
 
-export const approveToolConfirmation = (confirmationId: string): Promise<void> =>
-  invokeTauri('approve_tool_confirmation', { confirmation_id: confirmationId });
+export const approveToolConfirmation = (
+  confirmationId: string,
+  sessionId?: string | null,
+): Promise<void> =>
+  invokeTauri('approve_tool_confirmation', {
+    confirmation_id: confirmationId,
+    session_id: sessionId ?? null,
+  });
 
-export const denyToolConfirmation = (confirmationId: string): Promise<void> =>
-  invokeTauri('deny_tool_confirmation', { confirmation_id: confirmationId });
+export const denyToolConfirmation = (
+  confirmationId: string,
+  sessionId?: string | null,
+): Promise<void> =>
+  invokeTauri('deny_tool_confirmation', {
+    confirmation_id: confirmationId,
+    session_id: sessionId ?? null,
+  });
 
 // ─── Workspace / shell ────────────────────────────────────────────────────────
 

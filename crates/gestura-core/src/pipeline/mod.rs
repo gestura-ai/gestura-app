@@ -96,9 +96,10 @@ impl AgentPipeline {
         }))
     }
 
-    /// Create a new pipeline with default configuration
+    /// Create a new pipeline using the default runtime configuration merged with
+    /// persisted user pipeline settings from [`AppConfig`].
     pub fn new(config: AppConfig) -> Self {
-        let pipeline_config = PipelineConfig::default();
+        let pipeline_config = PipelineConfig::default().with_user_settings(&config.pipeline);
         let arc_config = std::sync::Arc::new(config.clone());
         let tool_router = build_tool_router(&pipeline_config.tool_routing_strategy, arc_config);
         Self {
@@ -358,6 +359,22 @@ impl AgentPipeline {
             knowledge_store: None,
             knowledge_settings: None,
             tool_router,
+        }
+    }
+
+    fn effective_request_max_iterations(&self, request: &AgentRequest) -> Option<usize> {
+        if let Some(override_limit) = request.max_iterations {
+            return Some(override_limit);
+        }
+
+        if !self.pipeline_config.iteration_budget_enabled {
+            return None;
+        }
+
+        if request.metadata.task_id.is_some() {
+            Some(self.pipeline_config.tracked_task_max_iterations.max(1))
+        } else {
+            Some(self.pipeline_config.max_iterations.max(1))
         }
     }
 
@@ -639,6 +656,8 @@ impl AgentPipeline {
         let reflection_retry_prompt = prompt.clone();
         let reflection_retry_tools = relevant_tools.clone();
         let reflection_retry_context = resolved_context.clone();
+        let effective_max_iterations = self.effective_request_max_iterations(&request);
+        let reflection_quality_budget = effective_max_iterations.unwrap_or(0);
         let mut response = self
             .execute_agentic_loop_streaming(
                 prompt,
@@ -649,6 +668,8 @@ impl AgentPipeline {
                 cancel_token,
                 workspace.as_ref(),
                 request.metadata.session_id.clone(),
+                request.metadata.task_id.clone(),
+                effective_max_iterations,
                 request.metadata.permission_level,
             )
             .await?;
@@ -666,7 +687,7 @@ impl AgentPipeline {
                 &request.metadata,
                 Some(&reflection_tx),
                 &reflection_cancel_token,
-                self.pipeline_config.max_iterations,
+                reflection_quality_budget,
             )
             .await
         {
@@ -1306,6 +1327,8 @@ impl AgentPipeline {
         let reflection_retry_prompt = prompt.clone();
         let reflection_retry_tools = relevant_tools.clone();
         let reflection_retry_context = resolved_context.clone();
+        let effective_max_iterations = self.effective_request_max_iterations(&request);
+        let reflection_quality_budget = effective_max_iterations.unwrap_or(0);
 
         let mut response = self
             .execute_agentic_loop_blocking(
@@ -1314,6 +1337,9 @@ impl AgentPipeline {
                 include_mcp_tool_schemas,
                 resolved_context,
                 workspace.as_ref(),
+                request.metadata.session_id.clone(),
+                request.metadata.task_id.clone(),
+                effective_max_iterations,
             )
             .await?;
 
@@ -1326,7 +1352,7 @@ impl AgentPipeline {
                 &request.metadata,
                 None,
                 &crate::streaming::CancellationToken::new(),
-                self.pipeline_config.max_iterations,
+                reflection_quality_budget,
             )
             .await
         {

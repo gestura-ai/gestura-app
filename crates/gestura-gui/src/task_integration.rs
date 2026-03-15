@@ -11,6 +11,7 @@
 
 use gestura_core::{Task, TaskSource, TaskStatus};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
 /// Returns the process-wide shared [`gestura_core::TaskManager`].
@@ -39,6 +40,94 @@ pub enum TaskEventType {
     Completed,
     Cancelled,
     Deleted,
+}
+
+/// Outcome of reconciling a tracked agent task after a run completes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrackedTaskFinalization {
+    /// The tracked task tree is terminal, so the root task was completed.
+    Completed,
+    /// The run ended while planned subtasks still remained open.
+    StillInProgress { open_subtasks: Vec<String> },
+}
+
+fn merge_task_metadata(
+    existing: Option<serde_json::Value>,
+    patch: serde_json::Value,
+) -> serde_json::Value {
+    let mut merged = existing
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+
+    if let Some(patch_map) = patch.as_object() {
+        for (key, value) in patch_map {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+
+    serde_json::Value::Object(merged)
+}
+
+fn finalize_tracked_task_after_agent_run_with_manager(
+    manager: &gestura_core::TaskManager,
+    session_id: &str,
+    task_id: &str,
+) -> Result<TrackedTaskFinalization, String> {
+    let tracked_task = manager
+        .get_task(session_id, task_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Tracked task '{task_id}' was not found"))?;
+
+    let open_subtasks = manager
+        .list_descendants(session_id, task_id)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|task| !matches!(task.status, TaskStatus::Completed | TaskStatus::Cancelled))
+        .map(|task| task.name)
+        .collect::<Vec<_>>();
+
+    if open_subtasks.is_empty() {
+        if tracked_task.status != TaskStatus::Completed {
+            manager
+                .update_task_status(session_id, task_id, TaskStatus::Completed)
+                .map_err(|e| e.to_string())?;
+        }
+
+        if manager
+            .get_current_task_id(session_id)
+            .map_err(|e| e.to_string())?
+            .as_deref()
+            == Some(task_id)
+        {
+            manager
+                .set_current_task_id(session_id, None)
+                .map_err(|e| e.to_string())?;
+        }
+
+        return Ok(TrackedTaskFinalization::Completed);
+    }
+
+    if tracked_task.status != TaskStatus::InProgress {
+        manager
+            .update_task_status(session_id, task_id, TaskStatus::InProgress)
+            .map_err(|e| e.to_string())?;
+    }
+
+    let metadata = merge_task_metadata(
+        tracked_task.metadata,
+        json!({
+            "agent_run": {
+                "completion_state": "incomplete",
+                "last_finished_at": chrono::Utc::now().to_rfc3339(),
+                "open_subtasks": open_subtasks,
+            }
+        }),
+    );
+    manager
+        .update_task_metadata(session_id, task_id, metadata)
+        .map_err(|e| e.to_string())?;
+
+    Ok(TrackedTaskFinalization::StillInProgress { open_subtasks })
 }
 
 /// Create an agent task and emit events
@@ -165,6 +254,38 @@ pub fn mark_task_cancelled(app: &AppHandle, session_id: &str, task_id: &str) -> 
     update_task_status(app, session_id, task_id, TaskStatus::Cancelled)
 }
 
+/// Finalize a tracked task after an agent run by reconciling its subtask tree.
+pub fn finalize_tracked_task_after_agent_run(
+    app: &AppHandle,
+    session_id: &str,
+    task_id: &str,
+) -> Result<TrackedTaskFinalization, String> {
+    let outcome = finalize_tracked_task_after_agent_run_with_manager(
+        get_task_manager(),
+        session_id,
+        task_id,
+    )?;
+
+    let payload = match &outcome {
+        TrackedTaskFinalization::Completed => json!({
+            "session_id": session_id,
+            "task_id": task_id,
+            "status": format!("{:?}", TaskStatus::Completed),
+            "finalized": true,
+        }),
+        TrackedTaskFinalization::StillInProgress { open_subtasks } => json!({
+            "session_id": session_id,
+            "task_id": task_id,
+            "status": format!("{:?}", TaskStatus::InProgress),
+            "finalized": false,
+            "open_subtasks": open_subtasks,
+        }),
+    };
+    let _ = app.emit("task-updated", payload);
+
+    Ok(outcome)
+}
+
 /// Update task metadata with execution results
 pub fn update_task_with_result(
     app: &AppHandle,
@@ -247,4 +368,124 @@ pub fn get_agent_tasks(session_id: &str) -> Result<Vec<Task>, String> {
         .into_iter()
         .filter(|t| matches!(t.source, TaskSource::Agent | TaskSource::Orchestrator))
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracked_root_completes_when_all_direct_subtasks_are_terminal() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let manager = gestura_core::TaskManager::new(temp_dir.path());
+        let session_id = format!("task-finalize-complete-{}", uuid::Uuid::new_v4());
+
+        let root = manager
+            .create_task(&session_id, "Build hello app", "desc", None)
+            .expect("root task");
+        let child = manager
+            .create_task(&session_id, "Run build", "desc", Some(root.id.clone()))
+            .expect("child task");
+        manager
+            .update_task_status(&session_id, &child.id, TaskStatus::Completed)
+            .expect("complete child");
+        manager
+            .set_current_task_id(&session_id, Some(root.id.clone()))
+            .expect("set current task");
+
+        let outcome =
+            finalize_tracked_task_after_agent_run_with_manager(&manager, &session_id, &root.id)
+                .expect("finalize tracked root");
+
+        assert_eq!(outcome, TrackedTaskFinalization::Completed);
+        let stored_root = manager
+            .get_task(&session_id, &root.id)
+            .expect("get root")
+            .expect("stored root");
+        assert_eq!(stored_root.status, TaskStatus::Completed);
+        assert_eq!(manager.get_current_task_id(&session_id).unwrap(), None);
+    }
+
+    #[test]
+    fn tracked_root_stays_in_progress_when_subtasks_remain_open() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let manager = gestura_core::TaskManager::new(temp_dir.path());
+        let session_id = format!("task-finalize-open-{}", uuid::Uuid::new_v4());
+
+        let root = manager
+            .create_task(&session_id, "Build hello app", "desc", None)
+            .expect("root task");
+        manager
+            .create_task(&session_id, "Run build", "desc", Some(root.id.clone()))
+            .expect("child task");
+
+        let outcome =
+            finalize_tracked_task_after_agent_run_with_manager(&manager, &session_id, &root.id)
+                .expect("reconcile tracked root");
+
+        assert_eq!(
+            outcome,
+            TrackedTaskFinalization::StillInProgress {
+                open_subtasks: vec!["Run build".to_string()],
+            }
+        );
+        let stored_root = manager
+            .get_task(&session_id, &root.id)
+            .expect("get root")
+            .expect("stored root");
+        assert_eq!(stored_root.status, TaskStatus::InProgress);
+        assert_eq!(
+            stored_root
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("agent_run"))
+                .and_then(|value| value.get("completion_state"))
+                .and_then(|value| value.as_str()),
+            Some("incomplete")
+        );
+    }
+
+    #[test]
+    fn tracked_root_stays_in_progress_when_nested_subtasks_remain_open() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let manager = gestura_core::TaskManager::new(temp_dir.path());
+        let session_id = format!("task-finalize-nested-open-{}", uuid::Uuid::new_v4());
+
+        let root = manager
+            .create_task(&session_id, "Build hello app", "desc", None)
+            .expect("root task");
+        let child = manager
+            .create_task(&session_id, "Implement UI", "desc", Some(root.id.clone()))
+            .expect("child task");
+        let grandchild = manager
+            .create_task(&session_id, "Run build", "desc", Some(child.id.clone()))
+            .expect("grandchild task");
+        manager
+            .update_task_status(&session_id, &grandchild.id, TaskStatus::Completed)
+            .expect("complete grandchild");
+
+        let mut task_list = manager.load_task_list(&session_id).expect("load task list");
+        let stored_child = task_list
+            .find_task_mut(&child.id)
+            .expect("stored child task");
+        stored_child.set_status(TaskStatus::Completed);
+        task_list
+            .find_task_mut(&grandchild.id)
+            .expect("stored grandchild task")
+            .set_status(TaskStatus::NotStarted);
+        manager
+            .replace_task_list(task_list)
+            .expect("replace task list");
+
+        let outcome =
+            finalize_tracked_task_after_agent_run_with_manager(&manager, &session_id, &root.id)
+                .expect("reconcile tracked root");
+
+        assert_eq!(
+            outcome,
+            TrackedTaskFinalization::StillInProgress {
+                open_subtasks: vec!["Run build".to_string()],
+            }
+        );
+    }
 }

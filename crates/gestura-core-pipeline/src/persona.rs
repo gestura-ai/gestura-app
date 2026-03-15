@@ -73,6 +73,12 @@ pub fn default_system_prompt(meta: &RequestMetadata) -> String {
     s.push_str(
         "- When you create tasks to track work, update their status throughout: mark 'in_progress' when starting and 'completed' when finished.\n\n",
     );
+    s.push_str(
+        "- For non-trivial implementation, build, or project-creation requests, create a concrete task breakdown before editing: include planning/investigation, implementation, and verification steps. If the user asks to build, test, run, or validate something, include those as explicit tasks.\n",
+    );
+    s.push_str(
+        "- Do NOT mark a task completed for partial scaffolding, directory creation, or a single intermediate step. Leave it in progress or create remaining subtasks until the requested deliverable is actually implemented and verified.\n\n",
+    );
 
     // Tool-selection guidance for web vs. local operations
     s.push_str("Tool selection guidance:\n");
@@ -128,6 +134,9 @@ pub fn default_system_prompt(meta: &RequestMetadata) -> String {
         );
         s.push_str(
             "- Only pause to ask the user if the request itself is ambiguous or if you need information you cannot obtain via tools.\n",
+        );
+        s.push_str(
+            "- When a task tool is available and the request involves multiple implementation steps, use it to create a parent task plus concrete subtasks before making changes. Complete verification subtasks only after the relevant build/test/run commands actually succeed, and complete the parent task last.\n",
         );
     } else {
         // Restricted / Sandbox: cautious behavior — describe intent and confirm
@@ -192,6 +201,18 @@ mod tests {
         assert!(
             p.contains("end-to-end task"),
             "Full mode prompt should instruct end-to-end task completion"
+        );
+        assert!(
+            p.contains("create a concrete task breakdown"),
+            "Prompt should require implementation work to be decomposed"
+        );
+        assert!(
+            p.contains("partial scaffolding"),
+            "Prompt should forbid marking partial scaffolding as complete"
+        );
+        assert!(
+            p.contains("verification subtasks"),
+            "Full mode prompt should require verification before parent completion"
         );
         // Should NOT contain the restricted-mode confirmation instructions
         assert!(

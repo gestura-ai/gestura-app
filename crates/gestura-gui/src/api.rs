@@ -81,6 +81,335 @@ async fn run_single_shot_pipeline(
         .map_err(|e| e.to_string())
 }
 
+fn should_auto_plan_agent_request(message: &str, explicit_task_id: Option<&str>) -> bool {
+    if explicit_task_id.is_some() {
+        return false;
+    }
+
+    let text = message.trim().to_ascii_lowercase();
+    if text.is_empty() || text.starts_with('/') {
+        return false;
+    }
+
+    let signals = [
+        "carefully plan",
+        "plan and implement",
+        "build and test",
+        "implement",
+        "build",
+        "test",
+        "create",
+        "setup",
+        "set up",
+        "refactor",
+        "fix",
+    ];
+
+    signals
+        .iter()
+        .filter(|signal| text.contains(**signal))
+        .count()
+        >= 2
+}
+
+fn should_resume_active_task_request(message: &str, explicit_task_id: Option<&str>) -> bool {
+    if explicit_task_id.is_some() {
+        return false;
+    }
+
+    let text = message.trim().to_ascii_lowercase();
+    if text.is_empty() || text.starts_with('/') {
+        return false;
+    }
+
+    [
+        "continue",
+        "please complete",
+        "complete",
+        "finish",
+        "keep going",
+        "go on",
+        "resume",
+        "proceed",
+        "carry on",
+        "keep working",
+    ]
+    .iter()
+    .any(|signal| text.contains(signal))
+}
+
+fn task_is_open(status: gestura_core::TaskStatus) -> bool {
+    !matches!(
+        status,
+        gestura_core::TaskStatus::Completed | gestura_core::TaskStatus::Cancelled
+    )
+}
+
+fn resolve_tracked_task_id(
+    manager: &gestura_core::TaskManager,
+    session_id: &str,
+    message: &str,
+    explicit_task_id: Option<&str>,
+    auto_planned_task_id: Option<&str>,
+) -> Option<String> {
+    if let Some(task_id) = explicit_task_id {
+        return Some(task_id.to_string());
+    }
+
+    if let Some(task_id) = auto_planned_task_id {
+        return Some(task_id.to_string());
+    }
+
+    if !should_resume_active_task_request(message, explicit_task_id) {
+        return None;
+    }
+
+    if let Ok(Some(current_task_id)) = manager.get_current_task_id(session_id)
+        && let Ok(Some(task)) = manager.get_task(session_id, &current_task_id)
+        && task_is_open(task.status)
+    {
+        return Some(current_task_id);
+    }
+
+    let active_roots = manager
+        .get_hierarchy(session_id)
+        .ok()?
+        .into_iter()
+        .filter(|(root, _)| task_is_open(root.status))
+        .map(|(root, _)| root.id)
+        .collect::<Vec<_>>();
+
+    if active_roots.len() == 1 {
+        active_roots.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn derive_agent_request_task_name(message: &str) -> String {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return "Agent request".to_string();
+    }
+
+    let first_line = trimmed
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or(trimmed);
+    let shortened: String = first_line.trim().chars().take(60).collect();
+
+    if first_line.trim().chars().count() > 60 {
+        format!("{}...", shortened)
+    } else {
+        shortened
+    }
+}
+
+fn collect_auto_plan_execution_context(
+    session_id: &str,
+    root_task_id: &str,
+) -> Option<(String, Vec<String>)> {
+    let manager = crate::task_integration::get_task_manager();
+    let root_task = manager.get_task(session_id, root_task_id).ok()??;
+
+    let planned_subtasks = manager
+        .list_descendants(session_id, root_task_id)
+        .ok()?
+        .into_iter()
+        .filter(|task| {
+            !matches!(
+                task.status,
+                gestura_core::TaskStatus::Completed | gestura_core::TaskStatus::Cancelled
+            )
+        })
+        .take(8)
+        .map(|task| format!("{} [{}]", task.name, task.status))
+        .collect();
+
+    Some((root_task.name, planned_subtasks))
+}
+
+fn build_auto_plan_execution_handoff_message(
+    original_message: &str,
+    root_task_name: &str,
+    planned_subtasks: &[String],
+) -> String {
+    let mut handoff = String::new();
+    handoff.push_str(original_message.trim());
+    handoff.push_str("\n\n[Runtime execution handoff]\n");
+    handoff.push_str(&format!(
+        "A task plan already exists for this request under the tracked task \"{}\". Your job now is to execute that plan, not to stop after planning.\n",
+        root_task_name
+    ));
+
+    if !planned_subtasks.is_empty() {
+        handoff.push_str("Start with the best next incomplete subtask from this plan:\n");
+        for subtask in planned_subtasks {
+            handoff.push_str("- ");
+            handoff.push_str(subtask);
+            handoff.push('\n');
+        }
+    }
+
+    handoff.push_str(
+        "Begin concrete implementation work immediately. Use the available tools to inspect files, edit code, build, test, and update task statuses as you start and finish each planned subtask. Do not claim the request is complete while any planned subtask remains open, and only mark the tracked root task complete after every subtask is terminal. Do not end the run after only reviewing the plan or task list.\n",
+    );
+    handoff
+}
+
+async fn generate_requirement_breakdown(
+    session_id: &str,
+    requirements: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut cfg = AppConfig::load_async().await;
+    let _effective_llm = apply_session_llm_config_overrides(&mut cfg, Some(session_id));
+
+    let prompt = format!(
+        r#"You are a project planning assistant. Analyze the following requirements and break them down into a structured task list.
+
+Requirements:
+{}
+
+Please respond with a JSON array of tasks. Each task should have:
+- "name": A concise task name (max 60 chars)
+- "description": A detailed description of what needs to be done
+- "priority": "high", "medium", or "low"
+- "is_blocking": true if other tasks depend on this, false otherwise
+- "parent_name": null for root tasks, or the exact name of the parent task for subtasks
+
+Order tasks by priority and logical execution order. Group related tasks under parent tasks.
+
+Example format:
+[
+  {{"name": "Setup project structure", "description": "Initialize the project...", "priority": "high", "is_blocking": true, "parent_name": null}},
+  {{"name": "Configure build system", "description": "Set up the build...", "priority": "high", "is_blocking": false, "parent_name": "Setup project structure"}}
+]
+
+Respond ONLY with the JSON array, no additional text."#,
+        requirements
+    );
+
+    let response = run_single_shot_pipeline(cfg, prompt, RequestSource::GuiText, Some(session_id))
+        .await
+        .map_err(|e| format!("LLM error: {}", e))?;
+
+    let tasks_json: serde_json::Value = serde_json::from_str(&response).map_err(|e| {
+        format!(
+            "Failed to parse LLM response: {}. Response was: {}",
+            e, response
+        )
+    })?;
+
+    tasks_json
+        .as_array()
+        .cloned()
+        .ok_or_else(|| "LLM response is not a JSON array".to_string())
+}
+
+fn format_breakdown_task_description(task_json: &serde_json::Value) -> String {
+    let priority = task_json
+        .get("priority")
+        .and_then(|v| v.as_str())
+        .unwrap_or("medium");
+    let is_blocking = task_json
+        .get("is_blocking")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    format!(
+        "{}\n\n[Priority: {} | Blocking: {}]",
+        task_json
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
+        priority,
+        if is_blocking { "Yes" } else { "No" }
+    )
+}
+
+async fn auto_plan_agent_request(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    message: &str,
+) -> Result<String, String> {
+    let root_name = derive_agent_request_task_name(message);
+    let root_description = format!(
+        "Autogenerated execution plan for request:\n\n{}",
+        message.trim()
+    );
+    let root_task = crate::task_integration::create_agent_task(
+        app,
+        session_id,
+        &root_name,
+        &root_description,
+        None,
+        None,
+    )?;
+    let _ = crate::task_integration::get_task_manager()
+        .set_current_task_id(session_id, Some(root_task.id.clone()));
+    let _ = crate::task_integration::mark_task_in_progress(app, session_id, &root_task.id);
+
+    match generate_requirement_breakdown(session_id, message).await {
+        Ok(tasks_array) => {
+            let mut name_to_id: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+
+            for task_json in &tasks_array {
+                let parent_name = task_json.get("parent_name").and_then(|v| v.as_str());
+                if parent_name.is_some() && !parent_name.unwrap_or_default().is_empty() {
+                    continue;
+                }
+
+                let name = task_json
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Untitled Task");
+                let task = crate::task_integration::create_agent_task(
+                    app,
+                    session_id,
+                    name,
+                    &format_breakdown_task_description(task_json),
+                    None,
+                    Some(root_task.id.clone()),
+                )?;
+                name_to_id.insert(name.to_string(), task.id.clone());
+            }
+
+            for task_json in &tasks_array {
+                let Some(parent_name) = task_json.get("parent_name").and_then(|v| v.as_str())
+                else {
+                    continue;
+                };
+                if parent_name.is_empty() {
+                    continue;
+                }
+                let parent_id = name_to_id
+                    .get(parent_name)
+                    .cloned()
+                    .unwrap_or_else(|| root_task.id.clone());
+                let name = task_json
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Untitled Subtask");
+                let task = crate::task_integration::create_agent_task(
+                    app,
+                    session_id,
+                    name,
+                    &format_breakdown_task_description(task_json),
+                    None,
+                    Some(parent_id),
+                )?;
+                name_to_id.insert(name.to_string(), task.id.clone());
+            }
+        }
+        Err(error) => {
+            tracing::warn!(session_id = %session_id, error = %error, "Failed to auto-plan agent request; keeping root task only");
+        }
+    }
+
+    Ok(root_task.id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,6 +444,120 @@ mod tests {
                 // Timeout elapsed - acceptable (provider may be slow to fail)
             }
         }
+    }
+
+    #[test]
+    fn auto_plan_heuristic_detects_multi_step_requests() {
+        assert!(should_auto_plan_agent_request(
+            "I want to create a small tauri gui that says hello world. Please carefully plan and implement then build and test it.",
+            None,
+        ));
+        assert!(!should_auto_plan_agent_request("/tools", None));
+        assert!(!should_auto_plan_agent_request("hello", None));
+        assert!(!should_auto_plan_agent_request(
+            "build and test it",
+            Some("task-1")
+        ));
+    }
+
+    #[test]
+    fn continuation_heuristic_detects_resume_requests() {
+        assert!(should_resume_active_task_request("please complete", None));
+        assert!(should_resume_active_task_request("continue", None));
+        assert!(!should_resume_active_task_request("hello there", None));
+        assert!(!should_resume_active_task_request(
+            "please complete",
+            Some("task-1")
+        ));
+    }
+
+    #[test]
+    fn derives_agent_request_task_name_from_first_line() {
+        assert_eq!(
+            derive_agent_request_task_name("Create a small tauri gui that says hello world"),
+            "Create a small tauri gui that says hello world"
+        );
+    }
+
+    #[test]
+    fn auto_plan_execution_handoff_pushes_into_implementation() {
+        let handoff = build_auto_plan_execution_handoff_message(
+            "Build a small Tauri hello world app",
+            "Build a small Tauri hello world app",
+            &[
+                "Scaffold the Tauri app [not_started]".to_string(),
+                "Run build and smoke tests [not_started]".to_string(),
+            ],
+        );
+
+        assert!(handoff.contains("task plan already exists"));
+        assert!(handoff.contains("execute that plan"));
+        assert!(handoff.contains("Scaffold the Tauri app [not_started]"));
+        assert!(handoff.contains("Begin concrete implementation work immediately"));
+        assert!(
+            handoff.contains("update task statuses as you start and finish each planned subtask")
+        );
+        assert!(
+            handoff.contains(
+                "only mark the tracked root task complete after every subtask is terminal"
+            )
+        );
+        assert!(handoff.contains("Do not end the run after only reviewing the plan or task list"));
+    }
+
+    #[test]
+    fn resolve_tracked_task_id_reattaches_current_task_for_continue_prompt() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let manager = gestura_core::TaskManager::new(temp_dir.path());
+        let session_id = format!("resume-task-{}", uuid::Uuid::new_v4());
+        let root = manager
+            .create_task(&session_id, "Build hello app", "desc", None)
+            .expect("root task");
+        manager
+            .set_current_task_id(&session_id, Some(root.id.clone()))
+            .expect("set current task");
+
+        let tracked = resolve_tracked_task_id(&manager, &session_id, "please complete", None, None);
+
+        assert_eq!(tracked.as_deref(), Some(root.id.as_str()));
+    }
+
+    #[test]
+    fn auto_plan_execution_context_includes_nested_open_tasks() {
+        let manager = crate::task_integration::get_task_manager();
+        let session_id = format!("auto-plan-context-{}", uuid::Uuid::new_v4());
+        let mut root = gestura_core::Task::new(&session_id, "Root", "Root", None);
+        let mut child = gestura_core::Task::new(
+            &session_id,
+            "Implement UI",
+            "Implement UI",
+            Some(root.id.clone()),
+        );
+        let grandchild = gestura_core::Task::new(
+            &session_id,
+            "Run build",
+            "Run build",
+            Some(child.id.clone()),
+        );
+        child.set_status(gestura_core::TaskStatus::Completed);
+        root.set_status(gestura_core::TaskStatus::InProgress);
+
+        let mut task_list = gestura_core::TaskList::new(&session_id);
+        task_list.add_task(root.clone());
+        task_list.add_task(child);
+        task_list.add_task(grandchild);
+        manager
+            .replace_task_list(task_list)
+            .expect("replace task list");
+
+        let (root_name, planned_subtasks) =
+            collect_auto_plan_execution_context(&session_id, &root.id).expect("execution context");
+
+        assert_eq!(root_name, "Root");
+        assert_eq!(
+            planned_subtasks,
+            vec!["Run build [not_started]".to_string()]
+        );
     }
 }
 
@@ -1660,6 +2103,7 @@ pub async fn process_agent_message_streaming(
     app: tauri::AppHandle,
     message: String,
     session_id: Option<String>,
+    task_id: Option<String>,
     source: Option<String>,
 ) -> Result<(), String> {
     use gestura_core::{CancellationToken, StreamChunk};
@@ -2102,43 +2546,54 @@ pub async fn process_agent_message_streaming(
         cfg.llm.primary
     );
 
-    // Create an agent task for this agent processing (if we have a session)
-    // This makes agent work visible in the task panel
-    let agent_task_id: Option<String> = if let Some(ref sid) = resolved_session_id {
-        let task_name = {
-            let preview: String = message.chars().take(50).collect();
-            if message.len() > 50 {
-                format!("{}...", preview)
-            } else {
-                preview
+    let auto_planned_task_id = if let Some(sid) = resolved_session_id.as_deref() {
+        if should_auto_plan_agent_request(&message, task_id.as_deref()) {
+            match auto_plan_agent_request(&app, sid, &message).await {
+                Ok(task_id) => Some(task_id),
+                Err(error) => {
+                    tracing::warn!(session_id = %sid, error = %error, "Failed to auto-create request plan before agent execution");
+                    None
+                }
             }
-        };
-
-        match crate::task_integration::create_agent_task(
-            &app, sid, &task_name, &message,
-            None, // agent_id - we could use the provider name here
-            None, // parent_id
-        ) {
-            Ok(task) => {
-                tracing::debug!(
-                    task_id = %task.id,
-                    session_id = %sid,
-                    "Created agent task for agent processing"
-                );
-                // Mark as in progress immediately
-                let _ = crate::task_integration::mark_task_in_progress(&app, sid, &task.id);
-                Some(task.id)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "Failed to create agent task for agent processing"
-                );
-                None
-            }
+        } else {
+            None
         }
     } else {
         None
+    };
+
+    // If the request is tied to an existing task (e.g. from the task panel),
+    // track status on that task. For multi-step implementation requests without
+    // an explicit task, auto-plan a root task + subtasks first and track that
+    // root task through the run.
+    let tracked_task_id: Option<String> = match &resolved_session_id {
+        Some(sid) => {
+            let resolved_task_id = resolve_tracked_task_id(
+                crate::task_integration::get_task_manager(),
+                sid,
+                &message,
+                task_id.as_deref(),
+                auto_planned_task_id.as_deref(),
+            );
+
+            if let Some(task_id) = resolved_task_id.as_deref() {
+                crate::task_integration::mark_task_in_progress(&app, sid, task_id)
+                    .map_err(|e| format!("Failed to start task '{task_id}': {e}"))?;
+                let _ = crate::task_integration::get_task_manager()
+                    .set_current_task_id(sid, Some(task_id.to_string()));
+            }
+
+            resolved_task_id
+        }
+        None if task_id.is_some() => {
+            let task_id = task_id.as_deref().unwrap_or_default();
+            tracing::warn!(
+                task_id = %task_id,
+                "Received task_id without a resolved session; task progress will not be tracked"
+            );
+            None
+        }
+        _ => None,
     };
 
     // Create channel for streaming chunks
@@ -2197,13 +2652,34 @@ pub async fn process_agent_message_streaming(
     let history_snapshot = history.clone();
     let input_snapshot = message.clone();
 
-    let mut request = AgentRequest::new(&message)
+    let request_input = match (resolved_session_id.as_deref(), tracked_task_id.as_deref()) {
+        (Some(session_id), Some(root_task_id)) => {
+            if let Some((root_task_name, planned_subtasks)) =
+                collect_auto_plan_execution_context(session_id, root_task_id)
+            {
+                build_auto_plan_execution_handoff_message(
+                    &message,
+                    &root_task_name,
+                    &planned_subtasks,
+                )
+            } else {
+                message.clone()
+            }
+        }
+        _ => message.clone(),
+    };
+
+    let mut request = AgentRequest::new(&request_input)
         .with_streaming(true)
         .with_source(request_source)
         .with_history(history);
 
     if let Some(ref sid) = resolved_session_id {
         request = request.with_session(sid);
+    }
+
+    if let Some(task_id) = tracked_task_id.as_deref() {
+        request = request.with_task(task_id);
     }
 
     // Set workspace directory for sandboxed operations
@@ -2617,9 +3093,31 @@ pub async fn process_agent_message_streaming(
                         );
                     }
 
-                // Mark agent task as completed
-                if let (Some(sid), Some(task_id)) = (&resolved_session_id, &agent_task_id) {
-                    let _ = crate::task_integration::mark_task_completed(&app, sid, task_id);
+                // Reconcile the tracked task tree before closing the run.
+                if let (Some(sid), Some(task_id)) = (&resolved_session_id, &tracked_task_id) {
+                    match crate::task_integration::finalize_tracked_task_after_agent_run(
+                        &app, sid, task_id,
+                    ) {
+                        Ok(crate::task_integration::TrackedTaskFinalization::Completed) => {}
+                        Ok(crate::task_integration::TrackedTaskFinalization::StillInProgress {
+                            open_subtasks,
+                        }) => {
+                            tracing::info!(
+                                session_id = %sid,
+                                task_id = %task_id,
+                                open_subtasks = ?open_subtasks,
+                                "Tracked task run finished but planned subtasks remain open"
+                            );
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                session_id = %sid,
+                                task_id = %task_id,
+                                error = %error,
+                                "Failed to reconcile tracked task state after agent run"
+                            );
+                        }
+                    }
                 }
 
                 emit("agent-stream-done", serde_json::json!(null));
@@ -2670,7 +3168,7 @@ pub async fn process_agent_message_streaming(
                 // Mark agent task as cancelled when explicitly cancelled.
                 if !is_paused
                     && let (Some(sid), Some(task_id)) =
-                        (&resolved_session_id, &agent_task_id)
+                        (&resolved_session_id, &tracked_task_id)
                 {
                     let _ =
                         crate::task_integration::mark_task_cancelled(&app, sid, task_id);
@@ -2701,7 +3199,7 @@ pub async fn process_agent_message_streaming(
                     }
 
                 // Mark agent task as cancelled (error case)
-                if let (Some(sid), Some(task_id)) = (&resolved_session_id, &agent_task_id) {
+                if let (Some(sid), Some(task_id)) = (&resolved_session_id, &tracked_task_id) {
                     let _ = crate::task_integration::mark_task_cancelled(&app, sid, task_id);
                 }
 
@@ -5581,55 +6079,7 @@ pub async fn break_down_requirements(
     session_id: String,
     requirements: String,
 ) -> Result<Vec<String>, String> {
-    let mut cfg = AppConfig::load_async().await;
-    let _effective_llm = apply_session_llm_config_overrides(&mut cfg, Some(&session_id));
-
-    // Construct a prompt that instructs the LLM to break down requirements
-    let prompt = format!(
-        r#"You are a project planning assistant. Analyze the following requirements and break them down into a structured task list.
-
-Requirements:
-{}
-
-Please respond with a JSON array of tasks. Each task should have:
-- "name": A concise task name (max 60 chars)
-- "description": A detailed description of what needs to be done
-- "priority": "high", "medium", or "low"
-- "is_blocking": true if other tasks depend on this, false otherwise
-- "parent_name": null for root tasks, or the exact name of the parent task for subtasks
-
-Order tasks by priority and logical execution order. Group related tasks under parent tasks.
-
-Example format:
-[
-  {{"name": "Setup project structure", "description": "Initialize the project...", "priority": "high", "is_blocking": true, "parent_name": null}},
-  {{"name": "Configure build system", "description": "Set up the build...", "priority": "high", "is_blocking": false, "parent_name": "Setup project structure"}}
-]
-
-Respond ONLY with the JSON array, no additional text."#,
-        requirements
-    );
-
-    let response = run_single_shot_pipeline(
-        cfg,
-        prompt,
-        RequestSource::GuiText,
-        Some(session_id.as_str()),
-    )
-    .await
-    .map_err(|e| format!("LLM error: {}", e))?;
-
-    // Parse the LLM response as JSON
-    let tasks_json: serde_json::Value = serde_json::from_str(&response).map_err(|e| {
-        format!(
-            "Failed to parse LLM response: {}. Response was: {}",
-            e, response
-        )
-    })?;
-
-    let tasks_array = tasks_json
-        .as_array()
-        .ok_or_else(|| "LLM response is not a JSON array".to_string())?;
+    let tasks_array = generate_requirement_breakdown(&session_id, &requirements).await?;
 
     let manager = get_task_manager();
     let mut created_task_ids = Vec::new();
@@ -5637,7 +6087,7 @@ Respond ONLY with the JSON array, no additional text."#,
         std::collections::HashMap::new();
 
     // First pass: create root tasks (no parent)
-    for task_json in tasks_array {
+    for task_json in &tasks_array {
         let parent_name = task_json.get("parent_name").and_then(|v| v.as_str());
         if parent_name.is_some() && !parent_name.unwrap().is_empty() {
             continue; // Skip subtasks in first pass
@@ -5649,24 +6099,7 @@ Respond ONLY with the JSON array, no additional text."#,
             .unwrap_or("Untitled Task")
             .to_string();
 
-        let priority = task_json
-            .get("priority")
-            .and_then(|v| v.as_str())
-            .unwrap_or("medium");
-        let is_blocking = task_json
-            .get("is_blocking")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        let description = format!(
-            "{}\n\n[Priority: {} | Blocking: {}]",
-            task_json
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or(""),
-            priority,
-            if is_blocking { "Yes" } else { "No" }
-        );
+        let description = format_breakdown_task_description(task_json);
 
         let task = manager
             .create_task(&session_id, name.clone(), description, None)
@@ -5686,7 +6119,7 @@ Respond ONLY with the JSON array, no additional text."#,
     }
 
     // Second pass: create subtasks
-    for task_json in tasks_array {
+    for task_json in &tasks_array {
         let parent_name = match task_json.get("parent_name").and_then(|v| v.as_str()) {
             Some(name) if !name.is_empty() => name,
             _ => continue, // Skip root tasks
@@ -5700,24 +6133,7 @@ Respond ONLY with the JSON array, no additional text."#,
             .unwrap_or("Untitled Subtask")
             .to_string();
 
-        let priority = task_json
-            .get("priority")
-            .and_then(|v| v.as_str())
-            .unwrap_or("medium");
-        let is_blocking = task_json
-            .get("is_blocking")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        let description = format!(
-            "{}\n\n[Priority: {} | Blocking: {}]",
-            task_json
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or(""),
-            priority,
-            if is_blocking { "Yes" } else { "No" }
-        );
+        let description = format_breakdown_task_description(task_json);
 
         let task = manager
             .create_task(&session_id, name.clone(), description, parent_id)
