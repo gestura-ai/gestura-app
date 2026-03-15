@@ -180,15 +180,13 @@ impl ToolConfirmationManager {
         }
         .ok_or_else(|| format!("Unknown confirmation id: {confirmation_id}"))?;
 
-        if let Some(expected) = pending.session_id.as_deref() {
-            let got = session_id.ok_or_else(|| {
-                format!("Missing session id while resolving confirmation {confirmation_id}")
-            })?;
-            if expected != got {
-                return Err(format!(
-                    "Session mismatch for confirmation {confirmation_id}: expected {expected}, got {got}"
-                ));
-            }
+        if let Some(expected) = pending.session_id.as_deref()
+            && let Some(got) = session_id
+            && expected != got
+        {
+            return Err(format!(
+                "Session mismatch for confirmation {confirmation_id}: expected {expected}, got {got}"
+            ));
         }
 
         // If the receiver side already went away (timeout/cancel), treat as success.
@@ -306,6 +304,21 @@ mod tests {
         );
         let err = mgr.resolve(&id, Some("s2"), true).unwrap_err();
         assert!(err.contains("Session mismatch"));
+    }
+
+    #[tokio::test]
+    async fn resolve_allows_missing_session_id_when_confirmation_id_matches() {
+        let mgr = ToolConfirmationManager::new();
+        let id = "c2b".to_string();
+        let rx = mgr.register(
+            id.clone(),
+            Some("s1".to_string()),
+            "shell".to_string(),
+            "{}".to_string(),
+        );
+
+        mgr.resolve(&id, None, true).unwrap();
+        assert!(rx.await.unwrap().is_allowed());
     }
 
     #[tokio::test]

@@ -56,10 +56,10 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "Shell command to run"},
+                    "command": {"type": "string", "description": "Shell command to run. Commands must be non-interactive: this tool cannot answer prompts or confirmations, so include unattended flags such as -y/--yes/CI=1 when needed."},
                     "cwd": {"type": "string", "description": "Working directory (optional)"},
                     "env": {"type": "object", "description": "Environment variables", "additionalProperties": {"type": "string"}},
-                    "timeout_secs": {"type": "integer", "description": "Timeout in seconds (optional, default 60)"}
+                    "timeout_secs": {"type": "integer", "description": "Timeout in seconds (optional, default 60). Interactive commands are not supported; if a command may prompt, use non-interactive flags or ask the user first."}
                 },
                 "required": ["command"],
                 "additionalProperties": true
@@ -72,7 +72,7 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "description": "File operation to perform. 'write' requires 'path' and 'content'. 'edit' requires 'path', 'old', and 'new'. 'search' requires 'path' and 'pattern'. 'read', 'list', and 'tree' require 'path' (defaults to '.' if omitted).",
+                        "description": "File operation to perform. 'write' requires 'path' and the full file 'content' (or clear aliases like 'contents'/'text'); do not send 'pattern' or line numbers for write. 'edit' requires 'path', 'old', and 'new'. 'search' requires 'path' and 'pattern'. 'read', 'list', and 'tree' require 'path' (defaults to '.' if omitted).",
                         "enum": ["read", "write", "edit", "list", "tree", "search"]
                     },
                     "path": {
@@ -81,7 +81,7 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                     },
                     "content": {
                         "type": "string",
-                        "description": "Content to write to file. REQUIRED when operation='write'."
+                        "description": "Full content to write to the file. REQUIRED when operation='write'. For partial changes, use operation='edit' with 'old' and 'new' instead."
                     },
                     "old": {
                         "type": "string",
@@ -282,11 +282,11 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                     },
                     "task_id": {
                         "type": "string",
-                        "description": "Task ID. REQUIRED for update_status, update, delete operations."
+                        "description": "Task ID. REQUIRED for update_status, update, delete operations. Omit this field entirely for create/list/get_hierarchy; do not send the string 'None' or 'null'."
                     },
                     "name": {
                         "type": "string",
-                        "description": "Task name. REQUIRED for create operation."
+                        "description": "Task name. REQUIRED for create operation. Provide plain text only; do not wrap it in XML or parameter tags."
                     },
                     "description": {
                         "type": "string",
@@ -295,13 +295,51 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                     "status": {
                         "type": "string",
                         "enum": ["notstarted", "inprogress", "completed", "cancelled"],
-                        "description": "Task status. REQUIRED for update_status operation. Use 'notstarted', 'inprogress', 'completed', or 'cancelled'."
+                        "description": "Task status. REQUIRED for update_status operation. Use plain JSON text only: 'notstarted', 'inprogress', 'completed', or 'cancelled'. Do not wrap status in XML/parameter tags."
                     },
                     "parent_id": {
                         "type": "string",
-                        "description": "Parent task ID for creating subtasks. Optional for create operation."
+                        "description": "Parent task ID for creating subtasks. Optional for create operation. Omit this field when there is no parent; do not send the string 'None' or 'null'."
                     }
                 },
+                "oneOf": [
+                    {
+                        "properties": {
+                            "operation": { "enum": ["create"] }
+                        },
+                        "required": ["operation", "name"]
+                    },
+                    {
+                        "properties": {
+                            "operation": { "enum": ["update_status"] }
+                        },
+                        "required": ["operation", "task_id", "status"]
+                    },
+                    {
+                        "properties": {
+                            "operation": { "enum": ["update"] }
+                        },
+                        "required": ["operation", "task_id"]
+                    },
+                    {
+                        "properties": {
+                            "operation": { "enum": ["delete"] }
+                        },
+                        "required": ["operation", "task_id"]
+                    },
+                    {
+                        "properties": {
+                            "operation": { "enum": ["list"] }
+                        },
+                        "required": ["operation"]
+                    },
+                    {
+                        "properties": {
+                            "operation": { "enum": ["get_hierarchy"] }
+                        },
+                        "required": ["operation"]
+                    }
+                ],
                 "required": ["operation"],
                 "additionalProperties": true
             }),
@@ -551,5 +589,32 @@ mod tests {
                 .iter()
                 .any(|v| v == "command")
         );
+
+        let command_description =
+            schemas.openai[0]["function"]["parameters"]["properties"]["command"]["description"]
+                .as_str()
+                .expect("shell command description should exist");
+        assert!(command_description.contains("non-interactive"));
+    }
+
+    #[test]
+    fn task_schema_requires_name_for_create_operation() {
+        let task = find_tool("task").unwrap();
+        let schemas = build_provider_tool_schemas(&[task]);
+
+        let branches = schemas.openai[0]["function"]["parameters"]["oneOf"]
+            .as_array()
+            .expect("task schema should define oneOf branches");
+
+        let create_branch = branches
+            .iter()
+            .find(|branch| branch["properties"]["operation"]["enum"][0] == "create")
+            .expect("missing create branch");
+
+        let required = create_branch["required"]
+            .as_array()
+            .expect("create branch should have required fields");
+
+        assert!(required.iter().any(|value| value == "name"));
     }
 }

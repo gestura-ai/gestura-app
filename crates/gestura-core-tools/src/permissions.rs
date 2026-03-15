@@ -145,6 +145,14 @@ impl PermissionManager {
             .join("gestura")
             .join("permissions.json");
 
+        Self::from_config_path(config_path)
+    }
+
+    /// Create a permission manager backed by an explicit config path.
+    ///
+    /// This is useful for tests and isolated runtimes that must avoid reading or
+    /// writing the default user-scoped permissions file.
+    pub fn from_config_path(config_path: PathBuf) -> Self {
         tracing::debug!(
             config_path = ?config_path,
             "Initializing PermissionManager"

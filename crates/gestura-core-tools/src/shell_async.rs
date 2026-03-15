@@ -4,12 +4,12 @@
 //! `tokio::task::spawn_blocking` for use in async contexts (pipeline, GUI).
 
 use crate::error::{AppError, Result};
-use crate::shell::ShellTools;
+use crate::shell::{CommandResult, ShellTools};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Execute a shell command asynchronously.
-pub async fn execute_command(command: &str, cwd: Option<&str>) -> Result<String> {
+pub async fn execute_command(command: &str, cwd: Option<&str>) -> Result<CommandResult> {
     execute_command_with_options(command, cwd, None, Some(60)).await
 }
 
@@ -19,7 +19,7 @@ pub async fn execute_command_with_options(
     cwd: Option<&str>,
     env: Option<&HashMap<String, String>>,
     timeout_secs: Option<u64>,
-) -> Result<String> {
+) -> Result<CommandResult> {
     let tools = ShellTools::new();
     let cmd = command.to_string();
     let work_dir = cwd.map(PathBuf::from);
@@ -27,15 +27,7 @@ pub async fn execute_command_with_options(
     let timeout = timeout_secs;
 
     tokio::task::spawn_blocking(move || {
-        tools
-            .run_with_options(&cmd, work_dir.as_deref(), env_map.as_ref(), timeout)
-            .map(|r| {
-                if r.success {
-                    r.stdout
-                } else {
-                    format!("Error (exit {}): {}", r.exit_code, r.stderr)
-                }
-            })
+        tools.run_with_options(&cmd, work_dir.as_deref(), env_map.as_ref(), timeout)
     })
     .await
     .map_err(|e| AppError::Io(std::io::Error::other(format!("Task join error: {}", e))))?

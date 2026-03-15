@@ -74,6 +74,7 @@ impl ShellTools {
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
             .arg(command)
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 

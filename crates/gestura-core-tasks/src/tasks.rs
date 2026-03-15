@@ -499,6 +499,34 @@ impl TaskList {
             .collect()
     }
 
+    /// Get all descendant tasks of a given task in depth-first order.
+    pub fn descendants(&self, task_id: &str) -> Vec<&Task> {
+        let mut descendants = Vec::new();
+        let mut pending_ids = self
+            .subtasks(task_id)
+            .into_iter()
+            .map(|task| task.id.clone())
+            .collect::<Vec<_>>();
+        let mut seen = HashSet::new();
+
+        while let Some(current_id) = pending_ids.pop() {
+            if !seen.insert(current_id.clone()) {
+                continue;
+            }
+
+            let Some(task) = self.find_task(&current_id) else {
+                continue;
+            };
+            descendants.push(task);
+
+            for child in self.subtasks(&current_id) {
+                pending_ids.push(child.id.clone());
+            }
+        }
+
+        descendants
+    }
+
     /// Return `true` when the task is blocked by any dependency that is not terminal.
     pub fn is_task_blocked(&self, task_id: &str) -> Result<bool, TaskError> {
         let task = self
@@ -516,6 +544,62 @@ impl TaskList {
         }
 
         Ok(false)
+    }
+
+    /// Validate that a task can transition to the requested status.
+    fn validate_status_transition(
+        &self,
+        task_id: &str,
+        status: TaskStatus,
+    ) -> Result<(), TaskError> {
+        if status != TaskStatus::Completed {
+            return Ok(());
+        }
+
+        let task = self
+            .find_task(task_id)
+            .ok_or_else(|| TaskError::NotFound(task_id.to_string()))?;
+
+        if self.is_task_blocked(task_id)? {
+            return Err(TaskError::InvalidInput(format!(
+                "task '{}' cannot be completed while dependencies remain open",
+                task.name
+            )));
+        }
+
+        let open_subtasks: Vec<&Task> = self
+            .descendants(task_id)
+            .into_iter()
+            .filter(|subtask| !subtask.is_terminal())
+            .collect();
+        if !open_subtasks.is_empty() {
+            let names = open_subtasks
+                .iter()
+                .map(|subtask| format!("'{}'", subtask.name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(TaskError::InvalidInput(format!(
+                "task '{}' cannot be completed while subtasks remain open: {}",
+                task.name, names
+            )));
+        }
+
+        if let Some(job) = task.background_job.as_ref()
+            && matches!(
+                job.status,
+                TaskBackgroundStatus::Queued
+                    | TaskBackgroundStatus::Blocked
+                    | TaskBackgroundStatus::AwaitingApproval
+                    | TaskBackgroundStatus::Running
+            )
+        {
+            return Err(TaskError::InvalidInput(format!(
+                "task '{}' cannot be completed while its background job is still {:?}",
+                task.name, job.status
+            )));
+        }
+
+        Ok(())
     }
 
     /// Add a dependency relationship: `task_id` is blocked by `blocked_by_id`.
@@ -793,6 +877,7 @@ impl TaskManager {
         status: TaskStatus,
     ) -> Result<(), TaskError> {
         let mut task_list = self.get_or_load(session_id)?;
+        task_list.validate_status_transition(task_id, status)?;
         let task = task_list
             .find_task_mut(task_id)
             .ok_or_else(|| TaskError::NotFound(task_id.to_string()))?;
@@ -852,6 +937,24 @@ impl TaskManager {
         }
 
         Ok(hierarchy)
+    }
+
+    /// List all descendant tasks for the given task.
+    pub fn list_descendants(
+        &self,
+        session_id: &str,
+        task_id: &str,
+    ) -> Result<Vec<Task>, TaskError> {
+        let task_list = self.get_or_load(session_id)?;
+        if task_list.find_task(task_id).is_none() {
+            return Err(TaskError::NotFound(task_id.to_string()));
+        }
+
+        Ok(task_list
+            .descendants(task_id)
+            .into_iter()
+            .cloned()
+            .collect())
     }
 
     /// Get a full recursive task tree for a session.
@@ -1332,6 +1435,128 @@ mod tests {
 
         let list = manager.load_task_list(session_id).unwrap();
         assert!(!list.is_task_blocked(&task.id).unwrap());
+    }
+
+    #[test]
+    fn test_task_manager_rejects_completion_with_open_subtasks() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let session_id = "session-123";
+
+        let parent = manager
+            .create_task(session_id, "Build hello world", "Create the app", None)
+            .unwrap();
+        let child = manager
+            .create_task(
+                session_id,
+                "Implement UI",
+                "Render hello world in a Tauri window",
+                Some(parent.id.clone()),
+            )
+            .unwrap();
+
+        let err = manager
+            .update_task_status(session_id, &parent.id, TaskStatus::Completed)
+            .unwrap_err();
+
+        assert!(matches!(err, TaskError::InvalidInput(_)));
+        assert!(err.to_string().contains("Implement UI"));
+
+        manager
+            .update_task_status(session_id, &child.id, TaskStatus::Completed)
+            .unwrap();
+        manager
+            .update_task_status(session_id, &parent.id, TaskStatus::Completed)
+            .unwrap();
+    }
+
+    #[test]
+    fn test_task_list_descendants_include_nested_children() {
+        let mut list = TaskList::new("session-123");
+        let root = Task::new("session-123", "Root", "Root", None);
+        let child = Task::new("session-123", "Child", "Child", Some(root.id.clone()));
+        let grandchild = Task::new(
+            "session-123",
+            "Grandchild",
+            "Grandchild",
+            Some(child.id.clone()),
+        );
+
+        let root_id = root.id.clone();
+        let child_id = child.id.clone();
+        let grandchild_id = grandchild.id.clone();
+
+        list.add_task(root);
+        list.add_task(child);
+        list.add_task(grandchild);
+
+        let descendants = list.descendants(&root_id);
+        assert_eq!(descendants.len(), 2);
+        assert!(descendants.iter().any(|task| task.id == child_id));
+        assert!(descendants.iter().any(|task| task.id == grandchild_id));
+    }
+
+    #[test]
+    fn test_task_manager_rejects_completion_with_open_nested_descendants() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let session_id = "session-nested-123";
+
+        let mut root = Task::new(session_id, "Root", "Root", None);
+        let mut child = Task::new(session_id, "Child", "Child", Some(root.id.clone()));
+        let grandchild = Task::new(
+            session_id,
+            "Grandchild",
+            "Grandchild",
+            Some(child.id.clone()),
+        );
+        child.set_status(TaskStatus::Completed);
+        root.set_status(TaskStatus::InProgress);
+
+        let mut task_list = TaskList::new(session_id);
+        task_list.add_task(root.clone());
+        task_list.add_task(child);
+        task_list.add_task(grandchild);
+        manager.replace_task_list(task_list).unwrap();
+
+        let err = manager
+            .update_task_status(session_id, &root.id, TaskStatus::Completed)
+            .unwrap_err();
+
+        assert!(matches!(err, TaskError::InvalidInput(_)));
+        assert!(err.to_string().contains("Grandchild"));
+    }
+
+    #[test]
+    fn test_task_manager_rejects_completion_while_blocked() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let session_id = "session-123";
+
+        let plan = manager
+            .create_task(session_id, "Plan work", "Break down the task", None)
+            .unwrap();
+        let implementation = manager
+            .create_task(session_id, "Implement app", "Build the Tauri app", None)
+            .unwrap();
+
+        manager
+            .add_task_dependency(session_id, &implementation.id, &plan.id)
+            .unwrap();
+
+        let err = manager
+            .update_task_status(session_id, &implementation.id, TaskStatus::Completed)
+            .unwrap_err();
+
+        assert!(matches!(err, TaskError::InvalidInput(_)));
+        assert!(err.to_string().contains("dependencies remain open"));
+
+        manager
+            .update_task_status(session_id, &plan.id, TaskStatus::Completed)
+            .unwrap();
+        manager
+            .update_task_status(session_id, &implementation.id, TaskStatus::Completed)
+            .unwrap();
     }
 
     #[test]

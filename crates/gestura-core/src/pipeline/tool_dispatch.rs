@@ -23,6 +23,377 @@ pub(super) struct FinalizePendingToolCallCtx<'a> {
 }
 
 impl AgentPipeline {
+    fn normalize_optional_tool_string(raw: &str) -> Option<String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty()
+            || trimmed.eq_ignore_ascii_case("none")
+            || trimmed.eq_ignore_ascii_case("null")
+        {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+
+    fn strip_xml_comments(raw: &str) -> String {
+        let mut output = String::new();
+        let mut cursor = 0usize;
+        let open = "<!--";
+        let close = "-->";
+
+        while let Some(start_rel) = raw[cursor..].find(open) {
+            let start = cursor + start_rel;
+            output.push_str(&raw[cursor..start]);
+            let comment_start = start + open.len();
+            let Some(end_rel) = raw[comment_start..].find(close) else {
+                return output.trim().to_string();
+            };
+            cursor = comment_start + end_rel + close.len();
+        }
+
+        output.push_str(&raw[cursor..]);
+        output.trim().to_string()
+    }
+
+    fn normalize_task_reference(raw: &str) -> Option<String> {
+        let stripped = Self::strip_parameter_fragments(&Self::strip_xml_comments(raw));
+        let trimmed = stripped
+            .trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '\\');
+
+        for token in trimmed.split(|c: char| {
+            c.is_whitespace() || matches!(c, '<' | '>' | ',' | ';' | '(' | ')' | '[' | ']')
+        }) {
+            let candidate = token
+                .trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '\\');
+            if let Ok(uuid) = uuid::Uuid::parse_str(candidate) {
+                return Some(uuid.to_string());
+            }
+        }
+
+        Self::normalize_optional_tool_string(trimmed)
+    }
+
+    fn normalize_tool_path(raw: &str) -> Option<String> {
+        let stripped = Self::strip_parameter_fragments(raw);
+        let trimmed = stripped.trim();
+        let trimmed = trimmed
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .or_else(|| {
+                trimmed
+                    .strip_prefix('\'')
+                    .and_then(|value| value.strip_suffix('\''))
+            })
+            .unwrap_or(trimmed)
+            .trim();
+        Self::normalize_optional_tool_string(trimmed)
+    }
+
+    fn normalize_file_tool_arguments(args: serde_json::Value) -> serde_json::Value {
+        let mut obj = match args {
+            serde_json::Value::Object(map) => map,
+            other => return other,
+        };
+
+        let mut recovered = serde_json::Map::new();
+        for value in obj.values() {
+            if let Some(raw) = value.as_str() {
+                for (name, content) in Self::extract_parameter_fragments(raw) {
+                    recovered
+                        .entry(name)
+                        .or_insert_with(|| serde_json::Value::String(content));
+                }
+            }
+        }
+
+        for (key, value) in recovered {
+            obj.entry(key).or_insert(value);
+        }
+
+        if let Some(operation) = obj.get("operation").and_then(|value| value.as_str()) {
+            let normalized = Self::strip_parameter_fragments(operation)
+                .trim()
+                .to_ascii_lowercase();
+            if !normalized.is_empty() {
+                obj.insert(
+                    "operation".to_string(),
+                    serde_json::Value::String(normalized),
+                );
+            }
+        }
+
+        if let Some(path) = obj.get("path").and_then(|value| value.as_str())
+            && let Some(normalized) = Self::normalize_tool_path(path)
+        {
+            obj.insert("path".to_string(), serde_json::Value::String(normalized));
+        }
+
+        let operation = obj
+            .get("operation")
+            .and_then(|value| value.as_str())
+            .unwrap_or("read")
+            .to_string();
+
+        for (alias, canonical) in [
+            ("old_str", "old"),
+            ("new_str", "new"),
+            ("replacement", "new"),
+            ("pattern", "old"),
+            ("content", "new"),
+        ] {
+            if obj.get(canonical).is_none()
+                && let Some(value) = obj.get(alias).cloned()
+            {
+                obj.insert(canonical.to_string(), value);
+            }
+        }
+
+        if operation == "write" && obj.get("content").is_none() {
+            for alias in [
+                "contents", "text", "data", "body", "value", "new", "new_str",
+            ] {
+                if let Some(value) = obj.get(alias).cloned() {
+                    obj.insert("content".to_string(), value);
+                    break;
+                }
+            }
+        }
+
+        serde_json::Value::Object(obj)
+    }
+
+    fn extract_parameter_fragments(raw: &str) -> Vec<(String, String)> {
+        let mut extracted = Vec::new();
+        let raw = Self::strip_xml_comments(raw);
+        let mut cursor = 0usize;
+        let open = "<parameter name=\"";
+        let close = "</parameter>";
+
+        while let Some(start_rel) = raw[cursor..].find(open) {
+            let start = cursor + start_rel;
+            let name_start = start + open.len();
+            let Some(name_end_rel) = raw[name_start..].find("\">") else {
+                break;
+            };
+            let name_end = name_start + name_end_rel;
+            let value_start = name_end + 2;
+            let next_parameter_start = raw[value_start..].find(open).map(|idx| value_start + idx);
+            let closing_parameter_end = raw[value_start..].find(close).map(|idx| value_start + idx);
+
+            let (value_end, next_cursor) = match (closing_parameter_end, next_parameter_start) {
+                (Some(close_idx), Some(next_idx)) if next_idx < close_idx => (next_idx, next_idx),
+                (Some(close_idx), _) => (close_idx, close_idx + close.len()),
+                (None, Some(next_idx)) => (next_idx, next_idx),
+                (None, None) => (raw.len(), raw.len()),
+            };
+
+            let name = raw[name_start..name_end].trim();
+            let value = raw[value_start..value_end].trim();
+            if !name.is_empty() && !value.is_empty() {
+                extracted.push((name.to_string(), value.to_string()));
+            }
+            cursor = next_cursor;
+        }
+
+        extracted
+    }
+
+    fn strip_parameter_fragments(raw: &str) -> String {
+        let raw = Self::strip_xml_comments(raw);
+        let mut output = String::new();
+        let mut cursor = 0usize;
+        let open = "<parameter name=\"";
+        let close = "</parameter>";
+
+        while let Some(start_rel) = raw[cursor..].find(open) {
+            let start = cursor + start_rel;
+            output.push_str(&raw[cursor..start]);
+            let name_start = start + open.len();
+            let Some(name_end_rel) = raw[name_start..].find("\">") else {
+                return output.trim().to_string();
+            };
+            let value_start = name_start + name_end_rel + 2;
+            let next_parameter_start = raw[value_start..].find(open).map(|idx| value_start + idx);
+            let closing_parameter_end = raw[value_start..]
+                .find(close)
+                .map(|idx| value_start + idx + close.len());
+
+            cursor = match (closing_parameter_end, next_parameter_start) {
+                (Some(close_idx), Some(next_idx)) if next_idx < close_idx => next_idx,
+                (Some(close_idx), _) => close_idx,
+                (None, Some(next_idx)) => next_idx,
+                (None, None) => raw.len(),
+            };
+        }
+
+        output.push_str(&raw[cursor..]);
+        output.replace("</parameter>", "").trim().to_string()
+    }
+
+    fn infer_task_name(description: &str) -> Option<String> {
+        let line = description
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())?;
+        let shortened: String = line.chars().take(60).collect();
+        if shortened.is_empty() {
+            None
+        } else if line.chars().count() > 60 {
+            Some(format!("{}...", shortened))
+        } else {
+            Some(shortened)
+        }
+    }
+
+    fn parse_task_status(raw: &str) -> Option<crate::TaskStatus> {
+        let normalized = raw.trim().to_ascii_lowercase().replace('-', "_");
+        match normalized.as_str() {
+            "notstarted" | "not_started" | "todo" => Some(crate::TaskStatus::NotStarted),
+            "blocked" | "waiting" => Some(crate::TaskStatus::Blocked),
+            "inprogress" | "in_progress" | "started" | "running" | "active" => {
+                Some(crate::TaskStatus::InProgress)
+            }
+            "completed" | "complete" | "done" | "finished" => Some(crate::TaskStatus::Completed),
+            "cancelled" | "canceled" => Some(crate::TaskStatus::Cancelled),
+            _ => None,
+        }
+    }
+
+    fn shell_output_looks_interactive(output: &str) -> bool {
+        let normalized = output.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return false;
+        }
+
+        [
+            "ok to proceed?",
+            "need to install the following packages",
+            "would you like to continue",
+            "press enter to continue",
+            "select an option",
+            "(y/n)",
+            "[y/n]",
+            "yes/no",
+            "confirm",
+        ]
+        .iter()
+        .any(|needle| normalized.contains(needle))
+    }
+
+    fn format_shell_failure(exit_code: i32, stdout: &str, stderr: &str) -> String {
+        let stdout = stdout.trim_end();
+        let stderr = stderr.trim_end();
+        let mut sections = Vec::new();
+        if !stdout.is_empty() {
+            sections.push(format!("stdout:\n{}", stdout));
+        }
+        if !stderr.is_empty() {
+            sections.push(format!("stderr:\n{}", stderr));
+        }
+        let combined = sections.join("\n\n");
+
+        if exit_code == 124 && Self::shell_output_looks_interactive(&combined) {
+            if combined.is_empty() {
+                return "Exit 124: Command likely waited for interactive input, but the shell tool is non-interactive and cannot answer prompts. Retry with unattended flags such as `-y`, `--yes`, `CI=1`, or an equivalent non-interactive mode, or ask the user for confirmation.".to_string();
+            }
+
+            return format!(
+                "Exit 124: Command likely waited for interactive input, but the shell tool is non-interactive and cannot answer prompts. Retry with unattended flags such as `-y`, `--yes`, `CI=1`, or an equivalent non-interactive mode, or ask the user for confirmation.\n\n{}",
+                combined
+            );
+        }
+
+        if combined.is_empty() {
+            if exit_code == 124 {
+                "Exit 124: Command timed out".to_string()
+            } else {
+                format!("Exit {exit_code}")
+            }
+        } else {
+            format!("Exit {exit_code}:\n{combined}")
+        }
+    }
+
+    fn infer_missing_task_status(
+        manager: &crate::TaskManager,
+        session_id: &str,
+        task_id: &str,
+    ) -> Option<(crate::TaskStatus, String)> {
+        let task = manager.get_task(session_id, task_id).ok().flatten()?;
+        let inferred = match task.status {
+            crate::TaskStatus::NotStarted | crate::TaskStatus::Blocked => {
+                crate::TaskStatus::InProgress
+            }
+            crate::TaskStatus::InProgress => crate::TaskStatus::InProgress,
+            crate::TaskStatus::Completed => crate::TaskStatus::Completed,
+            crate::TaskStatus::Cancelled => crate::TaskStatus::Cancelled,
+        };
+
+        Some((
+            inferred,
+            format!(
+                "No explicit status was provided, so the runtime inferred {:?} from the task's current state {:?}.",
+                inferred, task.status
+            ),
+        ))
+    }
+
+    fn normalize_task_tool_arguments(args: serde_json::Value) -> serde_json::Value {
+        let mut obj = match args {
+            serde_json::Value::Object(map) => map,
+            other => return other,
+        };
+
+        let mut recovered = serde_json::Map::new();
+        for value in obj.values() {
+            if let Some(raw) = value.as_str() {
+                for (name, content) in Self::extract_parameter_fragments(raw) {
+                    recovered
+                        .entry(name)
+                        .or_insert_with(|| serde_json::Value::String(content));
+                }
+            }
+        }
+
+        for (key, value) in recovered {
+            obj.entry(key).or_insert(value);
+        }
+
+        for key in ["operation", "name", "description", "status"] {
+            let Some(raw) = obj.get(key).and_then(|value| value.as_str()) else {
+                continue;
+            };
+
+            let stripped = Self::strip_parameter_fragments(raw);
+            match Self::normalize_optional_tool_string(&stripped) {
+                Some(value) => {
+                    obj.insert(key.to_string(), serde_json::Value::String(value));
+                }
+                None => {
+                    obj.remove(key);
+                }
+            }
+        }
+
+        for key in ["task_id", "parent_id"] {
+            let Some(raw) = obj.get(key).and_then(|value| value.as_str()) else {
+                continue;
+            };
+
+            let stripped = Self::strip_parameter_fragments(raw);
+            match Self::normalize_task_reference(&stripped) {
+                Some(value) => {
+                    obj.insert(key.to_string(), serde_json::Value::String(value));
+                }
+                None => {
+                    obj.remove(key);
+                }
+            }
+        }
+
+        serde_json::Value::Object(obj)
+    }
+
     /// Execute a tool by name with given arguments.
     ///
     /// Note: If a workspace is provided in `ctx`, all file paths and shell commands are sandboxed
@@ -867,10 +1238,10 @@ impl AgentPipeline {
                             if r.success {
                                 ToolResult::Success(r.stdout)
                             } else {
-                                ToolResult::Error(format!(
-                                    "Exit {}: {}",
+                                ToolResult::Error(Self::format_shell_failure(
                                     r.exit_code,
-                                    r.stderr.trim_end()
+                                    &r.stdout,
+                                    &r.stderr,
                                 ))
                             }
                         }
@@ -886,7 +1257,17 @@ impl AgentPipeline {
                     )
                     .await
                     {
-                        Ok(output) => ToolResult::Success(output),
+                        Ok(result) => {
+                            if result.success {
+                                ToolResult::Success(result.stdout)
+                            } else {
+                                ToolResult::Error(Self::format_shell_failure(
+                                    result.exit_code,
+                                    &result.stdout,
+                                    &result.stderr,
+                                ))
+                            }
+                        }
                         Err(e) => ToolResult::Error(e.to_string()),
                     }
                 }
@@ -921,10 +1302,10 @@ impl AgentPipeline {
                             if r.success {
                                 ToolResult::Success(r.stdout)
                             } else {
-                                ToolResult::Error(format!(
-                                    "Exit {}: {}",
+                                ToolResult::Error(Self::format_shell_failure(
                                     r.exit_code,
-                                    r.stderr.trim_end()
+                                    &r.stdout,
+                                    &r.stderr,
                                 ))
                             }
                         }
@@ -932,7 +1313,17 @@ impl AgentPipeline {
                     }
                 } else {
                     match shell_async::execute_command(arguments, cwd.as_deref()).await {
-                        Ok(output) => ToolResult::Success(output),
+                        Ok(result) => {
+                            if result.success {
+                                ToolResult::Success(result.stdout)
+                            } else {
+                                ToolResult::Error(Self::format_shell_failure(
+                                    result.exit_code,
+                                    &result.stdout,
+                                    &result.stderr,
+                                ))
+                            }
+                        }
                         Err(e) => ToolResult::Error(e.to_string()),
                     }
                 }
@@ -950,6 +1341,7 @@ impl AgentPipeline {
 
         match serde_json::from_str::<serde_json::Value>(arguments) {
             Ok(args) => {
+                let args = Self::normalize_file_tool_arguments(args);
                 let operation = args
                     .get("operation")
                     .and_then(|v| v.as_str())
@@ -1174,8 +1566,6 @@ impl AgentPipeline {
         arguments: &str,
         workspace: Option<&SessionWorkspace>,
     ) -> ToolResult {
-        use crate::TaskStatus;
-
         // Use the process-wide shared TaskManager so all subsystems share one cache.
         let manager = crate::get_global_task_manager();
 
@@ -1191,6 +1581,7 @@ impl AgentPipeline {
 
         match serde_json::from_str::<serde_json::Value>(arguments) {
             Ok(args) => {
+                let args = Self::normalize_task_tool_arguments(args);
                 let operation = args
                     .get("operation")
                     .and_then(|v| v.as_str())
@@ -1198,19 +1589,18 @@ impl AgentPipeline {
 
                 match operation {
                     "create" => {
-                        let name = match args.get("name").and_then(|v| v.as_str()) {
-                            Some(n) => n,
-                            None => {
-                                return ToolResult::Error(
-                                    "Missing required field 'name' for create operation"
-                                        .to_string(),
-                                );
-                            }
-                        };
                         let description = args
                             .get("description")
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
+                        let fallback_name = Self::infer_task_name(description)
+                            .unwrap_or_else(|| "Untitled Task".to_string());
+                        let name = args
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or(&fallback_name);
                         let parent_id = args
                             .get("parent_id")
                             .and_then(|v| v.as_str())
@@ -1233,34 +1623,37 @@ impl AgentPipeline {
                                         .to_string(),
                                 ),
                             };
-                        let status_str =
-                            match args.get("status").and_then(|v| v.as_str()) {
-                                Some(s) => s,
-                                None => return ToolResult::Error(
-                                    "Missing required field 'status' for update_status operation"
-                                        .to_string(),
-                                ),
-                            };
+                        let explicit_status = args
+                            .get("status")
+                            .or_else(|| args.get("state"))
+                            .or_else(|| args.get("new_status"))
+                            .or_else(|| args.get("target_status"))
+                            .and_then(|v| v.as_str())
+                            .and_then(Self::parse_task_status);
 
-                        let status = match status_str.to_lowercase().as_str() {
-                            "notstarted" | "not_started" => TaskStatus::NotStarted,
-                            "blocked" | "waiting" => TaskStatus::Blocked,
-                            "inprogress" | "in_progress" => TaskStatus::InProgress,
-                            "completed" => TaskStatus::Completed,
-                            "cancelled" => TaskStatus::Cancelled,
-                            _ => {
-                                return ToolResult::Error(format!(
-                                    "Invalid status '{}'. Use 'notstarted', 'blocked', 'inprogress', 'completed', or 'cancelled'",
-                                    status_str
-                                ));
-                            }
+                        let (status, inference_note) = match explicit_status {
+                            Some(status) => (status, None),
+                            None => match Self::infer_missing_task_status(manager, session_id, task_id) {
+                                Some((status, note)) => (status, Some(note)),
+                                None => {
+                                    return ToolResult::Error(
+                                        "Missing required field 'status' for update_status operation, and the runtime could not infer a safe default status for that task"
+                                            .to_string(),
+                                    )
+                                }
+                            },
                         };
 
                         match manager.update_task_status(session_id, task_id, status) {
-                            Ok(_) => ToolResult::Success(format!(
-                                "Updated task {} status to {:?}",
-                                task_id, status
-                            )),
+                            Ok(_) => {
+                                let mut message =
+                                    format!("Updated task {} status to {:?}", task_id, status);
+                                if let Some(note) = inference_note {
+                                    message.push('\n');
+                                    message.push_str(&note);
+                                }
+                                ToolResult::Success(message)
+                            }
                             Err(e) => {
                                 ToolResult::Error(format!("Failed to update task status: {}", e))
                             }
@@ -1795,13 +2188,424 @@ impl AgentPipeline {
             ));
         }
 
+        let had_task_tool_error = tool_calls.iter().any(|tool_call| {
+            tool_call.name == "task" && matches!(tool_call.result, ToolResult::Error(_))
+        });
+
         prompt.push_str(
-            "\nUser: Based on the tool results above, provide a complete and helpful response \
-             to my original request. Synthesize the information, highlight the key findings, \
-             and present a clear answer. If you created any tasks to track this work, mark \
-             them as completed now.\n",
+            "\nUser: Based on the tool results above, continue the original request end-to-end. \
+             Synthesize the information, execute any remaining necessary steps, and only mark \
+             tasks as completed if the requested deliverable is actually finished and any planned \
+             verification has succeeded. Otherwise, keep task status accurate and continue working.\n",
         );
 
+        if had_task_tool_error {
+            prompt.push_str(
+                "Important: task-tracking errors must not block implementation work. If a task update fails, continue the real work with file/shell/code tools and only retry the task tool when you can provide the exact required fields. For `update_status`, always include both `task_id` and `status`.\n",
+            );
+        }
+
+        let had_file_tool_error = tool_calls.iter().any(|tool_call| {
+            tool_call.name == "file" && matches!(tool_call.result, ToolResult::Error(_))
+        });
+
+        if had_file_tool_error {
+            prompt.push_str(
+                "Important: file-tool errors must not block implementation work. For `write`, always include the destination `path` and the full file `content` (aliases like `contents` or `text` are okay, but `pattern`/`start` do not make a valid write). For partial updates, use `edit` with `path`, `old`, and `new`; reserve `pattern` for `search`.\n",
+            );
+        }
+
         prompt
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentPipeline;
+    use crate::config::AppConfig;
+    use crate::session_workspace::SessionWorkspace;
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    #[test]
+    fn normalize_task_tool_arguments_recovers_embedded_parameter_fragments() {
+        let normalized = AgentPipeline::normalize_task_tool_arguments(json!({
+            "operation": "create",
+            "parent_id": "None",
+            "status": "notstarted",
+            "task_id": "None</parameter><parameter name=\"name\">Create Tauri Hello World GUI Application</parameter>\n<parameter name=\"description\">Plan, implement, build, and test a small Tauri v2 GUI that displays \"Hello World\"</parameter>",
+        }));
+
+        assert_eq!(
+            normalized.get("operation").and_then(|v| v.as_str()),
+            Some("create")
+        );
+        assert_eq!(normalized.get("parent_id"), None);
+        assert_eq!(normalized.get("task_id"), None);
+        assert_eq!(
+            normalized.get("name").and_then(|v| v.as_str()),
+            Some("Create Tauri Hello World GUI Application")
+        );
+        assert_eq!(
+            normalized.get("description").and_then(|v| v.as_str()),
+            Some(
+                "Plan, implement, build, and test a small Tauri v2 GUI that displays \"Hello World\""
+            )
+        );
+    }
+
+    #[test]
+    fn strip_parameter_fragments_keeps_plain_text_only() {
+        let raw = "None<parameter name=\"name\">Task A</parameter> trailing";
+        assert_eq!(
+            AgentPipeline::strip_parameter_fragments(raw),
+            "None trailing"
+        );
+    }
+
+    #[test]
+    fn normalize_task_tool_arguments_sanitizes_malformed_task_ids() {
+        let normalized = AgentPipeline::normalize_task_tool_arguments(json!({
+            "operation": "update_status",
+            "task_id": "5226626b-3fbf-4570-b717-387dc9492f51\\\" ",
+        }));
+
+        assert_eq!(
+            normalized.get("task_id").and_then(|v| v.as_str()),
+            Some("5226626b-3fbf-4570-b717-387dc9492f51")
+        );
+    }
+
+    #[test]
+    fn normalize_task_tool_arguments_recovers_unclosed_status_fragment() {
+        let normalized = AgentPipeline::normalize_task_tool_arguments(json!({
+            "operation": "update_status",
+            "task_id": "1c0a1ed3-e355-4117-9881-3632a2765199\"  <!-- Install Tauri prerequisites -->\n<parameter name=\"status\">inprogress",
+        }));
+
+        assert_eq!(
+            normalized.get("task_id").and_then(|v| v.as_str()),
+            Some("1c0a1ed3-e355-4117-9881-3632a2765199")
+        );
+        assert_eq!(
+            normalized.get("status").and_then(|v| v.as_str()),
+            Some("inprogress")
+        );
+    }
+
+    #[test]
+    fn normalize_file_tool_arguments_sanitizes_paths_and_aliases() {
+        let normalized = AgentPipeline::normalize_file_tool_arguments(json!({
+            "operation": "EDIT",
+            "path": "\"src/index.html\"",
+            "old_str": "<h1>Hello</h1>",
+            "new_str": "<h1>Hello, Gestura</h1>",
+        }));
+
+        assert_eq!(
+            normalized.get("operation").and_then(|v| v.as_str()),
+            Some("edit")
+        );
+        assert_eq!(
+            normalized.get("path").and_then(|v| v.as_str()),
+            Some("src/index.html")
+        );
+        assert_eq!(
+            normalized.get("old").and_then(|v| v.as_str()),
+            Some("<h1>Hello</h1>")
+        );
+        assert_eq!(
+            normalized.get("new").and_then(|v| v.as_str()),
+            Some("<h1>Hello, Gestura</h1>")
+        );
+    }
+
+    #[test]
+    fn normalize_file_tool_arguments_recovers_write_content_aliases() {
+        let normalized = AgentPipeline::normalize_file_tool_arguments(json!({
+            "operation": "write",
+            "path": "src/index.html",
+            "text": "<h1>Hello, Gestura</h1>",
+        }));
+
+        assert_eq!(
+            normalized.get("content").and_then(|v| v.as_str()),
+            Some("<h1>Hello, Gestura</h1>")
+        );
+    }
+
+    #[test]
+    fn infer_task_name_uses_first_non_empty_line() {
+        let description = "\n\nBuild a small Tauri hello world app\nwith tests";
+        assert_eq!(
+            AgentPipeline::infer_task_name(description).as_deref(),
+            Some("Build a small Tauri hello world app")
+        );
+    }
+
+    #[test]
+    fn parse_task_status_accepts_common_aliases() {
+        assert!(matches!(
+            AgentPipeline::parse_task_status("in_progress"),
+            Some(crate::TaskStatus::InProgress)
+        ));
+        assert!(matches!(
+            AgentPipeline::parse_task_status("done"),
+            Some(crate::TaskStatus::Completed)
+        ));
+        assert!(matches!(
+            AgentPipeline::parse_task_status("waiting"),
+            Some(crate::TaskStatus::Blocked)
+        ));
+    }
+
+    #[tokio::test]
+    async fn update_status_without_status_falls_back_to_in_progress() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("tool-dispatch-test-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let manager = crate::get_global_task_manager();
+        let task = manager
+            .create_task(&session_id, "Test task", "desc", None)
+            .expect("create task");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_task_tool(
+                &json!({
+                    "operation": "update_status",
+                    "task_id": task.id,
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        let output = match result {
+            crate::pipeline::ToolResult::Success(output) => output,
+            other => panic!("expected success, got {other:?}"),
+        };
+
+        assert!(output.contains("status to InProgress"));
+        assert!(output.contains("runtime inferred InProgress"));
+    }
+
+    #[tokio::test]
+    async fn file_edit_accepts_old_str_new_str_aliases() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("file-edit-alias-test-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let file_path = temp.path().join("index.html");
+        std::fs::write(&file_path, "<h1>Hello</h1>\n").expect("write seed file");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_file_tool(
+                &json!({
+                    "operation": "edit",
+                    "path": "\"index.html\"",
+                    "old_str": "<h1>Hello</h1>",
+                    "new_str": "<h1>Hello, Gestura</h1>",
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("index.html"));
+                assert!(output.contains("replacements"));
+                let updated = std::fs::read_to_string(&file_path).expect("read updated file");
+                assert!(updated.contains("Hello, Gestura"));
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_status_succeeds_with_sanitized_task_id() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("tool-dispatch-sanitize-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let manager = crate::get_global_task_manager();
+        let task = manager
+            .create_task(&session_id, "Test task", "desc", None)
+            .expect("create task");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_task_tool(
+                &json!({
+                    "operation": "update_status",
+                    "task_id": format!("{}\\\" ", task.id),
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        let output = match result {
+            crate::pipeline::ToolResult::Success(output) => output,
+            other => panic!("expected success, got {other:?}"),
+        };
+
+        assert!(output.contains(task.id.as_str()));
+        assert!(output.contains("runtime inferred InProgress"));
+    }
+
+    #[tokio::test]
+    async fn update_status_succeeds_with_unclosed_embedded_status_fragment() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("tool-dispatch-embedded-status-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let manager = crate::get_global_task_manager();
+        let task = manager
+            .create_task(&session_id, "Test task", "desc", None)
+            .expect("create task");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_task_tool(
+                &json!({
+                    "operation": "update_status",
+                    "task_id": format!(
+                        "{}\"  <!-- Install Tauri prerequisites -->\n<parameter name=\"status\">inprogress",
+                        task.id
+                    ),
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        let output = match result {
+            crate::pipeline::ToolResult::Success(output) => output,
+            other => panic!("expected success, got {other:?}"),
+        };
+
+        assert!(output.contains(task.id.as_str()));
+        assert!(output.contains("status to InProgress"));
+    }
+
+    #[tokio::test]
+    async fn file_write_accepts_text_alias_for_content() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("file-write-alias-test-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let file_path = temp.path().join("index.html");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_file_tool(
+                &json!({
+                    "operation": "write",
+                    "path": "index.html",
+                    "text": "<h1>Hello, Gestura</h1>\n",
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("index.html"));
+                let updated = std::fs::read_to_string(&file_path).expect("read updated file");
+                assert!(updated.contains("Hello, Gestura"));
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn continuation_prompt_warns_task_errors_should_not_block_implementation() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let prompt = pipeline.build_tool_continuation_prompt(
+            "User: build the app",
+            "I will update the task first.",
+            &[crate::pipeline::ToolCallRecord {
+                id: "1".to_string(),
+                name: "task".to_string(),
+                arguments: "{}".to_string(),
+                result: crate::pipeline::ToolResult::Error(
+                    "Missing required field 'status' for update_status operation".to_string(),
+                ),
+                duration_ms: 1,
+            }],
+        );
+
+        assert!(prompt.contains("task-tracking errors must not block implementation work"));
+        assert!(prompt.contains("always include both `task_id` and `status`"));
+    }
+
+    #[test]
+    fn continuation_prompt_warns_write_errors_need_full_content() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let prompt = pipeline.build_tool_continuation_prompt(
+            "User: build the app",
+            "I'll update the file next.",
+            &[crate::pipeline::ToolCallRecord {
+                id: "1".to_string(),
+                name: "file".to_string(),
+                arguments: "{}".to_string(),
+                result: crate::pipeline::ToolResult::Error(
+                    "Missing required field 'content' for file write operation".to_string(),
+                ),
+                duration_ms: 1,
+            }],
+        );
+
+        assert!(prompt.contains("file-tool errors must not block implementation work"));
+        assert!(prompt.contains("full file `content`"));
+        assert!(prompt.contains("`pattern`/`start` do not make a valid write"));
+    }
+
+    #[test]
+    fn shell_failure_format_detects_interactive_timeout_prompts() {
+        let message = AgentPipeline::format_shell_failure(
+            124,
+            "Need to install the following packages:\ncreate-tauri-app@4.6.2\nOk to proceed? (y)\n",
+            "",
+        );
+
+        assert!(message.contains("likely waited for interactive input"));
+        assert!(message.contains("shell tool is non-interactive"));
+        assert!(message.contains("Ok to proceed? (y)"));
+    }
+
+    #[tokio::test]
+    async fn shell_tool_timeout_surfaces_interactive_prompt_context() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let temp = TempDir::new().expect("temp dir");
+        let workspace =
+            SessionWorkspace::from_directory("shell-timeout-test", temp.path().to_path_buf())
+                .expect("workspace");
+
+        let result = pipeline
+            .execute_tool(
+                "shell",
+                &json!({
+                    "command": "printf 'Need to install the following packages:\ncreate-tauri-app@4.6.2\nOk to proceed? (y)\n'; sleep 2",
+                    "timeout_secs": 1,
+                })
+                .to_string(),
+                Some(&workspace),
+                None,
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Error(message) => {
+                assert!(message.contains("likely waited for interactive input"));
+                assert!(message.contains("Need to install the following packages"));
+            }
+            other => panic!("expected error, got {other:?}"),
+        }
     }
 }
