@@ -82,7 +82,21 @@ Today the shared runtime is hybrid:
 - it prefers the real external BLE central adapter in `gestura.app` when matching peripherals are available
 - it falls back to the built-in simulated ring manager when no external BLE adapter or matching device is present
 
-At the time of writing, `haptic-harmony-simulator` still models BLE internally rather than advertising a real OS BLE peripheral, so end-to-end validation of the external path remains blocked on simulator-side advertising support.
+`haptic-harmony-simulator` now supports real desktop BLE advertising through its `native-ble` feature. On Linux it routes through BlueZ, on macOS through CoreBluetooth, and on Windows through the same native backend abstraction.
+
+### macOS same-host validation note
+
+On macOS, treat **same-host** validation as non-authoritative when both roles run on the same machine:
+
+- the simulator can successfully advertise through CoreBluetooth
+- a central running on that same Mac may still fail to discover the simulator reliably
+- this affects raw btleplug scans and can also make GUI validation inconclusive even when the bundled app starts correctly
+
+For authoritative validation on macOS, prefer one of these:
+
+1. run the simulator on one Mac and scan from a **second Mac**
+2. run the simulator on a Mac and scan from an **iPhone/iPad**
+3. use the bundled app path to verify app startup and permission prompts, but rely on **cross-device discovery** for BLE proof
 
 ## Canonical API / IPC Reference
 
@@ -151,6 +165,8 @@ If you are wiring or debugging the frontend implementation, use
 Run a simulator scan from the UI and confirm the discovered devices appear in the
 simulator panel.
 
+For macOS native-BLE validation, prefer cross-device discovery. Same-host Mac ↔ Mac validation can fail even when the simulator is advertising correctly.
+
 ### 3. Connect and Test
 
 For a selected simulator:
@@ -211,6 +227,26 @@ For debugging, focus on three operator actions:
 
 Use `docs/IPC_CONTRACTS_GESTURA_GUI.md` only when you need the exact frontend ↔
 Tauri command contract.
+
+### Live cross-device smoke test
+
+`gestura-app` also includes an ignored live Rust integration test for the external BLE path:
+
+- `cargo test -p gestura-gui --test live_native_ble_smoke -- --ignored --nocapture`
+
+Helpful environment variables for cross-device runs:
+
+- `GESTURA_LIVE_BLE_DEVICE_ID=<exact peripheral id>` to force a specific target
+- `GESTURA_LIVE_BLE_NAME_SUBSTRING="Ring Simulator"` to select a scanned device by name
+- `GESTURA_LIVE_BLE_REQUIRE_GESTURE=false` when gesture injection is not available
+- `GESTURA_LIVE_BLE_EXPECT_BATTERY=85`
+- `GESTURA_LIVE_BLE_EXPECT_FIRMWARE=1.0.0-sim`
+
+The test always prints a raw btleplug scan snapshot first, which helps distinguish:
+
+- no BLE discovery at all
+- discovery without simulator classification
+- same-host macOS visibility limitations
 
 ## Best Practices
 
