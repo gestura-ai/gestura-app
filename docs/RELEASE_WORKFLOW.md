@@ -116,14 +116,11 @@ Examples:
 
 ## Recommended release process
 
-1. Update the version consistently in:
-   - `Cargo.toml`
-   - `crates/gestura-gui/tauri.conf.json`
-   - `crates/gestura-gui/frontend/package.json`
-2. Run validation locally:
-   - `cargo fmt`
-   - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-   - `cargo test --workspace --all-features`
+1. Update the version consistently:
+   - `just set-version X.Y.Z`
+2. Run the canonical local validation workflow:
+   - `just validate`
+   - `just show-version`
 3. Merge the release commit
 4. Push the release tag:
    - `git tag vX.Y.Z`

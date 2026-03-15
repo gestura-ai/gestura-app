@@ -304,20 +304,20 @@ rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
 
 ### 1. Prepare Release
 ```bash
-# Update version in Cargo.toml
+just set-version 1.0.0
 # Update CHANGELOG.md
 # Generate icons if updated
-./scripts/generate-icons.sh
+just icons
+
+# Validate the release candidate locally
+just validate
+just show-version
 ```
 
 ### 2. Create Release
 ```bash
-# Tag the release
 git tag v1.0.0
 git push origin v1.0.0
-
-# Or use GitHub CLI
-gh release create v1.0.0 --generate-notes
 ```
 
 ### 3. Automated Publishing

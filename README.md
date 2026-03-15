@@ -220,8 +220,11 @@ cargo run -p gestura-cli -- agent
 # Run GUI (Tauri)
 cargo tauri dev
 
-# Quick validation via Justfile
+# Canonical Just workflows
+just help
+just doctor
 just validate-quick
+just show-version
 ```
 
 ### Build Commands
@@ -235,7 +238,12 @@ just validate-quick
 | `cargo build --workspace --release` | Release build |
 | `cargo tauri dev` | GUI development |
 | `cargo tauri build` | GUI release |
+| `just help` | Show standardized local workflows |
+| `just doctor` | Check build/release readiness |
+| `just validate` | Run production validation pipeline |
 | `just validate-quick` | Quick validation (format, clippy, test) |
+| `just show-version` | Check Cargo/Tauri/frontend version parity |
+| `just set-version X.Y.Z` | Update release version across sources |
 | `just test-ui` | Run UI tests |
 
 ## Configuration
