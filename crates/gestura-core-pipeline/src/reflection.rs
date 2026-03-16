@@ -418,10 +418,242 @@ pub fn build_reflection_prompt(
          ATTEMPT: [1-2 sentence summary of what was attempted]\n\
          ISSUE: [1-2 sentence analysis of what went wrong]\n\
          STRATEGY: [1-2 sentence corrective strategy for future attempts]\n\
-         TAGS: [comma-separated relevant tags]\n",
+         TAGS: [comma-separated relevant tags]\n\
+         Important:\n\
+         - Output plain text only.\n\
+         - Do not wrap the reflection in Markdown code fences.\n\
+         - Do not add any preamble, explanation, or extra sections before or after the four fields.\n",
     );
 
     prompt
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReflectionField {
+    Attempt,
+    Issue,
+    Strategy,
+    Tags,
+}
+
+fn strip_tag_blocks(input: &str, open: &str, close: &str) -> String {
+    let mut output = String::new();
+    let mut cursor = 0usize;
+
+    while let Some(start_rel) = input[cursor..].find(open) {
+        let start = cursor + start_rel;
+        output.push_str(&input[cursor..start]);
+        let content_start = start + open.len();
+        let Some(end_rel) = input[content_start..].find(close) else {
+            return output.trim().to_string();
+        };
+        cursor = content_start + end_rel + close.len();
+    }
+
+    output.push_str(&input[cursor..]);
+    output.trim().to_string()
+}
+
+fn sanitize_reflection_response(response: &str) -> String {
+    strip_tag_blocks(response, "<think>", "</think>")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("```"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+fn compact_reflection_value(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn clean_reflection_field_value(value: &str) -> String {
+    value
+        .trim()
+        .trim_end_matches(',')
+        .trim_matches(|c: char| matches!(c, '*' | '_' | '`' | '"' | '\''))
+        .trim()
+        .to_string()
+}
+
+fn push_reflection_segment(target: &mut String, segment: &str) {
+    let segment = compact_reflection_value(&clean_reflection_field_value(segment));
+    if segment.is_empty() {
+        return;
+    }
+    if !target.is_empty() {
+        target.push(' ');
+    }
+    target.push_str(&segment);
+}
+
+fn normalize_reflection_label(label: &str) -> Option<ReflectionField> {
+    let normalized = label
+        .trim()
+        .trim_matches(|c: char| matches!(c, '*' | '_' | '`' | '[' | ']' | '(' | ')' | '#'))
+        .chars()
+        .filter_map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                Some(ch.to_ascii_lowercase())
+            } else if matches!(ch, ' ' | '-' | '_') {
+                Some('_')
+            } else {
+                None
+            }
+        })
+        .collect::<String>();
+
+    let normalized = normalized.trim_matches('_');
+
+    match normalized {
+        "attempt" | "attempt_summary" | "summary" | "what_was_attempted" => {
+            Some(ReflectionField::Attempt)
+        }
+        "issue" | "failure" | "failure_analysis" | "problem" | "analysis" | "what_went_wrong" => {
+            Some(ReflectionField::Issue)
+        }
+        "strategy"
+        | "corrective_strategy"
+        | "correction"
+        | "fix"
+        | "improvement_strategy"
+        | "next_time" => Some(ReflectionField::Strategy),
+        "tags" | "labels" => Some(ReflectionField::Tags),
+        _ => None,
+    }
+}
+
+fn strip_reflection_line_prefix(line: &str) -> &str {
+    let mut trimmed = line.trim_start();
+
+    loop {
+        if let Some(rest) = trimmed.strip_prefix('>') {
+            trimmed = rest.trim_start();
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("- ") {
+            trimmed = rest.trim_start();
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("* ") {
+            trimmed = rest.trim_start();
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("• ") {
+            trimmed = rest.trim_start();
+            continue;
+        }
+
+        let digit_count = trimmed.chars().take_while(|ch| ch.is_ascii_digit()).count();
+        if digit_count > 0 {
+            let suffix = &trimmed[digit_count..];
+            if let Some(rest) = suffix.strip_prefix(". ") {
+                trimmed = rest.trim_start();
+                continue;
+            }
+            if let Some(rest) = suffix.strip_prefix(") ") {
+                trimmed = rest.trim_start();
+                continue;
+            }
+        }
+
+        break;
+    }
+
+    trimmed
+}
+
+fn parse_reflection_field_line(line: &str) -> Option<(ReflectionField, String)> {
+    let candidate = strip_reflection_line_prefix(line);
+    let colon_idx = candidate.find(':')?;
+    let label = candidate[..colon_idx].trim();
+    let value = candidate[colon_idx + 1..].trim();
+    let field = normalize_reflection_label(label)?;
+    Some((field, value.to_string()))
+}
+
+fn parse_tag_values(value: &str) -> Vec<String> {
+    let trimmed = strip_reflection_line_prefix(value).trim();
+    let trimmed = clean_reflection_field_value(trimmed);
+    let trimmed = trimmed.trim_matches(|c: char| matches!(c, '[' | ']' | '{' | '}'));
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    trimmed
+        .split(',')
+        .map(|tag| clean_reflection_field_value(tag))
+        .filter(|tag| !tag.is_empty())
+        .collect()
+}
+
+fn extract_jsonish_string_value(source: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let start = source.find(&needle)? + needle.len();
+    let remainder = source[start..].trim_start();
+    let remainder = remainder.strip_prefix(':')?.trim_start();
+    let remainder = remainder.strip_prefix('"')?;
+
+    let mut value = String::new();
+    let mut escaped = false;
+    for ch in remainder.chars() {
+        if escaped {
+            value.push(match ch {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                '"' => '"',
+                '\\' => '\\',
+                other => other,
+            });
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => return Some(value.trim().to_string()),
+            other => value.push(other),
+        }
+    }
+
+    None
+}
+
+fn extract_jsonish_tags(source: &str) -> Option<Vec<String>> {
+    if let Some(tags_str) = extract_jsonish_string_value(source, "tags") {
+        return Some(parse_tag_values(&tags_str));
+    }
+
+    let needle = "\"tags\"";
+    let start = source.find(needle)? + needle.len();
+    let remainder = source[start..].trim_start();
+    let remainder = remainder.strip_prefix(':')?.trim_start();
+    let remainder = remainder.strip_prefix('[')?;
+    let end = remainder.find(']')?;
+    let body = &remainder[..end];
+
+    Some(
+        body.split(',')
+            .map(|item| item.trim().trim_matches(|c: char| matches!(c, '"' | '\'')))
+            .filter(|item| !item.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+    )
+}
+
+fn parse_jsonish_reflection_response(response: &str, session_id: &str) -> Option<AgentReflection> {
+    let attempt = extract_jsonish_string_value(response, "attempt_summary")
+        .or_else(|| extract_jsonish_string_value(response, "attempt"))?;
+    let issue = extract_jsonish_string_value(response, "failure_analysis")
+        .or_else(|| extract_jsonish_string_value(response, "issue"))?;
+    let strategy = extract_jsonish_string_value(response, "corrective_strategy")
+        .or_else(|| extract_jsonish_string_value(response, "strategy"))?;
+    let tags = extract_jsonish_tags(response).unwrap_or_default();
+
+    Some(
+        AgentReflection::new(session_id, attempt, issue, strategy)
+            .with_tags(tags.into_iter().filter(|tag| !tag.is_empty()).collect()),
+    )
 }
 
 /// Parse a structured reflection from an LLM response.
@@ -431,33 +663,53 @@ pub fn build_reflection_prompt(
 /// unparsable reflection as non-durable so it does not enter session or
 /// long-term memory in a malformed shape.
 pub fn parse_reflection_response(response: &str, session_id: &str) -> Option<AgentReflection> {
-    let mut attempt = None;
-    let mut issue = None;
-    let mut strategy = None;
+    let response = sanitize_reflection_response(response);
+    let mut attempt = String::new();
+    let mut issue = String::new();
+    let mut strategy = String::new();
     let mut tags = Vec::new();
+    let mut current_field = None;
 
     for line in response.lines() {
         let trimmed = line.trim();
-        if let Some(value) = trimmed.strip_prefix("ATTEMPT:") {
-            attempt = Some(value.trim().to_string());
-        } else if let Some(value) = trimmed.strip_prefix("ISSUE:") {
-            issue = Some(value.trim().to_string());
-        } else if let Some(value) = trimmed.strip_prefix("STRATEGY:") {
-            strategy = Some(value.trim().to_string());
-        } else if let Some(value) = trimmed.strip_prefix("TAGS:") {
-            tags = value
-                .split(',')
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some((field, value)) = parse_reflection_field_line(trimmed) {
+            current_field = Some(field);
+            match field {
+                ReflectionField::Attempt => push_reflection_segment(&mut attempt, &value),
+                ReflectionField::Issue => push_reflection_segment(&mut issue, &value),
+                ReflectionField::Strategy => push_reflection_segment(&mut strategy, &value),
+                ReflectionField::Tags => tags.extend(parse_tag_values(&value)),
+            }
+            continue;
+        }
+
+        match current_field {
+            Some(ReflectionField::Attempt) => push_reflection_segment(&mut attempt, trimmed),
+            Some(ReflectionField::Issue) => push_reflection_segment(&mut issue, trimmed),
+            Some(ReflectionField::Strategy) => push_reflection_segment(&mut strategy, trimmed),
+            Some(ReflectionField::Tags) => tags.extend(parse_tag_values(trimmed)),
+            None => {}
         }
     }
 
-    let attempt = attempt?;
-    let issue = issue?;
-    let strategy = strategy?;
+    let mut deduped_tags = Vec::new();
+    for tag in tags {
+        if !tag.is_empty() && !deduped_tags.contains(&tag) {
+            deduped_tags.push(tag);
+        }
+    }
 
-    Some(AgentReflection::new(session_id, attempt, issue, strategy).with_tags(tags))
+    if !attempt.is_empty() && !issue.is_empty() && !strategy.is_empty() {
+        return Some(
+            AgentReflection::new(session_id, attempt, issue, strategy).with_tags(deduped_tags),
+        );
+    }
+
+    parse_jsonish_reflection_response(&response, session_id)
 }
 
 #[cfg(test)]
@@ -602,6 +854,80 @@ mod tests {
         let response = "ATTEMPT: Something\nISSUE: Something else\n";
         let reflection = parse_reflection_response(response, "s1");
         assert!(reflection.is_none(), "Missing STRATEGY should return None");
+    }
+
+    #[test]
+    fn test_reflection_response_parsing_markdown_and_multiline() {
+        let response = "<think>diagnosing tool output</think>\n\
+            - **Attempt:** Tried to inspect the missing config file.\n\
+              I answered before verifying the real path.\n\
+            - **Issue:** The response relied on an assumed file location\n\
+              instead of repository evidence.\n\
+            - **Strategy:** Search for the config file first, then answer\n\
+              only from the verified path and contents.\n\
+            - **Tags:** file, verification\n";
+
+        let reflection = parse_reflection_response(response, "session-md").unwrap();
+        assert!(
+            reflection
+                .attempt_summary
+                .contains("inspect the missing config file")
+        );
+        assert!(
+            reflection
+                .attempt_summary
+                .contains("verifying the real path")
+        );
+        assert!(reflection.failure_analysis.contains("repository evidence"));
+        assert!(
+            reflection
+                .corrective_strategy
+                .contains("verified path and contents")
+        );
+        assert_eq!(reflection.tags, vec!["file", "verification"]);
+    }
+
+    #[test]
+    fn test_reflection_response_parsing_aliases_and_tag_list() {
+        let response = "attempt_summary: Investigated a build failure without reading the actual error output.\n\
+            failure_analysis: The explanation guessed at causes instead of grounding them in the logs.\n\
+            corrective_strategy: Read the concrete stderr output first, then explain only the confirmed failure mode.\n\
+            tags:\n\
+            - shell\n\
+            - validation\n";
+
+        let reflection = parse_reflection_response(response, "session-alias").unwrap();
+        assert!(reflection.attempt_summary.contains("build failure"));
+        assert!(
+            reflection
+                .failure_analysis
+                .contains("grounding them in the logs")
+        );
+        assert!(
+            reflection
+                .corrective_strategy
+                .contains("concrete stderr output")
+        );
+        assert_eq!(reflection.tags, vec!["shell", "validation"]);
+    }
+
+    #[test]
+    fn test_reflection_response_parsing_jsonish_payload() {
+        let response = "```json\n{\n  \"attempt_summary\": \"Tried to edit the wrong file\",\n  \"failure_analysis\": \"The response assumed the target path without confirming it\",\n  \"corrective_strategy\": \"Locate the file first, then apply the edit to the verified path\",\n  \"tags\": [\"file\", \"path\"]\n}\n```";
+
+        let reflection = parse_reflection_response(response, "session-json").unwrap();
+        assert_eq!(reflection.attempt_summary, "Tried to edit the wrong file");
+        assert!(
+            reflection
+                .failure_analysis
+                .contains("assumed the target path")
+        );
+        assert!(
+            reflection
+                .corrective_strategy
+                .contains("Locate the file first")
+        );
+        assert_eq!(reflection.tags, vec!["file", "path"]);
     }
 
     #[test]

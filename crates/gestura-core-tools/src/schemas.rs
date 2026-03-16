@@ -271,18 +271,18 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
             }),
         ),
         "task" | "tasks" => (
-            summary,
+            "Create, update, list, and organize tasks for the current session. For `update_status`, ALWAYS provide both `task_id` and `status` in the same call. Correct example: {\"operation\":\"update_status\",\"task_id\":\"abc123\",\"status\":\"completed\"}. Invalid example: {\"operation\":\"update_status\",\"task_id\":\"abc123\"}. Do not call `update_status` just to confirm or preserve the current state; if no status changed, continue the real work instead of repeating bookkeeping.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "operation": {
                         "type": "string",
                         "enum": ["create", "update_status", "update", "delete", "list", "get_hierarchy"],
-                        "description": "Task operation to perform"
+                        "description": "Task operation to perform. `update_status` requires BOTH `task_id` and `status`; do not call it with only `task_id`, and do not use it just to confirm the current state."
                     },
                     "task_id": {
                         "type": "string",
-                        "description": "Task ID. REQUIRED for update_status, update, delete operations. Omit this field entirely for create/list/get_hierarchy; do not send the string 'None' or 'null'."
+                        "description": "Task ID. REQUIRED for update_status, update, delete operations. For `update_status`, send this together with `status` in the same call. Omit this field entirely for create/list/get_hierarchy; do not send the string 'None' or 'null'."
                     },
                     "name": {
                         "type": "string",
@@ -295,7 +295,7 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                     "status": {
                         "type": "string",
                         "enum": ["notstarted", "inprogress", "completed", "cancelled"],
-                        "description": "Task status. REQUIRED for update_status operation. Use plain JSON text only: 'notstarted', 'inprogress', 'completed', or 'cancelled'. Do not wrap status in XML/parameter tags."
+                        "description": "Task status. REQUIRED for update_status operation. Use plain JSON text only: 'notstarted', 'inprogress', 'completed', or 'cancelled'. Do not wrap status in XML/parameter tags. Do not omit this field to ask the runtime to infer or preserve the current state; if no status changed, skip the task update and continue the real work."
                     },
                     "parent_id": {
                         "type": "string",
@@ -310,6 +310,7 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                         "required": ["operation", "name"]
                     },
                     {
+                        "description": "Update a task's status. REQUIRED fields: `task_id` and `status`. Correct example: {\"operation\":\"update_status\",\"task_id\":\"abc123\",\"status\":\"inprogress\"}. Invalid: {\"operation\":\"update_status\",\"task_id\":\"abc123\"}.",
                         "properties": {
                             "operation": { "enum": ["update_status"] }
                         },
@@ -339,6 +340,12 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                         },
                         "required": ["operation"]
                     }
+                ],
+                "examples": [
+                    {"operation": "create", "name": "Implement feature", "description": "Add new API endpoint"},
+                    {"operation": "update_status", "task_id": "abc123", "status": "inprogress"},
+                    {"operation": "update_status", "task_id": "abc123", "status": "completed"},
+                    {"operation": "list"}
                 ],
                 "required": ["operation"],
                 "additionalProperties": true
@@ -616,5 +623,52 @@ mod tests {
             .expect("create branch should have required fields");
 
         assert!(required.iter().any(|value| value == "name"));
+    }
+
+    #[test]
+    fn task_schema_warns_against_missing_status_noop_updates() {
+        let task = find_tool("task").unwrap();
+        let schemas = build_provider_tool_schemas(&[task]);
+
+        let function_description = schemas.openai[0]["function"]["description"]
+            .as_str()
+            .expect("task function description should exist");
+        assert!(function_description.contains("ALWAYS provide both `task_id` and `status`"));
+        assert!(function_description.contains("Invalid example"));
+
+        let operation_description = schemas.openai[0]["function"]["parameters"]["properties"]
+            ["operation"]["description"]
+            .as_str()
+            .expect("task operation description should exist");
+        assert!(operation_description.contains("requires BOTH `task_id` and `status`"));
+        assert!(operation_description.contains("do not use it just to confirm the current state"));
+
+        let status_description = schemas.openai[0]["function"]["parameters"]["properties"]
+            ["status"]["description"]
+            .as_str()
+            .expect("task status description should exist");
+        assert!(status_description.contains("Do not omit this field"));
+        assert!(status_description.contains("skip the task update and continue the real work"));
+
+        let update_status_branch = schemas.openai[0]["function"]["parameters"]["oneOf"]
+            .as_array()
+            .expect("task schema should define oneOf branches")
+            .iter()
+            .find(|branch| branch["properties"]["operation"]["enum"][0] == "update_status")
+            .expect("missing update_status branch");
+        let branch_description = update_status_branch["description"]
+            .as_str()
+            .expect("update_status branch description should exist");
+        assert!(branch_description.contains("Correct example"));
+        assert!(branch_description.contains("Invalid"));
+
+        let examples = schemas.openai[0]["function"]["parameters"]["examples"]
+            .as_array()
+            .expect("task schema should include examples");
+        assert!(examples.iter().any(|example| {
+            example["operation"] == "update_status"
+                && example["task_id"] == "abc123"
+                && example["status"] == "inprogress"
+        }));
     }
 }

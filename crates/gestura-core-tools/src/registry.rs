@@ -447,7 +447,10 @@ pub fn all_tools() -> &'static [ToolDefinition] {
             description: "Create, update, list, and organize tasks and work items for the \
                 current session. Use this tool when the user wants to track progress on work, \
                 create a to-do list, mark items as done, build subtask hierarchies, or manage \
-                any kind of structured checklist or work breakdown.",
+                any kind of structured checklist or work breakdown. For `update_status`, ALWAYS \
+                provide both `task_id` and `status` in the same call; do not call `update_status` \
+                with only `task_id`, and do not use it just to confirm/preserve the current state. \
+                If no status changed, skip the task update and continue the real work.",
             keywords: &[
                 "task",
                 "todo",
@@ -483,6 +486,7 @@ pub fn all_tools() -> &'static [ToolDefinition] {
             examples: &[
                 "task create --name 'Implement feature' --description 'Add new API endpoint'",
                 "task update_status --task_id abc123 --status inprogress",
+                "{\"operation\":\"update_status\",\"task_id\":\"abc123\",\"status\":\"completed\"}",
                 "task list",
                 "task create --name 'Write tests' --parent_id abc123",
             ],

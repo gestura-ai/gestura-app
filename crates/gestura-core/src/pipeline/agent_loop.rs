@@ -143,7 +143,7 @@ impl AgentPipeline {
         }
 
         prompt.push_str(
-            "\nUser: The work is not finished yet. Continue the same run now by executing the next highest-priority incomplete subtask with tools. Update the tracked task statuses as you start or finish each subtask, and do not mark the root task complete until every planned subtask is completed or explicitly cancelled. Do not stop with another status update, plan recap, or promise to resume later unless you are genuinely blocked and explain the blocker clearly.\n",
+            "\nUser: The work is not finished yet. Continue the same run now by executing the next highest-priority incomplete subtask with tools. If you have not created a concrete task breakdown for this non-trivial request yet, create one first with specific task names and, for substantive work, useful descriptions; then continue implementation, build, or test execution instead of stopping after reconnaissance. Update the tracked task statuses as you start or finish each subtask, and do not mark the root task complete until every planned subtask is completed or explicitly cancelled. Do not stop with another status update, plan recap, or promise to resume later unless you are genuinely blocked and explain the blocker clearly.\n",
         );
 
         prompt
@@ -223,6 +223,92 @@ impl AgentPipeline {
 
     fn has_iteration_headroom(iteration: usize, max_iterations: Option<usize>) -> bool {
         max_iterations.is_none_or(|limit| iteration + 1 < limit)
+    }
+
+    fn without_tool_schema(
+        schemas: &crate::tools::schemas::ProviderToolSchemas,
+        tool_name: &str,
+    ) -> crate::tools::schemas::ProviderToolSchemas {
+        fn openai_name(value: &serde_json::Value) -> Option<&str> {
+            value
+                .get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(|name| name.as_str())
+        }
+
+        fn named_entry(value: &serde_json::Value) -> Option<&str> {
+            value.get("name").and_then(|name| name.as_str())
+        }
+
+        let mut filtered = schemas.clone();
+        filtered.openai.retain(|entry| openai_name(entry) != Some(tool_name));
+        filtered
+            .anthropic
+            .retain(|entry| named_entry(entry) != Some(tool_name));
+        filtered
+            .gemini
+            .retain(|entry| named_entry(entry) != Some(tool_name));
+        filtered
+    }
+
+    fn is_task_loop_breaker_skip(tool_call: &ToolCallRecord) -> bool {
+        tool_call.name == "task"
+            && matches!(
+                &tool_call.result,
+                ToolResult::Skipped(message)
+                    if message.contains("Loop breaker:")
+                        && (message.contains("task.create")
+                            || message.contains("task.update_status"))
+            )
+    }
+
+    fn is_malformed_task_bookkeeping_call(tool_call: &ToolCallRecord) -> bool {
+        if tool_call.name != "task" {
+            return false;
+        }
+
+        matches!(
+            &tool_call.result,
+            ToolResult::Error(message)
+                if message.contains("Missing required field 'name' for create operation")
+                    || message.contains("Missing required field 'status' for update_status operation")
+        ) || Self::is_task_loop_breaker_skip(tool_call)
+    }
+
+    fn should_suspend_task_tool(tool_calls: &[ToolCallRecord]) -> bool {
+        let mut consecutive_malformed_attempts = 0usize;
+
+        for tool_call in tool_calls.iter().rev() {
+            if Self::is_task_loop_breaker_skip(tool_call) {
+                return true;
+            }
+
+            if Self::is_malformed_task_bookkeeping_call(tool_call) {
+                consecutive_malformed_attempts += 1;
+                if consecutive_malformed_attempts >= 2 {
+                    return true;
+                }
+                continue;
+            }
+
+            if tool_call.name == "task" {
+                break;
+            }
+
+            if !matches!(tool_call.result, ToolResult::Skipped(_)) {
+                break;
+            }
+        }
+
+        false
+    }
+
+    fn with_task_tool_disabled_instruction(current_prompt: &str) -> String {
+        let mut prompt = current_prompt.to_string();
+        prompt.push_str(
+            "\nUser: Repeated malformed task bookkeeping calls mean the `task` tool is disabled for the rest of this run. Do not call `task` again. Continue the real implementation, build, or test work with the other available tools instead.\n",
+        );
+        prompt
     }
 
     fn exhausted_iteration_budget(
@@ -339,6 +425,9 @@ impl AgentPipeline {
             }
             Some(schemas)
         };
+        let tool_schemas_without_task = tool_schemas
+            .as_ref()
+            .map(|schemas| Self::without_tool_schema(schemas, "task"));
 
         tracing::debug!(
             builtin_tool_count = tools.len(),
@@ -347,6 +436,7 @@ impl AgentPipeline {
         );
 
         let mut saw_any_tool_calls = false;
+        let mut forced_execution_after_empty_response = false;
         let mut forced_final_summary_requested = false;
         let mut delivered_terminal_summary = false;
 
@@ -386,9 +476,24 @@ impl AgentPipeline {
             let (inner_tx, mut inner_rx) = mpsc::channel::<StreamChunk>(100);
             let inner_cancel = cancel_token.clone();
             let streaming_cfg = crate::streaming::streaming_config_from(&self.config);
-            let prompt = current_prompt.clone();
             let enable_fallback = self.pipeline_config.enable_fallback;
-            let tool_schemas_for_iteration = tool_schemas.clone();
+            let task_tool_suspended = Self::should_suspend_task_tool(&response.tool_calls);
+            if task_tool_suspended {
+                tracing::warn!(
+                    iteration = iteration,
+                    "[AgentLoop] Temporarily disabling task tool schema after repeated malformed task bookkeeping calls"
+                );
+            }
+            let tool_schemas_for_iteration = if task_tool_suspended {
+                tool_schemas_without_task.clone()
+            } else {
+                tool_schemas.clone()
+            };
+            let prompt = if task_tool_suspended {
+                Self::with_task_tool_disabled_instruction(&current_prompt)
+            } else {
+                current_prompt.clone()
+            };
 
             // Spawn streaming task (with or without fallback)
             let stream_handle = tokio::spawn(async move {
@@ -709,6 +814,26 @@ impl AgentPipeline {
 
                 if saw_any_tool_calls
                     && !terminal_text_is_meaningful
+                    && !forced_execution_after_empty_response
+                    && Self::has_iteration_headroom(iteration, max_iterations)
+                {
+                    tracing::warn!(
+                        iteration = iteration,
+                        "[AgentLoop] Empty/non-substantive terminal iteration after tool use — forcing execution continuation before summary"
+                    );
+                    current_prompt = self.build_forced_execution_prompt(
+                        &current_prompt,
+                        &response.content,
+                        session_id.as_deref(),
+                        task_id.as_deref(),
+                    );
+                    forced_execution_after_empty_response = true;
+                    iteration += 1;
+                    continue;
+                }
+
+                if saw_any_tool_calls
+                    && !terminal_text_is_meaningful
                     && !forced_final_summary_requested
                     && Self::has_iteration_headroom(iteration, max_iterations)
                 {
@@ -732,6 +857,7 @@ impl AgentPipeline {
             }
 
             saw_any_tool_calls = true;
+            forced_execution_after_empty_response = false;
             forced_final_summary_requested = false;
 
             // Build continuation prompt with tool results
@@ -818,9 +944,13 @@ impl AgentPipeline {
             }
             Some(schemas)
         };
+        let tool_schemas_without_task = tool_schemas
+            .as_ref()
+            .map(|schemas| Self::without_tool_schema(schemas, "task"));
 
         let mut current_prompt = initial_prompt;
         let mut saw_any_tool_calls = false;
+        let mut forced_execution_after_empty_response = false;
         let mut forced_final_summary_requested = false;
         let mut delivered_terminal_summary = false;
 
@@ -835,8 +965,19 @@ impl AgentPipeline {
             response.iterations = iteration + 1;
 
             // Call LLM with fallback support, passing tool schemas.
+            let task_tool_suspended = Self::should_suspend_task_tool(&response.tool_calls);
+            let active_tool_schemas = if task_tool_suspended {
+                tool_schemas_without_task.as_ref()
+            } else {
+                tool_schemas.as_ref()
+            };
+            let prompt = if task_tool_suspended {
+                Self::with_task_tool_disabled_instruction(&current_prompt)
+            } else {
+                current_prompt.clone()
+            };
             let llm_response = self
-                .call_llm_with_fallback(&current_prompt, tool_schemas.as_ref())
+                .call_llm_with_fallback(&prompt, active_tool_schemas)
                 .await?;
             let (content, thinking) = crate::streaming::split_think_blocks(&llm_response.text);
 
@@ -892,6 +1033,22 @@ impl AgentPipeline {
 
                 if saw_any_tool_calls
                     && !terminal_text_is_meaningful
+                    && !forced_execution_after_empty_response
+                    && Self::has_iteration_headroom(iteration, max_iterations)
+                {
+                    current_prompt = self.build_forced_execution_prompt(
+                        &current_prompt,
+                        &response.content,
+                        session_id.as_deref(),
+                        task_id.as_deref(),
+                    );
+                    forced_execution_after_empty_response = true;
+                    iteration += 1;
+                    continue;
+                }
+
+                if saw_any_tool_calls
+                    && !terminal_text_is_meaningful
                     && !forced_final_summary_requested
                     && Self::has_iteration_headroom(iteration, max_iterations)
                 {
@@ -909,6 +1066,7 @@ impl AgentPipeline {
             }
 
             saw_any_tool_calls = true;
+            forced_execution_after_empty_response = false;
             forced_final_summary_requested = false;
 
             // Execute each structured tool call and collect records.
@@ -919,9 +1077,24 @@ impl AgentPipeline {
                     id = %tc.id,
                     "Blocking loop: executing tool call"
                 );
-                let result = self
-                    .execute_tool(&tc.name, &tc.arguments, workspace, None)
-                    .await;
+                let result = if let Some(message) = Self::repeated_malformed_tool_call_skip_message(
+                    &tc.name,
+                    &tc.arguments,
+                    response
+                        .tool_calls
+                        .iter()
+                        .chain(iteration_tool_calls.iter()),
+                ) {
+                    tracing::warn!(
+                        tool = %tc.name,
+                        id = %tc.id,
+                        "Blocking loop: loop breaker skipped repeated malformed tool call"
+                    );
+                    ToolResult::Skipped(message)
+                } else {
+                    self.execute_tool(&tc.name, &tc.arguments, workspace, None)
+                        .await
+                };
                 let duration_ms = 0u64; // No per-call timing in blocking path.
                 iteration_tool_calls.push(ToolCallRecord {
                     id: tc.id.clone(),
@@ -1110,6 +1283,37 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_final_summary_reports_skipped_loop_breaker_call_without_stop_reason() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let summary = pipeline
+            .build_synthetic_final_summary(
+                &[ToolCallRecord {
+                    id: "1".to_string(),
+                    name: "file".to_string(),
+                    arguments: serde_json::json!({
+                        "operation": "write",
+                        "path": "tauri-hello-world/src/index.html",
+                        "pattern": "none",
+                        "start": 1
+                    })
+                    .to_string(),
+                    result: ToolResult::Skipped(
+                        "Loop breaker: skipped a repeated malformed `file.write` call without `content`."
+                            .to_string(),
+                    ),
+                    duration_ms: 1,
+                }],
+                IncompleteRunReason::MissingTerminalSummary,
+            )
+            .expect("summary should be generated");
+
+        assert!(summary.contains(
+            "runtime ended the run without a terminal user-facing summary"
+        ));
+        assert!(summary.contains("Last tool `file` was skipped while trying to write a file."));
+    }
+
+    #[test]
     fn detects_deferred_remaining_work_in_status_updates() {
         assert!(AgentPipeline::text_defers_remaining_work(
             "Remaining: initialize the project and build it. Next turn will resume with the highest-priority incomplete subtask."
@@ -1148,7 +1352,77 @@ mod tests {
         assert!(
             prompt.contains("Update the tracked task statuses as you start or finish each subtask")
         );
+        assert!(prompt.contains(
+            "If you have not created a concrete task breakdown for this non-trivial request yet, create one first"
+        ));
         assert!(prompt.contains("do not mark the root task complete until every planned subtask is completed or explicitly cancelled"));
+    }
+
+    #[test]
+    fn without_tool_schema_removes_task_entries_for_all_providers() {
+        let task = crate::tools::registry::find_tool("task").expect("task tool");
+        let shell = crate::tools::registry::find_tool("shell").expect("shell tool");
+        let schemas = crate::tools::schemas::build_provider_tool_schemas(&[task, shell]);
+
+        let filtered = AgentPipeline::without_tool_schema(&schemas, "task");
+
+        assert_eq!(filtered.openai.len(), 1);
+        assert_eq!(filtered.anthropic.len(), 1);
+        assert_eq!(filtered.gemini.len(), 1);
+        assert_eq!(filtered.openai[0]["function"]["name"], "shell");
+        assert_eq!(filtered.anthropic[0]["name"], "shell");
+        assert_eq!(filtered.gemini[0]["name"], "shell");
+    }
+
+    #[test]
+    fn task_tool_is_suspended_after_task_loop_breaker_skip() {
+        let tool_calls = vec![ToolCallRecord {
+            id: "1".to_string(),
+            name: "task".to_string(),
+            arguments: serde_json::json!({
+                "operation": "create"
+            })
+            .to_string(),
+            result: ToolResult::Skipped(
+                "Loop breaker: skipped a repeated malformed `task.create` call without a valid `name` after 2 prior similar malformed attempts in this run."
+                    .to_string(),
+            ),
+            duration_ms: 1,
+        }];
+
+        assert!(AgentPipeline::should_suspend_task_tool(&tool_calls));
+    }
+
+    #[test]
+    fn task_tool_is_suspended_after_two_consecutive_malformed_task_errors() {
+        let tool_calls = vec![
+            ToolCallRecord {
+                id: "1".to_string(),
+                name: "task".to_string(),
+                arguments: serde_json::json!({
+                    "operation": "create"
+                })
+                .to_string(),
+                result: ToolResult::Error(
+                    "Missing required field 'name' for create operation".to_string(),
+                ),
+                duration_ms: 1,
+            },
+            ToolCallRecord {
+                id: "2".to_string(),
+                name: "task".to_string(),
+                arguments: serde_json::json!({
+                    "operation": "create"
+                })
+                .to_string(),
+                result: ToolResult::Error(
+                    "Missing required field 'name' for create operation".to_string(),
+                ),
+                duration_ms: 1,
+            },
+        ];
+
+        assert!(AgentPipeline::should_suspend_task_tool(&tool_calls));
     }
 
     #[test]

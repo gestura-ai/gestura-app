@@ -192,7 +192,7 @@ impl AgentPipeline {
 
         let mut section = String::from("Tracked task context:\n");
         section.push_str(
-            "Use these exact task IDs when calling the task tool to update progress. Keep the tracked root task in progress until every planned descendant is completed or cancelled.\n",
+            "Use these exact task IDs when calling the task tool to update progress. For `update_status`, ALWAYS send both the exact `task_id` and an explicit `status` (`notstarted`, `inprogress`, `completed`, or `cancelled`). Do not call `update_status` just to confirm or preserve the current state; task updates are bookkeeping only, so if no status changed, continue the real work instead. Keep the tracked root task in progress until every planned descendant is completed or cancelled.\n",
         );
 
         let mut remaining = 12usize;
@@ -542,5 +542,7 @@ mod tests {
         assert!(section.contains("Build hello app"));
         assert!(section.contains("Implement UI"));
         assert!(section.contains("Run build"));
+        assert!(section.contains("ALWAYS send both the exact `task_id` and an explicit `status`"));
+        assert!(section.contains("Do not call `update_status` just to confirm or preserve the current state"));
     }
 }

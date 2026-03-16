@@ -575,7 +575,10 @@ impl AgentPipeline {
                         initial_quality_score: quality_score,
                     });
                 } else {
-                    tracing::warn!("Failed to parse reflection response from LLM");
+                    tracing::warn!(
+                        reflection_excerpt = %truncate_retry_text(&reflection_text, 320),
+                        "Failed to parse reflection response from LLM"
+                    );
                     if let Some(tx) = tx {
                         let _ = tx
                             .send(StreamChunk::ReflectionComplete {

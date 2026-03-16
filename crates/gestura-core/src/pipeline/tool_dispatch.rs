@@ -22,6 +22,13 @@ pub(super) struct FinalizePendingToolCallCtx<'a> {
     pub(super) tx: &'a mpsc::Sender<StreamChunk>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RecoverableToolLoopPattern {
+    FileWriteMissingContent,
+    TaskCreateMissingName,
+    TaskUpdateStatusMissingExplicitStatus,
+}
+
 impl AgentPipeline {
     fn normalize_optional_tool_string(raw: &str) -> Option<String> {
         let trimmed = raw.trim();
@@ -162,22 +169,269 @@ impl AgentPipeline {
         serde_json::Value::Object(obj)
     }
 
+    fn format_missing_file_write_content_error(args: &serde_json::Value) -> String {
+        let path = args
+            .get("path")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("<path>");
+
+        let provided_fields = args
+            .as_object()
+            .map(|map| {
+                let mut keys = map.keys().cloned().collect::<Vec<_>>();
+                keys.sort();
+                keys.join(", ")
+            })
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "none".to_string());
+
+        let invalid_substitutes = [
+            "pattern",
+            "start",
+            "end",
+            "recursive",
+            "show_hidden",
+            "max_matches",
+            "max_entries",
+            "max_depth",
+        ]
+        .into_iter()
+        .filter(|field| args.get(*field).is_some())
+        .collect::<Vec<_>>();
+
+        let write_example = serde_json::json!({
+            "operation": "write",
+            "path": path,
+            "content": "<full file contents here>"
+        })
+        .to_string();
+        let edit_example = serde_json::json!({
+            "operation": "edit",
+            "path": path,
+            "old": "<exact existing text>",
+            "new": "<replacement text>"
+        })
+        .to_string();
+
+        let mut message = format!(
+            "Missing required field 'content' for file write operation. `write` requires the full destination file text in `content`. Provided fields: {provided_fields}."
+        );
+
+        if !invalid_substitutes.is_empty() {
+            message.push_str(&format!(
+                " The fields {} are not valid substitutes for file content.",
+                invalid_substitutes.join(", ")
+            ));
+        }
+
+        message.push_str(&format!(
+            " Retry with {write_example} if you already know the full file contents, or use {edit_example} for a targeted replacement. Do not retry the same malformed `write` call without adding real `content`."
+        ));
+
+        message
+    }
+
+    fn format_missing_task_update_status_error(args: &serde_json::Value) -> String {
+        let task_id = args
+            .get("task_id")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("<task-id>");
+
+        let provided_fields = args
+            .as_object()
+            .map(|map| {
+                let mut keys = map.keys().cloned().collect::<Vec<_>>();
+                keys.sort();
+                keys.join(", ")
+            })
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "none".to_string());
+
+        let example = serde_json::json!({
+            "operation": "update_status",
+            "task_id": task_id,
+            "status": "inprogress"
+        })
+        .to_string();
+
+        format!(
+            "Missing required field 'status' for update_status operation. `update_status` requires both `task_id` and `status`. Provided fields: {provided_fields}. Retry with {example} using one of: `notstarted`, `inprogress`, `completed`, or `cancelled`. Do not omit `status` to ask the runtime to infer or preserve the current state; if no status changed, skip the task update and continue the real work."
+        )
+    }
+
+    fn format_missing_task_create_name_error(args: &serde_json::Value) -> String {
+        let provided_fields = args
+            .as_object()
+            .map(|map| {
+                let mut keys = map.keys().cloned().collect::<Vec<_>>();
+                keys.sort();
+                keys.join(", ")
+            })
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "none".to_string());
+
+        let example = serde_json::json!({
+            "operation": "create",
+            "name": "Build hello world Tauri app",
+            "description": "Initialize a small Tauri GUI project, implement a Hello World window, then build and test it"
+        })
+        .to_string();
+
+        format!(
+            "Missing required field 'name' for create operation. `create` requires a specific task `name`; for non-trivial work it should usually also include a concrete `description`. Provided fields: {provided_fields}. Retry with {example}. Do not rely on the runtime to invent placeholder names like 'Untitled Task'."
+        )
+    }
+
+    fn detect_recoverable_tool_loop_pattern(
+        name: &str,
+        arguments: &str,
+    ) -> Option<RecoverableToolLoopPattern> {
+        match name {
+            "file" | "read_file" | "write_file" => {
+                let args = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
+                let args = Self::normalize_file_tool_arguments(args);
+                let operation = args
+                    .get("operation")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_else(|| {
+                        if args.get("content").is_some() {
+                            "write"
+                        } else {
+                            "read"
+                        }
+                    });
+
+                if operation == "write" && args.get("content").and_then(|v| v.as_str()).is_none() {
+                    Some(RecoverableToolLoopPattern::FileWriteMissingContent)
+                } else {
+                    None
+                }
+            }
+            "task" | "tasks" => {
+                let args = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
+                let args = Self::normalize_task_tool_arguments(args);
+                let operation = args.get("operation").and_then(|v| v.as_str()).unwrap_or("list");
+                let explicit_name = args
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty());
+                let explicit_status = args
+                    .get("status")
+                    .or_else(|| args.get("state"))
+                    .or_else(|| args.get("new_status"))
+                    .or_else(|| args.get("target_status"))
+                    .and_then(|v| v.as_str())
+                    .and_then(Self::parse_task_status);
+
+                if operation == "create" && explicit_name.is_none() {
+                    Some(RecoverableToolLoopPattern::TaskCreateMissingName)
+                } else if operation == "update_status" && explicit_status.is_none() {
+                    Some(RecoverableToolLoopPattern::TaskUpdateStatusMissingExplicitStatus)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn is_recoverable_tool_loop_attempt(
+        pattern: &RecoverableToolLoopPattern,
+        record: &ToolCallRecord,
+    ) -> bool {
+        let record_pattern = Self::detect_recoverable_tool_loop_pattern(&record.name, &record.arguments);
+        if record_pattern.as_ref() != Some(pattern) {
+            return false;
+        }
+
+        match pattern {
+            RecoverableToolLoopPattern::FileWriteMissingContent => {
+                matches!(record.result, ToolResult::Error(_) | ToolResult::Skipped(_))
+            }
+            RecoverableToolLoopPattern::TaskCreateMissingName => {
+                matches!(record.result, ToolResult::Error(_) | ToolResult::Skipped(_))
+            }
+            RecoverableToolLoopPattern::TaskUpdateStatusMissingExplicitStatus => {
+                matches!(record.result, ToolResult::Error(_) | ToolResult::Skipped(_))
+            }
+        }
+    }
+
+    fn count_prior_recoverable_tool_loop_attempts<'a, I>(
+        pattern: &RecoverableToolLoopPattern,
+        prior_records: I,
+    ) -> usize
+    where
+        I: IntoIterator<Item = &'a ToolCallRecord>,
+    {
+        prior_records
+            .into_iter()
+            .filter(|record| Self::is_recoverable_tool_loop_attempt(pattern, record))
+            .count()
+    }
+
+    fn build_recoverable_tool_loop_breaker_message(
+        pattern: &RecoverableToolLoopPattern,
+        prior_attempts: usize,
+    ) -> String {
+        match pattern {
+            RecoverableToolLoopPattern::FileWriteMissingContent => format!(
+                "Loop breaker: skipped a repeated malformed `file.write` call without `content` after {prior_attempts} prior similar non-successful attempts in this run. The agent is still running. Do not retry `write` until you can provide the full destination file text in `content`. Choose a different next step instead: read the existing file, prepare the full file contents and then send one corrected `write`, or use `edit` with `old` and `new` for a targeted change."
+            ),
+            RecoverableToolLoopPattern::TaskCreateMissingName => format!(
+                "Loop breaker: skipped a repeated malformed `task.create` call without a valid `name` after {prior_attempts} prior similar malformed attempts in this run. The agent is still running. Do not retry `create` without a specific task name. If you need task tracking, send one corrected `create` call with a concrete `name` and preferably a useful `description`; otherwise continue the real implementation work."
+            ),
+            RecoverableToolLoopPattern::TaskUpdateStatusMissingExplicitStatus => format!(
+                "Loop breaker: skipped a repeated malformed `task.update_status` call without explicit `status` after {prior_attempts} prior similar malformed attempts in this run. The agent is still running. Do not retry `update_status` without `status`. If you intend a status change, send one corrected call with both `task_id` and `status`; otherwise continue the real implementation or verification work instead of repeating task bookkeeping."
+            ),
+        }
+    }
+
+    pub(super) fn repeated_malformed_tool_call_skip_message<'a, I>(
+        name: &str,
+        arguments: &str,
+        prior_records: I,
+    ) -> Option<String>
+    where
+        I: IntoIterator<Item = &'a ToolCallRecord>,
+    {
+        let pattern = Self::detect_recoverable_tool_loop_pattern(name, arguments)?;
+        let prior_attempts =
+            Self::count_prior_recoverable_tool_loop_attempts(&pattern, prior_records);
+
+        (prior_attempts >= 2)
+            .then(|| Self::build_recoverable_tool_loop_breaker_message(&pattern, prior_attempts))
+    }
+
+    fn should_echo_tool_call_arguments(record: &ToolCallRecord) -> bool {
+        matches!(record.result, ToolResult::Error(_) | ToolResult::Skipped(_))
+    }
+
     fn extract_parameter_fragments(raw: &str) -> Vec<(String, String)> {
         let mut extracted = Vec::new();
         let raw = Self::strip_xml_comments(raw);
         let mut cursor = 0usize;
-        let open = "<parameter name=\"";
+        let open_markers = ["<parameter name=\"", "</parameter name=\""];
         let close = "</parameter>";
 
-        while let Some(start_rel) = raw[cursor..].find(open) {
-            let start = cursor + start_rel;
-            let name_start = start + open.len();
+        while let Some((start, marker)) = open_markers
+            .iter()
+            .filter_map(|marker| raw[cursor..].find(marker).map(|idx| (cursor + idx, *marker)))
+            .min_by_key(|(idx, _)| *idx)
+        {
+            let name_start = start + marker.len();
             let Some(name_end_rel) = raw[name_start..].find("\">") else {
                 break;
             };
             let name_end = name_start + name_end_rel;
             let value_start = name_end + 2;
-            let next_parameter_start = raw[value_start..].find(open).map(|idx| value_start + idx);
+            let next_parameter_start = open_markers
+                .iter()
+                .filter_map(|marker| raw[value_start..].find(marker).map(|idx| value_start + idx))
+                .min();
             let closing_parameter_end = raw[value_start..].find(close).map(|idx| value_start + idx);
 
             let (value_end, next_cursor) = match (closing_parameter_end, next_parameter_start) {
@@ -198,22 +452,67 @@ impl AgentPipeline {
         extracted
     }
 
+    fn extract_named_attribute_fragments(raw: &str, names: &[&str]) -> Vec<(String, String)> {
+        let mut extracted = Vec::new();
+        let raw = Self::strip_xml_comments(raw);
+
+        for name in names {
+            for quote in ['"', '\''] {
+                let marker = format!("{name}={quote}");
+                let mut cursor = 0usize;
+
+                while let Some(start_rel) = raw[cursor..].find(&marker) {
+                    let start = cursor + start_rel;
+                    if start > 0
+                        && raw[..start]
+                            .chars()
+                            .next_back()
+                            .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                    {
+                        cursor = start + marker.len();
+                        continue;
+                    }
+
+                    let value_start = start + marker.len();
+                    let Some(value_end_rel) = raw[value_start..].find(quote) else {
+                        break;
+                    };
+                    let value_end = value_start + value_end_rel;
+                    let value = raw[value_start..value_end].trim();
+                    if !value.is_empty() {
+                        extracted.push(((*name).to_string(), value.to_string()));
+                    }
+
+                    cursor = value_end + quote.len_utf8();
+                }
+            }
+        }
+
+        extracted
+    }
+
     fn strip_parameter_fragments(raw: &str) -> String {
         let raw = Self::strip_xml_comments(raw);
         let mut output = String::new();
         let mut cursor = 0usize;
-        let open = "<parameter name=\"";
+        let open_markers = ["<parameter name=\"", "</parameter name=\""];
         let close = "</parameter>";
 
-        while let Some(start_rel) = raw[cursor..].find(open) {
-            let start = cursor + start_rel;
+        while let Some((start, marker)) = open_markers
+            .iter()
+            .filter_map(|marker| raw[cursor..].find(marker).map(|idx| (cursor + idx, *marker)))
+            .min_by_key(|(idx, _)| *idx)
+        {
             output.push_str(&raw[cursor..start]);
-            let name_start = start + open.len();
+            let name_start = start + marker.len();
             let Some(name_end_rel) = raw[name_start..].find("\">") else {
                 return output.trim().to_string();
             };
             let value_start = name_start + name_end_rel + 2;
-            let next_parameter_start = raw[value_start..].find(open).map(|idx| value_start + idx);
+            let next_parameter_start = open_markers
+                .iter()
+                .filter_map(|marker| raw[value_start..].find(marker).map(|idx| value_start + idx))
+                .min();
             let closing_parameter_end = raw[value_start..]
                 .find(close)
                 .map(|idx| value_start + idx + close.len());
@@ -230,33 +529,82 @@ impl AgentPipeline {
         output.replace("</parameter>", "").trim().to_string()
     }
 
-    fn infer_task_name(description: &str) -> Option<String> {
-        let line = description
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())?;
-        let shortened: String = line.chars().take(60).collect();
-        if shortened.is_empty() {
-            None
-        } else if line.chars().count() > 60 {
-            Some(format!("{}...", shortened))
-        } else {
-            Some(shortened)
+    fn parse_task_status(raw: &str) -> Option<crate::TaskStatus> {
+        let normalized = raw
+            .trim()
+            .to_ascii_lowercase()
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { ' ' })
+            .collect::<String>();
+        let words = normalized.split_whitespace().collect::<Vec<_>>();
+        let joined = words.join("_");
+
+        match joined.as_str() {
+            "notstarted" | "not_started" | "todo" => return Some(crate::TaskStatus::NotStarted),
+            "blocked" | "waiting" => return Some(crate::TaskStatus::Blocked),
+            "inprogress" | "in_progress" | "started" | "running" | "active" => {
+                return Some(crate::TaskStatus::InProgress);
+            }
+            "completed" | "complete" | "done" | "finished" => {
+                return Some(crate::TaskStatus::Completed);
+            }
+            "cancelled" | "canceled" => return Some(crate::TaskStatus::Cancelled),
+            _ => {}
         }
+
+        for window in words.windows(2) {
+            match window {
+                ["not", "started"] => return Some(crate::TaskStatus::NotStarted),
+                ["in", "progress"] => return Some(crate::TaskStatus::InProgress),
+                _ => {}
+            }
+        }
+
+        for word in words {
+            match word {
+                "todo" | "notstarted" => return Some(crate::TaskStatus::NotStarted),
+                "blocked" | "waiting" => return Some(crate::TaskStatus::Blocked),
+                "inprogress" | "started" | "running" | "active" => {
+                    return Some(crate::TaskStatus::InProgress);
+                }
+                "completed" | "complete" | "done" | "finished" => {
+                    return Some(crate::TaskStatus::Completed);
+                }
+                "cancelled" | "canceled" => return Some(crate::TaskStatus::Cancelled),
+                _ => {}
+            }
+        }
+
+        None
     }
 
-    fn parse_task_status(raw: &str) -> Option<crate::TaskStatus> {
-        let normalized = raw.trim().to_ascii_lowercase().replace('-', "_");
-        match normalized.as_str() {
-            "notstarted" | "not_started" | "todo" => Some(crate::TaskStatus::NotStarted),
-            "blocked" | "waiting" => Some(crate::TaskStatus::Blocked),
-            "inprogress" | "in_progress" | "started" | "running" | "active" => {
-                Some(crate::TaskStatus::InProgress)
+    fn extract_embedded_task_status(raw: &str) -> Option<crate::TaskStatus> {
+        let lowered =
+            Self::strip_parameter_fragments(&Self::strip_xml_comments(raw)).to_ascii_lowercase();
+
+        for marker in [
+            "status is",
+            "status:",
+            "status=",
+            "state is",
+            "state:",
+            "state=",
+            "new status is",
+            "new status:",
+            "target status is",
+            "target status:",
+            "mark as",
+            "set to",
+        ] {
+            if let Some(start) = lowered.find(marker) {
+                let tail = lowered[start + marker.len()..].trim();
+                if let Some(status) = Self::parse_task_status(tail) {
+                    return Some(status);
+                }
             }
-            "completed" | "complete" | "done" | "finished" => Some(crate::TaskStatus::Completed),
-            "cancelled" | "canceled" => Some(crate::TaskStatus::Cancelled),
-            _ => None,
         }
+
+        None
     }
 
     fn shell_output_looks_interactive(output: &str) -> bool {
@@ -314,40 +662,29 @@ impl AgentPipeline {
         }
     }
 
-    fn infer_missing_task_status(
-        manager: &crate::TaskManager,
-        session_id: &str,
-        task_id: &str,
-    ) -> Option<(crate::TaskStatus, String)> {
-        let task = manager.get_task(session_id, task_id).ok().flatten()?;
-        let inferred = match task.status {
-            crate::TaskStatus::NotStarted | crate::TaskStatus::Blocked => {
-                crate::TaskStatus::InProgress
-            }
-            crate::TaskStatus::InProgress => crate::TaskStatus::InProgress,
-            crate::TaskStatus::Completed => crate::TaskStatus::Completed,
-            crate::TaskStatus::Cancelled => crate::TaskStatus::Cancelled,
-        };
-
-        Some((
-            inferred,
-            format!(
-                "No explicit status was provided, so the runtime inferred {:?} from the task's current state {:?}.",
-                inferred, task.status
-            ),
-        ))
-    }
-
     fn normalize_task_tool_arguments(args: serde_json::Value) -> serde_json::Value {
         let mut obj = match args {
             serde_json::Value::Object(map) => map,
             other => return other,
         };
 
+        let raw_string_values = obj
+            .values()
+            .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+            .collect::<Vec<_>>();
+
         let mut recovered = serde_json::Map::new();
         for value in obj.values() {
             if let Some(raw) = value.as_str() {
                 for (name, content) in Self::extract_parameter_fragments(raw) {
+                    recovered
+                        .entry(name)
+                        .or_insert_with(|| serde_json::Value::String(content));
+                }
+
+                for (name, content) in
+                    Self::extract_named_attribute_fragments(raw, &["name", "description", "status"])
+                {
                     recovered
                         .entry(name)
                         .or_insert_with(|| serde_json::Value::String(content));
@@ -391,6 +728,27 @@ impl AgentPipeline {
             }
         }
 
+        let parsed_status = obj
+            .get("status")
+            .and_then(|value| value.as_str())
+            .and_then(Self::parse_task_status);
+
+        if parsed_status.is_none() {
+            if obj.get("status").is_some() {
+                obj.remove("status");
+            }
+
+            if let Some(recovered_status) = raw_string_values
+                .iter()
+                .find_map(|raw| Self::extract_embedded_task_status(raw))
+            {
+                obj.insert(
+                    "status".to_string(),
+                    serde_json::Value::String(recovered_status.to_string()),
+                );
+            }
+        }
+
         serde_json::Value::Object(obj)
     }
 
@@ -418,6 +776,37 @@ impl AgentPipeline {
             permission_level = ?permission_level,
             "[ToolDispatch] finalize_pending_tool_call entry"
         );
+
+        if let Some(message) = Self::repeated_malformed_tool_call_skip_message(
+            &pending.name,
+            &pending.arguments,
+            response.tool_calls.iter(),
+        ) {
+            tracing::warn!(
+                tool = %pending.name,
+                "[ToolDispatch] Loop breaker skipped repeated malformed tool call"
+            );
+            let duration_ms = pending.start_time.elapsed().as_millis() as u64;
+            let _ = tx
+                .send(StreamChunk::ToolCallResult {
+                    name: pending.name.clone(),
+                    success: false,
+                    output: message.clone(),
+                    duration_ms,
+                })
+                .await;
+
+            let record = ToolCallRecord {
+                id: pending.id,
+                name: pending.name,
+                arguments: pending.arguments,
+                result: ToolResult::Skipped(message),
+                duration_ms,
+            };
+            tool_calls_in_iteration.push(record.clone());
+            response.tool_calls.push(record);
+            return;
+        }
 
         let policy = crate::tools::policy::evaluate_tool_call(
             permission_level,
@@ -1387,8 +1776,7 @@ impl AgentPipeline {
                             Some(c) => c,
                             None => {
                                 return ToolResult::Error(
-                                    "Missing required field 'content' for file write operation"
-                                        .to_string(),
+                                    Self::format_missing_file_write_content_error(&args),
                                 );
                             }
                         };
@@ -1593,14 +1981,16 @@ impl AgentPipeline {
                             .get("description")
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
-                        let fallback_name = Self::infer_task_name(description)
-                            .unwrap_or_else(|| "Untitled Task".to_string());
                         let name = args
                             .get("name")
                             .and_then(|v| v.as_str())
                             .map(str::trim)
-                            .filter(|name| !name.is_empty())
-                            .unwrap_or(&fallback_name);
+                            .filter(|name| !name.is_empty());
+                        let Some(name) = name else {
+                            return ToolResult::Error(Self::format_missing_task_create_name_error(
+                                &args,
+                            ));
+                        };
                         let parent_id = args
                             .get("parent_id")
                             .and_then(|v| v.as_str())
@@ -1631,32 +2021,19 @@ impl AgentPipeline {
                             .and_then(|v| v.as_str())
                             .and_then(Self::parse_task_status);
 
-                        let (status, inference_note) = match explicit_status {
-                            Some(status) => (status, None),
-                            None => match Self::infer_missing_task_status(manager, session_id, task_id) {
-                                Some((status, note)) => (status, Some(note)),
-                                None => {
-                                    return ToolResult::Error(
-                                        "Missing required field 'status' for update_status operation, and the runtime could not infer a safe default status for that task"
-                                            .to_string(),
-                                    )
+                        match explicit_status {
+                            Some(status) => match manager.update_task_status(session_id, task_id, status) {
+                                Ok(_) => ToolResult::Success(format!(
+                                    "Updated task {} status to {:?}",
+                                    task_id, status
+                                )),
+                                Err(e) => {
+                                    ToolResult::Error(format!("Failed to update task status: {}", e))
                                 }
                             },
-                        };
-
-                        match manager.update_task_status(session_id, task_id, status) {
-                            Ok(_) => {
-                                let mut message =
-                                    format!("Updated task {} status to {:?}", task_id, status);
-                                if let Some(note) = inference_note {
-                                    message.push('\n');
-                                    message.push_str(&note);
-                                }
-                                ToolResult::Success(message)
-                            }
-                            Err(e) => {
-                                ToolResult::Error(format!("Failed to update task status: {}", e))
-                            }
+                            None => ToolResult::Error(
+                                Self::format_missing_task_update_status_error(&args),
+                            ),
                         }
                     }
                     "update" => {
@@ -2182,10 +2559,18 @@ impl AgentPipeline {
                     format!("Skipped: {}", truncated)
                 }
             };
-            prompt.push_str(&format!(
-                "\nTool {} result:\n{}\n",
-                tool_call.name, result_text
-            ));
+            if Self::should_echo_tool_call_arguments(tool_call) {
+                let truncated_args = self.truncate_tool_result(&tool_call.arguments);
+                prompt.push_str(&format!(
+                    "\nTool {} call:\nArguments: {}\nResult: {}\n",
+                    tool_call.name, truncated_args, result_text
+                ));
+            } else {
+                prompt.push_str(&format!(
+                    "\nTool {} result:\n{}\n",
+                    tool_call.name, result_text
+                ));
+            }
         }
 
         let had_task_tool_error = tool_calls.iter().any(|tool_call| {
@@ -2201,7 +2586,61 @@ impl AgentPipeline {
 
         if had_task_tool_error {
             prompt.push_str(
-                "Important: task-tracking errors must not block implementation work. If a task update fails, continue the real work with file/shell/code tools and only retry the task tool when you can provide the exact required fields. For `update_status`, always include both `task_id` and `status`.\n",
+                "Important: task-tracking errors must not block implementation work. If a task operation fails, continue the real work with file/shell/code tools and only retry the task tool when you can provide the exact required fields. For `create`, provide a specific `name` and preferably a concrete `description`; for `update_status`, always include both `task_id` and `status`.\n",
+            );
+        }
+
+        let had_task_tool_success = tool_calls.iter().any(|tool_call| {
+            tool_call.name == "task" && matches!(tool_call.result, ToolResult::Success(_))
+        });
+
+        if had_task_tool_success {
+            prompt.push_str(
+                "Important: a successful task update is only bookkeeping. Do not repeat the same task update just to confirm it. After a task update succeeds, continue with the next concrete implementation or verification step unless another task's status genuinely changed.\n",
+            );
+        }
+
+        let had_missing_task_update_status_error = tool_calls.iter().any(|tool_call| {
+            tool_call.name == "task"
+                && matches!(
+                    &tool_call.result,
+                    ToolResult::Error(message)
+                        if message.contains("Missing required field 'status' for update_status operation")
+                )
+        });
+
+        if had_missing_task_update_status_error {
+            prompt.push_str(
+                "Important: if `task.update_status` failed because `status` was omitted, treat that as malformed arguments, not a reason to keep looping on task bookkeeping. The malformed task-update arguments are echoed above. If you intended a status change, send one corrected `update_status` call with both `task_id` and `status`; otherwise continue the real work now.\n",
+            );
+        }
+
+        let had_missing_task_create_name_error = tool_calls.iter().any(|tool_call| {
+            tool_call.name == "task"
+                && matches!(
+                    &tool_call.result,
+                    ToolResult::Error(message)
+                        if message.contains("Missing required field 'name' for create operation")
+                )
+        });
+
+        if had_missing_task_create_name_error {
+            prompt.push_str(
+                "Important: if `task.create` failed because `name` was missing, treat that as malformed arguments. The malformed task-create arguments are echoed above. Retry only with a specific task `name` and, for non-trivial work, a concrete `description`; do not rely on placeholder tasks.\n",
+            );
+        }
+
+        let had_task_loop_breaker_skip = tool_calls.iter().any(|tool_call| {
+            tool_call.name == "task"
+                && matches!(
+                    &tool_call.result,
+                    ToolResult::Skipped(message) if message.contains("Loop breaker:")
+                )
+        });
+
+        if had_task_loop_breaker_skip {
+            prompt.push_str(
+                "Important: repeated malformed task bookkeeping calls triggered the loop breaker. Treat task tracking as temporarily disabled for this run and continue the real implementation/build/test work with file/shell/code tools instead of calling `task` again.\n",
             );
         }
 
@@ -2212,6 +2651,34 @@ impl AgentPipeline {
         if had_file_tool_error {
             prompt.push_str(
                 "Important: file-tool errors must not block implementation work. For `write`, always include the destination `path` and the full file `content` (aliases like `contents` or `text` are okay, but `pattern`/`start` do not make a valid write). For partial updates, use `edit` with `path`, `old`, and `new`; reserve `pattern` for `search`.\n",
+            );
+        }
+
+        let had_missing_file_write_content_error = tool_calls.iter().any(|tool_call| {
+            tool_call.name == "file"
+                && matches!(
+                    &tool_call.result,
+                    ToolResult::Error(message)
+                        if message.contains("Missing required field 'content' for file write operation")
+                )
+        });
+
+        if had_missing_file_write_content_error {
+            prompt.push_str(
+                "Important: the malformed file-write arguments are echoed above. Do not repeat the same `write` call unchanged. If you do not yet know the full destination file text, read the existing file or prepare the full content first, then send one corrected `write` call with real `content`; otherwise use `edit` for a targeted change. Placeholders like `pattern: \"none\"` or `pattern: \"full content\"` are invalid.\n",
+            );
+        }
+
+        let had_tool_loop_breaker_skip = tool_calls.iter().any(|tool_call| {
+            matches!(
+                &tool_call.result,
+                ToolResult::Skipped(message) if message.contains("Loop breaker:")
+            )
+        });
+
+        if had_tool_loop_breaker_skip {
+            prompt.push_str(
+                "Important: a loop breaker blocked a repeated malformed tool call, but the agent run is still active. Do not retry the blocked malformed call shape again in this turn. Choose a different next step such as reading the file, preparing the missing content, using a more appropriate tool operation, or asking the user one focused question if essential information is still missing.\n",
             );
         }
 
@@ -2294,6 +2761,23 @@ mod tests {
     }
 
     #[test]
+    fn normalize_task_tool_arguments_recovers_embedded_natural_language_status() {
+        let normalized = AgentPipeline::normalize_task_tool_arguments(json!({
+            "operation": "update_status",
+            "task_id": "a519ef62-9279-46c0-a650-6c5bd644d107\" status is completed",
+        }));
+
+        assert_eq!(
+            normalized.get("task_id").and_then(|v| v.as_str()),
+            Some("a519ef62-9279-46c0-a650-6c5bd644d107")
+        );
+        assert_eq!(
+            normalized.get("status").and_then(|v| v.as_str()),
+            Some("completed")
+        );
+    }
+
+    #[test]
     fn normalize_file_tool_arguments_sanitizes_paths_and_aliases() {
         let normalized = AgentPipeline::normalize_file_tool_arguments(json!({
             "operation": "EDIT",
@@ -2335,18 +2819,243 @@ mod tests {
     }
 
     #[test]
-    fn infer_task_name_uses_first_non_empty_line() {
-        let description = "\n\nBuild a small Tauri hello world app\nwith tests";
-        assert_eq!(
-            AgentPipeline::infer_task_name(description).as_deref(),
-            Some("Build a small Tauri hello world app")
+    fn missing_file_write_content_error_explains_how_to_recover() {
+        let message = AgentPipeline::format_missing_file_write_content_error(&json!({
+            "operation": "write",
+            "path": "tauri-hello-world/src/index.html",
+            "pattern": "none",
+            "start": 1,
+        }));
+
+        assert!(message.contains("Missing required field 'content' for file write operation"));
+        assert!(message.contains("pattern, start"));
+        assert!(message.contains("\"content\":\"<full file contents here>\""));
+        assert!(message.contains("Do not retry the same malformed `write` call"));
+    }
+
+    #[test]
+    fn missing_task_update_status_error_explains_how_to_recover() {
+        let message = AgentPipeline::format_missing_task_update_status_error(&json!({
+            "operation": "update_status",
+            "task_id": "28d3bedc-81b9-45d2-a311-ccbb7d3be111",
+        }));
+
+        assert!(message.contains("Missing required field 'status' for update_status operation"));
+        assert!(message.contains("`update_status` requires both `task_id` and `status`"));
+        assert!(message.contains("\"status\":\"inprogress\""));
+        assert!(message.contains("Do not omit `status` to ask the runtime to infer or preserve the current state"));
+    }
+
+    #[test]
+    fn missing_task_create_name_error_explains_how_to_recover() {
+        let message = AgentPipeline::format_missing_task_create_name_error(&json!({
+            "operation": "create",
+            "task_id": "oops",
+        }));
+
+        assert!(message.contains("Missing required field 'name' for create operation"));
+        assert!(message.contains("`create` requires a specific task `name`"));
+        assert!(message.contains("\"name\":\"Build hello world Tauri app\""));
+        assert!(message.contains("Do not rely on the runtime to invent placeholder names like 'Untitled Task'"));
+    }
+
+    #[test]
+    fn repeated_malformed_tool_call_skip_message_trips_on_third_attempt() {
+        let malformed_args = json!({
+            "operation": "write",
+            "path": "tauri-hello-world/src/index.html",
+            "pattern": "none",
+            "start": 1,
+        })
+        .to_string();
+
+        let prior_records = vec![
+            crate::pipeline::ToolCallRecord {
+                id: "1".to_string(),
+                name: "file".to_string(),
+                arguments: malformed_args.clone(),
+                result: crate::pipeline::ToolResult::Error(
+                    AgentPipeline::format_missing_file_write_content_error(&json!({
+                        "operation": "write",
+                        "path": "tauri-hello-world/src/index.html",
+                        "pattern": "none",
+                        "start": 1,
+                    })),
+                ),
+                duration_ms: 1,
+            },
+            crate::pipeline::ToolCallRecord {
+                id: "2".to_string(),
+                name: "file".to_string(),
+                arguments: malformed_args.clone(),
+                result: crate::pipeline::ToolResult::Error(
+                    AgentPipeline::format_missing_file_write_content_error(&json!({
+                        "operation": "write",
+                        "path": "tauri-hello-world/src/index.html",
+                        "pattern": "full content",
+                        "start": 1,
+                    })),
+                ),
+                duration_ms: 1,
+            },
+        ];
+
+        let message = AgentPipeline::repeated_malformed_tool_call_skip_message(
+            "file",
+            &malformed_args,
+            prior_records.iter(),
+        )
+        .expect("loop breaker should trigger");
+
+        assert!(message.contains("Loop breaker:"));
+        assert!(message.contains("agent is still running"));
+        assert!(message.contains(
+            "Do not retry `write` until you can provide the full destination file text in `content`"
+        ));
+    }
+
+    #[test]
+    fn repeated_malformed_tool_call_skip_message_does_not_trip_too_early() {
+        let malformed_args = json!({
+            "operation": "write",
+            "path": "tauri-hello-world/src/index.html",
+            "pattern": "none",
+            "start": 1,
+        })
+        .to_string();
+
+        let prior_records = vec![crate::pipeline::ToolCallRecord {
+            id: "1".to_string(),
+            name: "file".to_string(),
+            arguments: malformed_args.clone(),
+            result: crate::pipeline::ToolResult::Error(
+                AgentPipeline::format_missing_file_write_content_error(&json!({
+                    "operation": "write",
+                    "path": "tauri-hello-world/src/index.html",
+                    "pattern": "none",
+                    "start": 1,
+                })),
+            ),
+            duration_ms: 1,
+        }];
+
+        assert!(
+            AgentPipeline::repeated_malformed_tool_call_skip_message(
+                "file",
+                &malformed_args,
+                prior_records.iter(),
+            )
+            .is_none()
         );
+    }
+
+    #[test]
+    fn repeated_malformed_task_update_without_status_trips_on_third_attempt() {
+        let malformed_args = json!({
+            "operation": "update_status",
+            "task_id": "6073f304-388d-408c-82d0-f49f8679656a",
+        })
+        .to_string();
+
+        let prior_records = vec![
+            crate::pipeline::ToolCallRecord {
+                id: "1".to_string(),
+                name: "task".to_string(),
+                arguments: malformed_args.clone(),
+                result: crate::pipeline::ToolResult::Error(
+                    AgentPipeline::format_missing_task_update_status_error(&json!({
+                        "operation": "update_status",
+                        "task_id": "6073f304-388d-408c-82d0-f49f8679656a",
+                    })),
+                ),
+                duration_ms: 1,
+            },
+            crate::pipeline::ToolCallRecord {
+                id: "2".to_string(),
+                name: "task".to_string(),
+                arguments: malformed_args.clone(),
+                result: crate::pipeline::ToolResult::Error(
+                    AgentPipeline::format_missing_task_update_status_error(&json!({
+                        "operation": "update_status",
+                        "task_id": "6073f304-388d-408c-82d0-f49f8679656a",
+                    })),
+                ),
+                duration_ms: 1,
+            },
+        ];
+
+        let message = AgentPipeline::repeated_malformed_tool_call_skip_message(
+            "task",
+            &malformed_args,
+            prior_records.iter(),
+        )
+        .expect("loop breaker should trigger");
+
+        assert!(message.contains("Loop breaker:"));
+        assert!(message.contains("task.update_status"));
+        assert!(message.contains("agent is still running"));
+        assert!(message.contains("Do not retry `update_status` without `status`"));
+    }
+
+    #[test]
+    fn repeated_malformed_task_create_without_name_trips_on_third_attempt() {
+        let malformed_args = json!({
+            "operation": "create",
+            "task_id": "\"tauri-hello-world\" wait no, task_id not for create.",
+        })
+        .to_string();
+
+        let prior_records = vec![
+            crate::pipeline::ToolCallRecord {
+                id: "1".to_string(),
+                name: "task".to_string(),
+                arguments: malformed_args.clone(),
+                result: crate::pipeline::ToolResult::Error(
+                    AgentPipeline::format_missing_task_create_name_error(&json!({
+                        "operation": "create",
+                        "task_id": "\"tauri-hello-world\" wait no, task_id not for create.",
+                    })),
+                ),
+                duration_ms: 1,
+            },
+            crate::pipeline::ToolCallRecord {
+                id: "2".to_string(),
+                name: "task".to_string(),
+                arguments: malformed_args.clone(),
+                result: crate::pipeline::ToolResult::Error(
+                    AgentPipeline::format_missing_task_create_name_error(&json!({
+                        "operation": "create",
+                        "task_id": "\"tauri-hello-world\" wait no, task_id not for create.",
+                    })),
+                ),
+                duration_ms: 1,
+            },
+        ];
+
+        let message = AgentPipeline::repeated_malformed_tool_call_skip_message(
+            "task",
+            &malformed_args,
+            &prior_records,
+        )
+        .expect("third malformed create should trip loop breaker");
+
+        assert!(message.contains("Loop breaker:"));
+        assert!(message.contains("task.create"));
+        assert!(message.contains("without a valid `name`"));
     }
 
     #[test]
     fn parse_task_status_accepts_common_aliases() {
         assert!(matches!(
             AgentPipeline::parse_task_status("in_progress"),
+            Some(crate::TaskStatus::InProgress)
+        ));
+        assert!(matches!(
+            AgentPipeline::parse_task_status("status is completed"),
+            Some(crate::TaskStatus::Completed)
+        ));
+        assert!(matches!(
+            AgentPipeline::parse_task_status("state: in progress"),
             Some(crate::TaskStatus::InProgress)
         ));
         assert!(matches!(
@@ -2360,7 +3069,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_status_without_status_falls_back_to_in_progress() {
+    async fn update_status_without_status_returns_actionable_error() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("tool-dispatch-test-{}", uuid::Uuid::new_v4());
         let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
@@ -2383,12 +3092,131 @@ mod tests {
             .await;
 
         let output = match result {
-            crate::pipeline::ToolResult::Success(output) => output,
-            other => panic!("expected success, got {other:?}"),
+            crate::pipeline::ToolResult::Error(output) => output,
+            other => panic!("expected error, got {other:?}"),
         };
 
-        assert!(output.contains("status to InProgress"));
-        assert!(output.contains("runtime inferred InProgress"));
+        assert!(output.contains("Missing required field 'status' for update_status operation"));
+        assert!(output.contains("\"status\":\"inprogress\""));
+
+        let task_after = manager
+            .get_task(&session_id, &task.id)
+            .expect("get task")
+            .expect("task exists");
+        assert_eq!(task_after.status, crate::TaskStatus::NotStarted);
+    }
+
+    #[tokio::test]
+    async fn create_without_name_returns_actionable_error() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("tool-dispatch-create-test-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let manager = crate::get_global_task_manager();
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let before = manager.list_tasks(&session_id).expect("list tasks before").len();
+
+        let result = pipeline
+            .execute_task_tool(
+                &json!({
+                    "operation": "create",
+                    "task_id": "malformed",
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        let output = match result {
+            crate::pipeline::ToolResult::Error(output) => output,
+            other => panic!("expected error, got {other:?}"),
+        };
+
+        assert!(output.contains("Missing required field 'name' for create operation"));
+
+        let after = manager.list_tasks(&session_id).expect("list tasks after").len();
+        assert_eq!(before, after);
+    }
+
+    #[tokio::test]
+    async fn update_status_without_status_does_not_change_existing_in_progress_task() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("tool-dispatch-noop-test-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let manager = crate::get_global_task_manager();
+        let task = manager
+            .create_task(&session_id, "Test task", "desc", None)
+            .expect("create task");
+        manager
+            .update_task_status(&session_id, &task.id, crate::TaskStatus::InProgress)
+            .expect("seed in progress status");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_task_tool(
+                &json!({
+                    "operation": "update_status",
+                    "task_id": task.id,
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        let output = match result {
+            crate::pipeline::ToolResult::Error(output) => output,
+            other => panic!("expected error, got {other:?}"),
+        };
+
+        assert!(output.contains("Missing required field 'status' for update_status operation"));
+
+        let task_after = manager
+            .get_task(&session_id, &task.id)
+            .expect("get task")
+            .expect("task exists");
+        assert_eq!(task_after.status, crate::TaskStatus::InProgress);
+    }
+
+    #[tokio::test]
+    async fn update_status_without_status_does_not_change_completed_task() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("tool-dispatch-completed-noop-test-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let manager = crate::get_global_task_manager();
+        let task = manager
+            .create_task(&session_id, "Completed task", "desc", None)
+            .expect("create task");
+        manager
+            .update_task_status(&session_id, &task.id, crate::TaskStatus::Completed)
+            .expect("seed completed status");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_task_tool(
+                &json!({
+                    "operation": "update_status",
+                    "task_id": task.id,
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        let output = match result {
+            crate::pipeline::ToolResult::Error(output) => output,
+            other => panic!("expected error, got {other:?}"),
+        };
+
+        assert!(output.contains("Missing required field 'status' for update_status operation"));
+
+        let task_after = manager
+            .get_task(&session_id, &task.id)
+            .expect("get task")
+            .expect("task exists");
+        assert_eq!(task_after.status, crate::TaskStatus::Completed);
     }
 
     #[tokio::test]
@@ -2442,6 +3270,7 @@ mod tests {
                 &json!({
                     "operation": "update_status",
                     "task_id": format!("{}\\\" ", task.id),
+                    "status": "inprogress",
                 })
                 .to_string(),
                 Some(&workspace),
@@ -2454,7 +3283,7 @@ mod tests {
         };
 
         assert!(output.contains(task.id.as_str()));
-        assert!(output.contains("runtime inferred InProgress"));
+        assert!(output.contains("status to InProgress"));
     }
 
     #[tokio::test]
@@ -2493,6 +3322,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_status_succeeds_with_embedded_natural_language_completed_status() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("tool-dispatch-natural-status-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let manager = crate::get_global_task_manager();
+        let task = manager
+            .create_task(&session_id, "Leaf task", "desc", None)
+            .expect("create task");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_task_tool(
+                &json!({
+                    "operation": "update_status",
+                    "task_id": format!("{}\" status is completed", task.id),
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        let output = match result {
+            crate::pipeline::ToolResult::Success(output) => output,
+            other => panic!("expected success, got {other:?}"),
+        };
+
+        assert!(output.contains(task.id.as_str()));
+        assert!(output.contains("status to Completed"));
+    }
+
+    #[tokio::test]
     async fn file_write_accepts_text_alias_for_content() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("file-write-alias-test-{}", uuid::Uuid::new_v4());
@@ -2523,6 +3384,39 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn file_write_missing_content_error_is_actionable() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("file-write-missing-content-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_file_tool(
+                &json!({
+                    "operation": "write",
+                    "path": "index.html",
+                    "pattern": "full content",
+                    "start": 1,
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Error(message) => {
+                assert!(
+                    message.contains("Missing required field 'content' for file write operation")
+                );
+                assert!(message.contains("pattern, start"));
+                assert!(message.contains("\"content\":\"<full file contents here>\""));
+            }
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
     #[test]
     fn continuation_prompt_warns_task_errors_should_not_block_implementation() {
         let pipeline = AgentPipeline::new(AppConfig::default());
@@ -2532,16 +3426,159 @@ mod tests {
             &[crate::pipeline::ToolCallRecord {
                 id: "1".to_string(),
                 name: "task".to_string(),
-                arguments: "{}".to_string(),
+                arguments: json!({
+                    "operation": "update_status",
+                    "task_id": "abc",
+                })
+                .to_string(),
                 result: crate::pipeline::ToolResult::Error(
-                    "Missing required field 'status' for update_status operation".to_string(),
+                    AgentPipeline::format_missing_task_update_status_error(&json!({
+                        "operation": "update_status",
+                        "task_id": "abc",
+                    })),
                 ),
                 duration_ms: 1,
             }],
         );
 
         assert!(prompt.contains("task-tracking errors must not block implementation work"));
+        assert!(prompt.contains("For `create`, provide a specific `name` and preferably a concrete `description`"));
         assert!(prompt.contains("always include both `task_id` and `status`"));
+        assert!(prompt.contains("Arguments: {\"operation\":\"update_status\",\"task_id\":\"abc\"}"));
+    }
+
+    #[test]
+    fn continuation_prompt_warns_not_to_repeat_successful_task_updates() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let prompt = pipeline.build_tool_continuation_prompt(
+            "User: build the app",
+            "I updated the task status.",
+            &[crate::pipeline::ToolCallRecord {
+                id: "1".to_string(),
+                name: "task".to_string(),
+                arguments: "{}".to_string(),
+                result: crate::pipeline::ToolResult::Success(
+                    "Updated task abc status to InProgress".to_string(),
+                ),
+                duration_ms: 1,
+            }],
+        );
+
+        assert!(prompt.contains("successful task update is only bookkeeping"));
+        assert!(prompt.contains("Do not repeat the same task update"));
+    }
+
+    #[test]
+    fn continuation_prompt_warns_missing_task_status_should_not_cause_looping() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let prompt = pipeline.build_tool_continuation_prompt(
+            "User: build the app",
+            "I updated the task status.",
+            &[crate::pipeline::ToolCallRecord {
+                id: "1".to_string(),
+                name: "task".to_string(),
+                arguments: json!({
+                    "operation": "update_status",
+                    "task_id": "abc",
+                })
+                .to_string(),
+                result: crate::pipeline::ToolResult::Error(
+                    AgentPipeline::format_missing_task_update_status_error(&json!({
+                        "operation": "update_status",
+                        "task_id": "abc",
+                    })),
+                ),
+                duration_ms: 1,
+            }],
+        );
+
+        assert!(prompt.contains("if `task.update_status` failed because `status` was omitted"));
+        assert!(prompt.contains("not a reason to keep looping on task bookkeeping"));
+        assert!(prompt.contains("Arguments: {\"operation\":\"update_status\",\"task_id\":\"abc\"}"));
+    }
+
+    #[test]
+    fn continuation_prompt_warns_missing_task_create_name_should_not_cause_looping() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let prompt = pipeline.build_tool_continuation_prompt(
+            "User: build the app",
+            "I started planning.",
+            &[crate::pipeline::ToolCallRecord {
+                id: "1".to_string(),
+                name: "task".to_string(),
+                arguments: json!({
+                    "operation": "create",
+                    "task_id": "abc",
+                })
+                .to_string(),
+                result: crate::pipeline::ToolResult::Error(
+                    AgentPipeline::format_missing_task_create_name_error(&json!({
+                        "operation": "create",
+                        "task_id": "abc",
+                    })),
+                ),
+                duration_ms: 1,
+            }],
+        );
+
+        assert!(prompt.contains("if `task.create` failed because `name` was missing"));
+        assert!(prompt.contains("Retry only with a specific task `name`"));
+        assert!(prompt.contains("Arguments: {\"operation\":\"create\",\"task_id\":\"abc\"}"));
+    }
+
+    #[test]
+    fn continuation_prompt_warns_task_tool_is_temporarily_disabled_after_loop_breaker() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let prompt = pipeline.build_tool_continuation_prompt(
+            "User: build the app",
+            "I attempted task creation.",
+            &[crate::pipeline::ToolCallRecord {
+                id: "1".to_string(),
+                name: "task".to_string(),
+                arguments: json!({
+                    "operation": "create"
+                })
+                .to_string(),
+                result: crate::pipeline::ToolResult::Skipped(
+                    "Loop breaker: skipped a repeated malformed `task.create` call without a valid `name` after 2 prior similar malformed attempts in this run."
+                        .to_string(),
+                ),
+                duration_ms: 1,
+            }],
+        );
+
+        assert!(prompt.contains("task tracking as temporarily disabled for this run"));
+        assert!(prompt.contains("continue the real implementation/build/test work with file/shell/code tools"));
+    }
+
+    #[test]
+    fn continuation_prompt_echoes_missing_status_task_error_arguments() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let prompt = pipeline.build_tool_continuation_prompt(
+            "User: build the app",
+            "I updated the task status.",
+            &[crate::pipeline::ToolCallRecord {
+                id: "1".to_string(),
+                name: "task".to_string(),
+                arguments: json!({
+                    "operation": "update_status",
+                    "task_id": "6073f304-388d-408c-82d0-f49f8679656a",
+                })
+                .to_string(),
+                result: crate::pipeline::ToolResult::Error(
+                    AgentPipeline::format_missing_task_update_status_error(&json!({
+                        "operation": "update_status",
+                        "task_id": "6073f304-388d-408c-82d0-f49f8679656a",
+                    })),
+                ),
+                duration_ms: 1,
+            }],
+        );
+
+        assert!(prompt.contains("Tool task call:"));
+        assert!(prompt.contains("\"operation\":\"update_status\""));
+        assert!(prompt.contains("\"task_id\":\"6073f304-388d-408c-82d0-f49f8679656a\""));
+        assert!(prompt.contains("Missing required field 'status' for update_status operation"));
     }
 
     #[test]
@@ -2553,9 +3590,20 @@ mod tests {
             &[crate::pipeline::ToolCallRecord {
                 id: "1".to_string(),
                 name: "file".to_string(),
-                arguments: "{}".to_string(),
+                arguments: json!({
+                    "operation": "write",
+                    "path": "tauri-hello-world/src/index.html",
+                    "pattern": "none",
+                    "start": 1,
+                })
+                .to_string(),
                 result: crate::pipeline::ToolResult::Error(
-                    "Missing required field 'content' for file write operation".to_string(),
+                    AgentPipeline::format_missing_file_write_content_error(&json!({
+                        "operation": "write",
+                        "path": "tauri-hello-world/src/index.html",
+                        "pattern": "none",
+                        "start": 1,
+                    })),
                 ),
                 duration_ms: 1,
             }],
@@ -2564,6 +3612,38 @@ mod tests {
         assert!(prompt.contains("file-tool errors must not block implementation work"));
         assert!(prompt.contains("full file `content`"));
         assert!(prompt.contains("`pattern`/`start` do not make a valid write"));
+        assert!(prompt.contains("Arguments: {\"operation\":\"write\""));
+        assert!(prompt.contains("Do not repeat the same `write` call unchanged"));
+    }
+
+    #[test]
+    fn continuation_prompt_explains_loop_breaker_is_non_fatal() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let prompt = pipeline.build_tool_continuation_prompt(
+            "User: build the app",
+            "I will correct the file write.",
+            &[crate::pipeline::ToolCallRecord {
+                id: "1".to_string(),
+                name: "file".to_string(),
+                arguments: json!({
+                    "operation": "write",
+                    "path": "tauri-hello-world/src/index.html",
+                    "pattern": "none",
+                    "start": 1,
+                })
+                .to_string(),
+                result: crate::pipeline::ToolResult::Skipped(
+                    "Loop breaker: skipped a repeated malformed `file.write` call without `content` after 2 prior similar non-successful attempts in this run. The agent is still running.".to_string(),
+                ),
+                duration_ms: 1,
+            }],
+        );
+
+        assert!(prompt.contains("loop breaker blocked a repeated malformed tool call"));
+        assert!(prompt.contains("agent run is still active"));
+        assert!(
+            prompt.contains("Do not retry the blocked malformed call shape again in this turn")
+        );
     }
 
     #[test]

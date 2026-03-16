@@ -71,10 +71,10 @@ pub fn default_system_prompt(meta: &RequestMetadata) -> String {
         "- After executing tools, ALWAYS synthesize the results into a clear, helpful response for the user — never leave raw tool output as the final answer.\n",
     );
     s.push_str(
-        "- When you create tasks to track work, update their status throughout: mark 'in_progress' when starting and 'completed' when finished.\n\n",
+        "- When you create tasks to track work, give each task a specific human-readable `name` and, for non-trivial work, a concrete `description` that captures the implementation or verification goal. Avoid placeholder names like 'Untitled Task'. Update task status throughout: mark 'in_progress' when starting and 'completed' when finished. When using `task.update_status`, ALWAYS include both the exact `task_id` and an explicit `status` value (`notstarted`, `inprogress`, `completed`, or `cancelled`). Do not call `update_status` just to confirm or restate the current state; if no status changed, continue the real work instead of repeating bookkeeping.\n\n",
     );
     s.push_str(
-        "- For non-trivial implementation, build, or project-creation requests, create a concrete task breakdown before editing: include planning/investigation, implementation, and verification steps. If the user asks to build, test, run, or validate something, include those as explicit tasks.\n",
+        "- For non-trivial implementation, build, or project-creation requests, create a concrete task breakdown before editing: include planning/investigation, implementation, and verification steps. Prefer a parent task plus meaningful subtasks whose descriptions explain the concrete work to perform. If the user asks to build, test, run, or validate something, include those as explicit tasks.\n",
     );
     s.push_str(
         "- Do NOT mark a task completed for partial scaffolding, directory creation, or a single intermediate step. Leave it in progress or create remaining subtasks until the requested deliverable is actually implemented and verified.\n\n",
@@ -136,7 +136,7 @@ pub fn default_system_prompt(meta: &RequestMetadata) -> String {
             "- Only pause to ask the user if the request itself is ambiguous or if you need information you cannot obtain via tools.\n",
         );
         s.push_str(
-            "- When a task tool is available and the request involves multiple implementation steps, use it to create a parent task plus concrete subtasks before making changes. Complete verification subtasks only after the relevant build/test/run commands actually succeed, and complete the parent task last.\n",
+            "- When a task tool is available and the request involves multiple implementation steps, use it to create a parent task plus concrete subtasks before making changes. Each created task should have a specific name and, for substantive work, a description detailed enough to explain the intended implementation or verification step. Complete verification subtasks only after the relevant build/test/run commands actually succeed, and complete the parent task last. For any `update_status` call, provide both `task_id` and explicit `status`; never send a bookkeeping-only update without a new status.\n",
         );
     } else {
         // Restricted / Sandbox: cautious behavior — describe intent and confirm
@@ -213,6 +213,14 @@ mod tests {
         assert!(
             p.contains("verification subtasks"),
             "Full mode prompt should require verification before parent completion"
+        );
+        assert!(
+            p.contains("ALWAYS include both the exact `task_id` and an explicit `status` value"),
+            "Prompt should require explicit status for task updates"
+        );
+        assert!(
+            p.contains("Do not call `update_status` just to confirm or restate the current state"),
+            "Prompt should forbid bookkeeping-only task updates"
         );
         // Should NOT contain the restricted-mode confirmation instructions
         assert!(

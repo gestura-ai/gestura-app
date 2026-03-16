@@ -2994,11 +2994,6 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 task_record.task.session_id.as_deref(),
                 task_record.task.tracking_task_id.as_deref(),
             )
-            && let Some(workspace_dir) = task_record
-                .task
-                .workspace_dir
-                .as_deref()
-                .or(run_snapshot.workspace_dir.as_deref())
         {
             let phase = match kind {
                 SharedCognitionKind::Blocker => crate::tasks::TaskMemoryPhase::Blocked,
@@ -3008,7 +3003,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 | SharedCognitionKind::Steering
                 | SharedCognitionKind::Decision => crate::tasks::TaskMemoryPhase::Promoted,
             };
-            let manager = TaskManager::new(workspace_dir);
+            let manager = crate::get_global_task_manager();
             let _ = manager.record_memory_event(
                 session_id,
                 tracking_task_id,
@@ -3272,16 +3267,14 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
     }
 
     async fn ensure_tracking_task(&self, task: &mut DelegatedTask) {
-        let (Some(workspace_dir), Some(session_id)) =
-            (task.workspace_dir.as_deref(), task.session_id.as_deref())
-        else {
+        let Some(session_id) = task.session_id.as_deref() else {
             return;
         };
         if task.tracking_task_id.is_some() {
             return;
         }
 
-        let manager = TaskManager::new(workspace_dir);
+        let manager = crate::get_global_task_manager();
         let name = task
             .name
             .clone()
@@ -5162,9 +5155,6 @@ fn restart_blocked_reason_for_checkpoint(checkpoint: &DelegatedTaskCheckpoint) -
 }
 
 fn record_task_dispatch(task: &DelegatedTask, record: &SupervisorTaskRecord, run: &SupervisorRun) {
-    let Some(workspace_dir) = task.workspace_dir.as_deref() else {
-        return;
-    };
     let Some(session_id) = task.session_id.as_deref() else {
         return;
     };
@@ -5172,7 +5162,7 @@ fn record_task_dispatch(task: &DelegatedTask, record: &SupervisorTaskRecord, run
         return;
     };
 
-    let manager = TaskManager::new(workspace_dir);
+    let manager = crate::get_global_task_manager();
     let task_status = match record.state {
         SupervisorTaskState::Blocked
         | SupervisorTaskState::PendingApproval
@@ -5267,9 +5257,6 @@ fn record_task_dispatch(task: &DelegatedTask, record: &SupervisorTaskRecord, run
 }
 
 fn record_task_progress(task: &DelegatedTask, record: &SupervisorTaskRecord, run: &SupervisorRun) {
-    let Some(workspace_dir) = task.workspace_dir.as_deref() else {
-        return;
-    };
     let Some(session_id) = task.session_id.as_deref() else {
         return;
     };
@@ -5277,7 +5264,7 @@ fn record_task_progress(task: &DelegatedTask, record: &SupervisorTaskRecord, run
         return;
     };
 
-    let manager = TaskManager::new(workspace_dir);
+    let manager = crate::get_global_task_manager();
     let task_status = match record.state {
         SupervisorTaskState::Blocked
         | SupervisorTaskState::PendingApproval
@@ -5320,9 +5307,6 @@ fn record_task_completion(
     record: &SupervisorTaskRecord,
     run: &SupervisorRun,
 ) {
-    let Some(workspace_dir) = task.workspace_dir.as_deref() else {
-        return;
-    };
     let Some(session_id) = task.session_id.as_deref() else {
         return;
     };
@@ -5330,7 +5314,7 @@ fn record_task_completion(
         return;
     };
 
-    let manager = TaskManager::new(workspace_dir);
+    let manager = crate::get_global_task_manager();
     let task_status = match record.state {
         SupervisorTaskState::Blocked
         | SupervisorTaskState::PendingApproval
