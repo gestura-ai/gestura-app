@@ -42,14 +42,14 @@ function renderTaskPanel(tasks: TaskHierarchy) {
 describe('TaskPanel', () => {
   it('starts the first non-terminal task from the panel', async () => {
     const tasks: TaskHierarchy = [{
-      id: 'task-hello-world',
-      name: 'Create hello world Tauri app',
-      description: 'Build a small Tauri GUI that renders hello world.',
+      id: 'task-main-app',
+      name: 'Create desktop app shell',
+      description: 'Build the primary desktop application shell.',
       status: 'Completed',
       subtasks: [{
         id: 'task-build-app',
         name: 'Build the Tauri app',
-        description: 'Compile and verify the hello world app.',
+        description: 'Compile and verify the application.',
         status: 'InProgress',
         subtasks: [{
           id: 'task-run-tests',

@@ -263,6 +263,18 @@ fn test_agent_help() {
         .stdout(predicate::str::contains("agent"));
 }
 
+#[test]
+fn test_agent_basic_accepts_piped_slash_commands() {
+    gestura()
+        .args(["agent", "--basic"])
+        .write_stdin("/help\n/history\n/quit\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Commands"))
+        .stdout(predicate::str::contains("Session Statistics"))
+        .stdout(predicate::str::contains("Session saved."));
+}
+
 // ==================== Tools Permissions Command Tests ====================
 
 #[test]

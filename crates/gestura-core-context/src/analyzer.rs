@@ -35,8 +35,19 @@ const CATEGORY_PATTERNS: &[CategoryPattern] = &[
     CategoryPattern {
         keywords: &[
             "run", "execute", "shell", "command", "terminal", "bash", "sh", "npm", "cargo",
+            "build", "test", "compile", "check", "scaffold",
         ],
-        phrases: &["run this", "execute the", "in terminal", "run the"],
+        phrases: &[
+            "run this",
+            "execute the",
+            "in terminal",
+            "run the",
+            "build and test",
+            "build it",
+            "run tests",
+            "compile it",
+            "scaffold the",
+        ],
         category: ContextCategory::Shell,
     },
     CategoryPattern {
@@ -273,29 +284,19 @@ impl RequestAnalyzer {
     /// Create a new analyzer
     pub fn new() -> Self {
         let mut tool_categories = HashMap::new();
-        // File tools
-        for tool in [
-            "read_file",
-            "write_file",
-            "list_directory",
-            "search_files",
-            "tree",
-        ] {
-            tool_categories.insert(tool.to_string(), ContextCategory::FileSystem);
-        }
-        // Shell tools
-        for tool in ["run_command", "shell", "execute"] {
-            tool_categories.insert(tool.to_string(), ContextCategory::Shell);
-        }
-        // Git tools
-        for tool in ["git_status", "git_log", "git_diff", "git_branch"] {
-            tool_categories.insert(tool.to_string(), ContextCategory::Git);
-        }
-        // Screen tools
-        for tool in ["screenshot", "screen_record"] {
-            tool_categories.insert(tool.to_string(), ContextCategory::Screen);
-        }
-        // Task tools
+        // Canonical built-in tool names. These are the names exposed by the
+        // registry and understood by prompt/tool-schema construction.
+        tool_categories.insert("file".to_string(), ContextCategory::FileSystem);
+        tool_categories.insert("shell".to_string(), ContextCategory::Shell);
+        tool_categories.insert("git".to_string(), ContextCategory::Git);
+        tool_categories.insert("code".to_string(), ContextCategory::Code);
+        tool_categories.insert("web".to_string(), ContextCategory::Web);
+        tool_categories.insert("web_search".to_string(), ContextCategory::Web);
+        tool_categories.insert("permissions".to_string(), ContextCategory::Tools);
+        tool_categories.insert("a2a".to_string(), ContextCategory::A2a);
+        tool_categories.insert("mcp".to_string(), ContextCategory::Mcp);
+        tool_categories.insert("screenshot".to_string(), ContextCategory::Screen);
+        tool_categories.insert("screen_record".to_string(), ContextCategory::Screen);
         tool_categories.insert("task".to_string(), ContextCategory::Task);
 
         Self {
@@ -581,6 +582,7 @@ mod tests {
         let analysis = analyzer.analyze("Read the file src/main.rs and show me its contents");
 
         assert!(analysis.categories.contains(&ContextCategory::FileSystem));
+        assert!(analysis.suggested_tools.contains(&"file".to_string()));
         assert!(!analysis.entities.is_empty());
         assert!(analysis.needs_tools);
     }
@@ -732,5 +734,21 @@ mod tests {
             analysis.categories
         );
         assert!(analysis.needs_tools);
+    }
+
+    #[test]
+    fn test_build_and_test_requests_include_shell() {
+        let analyzer = RequestAnalyzer::new();
+        let analysis = analyzer.analyze(
+            "I want to create a small tauri gui that says hello world. Please carefully plan and implement then build and test it.",
+        );
+
+        assert!(analysis.categories.contains(&ContextCategory::Shell));
+        assert!(analysis.categories.contains(&ContextCategory::FileSystem));
+        assert!(analysis.suggested_tools.contains(&"file".to_string()));
+        assert!(analysis.suggested_tools.contains(&"shell".to_string()));
+        assert!(analysis.suggested_tools.contains(&"code".to_string()));
+        assert!(analysis.needs_tools);
+        assert!(analysis.confidence >= 0.2);
     }
 }

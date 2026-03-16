@@ -19,6 +19,97 @@ impl AgentPipeline {
         alnum_count >= 24 || word_count >= 5
     }
 
+    fn prompt_requires_build_and_test(prompt: &str) -> bool {
+        let normalized = prompt.to_ascii_lowercase();
+        ["build and test", "test and build", "build & test"]
+            .iter()
+            .any(|needle| normalized.contains(needle))
+    }
+
+    fn extract_shell_command(tool_call: &ToolCallRecord) -> Option<String> {
+        if tool_call.name != "shell" || !matches!(tool_call.result, ToolResult::Success(_)) {
+            return None;
+        }
+
+        serde_json::from_str::<serde_json::Value>(&tool_call.arguments)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("command")
+                    .and_then(|command| command.as_str())
+                    .map(str::to_string)
+            })
+            .or_else(|| {
+                (!tool_call.arguments.trim().is_empty()).then(|| tool_call.arguments.clone())
+            })
+    }
+
+    fn build_and_test_completion_status(tool_calls: &[ToolCallRecord]) -> (bool, bool) {
+        let mut build_completed = false;
+        let mut test_completed = false;
+
+        for command in tool_calls.iter().filter_map(Self::extract_shell_command) {
+            let normalized = command.to_ascii_lowercase();
+            if [
+                "cargo check",
+                "cargo build",
+                "cargo tauri build",
+                "npm run build",
+                "npm run tauri build",
+                "pnpm build",
+                "pnpm tauri build",
+                "yarn build",
+                "tauri build",
+            ]
+            .iter()
+            .any(|marker| normalized.contains(marker))
+            {
+                build_completed = true;
+            }
+
+            if [
+                "cargo test",
+                "npm test",
+                "npm run test",
+                "pnpm test",
+                "pnpm run test",
+                "yarn test",
+            ]
+            .iter()
+            .any(|marker| normalized.contains(marker))
+            {
+                test_completed = true;
+            }
+        }
+
+        (build_completed, test_completed)
+    }
+
+    fn is_missing_requested_build_and_test(prompt: &str, tool_calls: &[ToolCallRecord]) -> bool {
+        if !Self::prompt_requires_build_and_test(prompt) {
+            return false;
+        }
+
+        let (build_completed, test_completed) = Self::build_and_test_completion_status(tool_calls);
+        !(build_completed && test_completed)
+    }
+
+    fn should_force_initial_execution_without_tools(
+        saw_any_tool_calls: bool,
+        tools_available: bool,
+        requires_build_and_test: bool,
+        tracked_task: bool,
+        iteration_content: &str,
+        iteration: usize,
+        max_iterations: Option<usize>,
+    ) -> bool {
+        !saw_any_tool_calls
+            && tools_available
+            && (requires_build_and_test || tracked_task)
+            && !Self::text_signals_user_blocker_or_question(iteration_content)
+            && Self::has_iteration_headroom(iteration, max_iterations)
+    }
+
     fn text_defers_remaining_work(text: &str) -> bool {
         let normalized = text.trim().to_ascii_lowercase();
         if normalized.is_empty() {
@@ -327,8 +418,38 @@ impl AgentPipeline {
         }
 
         prompt.push_str(
-            "\nUser: The work is not finished yet. Continue the same run now by executing the next highest-priority incomplete subtask with tools. If you have not created a concrete task breakdown for this non-trivial request yet, create one first with specific task names and, for substantive work, useful descriptions; then continue implementation, build, or test execution instead of stopping after reconnaissance. Update the tracked task statuses as you start or finish each subtask, and do not mark the root task complete until every planned subtask is completed or explicitly cancelled. Do not stop with another status update, plan recap, or promise to resume later unless you are genuinely blocked and explain the blocker clearly.\n",
+            "\nUser: The work is not finished yet. Continue the same run now by executing the next highest-priority incomplete implementation or verification step with tools. Task tracking is optional and must never block the real work. The runtime already keeps the tracked root task aligned with overall run progress, so do not call `task.update_status` just to reflect ongoing work or preserve the current state. Only use `task` when you have one exact, worthwhile bookkeeping action ready: create a concrete subtask with a specific `name`, or make one explicit status change with both `task_id` and `status`. Prioritize implementation, build, and test execution over planning chatter. Do not stop with another task update, plan recap, or promise to resume later unless you are genuinely blocked and explain the blocker clearly.\n",
         );
+
+        prompt
+    }
+
+    fn build_required_verification_prompt(
+        &self,
+        current_prompt: &str,
+        response_so_far: &str,
+        tool_calls: &[ToolCallRecord],
+    ) -> String {
+        let mut prompt = current_prompt.to_string();
+
+        if !response_so_far.trim().is_empty() {
+            prompt.push_str(&format!(
+                "\nAssistant progress so far:\n{}\n",
+                self.truncate_tool_result(response_so_far)
+            ));
+        }
+
+        let (build_completed, test_completed) = Self::build_and_test_completion_status(tool_calls);
+        let missing = match (build_completed, test_completed) {
+            (false, false) => "both a successful build/check command and a successful test command",
+            (false, true) => "a successful build/check command",
+            (true, false) => "a successful test command",
+            (true, true) => "no additional verification",
+        };
+
+        prompt.push_str(&format!(
+            "\nUser: You must not finish yet because I explicitly asked you to build and test this project, and this run is still missing {missing}. Continue working now: install dependencies if needed, run the remaining non-interactive verification commands, and only stop after reporting actual build/test results observed in this run. Do not claim readiness without executing the missing verification.\n"
+        ));
 
         prompt
     }
@@ -502,6 +623,55 @@ impl AgentPipeline {
         tool_calls.iter().rev().any(Self::is_file_loop_breaker_skip)
     }
 
+    fn is_code_loop_breaker_skip(tool_call: &ToolCallRecord) -> bool {
+        tool_call.name == "code"
+            && matches!(
+                &tool_call.result,
+                ToolResult::Skipped(message)
+                    if message.contains("Loop breaker:") && message.contains("code.batch_edit")
+            )
+    }
+
+    fn is_malformed_code_batch_edit_call(tool_call: &ToolCallRecord) -> bool {
+        if tool_call.name != "code" {
+            return false;
+        }
+
+        matches!(
+            &tool_call.result,
+            ToolResult::Error(message)
+                if message.contains("Missing required field 'edits' for code batch_edit operation")
+        ) || Self::is_code_loop_breaker_skip(tool_call)
+    }
+
+    fn should_suspend_code_tool(tool_calls: &[ToolCallRecord]) -> bool {
+        let mut consecutive_malformed_attempts = 0usize;
+
+        for tool_call in tool_calls.iter().rev() {
+            if Self::is_code_loop_breaker_skip(tool_call) {
+                return true;
+            }
+
+            if Self::is_malformed_code_batch_edit_call(tool_call) {
+                consecutive_malformed_attempts += 1;
+                if consecutive_malformed_attempts >= 2 {
+                    return true;
+                }
+                continue;
+            }
+
+            if tool_call.name == "code" {
+                break;
+            }
+
+            if !matches!(tool_call.result, ToolResult::Skipped(_)) {
+                break;
+            }
+        }
+
+        false
+    }
+
     fn with_task_tool_disabled_instruction(current_prompt: &str) -> String {
         let mut prompt = current_prompt.to_string();
         prompt.push_str(
@@ -514,6 +684,14 @@ impl AgentPipeline {
         let mut prompt = current_prompt.to_string();
         prompt.push_str(
             "\nUser: Repeated malformed `file.write` calls mean the `file` tool is disabled for the rest of this run. Do not call `file` again in this run. Continue with other available tools such as `shell` or `code`, or provide a concise user-facing summary if you cannot safely proceed further.\n",
+        );
+        prompt
+    }
+
+    fn with_code_tool_disabled_instruction(current_prompt: &str) -> String {
+        let mut prompt = current_prompt.to_string();
+        prompt.push_str(
+            "\nUser: Repeated malformed `code.batch_edit` calls mean the `code` tool is disabled for the rest of this run. Do not call `code` again in this run. Continue with other available tools such as `file` or `shell`, or provide a concise user-facing summary if you cannot safely proceed further.\n",
         );
         prompt
     }
@@ -607,6 +785,7 @@ impl AgentPipeline {
             iterations: 0,
         };
 
+        let requires_build_and_test = Self::prompt_requires_build_and_test(&initial_prompt);
         let mut current_prompt = initial_prompt;
 
         // Build provider-specific tool schemas once for this request.
@@ -690,6 +869,7 @@ impl AgentPipeline {
             let enable_fallback = self.pipeline_config.enable_fallback;
             let task_tool_suspended = Self::should_suspend_task_tool(&response.tool_calls);
             let file_tool_suspended = Self::should_suspend_file_tool(&response.tool_calls);
+            let code_tool_suspended = Self::should_suspend_code_tool(&response.tool_calls);
             telemetry
                 .record_iteration_start(iteration, max_iterations, task_tool_suspended)
                 .await;
@@ -705,6 +885,12 @@ impl AgentPipeline {
                     "[AgentLoop] Temporarily disabling file tool schema after repeated malformed file-write calls"
                 );
             }
+            if code_tool_suspended {
+                tracing::warn!(
+                    iteration = iteration,
+                    "[AgentLoop] Temporarily disabling code tool schema after repeated malformed code.batch_edit calls"
+                );
+            }
             let mut tool_schemas_for_iteration = tool_schemas.clone();
             if task_tool_suspended {
                 tool_schemas_for_iteration = tool_schemas_for_iteration
@@ -716,12 +902,20 @@ impl AgentPipeline {
                     .as_ref()
                     .map(|schemas| Self::without_tool_schema(schemas, "file"));
             }
+            if code_tool_suspended {
+                tool_schemas_for_iteration = tool_schemas_for_iteration
+                    .as_ref()
+                    .map(|schemas| Self::without_tool_schema(schemas, "code"));
+            }
             let mut prompt = current_prompt.clone();
             if task_tool_suspended {
                 prompt = Self::with_task_tool_disabled_instruction(&prompt);
             }
             if file_tool_suspended {
                 prompt = Self::with_file_tool_disabled_instruction(&prompt);
+            }
+            if code_tool_suspended {
+                prompt = Self::with_code_tool_disabled_instruction(&prompt);
             }
 
             // Spawn streaming task (with or without fallback)
@@ -1041,6 +1235,69 @@ impl AgentPipeline {
             if tool_calls_in_iteration.is_empty() {
                 let terminal_text_is_meaningful =
                     Self::has_meaningful_final_text(&iteration_content);
+                if Self::should_force_initial_execution_without_tools(
+                    saw_any_tool_calls,
+                    !tools.is_empty(),
+                    requires_build_and_test,
+                    task_id.is_some(),
+                    &iteration_content,
+                    iteration,
+                    max_iterations,
+                ) {
+                    telemetry
+                        .record_iteration_completed(
+                            iteration,
+                            0,
+                            iteration_content.chars().count(),
+                            false,
+                        )
+                        .await;
+                    telemetry
+                        .record_iteration_continuation(
+                            iteration,
+                            AgentLoopContinuation::InitialExecutionRequired,
+                        )
+                        .await;
+                    current_prompt = self.build_forced_execution_prompt(
+                        &current_prompt,
+                        &response.content,
+                        session_id.as_deref(),
+                        task_id.as_deref(),
+                    );
+                    iteration += 1;
+                    continue;
+                }
+                if saw_any_tool_calls
+                    && requires_build_and_test
+                    && Self::is_missing_requested_build_and_test(
+                        &current_prompt,
+                        &response.tool_calls,
+                    )
+                    && !Self::text_signals_user_blocker_or_question(&iteration_content)
+                    && Self::has_iteration_headroom(iteration, max_iterations)
+                {
+                    telemetry
+                        .record_iteration_completed(
+                            iteration,
+                            0,
+                            iteration_content.chars().count(),
+                            false,
+                        )
+                        .await;
+                    telemetry
+                        .record_iteration_continuation(
+                            iteration,
+                            AgentLoopContinuation::RequiredVerificationPending,
+                        )
+                        .await;
+                    current_prompt = self.build_required_verification_prompt(
+                        &current_prompt,
+                        &response.content,
+                        &response.tool_calls,
+                    );
+                    iteration += 1;
+                    continue;
+                }
                 if saw_any_tool_calls
                     && self
                         .active_task_has_open_descendants(session_id.as_deref(), task_id.as_deref())
@@ -1306,6 +1563,7 @@ impl AgentPipeline {
             }
             Some(schemas)
         };
+        let requires_build_and_test = Self::prompt_requires_build_and_test(&initial_prompt);
         let mut current_prompt = initial_prompt;
         let mut saw_any_tool_calls = false;
         let mut forced_execution_after_empty_response = false;
@@ -1376,6 +1634,59 @@ impl AgentPipeline {
             // If the model returned no tool calls, this is the final text response.
             if llm_response.tool_calls.is_empty() {
                 let terminal_text_is_meaningful = Self::has_meaningful_final_text(&content);
+                if Self::should_force_initial_execution_without_tools(
+                    saw_any_tool_calls,
+                    !tools.is_empty(),
+                    requires_build_and_test,
+                    task_id.is_some(),
+                    &content,
+                    iteration,
+                    max_iterations,
+                ) {
+                    telemetry
+                        .record_iteration_completed(iteration, 0, content.chars().count(), false)
+                        .await;
+                    telemetry
+                        .record_iteration_continuation(
+                            iteration,
+                            AgentLoopContinuation::InitialExecutionRequired,
+                        )
+                        .await;
+                    current_prompt = self.build_forced_execution_prompt(
+                        &current_prompt,
+                        &response.content,
+                        session_id.as_deref(),
+                        task_id.as_deref(),
+                    );
+                    iteration += 1;
+                    continue;
+                }
+                if saw_any_tool_calls
+                    && requires_build_and_test
+                    && Self::is_missing_requested_build_and_test(
+                        &current_prompt,
+                        &response.tool_calls,
+                    )
+                    && !Self::text_signals_user_blocker_or_question(&content)
+                    && Self::has_iteration_headroom(iteration, max_iterations)
+                {
+                    telemetry
+                        .record_iteration_completed(iteration, 0, content.chars().count(), false)
+                        .await;
+                    telemetry
+                        .record_iteration_continuation(
+                            iteration,
+                            AgentLoopContinuation::RequiredVerificationPending,
+                        )
+                        .await;
+                    current_prompt = self.build_required_verification_prompt(
+                        &current_prompt,
+                        &response.content,
+                        &response.tool_calls,
+                    );
+                    iteration += 1;
+                    continue;
+                }
                 if saw_any_tool_calls
                     && self
                         .active_task_has_open_descendants(session_id.as_deref(), task_id.as_deref())
@@ -1681,6 +1992,60 @@ mod tests {
     }
 
     #[test]
+    fn build_and_test_request_requires_both_successful_verifications() {
+        let tool_calls = vec![
+            ToolCallRecord {
+                id: "1".to_string(),
+                name: "shell".to_string(),
+                arguments: serde_json::json!({"command": "cargo check"}).to_string(),
+                result: ToolResult::Success("ok".to_string()),
+                duration_ms: 1,
+            },
+            ToolCallRecord {
+                id: "2".to_string(),
+                name: "shell".to_string(),
+                arguments: serde_json::json!({"command": "cargo test"}).to_string(),
+                result: ToolResult::Success("ok".to_string()),
+                duration_ms: 1,
+            },
+        ];
+
+        assert!(AgentPipeline::is_missing_requested_build_and_test(
+            "Please build and test it.",
+            &tool_calls[..1]
+        ));
+        assert!(!AgentPipeline::is_missing_requested_build_and_test(
+            "Please build and test it.",
+            &tool_calls
+        ));
+    }
+
+    #[test]
+    fn first_turn_plan_only_response_for_tracked_execution_is_not_terminal() {
+        assert!(AgentPipeline::should_force_initial_execution_without_tools(
+            false,
+            true,
+            true,
+            true,
+            "I will first plan the project structure and then implement it.",
+            0,
+            Some(12),
+        ));
+
+        assert!(
+            !AgentPipeline::should_force_initial_execution_without_tools(
+                false,
+                true,
+                true,
+                true,
+                "I need one clarification from you before I can continue.",
+                0,
+                Some(12),
+            )
+        );
+    }
+
+    #[test]
     fn synthetic_final_summary_reports_tool_activity_transparently() {
         let pipeline = AgentPipeline::new(AppConfig::default());
         let summary = pipeline
@@ -1788,7 +2153,7 @@ mod tests {
     }
 
     #[test]
-    fn forced_execution_prompt_requires_status_updates_before_completion() {
+    fn forced_execution_prompt_deprioritizes_task_bookkeeping() {
         let pipeline = AgentPipeline::new(AppConfig::default());
         let prompt = pipeline.build_forced_execution_prompt(
             "Inspect the project and continue execution.",
@@ -1797,13 +2162,13 @@ mod tests {
             None,
         );
 
-        assert!(
-            prompt.contains("Update the tracked task statuses as you start or finish each subtask")
-        );
+        assert!(prompt.contains("Task tracking is optional and must never block the real work"));
         assert!(prompt.contains(
-            "If you have not created a concrete task breakdown for this non-trivial request yet, create one first"
+            "runtime already keeps the tracked root task aligned with overall run progress"
         ));
-        assert!(prompt.contains("do not mark the root task complete until every planned subtask is completed or explicitly cancelled"));
+        assert!(prompt.contains(
+            "Only use `task` when you have one exact, worthwhile bookkeeping action ready"
+        ));
     }
 
     #[test]
@@ -1900,6 +2265,34 @@ mod tests {
 
         assert!(prompt.contains("`file` tool is disabled for the rest of this run"));
         assert!(prompt.contains("Do not call `file` again"));
+    }
+
+    #[test]
+    fn code_tool_is_suspended_after_code_loop_breaker_skip() {
+        let tool_calls = vec![ToolCallRecord {
+            id: "1".to_string(),
+            name: "code".to_string(),
+            arguments: serde_json::json!({
+                "operation": "batch_edit",
+                "path": "src/index.html"
+            })
+            .to_string(),
+            result: ToolResult::Skipped(
+                "Loop breaker: skipped a repeated malformed `code.batch_edit` call without a valid `edits` array after 2 prior similar malformed attempts in this run."
+                    .to_string(),
+            ),
+            duration_ms: 1,
+        }];
+
+        assert!(AgentPipeline::should_suspend_code_tool(&tool_calls));
+    }
+
+    #[test]
+    fn code_tool_disabled_instruction_is_appended_to_prompt() {
+        let prompt = AgentPipeline::with_code_tool_disabled_instruction("User: update index.html");
+
+        assert!(prompt.contains("`code` tool is disabled for the rest of this run"));
+        assert!(prompt.contains("Do not call `code` again"));
     }
 
     #[test]

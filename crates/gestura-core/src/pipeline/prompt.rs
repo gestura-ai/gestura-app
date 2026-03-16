@@ -3,7 +3,7 @@ use super::*;
 impl AgentPipeline {
     fn append_tool_discipline(&self, prompt: &mut String) {
         prompt.push_str(
-            "Tool usage discipline:\n- For `task.create`, provide `name` (and preferably `description`); do not send `task_id` because the runtime assigns it.\n- After reading an existing file, prefer `file.edit` for targeted changes. Use `file.write` only when you provide the full replacement `content`.\n- For install/build/test/scaffold shell commands, include non-interactive flags when needed and set a generous `timeout_secs` (for example 300).\n\n",
+            "Tool usage discipline:\n- For `task.create`, provide `name` (and preferably `description`); do not send `task_id` because the runtime assigns it.\n- For `task.update_status`, always include both `task_id` and `status`; do not omit `status` and expect the runtime to infer it.\n- After reading an existing file, prefer `file.edit` for targeted changes. Use `file.write` only when you provide the full replacement `content`.\n- `code.batch_edit` requires `edits`, and `edits` must be an array even for a single change. Each entry needs `path`, `old_str`, and `new_str`.\n- For install/build/test/scaffold shell commands, include non-interactive flags when needed and set a generous `timeout_secs` (for example 300). Do not wrap commands with shell `timeout`; use the tool's `timeout_secs` field instead.\n- Do not manually synthesize a Tauri scaffold with shell heredocs or `mkdir`/`cargo init` fallback scripts. If `create-tauri-app` is non-interactive-sensitive, inspect `--help` and then use one known-good non-interactive scaffold command.\nCanonical JSON tool call shapes:\n- `task.create`: {\"operation\":\"create\",\"name\":\"Implement Hello World UI\",\"description\":\"Update the scaffolded Tauri app, then build and test it\"}\n- `task.update_status`: {\"operation\":\"update_status\",\"task_id\":\"abc123\",\"status\":\"inprogress\"}\n- `file.write`: {\"operation\":\"write\",\"path\":\"src/index.html\",\"content\":\"<h1>Hello World</h1>\\n\"}\n- `file.edit`: {\"operation\":\"edit\",\"path\":\"src/index.html\",\"old\":\"<h1>Hello</h1>\",\"new\":\"<h1>Hello World</h1>\"}\n- `code.batch_edit`: {\"operation\":\"batch_edit\",\"edits\":[{\"path\":\"src/index.html\",\"old_str\":\"<h1>Hello</h1>\",\"new_str\":\"<h1>Hello World</h1>\"}]}\n\n",
         );
     }
 
@@ -519,8 +519,13 @@ mod tests {
 
         assert!(prompt.contains("Tool usage discipline:"));
         assert!(prompt.contains("do not send `task_id` because the runtime assigns it"));
+        assert!(prompt.contains("always include both `task_id` and `status`"));
         assert!(prompt.contains("prefer `file.edit` for targeted changes"));
+        assert!(prompt.contains("`code.batch_edit` requires `edits`"));
         assert!(prompt.contains("set a generous `timeout_secs`"));
+        assert!(prompt.contains("Do not manually synthesize a Tauri scaffold"));
+        assert!(prompt.contains("Canonical JSON tool call shapes:"));
+        assert!(prompt.contains("\"operation\":\"batch_edit\""));
     }
 
     #[test]

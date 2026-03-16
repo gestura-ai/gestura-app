@@ -1,4 +1,7 @@
 use super::*;
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 
 /// Pending tool call being accumulated during streaming
 pub(super) struct PendingToolCall {
@@ -25,6 +28,7 @@ pub(super) struct FinalizePendingToolCallCtx<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RecoverableToolLoopPattern {
     FileWriteMissingContent,
+    CodeBatchEditMissingEdits,
     TaskCreateMissingName,
     TaskUpdateStatusMissingExplicitStatus,
 }
@@ -104,6 +108,11 @@ impl AgentPipeline {
         }
     }
 
+    fn looks_like_full_file_content(raw: &str) -> bool {
+        let trimmed = raw.trim();
+        trimmed.contains('\n') || trimmed.len() >= 120
+    }
+
     fn strip_xml_comments(raw: &str) -> String {
         let mut output = String::new();
         let mut cursor = 0usize;
@@ -158,6 +167,171 @@ impl AgentPipeline {
         Self::normalize_optional_tool_string(trimmed)
     }
 
+    fn normalize_tool_operation(raw: &str) -> Option<String> {
+        let stripped = Self::strip_parameter_fragments(raw);
+        let trimmed = stripped
+            .trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '\\')
+            .trim();
+
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        let operation = trimmed
+            .split_whitespace()
+            .next()
+            .unwrap_or(trimmed)
+            .trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '\\')
+            .to_ascii_lowercase();
+
+        (!operation.is_empty()).then_some(operation)
+    }
+
+    fn workspace_path_suffix_components(path: &Path) -> Option<Vec<String>> {
+        let mut components = Vec::new();
+        for component in path.components() {
+            match component {
+                std::path::Component::Normal(value) => {
+                    components.push(value.to_string_lossy().to_string())
+                }
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_) => return None,
+            }
+        }
+
+        (!components.is_empty()).then_some(components)
+    }
+
+    fn path_ends_with_components(path: &Path, suffix: &[String]) -> bool {
+        let components = path
+            .components()
+            .filter_map(|component| match component {
+                std::path::Component::Normal(value) => Some(value.to_string_lossy().to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        components.ends_with(suffix)
+    }
+
+    fn find_unique_workspace_suffix_match(
+        root: &Path,
+        suffix: &[String],
+        directories_only: bool,
+    ) -> Option<PathBuf> {
+        fn visit(
+            current: &Path,
+            root: &Path,
+            suffix: &[String],
+            directories_only: bool,
+            found: &mut Option<PathBuf>,
+            ambiguous: &mut bool,
+        ) {
+            if *ambiguous {
+                return;
+            }
+
+            let metadata = match fs::metadata(current) {
+                Ok(metadata) => metadata,
+                Err(_) => return,
+            };
+            let is_dir = metadata.is_dir();
+
+            if (!directories_only || is_dir)
+                && let Ok(relative) = current.strip_prefix(root)
+                && !relative.as_os_str().is_empty()
+                && AgentPipeline::path_ends_with_components(relative, suffix)
+            {
+                if found.is_some() {
+                    *ambiguous = true;
+                    return;
+                }
+                *found = Some(current.to_path_buf());
+            }
+
+            if !is_dir {
+                return;
+            }
+
+            let entries = match fs::read_dir(current) {
+                Ok(entries) => entries,
+                Err(_) => return,
+            };
+
+            for entry in entries.flatten() {
+                visit(
+                    &entry.path(),
+                    root,
+                    suffix,
+                    directories_only,
+                    found,
+                    ambiguous,
+                );
+                if *ambiguous {
+                    return;
+                }
+            }
+        }
+
+        let mut found = None;
+        let mut ambiguous = false;
+        visit(
+            root,
+            root,
+            suffix,
+            directories_only,
+            &mut found,
+            &mut ambiguous,
+        );
+
+        (!ambiguous).then_some(found).flatten()
+    }
+
+    fn recover_workspace_read_path_by_suffix(
+        ws: &SessionWorkspace,
+        requested: &Path,
+    ) -> Option<PathBuf> {
+        let suffix = Self::workspace_path_suffix_components(requested)?;
+        let candidate = Self::find_unique_workspace_suffix_match(ws.root(), &suffix, false)?;
+        ws.resolve_path_for_read(candidate.strip_prefix(ws.root()).ok()?)
+            .ok()
+    }
+
+    fn recover_workspace_write_path_by_suffix(
+        ws: &SessionWorkspace,
+        requested: &Path,
+    ) -> Option<PathBuf> {
+        let parent = requested.parent()?;
+        if parent.as_os_str().is_empty() {
+            return None;
+        }
+
+        let file_name = requested.file_name()?;
+        let suffix = Self::workspace_path_suffix_components(parent)?;
+        let parent_dir = Self::find_unique_workspace_suffix_match(ws.root(), &suffix, true)?;
+        let candidate = parent_dir.join(file_name);
+        ws.resolve_path_for_write(candidate.strip_prefix(ws.root()).ok()?)
+            .ok()
+    }
+
+    fn resolve_workspace_read_path(ws: &SessionWorkspace, raw: &str) -> Result<PathBuf, String> {
+        let requested = Path::new(raw);
+        ws.resolve_path_for_read(requested).or_else(|err| {
+            Self::recover_workspace_read_path_by_suffix(ws, requested)
+                .ok_or_else(|| err.to_string())
+        })
+    }
+
+    fn resolve_workspace_write_path(ws: &SessionWorkspace, raw: &str) -> Result<PathBuf, String> {
+        let requested = Path::new(raw);
+        ws.resolve_path_for_write(requested).or_else(|err| {
+            Self::recover_workspace_write_path_by_suffix(ws, requested)
+                .ok_or_else(|| err.to_string())
+        })
+    }
+
     fn normalize_file_tool_arguments(args: serde_json::Value) -> serde_json::Value {
         let mut obj = match args {
             serde_json::Value::Object(map) => map,
@@ -180,10 +354,7 @@ impl AgentPipeline {
         }
 
         if let Some(operation) = obj.get("operation").and_then(|value| value.as_str()) {
-            let normalized = Self::strip_parameter_fragments(operation)
-                .trim()
-                .to_ascii_lowercase();
-            if !normalized.is_empty() {
+            if let Some(normalized) = Self::normalize_tool_operation(operation) {
                 obj.insert(
                     "operation".to_string(),
                     serde_json::Value::String(normalized),
@@ -226,6 +397,186 @@ impl AgentPipeline {
                     break;
                 }
             }
+
+            if obj.get("content").is_none()
+                && let Some(pattern) = obj.get("pattern").and_then(|value| value.as_str())
+                && Self::looks_like_full_file_content(pattern)
+            {
+                obj.insert(
+                    "content".to_string(),
+                    serde_json::Value::String(pattern.to_string()),
+                );
+            }
+        }
+
+        serde_json::Value::Object(obj)
+    }
+
+    fn normalize_code_edit_entry(value: serde_json::Value) -> Option<serde_json::Value> {
+        let mut obj = match value {
+            serde_json::Value::Object(map) => map,
+            _ => return None,
+        };
+
+        let mut recovered = serde_json::Map::new();
+        for value in obj.values() {
+            if let Some(raw) = value.as_str() {
+                for (name, content) in Self::extract_parameter_fragments(raw) {
+                    recovered
+                        .entry(name)
+                        .or_insert_with(|| serde_json::Value::String(content));
+                }
+            }
+        }
+
+        for (key, value) in recovered {
+            obj.entry(key).or_insert(value);
+        }
+
+        if obj.get("path").is_none() {
+            for alias in ["file", "file_path", "filepath", "target", "target_path"] {
+                if let Some(value) = obj.get(alias).cloned() {
+                    obj.insert("path".to_string(), value);
+                    break;
+                }
+            }
+        }
+
+        if let Some(path) = obj.get("path").and_then(|value| value.as_str())
+            && let Some(normalized) = Self::normalize_tool_path(path)
+        {
+            obj.insert("path".to_string(), serde_json::Value::String(normalized));
+        }
+
+        for (alias, canonical) in [
+            ("old", "old_str"),
+            ("find", "old_str"),
+            ("search", "old_str"),
+            ("target_text", "old_str"),
+            ("new", "new_str"),
+            ("replacement", "new_str"),
+            ("replace", "new_str"),
+            ("text", "new_str"),
+            ("content", "new_str"),
+            ("body", "new_str"),
+            ("value", "new_str"),
+        ] {
+            if obj.get(canonical).is_none()
+                && let Some(value) = obj.get(alias).cloned()
+            {
+                obj.insert(canonical.to_string(), value);
+            }
+        }
+
+        Some(serde_json::Value::Object(obj))
+    }
+
+    fn normalize_code_edit_entries(value: serde_json::Value) -> Option<serde_json::Value> {
+        match value {
+            serde_json::Value::Array(entries) => Some(serde_json::Value::Array(
+                entries
+                    .into_iter()
+                    .filter_map(Self::normalize_code_edit_entry)
+                    .collect(),
+            )),
+            serde_json::Value::Object(_) => Self::normalize_code_edit_entry(value)
+                .map(|entry| serde_json::Value::Array(vec![entry])),
+            _ => None,
+        }
+    }
+
+    fn normalize_code_tool_arguments(args: serde_json::Value) -> serde_json::Value {
+        let mut obj = match args {
+            serde_json::Value::Object(map) => map,
+            other => return other,
+        };
+
+        let mut recovered = serde_json::Map::new();
+        for value in obj.values() {
+            if let Some(raw) = value.as_str() {
+                for (name, content) in Self::extract_parameter_fragments(raw) {
+                    recovered
+                        .entry(name)
+                        .or_insert_with(|| serde_json::Value::String(content));
+                }
+            }
+        }
+
+        for (key, value) in recovered {
+            obj.entry(key).or_insert(value);
+        }
+
+        if let Some(operation) = obj.get("operation").and_then(|value| value.as_str())
+            && let Some(normalized) = Self::normalize_tool_operation(operation)
+        {
+            let normalized = match normalized.as_str() {
+                "edit" | "edits" | "replace" | "replace_all" => "batch_edit",
+                "read_many" | "multi_read" | "multiread" => "batch_read",
+                other => other,
+            };
+            obj.insert(
+                "operation".to_string(),
+                serde_json::Value::String(normalized.to_string()),
+            );
+        }
+
+        if let Some(path) = obj.get("path").and_then(|value| value.as_str())
+            && let Some(normalized) = Self::normalize_tool_path(path)
+        {
+            obj.insert("path".to_string(), serde_json::Value::String(normalized));
+        }
+
+        if obj.get("pattern").is_none() {
+            for alias in ["query", "regex", "glob_pattern"] {
+                if let Some(value) = obj.get(alias).cloned() {
+                    obj.insert("pattern".to_string(), value);
+                    break;
+                }
+            }
+        }
+
+        if obj.get("paths").is_none() {
+            for alias in ["files", "file_paths"] {
+                if let Some(value) = obj.get(alias).cloned() {
+                    obj.insert("paths".to_string(), value);
+                    break;
+                }
+            }
+        }
+
+        let operation = obj
+            .get("operation")
+            .and_then(|value| value.as_str())
+            .unwrap_or("stats")
+            .to_string();
+
+        if operation == "batch_read"
+            && obj.get("paths").is_none()
+            && let Some(path) = obj.get("path").cloned()
+        {
+            obj.insert("paths".to_string(), serde_json::Value::Array(vec![path]));
+        }
+
+        let edits_source = obj
+            .get("edits")
+            .cloned()
+            .or_else(|| obj.get("changes").cloned())
+            .or_else(|| obj.get("operations").cloned())
+            .or_else(|| obj.get("replacements").cloned())
+            .or_else(|| {
+                (operation == "batch_edit"
+                    && obj.get("path").is_some()
+                    && (obj.get("old_str").is_some() || obj.get("old").is_some())
+                    && (obj.get("new_str").is_some()
+                        || obj.get("new").is_some()
+                        || obj.get("replacement").is_some()))
+                .then(|| serde_json::Value::Object(obj.clone()))
+            });
+
+        if let Some(edits_value) = edits_source
+            && let Some(normalized) = Self::normalize_code_edit_entries(edits_value)
+        {
+            obj.insert("edits".to_string(), normalized);
         }
 
         serde_json::Value::Object(obj)
@@ -294,6 +645,33 @@ impl AgentPipeline {
         message
     }
 
+    fn format_missing_code_batch_edit_edits_error(args: &serde_json::Value) -> String {
+        let provided_fields = args
+            .as_object()
+            .map(|map| {
+                let mut keys = map.keys().cloned().collect::<Vec<_>>();
+                keys.sort();
+                keys.join(", ")
+            })
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "none".to_string());
+
+        let example = serde_json::json!({
+            "operation": "batch_edit",
+            "edits": [{
+                "path": "src/index.html",
+                "old_str": "<h1>Hello</h1>",
+                "new_str": "<h1>Hello World</h1>"
+            }]
+        })
+        .to_string();
+
+        format!(
+            "Missing required field 'edits' for code batch_edit operation. `batch_edit` requires an `edits` array even for a single change, and each edit must include `path`, `old_str`, and `new_str`. Provided fields: {provided_fields}. Retry with {example}. Prefer the canonical `edits` array shape on the next attempt; if you use aliases like `changes`, ensure each entry still resolves to `path`, `old_str`, and `new_str`."
+        )
+    }
+
+    #[cfg(test)]
     fn format_missing_task_update_status_error(args: &serde_json::Value) -> String {
         let task_id = args
             .get("task_id")
@@ -371,6 +749,35 @@ impl AgentPipeline {
                     None
                 }
             }
+            "code" => {
+                let args = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
+                let args = Self::normalize_code_tool_arguments(args);
+                let operation = args
+                    .get("operation")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("stats");
+
+                let batch_edits = args
+                    .get("edits")
+                    .and_then(|v| v.as_array())
+                    .map(|entries| {
+                        entries
+                            .iter()
+                            .filter(|entry| {
+                                entry.get("path").and_then(|v| v.as_str()).is_some()
+                                    && entry.get("old_str").and_then(|v| v.as_str()).is_some()
+                                    && entry.get("new_str").and_then(|v| v.as_str()).is_some()
+                            })
+                            .count()
+                    })
+                    .unwrap_or_default();
+
+                if operation == "batch_edit" && batch_edits == 0 {
+                    Some(RecoverableToolLoopPattern::CodeBatchEditMissingEdits)
+                } else {
+                    None
+                }
+            }
             "task" | "tasks" => {
                 let args = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
                 let args = Self::normalize_task_tool_arguments(args);
@@ -417,6 +824,9 @@ impl AgentPipeline {
             RecoverableToolLoopPattern::FileWriteMissingContent => {
                 matches!(record.result, ToolResult::Error(_) | ToolResult::Skipped(_))
             }
+            RecoverableToolLoopPattern::CodeBatchEditMissingEdits => {
+                matches!(record.result, ToolResult::Error(_) | ToolResult::Skipped(_))
+            }
             RecoverableToolLoopPattern::TaskCreateMissingName => {
                 matches!(record.result, ToolResult::Error(_) | ToolResult::Skipped(_))
             }
@@ -447,12 +857,24 @@ impl AgentPipeline {
             RecoverableToolLoopPattern::FileWriteMissingContent => format!(
                 "Loop breaker: skipped a repeated malformed `file.write` call without `content` after {prior_attempts} prior similar non-successful attempts in this run. The agent is still running. Do not retry `write` until you can provide the full destination file text in `content`. Choose a different next step instead: read the existing file, prepare the full file contents and then send one corrected `write`, or use `edit` with `old` and `new` for a targeted change."
             ),
+            RecoverableToolLoopPattern::CodeBatchEditMissingEdits => format!(
+                "Loop breaker: skipped a repeated malformed `code.batch_edit` call without a valid `edits` array after {prior_attempts} prior similar malformed attempts in this run. The agent is still running. Do not retry `batch_edit` until you can provide `edits` as an array of objects with `path`, `old_str`, and `new_str`. If you only have one replacement, wrap it in a one-element `edits` array; otherwise choose a different next step such as reading the file, preparing the exact replacement strings, or using `file.edit` for a single targeted change."
+            ),
             RecoverableToolLoopPattern::TaskCreateMissingName => format!(
                 "Loop breaker: skipped a repeated malformed `task.create` call without a valid `name` after {prior_attempts} prior similar malformed attempts in this run. The agent is still running. Do not retry `create` without a specific task name. If you need task tracking, send one corrected `create` call with a concrete `name` and preferably a useful `description`; otherwise continue the real implementation work."
             ),
             RecoverableToolLoopPattern::TaskUpdateStatusMissingExplicitStatus => format!(
                 "Loop breaker: skipped a repeated malformed `task.update_status` call without explicit `status` after {prior_attempts} prior similar malformed attempts in this run. The agent is still running. Do not retry `update_status` without `status`. If you intend a status change, send one corrected call with both `task_id` and `status`; otherwise continue the real implementation or verification work instead of repeating task bookkeeping."
             ),
+        }
+    }
+
+    fn recoverable_tool_loop_skip_threshold(pattern: &RecoverableToolLoopPattern) -> usize {
+        match pattern {
+            RecoverableToolLoopPattern::FileWriteMissingContent
+            | RecoverableToolLoopPattern::CodeBatchEditMissingEdits
+            | RecoverableToolLoopPattern::TaskCreateMissingName
+            | RecoverableToolLoopPattern::TaskUpdateStatusMissingExplicitStatus => 1,
         }
     }
 
@@ -468,8 +890,262 @@ impl AgentPipeline {
         let prior_attempts =
             Self::count_prior_recoverable_tool_loop_attempts(&pattern, prior_records);
 
-        (prior_attempts >= 2)
+        (prior_attempts >= Self::recoverable_tool_loop_skip_threshold(&pattern))
             .then(|| Self::build_recoverable_tool_loop_breaker_message(&pattern, prior_attempts))
+    }
+
+    fn extract_shell_command_from_arguments(arguments: &str) -> Option<String> {
+        serde_json::from_str::<serde_json::Value>(arguments)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("command")
+                    .and_then(|command| command.as_str())
+                    .map(str::to_string)
+            })
+            .or_else(|| (!arguments.trim().is_empty()).then(|| arguments.to_string()))
+    }
+
+    fn extract_file_operation_and_path(arguments: &str) -> Option<(String, String)> {
+        let args = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
+        let args = Self::normalize_file_tool_arguments(args);
+        let operation = args
+            .get("operation")
+            .and_then(|value| value.as_str())
+            .unwrap_or_else(|| {
+                if args.get("content").is_some() {
+                    "write"
+                } else {
+                    "read"
+                }
+            })
+            .to_ascii_lowercase();
+        let path = args
+            .get("path")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(".")
+            .to_string();
+        Some((operation, path))
+    }
+
+    fn is_tauri_init_command(command: &str) -> bool {
+        let normalized = command.to_ascii_lowercase();
+        normalized.contains("cargo tauri init") || normalized.contains("cargo-tauri init")
+    }
+
+    fn is_tauri_scaffold_command(command: &str) -> bool {
+        let normalized = command.to_ascii_lowercase();
+        normalized.contains("create-tauri-app") || Self::is_tauri_init_command(&normalized)
+    }
+
+    fn is_create_tauri_app_command(command: &str) -> bool {
+        command.to_ascii_lowercase().contains("create-tauri-app")
+    }
+
+    fn is_create_tauri_app_help_command(command: &str) -> bool {
+        let normalized = command.to_ascii_lowercase();
+        Self::is_create_tauri_app_command(command)
+            && (normalized.contains(" --help")
+                || normalized.ends_with("--help")
+                || normalized.contains(" -h"))
+    }
+
+    fn is_create_tauri_app_latest_command(command: &str) -> bool {
+        command
+            .to_ascii_lowercase()
+            .contains("create-tauri-app@latest")
+    }
+
+    fn is_known_good_tauri_alternate_scaffold_command(command: &str) -> bool {
+        let normalized = command.to_ascii_lowercase();
+        Self::is_create_tauri_app_help_command(command)
+            || (Self::is_create_tauri_app_command(command)
+                && !Self::is_create_tauri_app_latest_command(command)
+                && normalized.contains(" --yes")
+                && normalized.contains("--template")
+                && normalized.contains("--tauri-version"))
+            || (Self::is_tauri_init_command(command) && normalized.contains(" --ci"))
+    }
+
+    fn is_manual_tauri_scaffold_shell_command(command: &str) -> bool {
+        let normalized = command.to_ascii_lowercase();
+        let targets_tauri_files = normalized.contains("src-tauri")
+            || normalized.contains("tauri.conf.json")
+            || normalized.contains("src/index.html")
+            || normalized.contains("src/main.js")
+            || normalized.contains("src/styles.css")
+            || normalized.contains("package.json")
+            || normalized.contains("cargo.toml");
+        let uses_manual_shell_synthesis = normalized.contains("<<")
+            || normalized.contains("cat >")
+            || normalized.contains("tee ")
+            || (normalized.contains("mkdir -p") && normalized.contains("src-tauri"))
+            || (normalized.contains("cargo init") && normalized.contains("src-tauri"));
+
+        targets_tauri_files
+            && uses_manual_shell_synthesis
+            && !Self::is_tauri_scaffold_command(command)
+    }
+
+    fn is_non_tty_tauri_scaffold_failure(record: &ToolCallRecord) -> bool {
+        if record.name != "shell" {
+            return false;
+        }
+
+        let Some(command) = Self::extract_shell_command_from_arguments(&record.arguments) else {
+            return false;
+        };
+        if !Self::is_create_tauri_app_command(&command) {
+            return false;
+        }
+
+        matches!(
+            &record.result,
+            ToolResult::Error(message)
+                if {
+                    let normalized = message.to_ascii_lowercase();
+                    normalized.contains("not a terminal")
+                        || normalized.contains("likely waited for interactive input")
+                }
+        )
+    }
+
+    fn count_non_tty_tauri_scaffold_failures<'a, I>(prior_records: I) -> usize
+    where
+        I: IntoIterator<Item = &'a ToolCallRecord>,
+    {
+        prior_records
+            .into_iter()
+            .filter(|record| Self::is_non_tty_tauri_scaffold_failure(record))
+            .count()
+    }
+
+    fn build_tauri_scaffold_recovery_message(prior_failures: usize) -> String {
+        format!(
+            "Loop breaker: skipped a fallback shell scaffolding command after {prior_failures} prior non-interactive `create-tauri-app` failure(s) in this run. Do not synthesize a Tauri project with `cat <<EOF`, `tee`, `cargo init src-tauri`, or `mkdir`-only shell scripts. Use one specific alternate strategy next: run `npx create-tauri-app --help` (or `npx create-tauri-app@latest --help`) to confirm supported flags, then run a single non-interactive scaffold command like `npx create-tauri-app <app-dir> --yes --template vanilla --tauri-version 2`; if you already have a frontend project, use `cargo tauri init --ci ...` instead. After scaffold succeeds, move on to editing files and running build/test verification."
+        )
+    }
+
+    fn extract_tauri_scaffold_target(command: &str) -> Option<String> {
+        let tokens = command.split_whitespace().collect::<Vec<_>>();
+        let scaffold_index = tokens
+            .iter()
+            .position(|token| token.to_ascii_lowercase().contains("create-tauri-app"))?;
+
+        tokens
+            .iter()
+            .skip(scaffold_index + 1)
+            .find(|token| !token.starts_with('-'))
+            .map(|token| {
+                token
+                    .trim_matches(|ch| matches!(ch, '"' | '\''))
+                    .to_string()
+            })
+            .filter(|token| !token.is_empty())
+    }
+
+    fn repeated_redundant_tool_call_skip_message<'a, I>(
+        name: &str,
+        arguments: &str,
+        prior_records: I,
+    ) -> Option<String>
+    where
+        I: IntoIterator<Item = &'a ToolCallRecord>,
+    {
+        if name == "shell" {
+            let command = Self::extract_shell_command_from_arguments(arguments)?;
+            let prior_records = prior_records.into_iter().collect::<Vec<_>>();
+
+            let prior_non_tty_failures =
+                Self::count_non_tty_tauri_scaffold_failures(prior_records.iter().copied());
+
+            if prior_non_tty_failures >= 2 && Self::is_manual_tauri_scaffold_shell_command(&command)
+            {
+                return Some(Self::build_tauri_scaffold_recovery_message(
+                    prior_non_tty_failures,
+                ));
+            }
+
+            if prior_non_tty_failures >= 2
+                && Self::is_create_tauri_app_command(&command)
+                && !Self::is_known_good_tauri_alternate_scaffold_command(&command)
+            {
+                return Some(Self::build_tauri_scaffold_recovery_message(
+                    prior_non_tty_failures,
+                ));
+            }
+
+            if !Self::is_tauri_init_command(&command) {
+                return None;
+            }
+
+            let prior_successes = prior_records
+                .iter()
+                .copied()
+                .filter(|record| record.name == "shell")
+                .filter(|record| matches!(record.result, ToolResult::Success(_)))
+                .filter_map(|record| Self::extract_shell_command_from_arguments(&record.arguments))
+                .filter(|prior_command| Self::is_tauri_init_command(prior_command))
+                .count();
+
+            return (prior_successes >= 1).then(|| {
+                format!(
+                    "Loop breaker: skipped a redundant repeated `cargo tauri init` scaffold command after {prior_successes} prior successful init command(s) in this run. The Tauri scaffold already exists. Do not run `cargo tauri init` again; move on to editing files and running build/test verification."
+                )
+            });
+        }
+
+        if name == "file" {
+            let (operation, path) = Self::extract_file_operation_and_path(arguments)?;
+            if !matches!(operation.as_str(), "list" | "tree") {
+                return None;
+            }
+
+            let prior_successes = prior_records
+                .into_iter()
+                .filter(|record| record.name == "file")
+                .filter(|record| matches!(record.result, ToolResult::Success(_)))
+                .filter_map(|record| Self::extract_file_operation_and_path(&record.arguments))
+                .filter(|(prior_operation, prior_path)| {
+                    prior_operation == &operation && prior_path == &path
+                })
+                .count();
+
+            return (prior_successes >= 2).then(|| {
+                format!(
+                    "Loop breaker: skipped a redundant repeated `file.{operation}` inspection of `{path}` after {prior_successes} prior successful identical inspections in this run. The scaffold is already visible. Do not keep inspecting the same path; move on to reading the specific file you need to edit, making the implementation change, or running build/test verification next."
+                )
+            });
+        }
+
+        None
+    }
+
+    fn harden_noninteractive_shell_command(
+        command: &str,
+        env: Option<HashMap<String, String>>,
+    ) -> (String, Option<HashMap<String, String>>) {
+        let normalized = command.to_ascii_lowercase();
+        if !normalized.contains("create-tauri-app") {
+            return (command.to_string(), env);
+        }
+
+        let mut hardened_command = command.trim().to_string();
+        if !normalized.contains(" --yes") && !normalized.contains(" -y") {
+            hardened_command.push_str(" --yes");
+        }
+
+        let mut hardened_env = env.unwrap_or_default();
+        hardened_env
+            .entry("CI".to_string())
+            .or_insert_with(|| "true".to_string());
+        hardened_env
+            .entry("FORCE_COLOR".to_string())
+            .or_insert_with(|| "0".to_string());
+
+        (hardened_command, Some(hardened_env))
     }
 
     fn should_echo_tool_call_arguments(record: &ToolCallRecord) -> bool {
@@ -725,6 +1401,15 @@ impl AgentPipeline {
             );
         }
 
+        if stderr.to_ascii_lowercase().contains("not a terminal") {
+            let guidance = "Shell command failed because it expected a terminal. Retry with non-interactive flags and environment such as `--yes`, `CI=1`, and `FORCE_COLOR=0`, or choose a fully non-interactive command.";
+            if combined.is_empty() {
+                return format!("Exit {exit_code}: {guidance}");
+            }
+
+            return format!("Exit {exit_code}: {guidance}\n\n{combined}");
+        }
+
         if combined.is_empty() {
             if exit_code == 124 {
                 "Exit 124: Command timed out".to_string()
@@ -770,7 +1455,15 @@ impl AgentPipeline {
             obj.entry(key).or_insert(value);
         }
 
-        for key in ["operation", "name", "description", "status"] {
+        if let Some(raw) = obj.get("operation").and_then(|value| value.as_str()) {
+            if let Some(value) = Self::normalize_tool_operation(raw) {
+                obj.insert("operation".to_string(), serde_json::Value::String(value));
+            } else {
+                obj.remove("operation");
+            }
+        }
+
+        for key in ["name", "description", "status"] {
             let Some(raw) = obj.get(key).and_then(|value| value.as_str()) else {
                 continue;
             };
@@ -919,6 +1612,37 @@ impl AgentPipeline {
             tracing::warn!(
                 tool = %pending.name,
                 "[ToolDispatch] Loop breaker skipped repeated malformed tool call"
+            );
+            let duration_ms = pending.start_time.elapsed().as_millis() as u64;
+            let _ = tx
+                .send(StreamChunk::ToolCallResult {
+                    name: pending.name.clone(),
+                    success: false,
+                    output: message.clone(),
+                    duration_ms,
+                })
+                .await;
+
+            let record = ToolCallRecord {
+                id: pending.id,
+                name: pending.name,
+                arguments: pending.arguments,
+                result: ToolResult::Skipped(message),
+                duration_ms,
+            };
+            tool_calls_in_iteration.push(record.clone());
+            response.tool_calls.push(record);
+            return;
+        }
+
+        if let Some(message) = Self::repeated_redundant_tool_call_skip_message(
+            &pending.name,
+            &pending.arguments,
+            response.tool_calls.iter(),
+        ) {
+            tracing::warn!(
+                tool = %pending.name,
+                "[ToolDispatch] Loop breaker skipped redundant repeated tool call"
             );
             let duration_ms = pending.start_time.elapsed().as_millis() as u64;
             let _ = tx
@@ -1479,6 +2203,7 @@ impl AgentPipeline {
 
         match serde_json::from_str::<serde_json::Value>(arguments) {
             Ok(args) => {
+                let args = Self::normalize_code_tool_arguments(args);
                 let operation = args
                     .get("operation")
                     .and_then(|v| v.as_str())
@@ -1539,7 +2264,16 @@ impl AgentPipeline {
                     .and_then(|v| v.as_array())
                     .map(|arr| {
                         arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .filter_map(|v| {
+                                let raw = v.as_str()?;
+                                if let Some(ws) = workspace {
+                                    Self::resolve_workspace_read_path(ws, raw)
+                                        .ok()
+                                        .map(|path| path.to_string_lossy().to_string())
+                                } else {
+                                    Some(raw.to_string())
+                                }
+                            })
                             .collect()
                     })
                     .unwrap_or_default();
@@ -1551,7 +2285,15 @@ impl AgentPipeline {
                     .map(|arr| {
                         arr.iter()
                             .filter_map(|v| {
-                                serde_json::from_value::<crate::tools::code::EditOp>(v.clone()).ok()
+                                let mut edit =
+                                    serde_json::from_value::<crate::tools::code::EditOp>(v.clone())
+                                        .ok()?;
+                                if let Some(ws) = workspace {
+                                    let resolved =
+                                        Self::resolve_workspace_write_path(ws, &edit.path).ok()?;
+                                    edit.path = resolved.to_string_lossy().to_string();
+                                }
+                                Some(edit)
                             })
                             .collect()
                     })
@@ -1649,7 +2391,7 @@ impl AgentPipeline {
                     "batch_edit" => {
                         if batch_edits.is_empty() {
                             return ToolResult::Error(
-                                "Missing required parameter: edits".to_string(),
+                                Self::format_missing_code_batch_edit_edits_error(&args),
                             );
                         }
                         match code_async::batch_edit(batch_edits).await {
@@ -1737,19 +2479,20 @@ impl AgentPipeline {
                             .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
                             .collect::<HashMap<_, _>>()
                     });
+                let (command, env) = Self::harden_noninteractive_shell_command(command, env);
 
                 // Optional timeout (seconds). Use a longer default for build/test/install flows.
                 let timeout_secs = args
                     .get("timeout_secs")
                     .and_then(|v| v.as_u64())
-                    .unwrap_or_else(|| Self::default_shell_timeout_secs(command));
+                    .unwrap_or_else(|| Self::default_shell_timeout_secs(&command));
 
                 // Streaming path: send real-time output chunks to the frontend.
                 if let Some(tx) = stream_tx {
                     use crate::tools::shell_streaming;
 
                     match shell_streaming::execute_streaming(
-                        command,
+                        &command,
                         cwd.as_deref(),
                         env.as_ref(),
                         Some(timeout_secs),
@@ -1773,7 +2516,7 @@ impl AgentPipeline {
                 } else {
                     // Legacy non-streaming path.
                     match shell_async::execute_command_with_options(
-                        command,
+                        &command,
                         cwd.as_deref(),
                         env.as_ref(),
                         Some(timeout_secs),
@@ -1807,16 +2550,17 @@ impl AgentPipeline {
                 }
 
                 let cwd = workspace.map(|ws| ws.root().to_string_lossy().to_string());
+                let (command, env) = Self::harden_noninteractive_shell_command(arguments, None);
 
                 // Streaming path for raw-argument commands.
                 if let Some(tx) = stream_tx {
                     use crate::tools::shell_streaming;
 
                     match shell_streaming::execute_streaming(
-                        arguments,
+                        &command,
                         cwd.as_deref(),
-                        None,
-                        Some(Self::default_shell_timeout_secs(arguments)),
+                        env.as_ref(),
+                        Some(Self::default_shell_timeout_secs(&command)),
                         tx.clone(),
                     )
                     .await
@@ -1835,7 +2579,14 @@ impl AgentPipeline {
                         Err(e) => ToolResult::Error(e.to_string()),
                     }
                 } else {
-                    match shell_async::execute_command(arguments, cwd.as_deref()).await {
+                    match shell_async::execute_command_with_options(
+                        &command,
+                        cwd.as_deref(),
+                        env.as_ref(),
+                        Some(Self::default_shell_timeout_secs(&command)),
+                    )
+                    .await
+                    {
                         Ok(result) => {
                             if result.success {
                                 ToolResult::Success(result.stdout)
@@ -1886,16 +2637,18 @@ impl AgentPipeline {
                 // Resolve path within workspace if set, using stricter variants depending on operation.
                 let resolved_path = if let Some(ws) = workspace {
                     let resolved = match operation {
-                        "read" => ws.resolve_path_for_read(Path::new(path_str)),
-                        "write" | "edit" => ws.resolve_path_for_write(Path::new(path_str)),
-                        _ => ws.resolve_path(Path::new(path_str)),
+                        "read" => Self::resolve_workspace_read_path(ws, path_str),
+                        "write" | "edit" => Self::resolve_workspace_write_path(ws, path_str),
+                        _ => ws
+                            .resolve_path(Path::new(path_str))
+                            .map_err(|e| e.to_string()),
                     };
 
                     match resolved {
                         Ok(p) => p.to_string_lossy().to_string(),
                         Err(e) => {
                             return ToolResult::Error(format!(
-                                "Path '{}' is outside workspace: {}",
+                                "Path '{}' could not be resolved within workspace: {}",
                                 path_str, e
                             ));
                         }
@@ -2168,9 +2921,36 @@ impl AgentPipeline {
                                     )),
                                 }
                             }
-                            None => ToolResult::Error(
-                                Self::format_missing_task_update_status_error(&args),
-                            ),
+                            None => match manager.get_task(session_id, task_id) {
+                                Ok(Some(task)) if task.status == crate::TaskStatus::NotStarted => {
+                                    match manager.update_task_status(
+                                        session_id,
+                                        task_id,
+                                        crate::TaskStatus::InProgress,
+                                    ) {
+                                        Ok(_) => ToolResult::Success(format!(
+                                            "Recovered omitted `status` on task {} by promoting it from NotStarted to InProgress. Future `update_status` calls should include explicit `status`.",
+                                            task_id
+                                        )),
+                                        Err(e) => ToolResult::Error(format!(
+                                            "Failed to recover missing task status for {}: {}",
+                                            task_id, e
+                                        )),
+                                    }
+                                }
+                                Ok(Some(task)) => ToolResult::Skipped(format!(
+                                    "Skipped malformed `task.update_status` without explicit `status` for task {} because its current status is {:?} and no safe status inference is possible. Continue the real implementation work; if you truly need a status change, retry once with both `task_id` and `status`.",
+                                    task_id, task.status
+                                )),
+                                Ok(None) => ToolResult::Error(format!(
+                                    "Task {} not found for update_status operation",
+                                    task_id
+                                )),
+                                Err(e) => ToolResult::Error(format!(
+                                    "Failed to inspect current task status for {}: {}",
+                                    task_id, e
+                                )),
+                            },
                         }
                     }
                     "update" => {
@@ -2723,7 +3503,7 @@ impl AgentPipeline {
 
         if had_task_tool_error {
             prompt.push_str(
-                "Important: task-tracking errors must not block implementation work. If a task operation fails, continue the real work with file/shell/code tools and only retry the task tool when you can provide the exact required fields. For `create`, provide a specific `name` and preferably a concrete `description`; for `update_status`, always include both `task_id` and `status`.\n",
+                "Important: task-tracking errors must not block implementation work. The runtime already keeps the tracked root task aligned with overall run progress, so do not use `task` just to preserve momentum. If a task operation fails, continue the real work with file/shell/code tools and only retry the task tool when you have one exact bookkeeping action ready. For `create`, provide a specific `name` and preferably a concrete `description`; for `update_status`, always include both `task_id` and `status`.\n",
             );
         }
 
@@ -2733,7 +3513,7 @@ impl AgentPipeline {
 
         if had_task_tool_success {
             prompt.push_str(
-                "Important: a successful task update is only bookkeeping. Do not repeat the same task update just to confirm it. After a task update succeeds, continue with the next concrete implementation or verification step unless another task's status genuinely changed.\n",
+                "Important: a successful task update is only bookkeeping. Do not repeat the same task update just to confirm it. After a task update succeeds, continue with the next concrete implementation or verification step unless a different task genuinely changed and you know its exact next status.\n",
             );
         }
 
@@ -2748,7 +3528,7 @@ impl AgentPipeline {
 
         if had_missing_task_update_status_error {
             prompt.push_str(
-                "Important: if `task.update_status` failed because `status` was omitted, treat that as malformed arguments, not a reason to keep looping on task bookkeeping. The malformed task-update arguments are echoed above. If you intended a status change, send one corrected `update_status` call with both `task_id` and `status`; otherwise continue the real work now.\n",
+                "Important: if `task.update_status` failed because `status` was omitted, treat that as malformed arguments, not a reason to keep looping on task bookkeeping. The malformed task-update arguments are echoed above. If you already know the new status, send one corrected `update_status` call with both `task_id` and `status`; otherwise do not call `task` on the next step and continue the real work now.\n",
             );
         }
 
@@ -2791,6 +3571,16 @@ impl AgentPipeline {
             );
         }
 
+        let had_code_tool_error = tool_calls.iter().any(|tool_call| {
+            tool_call.name == "code" && matches!(tool_call.result, ToolResult::Error(_))
+        });
+
+        if had_code_tool_error {
+            prompt.push_str(
+                "Important: code-tool errors must not block implementation work. For `code.batch_edit`, always send `edits` as an array, even for one change, and each entry must include `path`, `old_str`, and `new_str`. If you only need one targeted replacement in one file, `file.edit` may be simpler.\n",
+            );
+        }
+
         let had_missing_file_write_content_error = tool_calls.iter().any(|tool_call| {
             tool_call.name == "file"
                 && matches!(
@@ -2803,6 +3593,21 @@ impl AgentPipeline {
         if had_missing_file_write_content_error {
             prompt.push_str(
                 "Important: the malformed file-write arguments are echoed above. Do not repeat the same `write` call unchanged. If you do not yet know the full destination file text, read the existing file or prepare the full content first, then send one corrected `write` call with real `content`; otherwise use `edit` for a targeted change. Placeholders like `pattern: \"none\"` or `pattern: \"full content\"` are invalid.\n",
+            );
+        }
+
+        let had_missing_code_batch_edit_edits_error = tool_calls.iter().any(|tool_call| {
+            tool_call.name == "code"
+                && matches!(
+                    &tool_call.result,
+                    ToolResult::Error(message)
+                        if message.contains("Missing required field 'edits' for code batch_edit operation")
+                )
+        });
+
+        if had_missing_code_batch_edit_edits_error {
+            prompt.push_str(
+                "Important: the malformed code batch-edit arguments are echoed above. Do not retry `code.batch_edit` without a valid `edits` array. Retry only with one corrected `edits` array containing objects shaped like `{\"path\":...,\"old_str\":...,\"new_str\":...}`; aliases like `changes` are only safe if they still normalize into that canonical shape. For one targeted single-file replacement, `file.edit` is also acceptable.\n",
             );
         }
 
@@ -2819,6 +3624,71 @@ impl AgentPipeline {
             );
         }
 
+        let had_non_tty_shell_error = tool_calls.iter().any(|tool_call| {
+            tool_call.name == "shell"
+                && matches!(
+                    &tool_call.result,
+                    ToolResult::Error(message) if message.to_ascii_lowercase().contains("not a terminal")
+                )
+        });
+
+        if had_non_tty_shell_error {
+            prompt.push_str(
+                "Important: a shell command failed because it expected an interactive terminal. Retry with a fully non-interactive command shape (for example explicit `--yes` flags plus env like `CI=1` and `FORCE_COLOR=0`) instead of repeating the same scaffold command unchanged.\n",
+            );
+        }
+
+        let non_tty_tauri_failures = Self::count_non_tty_tauri_scaffold_failures(tool_calls.iter());
+        if non_tty_tauri_failures >= 2 {
+            prompt.push_str(
+                "Important: `create-tauri-app` has already failed multiple times because the shell is non-interactive. Stop retrying the same scaffold shape and do not manually synthesize Tauri files with `cat <<EOF`, `tee`, `cargo init src-tauri`, or `mkdir`-only shell scripts. Use one specific alternate strategy next: run `npx create-tauri-app --help` (or `npx create-tauri-app@latest --help`) to confirm flags, then run a single `npx create-tauri-app <app-dir> --yes --template vanilla --tauri-version 2` command; if you already have a frontend project, use `cargo tauri init --ci ...` instead. After the scaffold succeeds, move directly to edits and build/test verification.\n",
+            );
+        }
+
+        let had_redundant_tauri_init_skip = tool_calls.iter().any(|tool_call| {
+            tool_call.name == "shell"
+                && matches!(
+                    &tool_call.result,
+                    ToolResult::Skipped(message)
+                        if message.contains("redundant repeated `cargo tauri init`")
+                )
+        });
+
+        if had_redundant_tauri_init_skip {
+            prompt.push_str(
+                "Important: the Tauri scaffold has already been initialized in this run. Do not call `cargo tauri init` again. Move on to editing the frontend files and then run the requested build/test verification.\n",
+            );
+        }
+
+        let successful_tauri_scaffold_target = tool_calls.iter().find_map(|tool_call| {
+            (tool_call.name == "shell" && matches!(tool_call.result, ToolResult::Success(_)))
+                .then(|| Self::extract_shell_command_from_arguments(&tool_call.arguments))
+                .flatten()
+                .filter(|command| Self::is_tauri_scaffold_command(command))
+                .and_then(|command| Self::extract_tauri_scaffold_target(&command))
+        });
+
+        if let Some(target) = successful_tauri_scaffold_target {
+            prompt.push_str(&format!(
+                "Important: the Tauri scaffold now exists at `{target}`. Do not spend another turn repeatedly listing or treeing that directory. Read only the minimum files needed to implement the request (for example `src/index.html`, `src/main.js`, `src/styles.css`, and `src-tauri/src/lib.rs` or `src-tauri/src/main.rs`), then make the Hello World change and run the remaining build/test verification.\n"
+            ));
+        }
+
+        let had_redundant_file_inspection_skip = tool_calls.iter().any(|tool_call| {
+            tool_call.name == "file"
+                && matches!(
+                    &tool_call.result,
+                    ToolResult::Skipped(message)
+                        if message.contains("redundant repeated `file.")
+                )
+        });
+
+        if had_redundant_file_inspection_skip {
+            prompt.push_str(
+                "Important: repeated file inspections of the same path are now being skipped. Stop re-listing the scaffold root and move directly to the next concrete action: read the exact file you need, edit it, then run the requested verification commands.\n",
+            );
+        }
+
         prompt
     }
 }
@@ -2827,6 +3697,7 @@ impl AgentPipeline {
 mod tests {
     use super::AgentPipeline;
     use crate::config::AppConfig;
+    use crate::pipeline::{ToolCallRecord, ToolResult};
     use crate::session_workspace::SessionWorkspace;
     use serde_json::json;
     use tempfile::TempDir;
@@ -2855,6 +3726,26 @@ mod tests {
             Some(
                 "Plan, implement, build, and test a small Tauri v2 GUI that displays \"Hello World\""
             )
+        );
+    }
+
+    #[test]
+    fn normalize_task_tool_arguments_recovers_operation_from_embedded_parameter_payload() {
+        let normalized = AgentPipeline::normalize_task_tool_arguments(json!({
+            "operation": "\"create\"\n<parameter name=\"name\">Plan app</parameter>\n<parameter name=\"parent_id\">e4d5f1a0-c20d-4562-aef3-b1ca3ffbdb8c</parameter>"
+        }));
+
+        assert_eq!(
+            normalized.get("operation").and_then(|v| v.as_str()),
+            Some("create")
+        );
+        assert_eq!(
+            normalized.get("name").and_then(|v| v.as_str()),
+            Some("Plan app")
+        );
+        assert_eq!(
+            normalized.get("parent_id").and_then(|v| v.as_str()),
+            Some("e4d5f1a0-c20d-4562-aef3-b1ca3ffbdb8c")
         );
     }
 
@@ -2909,6 +3800,19 @@ mod tests {
             AgentPipeline::default_shell_timeout_secs("printf hello"),
             60
         );
+    }
+
+    #[test]
+    fn harden_noninteractive_shell_command_normalizes_create_tauri_app() {
+        let (command, env) = AgentPipeline::harden_noninteractive_shell_command(
+            "npx create-tauri-app@latest hello-world --template vanilla",
+            None,
+        );
+
+        assert!(command.contains("--yes"));
+        let env = env.expect("env should be injected");
+        assert_eq!(env.get("CI"), Some(&"true".to_string()));
+        assert_eq!(env.get("FORCE_COLOR"), Some(&"0".to_string()));
     }
 
     #[test]
@@ -2987,6 +3891,53 @@ mod tests {
     }
 
     #[test]
+    fn normalize_code_tool_arguments_recovers_batch_edit_aliases() {
+        let normalized = AgentPipeline::normalize_code_tool_arguments(json!({
+            "operation": "edit",
+            "changes": [{
+                "file": "\"src/index.html\"",
+                "old": "<h1>Hello</h1>",
+                "replacement": "<h1>Hello, Gestura</h1>",
+            }]
+        }));
+
+        assert_eq!(
+            normalized.get("operation").and_then(|v| v.as_str()),
+            Some("batch_edit")
+        );
+        let edits = normalized
+            .get("edits")
+            .and_then(|value| value.as_array())
+            .expect("edits array should be recovered");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(
+            edits[0].get("path").and_then(|v| v.as_str()),
+            Some("src/index.html")
+        );
+        assert_eq!(
+            edits[0].get("old_str").and_then(|v| v.as_str()),
+            Some("<h1>Hello</h1>")
+        );
+        assert_eq!(
+            edits[0].get("new_str").and_then(|v| v.as_str()),
+            Some("<h1>Hello, Gestura</h1>")
+        );
+    }
+
+    #[test]
+    fn normalize_file_tool_arguments_recovers_operation_from_embedded_parameter_payload() {
+        let normalized = AgentPipeline::normalize_file_tool_arguments(json!({
+            "operation": "\"list\"\n<parameter name=\"path\">.</parameter>"
+        }));
+
+        assert_eq!(
+            normalized.get("operation").and_then(|v| v.as_str()),
+            Some("list")
+        );
+        assert_eq!(normalized.get("path").and_then(|v| v.as_str()), Some("."));
+    }
+
+    #[test]
     fn missing_file_write_content_error_explains_how_to_recover() {
         let message = AgentPipeline::format_missing_file_write_content_error(&json!({
             "operation": "write",
@@ -3032,62 +3983,21 @@ mod tests {
     }
 
     #[test]
-    fn repeated_malformed_tool_call_skip_message_trips_on_third_attempt() {
-        let malformed_args = json!({
-            "operation": "write",
-            "path": "tauri-hello-world/src/index.html",
-            "pattern": "none",
-            "start": 1,
-        })
-        .to_string();
+    fn missing_code_batch_edit_edits_error_explains_how_to_recover() {
+        let message = AgentPipeline::format_missing_code_batch_edit_edits_error(&json!({
+            "operation": "batch_edit",
+            "path": "src/index.html",
+            "note": "replace the greeting",
+        }));
 
-        let prior_records = vec![
-            crate::pipeline::ToolCallRecord {
-                id: "1".to_string(),
-                name: "file".to_string(),
-                arguments: malformed_args.clone(),
-                result: crate::pipeline::ToolResult::Error(
-                    AgentPipeline::format_missing_file_write_content_error(&json!({
-                        "operation": "write",
-                        "path": "tauri-hello-world/src/index.html",
-                        "pattern": "none",
-                        "start": 1,
-                    })),
-                ),
-                duration_ms: 1,
-            },
-            crate::pipeline::ToolCallRecord {
-                id: "2".to_string(),
-                name: "file".to_string(),
-                arguments: malformed_args.clone(),
-                result: crate::pipeline::ToolResult::Error(
-                    AgentPipeline::format_missing_file_write_content_error(&json!({
-                        "operation": "write",
-                        "path": "tauri-hello-world/src/index.html",
-                        "pattern": "full content",
-                        "start": 1,
-                    })),
-                ),
-                duration_ms: 1,
-            },
-        ];
-
-        let message = AgentPipeline::repeated_malformed_tool_call_skip_message(
-            "file",
-            &malformed_args,
-            prior_records.iter(),
-        )
-        .expect("loop breaker should trigger");
-
-        assert!(message.contains("Loop breaker:"));
-        assert!(message.contains("agent is still running"));
-        assert!(message.contains(
-            "Do not retry `write` until you can provide the full destination file text in `content`"
-        ));
+        assert!(message.contains("Missing required field 'edits' for code batch_edit operation"));
+        assert!(message.contains("`batch_edit` requires an `edits` array"));
+        assert!(message.contains("\"operation\":\"batch_edit\""));
+        assert!(message.contains("Prefer the canonical `edits` array shape"));
     }
 
     #[test]
-    fn repeated_malformed_tool_call_skip_message_does_not_trip_too_early() {
+    fn repeated_malformed_tool_call_skip_message_trips_on_second_attempt() {
         let malformed_args = json!({
             "operation": "write",
             "path": "tauri-hello-world/src/index.html",
@@ -3111,50 +4021,56 @@ mod tests {
             duration_ms: 1,
         }];
 
+        let message = AgentPipeline::repeated_malformed_tool_call_skip_message(
+            "file",
+            &malformed_args,
+            prior_records.iter(),
+        )
+        .expect("loop breaker should trigger");
+
+        assert!(message.contains("Loop breaker:"));
+        assert!(message.contains("agent is still running"));
+        assert!(message.contains(
+            "Do not retry `write` until you can provide the full destination file text in `content`"
+        ));
+    }
+
+    #[test]
+    fn repeated_malformed_tool_call_skip_message_does_not_trip_on_first_attempt() {
+        let malformed_args = json!({
+            "operation": "write",
+            "path": "tauri-hello-world/src/index.html",
+            "pattern": "none",
+            "start": 1,
+        })
+        .to_string();
+
         assert!(
-            AgentPipeline::repeated_malformed_tool_call_skip_message(
-                "file",
-                &malformed_args,
-                prior_records.iter(),
-            )
-            .is_none()
+            AgentPipeline::repeated_malformed_tool_call_skip_message("file", &malformed_args, [])
+                .is_none()
         );
     }
 
     #[test]
-    fn repeated_malformed_task_update_without_status_trips_on_third_attempt() {
+    fn repeated_malformed_task_update_without_status_trips_on_second_attempt() {
         let malformed_args = json!({
             "operation": "update_status",
             "task_id": "6073f304-388d-408c-82d0-f49f8679656a",
         })
         .to_string();
 
-        let prior_records = vec![
-            crate::pipeline::ToolCallRecord {
-                id: "1".to_string(),
-                name: "task".to_string(),
-                arguments: malformed_args.clone(),
-                result: crate::pipeline::ToolResult::Error(
-                    AgentPipeline::format_missing_task_update_status_error(&json!({
-                        "operation": "update_status",
-                        "task_id": "6073f304-388d-408c-82d0-f49f8679656a",
-                    })),
-                ),
-                duration_ms: 1,
-            },
-            crate::pipeline::ToolCallRecord {
-                id: "2".to_string(),
-                name: "task".to_string(),
-                arguments: malformed_args.clone(),
-                result: crate::pipeline::ToolResult::Error(
-                    AgentPipeline::format_missing_task_update_status_error(&json!({
-                        "operation": "update_status",
-                        "task_id": "6073f304-388d-408c-82d0-f49f8679656a",
-                    })),
-                ),
-                duration_ms: 1,
-            },
-        ];
+        let prior_records = vec![crate::pipeline::ToolCallRecord {
+            id: "1".to_string(),
+            name: "task".to_string(),
+            arguments: malformed_args.clone(),
+            result: crate::pipeline::ToolResult::Error(
+                AgentPipeline::format_missing_task_update_status_error(&json!({
+                    "operation": "update_status",
+                    "task_id": "6073f304-388d-408c-82d0-f49f8679656a",
+                })),
+            ),
+            duration_ms: 1,
+        }];
 
         let message = AgentPipeline::repeated_malformed_tool_call_skip_message(
             "task",
@@ -3170,50 +4086,216 @@ mod tests {
     }
 
     #[test]
-    fn repeated_malformed_task_create_without_name_trips_on_third_attempt() {
+    fn repeated_malformed_task_create_without_name_trips_on_second_attempt() {
         let malformed_args = json!({
             "operation": "create",
             "task_id": "\"tauri-hello-world\" wait no, task_id not for create.",
         })
         .to_string();
 
-        let prior_records = vec![
-            crate::pipeline::ToolCallRecord {
-                id: "1".to_string(),
-                name: "task".to_string(),
-                arguments: malformed_args.clone(),
-                result: crate::pipeline::ToolResult::Error(
-                    AgentPipeline::format_missing_task_create_name_error(&json!({
-                        "operation": "create",
-                        "task_id": "\"tauri-hello-world\" wait no, task_id not for create.",
-                    })),
-                ),
-                duration_ms: 1,
-            },
-            crate::pipeline::ToolCallRecord {
-                id: "2".to_string(),
-                name: "task".to_string(),
-                arguments: malformed_args.clone(),
-                result: crate::pipeline::ToolResult::Error(
-                    AgentPipeline::format_missing_task_create_name_error(&json!({
-                        "operation": "create",
-                        "task_id": "\"tauri-hello-world\" wait no, task_id not for create.",
-                    })),
-                ),
-                duration_ms: 1,
-            },
-        ];
+        let prior_records = vec![crate::pipeline::ToolCallRecord {
+            id: "1".to_string(),
+            name: "task".to_string(),
+            arguments: malformed_args.clone(),
+            result: crate::pipeline::ToolResult::Error(
+                AgentPipeline::format_missing_task_create_name_error(&json!({
+                    "operation": "create",
+                    "task_id": "\"tauri-hello-world\" wait no, task_id not for create.",
+                })),
+            ),
+            duration_ms: 1,
+        }];
 
         let message = AgentPipeline::repeated_malformed_tool_call_skip_message(
             "task",
             &malformed_args,
             &prior_records,
         )
-        .expect("third malformed create should trip loop breaker");
+        .expect("second malformed create should trip loop breaker");
 
         assert!(message.contains("Loop breaker:"));
         assert!(message.contains("task.create"));
         assert!(message.contains("without a valid `name`"));
+    }
+
+    #[test]
+    fn repeated_malformed_code_batch_edit_without_edits_trips_on_second_attempt() {
+        let malformed_args = json!({
+            "operation": "batch_edit",
+            "path": "src/index.html",
+            "note": "replace the heading",
+        })
+        .to_string();
+
+        let prior_records = vec![crate::pipeline::ToolCallRecord {
+            id: "1".to_string(),
+            name: "code".to_string(),
+            arguments: malformed_args.clone(),
+            result: crate::pipeline::ToolResult::Error(
+                AgentPipeline::format_missing_code_batch_edit_edits_error(&json!({
+                    "operation": "batch_edit",
+                    "path": "src/index.html",
+                    "note": "replace the heading",
+                })),
+            ),
+            duration_ms: 1,
+        }];
+
+        let message = AgentPipeline::repeated_malformed_tool_call_skip_message(
+            "code",
+            &malformed_args,
+            &prior_records,
+        )
+        .expect("second malformed batch_edit should trip loop breaker");
+
+        assert!(message.contains("Loop breaker:"));
+        assert!(message.contains("code.batch_edit"));
+        assert!(message.contains("`edits` array"));
+    }
+
+    #[test]
+    fn repeated_redundant_tauri_init_trips_after_first_success() {
+        let args = json!({
+            "command": "cargo tauri init --ci --app-name hello-world --window-title \"Hello World\" --force"
+        })
+        .to_string();
+        let prior_records = vec![ToolCallRecord {
+            id: "1".to_string(),
+            name: "shell".to_string(),
+            arguments: args.clone(),
+            result: ToolResult::Success(String::new()),
+            duration_ms: 1,
+        }];
+
+        let message = AgentPipeline::repeated_redundant_tool_call_skip_message(
+            "shell",
+            &args,
+            &prior_records,
+        )
+        .expect("second successful tauri init should trip loop breaker");
+
+        assert!(message.contains("redundant repeated `cargo tauri init`"));
+        assert!(message.contains("move on to editing files and running build/test verification"));
+    }
+
+    #[test]
+    fn manual_tauri_shell_scaffold_is_blocked_after_repeated_non_tty_failures() {
+        let prior_records = vec![
+            ToolCallRecord {
+                id: "1".to_string(),
+                name: "shell".to_string(),
+                arguments: json!({
+                    "command": "npx create-tauri-app@latest hello-tauri --template vanilla --yes"
+                })
+                .to_string(),
+                result: ToolResult::Error("Exit 1: Shell command failed because it expected a terminal. stderr: IO error: not a terminal".to_string()),
+                duration_ms: 1,
+            },
+            ToolCallRecord {
+                id: "2".to_string(),
+                name: "shell".to_string(),
+                arguments: json!({
+                    "command": "npx create-tauri-app@latest hello-tauri --template vanilla --yes"
+                })
+                .to_string(),
+                result: ToolResult::Error("Exit 1: command likely waited for interactive input".to_string()),
+                duration_ms: 1,
+            },
+        ];
+        let manual_args = json!({
+            "command": "mkdir -p hello-tauri/src-tauri/src && cat <<'EOF' > hello-tauri/src-tauri/Cargo.toml\n[package]\nname = \"hello-tauri\"\nEOF"
+        })
+        .to_string();
+
+        let message = AgentPipeline::repeated_redundant_tool_call_skip_message(
+            "shell",
+            &manual_args,
+            &prior_records,
+        )
+        .expect("manual tauri shell fallback should be blocked after repeated non-tty failures");
+
+        assert!(message.contains("Do not synthesize a Tauri project with `cat <<EOF`"));
+        assert!(message.contains("npx create-tauri-app --help"));
+        assert!(message.contains("cargo tauri init --ci"));
+    }
+
+    #[test]
+    fn repeated_create_tauri_app_latest_is_blocked_after_two_non_tty_failures() {
+        let prior_records = vec![
+            ToolCallRecord {
+                id: "1".to_string(),
+                name: "shell".to_string(),
+                arguments: json!({
+                    "command": "npx create-tauri-app@latest hello-tauri --template vanilla --yes"
+                })
+                .to_string(),
+                result: ToolResult::Error("Exit 1: stderr: IO error: not a terminal".to_string()),
+                duration_ms: 1,
+            },
+            ToolCallRecord {
+                id: "2".to_string(),
+                name: "shell".to_string(),
+                arguments: json!({
+                    "command": "npx create-tauri-app@latest hello-tauri --template vanilla --yes"
+                })
+                .to_string(),
+                result: ToolResult::Error(
+                    "Exit 124: command likely waited for interactive input".to_string(),
+                ),
+                duration_ms: 1,
+            },
+        ];
+        let retry_args = json!({
+            "command": "npx create-tauri-app@latest hello-tauri --template vanilla --yes"
+        })
+        .to_string();
+
+        let message = AgentPipeline::repeated_redundant_tool_call_skip_message(
+            "shell",
+            &retry_args,
+            &prior_records,
+        )
+        .expect("same create-tauri-app retry should be blocked after repeated non-tty failures");
+
+        assert!(message.contains("Use one specific alternate strategy next"));
+        assert!(
+            message.contains(
+                "npx create-tauri-app <app-dir> --yes --template vanilla --tauri-version 2"
+            )
+        );
+    }
+
+    #[test]
+    fn repeated_file_tree_inspection_trips_after_two_successes() {
+        let args = json!({
+            "operation": "tree",
+            "path": "hello-tauri"
+        })
+        .to_string();
+        let prior_records = vec![
+            ToolCallRecord {
+                id: "1".to_string(),
+                name: "file".to_string(),
+                arguments: args.clone(),
+                result: ToolResult::Success("{}".to_string()),
+                duration_ms: 1,
+            },
+            ToolCallRecord {
+                id: "2".to_string(),
+                name: "file".to_string(),
+                arguments: args.clone(),
+                result: ToolResult::Success("{}".to_string()),
+                duration_ms: 1,
+            },
+        ];
+
+        let message =
+            AgentPipeline::repeated_redundant_tool_call_skip_message("file", &args, &prior_records)
+                .expect("third identical file.tree should trip loop breaker");
+
+        assert!(message.contains("redundant repeated `file.tree` inspection"));
+        assert!(message.contains("hello-tauri"));
+        assert!(message.contains("move on to reading the specific file you need to edit"));
     }
 
     #[test]
@@ -3241,7 +4323,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_status_without_status_returns_actionable_error() {
+    async fn update_status_without_status_recovers_not_started_task_to_in_progress() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("tool-dispatch-test-{}", uuid::Uuid::new_v4());
         let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
@@ -3264,18 +4346,18 @@ mod tests {
             .await;
 
         let output = match result {
-            crate::pipeline::ToolResult::Error(output) => output,
-            other => panic!("expected error, got {other:?}"),
+            crate::pipeline::ToolResult::Success(output) => output,
+            other => panic!("expected success, got {other:?}"),
         };
 
-        assert!(output.contains("Missing required field 'status' for update_status operation"));
-        assert!(output.contains("\"status\":\"inprogress\""));
+        assert!(output.contains("Recovered omitted `status`"));
+        assert!(output.contains("NotStarted to InProgress"));
 
         let task_after = manager
             .get_task(&session_id, &task.id)
             .expect("get task")
             .expect("task exists");
-        assert_eq!(task_after.status, crate::TaskStatus::NotStarted);
+        assert_eq!(task_after.status, crate::TaskStatus::InProgress);
     }
 
     #[tokio::test]
@@ -3344,11 +4426,14 @@ mod tests {
             .await;
 
         let output = match result {
-            crate::pipeline::ToolResult::Error(output) => output,
-            other => panic!("expected error, got {other:?}"),
+            crate::pipeline::ToolResult::Skipped(output) => output,
+            other => panic!("expected skipped result, got {other:?}"),
         };
 
-        assert!(output.contains("Missing required field 'status' for update_status operation"));
+        assert!(
+            output.contains("Skipped malformed `task.update_status` without explicit `status`")
+        );
+        assert!(output.contains("current status is InProgress"));
 
         let task_after = manager
             .get_task(&session_id, &task.id)
@@ -3384,11 +4469,14 @@ mod tests {
             .await;
 
         let output = match result {
-            crate::pipeline::ToolResult::Error(output) => output,
-            other => panic!("expected error, got {other:?}"),
+            crate::pipeline::ToolResult::Skipped(output) => output,
+            other => panic!("expected skipped result, got {other:?}"),
         };
 
-        assert!(output.contains("Missing required field 'status' for update_status operation"));
+        assert!(
+            output.contains("Skipped malformed `task.update_status` without explicit `status`")
+        );
+        assert!(output.contains("current status is Completed"));
 
         let task_after = manager
             .get_task(&session_id, &task.id)
@@ -3424,6 +4512,113 @@ mod tests {
             crate::pipeline::ToolResult::Success(output) => {
                 assert!(output.contains("index.html"));
                 assert!(output.contains("replacements"));
+                let updated = std::fs::read_to_string(&file_path).expect("read updated file");
+                assert!(updated.contains("Hello, Gestura"));
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn file_edit_recovers_unique_nested_workspace_suffix_path() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("file-edit-suffix-test-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let project_dir = temp.path().join("hello-world").join("src");
+        std::fs::create_dir_all(&project_dir).expect("create nested src dir");
+        let file_path = project_dir.join("index.html");
+        std::fs::write(&file_path, "<h1>Hello</h1>\n").expect("write seed file");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_file_tool(
+                &json!({
+                    "operation": "edit",
+                    "path": "src/index.html",
+                    "old": "<h1>Hello</h1>",
+                    "new": "<h1>Hello, Gestura</h1>",
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("src/index.html"));
+                let updated = std::fs::read_to_string(&file_path).expect("read updated file");
+                assert!(updated.contains("Hello, Gestura"));
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn code_batch_edit_accepts_changes_aliases() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("code-edit-alias-test-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let file_path = temp.path().join("index.html");
+        std::fs::write(&file_path, "<h1>Hello</h1>\n").expect("write seed file");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_code_tool(
+                &json!({
+                    "operation": "edit",
+                    "changes": [{
+                        "file": "index.html",
+                        "old": "<h1>Hello</h1>",
+                        "new": "<h1>Hello, Gestura</h1>",
+                    }]
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("index.html"));
+                let updated = std::fs::read_to_string(&file_path).expect("read updated file");
+                assert!(updated.contains("Hello, Gestura"));
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn code_batch_edit_recovers_unique_nested_workspace_suffix_path() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("code-edit-suffix-test-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let project_dir = temp.path().join("hello-world").join("src");
+        std::fs::create_dir_all(&project_dir).expect("create nested src dir");
+        let file_path = project_dir.join("index.html");
+        std::fs::write(&file_path, "<h1>Hello</h1>\n").expect("write seed file");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_code_tool(
+                &json!({
+                    "operation": "batch_edit",
+                    "edits": [{
+                        "path": "src/index.html",
+                        "old_str": "<h1>Hello</h1>",
+                        "new_str": "<h1>Hello, Gestura</h1>",
+                    }]
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("index.html"));
                 let updated = std::fs::read_to_string(&file_path).expect("read updated file");
                 assert!(updated.contains("Hello, Gestura"));
             }
@@ -3563,6 +4758,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_write_accepts_multiline_pattern_as_content_fallback() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("file-write-pattern-fallback-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let file_path = temp.path().join("index.html");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_file_tool(
+                &json!({
+                    "operation": "write",
+                    "path": "index.html",
+                    "pattern": "<!doctype html>\n<html><body><h1>Hello, Gestura</h1></body></html>\n",
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("index.html"));
+                let updated = std::fs::read_to_string(&file_path).expect("read updated file");
+                assert!(updated.contains("Hello, Gestura"));
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn file_write_missing_content_error_is_actionable() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("file-write-missing-content-{}", uuid::Uuid::new_v4());
@@ -3621,6 +4847,9 @@ mod tests {
 
         assert!(prompt.contains("task-tracking errors must not block implementation work"));
         assert!(prompt.contains(
+            "runtime already keeps the tracked root task aligned with overall run progress"
+        ));
+        assert!(prompt.contains(
             "For `create`, provide a specific `name` and preferably a concrete `description`"
         ));
         assert!(prompt.contains("always include both `task_id` and `status`"));
@@ -3648,6 +4877,7 @@ mod tests {
 
         assert!(prompt.contains("successful task update is only bookkeeping"));
         assert!(prompt.contains("Do not repeat the same task update"));
+        assert!(prompt.contains("you know its exact next status"));
     }
 
     #[test]
@@ -3676,6 +4906,7 @@ mod tests {
 
         assert!(prompt.contains("if `task.update_status` failed because `status` was omitted"));
         assert!(prompt.contains("not a reason to keep looping on task bookkeeping"));
+        assert!(prompt.contains("do not call `task` on the next step"));
         assert!(
             prompt.contains("Arguments: {\"operation\":\"update_status\",\"task_id\":\"abc\"}")
         );
@@ -3724,7 +4955,7 @@ mod tests {
                 })
                 .to_string(),
                 result: crate::pipeline::ToolResult::Skipped(
-                    "Loop breaker: skipped a repeated malformed `task.create` call without a valid `name` after 2 prior similar malformed attempts in this run."
+                    "Loop breaker: skipped a repeated malformed `task.create` call without a valid `name` after 1 prior similar malformed attempts in this run."
                         .to_string(),
                 ),
                 duration_ms: 1,
@@ -3819,7 +5050,7 @@ mod tests {
                 })
                 .to_string(),
                 result: crate::pipeline::ToolResult::Skipped(
-                    "Loop breaker: skipped a repeated malformed `file.write` call without `content` after 2 prior similar non-successful attempts in this run. The agent is still running.".to_string(),
+                    "Loop breaker: skipped a repeated malformed `file.write` call without `content` after 1 prior similar non-successful attempts in this run. The agent is still running.".to_string(),
                 ),
                 duration_ms: 1,
             }],
@@ -3829,6 +5060,108 @@ mod tests {
         assert!(prompt.contains("agent run is still active"));
         assert!(
             prompt.contains("Do not retry the blocked malformed call shape again in this turn")
+        );
+    }
+
+    #[test]
+    fn continuation_prompt_pushes_implementation_after_successful_tauri_scaffold() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let prompt = pipeline.build_tool_continuation_prompt(
+            "User: create a tauri hello world app and build/test it",
+            "I scaffolded the app and will inspect the files.",
+            &[ToolCallRecord {
+                id: "1".to_string(),
+                name: "shell".to_string(),
+                arguments: json!({
+                    "command": "npx create-tauri-app@latest hello-tauri --yes --template vanilla --tauri-version 2"
+                })
+                .to_string(),
+                result: ToolResult::Success("Scaffold created".to_string()),
+                duration_ms: 1,
+            }],
+        );
+
+        assert!(prompt.contains("the Tauri scaffold now exists at `hello-tauri`"));
+        assert!(
+            prompt
+                .contains("Do not spend another turn repeatedly listing or treeing that directory")
+        );
+        assert!(
+            prompt.contains(
+                "make the Hello World change and run the remaining build/test verification"
+            )
+        );
+    }
+
+    #[test]
+    fn continuation_prompt_explains_redundant_file_inspection_skip() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let prompt = pipeline.build_tool_continuation_prompt(
+            "User: finish the tauri app",
+            "I will inspect the scaffold again.",
+            &[ToolCallRecord {
+                id: "1".to_string(),
+                name: "file".to_string(),
+                arguments: json!({
+                    "operation": "tree",
+                    "path": "hello-tauri"
+                })
+                .to_string(),
+                result: ToolResult::Skipped(
+                    "Loop breaker: skipped a redundant repeated `file.tree` inspection of `hello-tauri` after 2 prior successful identical inspections in this run.".to_string(),
+                ),
+                duration_ms: 1,
+            }],
+        );
+
+        assert!(
+            prompt.contains("repeated file inspections of the same path are now being skipped")
+        );
+        assert!(prompt.contains("Stop re-listing the scaffold root"));
+        assert!(prompt.contains("edit it, then run the requested verification commands"));
+    }
+
+    #[test]
+    fn continuation_prompt_forces_specific_recovery_after_repeated_non_tty_tauri_failures() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let prompt = pipeline.build_tool_continuation_prompt(
+            "User: create a tauri app and build/test it",
+            "I will try another shell fallback.",
+            &[
+                ToolCallRecord {
+                    id: "1".to_string(),
+                    name: "shell".to_string(),
+                    arguments: json!({
+                        "command": "npx create-tauri-app@latest hello-tauri --template vanilla --yes"
+                    })
+                    .to_string(),
+                    result: ToolResult::Error(
+                        "Exit 1: stderr: IO error: not a terminal".to_string(),
+                    ),
+                    duration_ms: 1,
+                },
+                ToolCallRecord {
+                    id: "2".to_string(),
+                    name: "shell".to_string(),
+                    arguments: json!({
+                        "command": "npx create-tauri-app@latest hello-tauri --template vanilla --yes"
+                    })
+                    .to_string(),
+                    result: ToolResult::Error(
+                        "Exit 124: command likely waited for interactive input".to_string(),
+                    ),
+                    duration_ms: 1,
+                },
+            ],
+        );
+
+        assert!(prompt.contains("`create-tauri-app` has already failed multiple times"));
+        assert!(prompt.contains("do not manually synthesize Tauri files with `cat <<EOF`"));
+        assert!(prompt.contains("npx create-tauri-app --help"));
+        assert!(
+            prompt.contains(
+                "npx create-tauri-app <app-dir> --yes --template vanilla --tauri-version 2"
+            )
         );
     }
 

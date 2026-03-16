@@ -16,7 +16,7 @@ use gestura_core::{
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use std::fs;
-use std::io::Write;
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
@@ -335,6 +335,15 @@ pub fn run(opts: AgentOptions<'_>) -> Result<()> {
     run_basic_mode(opts)
 }
 
+enum BasicModeCommandOutcome {
+    Continue,
+    Break,
+    Submit {
+        input: String,
+        input_source: MessageSource,
+    },
+}
+
 fn run_basic_mode(opts: AgentOptions<'_>) -> Result<()> {
     let AgentOptions {
         model,
@@ -576,6 +585,20 @@ fn run_basic_mode(opts: AgentOptions<'_>) -> Result<()> {
         println!();
     }
 
+    // Create tokio runtime for async LLM calls
+    let rt = tokio::runtime::Runtime::new()?;
+
+    if !io::stdin().is_terminal() {
+        return run_basic_mode_noninteractive(
+            model,
+            &mut config,
+            &mut agent_session,
+            &mut voice,
+            system_prompt.as_deref(),
+            &rt,
+        );
+    }
+
     // Set up readline
     let mut rl =
         DefaultEditor::new().map_err(|e| format!("Failed to initialize readline: {}", e))?;
@@ -586,9 +609,6 @@ fn run_basic_mode(opts: AgentOptions<'_>) -> Result<()> {
         let _ = fs::create_dir_all(parent);
     }
     let _ = rl.load_history(&history_path);
-
-    // Create tokio runtime for async LLM calls
-    let rt = tokio::runtime::Runtime::new()?;
 
     // Main agent loop
     loop {
@@ -626,892 +646,36 @@ fn run_basic_mode(opts: AgentOptions<'_>) -> Result<()> {
                     input = rest.to_string();
                 }
 
-                // Handle commands
-                if input.starts_with('/') {
-                    let mut parts = input.split_whitespace();
-                    let raw_cmd = parts.next().unwrap_or("").to_ascii_lowercase();
-                    let cmd = catalog::canonical_command(&raw_cmd);
-                    let args: Vec<&str> = parts.collect();
-                    match cmd {
-                        "/quit" => {
-                            save_cli_session(&agent_session)?;
-                            println!();
-                            println!(
-                                "{} {} {}",
-                                "✓".green(),
-                                "Session saved.".dimmed(),
-                                "Goodbye!".cyan()
-                            );
-                            println!();
-                            break;
-                        }
-                        "/voice" => {
-                            // Explicit voice command
-                            match record_voice_input(&rt) {
-                                Ok(text) => {
-                                    if !text.is_empty() {
-                                        println!("{} {}", "Transcribed:".cyan(), text);
-                                        // Treat transcription as the user input (falls through
-                                        // to the LLM call below).
-                                        input = text;
-                                        input_source = MessageSource::Voice;
-                                    } else {
-                                        // No transcription; do not send an empty message.
-                                        continue;
-                                    }
-                                }
-                                Err(e) => {
-                                    eprintln!("{}: {}", "Voice error".red(), e);
-                                    continue;
-                                }
-                            }
-                        }
-                        "/help" => {
-                            print_basic_mode_help();
-                            continue;
-                        }
-                        "/tools" => {
-                            println!();
-                            basic_mode_tools_command(&args, &mut agent_session);
-                            println!();
-                            continue;
-                        }
-                        "/summarize" => {
-                            println!();
-                            // Get conversation history
-                            let history: Vec<String> = agent_session
-                                .state
-                                .messages
-                                .iter()
-                                .map(|msg| msg.content.clone())
-                                .collect();
-
-                            if history.is_empty() {
-                                println!(
-                                    "{} {}",
-                                    "◆".yellow().bold(),
-                                    "No conversation history to summarize.".yellow()
-                                );
-                            } else {
-                                // Use context manager to summarize
-                                use gestura_core::context::ContextManager;
-                                let context_manager = ContextManager::new();
-                                let summary = context_manager.summarize_history(&history);
-
-                                println!(
-                                    "{} {}",
-                                    "◆".blue().bold(),
-                                    "Conversation Summary:".blue()
-                                );
-                                println!();
-                                println!("{}", summary);
-                                println!();
-                                println!(
-                                    "{}",
-                                    format!("Summarized {} messages", history.len()).dimmed()
-                                );
-
-                                // Add summary to session
-                                agent_session.add_assistant_message(
-                                    &format!(
-                                        "## Conversation Summary\n\n{}\n\n---\n\n*Summarized {} messages*",
-                                        summary,
-                                        history.len()
-                                    ),
-                                    Some("Summarizing conversation history (no LLM call)...".to_string()),
-                                );
-                            }
-                            println!();
-                            continue;
-                        }
-                        "/memory" => {
-                            println!();
-                            basic_mode_memory_command(&args, &agent_session);
-                            println!();
-                            continue;
-                        }
-                        "/clear" => {
-                            print!("\x1B[2J\x1B[1;1H");
-                            continue;
-                        }
-                        "/save" => {
-                            save_cli_session(&agent_session)?;
-                            println!("{} Session saved", "✓".green());
-                            continue;
-                        }
-                        "/history" => {
-                            let user_msgs = agent_session
-                                .state
-                                .messages
-                                .iter()
-                                .filter(|m| m.role == "user")
-                                .count();
-                            let asst_msgs = agent_session
-                                .state
-                                .messages
-                                .iter()
-                                .filter(|m| m.role == "assistant")
-                                .count();
-                            println!();
-                            println!(
-                                "{}",
-                                "╭─ Session Statistics ─────────────────────────────────────────╮"
-                                    .dimmed()
-                            );
-                            println!(
-                                "{}  {} {}",
-                                "│".dimmed(),
-                                "Session ID:".dimmed(),
-                                agent_session.id
-                            );
-                            println!(
-                                "{}  {} {}",
-                                "│".dimmed(),
-                                "Total Messages:".dimmed(),
-                                agent_session.message_count()
-                            );
-                            println!(
-                                "{}  {} {}",
-                                "│".dimmed(),
-                                "Your Messages:".dimmed(),
-                                user_msgs
-                            );
-                            println!(
-                                "{}  {} {}",
-                                "│".dimmed(),
-                                "AI Responses:".dimmed(),
-                                asst_msgs
-                            );
-                            if let Some(workspace) = agent_session.workspace_dir() {
-                                println!(
-                                    "{}  {} {}",
-                                    "│".dimmed(),
-                                    "Workspace:".dimmed(),
-                                    workspace.display()
-                                );
-                            }
-                            println!(
-                                "{}",
-                                "╰───────────────────────────────────────────────────────────────╯"
-                                    .dimmed()
-                            );
-                            println!();
-                            continue;
-                        }
-                        "/new" => {
-                            save_cli_session(&agent_session)?;
-                            agent_session = new_cli_session(model.map(String::from))?;
-                            println!();
-                            println!(
-                                "{} {} {}",
-                                "✓".green(),
-                                "New session started:".dimmed(),
-                                agent_session.id
-                            );
-                            println!();
-                            continue;
-                        }
-                        "/mcp" => {
-                            println!();
-                            basic_mode_mcp_command(&args);
-                            println!();
-                            continue;
-                        }
-                        "/a2a" => {
-                            println!();
-                            basic_mode_a2a_command(&args);
-                            println!();
-                            continue;
-                        }
-                        "/knowledge" => {
-                            println!();
-                            basic_mode_knowledge_command(&args, &agent_session);
-                            println!();
-                            continue;
-                        }
-                        "/agent" => {
-                            println!();
-                            basic_mode_agent_command(&args, &config, &agent_session);
-                            println!();
-                            continue;
-                        }
-                        "/device" => {
-                            println!();
-                            basic_mode_device_command(&args, &config, &agent_session);
-                            println!();
-                            continue;
-                        }
-                        "/health" => {
-                            println!();
-                            basic_mode_health_command(&config);
-                            println!();
-                            continue;
-                        }
-                        "/privacy" => {
-                            println!();
-                            basic_mode_privacy_command(&args);
-                            println!();
-                            continue;
-                        }
-                        "/listen" => {
-                            println!();
-                            // Toggle listening mode for basic CLI.
-                            if !voice {
-                                if !gestura_core::is_microphone_available() {
-                                    println!(
-                                        "{} {}",
-                                        "✗".red(),
-                                        "Microphone not available; cannot enable listening mode"
-                                            .dimmed()
-                                    );
-                                    voice = false;
-                                } else {
-                                    voice = true;
-                                    println!(
-                                        "{} {}",
-                                        "🎤".green(),
-                                        "Listening mode enabled (press Enter on an empty prompt to record)"
-                                            .dimmed()
-                                    );
-                                }
-                            } else {
-                                voice = false;
-                                println!(
-                                    "{} {}",
-                                    "🔇".yellow(),
-                                    "Listening mode disabled".dimmed()
-                                );
-                            }
-
-                            basic_mode_listen_command(voice);
-                            println!();
-                            continue;
-                        }
-                        "/config" => {
-                            println!();
-                            basic_mode_config_command(&args);
-                            println!();
-                            continue;
-                        }
-                        "/session" => {
-                            println!();
-                            basic_mode_session_command(&args, &agent_session);
-                            println!();
-                            continue;
-                        }
-                        "/context" => {
-                            println!();
-                            basic_mode_context_command(&args);
-                            println!();
-                            continue;
-                        }
-                        "/workflow" => {
-                            println!();
-                            if let Some(workflow_prompt) = basic_mode_workflow_command(&args) {
-                                input = workflow_prompt;
-                            } else {
-                                println!();
-                                continue;
-                            }
-                        }
-                        "/init" => {
-                            println!();
-                            match crate::commands::init::run() {
-                                Ok(()) => println!(),
-                                Err(error) => println!("{} {}", "✗".red(), error),
-                            }
-                            continue;
-                        }
-                        "/model" => {
-                            println!();
-                            if let Some(new_llm) =
-                                basic_mode_model_command(&args, &config, &agent_session)
-                            {
-                                // Persist canonical override + legacy hint.
-                                let provider = new_llm.provider.clone().unwrap_or_default();
-                                let model = new_llm.model.clone().unwrap_or_default();
-                                if !provider.trim().is_empty() && !model.trim().is_empty() {
-                                    agent_session.state.llm_config = Some(new_llm);
-                                    agent_session.model = Some(format!("{}:{}", provider, model));
-                                    save_cli_session(&agent_session)?;
-                                }
-                            }
-                            println!();
-                            continue;
-                        }
-                        "/hooks" => {
-                            println!();
-                            if args.is_empty() {
-                                basic_mode_hooks_command(&config);
-                            } else {
-                                let mut cfg = config.clone();
-                                match slash::apply_hooks_subcommand(&args, &mut cfg) {
-                                    Ok(outcome) => {
-                                        let changed = outcome.changed();
-                                        for line in outcome.into_lines() {
-                                            println!("{line}");
-                                        }
-                                        if changed {
-                                            if let Err(e) = cfg.save() {
-                                                println!(
-                                                    "{} Failed to save config: {}",
-                                                    "✗".red(),
-                                                    e
-                                                );
-                                            } else {
-                                                config = cfg;
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        println!("{} {}", "✗".red(), e);
-                                        println!();
-                                        if let Ok(outcome) =
-                                            slash::apply_hooks_subcommand(&["help"], &mut cfg)
-                                        {
-                                            for line in outcome.into_lines() {
-                                                println!("{line}");
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            println!();
-                            continue;
-                        }
-                        "/permissions" => {
-                            println!();
-                            if args.is_empty() {
-                                basic_mode_permissions_command();
-                            } else {
-                                match slash::run_permissions_subcommand(&args, &mut agent_session) {
-                                    Ok(outcome) => {
-                                        for line in outcome.lines {
-                                            println!("{line}");
-                                        }
-                                        if outcome.changed_permissions {
-                                            println!("{} Permissions updated.", "✓".green());
-                                        }
-
-                                        if outcome.session_changed
-                                            && let Err(e) = save_cli_session(&agent_session)
-                                        {
-                                            println!("{} Failed to save session: {}", "✗".red(), e);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        println!("{} {}", "✗".red(), e);
-                                        println!();
-                                        if let Ok(outcome) = slash::run_permissions_subcommand(
-                                            &["help"],
-                                            &mut agent_session,
-                                        ) {
-                                            for line in outcome.lines {
-                                                println!("{line}");
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            println!();
-                            continue;
-                        }
-                        "/tasks" => {
-                            println!();
-                            if args.is_empty() {
-                                basic_mode_tasks_command(&agent_session, &rt);
-                            } else {
-                                use gestura_core::tasks::TaskManager;
-
-                                let task_manager = TaskManager::new(
-                                    dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")),
-                                );
-                                match slash::run_tasks_subcommand(
-                                    &args,
-                                    &task_manager,
-                                    &agent_session.id,
-                                    agent_session.workspace_dir().map(|path| path.as_path()),
-                                ) {
-                                    Ok(out) => {
-                                        let lines = match out.live_action {
-                                            Some(act) => {
-                                                match slash::execute_tasks_live_action(&rt, act) {
-                                                    Ok(lines) => lines,
-                                                    Err(e) => {
-                                                        println!("{} {}", "✗".red(), e);
-                                                        Vec::new()
-                                                    }
-                                                }
-                                            }
-                                            None => out.lines,
-                                        };
-                                        for line in lines {
-                                            println!("{line}");
-                                        }
-                                    }
-                                    Err(e) => {
-                                        println!("{} {}", "✗".red(), e);
-                                    }
-                                }
-                            }
-                            println!();
-                            continue;
-                        }
-
-                        "/theme" => {
-                            println!();
-                            basic_mode_themes_command();
-                            println!();
-                            continue;
-                        }
-                        _ => {
-                            println!();
-                            println!("{} {} {}", "✗".red(), "Unknown command:".dimmed(), cmd);
-                            println!(
-                                "  {} /help {}",
-                                "Tip:".dimmed(),
-                                "for available commands".dimmed()
-                            );
-                            println!();
-                            continue;
+                if let Some(outcome) = handle_basic_mode_slash_command(
+                    input.clone(),
+                    input_source,
+                    model,
+                    &mut config,
+                    &mut agent_session,
+                    &mut voice,
+                    &rt,
+                )? {
+                    match outcome {
+                        BasicModeCommandOutcome::Continue => continue,
+                        BasicModeCommandOutcome::Break => break,
+                        BasicModeCommandOutcome::Submit {
+                            input: next_input,
+                            input_source: next_source,
+                        } => {
+                            input = next_input;
+                            input_source = next_source;
                         }
                     }
                 }
 
-                // Add user message to session
-                agent_session.add_user_message(&input, input_source);
-
-                // Handle explicit /tools command only (not natural language questions)
-                if input.trim().starts_with("/tools") {
-                    let parts: Vec<&str> = input.split_whitespace().collect();
-                    println!();
-                    basic_mode_tools_command(&parts[1..], &mut agent_session);
-                    println!();
-                    continue;
-                }
-
-                // Handle /summarize command - summarize conversation history without calling LLM
-                if input.trim().starts_with("/summarize") {
-                    println!();
-                    // Get conversation history
-                    let history: Vec<String> = agent_session
-                        .state
-                        .messages
-                        .iter()
-                        .map(|msg| msg.content.clone())
-                        .collect();
-
-                    if history.is_empty() {
-                        println!(
-                            "{} {}",
-                            "◆".yellow().bold(),
-                            "No conversation history to summarize.".yellow()
-                        );
-                    } else {
-                        // Use context manager to summarize
-                        use gestura_core::context::ContextManager;
-                        let context_manager = ContextManager::new();
-                        let summary = context_manager.summarize_history(&history);
-
-                        println!("{} {}", "◆".blue().bold(), "Conversation Summary:".blue());
-                        println!();
-                        println!("{}", summary);
-                        println!();
-                        println!(
-                            "{}",
-                            format!("Summarized {} messages", history.len()).dimmed()
-                        );
-
-                        // Add summary to session
-                        agent_session.add_assistant_message(
-                            &format!(
-                                "## Conversation Summary\n\n{}\n\n---\n\n*Summarized {} messages*",
-                                summary,
-                                history.len()
-                            ),
-                            Some("Summarizing conversation history (no LLM call)...".to_string()),
-                        );
-                    }
-                    println!();
-                    continue;
-                }
-
-                // Build conversation history for the AgentPipeline
-                let history: Vec<gestura_core::Message> =
-                    agent_session.to_pipeline_messages_limited(10);
-
-                // ─────────────────────────────────────────────────────────────
-                // AI RESPONSE: Show thinking indicator then response
-                // ─────────────────────────────────────────────────────────────
-                // Build the agent request with workspace sandboxing
-                let mut request = AgentRequest::new(&input)
-                    .with_streaming(true)
-                    .with_source(RequestSource::CliBasic)
-                    .with_session(agent_session.id.clone())
-                    .with_history(history);
-
-                // Set workspace directory for sandboxed operations
-                if let Some(workspace) = agent_session.workspace_dir() {
-                    request = request.with_workspace(workspace.clone());
-                }
-
-                // Add system prompt if available
-                if let Some(ref sys) = system_prompt {
-                    request = request.with_system_prompt(sys.clone());
-                }
-
-                // Compute and apply the effective provider/model for this session.
-                //
-                // IMPORTANT: we apply overrides to the *pipeline config* so the underlying LLM
-                // call matches what `/model` says, and so provider configs are materialized.
-                let (config_for_pipeline, effective) =
-                    llm_overrides::apply_basic_mode_session_llm_overrides(&config, &agent_session);
-                let provider_name = effective.provider;
-                let model_name = effective.model;
-                let (permission_level, allowed_tools) = derive_request_policy(&agent_session);
-                request = request
-                    .with_session_llm_config(provider_name, model_name)
-                    .with_permission_level(permission_level);
-                if !allowed_tools.is_empty() {
-                    request = request.with_allowed_tools(allowed_tools);
-                }
-
-                // Stream response chunks as they arrive (CLI basic mode should feel interactive).
-                println!();
-                println!("{}", "◆".blue().bold());
-                print!("  ");
-                let _ = std::io::stdout().flush();
-
-                // Clone the session id into the async streaming scope so we can resolve
-                // tool confirmations against the correct session.
-                let session_id_for_tool_confirm = agent_session.id.clone();
-
-                let config_clone = config_for_pipeline;
-                let response: Result<gestura_core::AgentResponse> = rt.block_on(async move {
-                    let (tx, mut rx) = mpsc::channel::<StreamChunk>(100);
-                    let cancel_token = CancellationToken::new();
-                    let cancel_for_task = cancel_token.clone();
-
-                    let stream_task = tokio::spawn(async move {
-                        let pipeline = AgentPipeline::with_provider_optimized_config(config_clone)
-                            .with_knowledge(get_knowledge_store(), get_knowledge_settings());
-                        pipeline
-                            .process_streaming(request, tx, cancel_for_task)
-                            .await
-                    });
-
-                    let mut saw_done = false;
-                    while let Some(chunk) = rx.recv().await {
-                        match chunk {
-                            StreamChunk::Status { message } => {
-                                println!();
-                                println!("  {} {}", "ℹ".cyan(), message.dimmed());
-                                print!("  ");
-                                let _ = std::io::stdout().flush();
-                            }
-                            StreamChunk::Text(t) => {
-                                // Maintain indentation across newlines.
-                                let rendered = t.replace("\n", "\n  ");
-                                print!("{}", rendered);
-                                let _ = std::io::stdout().flush();
-                            }
-                            StreamChunk::Thinking(_) => {
-                                // Thinking is stored in the final AgentResponse; we don't print it by default.
-                            }
-                            StreamChunk::ToolCallStart { name, .. } => {
-                                println!();
-                                println!("  {} {}", "→".cyan(), format!("tool: {name}").dimmed());
-                                print!("  ");
-                                let _ = std::io::stdout().flush();
-                            }
-                            StreamChunk::ToolCallEnd => {
-                                // Tool call specification ended, execution starting
-                            }
-                            StreamChunk::ToolCallArgs(_) => {}
-                            StreamChunk::ToolCallResult {
-                                name,
-                                success,
-                                output,
-                                duration_ms,
-                            } => {
-                                if success {
-                                    println!(
-                                        "  {} {} ({}ms)",
-                                        "✓".green(),
-                                        name.dimmed(),
-                                        duration_ms
-                                    );
-                                    // Show output with pretty printing for JSON
-                                    if !output.is_empty() {
-                                        let formatted_output = format_tool_output(&output);
-                                        println!("{}", formatted_output.dimmed());
-                                    }
-                                } else {
-                                    println!(
-                                        "  {} {} failed ({}ms):",
-                                        "✗".red(),
-                                        name,
-                                        duration_ms
-                                    );
-                                    // Show error output with pretty printing
-                                    let formatted_output = format_tool_output(&output);
-                                    println!("{}", formatted_output.red());
-                                }
-                                print!("  ");
-                                let _ = std::io::stdout().flush();
-                            }
-                            StreamChunk::RetryAttempt {
-                                attempt,
-                                max_attempts,
-                                delay_ms,
-                                error_message,
-                            } => {
-                                println!();
-                                println!(
-                                    "  {} Retry {}/{} in {}ms: {}",
-                                    "⟳".yellow(),
-                                    attempt,
-                                    max_attempts,
-                                    delay_ms,
-                                    error_message.dimmed()
-                                );
-                                print!("  ");
-                                let _ = std::io::stdout().flush();
-                            }
-                            StreamChunk::ContextCompacted {
-                                messages_before,
-                                messages_after,
-                                tokens_saved,
-                                summary,
-                            } => {
-                                println!();
-                                println!(
-                                    "  {} Context compacted: {} → {} messages ({} tokens saved)",
-                                    "📦".cyan(),
-                                    messages_before,
-                                    messages_after,
-                                    tokens_saved
-                                );
-                                if !summary.is_empty() {
-                                    println!("     {}", summary.dimmed());
-                                }
-                                print!("  ");
-                                let _ = std::io::stdout().flush();
-                            }
-                            StreamChunk::MemoryBankSaved {
-                                file_path,
-                                session_id,
-                                summary,
-                                messages_saved,
-                            } => {
-                                println!();
-                                println!(
-                                    "  {} Memory bank saved: {} messages",
-                                    "💾".cyan(),
-                                    messages_saved
-                                );
-                                println!("     File: {}", file_path.dimmed());
-                                if !summary.is_empty() {
-                                    println!("     Summary: {}", summary.dimmed());
-                                }
-                                println!("     Session: {}", session_id.dimmed());
-                                print!("  ");
-                                let _ = std::io::stdout().flush();
-                            }
-                            StreamChunk::ReflectionStarted { reason } => {
-                                println!();
-                                println!(
-                                    "  {} {}",
-                                    "↺".magenta(),
-                                    format!("reflection: {reason}").dimmed()
-                                );
-                                print!("  ");
-                                let _ = std::io::stdout().flush();
-                            }
-                            StreamChunk::ReflectionComplete {
-                                summary,
-                                stored,
-                                promoted,
-                            } => {
-                                println!();
-                                println!(
-                                    "  {} {}{}{}",
-                                    "🧠".magenta(),
-                                    summary.dimmed(),
-                                    if stored { " · stored" } else { "" },
-                                    if promoted { " · promoted" } else { "" },
-                                );
-                                print!("  ");
-                                let _ = std::io::stdout().flush();
-                            }
-                            StreamChunk::Done(_) => {
-                                saw_done = true;
-                                break;
-                            }
-                            StreamChunk::ConfigRequest { key, value, .. } => {
-                                // In CLI, just show config request as info
-                                if let Some(v) = value {
-                                    println!("\n📋 Config request: {} → {}", key, v);
-                                } else {
-                                    println!("\n📋 Config query: {}", key);
-                                }
-                            }
-                            StreamChunk::ToolConfirmationRequired {
-                                confirmation_id,
-                                tool_name,
-                                description,
-                                risk_level,
-                                category,
-                                ..
-                            } => {
-                                println!();
-                                println!(
-                                    "  {} Tool '{}' requires confirmation (risk {}/10, {}): {}",
-                                    "⚠️".yellow(),
-                                    tool_name,
-                                    risk_level,
-                                    category,
-                                    description
-                                );
-
-                                let decision = prompt_tool_confirmation_decision();
-                                if let Err(err) = TOOL_CONFIRMATIONS.resolve_decision(
-                                    &confirmation_id,
-                                    Some(session_id_for_tool_confirm.as_str()),
-                                    decision,
-                                ) {
-                                    println!(
-                                        "  {} Failed to resolve confirmation: {}",
-                                        "✗".red(),
-                                        err
-                                    );
-                                }
-
-                                print!("  ");
-                                let _ = std::io::stdout().flush();
-                            }
-                            StreamChunk::ToolBlocked { tool_name, reason } => {
-                                println!();
-                                println!(
-                                    "  {} Tool '{}' blocked: {}",
-                                    "🚫".red(),
-                                    tool_name,
-                                    reason
-                                );
-                                print!("  ");
-                                let _ = std::io::stdout().flush();
-                            }
-                            StreamChunk::TokenUsageUpdate {
-                                estimated,
-                                limit,
-                                percentage,
-                                status,
-                                estimated_cost,
-                            } => {
-                                // Display token usage inline
-                                let status_icon = match status {
-                                    gestura_core::streaming::TokenUsageStatus::Green => "🟢",
-                                    gestura_core::streaming::TokenUsageStatus::Yellow => "🟡",
-                                    gestura_core::streaming::TokenUsageStatus::Red => "🔴",
-                                };
-                                println!();
-                                println!(
-                                    "  {} Tokens: {}/{} ({}%) - Est. cost: ${:.4}",
-                                    status_icon, estimated, limit, percentage, estimated_cost
-                                );
-                                print!("  ");
-                                let _ = std::io::stdout().flush();
-                            }
-                            StreamChunk::AgentLoopIteration { iteration } => {
-                                if iteration > 0 {
-                                    println!();
-                                    println!("  {} {}", "◆".cyan(), "Reviewing results…".dimmed());
-                                    print!("  ");
-                                    let _ = std::io::stdout().flush();
-                                }
-                            }
-                            StreamChunk::ShellOutput { data, .. } => {
-                                print!("{data}");
-                                let _ = std::io::stdout().flush();
-                            }
-                            StreamChunk::ShellLifecycle {
-                                state,
-                                exit_code,
-                                command,
-                                ..
-                            } => {
-                                println!();
-                                let label = format!("{state:?}");
-                                if let Some(code) = exit_code {
-                                    println!(
-                                        "  {} shell {}: {} (exit {})",
-                                        "⚙".dimmed(),
-                                        label.dimmed(),
-                                        command.dimmed(),
-                                        code
-                                    );
-                                } else {
-                                    println!(
-                                        "  {} shell {}: {}",
-                                        "⚙".dimmed(),
-                                        label.dimmed(),
-                                        command.dimmed()
-                                    );
-                                }
-                                print!("  ");
-                                let _ = std::io::stdout().flush();
-                            }
-                            StreamChunk::Paused => {
-                                println!();
-                                println!("  {} {}", "⏸".yellow(), "Session paused".dimmed());
-                                break;
-                            }
-                            StreamChunk::Cancelled => break,
-                            StreamChunk::Error(e) => {
-                                return Err(std::io::Error::other(e).into());
-                            }
-                        }
-                    }
-
-                    let agent_response = stream_task.await.map_err(|e| {
-                        std::io::Error::other(format!("Streaming task failed: {e}"))
-                    })??;
-                    if !saw_done {
-                        // The channel can close without an explicit Done; still return whatever we have.
-                    }
-                    Ok(agent_response)
-                });
-
-                match response {
-                    Ok(agent_response) => {
-                        println!();
-
-                        // Show token usage if available
-                        if let Some(usage) = &agent_response.usage {
-                            println!(
-                                "  {} tokens: {} in / {} out",
-                                "ℹ".dimmed(),
-                                usage.input_tokens.to_string().dimmed(),
-                                usage.output_tokens.to_string().dimmed()
-                            );
-                        }
-
-                        agent_session.add_assistant_message(
-                            &agent_response.content,
-                            agent_response.thinking,
-                        );
-                    }
-                    Err(e) => {
-                        println!();
-                        println!("{} {} {}", "✗".red(), "Error:".red(), e);
-                    }
-                }
-                println!();
-
-                // Auto-save periodically
-                if agent_session.message_count() % 5 == 0 {
-                    let _ = save_cli_session(&agent_session);
-                }
+                execute_basic_mode_turn(
+                    &mut agent_session,
+                    input,
+                    input_source,
+                    &config,
+                    system_prompt.as_deref(),
+                    &rt,
+                )?;
             }
             Err(ReadlineError::Interrupted) => {
                 println!();
@@ -1557,6 +721,867 @@ fn run_basic_mode(opts: AgentOptions<'_>) -> Result<()> {
     let _ = rl.save_history(&history_path);
 
     Ok(())
+}
+
+fn run_basic_mode_noninteractive(
+    model_hint: Option<&str>,
+    config: &mut AppConfig,
+    agent_session: &mut AgentSession,
+    voice: &mut bool,
+    system_prompt: Option<&str>,
+    rt: &tokio::runtime::Runtime,
+) -> Result<()> {
+    let mut script = String::new();
+    io::stdin().read_to_string(&mut script)?;
+
+    for raw_line in script.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let mut input = trimmed.to_string();
+        let mut input_source = MessageSource::Text;
+
+        if let Some(rest) = input.strip_prefix("/exec ") {
+            input = rest.to_string();
+        }
+
+        if let Some(outcome) = handle_basic_mode_slash_command(
+            input.clone(),
+            input_source,
+            model_hint,
+            config,
+            agent_session,
+            voice,
+            rt,
+        )? {
+            match outcome {
+                BasicModeCommandOutcome::Continue => continue,
+                BasicModeCommandOutcome::Break => return Ok(()),
+                BasicModeCommandOutcome::Submit {
+                    input: next_input,
+                    input_source: next_source,
+                } => {
+                    input = next_input;
+                    input_source = next_source;
+                }
+            }
+        }
+
+        execute_basic_mode_turn(
+            agent_session,
+            input,
+            input_source,
+            config,
+            system_prompt,
+            rt,
+        )?;
+    }
+
+    println!();
+    println!("{} {}", "✓".green(), "Session saved. Goodbye!".dimmed());
+    save_cli_session(agent_session)?;
+    Ok(())
+}
+
+fn handle_basic_mode_slash_command(
+    mut input: String,
+    mut input_source: MessageSource,
+    model_hint: Option<&str>,
+    config: &mut AppConfig,
+    agent_session: &mut AgentSession,
+    voice: &mut bool,
+    rt: &tokio::runtime::Runtime,
+) -> Result<Option<BasicModeCommandOutcome>> {
+    if !input.starts_with('/') {
+        return Ok(None);
+    }
+
+    let mut parts = input.split_whitespace();
+    let raw_cmd = parts.next().unwrap_or("").to_ascii_lowercase();
+    let cmd = catalog::canonical_command(&raw_cmd);
+    let args: Vec<&str> = parts.collect();
+
+    let outcome = match cmd {
+        "/quit" => {
+            save_cli_session(agent_session)?;
+            println!();
+            println!(
+                "{} {} {}",
+                "✓".green(),
+                "Session saved.".dimmed(),
+                "Goodbye!".cyan()
+            );
+            println!();
+            BasicModeCommandOutcome::Break
+        }
+        "/voice" => match record_voice_input(rt) {
+            Ok(text) if !text.is_empty() => {
+                println!("{} {}", "Transcribed:".cyan(), text);
+                input = text;
+                input_source = MessageSource::Voice;
+                BasicModeCommandOutcome::Submit {
+                    input,
+                    input_source,
+                }
+            }
+            Ok(_) => BasicModeCommandOutcome::Continue,
+            Err(e) => {
+                eprintln!("{}: {}", "Voice error".red(), e);
+                BasicModeCommandOutcome::Continue
+            }
+        },
+        "/help" => {
+            print_basic_mode_help();
+            BasicModeCommandOutcome::Continue
+        }
+        "/tools" => {
+            println!();
+            basic_mode_tools_command(&args, agent_session);
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/summarize" => {
+            println!();
+            summarize_session_history(agent_session);
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/memory" => {
+            println!();
+            basic_mode_memory_command(&args, agent_session);
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/clear" => {
+            print!("\x1B[2J\x1B[1;1H");
+            BasicModeCommandOutcome::Continue
+        }
+        "/save" => {
+            save_cli_session(agent_session)?;
+            println!("{} Session saved", "✓".green());
+            BasicModeCommandOutcome::Continue
+        }
+        "/history" => {
+            println!();
+            print_session_statistics(agent_session);
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/new" => {
+            save_cli_session(agent_session)?;
+            *agent_session = new_cli_session(model_hint.map(String::from))?;
+            println!();
+            println!(
+                "{} {} {}",
+                "✓".green(),
+                "New session started:".dimmed(),
+                agent_session.id
+            );
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/mcp" => {
+            println!();
+            basic_mode_mcp_command(&args);
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/a2a" => {
+            println!();
+            basic_mode_a2a_command(&args);
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/knowledge" => {
+            println!();
+            basic_mode_knowledge_command(&args, agent_session);
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/agent" => {
+            println!();
+            basic_mode_agent_command(&args, config, agent_session);
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/device" => {
+            println!();
+            basic_mode_device_command(&args, config, agent_session);
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/health" => {
+            println!();
+            basic_mode_health_command(config);
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/privacy" => {
+            println!();
+            basic_mode_privacy_command(&args);
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/listen" => {
+            println!();
+            if !*voice {
+                if !gestura_core::is_microphone_available() {
+                    println!(
+                        "{} {}",
+                        "✗".red(),
+                        "Microphone not available; cannot enable listening mode".dimmed()
+                    );
+                    *voice = false;
+                } else {
+                    *voice = true;
+                    println!(
+                        "{} {}",
+                        "🎤".green(),
+                        "Listening mode enabled (press Enter on an empty prompt to record)"
+                            .dimmed()
+                    );
+                }
+            } else {
+                *voice = false;
+                println!("{} {}", "🔇".yellow(), "Listening mode disabled".dimmed());
+            }
+
+            basic_mode_listen_command(*voice);
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/config" => {
+            println!();
+            basic_mode_config_command(&args);
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/session" => {
+            println!();
+            basic_mode_session_command(&args, agent_session);
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/context" => {
+            println!();
+            basic_mode_context_command(&args);
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/workflow" => {
+            println!();
+            if let Some(workflow_prompt) = basic_mode_workflow_command(&args) {
+                BasicModeCommandOutcome::Submit {
+                    input: workflow_prompt,
+                    input_source,
+                }
+            } else {
+                println!();
+                BasicModeCommandOutcome::Continue
+            }
+        }
+        "/init" => {
+            println!();
+            match crate::commands::init::run() {
+                Ok(()) => println!(),
+                Err(error) => println!("{} {}", "✗".red(), error),
+            }
+            BasicModeCommandOutcome::Continue
+        }
+        "/model" => {
+            println!();
+            if let Some(new_llm) = basic_mode_model_command(&args, config, agent_session) {
+                let provider = new_llm.provider.clone().unwrap_or_default();
+                let model_name = new_llm.model.clone().unwrap_or_default();
+                if !provider.trim().is_empty() && !model_name.trim().is_empty() {
+                    agent_session.state.llm_config = Some(new_llm);
+                    agent_session.model = Some(format!("{}:{}", provider, model_name));
+                    save_cli_session(agent_session)?;
+                }
+            }
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/hooks" => {
+            println!();
+            if args.is_empty() {
+                basic_mode_hooks_command(config);
+            } else {
+                let mut cfg = config.clone();
+                match slash::apply_hooks_subcommand(&args, &mut cfg) {
+                    Ok(outcome) => {
+                        let changed = outcome.changed();
+                        for line in outcome.into_lines() {
+                            println!("{line}");
+                        }
+                        if changed {
+                            if let Err(e) = cfg.save() {
+                                println!("{} Failed to save config: {}", "✗".red(), e);
+                            } else {
+                                *config = cfg;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("{} {}", "✗".red(), e);
+                        println!();
+                        if let Ok(outcome) = slash::apply_hooks_subcommand(&["help"], &mut cfg) {
+                            for line in outcome.into_lines() {
+                                println!("{line}");
+                            }
+                        }
+                    }
+                }
+            }
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/permissions" => {
+            println!();
+            if args.is_empty() {
+                basic_mode_permissions_command();
+            } else {
+                match slash::run_permissions_subcommand(&args, agent_session) {
+                    Ok(outcome) => {
+                        for line in outcome.lines {
+                            println!("{line}");
+                        }
+                        if outcome.changed_permissions {
+                            println!("{} Permissions updated.", "✓".green());
+                        }
+
+                        if outcome.session_changed
+                            && let Err(e) = save_cli_session(agent_session)
+                        {
+                            println!("{} Failed to save session: {}", "✗".red(), e);
+                        }
+                    }
+                    Err(e) => {
+                        println!("{} {}", "✗".red(), e);
+                        println!();
+                        if let Ok(outcome) =
+                            slash::run_permissions_subcommand(&["help"], agent_session)
+                        {
+                            for line in outcome.lines {
+                                println!("{line}");
+                            }
+                        }
+                    }
+                }
+            }
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/tasks" => {
+            println!();
+            if args.is_empty() {
+                basic_mode_tasks_command(agent_session, rt);
+            } else {
+                use gestura_core::tasks::TaskManager;
+
+                let task_manager =
+                    TaskManager::new(dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")));
+                match slash::run_tasks_subcommand(
+                    &args,
+                    &task_manager,
+                    &agent_session.id,
+                    agent_session.workspace_dir().map(|path| path.as_path()),
+                ) {
+                    Ok(out) => {
+                        let lines = match out.live_action {
+                            Some(act) => match slash::execute_tasks_live_action(rt, act) {
+                                Ok(lines) => lines,
+                                Err(e) => {
+                                    println!("{} {}", "✗".red(), e);
+                                    Vec::new()
+                                }
+                            },
+                            None => out.lines,
+                        };
+                        for line in lines {
+                            println!("{line}");
+                        }
+                    }
+                    Err(e) => {
+                        println!("{} {}", "✗".red(), e);
+                    }
+                }
+            }
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        "/theme" => {
+            println!();
+            basic_mode_themes_command();
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+        _ => {
+            println!();
+            println!("{} {} {}", "✗".red(), "Unknown command:".dimmed(), cmd);
+            println!(
+                "  {} /help {}",
+                "Tip:".dimmed(),
+                "for available commands".dimmed()
+            );
+            println!();
+            BasicModeCommandOutcome::Continue
+        }
+    };
+
+    Ok(Some(outcome))
+}
+
+fn execute_basic_mode_turn(
+    agent_session: &mut AgentSession,
+    input: String,
+    input_source: MessageSource,
+    config: &AppConfig,
+    system_prompt: Option<&str>,
+    rt: &tokio::runtime::Runtime,
+) -> Result<()> {
+    agent_session.add_user_message(&input, input_source);
+
+    if input.trim().starts_with("/tools") {
+        let parts: Vec<&str> = input.split_whitespace().collect();
+        println!();
+        basic_mode_tools_command(&parts[1..], agent_session);
+        println!();
+        return Ok(());
+    }
+
+    if input.trim().starts_with("/summarize") {
+        println!();
+        summarize_session_history(agent_session);
+        println!();
+        return Ok(());
+    }
+
+    let history: Vec<gestura_core::Message> = agent_session.to_pipeline_messages_limited(10);
+
+    let mut request = AgentRequest::new(&input)
+        .with_streaming(true)
+        .with_source(RequestSource::CliBasic)
+        .with_session(agent_session.id.clone())
+        .with_history(history);
+
+    if let Some(workspace) = agent_session.workspace_dir() {
+        request = request.with_workspace(workspace.clone());
+    }
+
+    if let Some(sys) = system_prompt {
+        request = request.with_system_prompt(sys.to_string());
+    }
+
+    let (config_for_pipeline, effective) =
+        llm_overrides::apply_basic_mode_session_llm_overrides(config, agent_session);
+    let provider_name = effective.provider;
+    let model_name = effective.model;
+    let (permission_level, allowed_tools) = derive_request_policy(agent_session);
+    request = request
+        .with_session_llm_config(provider_name, model_name)
+        .with_permission_level(permission_level);
+    if !allowed_tools.is_empty() {
+        request = request.with_allowed_tools(allowed_tools);
+    }
+
+    println!();
+    println!("{}", "◆".blue().bold());
+    print!("  ");
+    let _ = std::io::stdout().flush();
+
+    let session_id_for_tool_confirm = agent_session.id.clone();
+    let config_clone = config_for_pipeline;
+    let response: Result<gestura_core::AgentResponse> = rt.block_on(async move {
+        let (tx, mut rx) = mpsc::channel::<StreamChunk>(100);
+        let cancel_token = CancellationToken::new();
+        let cancel_for_task = cancel_token.clone();
+
+        let stream_task = tokio::spawn(async move {
+            let pipeline = AgentPipeline::with_provider_optimized_config(config_clone)
+                .with_knowledge(get_knowledge_store(), get_knowledge_settings());
+            pipeline
+                .process_streaming(request, tx, cancel_for_task)
+                .await
+        });
+
+        let mut saw_done = false;
+        while let Some(chunk) = rx.recv().await {
+            match chunk {
+                StreamChunk::Status { message } => {
+                    println!();
+                    println!("  {} {}", "ℹ".cyan(), message.dimmed());
+                    print!("  ");
+                    let _ = std::io::stdout().flush();
+                }
+                StreamChunk::Text(t) => {
+                    let rendered = t.replace("\n", "\n  ");
+                    print!("{rendered}");
+                    let _ = std::io::stdout().flush();
+                }
+                StreamChunk::Thinking(_) => {}
+                StreamChunk::ToolCallStart { name, .. } => {
+                    println!();
+                    println!("  {} {}", "→".cyan(), format!("tool: {name}").dimmed());
+                    print!("  ");
+                    let _ = std::io::stdout().flush();
+                }
+                StreamChunk::ToolCallEnd => {}
+                StreamChunk::ToolCallArgs(_) => {}
+                StreamChunk::ToolCallResult {
+                    name,
+                    success,
+                    output,
+                    duration_ms,
+                } => {
+                    if success {
+                        println!("  {} {} ({}ms)", "✓".green(), name.dimmed(), duration_ms);
+                        if !output.is_empty() {
+                            let formatted_output = format_tool_output(&output);
+                            println!("{}", formatted_output.dimmed());
+                        }
+                    } else {
+                        println!("  {} {} failed ({}ms):", "✗".red(), name, duration_ms);
+                        let formatted_output = format_tool_output(&output);
+                        println!("{}", formatted_output.red());
+                    }
+                    print!("  ");
+                    let _ = std::io::stdout().flush();
+                }
+                StreamChunk::RetryAttempt {
+                    attempt,
+                    max_attempts,
+                    delay_ms,
+                    error_message,
+                } => {
+                    println!();
+                    println!(
+                        "  {} Retry {}/{} in {}ms: {}",
+                        "⟳".yellow(),
+                        attempt,
+                        max_attempts,
+                        delay_ms,
+                        error_message.dimmed()
+                    );
+                    print!("  ");
+                    let _ = std::io::stdout().flush();
+                }
+                StreamChunk::ContextCompacted {
+                    messages_before,
+                    messages_after,
+                    tokens_saved,
+                    summary,
+                } => {
+                    println!();
+                    println!(
+                        "  {} Context compacted: {} → {} messages ({} tokens saved)",
+                        "📦".cyan(),
+                        messages_before,
+                        messages_after,
+                        tokens_saved
+                    );
+                    if !summary.is_empty() {
+                        println!("     {}", summary.dimmed());
+                    }
+                    print!("  ");
+                    let _ = std::io::stdout().flush();
+                }
+                StreamChunk::MemoryBankSaved {
+                    file_path,
+                    session_id,
+                    summary,
+                    messages_saved,
+                } => {
+                    println!();
+                    println!(
+                        "  {} Memory bank saved: {} messages",
+                        "💾".cyan(),
+                        messages_saved
+                    );
+                    println!("     File: {}", file_path.dimmed());
+                    if !summary.is_empty() {
+                        println!("     Summary: {}", summary.dimmed());
+                    }
+                    println!("     Session: {}", session_id.dimmed());
+                    print!("  ");
+                    let _ = std::io::stdout().flush();
+                }
+                StreamChunk::ReflectionStarted { reason } => {
+                    println!();
+                    println!(
+                        "  {} {}",
+                        "↺".magenta(),
+                        format!("reflection: {reason}").dimmed()
+                    );
+                    print!("  ");
+                    let _ = std::io::stdout().flush();
+                }
+                StreamChunk::ReflectionComplete {
+                    summary,
+                    stored,
+                    promoted,
+                } => {
+                    println!();
+                    println!(
+                        "  {} {}{}{}",
+                        "🧠".magenta(),
+                        summary.dimmed(),
+                        if stored { " · stored" } else { "" },
+                        if promoted { " · promoted" } else { "" },
+                    );
+                    print!("  ");
+                    let _ = std::io::stdout().flush();
+                }
+                StreamChunk::Done(_) => {
+                    saw_done = true;
+                    break;
+                }
+                StreamChunk::ConfigRequest { key, value, .. } => {
+                    if let Some(v) = value {
+                        println!("\n📋 Config request: {} → {}", key, v);
+                    } else {
+                        println!("\n📋 Config query: {}", key);
+                    }
+                }
+                StreamChunk::ToolConfirmationRequired {
+                    confirmation_id,
+                    tool_name,
+                    description,
+                    risk_level,
+                    category,
+                    ..
+                } => {
+                    println!();
+                    println!(
+                        "  {} Tool '{}' requires confirmation (risk {}/10, {}): {}",
+                        "⚠️".yellow(),
+                        tool_name,
+                        risk_level,
+                        category,
+                        description
+                    );
+
+                    let decision = prompt_tool_confirmation_decision();
+                    if let Err(err) = TOOL_CONFIRMATIONS.resolve_decision(
+                        &confirmation_id,
+                        Some(session_id_for_tool_confirm.as_str()),
+                        decision,
+                    ) {
+                        println!("  {} Failed to resolve confirmation: {}", "✗".red(), err);
+                    }
+
+                    print!("  ");
+                    let _ = std::io::stdout().flush();
+                }
+                StreamChunk::ToolBlocked { tool_name, reason } => {
+                    println!();
+                    println!("  {} Tool '{}' blocked: {}", "🚫".red(), tool_name, reason);
+                    print!("  ");
+                    let _ = std::io::stdout().flush();
+                }
+                StreamChunk::TokenUsageUpdate {
+                    estimated,
+                    limit,
+                    percentage,
+                    status,
+                    estimated_cost,
+                } => {
+                    let status_icon = match status {
+                        gestura_core::streaming::TokenUsageStatus::Green => "🟢",
+                        gestura_core::streaming::TokenUsageStatus::Yellow => "🟡",
+                        gestura_core::streaming::TokenUsageStatus::Red => "🔴",
+                    };
+                    println!();
+                    println!(
+                        "  {} Tokens: {}/{} ({}%) - Est. cost: ${:.4}",
+                        status_icon, estimated, limit, percentage, estimated_cost
+                    );
+                    print!("  ");
+                    let _ = std::io::stdout().flush();
+                }
+                StreamChunk::AgentLoopIteration { iteration } => {
+                    if iteration > 0 {
+                        println!();
+                        println!("  {} {}", "◆".cyan(), "Reviewing results…".dimmed());
+                        print!("  ");
+                        let _ = std::io::stdout().flush();
+                    }
+                }
+                StreamChunk::ShellOutput { data, .. } => {
+                    print!("{data}");
+                    let _ = std::io::stdout().flush();
+                }
+                StreamChunk::ShellLifecycle {
+                    state,
+                    exit_code,
+                    command,
+                    ..
+                } => {
+                    println!();
+                    let label = format!("{state:?}");
+                    if let Some(code) = exit_code {
+                        println!(
+                            "  {} shell {}: {} (exit {})",
+                            "⚙".dimmed(),
+                            label.dimmed(),
+                            command.dimmed(),
+                            code
+                        );
+                    } else {
+                        println!(
+                            "  {} shell {}: {}",
+                            "⚙".dimmed(),
+                            label.dimmed(),
+                            command.dimmed()
+                        );
+                    }
+                    print!("  ");
+                    let _ = std::io::stdout().flush();
+                }
+                StreamChunk::Paused => {
+                    println!();
+                    println!("  {} {}", "⏸".yellow(), "Session paused".dimmed());
+                    break;
+                }
+                StreamChunk::Cancelled => break,
+                StreamChunk::Error(e) => {
+                    return Err(std::io::Error::other(e).into());
+                }
+            }
+        }
+
+        let agent_response = stream_task
+            .await
+            .map_err(|e| std::io::Error::other(format!("Streaming task failed: {e}")))??;
+        if !saw_done {
+            // The channel can close without an explicit Done; still return whatever we have.
+        }
+        Ok(agent_response)
+    });
+
+    match response {
+        Ok(agent_response) => {
+            println!();
+            if let Some(usage) = &agent_response.usage {
+                println!(
+                    "  {} tokens: {} in / {} out",
+                    "ℹ".dimmed(),
+                    usage.input_tokens.to_string().dimmed(),
+                    usage.output_tokens.to_string().dimmed()
+                );
+            }
+
+            agent_session.add_assistant_message(&agent_response.content, agent_response.thinking);
+        }
+        Err(e) => {
+            println!();
+            println!("{} {} {}", "✗".red(), "Error:".red(), e);
+        }
+    }
+    println!();
+
+    if agent_session.message_count() % 5 == 0 {
+        let _ = save_cli_session(agent_session);
+    }
+
+    Ok(())
+}
+
+fn print_session_statistics(agent_session: &AgentSession) {
+    let user_msgs = agent_session
+        .state
+        .messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .count();
+    let asst_msgs = agent_session
+        .state
+        .messages
+        .iter()
+        .filter(|m| m.role == "assistant")
+        .count();
+    println!(
+        "{}",
+        "╭─ Session Statistics ─────────────────────────────────────────╮".dimmed()
+    );
+    println!(
+        "{}  {} {}",
+        "│".dimmed(),
+        "Session ID:".dimmed(),
+        agent_session.id
+    );
+    println!(
+        "{}  {} {}",
+        "│".dimmed(),
+        "Total Messages:".dimmed(),
+        agent_session.message_count()
+    );
+    println!(
+        "{}  {} {}",
+        "│".dimmed(),
+        "Your Messages:".dimmed(),
+        user_msgs
+    );
+    println!(
+        "{}  {} {}",
+        "│".dimmed(),
+        "AI Responses:".dimmed(),
+        asst_msgs
+    );
+    if let Some(workspace) = agent_session.workspace_dir() {
+        println!(
+            "{}  {} {}",
+            "│".dimmed(),
+            "Workspace:".dimmed(),
+            workspace.display()
+        );
+    }
+    println!(
+        "{}",
+        "╰───────────────────────────────────────────────────────────────╯".dimmed()
+    );
+}
+
+fn summarize_session_history(agent_session: &mut AgentSession) {
+    let history: Vec<String> = agent_session
+        .state
+        .messages
+        .iter()
+        .map(|msg| msg.content.clone())
+        .collect();
+
+    if history.is_empty() {
+        println!(
+            "{} {}",
+            "◆".yellow().bold(),
+            "No conversation history to summarize.".yellow()
+        );
+        return;
+    }
+
+    use gestura_core::context::ContextManager;
+    let context_manager = ContextManager::new();
+    let summary = context_manager.summarize_history(&history);
+
+    println!("{} {}", "◆".blue().bold(), "Conversation Summary:".blue());
+    println!();
+    println!("{summary}");
+    println!();
+    println!(
+        "{}",
+        format!("Summarized {} messages", history.len()).dimmed()
+    );
+
+    agent_session.add_assistant_message(
+        &format!(
+            "## Conversation Summary\n\n{}\n\n---\n\n*Summarized {} messages*",
+            summary,
+            history.len()
+        ),
+        Some("Summarizing conversation history (no LLM call)...".to_string()),
+    );
 }
 
 /// Record voice input and return transcribed text

@@ -1077,6 +1077,87 @@ fn test_tool_filtering_by_category() {
 }
 
 #[test]
+fn build_and_test_request_uses_session_tool_pool_without_exposing_task() {
+    use crate::context::ContextCategory;
+
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let mut analysis = crate::context::RequestAnalysis::new(
+        "I want to create a small tauri gui that says hello world. Please carefully plan and implement then build and test it.",
+    );
+    analysis.needs_tools = true;
+    analysis.confidence = 0.6;
+    analysis.categories.insert(ContextCategory::FileSystem);
+    analysis.categories.insert(ContextCategory::Code);
+    analysis.categories.insert(ContextCategory::Shell);
+    let allowed_tools = vec![
+        "a2a".to_string(),
+        "code".to_string(),
+        "file".to_string(),
+        "git".to_string(),
+        "shell".to_string(),
+        "task".to_string(),
+        "web".to_string(),
+        "web_search".to_string(),
+    ];
+
+    let tool_names: Vec<_> = pipeline
+        .get_tools_for_analysis(&analysis, &allowed_tools)
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+
+    assert!(tool_names.contains(&"file"));
+    assert!(tool_names.contains(&"code"));
+    assert!(tool_names.contains(&"shell"));
+    assert!(!tool_names.contains(&"task"));
+}
+
+#[test]
+fn analyzed_build_and_test_request_exposes_file_code_and_shell() {
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let analysis = ContextManager::new().analyze(
+        "I want to create a small tauri gui that says hello world. Please carefully plan and implement then build and test it.",
+    );
+    let allowed_tools = vec![
+        "a2a".to_string(),
+        "code".to_string(),
+        "file".to_string(),
+        "git".to_string(),
+        "shell".to_string(),
+        "task".to_string(),
+        "web".to_string(),
+        "web_search".to_string(),
+    ];
+
+    let tool_names: Vec<_> = pipeline
+        .get_tools_for_analysis(&analysis, &allowed_tools)
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+
+    assert!(tool_names.contains(&"file"));
+    assert!(tool_names.contains(&"code"));
+    assert!(tool_names.contains(&"shell"));
+    assert!(!tool_names.contains(&"task"));
+}
+
+#[test]
+fn low_confidence_fallback_stays_inside_allowed_pool() {
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let mut analysis = crate::context::RequestAnalysis::new("use some tool");
+    analysis.needs_tools = true;
+    analysis.confidence = 0.0;
+
+    let tool_names: Vec<_> = pipeline
+        .get_tools_for_analysis(&analysis, &["file".to_string(), "shell".to_string()])
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+
+    assert_eq!(tool_names, vec!["file", "shell"]);
+}
+
+#[test]
 fn test_token_estimation() {
     // Test token estimation function
     let short_text = "Hello world";

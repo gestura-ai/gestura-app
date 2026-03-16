@@ -22,6 +22,7 @@ mod tool_router;
 pub mod types;
 pub(crate) use reflection::sync_task_reflection_outcomes;
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -1662,7 +1663,8 @@ impl AgentPipeline {
     }
 
     /// Get tools relevant to the analyzed request
-    /// If allowed_tools is non-empty, only those tools are considered
+    /// If allowed_tools is non-empty, treat them as the candidate pool and still
+    /// narrow to the tools that are relevant for the analyzed request.
     fn get_tools_for_analysis(
         &self,
         analysis: &crate::context::RequestAnalysis,
@@ -1670,34 +1672,33 @@ impl AgentPipeline {
     ) -> Vec<&'static ToolDefinition> {
         use crate::context::ContextCategory;
 
+        let candidate_tools: Vec<_> = if allowed_tools.is_empty() {
+            all_tools().iter().collect()
+        } else {
+            allowed_tools
+                .iter()
+                .filter_map(|tool_name| crate::tools::registry::find_tool(tool_name))
+                .collect()
+        };
+        let candidate_names: HashSet<_> = candidate_tools.iter().map(|tool| tool.name).collect();
         let mut tools = Vec::new();
 
-        // If allowed_tools is specified, only use those (session-specific tool configuration)
-        // This ensures the LLM only sees tools that are enabled in the session settings
-        if !allowed_tools.is_empty() {
-            for tool_name in allowed_tools {
-                if let Some(t) = crate::tools::registry::find_tool(tool_name) {
-                    tools.push(t);
-                }
-            }
-
-            if self.pipeline_config.log_token_usage {
-                tracing::debug!(
-                    allowed_tools = ?allowed_tools,
-                    resolved_tools = ?tools.iter().map(|t| t.name).collect::<Vec<_>>(),
-                    "Using session-specific tool configuration"
-                );
-            }
-
-            return tools;
+        if !allowed_tools.is_empty() && self.pipeline_config.log_token_usage {
+            tracing::debug!(
+                allowed_tools = ?allowed_tools,
+                candidate_tools = ?candidate_tools.iter().map(|t| t.name).collect::<Vec<_>>(),
+                "Using session-specific tool configuration as candidate pool"
+            );
         }
 
         // If the pre-flight LLM router already chose tools, use that selection
-        // directly (skipping the category map entirely for this request).
+        // directly (skipping the category map entirely for this request), but keep
+        // the selection inside the candidate pool.
         if !analysis.suggested_tools.is_empty() {
             let resolved: Vec<_> = analysis
                 .suggested_tools
                 .iter()
+                .filter(|name| candidate_names.contains(name.as_str()))
                 .filter_map(|name| crate::tools::registry::find_tool(name))
                 .collect();
 
@@ -1713,71 +1714,35 @@ impl AgentPipeline {
             }
         }
 
-        // Otherwise, filter by category (legacy behavior when no session tool settings exist)
+        let mut push_if_allowed = |tool_name: &str| {
+            if candidate_names.contains(tool_name)
+                && let Some(tool) = crate::tools::registry::find_tool(tool_name)
+            {
+                tools.push(tool);
+            }
+        };
+
+        // Otherwise, filter the candidate pool by category.
         for category in &analysis.categories {
             match category {
-                ContextCategory::FileSystem => {
-                    if let Some(t) = crate::tools::registry::find_tool("file") {
-                        tools.push(t);
-                    }
-                }
-                ContextCategory::Shell => {
-                    if let Some(t) = crate::tools::registry::find_tool("shell") {
-                        tools.push(t);
-                    }
-                }
-                ContextCategory::Git => {
-                    if let Some(t) = crate::tools::registry::find_tool("git") {
-                        tools.push(t);
-                    }
-                }
-                ContextCategory::Code => {
-                    if let Some(t) = crate::tools::registry::find_tool("code") {
-                        tools.push(t);
-                    }
-                }
+                ContextCategory::FileSystem => push_if_allowed("file"),
+                ContextCategory::Shell => push_if_allowed("shell"),
+                ContextCategory::Git => push_if_allowed("git"),
+                ContextCategory::Code => push_if_allowed("code"),
                 ContextCategory::Web => {
-                    if let Some(t) = crate::tools::registry::find_tool("web") {
-                        tools.push(t);
-                    }
+                    push_if_allowed("web");
                     // Also include web_search for search-related queries
-                    if let Some(t) = crate::tools::registry::find_tool("web_search") {
-                        tools.push(t);
-                    }
+                    push_if_allowed("web_search");
                 }
                 ContextCategory::Screen => {
-                    if let Some(t) = crate::tools::registry::find_tool("screenshot") {
-                        tools.push(t);
-                    }
-                    if let Some(t) = crate::tools::registry::find_tool("screen_record") {
-                        tools.push(t);
-                    }
+                    push_if_allowed("screenshot");
+                    push_if_allowed("screen_record");
                 }
-                ContextCategory::Agent => {
-                    if let Some(t) = crate::tools::registry::find_tool("a2a") {
-                        tools.push(t);
-                    }
-                }
-                ContextCategory::Mcp => {
-                    if let Some(t) = crate::tools::registry::find_tool("mcp") {
-                        tools.push(t);
-                    }
-                }
-                ContextCategory::A2a => {
-                    if let Some(t) = crate::tools::registry::find_tool("a2a") {
-                        tools.push(t);
-                    }
-                }
-                ContextCategory::Task => {
-                    if let Some(t) = crate::tools::registry::find_tool("task") {
-                        tools.push(t);
-                    }
-                }
-                ContextCategory::Tools => {
-                    if let Some(t) = crate::tools::registry::find_tool("permissions") {
-                        tools.push(t);
-                    }
-                }
+                ContextCategory::Agent => push_if_allowed("a2a"),
+                ContextCategory::Mcp => push_if_allowed("mcp"),
+                ContextCategory::A2a => push_if_allowed("a2a"),
+                ContextCategory::Task => push_if_allowed("task"),
+                ContextCategory::Tools => push_if_allowed("permissions"),
                 ContextCategory::Voice
                 | ContextCategory::Config
                 | ContextCategory::Session
@@ -1786,16 +1751,18 @@ impl AgentPipeline {
         }
 
         // If no specific tools found, or confidence is too low to trust the category match,
-        // fall back to all tools so the LLM can make the correct selection itself.
+        // fall back to the entire candidate pool so the LLM can make the correct selection
+        // without seeing disabled or irrelevant session tools.
         // confidence < 0.2 means only a single weak keyword fired — not reliable enough to
         // narrow the tool set, and risks silently excluding the right tool.
         if analysis.needs_tools && (tools.is_empty() || analysis.confidence < 0.2) {
-            tools = all_tools().iter().collect();
+            tools = candidate_tools;
 
             if self.pipeline_config.log_token_usage {
                 tracing::debug!(
                     confidence = analysis.confidence,
-                    "Using all-tools fallback (no category match or confidence too low)"
+                    candidate_tools = ?tools.iter().map(|t| t.name).collect::<Vec<_>>(),
+                    "Using candidate-pool fallback (no category match or confidence too low)"
                 );
             }
         }

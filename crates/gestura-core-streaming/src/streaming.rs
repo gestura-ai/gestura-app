@@ -8,6 +8,7 @@ use futures_util::StreamExt;
 use gestura_core_foundation::AppError;
 use gestura_core_llm::TokenUsage;
 use gestura_core_tools::schemas::ProviderToolSchemas;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
@@ -712,6 +713,80 @@ fn build_openai_request_body(
     body
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PendingOpenAiToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+fn merge_openai_tool_call_delta(
+    pending: &mut BTreeMap<usize, PendingOpenAiToolCall>,
+    call: &serde_json::Value,
+    fallback_index: usize,
+) {
+    let index = call
+        .get("index")
+        .and_then(|value| value.as_u64())
+        .map(|value| value as usize)
+        .unwrap_or(fallback_index);
+
+    let entry = pending.entry(index).or_default();
+
+    if let Some(id) = call["id"].as_str()
+        && !id.is_empty()
+    {
+        entry.id = id.to_string();
+    }
+
+    if let Some(name) = call["function"]["name"].as_str()
+        && !name.is_empty()
+    {
+        entry.name = name.to_string();
+    }
+
+    if let Some(arguments) = call["function"]["arguments"].as_str()
+        && !arguments.is_empty()
+    {
+        entry.arguments.push_str(arguments);
+    }
+}
+
+fn take_openai_tool_calls(
+    pending: &mut BTreeMap<usize, PendingOpenAiToolCall>,
+) -> Vec<(usize, PendingOpenAiToolCall)> {
+    std::mem::take(pending)
+        .into_iter()
+        .filter(|(_, call)| !call.name.is_empty())
+        .collect()
+}
+
+async fn emit_openai_tool_calls(
+    tx: &mpsc::Sender<StreamChunk>,
+    pending: &mut BTreeMap<usize, PendingOpenAiToolCall>,
+) {
+    for (index, call) in take_openai_tool_calls(pending) {
+        let id = if call.id.is_empty() {
+            format!("openai-tool-{index}")
+        } else {
+            call.id
+        };
+
+        let _ = tx
+            .send(StreamChunk::ToolCallStart {
+                id,
+                name: call.name,
+            })
+            .await;
+
+        if !call.arguments.is_empty() {
+            let _ = tx.send(StreamChunk::ToolCallArgs(call.arguments)).await;
+        }
+
+        let _ = tx.send(StreamChunk::ToolCallEnd).await;
+    }
+}
+
 pub async fn stream_openai(
     api_key: &str,
     base_url: &str,
@@ -742,10 +817,12 @@ pub async fn stream_openai(
     let mut stream = response.bytes_stream();
     let mut parser = ThinkingParser::new();
     let mut line_buffer = String::new();
-    // Track whether we have an active (in-flight) tool call so we can emit
-    // `ToolCallEnd` before the next `ToolCallStart` when the model makes
-    // multiple concurrent tool calls in a single response.
-    let mut in_tool_call = false;
+    // OpenAI-compatible providers may stream multiple tool calls concurrently,
+    // identifying each call by `index` and interleaving argument fragments
+    // across SSE events. Buffer them until the provider signals the end of the
+    // tool-call block, then emit complete Start/Args/End sequences in index
+    // order so downstream consumers never merge fragments from different calls.
+    let mut pending_tool_calls = BTreeMap::<usize, PendingOpenAiToolCall>::new();
 
     while let Some(chunk_result) = stream.next().await {
         if cancel_token.is_cancelled() {
@@ -761,10 +838,7 @@ pub async fn stream_openai(
                         continue;
                     };
                     if data == "[DONE]" {
-                        // If a tool call was in flight, close it before signalling done.
-                        if in_tool_call {
-                            let _ = tx.send(StreamChunk::ToolCallEnd).await;
-                        }
+                        emit_openai_tool_calls(&tx, &mut pending_tool_calls).await;
                         let _ = tx.send(StreamChunk::Done(None)).await;
                         return Ok(());
                     }
@@ -783,44 +857,20 @@ pub async fn stream_openai(
                         if let Some(tool_calls) =
                             json["choices"][0]["delta"]["tool_calls"].as_array()
                         {
-                            for call in tool_calls {
-                                // OpenAI-compatible streaming may send `id`, `name`, and a first
-                                // `arguments` fragment in the same delta. Subsequent deltas often
-                                // omit `id` and stream only `arguments`.
-                                let id = call["id"].as_str();
-                                let name = call["function"]["name"].as_str();
-                                let args = call["function"]["arguments"].as_str();
-
-                                if let (Some(id), Some(name)) = (id, name) {
-                                    // Close previous tool call before starting a new one.
-                                    if in_tool_call {
-                                        let _ = tx.send(StreamChunk::ToolCallEnd).await;
-                                    }
-                                    let _ = tx
-                                        .send(StreamChunk::ToolCallStart {
-                                            id: id.to_string(),
-                                            name: name.to_string(),
-                                        })
-                                        .await;
-                                    in_tool_call = true;
-                                }
-
-                                if let Some(args) = args
-                                    && !args.is_empty()
-                                {
-                                    let _ =
-                                        tx.send(StreamChunk::ToolCallArgs(args.to_string())).await;
-                                }
+                            for (fallback_index, call) in tool_calls.iter().enumerate() {
+                                merge_openai_tool_call_delta(
+                                    &mut pending_tool_calls,
+                                    call,
+                                    fallback_index,
+                                );
                             }
                         }
 
-                        // Handle finish reason — close the final tool call.
+                        // Handle finish reason — emit each complete tool call in order.
                         if let Some(finish_reason) = json["choices"][0]["finish_reason"].as_str()
                             && finish_reason == "tool_calls"
-                            && in_tool_call
                         {
-                            let _ = tx.send(StreamChunk::ToolCallEnd).await;
-                            in_tool_call = false;
+                            emit_openai_tool_calls(&tx, &mut pending_tool_calls).await;
                         }
                     }
                 }
@@ -1818,6 +1868,108 @@ mod tests {
     fn openai_body_omits_temperature() {
         let body = build_openai_request_body("gpt-test", "hi", None);
         assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn openai_tool_call_deltas_are_assembled_by_index() {
+        let mut pending = BTreeMap::new();
+
+        merge_openai_tool_call_delta(
+            &mut pending,
+            &serde_json::json!({
+                "index": 0,
+                "id": "call_0",
+                "function": {"name": "task", "arguments": "{\"operation\":\"update_status\",\"task_id\":\"abc"}
+            }),
+            0,
+        );
+        merge_openai_tool_call_delta(
+            &mut pending,
+            &serde_json::json!({
+                "index": 1,
+                "id": "call_1",
+                "function": {"name": "shell", "arguments": "{\"command\":\"cargo check"}
+            }),
+            1,
+        );
+        merge_openai_tool_call_delta(
+            &mut pending,
+            &serde_json::json!({
+                "index": 0,
+                "function": {"arguments": "\",\"status\":\"completed\"}"}
+            }),
+            0,
+        );
+        merge_openai_tool_call_delta(
+            &mut pending,
+            &serde_json::json!({
+                "index": 1,
+                "function": {"arguments": "\",\"timeout_secs\":300}"}
+            }),
+            1,
+        );
+
+        let calls = take_openai_tool_calls(&mut pending);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, 0);
+        assert_eq!(calls[0].1.id, "call_0");
+        assert_eq!(calls[0].1.name, "task");
+        assert_eq!(
+            calls[0].1.arguments,
+            "{\"operation\":\"update_status\",\"task_id\":\"abc\",\"status\":\"completed\"}"
+        );
+        assert_eq!(calls[1].0, 1);
+        assert_eq!(calls[1].1.id, "call_1");
+        assert_eq!(calls[1].1.name, "shell");
+        assert_eq!(
+            calls[1].1.arguments,
+            "{\"command\":\"cargo check\",\"timeout_secs\":300}"
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn emit_openai_tool_calls_streams_complete_calls_in_index_order() {
+        let (tx, mut rx) = mpsc::channel(10);
+        let mut pending = BTreeMap::new();
+        pending.insert(
+            1,
+            PendingOpenAiToolCall {
+                id: "call_1".to_string(),
+                name: "shell".to_string(),
+                arguments: "{\"command\":\"pwd\"}".to_string(),
+            },
+        );
+        pending.insert(
+            0,
+            PendingOpenAiToolCall {
+                id: "call_0".to_string(),
+                name: "file".to_string(),
+                arguments: "{\"operation\":\"list\"}".to_string(),
+            },
+        );
+
+        emit_openai_tool_calls(&tx, &mut pending).await;
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(StreamChunk::ToolCallStart { id, name }) if id == "call_0" && name == "file"
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(StreamChunk::ToolCallArgs(args)) if args == "{\"operation\":\"list\"}"
+        ));
+        assert!(matches!(rx.recv().await, Some(StreamChunk::ToolCallEnd)));
+        assert!(matches!(
+            rx.recv().await,
+            Some(StreamChunk::ToolCallStart { id, name }) if id == "call_1" && name == "shell"
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(StreamChunk::ToolCallArgs(args)) if args == "{\"command\":\"pwd\"}"
+        ));
+        assert!(matches!(rx.recv().await, Some(StreamChunk::ToolCallEnd)));
+        assert!(pending.is_empty());
     }
 
     #[test]

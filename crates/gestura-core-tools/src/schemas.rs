@@ -49,7 +49,7 @@ pub fn build_provider_tool_schemas(tools: &[&'static ToolDefinition]) -> Provide
 }
 
 fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
-    // Keep schemas small but precise; avoid huge `oneOf` trees.
+    // Keep schemas precise enough that models can infer required call shapes reliably.
     let (description, input_schema) = match name {
         "shell" => (
             summary,
@@ -124,6 +124,56 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                         "description": "Ending line number for partial file read (optional, for read operation, 1-based, inclusive)"
                     }
                 },
+                "oneOf": [
+                    {
+                        "description": "Read a file. REQUIRED fields: `operation`, `path`.",
+                        "properties": {
+                            "operation": { "enum": ["read"] }
+                        },
+                        "required": ["operation", "path"]
+                    },
+                    {
+                        "description": "Write a full file. REQUIRED fields: `operation`, `path`, `content`. Do not use `write` for partial replacements.",
+                        "properties": {
+                            "operation": { "enum": ["write"] }
+                        },
+                        "required": ["operation", "path", "content"]
+                    },
+                    {
+                        "description": "Edit part of an existing file. REQUIRED fields: `operation`, `path`, `old`, `new`.",
+                        "properties": {
+                            "operation": { "enum": ["edit"] }
+                        },
+                        "required": ["operation", "path", "old", "new"]
+                    },
+                    {
+                        "description": "List directory contents. REQUIRED field: `operation`. `path` defaults to '.'.",
+                        "properties": {
+                            "operation": { "enum": ["list"] }
+                        },
+                        "required": ["operation"]
+                    },
+                    {
+                        "description": "Show a directory tree. REQUIRED field: `operation`. `path` defaults to '.'.",
+                        "properties": {
+                            "operation": { "enum": ["tree"] }
+                        },
+                        "required": ["operation"]
+                    },
+                    {
+                        "description": "Search for text in files. REQUIRED fields: `operation`, `path`, `pattern`.",
+                        "properties": {
+                            "operation": { "enum": ["search"] }
+                        },
+                        "required": ["operation", "path", "pattern"]
+                    }
+                ],
+                "examples": [
+                    {"operation": "read", "path": "src/index.html"},
+                    {"operation": "write", "path": "src/index.html", "content": "<h1>Hello World</h1>\n"},
+                    {"operation": "edit", "path": "src/index.html", "old": "<h1>Hello</h1>", "new": "<h1>Hello World</h1>"},
+                    {"operation": "search", "path": "src", "pattern": "Hello World"}
+                ],
                 "required": ["operation"],
                 "additionalProperties": true
             }),
@@ -266,6 +316,43 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                         "description": "Test name filter for cargo test (test operation only)."
                     }
                 },
+                "oneOf": [
+                    {
+                        "properties": { "operation": { "enum": ["stats", "map", "deps", "lint", "test"] } },
+                        "required": ["operation"]
+                    },
+                    {
+                        "description": "Extract symbols or an outline from a single file. REQUIRED fields: `operation`, `path`.",
+                        "properties": { "operation": { "enum": ["symbols", "outline"] } },
+                        "required": ["operation", "path"]
+                    },
+                    {
+                        "description": "Find references or a definition for a symbol. REQUIRED fields: `operation`, `symbol`.",
+                        "properties": { "operation": { "enum": ["references", "definition"] } },
+                        "required": ["operation", "symbol"]
+                    },
+                    {
+                        "description": "Find files matching a glob or grep pattern. REQUIRED fields: `operation`, `pattern`.",
+                        "properties": { "operation": { "enum": ["glob", "grep"] } },
+                        "required": ["operation", "pattern"]
+                    },
+                    {
+                        "description": "Read multiple files in one call. REQUIRED fields: `operation`, `paths`.",
+                        "properties": { "operation": { "enum": ["batch_read"] } },
+                        "required": ["operation", "paths"]
+                    },
+                    {
+                        "description": "Apply one or more exact string replacements. REQUIRED fields: `operation`, `edits`. `edits` must be an array even for one change. Each edit requires `path`, `old_str`, and `new_str`.",
+                        "properties": { "operation": { "enum": ["batch_edit"] } },
+                        "required": ["operation", "edits"]
+                    }
+                ],
+                "examples": [
+                    {"operation": "batch_read", "paths": ["src/main.rs", "src/lib.rs"]},
+                    {"operation": "batch_edit", "edits": [{"path": "src/index.html", "old_str": "<h1>Hello</h1>", "new_str": "<h1>Hello World</h1>"}]},
+                    {"operation": "grep", "pattern": "Hello World", "path": ".", "max_results": 20},
+                    {"operation": "test", "path": ".", "filter": "hello_world"}
+                ],
                 "required": ["operation"],
                 "additionalProperties": false
             }),
@@ -669,6 +756,68 @@ mod tests {
             example["operation"] == "update_status"
                 && example["task_id"] == "abc123"
                 && example["status"] == "inprogress"
+        }));
+    }
+
+    #[test]
+    fn file_schema_requires_content_for_write_operation() {
+        let file = find_tool("file").unwrap();
+        let schemas = build_provider_tool_schemas(&[file]);
+
+        let branches = schemas.openai[0]["function"]["parameters"]["oneOf"]
+            .as_array()
+            .expect("file schema should define oneOf branches");
+        let write_branch = branches
+            .iter()
+            .find(|branch| branch["properties"]["operation"]["enum"][0] == "write")
+            .expect("missing write branch");
+        let required = write_branch["required"]
+            .as_array()
+            .expect("write branch should have required fields");
+
+        assert!(required.iter().any(|value| value == "path"));
+        assert!(required.iter().any(|value| value == "content"));
+
+        let examples = schemas.openai[0]["function"]["parameters"]["examples"]
+            .as_array()
+            .expect("file schema should include examples");
+        assert!(examples.iter().any(|example| {
+            example["operation"] == "write"
+                && example["path"] == "src/index.html"
+                && example["content"].is_string()
+        }));
+    }
+
+    #[test]
+    fn code_schema_requires_edits_for_batch_edit_operation() {
+        let code = find_tool("code").unwrap();
+        let schemas = build_provider_tool_schemas(&[code]);
+
+        let branches = schemas.openai[0]["function"]["parameters"]["oneOf"]
+            .as_array()
+            .expect("code schema should define oneOf branches");
+        let batch_edit_branch = branches
+            .iter()
+            .find(|branch| branch["properties"]["operation"]["enum"][0] == "batch_edit")
+            .expect("missing batch_edit branch");
+        let required = batch_edit_branch["required"]
+            .as_array()
+            .expect("batch_edit branch should have required fields");
+
+        assert!(required.iter().any(|value| value == "edits"));
+
+        let description = batch_edit_branch["description"]
+            .as_str()
+            .expect("batch_edit branch description should exist");
+        assert!(description.contains("`edits` must be an array even for one change"));
+
+        let examples = schemas.openai[0]["function"]["parameters"]["examples"]
+            .as_array()
+            .expect("code schema should include examples");
+        assert!(examples.iter().any(|example| {
+            example["operation"] == "batch_edit"
+                && example["edits"].is_array()
+                && example["edits"][0]["old_str"].is_string()
         }));
     }
 }
