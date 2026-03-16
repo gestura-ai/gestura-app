@@ -3435,6 +3435,51 @@
 
                     <div class="subsection">
                         <div class="subsection-title">
+                            <span class="icon icon-chart"></span>Observability &amp; Tracing
+                        </div>
+
+                        <div class="checkbox-group">
+                            <input type="checkbox" class="form-checkbox" id="enableAgentTelemetry"
+                                name="agent_telemetry_enabled">
+                            <div class="checkbox-label">
+                                Enable agent loop telemetry
+                                <div class="checkbox-description">Capture request telemetry across routing, context
+                                    resolution, compaction, tool calls, and reflection.</div>
+                            </div>
+                        </div>
+
+                        <div class="checkbox-group">
+                            <input type="checkbox" class="form-checkbox" id="enableOtlpTraceExport"
+                                name="otlp_trace_export_enabled">
+                            <div class="checkbox-label">
+                                Export traces via OpenTelemetry (OTLP)
+                                <div class="checkbox-description">Send correlated request traces to a local or remote
+                                    collector such as SigNoz, Grafana Alloy, or the OpenTelemetry Collector.</div>
+                            </div>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label" for="otlpTraceProtocol">OTLP Transport</label>
+                                <select class="form-select" id="otlpTraceProtocol" name="otlp_trace_protocol">
+                                    <option value="grpc">OTLP/gRPC</option>
+                                    <option value="http">OTLP/HTTP</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label" for="otlpTraceEndpoint">Collector Endpoint</label>
+                                <input type="text" class="form-input" id="otlpTraceEndpoint" name="otlp_trace_endpoint"
+                                    placeholder="http://127.0.0.1:4317">
+                            </div>
+                        </div>
+
+                        <div class="help-text">Use <code>:4317</code> for OTLP/gRPC or <code>:4318/v1/traces</code>
+                            for OTLP/HTTP unless your collector specifies a custom endpoint.</div>
+                    </div>
+
+                    <div class="subsection">
+                        <div class="subsection-title">
                             <span class="icon icon-monitor"></span>User Interface
                         </div>
 
@@ -3543,6 +3588,10 @@
         const configForm = document.getElementById('configForm');
         const tocLinks = document.querySelectorAll('.toc-link');
         const configSections = document.querySelectorAll('.config-section');
+        const OTLP_DEFAULT_ENDPOINTS = {
+            http: 'http://127.0.0.1:4318/v1/traces',
+            grpc: 'http://127.0.0.1:4317',
+        };
 
         // =====================================================================
         // LLM model selection caching
@@ -4792,6 +4841,28 @@
 
             // Setup MCP transport field visibility
             setupMcpTransportVisibility();
+
+            // Setup OpenTelemetry trace export defaults
+            setupTelemetryConfigBehavior();
+        }
+
+        function setupTelemetryConfigBehavior() {
+            const protocolSelect = document.getElementById('otlpTraceProtocol');
+            const endpointInput = document.getElementById('otlpTraceEndpoint');
+            if (!protocolSelect || !endpointInput) return;
+
+            const updateTraceEndpointDefault = () => {
+                const endpoint = (endpointInput.value || '').trim();
+                const followsKnownDefault = endpoint.length === 0 || Object.values(OTLP_DEFAULT_ENDPOINTS).includes(endpoint);
+                if (!followsKnownDefault) return;
+
+                endpointInput.value = OTLP_DEFAULT_ENDPOINTS[protocolSelect.value] || OTLP_DEFAULT_ENDPOINTS.grpc;
+            };
+
+            if (protocolSelect.dataset.telemetryListenerAttached !== 'true') {
+                protocolSelect.addEventListener('change', updateTraceEndpointDefault);
+                protocolSelect.dataset.telemetryListenerAttached = 'true';
+            }
         }
 
         // Handle STT provider configuration visibility
@@ -5476,6 +5547,27 @@
                 document.getElementById('debugMode').checked = false;
                 document.getElementById('devTools').checked = false;
 
+                const pipelineConfig = backendConfig?.pipeline;
+                const agentTelemetryConfig = pipelineConfig?.agent_telemetry;
+                const traceExportConfig = agentTelemetryConfig?.trace_export;
+                const otlpProtocol = traceExportConfig?.protocol || 'grpc';
+                const enableAgentTelemetryEl = document.getElementById('enableAgentTelemetry');
+                if (enableAgentTelemetryEl) {
+                    enableAgentTelemetryEl.checked = agentTelemetryConfig?.enabled === true;
+                }
+                const enableOtlpTraceExportEl = document.getElementById('enableOtlpTraceExport');
+                if (enableOtlpTraceExportEl) {
+                    enableOtlpTraceExportEl.checked = traceExportConfig?.enabled === true;
+                }
+                const otlpTraceProtocolEl = document.getElementById('otlpTraceProtocol');
+                if (otlpTraceProtocolEl) {
+                    otlpTraceProtocolEl.value = otlpProtocol;
+                }
+                const otlpTraceEndpointEl = document.getElementById('otlpTraceEndpoint');
+                if (otlpTraceEndpointEl) {
+                    otlpTraceEndpointEl.value = traceExportConfig?.endpoint || OTLP_DEFAULT_ENDPOINTS[otlpProtocol] || OTLP_DEFAULT_ENDPOINTS.grpc;
+                }
+
                 // UI Settings (load from backend config if available)
                 const uiConfig = backendConfig?.ui;
                 const themeModeSelect = document.getElementById('themeMode');
@@ -5894,6 +5986,16 @@
                         ...prevEnabled,
                         ...computeDefaultEnabledToolsFromUi(),
                     };
+
+                    currentConfig.pipeline = currentConfig.pipeline || {};
+                    currentConfig.pipeline.agent_telemetry = currentConfig.pipeline.agent_telemetry || {};
+                    currentConfig.pipeline.agent_telemetry.enabled = document.getElementById('enableAgentTelemetry')?.checked === true;
+                    currentConfig.pipeline.agent_telemetry.trace_export = currentConfig.pipeline.agent_telemetry.trace_export || {};
+                    const otlpProtocol = document.getElementById('otlpTraceProtocol')?.value === 'http' ? 'http' : 'grpc';
+                    currentConfig.pipeline.agent_telemetry.trace_export.enabled = document.getElementById('enableOtlpTraceExport')?.checked === true;
+                    currentConfig.pipeline.agent_telemetry.trace_export.protocol = otlpProtocol;
+                    const otlpEndpoint = (document.getElementById('otlpTraceEndpoint')?.value || '').trim();
+                    currentConfig.pipeline.agent_telemetry.trace_export.endpoint = otlpEndpoint || OTLP_DEFAULT_ENDPOINTS[otlpProtocol];
 
                     // Save the updated config
                     await window.__TAURI__.core.invoke('save_config', { cfg: currentConfig });

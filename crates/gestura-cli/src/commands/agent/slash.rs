@@ -930,6 +930,10 @@ const FEATURED_CONFIG_KEYS: &[&str] = &[
     "pipeline.compaction_strategy",
     "pipeline.max_context_tokens",
     "pipeline.log_token_usage",
+    "pipeline.agent_telemetry.enabled",
+    "pipeline.agent_telemetry.trace_export.enabled",
+    "pipeline.agent_telemetry.trace_export.protocol",
+    "pipeline.agent_telemetry.trace_export.endpoint",
 ];
 
 pub(crate) fn config_lookup_value(config: &AppConfig, key: &str) -> Option<String> {
@@ -5227,6 +5231,8 @@ mod tests {
 
         assert!(list.contains("Configuration"));
         assert!(list.contains("llm.primary"));
+        assert!(list.contains("pipeline.agent_telemetry.enabled"));
+        assert!(list.contains("pipeline.agent_telemetry.trace_export.endpoint"));
         assert!(list.contains("Config file:"));
         assert!(keys.contains("Available Config Keys"));
         assert!(keys.contains("llm.primary"));

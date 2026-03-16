@@ -2,6 +2,7 @@
 
 use super::Result;
 use colored::Colorize;
+use gestura_core::config::AgentTelemetryTraceExportProtocol;
 use gestura_core::{
     AgentPipeline, AgentRequest, AppConfig, AppConfigSecurityExt, AudioCaptureConfig,
     CancellationToken, PermissionLevel, RequestSource, SessionToolSettings, SpeechProcessorCoreExt,
@@ -3501,6 +3502,34 @@ fn basic_mode_set_config_value(config: &mut AppConfig, key: &str, value: &str) -
                 false
             }
         }
+        "pipeline.agent_telemetry.enabled" => {
+            if let Ok(val) = value.parse::<bool>() {
+                config.pipeline.agent_telemetry.enabled = val;
+                true
+            } else {
+                false
+            }
+        }
+        "pipeline.agent_telemetry.trace_export.enabled" => {
+            if let Ok(val) = value.parse::<bool>() {
+                config.pipeline.agent_telemetry.trace_export.enabled = val;
+                true
+            } else {
+                false
+            }
+        }
+        "pipeline.agent_telemetry.trace_export.protocol" => {
+            if let Some(protocol) = AgentTelemetryTraceExportProtocol::parse(value) {
+                config.pipeline.agent_telemetry.trace_export.protocol = protocol;
+                true
+            } else {
+                false
+            }
+        }
+        "pipeline.agent_telemetry.trace_export.endpoint" => {
+            config.pipeline.agent_telemetry.trace_export.endpoint = value.to_string();
+            true
+        }
         "llm.openai.api_key" => {
             config.llm.openai.get_or_insert(Default::default()).api_key = value.to_string();
             true
@@ -3518,6 +3547,54 @@ fn basic_mode_set_config_value(config: &mut AppConfig, key: &str, value: &str) -
             true
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::basic_mode_set_config_value;
+    use gestura_core::AppConfig;
+
+    #[test]
+    fn basic_mode_set_config_value_supports_agent_telemetry_fields() {
+        let mut config = AppConfig::default();
+
+        assert!(basic_mode_set_config_value(
+            &mut config,
+            "pipeline.agent_telemetry.enabled",
+            "true"
+        ));
+        assert!(basic_mode_set_config_value(
+            &mut config,
+            "pipeline.agent_telemetry.trace_export.enabled",
+            "true"
+        ));
+        assert!(basic_mode_set_config_value(
+            &mut config,
+            "pipeline.agent_telemetry.trace_export.protocol",
+            "http"
+        ));
+        assert!(basic_mode_set_config_value(
+            &mut config,
+            "pipeline.agent_telemetry.trace_export.endpoint",
+            "http://127.0.0.1:4318/v1/traces"
+        ));
+
+        assert!(config.pipeline.agent_telemetry.enabled);
+        assert!(config.pipeline.agent_telemetry.trace_export.enabled);
+        assert_eq!(
+            config
+                .pipeline
+                .agent_telemetry
+                .trace_export
+                .protocol
+                .as_str(),
+            "http"
+        );
+        assert_eq!(
+            config.pipeline.agent_telemetry.trace_export.endpoint,
+            "http://127.0.0.1:4318/v1/traces"
+        );
     }
 }
 
