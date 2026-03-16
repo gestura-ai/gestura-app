@@ -1,0 +1,39 @@
+.hello-world-panel {
+  flex: 1 1 auto;
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  background:
+    radial-gradient(circle at top, rgba(var(--accent-rgb), 0.12), transparent 40%),
+    var(--background);
+}
+
+.hello-world-card {
+  width: min(100%, 32rem);
+  padding: 2.5rem;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.14);
+  text-align: center;
+}
+
+.hello-world-eyebrow {
+  margin-bottom: 0.75rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.hello-world-card h2 {
+  margin-bottom: 0.75rem;
+  font-size: clamp(2rem, 4vw, 3rem);
+  line-height: 1.1;
+}
+
+.hello-world-copy {
+  color: var(--text-secondary);
+  font-size: 1rem;
+}

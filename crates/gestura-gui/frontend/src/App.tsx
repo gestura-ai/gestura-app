@@ -12,6 +12,7 @@ import HelpSystem from './shared/components/HelpSystem';
 import SimulatorPanel from './features/simulator/SimulatorPanel';
 import McpPanel from './features/mcp/McpPanel';
 import MemoryConsolePanel from './features/memory/components/MemoryConsolePanel';
+import HelloWorldPanel from './features/hello/HelloWorldPanel';
 import { AppConfig, UiSettings } from './types/config';
 import { getConfig, saveConfig, setUiPrefs } from './services/tauri/config';
 import { useKeyboardShortcuts } from './shared/hooks/useKeyboardShortcuts';
@@ -22,9 +23,8 @@ import { ONBOARDING_COMPLETED_KEY } from './shared/constants/storageKeys';
 
 function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
-  // The legacy agent UI (React AgentPanel) has been removed.
-  // Default the main window to voice-related functionality.
-  const [activePanel, setActivePanel] = useState('voice');
+  // Keep the main window simple for this branch: boot into a minimal Hello World GUI.
+  const [activePanel, setActivePanel] = useState('hello');
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -153,6 +153,12 @@ function App() {
         <div className="sidebar">
           <nav>
             <button
+              className={`btn ${activePanel === 'hello' ? '' : 'btn-secondary'}`}
+              onClick={() => setActivePanel('hello')}
+            >
+              👋 Hello
+            </button>
+            <button
               className={`btn ${activePanel === 'voice' ? '' : 'btn-secondary'}`}
               onClick={() => setActivePanel('voice')}
             >
@@ -204,6 +210,9 @@ function App() {
         </div>
 
         <div className="content">
+          {activePanel === 'hello' && (
+            <HelloWorldPanel />
+          )}
           {activePanel === 'tools' && (
             <ToolsPanel />
           )}
