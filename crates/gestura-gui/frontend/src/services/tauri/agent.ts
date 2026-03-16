@@ -25,11 +25,19 @@ export const sendMessageStreaming = (args: SendMessageArgs): Promise<void> =>
 export const cancelStreaming = (sessionId: string): Promise<void> =>
   invokeTauri('cancel_agent_streaming', { session_id: sessionId });
 
+export const pauseStreaming = (sessionId: string): Promise<void> =>
+  invokeTauri('pause_agent_streaming', { session_id: sessionId });
+
+export const resumeStreaming = (sessionId: string): Promise<void> =>
+  invokeTauri('resume_agent_streaming', { session_id: sessionId });
+
 // ─── Session history ──────────────────────────────────────────────────────────
 
 export interface HistoryMessage {
   role: string;
   content: string;
+  thinking?: string | null;
+  timestamp?: string;
 }
 
 export interface MemoryConsoleSessionSummary {
@@ -210,6 +218,9 @@ export interface UpdateMemoryEntryRequest {
 
 export const getSessionHistory = (sessionId: string): Promise<HistoryMessage[]> =>
   invokeTauri('get_session_history', { session_id: sessionId });
+
+export const hasSessionPausedExecution = (sessionId: string): Promise<boolean> =>
+  invokeTauri('has_session_paused_execution', { session_id: sessionId });
 
 export const getMemoryConsoleSessions = (limit = 12): Promise<MemoryConsoleSessionSummary[]> =>
   invokeTauri('get_memory_console_sessions', { limit });

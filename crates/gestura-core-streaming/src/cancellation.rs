@@ -55,6 +55,22 @@ impl StreamCancellationRegistry {
         }
     }
 
+    /// Pause the token for `key`.
+    ///
+    /// Returns `true` if a token existed and was marked as resumably paused.
+    pub fn pause(&self, key: &str) -> bool {
+        let mut map = self
+            .tokens
+            .lock()
+            .expect("stream cancellation registry poisoned");
+        if let Some(token) = map.remove(key) {
+            token.pause();
+            true
+        } else {
+            false
+        }
+    }
+
     /// Remove the token for `key` without cancelling it.
     ///
     /// This is used for cleanup after a stream completes normally.
@@ -109,5 +125,19 @@ mod tests {
         assert!(t.is_cancelled());
         assert!(!reg.contains_key(&key));
         assert!(!reg.cancel(&key));
+    }
+
+    #[test]
+    fn pause_removes_and_marks_token_resumable() {
+        let reg = StreamCancellationRegistry::new();
+        let key = "k3".to_string();
+        let t = CancellationToken::new();
+        reg.register(key.clone(), t.clone());
+
+        assert!(reg.pause(&key));
+        assert!(t.is_cancelled());
+        assert!(t.is_pause_requested());
+        assert!(!reg.contains_key(&key));
+        assert!(!reg.pause(&key));
     }
 }

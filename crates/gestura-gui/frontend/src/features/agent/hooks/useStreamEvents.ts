@@ -49,7 +49,9 @@ export type StreamEventAction =
   | { type: 'status'; text: string; kind: string }
   | { type: 'context-compacted'; summary: string }
   | { type: 'done' }
+  | { type: 'paused' }
   | { type: 'cancelled' }
+  | { type: 'resumed' }
   | { type: 'error'; message: string }
   | { type: 'health'; payload: StreamHealthPayload }
   | { type: 'agent-message'; role: string; content: string }
@@ -297,10 +299,22 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
         dispatch({ type: 'done' });
       });
 
+      await safeListen('agent-stream-paused', (e) => {
+        const r = accept('agent-stream-paused', e.payload);
+        if (!r.ok) return;
+        dispatch({ type: 'paused' });
+      });
+
       await safeListen('agent-stream-cancelled', (e) => {
         const r = accept('agent-stream-cancelled', e.payload);
         if (!r.ok) return;
         dispatch({ type: 'cancelled' });
+      });
+
+      await safeListen('agent-stream-resumed', (e) => {
+        const r = accept('agent-stream-resumed', e.payload);
+        if (!r.ok) return;
+        dispatch({ type: 'resumed' });
       });
 
       await safeListen('agent-stream-error', (e) => {

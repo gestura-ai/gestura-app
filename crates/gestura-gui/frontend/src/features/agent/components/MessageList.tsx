@@ -216,12 +216,15 @@ export interface MessageListProps {
   streamingMessage: AgentMessage | null;
   sessionId: string;
   onScrollChange: (scrolledUp: boolean) => void;
+  canResume?: boolean;
+  isResuming?: boolean;
+  onResume?: () => void;
 }
 
 const SCROLL_THRESHOLD = 60;
 
 export const MessageList: React.FC<MessageListProps> = ({
-  messages, streamingMessage, sessionId, onScrollChange,
+  messages, streamingMessage, sessionId, onScrollChange, canResume = false, isResuming = false, onResume,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [userScrolledUp, setUserScrolledUp] = useState(false);
@@ -254,6 +257,17 @@ export const MessageList: React.FC<MessageListProps> = ({
       {allMessages.map((msg) => (
         <MessageView key={msg.id} message={msg} sessionId={sessionId} />
       ))}
+      {canResume && (
+        <div className={`paused-marker${isResuming ? ' resumed' : ''}`}>
+          <span className="pause-icon" aria-hidden="true">⏸</span>
+          <span>{isResuming ? 'Resuming interrupted response…' : 'Response interrupted. Resume from where it stopped.'}</span>
+          {!isResuming && onResume && (
+            <button type="button" className="resume-btn" onClick={onResume}>
+              Resume
+            </button>
+          )}
+        </div>
+      )}
       {userScrolledUp && (
         <button type="button" className="scroll-to-bottom-btn visible" onClick={scrollToBottom}>
           ↓

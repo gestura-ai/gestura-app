@@ -35,10 +35,10 @@ export interface ChatPanelProps {
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({ sessionId, onToggleEditor, viewMode, style }) => {
   const {
-    messages, streamingMessage, isProcessing, isListening, status,
+    messages, streamingMessage, isProcessing, isStopping, isListening, status,
     pendingConfirmation, tasks, knowledgeItems, toolSettings,
     userScrolledUp, setUserScrolledUp,
-    sendMessage, cancelStream, resolveConfirmation,
+    sendMessage, cancelStream, resumeStream, canResume, isResuming, resolveConfirmation,
     toggleVoice, enhanceText,
     refreshTasks, refreshKnowledge, refreshToolSettings,
   } = useChatSession(sessionId);
@@ -133,7 +133,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ sessionId, onToggleEditor,
 
       {/* Messages */}
       <MessageList messages={messages} streamingMessage={streamingMessage}
-        sessionId={sessionId} onScrollChange={handleScrollChange} />
+        sessionId={sessionId} onScrollChange={handleScrollChange}
+        canResume={canResume} isResuming={isResuming}
+        onResume={() => { void resumeStream(); }} />
 
       {/* Scroll-to-bottom indicator */}
       {userScrolledUp && (
@@ -152,7 +154,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ sessionId, onToggleEditor,
 
       {/* Input + Quick Access Bar */}
       <MessageInput
-        isProcessing={isProcessing} isListening={isListening} status={status}
+        isProcessing={isProcessing} isStopping={isStopping}
+        isListening={isListening} status={status}
         onSend={handleSend} onCancel={handleCancel} onVoiceToggle={toggleVoice}
         onEnhance={handleEnhance} viewMode={viewMode} onToggleEditor={onToggleEditor}
         onOpenTasks={() => togglePanel('tasks')}

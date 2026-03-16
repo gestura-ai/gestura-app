@@ -229,6 +229,34 @@ fn collect_auto_plan_execution_context(
     Some((root_task.name, planned_subtasks))
 }
 
+fn task_tool_mutation_event(
+    session_id: &str,
+    tool_name: &str,
+    tool_args: &str,
+    success: bool,
+) -> Option<(&'static str, serde_json::Value)> {
+    if !success || !matches!(tool_name.to_ascii_lowercase().as_str(), "task" | "tasks") {
+        return None;
+    }
+
+    let args: serde_json::Value = serde_json::from_str(tool_args).ok()?;
+    let operation = args.get("operation")?.as_str()?.to_ascii_lowercase();
+    let event_name = match operation.as_str() {
+        "create" => "task-created",
+        "update_status" | "update" => "task-updated",
+        "delete" => "task-deleted",
+        _ => return None,
+    };
+
+    Some((
+        event_name,
+        serde_json::json!({
+            "session_id": session_id,
+            "operation": operation,
+        }),
+    ))
+}
+
 fn build_auto_plan_execution_handoff_message(
     original_message: &str,
     root_task_name: &str,
@@ -557,6 +585,54 @@ mod tests {
         assert_eq!(
             planned_subtasks,
             vec!["Run build [not_started]".to_string()]
+        );
+    }
+
+    #[test]
+    fn task_tool_mutation_event_maps_mutating_task_operations() {
+        let created = task_tool_mutation_event(
+            "session-1",
+            "task",
+            r#"{"operation":"create","name":"Build app"}"#,
+            true,
+        )
+        .expect("create event");
+        assert_eq!(created.0, "task-created");
+
+        let updated = task_tool_mutation_event(
+            "session-1",
+            "task",
+            r#"{"operation":"update_status","task_id":"abc","status":"completed"}"#,
+            true,
+        )
+        .expect("update event");
+        assert_eq!(updated.0, "task-updated");
+
+        let deleted = task_tool_mutation_event(
+            "session-1",
+            "tasks",
+            r#"{"operation":"delete","task_id":"abc"}"#,
+            true,
+        )
+        .expect("delete event");
+        assert_eq!(deleted.0, "task-deleted");
+    }
+
+    #[test]
+    fn task_tool_mutation_event_ignores_reads_and_failures() {
+        assert!(
+            task_tool_mutation_event("session-1", "task", r#"{"operation":"list"}"#, true,)
+                .is_none()
+        );
+
+        assert!(
+            task_tool_mutation_event(
+                "session-1",
+                "task",
+                r#"{"operation":"update_status","task_id":"abc"}"#,
+                false,
+            )
+            .is_none()
         );
     }
 }
@@ -2642,8 +2718,11 @@ pub async fn process_agent_message_streaming(
         })
         .unwrap_or_default();
 
-    // Persist user message to session state now that we've captured the prior history.
+    // A brand-new user message supersedes any previously paused execution for the
+    // session. Clear it before recording the new turn so "resume" only applies to
+    // the most recently interrupted response.
     if let Some(ref sid) = resolved_session_id {
+        crate::window_manager::set_session_paused_execution(sid, None);
         crate::window_manager::add_user_message(sid, &message, message_source);
     }
 
@@ -2869,8 +2948,12 @@ pub async fn process_agent_message_streaming(
                 output,
                 duration_ms,
             } => {
+                let mut task_tool_ui_event: Option<(&'static str, serde_json::Value)> = None;
                 // Finalize the tracked tool call record for pause-state capture.
                 if let Some((tc_id, tc_name, tc_args)) = current_tool_call.take() {
+                    if let Some(sid) = resolved_session_id.as_deref() {
+                        task_tool_ui_event = task_tool_mutation_event(sid, &tc_name, &tc_args, success);
+                    }
                     let result = if success {
                         gestura_core::ToolResult::Success(output.clone())
                     } else {
@@ -2891,6 +2974,9 @@ pub async fn process_agent_message_streaming(
                     "duration_ms": duration_ms
                 });
                 emit("agent-stream-tool-result", payload);
+                if let Some((event_name, event_payload)) = task_tool_ui_event {
+                    let _ = app.emit(event_name, event_payload);
+                }
             }
             StreamChunk::RetryAttempt {
                 attempt,
@@ -3133,6 +3219,11 @@ pub async fn process_agent_message_streaming(
                         || assistant_thinking
                             .as_ref()
                             .is_some_and(|t| !t.trim().is_empty()))
+                    && !crate::window_manager::append_to_last_assistant_message(
+                        sid,
+                        &assistant_text,
+                        assistant_thinking.clone(),
+                    )
                 {
                     crate::window_manager::add_assistant_message(
                         sid,
@@ -3277,7 +3368,19 @@ pub fn cancel_agent_streaming(
     session_id: Option<String>,
 ) -> Result<(), String> {
     let calling_window_label = webview_window.label().to_string();
-    cancel_agent_streaming_internal(Some(calling_window_label), session_id)
+    interrupt_agent_streaming_internal(Some(calling_window_label), session_id, false)
+}
+
+/// Pause an ongoing streaming agent request while preserving resumable state.
+///
+/// Like cancellation, pausing is scoped to a single webview window.
+#[tauri::command(rename_all = "snake_case")]
+pub fn pause_agent_streaming(
+    webview_window: tauri::WebviewWindow,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    let calling_window_label = webview_window.label().to_string();
+    interrupt_agent_streaming_internal(Some(calling_window_label), session_id, true)
 }
 
 /// Resume a previously paused streaming agent session.
@@ -3437,7 +3540,11 @@ pub async fn resume_agent_streaming(
                         emit("agent-stream-tool-end", serde_json::json!(null));
                     }
                     StreamChunk::ToolCallResult { name, success, output, duration_ms } => {
+                        let mut task_tool_ui_event: Option<(&'static str, serde_json::Value)> = None;
                         if let Some((tc_id, tc_name, tc_args)) = current_tool_call.take() {
+                            if let Some(sid) = resolved_session_id.as_deref() {
+                                task_tool_ui_event = task_tool_mutation_event(sid, &tc_name, &tc_args, success);
+                            }
                             let result = if success {
                                 gestura_core::ToolResult::Success(output.clone())
                             } else {
@@ -3451,13 +3558,25 @@ pub async fn resume_agent_streaming(
                         emit("agent-stream-tool-result", serde_json::json!({
                             "name": name, "success": success, "output": output, "duration_ms": duration_ms
                         }));
+                        if let Some((event_name, event_payload)) = task_tool_ui_event {
+                            let _ = app.emit(event_name, event_payload);
+                        }
                     }
                     StreamChunk::Done(_) => {
                         if let Some(ref sid) = resolved_session_id
                             && (!assistant_text.trim().is_empty()
                                 || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty()))
+                            && !crate::window_manager::append_to_last_assistant_message(
+                                sid,
+                                &assistant_text,
+                                assistant_thinking.clone(),
+                            )
                         {
-                            crate::window_manager::add_assistant_message(sid, &assistant_text, assistant_thinking.clone());
+                            crate::window_manager::add_assistant_message(
+                                sid,
+                                &assistant_text,
+                                assistant_thinking.clone(),
+                            );
                         }
                         emit("agent-stream-done", serde_json::json!(null));
                         break;
@@ -3467,7 +3586,17 @@ pub async fn resume_agent_streaming(
                             if !assistant_text.trim().is_empty()
                                 || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty())
                             {
-                                crate::window_manager::add_assistant_message(sid, &assistant_text, assistant_thinking.clone());
+                                if !crate::window_manager::append_to_last_assistant_message(
+                                    sid,
+                                    &assistant_text,
+                                    assistant_thinking.clone(),
+                                ) {
+                                    crate::window_manager::add_assistant_message(
+                                        sid,
+                                        &assistant_text,
+                                        assistant_thinking.clone(),
+                                    );
+                                }
                             }
                             let paused_state = gestura_core::PausedExecutionState {
                                 original_input: input_snapshot.clone(),
@@ -3490,9 +3619,19 @@ pub async fn resume_agent_streaming(
                     }
                     StreamChunk::Error(err) => {
                         if let Some(ref sid) = resolved_session_id
-                            && !assistant_text.trim().is_empty()
+                            && (!assistant_text.trim().is_empty()
+                                || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty()))
+                            && !crate::window_manager::append_to_last_assistant_message(
+                                sid,
+                                &assistant_text,
+                                assistant_thinking.clone(),
+                            )
                         {
-                            crate::window_manager::add_assistant_message(sid, &assistant_text, assistant_thinking.clone());
+                            crate::window_manager::add_assistant_message(
+                                sid,
+                                &assistant_text,
+                                assistant_thinking.clone(),
+                            );
                         }
                         emit("agent-stream-error", serde_json::json!(err));
                         break;
@@ -3671,13 +3810,14 @@ pub async fn run_agent_isolation_probe(
     crate::agent_probe::run_agent_isolation_probe(app).await
 }
 
-/// Internal cancellation implementation shared by `cancel_agent_streaming`.
+/// Internal interruption implementation shared by cancel/pause agent commands.
 ///
 /// This helper keeps the key-resolution logic testable without requiring an actual
 /// Tauri [`tauri::WebviewWindow`] instance.
-fn cancel_agent_streaming_internal(
+fn interrupt_agent_streaming_internal(
     calling_window_label: Option<String>,
     session_id: Option<String>,
+    pause: bool,
 ) -> Result<(), String> {
     let cancel_key = if let Some(ref sid) = session_id {
         match crate::window_manager::get_session_window_label(sid) {
@@ -3688,13 +3828,13 @@ fn cancel_agent_streaming_internal(
                 // still works for the active streaming request in that window.
                 tracing::warn!(
                     session_id = %sid,
-                    "get_session_window_label returned None; falling back to calling window label for cancel"
+                    "get_session_window_label returned None; falling back to calling window label for stream interruption"
                 );
                 if let Some(label) = calling_window_label {
                     cancel_key_for_window_label(&label)
                 } else {
                     return Err(format!(
-                        "Cannot cancel stream: no window label found for session {} and no calling window context",
+                        "Cannot interrupt stream: no window label found for session {} and no calling window context",
                         sid
                     ));
                 }
@@ -3704,19 +3844,36 @@ fn cancel_agent_streaming_internal(
         cancel_key_for_window_label(&label)
     } else {
         return Err(
-            "Cannot cancel stream: no session_id provided and no calling window context"
+            "Cannot interrupt stream: no session_id provided and no calling window context"
                 .to_string(),
         );
     };
 
-    if gestura_core::stream_cancellation::STREAM_CANCELLATIONS.cancel(&cancel_key) {
-        tracing::info!(cancel_key = %cancel_key, "Streaming agent cancelled");
+    let interrupted = if pause {
+        gestura_core::stream_cancellation::STREAM_CANCELLATIONS.pause(&cancel_key)
+    } else {
+        gestura_core::stream_cancellation::STREAM_CANCELLATIONS.cancel(&cancel_key)
+    };
+
+    if interrupted {
+        tracing::info!(
+            cancel_key = %cancel_key,
+            interruption = if pause { "paused" } else { "cancelled" },
+            "Streaming agent interrupted"
+        );
         Ok(())
     } else {
-        Err(format!(
-            "No active streaming request to cancel for key {}",
-            cancel_key
-        ))
+        Err(if pause {
+            format!(
+                "No active streaming request to pause for key {}",
+                cancel_key
+            )
+        } else {
+            format!(
+                "No active streaming request to cancel for key {}",
+                cancel_key
+            )
+        })
     }
 }
 
@@ -3739,7 +3896,7 @@ mod streaming_cancellation_tests {
         gestura_core::stream_cancellation::STREAM_CANCELLATIONS
             .register(key.clone(), token.clone());
 
-        cancel_agent_streaming_internal(Some(label.to_string()), None)
+        interrupt_agent_streaming_internal(Some(label.to_string()), None, false)
             .expect("expected cancellation to succeed");
 
         assert!(token.is_cancelled(), "token should be cancelled");
@@ -3751,8 +3908,33 @@ mod streaming_cancellation_tests {
 
     #[test]
     fn cancel_internal_requires_context() {
-        let err = cancel_agent_streaming_internal(None, None).expect_err("expected error");
+        let err =
+            interrupt_agent_streaming_internal(None, None, false).expect_err("expected error");
         assert!(err.contains("no session_id") || err.contains("no calling window"));
+    }
+
+    #[test]
+    fn pause_internal_marks_token_for_resumable_pause() {
+        let label = "agent-test-pause-internal";
+        let key = cancel_key_for_window_label(label);
+
+        let token = gestura_core::CancellationToken::new();
+        gestura_core::stream_cancellation::STREAM_CANCELLATIONS.remove(&key);
+        gestura_core::stream_cancellation::STREAM_CANCELLATIONS
+            .register(key.clone(), token.clone());
+
+        interrupt_agent_streaming_internal(Some(label.to_string()), None, true)
+            .expect("expected pause to succeed");
+
+        assert!(token.is_cancelled(), "token should be interrupted");
+        assert!(
+            token.is_pause_requested(),
+            "token should preserve pause intent"
+        );
+        assert!(
+            !gestura_core::stream_cancellation::STREAM_CANCELLATIONS.contains_key(&key),
+            "token entry should be removed after pause"
+        );
     }
 }
 
@@ -4826,6 +5008,16 @@ pub fn get_session_history(
 ) -> Result<Vec<crate::window_manager::ConversationMessage>, String> {
     crate::window_manager::get_session_state(&session_id)
         .map(|state| state.messages)
+        .ok_or_else(|| format!("Session not found: {}", session_id))
+}
+
+/// Return whether the session has an interrupted response that can be resumed.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub fn has_session_paused_execution(session_id: String) -> Result<bool, String> {
+    crate::window_manager::get_session_state(&session_id)
+        .map(|state| state.paused_execution.is_some())
         .ok_or_else(|| format!("Session not found: {}", session_id))
 }
 

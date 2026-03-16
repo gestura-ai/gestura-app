@@ -222,6 +222,7 @@ async fn main() {
             gestura_gui::api::process_agent_message,
             gestura_gui::api::process_agent_message_streaming,
             gestura_gui::api::cancel_agent_streaming,
+            gestura_gui::api::pause_agent_streaming,
             gestura_gui::api::resume_agent_streaming,
             // Tool confirmation (Restricted mode pause/resume)
             gestura_gui::api::approve_tool_confirmation,
@@ -312,6 +313,7 @@ async fn main() {
             gestura_gui::api::create_agent_session,
             gestura_gui::api::get_session_counts,
             gestura_gui::api::get_session_history,
+            gestura_gui::api::has_session_paused_execution,
             gestura_gui::api::get_session_workspace,
             gestura_gui::api::get_session_workspace_by_id,
             gestura_gui::api::get_memory_console_overview,

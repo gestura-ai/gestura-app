@@ -912,6 +912,46 @@ impl SessionState {
             .remember_assistant_summary(content, thinking.as_deref());
     }
 
+    /// Append streamed continuation content to the most recent assistant message.
+    ///
+    /// Returns `true` when the last conversation entry was an assistant message and
+    /// the additional content/thinking was merged into that entry.
+    pub fn append_to_last_assistant_message(
+        &mut self,
+        content: &str,
+        thinking: Option<String>,
+    ) -> bool {
+        let has_content = !content.is_empty();
+        let has_thinking = thinking.as_ref().is_some_and(|value| !value.is_empty());
+        if !has_content && !has_thinking {
+            return false;
+        }
+
+        let Some(last_message) = self
+            .messages
+            .last_mut()
+            .filter(|message| message.role == "assistant")
+        else {
+            return false;
+        };
+
+        if has_content {
+            last_message.content.push_str(content);
+        }
+
+        if let Some(thinking_chunk) = thinking.filter(|value| !value.is_empty()) {
+            match &mut last_message.thinking {
+                Some(existing) => existing.push_str(&thinking_chunk),
+                None => last_message.thinking = Some(thinking_chunk),
+            }
+        }
+
+        last_message.timestamp = Utc::now();
+        self.working_memory
+            .remember_assistant_summary(&last_message.content, last_message.thinking.as_deref());
+        true
+    }
+
     /// Add a tool result message.
     pub fn add_tool_message(&mut self, tool_call_id: &str, content: &str) {
         self.messages.push(ConversationMessage {

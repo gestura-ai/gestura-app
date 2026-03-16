@@ -14,8 +14,10 @@ import {
 } from './useStreamEvents';
 import {
   sendMessageStreaming,
-  cancelStreaming,
+  pauseStreaming,
+  resumeStreaming,
   getSessionHistory,
+  hasSessionPausedExecution,
   getTaskHierarchy,
   listKnowledgeItems,
   getEnabledKnowledge,
@@ -56,6 +58,9 @@ export interface ChatSessionState {
   messages: AgentMessage[];
   streamingMessage: AgentMessage | null;
   isProcessing: boolean;
+  isStopping: boolean;
+  canResume: boolean;
+  isResuming: boolean;
   isListening: boolean;
   status: StatusState;
   pendingConfirmation: ToolConfirmation | null;
@@ -66,6 +71,7 @@ export interface ChatSessionState {
   setUserScrolledUp: (v: boolean) => void;
   sendMessage: (text: string, taskId?: string | null) => Promise<void>;
   cancelStream: () => Promise<void>;
+  resumeStream: () => Promise<void>;
   resolveConfirmation: (decision: ToolConfirmationDecision) => Promise<void>;
   toggleVoice: () => Promise<void>;
   enhanceText: (text: string) => Promise<string>;
@@ -192,6 +198,9 @@ export function useChatSession(sessionId: string): ChatSessionState {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [streamingMessage, setStreamingMessage] = useState<AgentMessage | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
+  const [canResume, setCanResume] = useState(false);
+  const [isResuming, setIsResuming] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [status, setStatus] = useState<StatusState>({ text: 'Ready', kind: 'ready' });
   const [pendingConfirmation, setPendingConfirmation] = useState<ToolConfirmation | null>(null);
@@ -205,7 +214,10 @@ export function useChatSession(sessionId: string): ChatSessionState {
   const currentTextBlockIdRef = useRef<string | null>(null);
   const currentToolBlockIdRef = useRef<string | null>(null);
   const streamingMsgIdRef = useRef<string | null>(null);
+  const pausedMessageIdRef = useRef<string | null>(null);
   const messageQueueRef = useRef<QueuedMessage[]>([]);
+  const messagesRef = useRef<AgentMessage[]>([]);
+  const streamingMessageRef = useRef<AgentMessage | null>(null);
   const isProcessingRef = useRef(false);
   const confirmationQueueRef = useRef<ToolConfirmation[]>([]);
   const pendingConfirmationRef = useRef<ToolConfirmation | null>(null);
@@ -214,28 +226,131 @@ export function useChatSession(sessionId: string): ChatSessionState {
   const lastToolContextRef = useRef<LastToolContext | null>(null);
   const lastReflectionNoticeRef = useRef<string | null>(null);
 
-  // ── Finalize streaming ──────────────────────────────────────────────────────
-  const finalizeStream = useCallback((msg?: AgentMessage | null) => {
-    const final = msg ?? null;
-    if (final) {
-      setMessages((prev) => [...prev, { ...final, isStreaming: false }]);
-    }
-    setStreamingMessage(null);
-    setIsProcessing(false);
-    isProcessingRef.current = false;
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    streamingMessageRef.current = streamingMessage;
+  }, [streamingMessage]);
+
+  const resetStreamingCursor = useCallback(() => {
     streamingMsgIdRef.current = null;
     currentThinkingIdRef.current = null;
     currentTextBlockIdRef.current = null;
     currentToolBlockIdRef.current = null;
     lastReflectionNoticeRef.current = null;
-    setStatus({ text: 'Ready', kind: 'ready' });
+  }, []);
 
-    // Advance queue
-    const next = messageQueueRef.current.shift();
-    if (next && triggerSendRef.current) {
-      void triggerSendRef.current(next.text, next.taskId);
+  const primeStreamingCursorFromMessage = useCallback((message: AgentMessage) => {
+    streamingMsgIdRef.current = message.id;
+    currentThinkingIdRef.current = null;
+    currentTextBlockIdRef.current = null;
+    currentToolBlockIdRef.current = null;
+
+    for (let idx = message.blocks.length - 1; idx >= 0; idx -= 1) {
+      const block = message.blocks[idx];
+      if (!currentTextBlockIdRef.current && block.kind === 'text') {
+        currentTextBlockIdRef.current = block.id;
+      }
+      if (!currentThinkingIdRef.current && block.kind === 'thinking' && !block.done) {
+        currentThinkingIdRef.current = block.id;
+      }
+      if (
+        !currentToolBlockIdRef.current
+        && block.kind === 'tool'
+        && (block.status === 'running' || block.status === 'executing')
+      ) {
+        currentToolBlockIdRef.current = block.id;
+      }
     }
   }, []);
+
+  const restorePausedMessageToStreaming = useCallback((): AgentMessage => {
+    const currentStreamingMessage = streamingMessageRef.current;
+    if (
+      currentStreamingMessage
+      && (!pausedMessageIdRef.current || currentStreamingMessage.id === pausedMessageIdRef.current)
+    ) {
+      const resumedStreamingMessage = { ...currentStreamingMessage, isStreaming: true };
+      pausedMessageIdRef.current = resumedStreamingMessage.id;
+      setStreamingMessage(resumedStreamingMessage);
+      primeStreamingCursorFromMessage(resumedStreamingMessage);
+      return resumedStreamingMessage;
+    }
+
+    const currentMessages = messagesRef.current;
+    let resumeIndex = pausedMessageIdRef.current
+      ? currentMessages.findIndex((message) => message.id === pausedMessageIdRef.current)
+      : -1;
+
+    if (resumeIndex < 0) {
+      for (let idx = currentMessages.length - 1; idx >= 0; idx -= 1) {
+        if (currentMessages[idx].role === 'assistant') {
+          resumeIndex = idx;
+          break;
+        }
+      }
+    }
+
+    const resumeMessage = resumeIndex >= 0
+      ? { ...currentMessages[resumeIndex], isStreaming: true }
+      : makeStreamingMessage();
+
+    if (resumeIndex >= 0) {
+      setMessages([
+        ...currentMessages.slice(0, resumeIndex),
+        ...currentMessages.slice(resumeIndex + 1),
+      ]);
+    }
+
+    pausedMessageIdRef.current = resumeMessage.id;
+    setStreamingMessage(resumeMessage);
+    primeStreamingCursorFromMessage(resumeMessage);
+    return resumeMessage;
+  }, [primeStreamingCursorFromMessage]);
+
+  // ── Finalize streaming ──────────────────────────────────────────────────────
+  const finalizeStream = useCallback((
+    msg?: AgentMessage | null,
+    options?: {
+      statusText?: string;
+      statusKind?: StatusState['kind'];
+      allowQueueAdvance?: boolean;
+      canResumeAfter?: boolean;
+    },
+  ) => {
+    const {
+      statusText = 'Ready',
+      statusKind = 'ready',
+      allowQueueAdvance = true,
+      canResumeAfter = false,
+    } = options ?? {};
+    const final = msg ?? null;
+    if (final) {
+      const completed = { ...final, isStreaming: false };
+      pausedMessageIdRef.current = canResumeAfter ? completed.id : null;
+      setMessages((prev) => [...prev, completed]);
+    } else if (!canResumeAfter) {
+      pausedMessageIdRef.current = null;
+    }
+    setStreamingMessage(null);
+    setIsProcessing(false);
+    setIsStopping(false);
+    setIsResuming(false);
+    setCanResume(canResumeAfter);
+    isProcessingRef.current = false;
+    resetStreamingCursor();
+    setStatus({ text: statusText, kind: statusKind });
+
+    // Advance queue
+    if (allowQueueAdvance) {
+      const next = messageQueueRef.current.shift();
+      if (next && triggerSendRef.current) {
+        void triggerSendRef.current(next.text, next.taskId);
+      }
+    }
+  }, [resetStreamingCursor]);
 
   // ── Ensure streaming message exists ────────────────────────────────────────
   const ensureStreamingMsg = useCallback((): string => {
@@ -488,17 +603,60 @@ export function useChatSession(sessionId: string): ChatSessionState {
       }
 
       case 'done':
-        setStreamingMessage((prev) => { finalizeStream(prev); return null; });
+        setStreamingMessage((prev) => {
+          finalizeStream(prev, { statusText: 'Ready', statusKind: 'ready', canResumeAfter: false });
+          return null;
+        });
+        break;
+
+      case 'paused':
+        setStreamingMessage((prev) => {
+          const paused = prev ? { ...prev, isStreaming: false } : prev;
+          if (paused) {
+            pausedMessageIdRef.current = paused.id;
+          }
+          setIsProcessing(false);
+          setIsStopping(false);
+          setIsResuming(false);
+          setCanResume(true);
+          isProcessingRef.current = false;
+          resetStreamingCursor();
+          setStatus({ text: 'Interrupted — resume available', kind: 'ready' });
+          return paused;
+        });
         break;
 
       case 'cancelled':
-        setStreamingMessage((prev) => { finalizeStream(prev); return null; });
-        setStatus({ text: 'Cancelled', kind: 'ready' });
+        setStreamingMessage((prev) => {
+          finalizeStream(prev, {
+            statusText: 'Cancelled',
+            statusKind: 'ready',
+            allowQueueAdvance: false,
+            canResumeAfter: false,
+          });
+          return null;
+        });
+        break;
+
+      case 'resumed':
+        if (!streamingMsgIdRef.current) {
+          restorePausedMessageToStreaming();
+        }
+        setCanResume(false);
+        setIsStopping(false);
+        setIsResuming(true);
+        setStatus({ text: 'Resuming…', kind: 'busy' });
         break;
 
       case 'error': {
-        setStreamingMessage((prev) => { finalizeStream(prev); return null; });
-        setStatus({ text: `Error: ${action.message}`, kind: 'error' });
+        setStreamingMessage((prev) => {
+          finalizeStream(prev, {
+            statusText: `Error: ${action.message}`,
+            statusKind: 'error',
+            canResumeAfter: false,
+          });
+          return null;
+        });
         const errId = nanoid();
         const errBlock: TextBlock = { kind: 'text', id: errId, content: `⚠️ **Error:** ${action.message}` };
         setMessages((prev) => [...prev, {
@@ -531,21 +689,52 @@ export function useChatSession(sessionId: string): ChatSessionState {
         break;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ensureStreamingMsg, updateStreamingBlocks, finalizeStream]);
+  }, [ensureStreamingMsg, updateStreamingBlocks, finalizeStream, restorePausedMessageToStreaming, resetStreamingCursor, sessionId]);
 
   useStreamEvents(sessionId, handleStreamEvent);
 
   // ── Load session history on mount ───────────────────────────────────────────
   useEffect(() => {
     if (!sessionId) return;
-    getSessionHistory(sessionId)
-      .then((history) => {
+    Promise.all([
+      getSessionHistory(sessionId),
+      hasSessionPausedExecution(sessionId).catch(() => false),
+    ])
+      .then(([history, paused]) => {
         const msgs: AgentMessage[] = history.map((h) => {
           const id = nanoid();
-          const block: TextBlock = { kind: 'text', id, content: h.content };
-          return { id, role: h.role === 'user' ? 'user' : 'assistant', rawMarkdown: h.content, blocks: [block], isStreaming: false, timestamp: Date.now() };
+          const blocks: MsgBlock[] = [];
+          if (h.thinking?.trim()) {
+            blocks.push({
+              kind: 'thinking',
+              id: nanoid(),
+              content: h.thinking,
+              done: true,
+              collapsed: true,
+            });
+          }
+          if (h.content) {
+            blocks.push({ kind: 'text', id: nanoid(), content: h.content });
+          }
+          return {
+            id,
+            role: h.role === 'user' ? 'user' : 'assistant',
+            rawMarkdown: h.content,
+            blocks,
+            isStreaming: false,
+            timestamp: h.timestamp ? Date.parse(h.timestamp) || Date.now() : Date.now(),
+          };
         });
         setMessages(msgs);
+        if (paused) {
+          const resumable = [...msgs].reverse().find((message) => message.role === 'assistant') ?? null;
+          pausedMessageIdRef.current = resumable?.id ?? null;
+          setCanResume(true);
+          setStatus({ text: 'Interrupted — resume available', kind: 'ready' });
+        } else {
+          pausedMessageIdRef.current = null;
+          setCanResume(false);
+        }
       })
       .catch((e) => console.warn('[useChatSession] history load failed:', e));
   }, [sessionId]);
@@ -586,6 +775,16 @@ export function useChatSession(sessionId: string): ChatSessionState {
 
   // ── Send message ────────────────────────────────────────────────────────────
   const triggerSend = useCallback(async (text: string, taskId: string | null) => {
+    const pausedStreamingMessage = streamingMessageRef.current;
+    if (pausedStreamingMessage && !isProcessingRef.current) {
+      setMessages((prev) => [...prev, { ...pausedStreamingMessage, isStreaming: false }]);
+      setStreamingMessage(null);
+      resetStreamingCursor();
+    }
+    pausedMessageIdRef.current = null;
+    setCanResume(false);
+    setIsStopping(false);
+    setIsResuming(false);
     isProcessingRef.current = true;
     setIsProcessing(true);
     setStatus({ text: 'Thinking…', kind: 'busy' });
@@ -602,7 +801,7 @@ export function useChatSession(sessionId: string): ChatSessionState {
       setIsProcessing(false);
       isProcessingRef.current = false;
     }
-  }, [sessionId]);
+  }, [resetStreamingCursor, sessionId]);
 
   useEffect(() => {
     triggerSendRef.current = triggerSend;
@@ -619,15 +818,48 @@ export function useChatSession(sessionId: string): ChatSessionState {
 
   // ── Cancel streaming ────────────────────────────────────────────────────────
   const cancelStream = useCallback(async () => {
+    if (isStopping) return;
+
+    setIsStopping(true);
+    setStatus({ text: 'Stopping…', kind: 'busy' });
+
     try {
-      await cancelStreaming(sessionId);
+      await pauseStreaming(sessionId);
     } catch (e) {
-      // Cancel command failed (e.g. no active stream or session not yet registered).
-      // Force-finalize so the UI doesn't remain stuck at isProcessing=true.
-      console.warn('[cancelStream] cancel command failed, forcing finalize:', e);
-      finalizeStream(null);
+      console.warn('[cancelStream] pause command failed:', e);
+      setIsStopping(false);
+      setStatus({ text: `Stop failed: ${String(e)}`, kind: 'error' });
     }
-  }, [sessionId, finalizeStream]);
+  }, [isStopping, sessionId]);
+
+  const resumeStream = useCallback(async () => {
+    if (!sessionId || isProcessingRef.current || !canResume) return;
+
+    const seedMessage = restorePausedMessageToStreaming();
+    setCanResume(false);
+    setIsResuming(true);
+    isProcessingRef.current = true;
+    setIsProcessing(true);
+    setStatus({ text: 'Resuming…', kind: 'busy' });
+
+    try {
+      await resumeStreaming(sessionId);
+    } catch (err) {
+      console.warn('[useChatSession] resume failed:', err);
+      setStreamingMessage(null);
+      if (seedMessage.blocks.length > 0 || seedMessage.rawMarkdown) {
+        const completed = { ...seedMessage, isStreaming: false };
+        pausedMessageIdRef.current = completed.id;
+        setMessages((prev) => [...prev, completed]);
+        setCanResume(true);
+      }
+      setIsResuming(false);
+      setIsProcessing(false);
+      isProcessingRef.current = false;
+      resetStreamingCursor();
+      setStatus({ text: `Resume failed: ${String(err)}`, kind: 'error' });
+    }
+  }, [sessionId, canResume, restorePausedMessageToStreaming, resetStreamingCursor]);
 
   // ── Tool confirmation ────────────────────────────────────────────────────────
   const resolveConfirmation = useCallback(async (decision: ToolConfirmationDecision) => {
@@ -662,10 +894,10 @@ export function useChatSession(sessionId: string): ChatSessionState {
   const enhanceText = useCallback((text: string) => enhancePrompt(sessionId, text), [sessionId]);
 
   return {
-    messages, streamingMessage, isProcessing, isListening, status,
+    messages, streamingMessage, isProcessing, isStopping, canResume, isResuming, isListening, status,
     pendingConfirmation, tasks, knowledgeItems, toolSettings,
     userScrolledUp, setUserScrolledUp,
-    sendMessage, cancelStream, resolveConfirmation,
+    sendMessage, cancelStream, resumeStream, resolveConfirmation,
     toggleVoice, enhanceText, refreshTasks, refreshKnowledge, refreshToolSettings,
   };
 }

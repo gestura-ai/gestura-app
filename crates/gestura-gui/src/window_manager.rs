@@ -733,6 +733,35 @@ impl WindowManager {
         self.save_sessions_to_disk();
     }
 
+    /// Append continuation content to the most recent assistant message.
+    pub fn append_to_last_assistant_message(
+        &self,
+        session_id: &str,
+        content: &str,
+        thinking: Option<String>,
+    ) -> bool {
+        let mut sessions = self.sessions.lock().unwrap();
+        let updated = if let Some(session) = sessions.get_mut(session_id) {
+            let changed = session
+                .state
+                .append_to_last_assistant_message(content, thinking);
+            if changed {
+                session.message_count = session.state.messages.len();
+                session.last_active = chrono::Utc::now();
+            }
+            changed
+        } else {
+            false
+        };
+        drop(sessions);
+
+        if updated {
+            self.save_sessions_to_disk();
+        }
+
+        updated
+    }
+
     /// Add a tool result message to a session
     pub fn add_tool_message(&self, session_id: &str, tool_call_id: &str, content: &str) {
         let mut sessions = self.sessions.lock().unwrap();
@@ -1299,6 +1328,18 @@ pub fn add_assistant_message(session_id: &str, content: &str, thinking: Option<S
     if let Some(manager) = get_window_manager() {
         manager.add_assistant_message(session_id, content, thinking);
     }
+}
+
+/// Append continuation content to the most recent assistant message.
+pub fn append_to_last_assistant_message(
+    session_id: &str,
+    content: &str,
+    thinking: Option<String>,
+) -> bool {
+    if let Some(manager) = get_window_manager() {
+        return manager.append_to_last_assistant_message(session_id, content, thinking);
+    }
+    false
 }
 
 /// Add a tool result message to a session

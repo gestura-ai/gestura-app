@@ -10,6 +10,7 @@ import type { StatusState } from '../types';
 
 export interface MessageInputProps {
   isProcessing: boolean;
+  isStopping?: boolean;
   isListening: boolean;
   status: StatusState;
   onSend: (text: string) => void;
@@ -30,6 +31,7 @@ export interface MessageInputProps {
 
 export const MessageInput: React.FC<MessageInputProps> = ({
   isProcessing,
+  isStopping = false,
   isListening,
   // status is passed through for future use (session panels, inline status)
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -104,8 +106,9 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           <button
             type="button"
             className="btn-icon btn-cancel"
-            title="Cancel (Esc)"
+            title={isStopping ? 'Stopping…' : 'Stop response'}
             onClick={onCancel}
+            disabled={isStopping}
           >
             <span className="icon-close"></span>
           </button>

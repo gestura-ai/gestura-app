@@ -33,7 +33,7 @@ describe('useStreamEvents', () => {
   });
 
   it('refreshes tasks when a task tool result succeeds', async () => {
-    const dispatch = vi.fn<(action: StreamEventAction) => void>();
+    const dispatch = vi.fn<[StreamEventAction], void>();
     render(<HookHarness sessionId="session-123" dispatch={dispatch} />);
 
     await waitFor(() => {
@@ -53,7 +53,7 @@ describe('useStreamEvents', () => {
   });
 
   it('does not refresh tasks for failed task tool results', async () => {
-    const dispatch = vi.fn<(action: StreamEventAction) => void>();
+    const dispatch = vi.fn<[StreamEventAction], void>();
     render(<HookHarness sessionId="session-123" dispatch={dispatch} />);
 
     await waitFor(() => {
@@ -74,5 +74,23 @@ describe('useStreamEvents', () => {
       output: 'nope',
       durationMs: null,
     });
+  });
+
+  it('dispatches paused and resumed stream lifecycle events', async () => {
+    const dispatch = vi.fn<[StreamEventAction], void>();
+    render(<HookHarness sessionId="session-123" dispatch={dispatch} />);
+
+    await waitFor(() => {
+      expect(listeners.has('agent-stream-paused')).toBe(true);
+      expect(listeners.has('agent-stream-resumed')).toBe(true);
+    });
+
+    await act(async () => {
+      listeners.get('agent-stream-paused')?.({ payload: { session_id: 'session-123' } });
+      listeners.get('agent-stream-resumed')?.({ payload: { session_id: 'session-123' } });
+    });
+
+    expect(dispatch.mock.calls.map(([action]) => action.type)).toContain('paused');
+    expect(dispatch.mock.calls.map(([action]) => action.type)).toContain('resumed');
   });
 });
