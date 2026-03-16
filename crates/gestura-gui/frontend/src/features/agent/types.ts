@@ -184,7 +184,7 @@ export interface Task {
   subtasks?: Task[];
 }
 
-export type TaskHierarchy = [Task, Task[]][];
+export type TaskHierarchy = Task[];
 
 // ─── Knowledge types ──────────────────────────────────────────────────────────
 

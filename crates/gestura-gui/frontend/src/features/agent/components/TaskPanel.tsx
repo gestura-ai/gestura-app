@@ -19,6 +19,26 @@ interface TaskPanelProps {
 
 const STATUS_ORDER: TaskStatus[] = ["NotStarted", "InProgress", "Completed", "Cancelled"];
 
+function flattenTasks(tasks: TaskHierarchy): Task[] {
+  return tasks.flatMap((task) => [task, ...flattenTasks(task.subtasks ?? [])]);
+}
+
+function isTerminalTaskStatus(status: TaskStatus): boolean {
+  switch (status) {
+    case "Completed":
+    case "Cancelled":
+      return true;
+    case "NotStarted":
+    case "Blocked":
+    case "InProgress":
+      return false;
+    default: {
+      const exhaustiveCheck: never = status;
+      return exhaustiveCheck;
+    }
+  }
+}
+
 function statusClass(s: TaskStatus): string {
   switch (s) {
     case "InProgress": return "in-progress";
@@ -51,7 +71,8 @@ export function TaskPanel({
   const [saving, setSaving] = useState(false);
   const [showBreakdown, setShowBreakdown] = useState(false);
 
-  const allTasks = tasks.flatMap(([parent, children]) => [parent, ...children]);
+  const allTasks = flattenTasks(tasks);
+  const firstOpenTask = allTasks.find((task) => !isTerminalTaskStatus(task.status)) ?? allTasks[0];
 
   const handleCreate = useCallback(async () => {
     if (!newName.trim()) return;
@@ -92,7 +113,7 @@ export function TaskPanel({
   }, [sessionId, onRefreshTasks, onShowToast]);
 
   const handleCleanup = useCallback(async () => {
-    const done = allTasks.filter(t => t.status === "Completed" || t.status === "Cancelled");
+    const done = allTasks.filter((task) => isTerminalTaskStatus(task.status));
     await Promise.all(done.map(t => deleteTask(sessionId, t.id).catch(() => { })));
     await onRefreshTasks();
     onShowToast(`Cleaned up ${done.length} finished task(s)`, "success");
@@ -111,7 +132,7 @@ export function TaskPanel({
             <button className="task-header-btn" onClick={() => setShowBreakdown(true)} title="Break Down Requirements">
               <span className="icon-file-plus-02" />
             </button>
-            <button className="task-header-btn" onClick={() => allTasks[0] && handlePlay(allTasks[0])} title="Play First Task">
+            <button className="task-header-btn" onClick={() => firstOpenTask && handlePlay(firstOpenTask)} title="Play First Task">
               <span className="icon-play-circle" />
             </button>
             <button className="task-header-btn" onClick={handleCleanup} title="Cleanup Finished">
@@ -143,14 +164,15 @@ export function TaskPanel({
             {allTasks.length === 0 ? (
               <div className="task-empty">No tasks yet. Click + to get started.</div>
             ) : (
-              tasks.flatMap(([parent, children]) => [
-                <TaskItem key={parent.id} task={parent} onCycleStatus={handleCycleStatus}
-                  onPlay={handlePlay} onDelete={handleDelete} />,
-                ...children.map(child => (
-                  <TaskItem key={child.id} task={child} isSubtask
-                    onCycleStatus={handleCycleStatus} onPlay={handlePlay} onDelete={handleDelete} />
-                )),
-              ])
+              tasks.map((task) => (
+                <TaskItem
+                  key={task.id}
+                  task={task}
+                  onCycleStatus={handleCycleStatus}
+                  onPlay={handlePlay}
+                  onDelete={handleDelete}
+                />
+              ))
             )}
           </div>
         </div>
@@ -169,32 +191,47 @@ export function TaskPanel({
 
 interface TaskItemProps {
   task: Task;
-  isSubtask?: boolean;
+  depth?: number;
   onCycleStatus: (t: Task) => Promise<void>;
   onPlay: (t: Task) => Promise<void>;
   onDelete: (t: Task) => Promise<void>;
 }
 
-function TaskItem({ task, isSubtask, onCycleStatus, onPlay, onDelete }: TaskItemProps) {
+function TaskItem({ task, depth = 0, onCycleStatus, onPlay, onDelete }: TaskItemProps) {
   return (
-    <div className={`task-item${isSubtask ? " subtask" : ""}`}>
-      <div className="task-header">
-        <div className={`task-status-icon ${statusClass(task.status)}`}
-          onClick={() => onCycleStatus(task)} title={`Status: ${task.status} — click to cycle`}>
-          <span className={statusIcon(task.status)} />
+    <>
+      <div
+        className={`task-item${depth > 0 ? " subtask" : ""}`}
+        style={depth > 0 ? { marginLeft: `${depth * 16}px` } : undefined}
+      >
+        <div className="task-header">
+          <div className={`task-status-icon ${statusClass(task.status)}`}
+            onClick={() => onCycleStatus(task)} title={`Status: ${task.status} — click to cycle`}>
+            <span className={statusIcon(task.status)} />
+          </div>
+          <span className="task-name">{task.name}</span>
+          <div className="task-item-actions">
+            <button className="task-icon-btn play" onClick={() => onPlay(task)} title="Run task">
+              <span className="icon-play" />
+            </button>
+            <button className="task-icon-btn delete" onClick={() => onDelete(task)} title="Delete">
+              <span className="icon-trash" />
+            </button>
+          </div>
         </div>
-        <span className="task-name">{task.name}</span>
-        <div className="task-item-actions">
-          <button className="task-icon-btn play" onClick={() => onPlay(task)} title="Run task">
-            <span className="icon-play" />
-          </button>
-          <button className="task-icon-btn delete" onClick={() => onDelete(task)} title="Delete">
-            <span className="icon-trash" />
-          </button>
-        </div>
+        {task.description && <div className="task-description">{task.description}</div>}
       </div>
-      {task.description && <div className="task-description">{task.description}</div>}
-    </div>
+      {(task.subtasks ?? []).map((child) => (
+        <TaskItem
+          key={child.id}
+          task={child}
+          depth={depth + 1}
+          onCycleStatus={onCycleStatus}
+          onPlay={onPlay}
+          onDelete={onDelete}
+        />
+      ))}
+    </>
   );
 }
 

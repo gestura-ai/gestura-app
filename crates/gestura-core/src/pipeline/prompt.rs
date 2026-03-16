@@ -1,6 +1,12 @@
 use super::*;
 
 impl AgentPipeline {
+    fn append_tool_discipline(&self, prompt: &mut String) {
+        prompt.push_str(
+            "Tool usage discipline:\n- For `task.create`, provide `name` (and preferably `description`); do not send `task_id` because the runtime assigns it.\n- After reading an existing file, prefer `file.edit` for targeted changes. Use `file.write` only when you provide the full replacement `content`.\n- For install/build/test/scaffold shell commands, include non-interactive flags when needed and set a generous `timeout_secs` (for example 300).\n\n",
+        );
+    }
+
     /// Build an optimized prompt from request and context
     pub(super) fn build_prompt(
         &self,
@@ -17,6 +23,7 @@ impl AgentPipeline {
 
         // Inject repository-local guardrails (AGENTS.md, .gestura/guardrails) when available.
         self.append_project_guardrails(&mut prompt, request);
+        self.append_tool_discipline(&mut prompt);
 
         // Tool definitions are now passed via the structured `tools` API parameter
         // (ProviderToolSchemas) rather than duplicated in the prompt text. This avoids
@@ -503,6 +510,20 @@ mod tests {
     use crate::TaskStatus;
 
     #[test]
+    fn build_prompt_includes_tool_discipline_guidance() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let request = AgentRequest::new("Build a hello world Tauri app");
+        let context = crate::context::ResolvedContext::default();
+
+        let prompt = pipeline.build_prompt(&request, &context);
+
+        assert!(prompt.contains("Tool usage discipline:"));
+        assert!(prompt.contains("do not send `task_id` because the runtime assigns it"));
+        assert!(prompt.contains("prefer `file.edit` for targeted changes"));
+        assert!(prompt.contains("set a generous `timeout_secs`"));
+    }
+
+    #[test]
     fn tracked_task_context_includes_exact_ids_for_nested_subtasks() {
         let temp_dir = tempfile::TempDir::new().expect("temp dir");
         let manager = crate::TaskManager::new(temp_dir.path());
@@ -543,6 +564,10 @@ mod tests {
         assert!(section.contains("Implement UI"));
         assert!(section.contains("Run build"));
         assert!(section.contains("ALWAYS send both the exact `task_id` and an explicit `status`"));
-        assert!(section.contains("Do not call `update_status` just to confirm or preserve the current state"));
+        assert!(
+            section.contains(
+                "Do not call `update_status` just to confirm or preserve the current state"
+            )
+        );
     }
 }

@@ -119,6 +119,16 @@ export interface ReflectionSettings {
   promotion_confidence_percent: number;
 }
 
+/**
+ * Opt-in request tracing for the core agent loop.
+ *
+ * This mirrors `pipeline.agent_telemetry` in Rust and lets the UI expose a
+ * durable toggle without needing to know the underlying metric names.
+ */
+export interface AgentTelemetrySettings {
+  enabled: boolean;
+}
+
 export type CompactionStrategy = 'Summarize' | 'Truncate' | 'Clear' | 'Prompt' | 'MemoryBank';
 
 export interface PipelineSettings {
@@ -130,6 +140,8 @@ export interface PipelineSettings {
   compaction_strategy: CompactionStrategy;
   max_context_tokens: number;
   log_token_usage: boolean;
+  /** Request-level telemetry emitted across analysis, context, loop, and reflection phases. */
+  agent_telemetry: AgentTelemetrySettings;
   reflection: ReflectionSettings;
 }
 

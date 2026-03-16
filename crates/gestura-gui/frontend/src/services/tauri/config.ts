@@ -72,6 +72,11 @@ const defaultConfig = (): AppConfig => ({
     compaction_strategy: 'Summarize',
     max_context_tokens: 0,
     log_token_usage: true,
+    // Keep request tracing opt-in so existing installs do not suddenly emit a
+    // much richer metric stream until the user explicitly enables it.
+    agent_telemetry: {
+      enabled: false,
+    },
     reflection: {
       enabled: false,
       quality_threshold_percent: 60,
@@ -114,6 +119,12 @@ const normalizeConfig = (raw: PartialConfig): AppConfig => {
       compaction_strategy: normalizeCompactionStrategy(
         (raw.pipeline as AppConfig['pipeline'] | undefined)?.compaction_strategy,
       ),
+      // Merge nested telemetry defaults explicitly so older configs that predate
+      // the setting still deserialize into a fully-shaped object for the UI.
+      agent_telemetry: {
+        ...defaults.pipeline.agent_telemetry,
+        ...((raw.pipeline as AppConfig['pipeline'] | undefined)?.agent_telemetry ?? {}),
+      },
       reflection: {
         ...defaults.pipeline.reflection,
         ...((raw.pipeline as AppConfig['pipeline'] | undefined)?.reflection ?? {}),

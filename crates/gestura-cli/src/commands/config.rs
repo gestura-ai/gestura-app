@@ -101,6 +101,10 @@ pub fn run(action: &ConfigAction) -> Result<()> {
                         "log_token_usage",
                         &config.pipeline.log_token_usage.to_string(),
                     ),
+                    (
+                        "agent_telemetry.enabled",
+                        &config.pipeline.agent_telemetry.enabled.to_string(),
+                    ),
                 ],
             );
 
@@ -211,6 +215,9 @@ fn get_config_value(config: &AppConfig, key: &str) -> Option<String> {
         }
         "pipeline.max_context_tokens" => Some(config.pipeline.max_context_tokens.to_string()),
         "pipeline.log_token_usage" => Some(config.pipeline.log_token_usage.to_string()),
+        "pipeline.agent_telemetry.enabled" => {
+            Some(config.pipeline.agent_telemetry.enabled.to_string())
+        }
         "llm.openai.api_key" => config
             .llm
             .openai
@@ -307,6 +314,14 @@ fn set_config_value(config: &mut AppConfig, key: &str, value: &str) -> bool {
         "pipeline.log_token_usage" => {
             if let Ok(val) = value.parse::<bool>() {
                 config.pipeline.log_token_usage = val;
+                true
+            } else {
+                false
+            }
+        }
+        "pipeline.agent_telemetry.enabled" => {
+            if let Ok(val) = value.parse::<bool>() {
+                config.pipeline.agent_telemetry.enabled = val;
                 true
             } else {
                 false

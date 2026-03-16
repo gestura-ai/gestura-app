@@ -81,6 +81,10 @@ async fn run_single_shot_pipeline(
         .map_err(|e| e.to_string())
 }
 
+fn contains_any_signal(text: &str, signals: &[&str]) -> bool {
+    signals.iter().any(|signal| text.contains(signal))
+}
+
 fn should_auto_plan_agent_request(message: &str, explicit_task_id: Option<&str>) -> bool {
     if explicit_task_id.is_some() {
         return false;
@@ -91,25 +95,63 @@ fn should_auto_plan_agent_request(message: &str, explicit_task_id: Option<&str>)
         return false;
     }
 
-    let signals = [
+    let planning_signals = [
         "carefully plan",
+        "plan",
+        "step by step",
+        "break this down",
+        "break it down",
+        "task out",
+        "outline",
+    ];
+    let implementation_signals = [
         "plan and implement",
-        "build and test",
         "implement",
         "build",
-        "test",
         "create",
+        "scaffold",
         "setup",
         "set up",
         "refactor",
         "fix",
+        "add",
+        "update",
+        "wire",
+        "integrate",
+        "migrate",
+    ];
+    let validation_signals = [
+        "build and test",
+        "test",
+        "verify",
+        "validate",
+        "smoke test",
+        "compile",
+        "check",
+    ];
+    let sequencing_signals = [
+        " and then ",
+        " then ",
+        " afterwards",
+        " after that",
+        " finally",
+        " end to end",
+        " from start to finish",
     ];
 
-    signals
-        .iter()
-        .filter(|signal| text.contains(**signal))
-        .count()
-        >= 2
+    let matched_categories = [
+        contains_any_signal(&text, &planning_signals),
+        contains_any_signal(&text, &implementation_signals),
+        contains_any_signal(&text, &validation_signals),
+        contains_any_signal(&text, &sequencing_signals),
+    ]
+    .into_iter()
+    .filter(|matched| *matched)
+    .count();
+
+    matched_categories >= 2
+        && (contains_any_signal(&text, &implementation_signals)
+            || contains_any_signal(&text, &validation_signals))
 }
 
 fn should_resume_active_task_request(message: &str, explicit_task_id: Option<&str>) -> bool {
@@ -164,6 +206,13 @@ fn resolve_tracked_task_id(
         return None;
     }
 
+    resolve_open_tracking_task_from_session(manager, session_id)
+}
+
+fn resolve_open_tracking_task_from_session(
+    manager: &gestura_core::TaskManager,
+    session_id: &str,
+) -> Option<String> {
     if let Ok(Some(current_task_id)) = manager.get_current_task_id(session_id)
         && let Ok(Some(task)) = manager.get_task(session_id, &current_task_id)
         && task_is_open(task.status)
@@ -184,6 +233,13 @@ fn resolve_tracked_task_id(
     } else {
         None
     }
+}
+
+fn resolve_resume_tracked_task_id(
+    manager: &gestura_core::TaskManager,
+    session_id: &str,
+) -> Option<String> {
+    resolve_open_tracking_task_from_session(manager, session_id)
 }
 
 fn derive_agent_request_task_name(message: &str) -> String {
@@ -480,8 +536,24 @@ mod tests {
             "I want to create a small tauri gui that says hello world. Please carefully plan and implement then build and test it.",
             None,
         ));
+        assert!(should_auto_plan_agent_request(
+            "Please refactor the retry logic, then run the relevant tests and verify the CLI still works.",
+            None,
+        ));
+        assert!(should_auto_plan_agent_request(
+            "Break this down, implement the session restore flow, and validate it end to end.",
+            None,
+        ));
         assert!(!should_auto_plan_agent_request("/tools", None));
         assert!(!should_auto_plan_agent_request("hello", None));
+        assert!(!should_auto_plan_agent_request(
+            "Please carefully plan the work before we start.",
+            None,
+        ));
+        assert!(!should_auto_plan_agent_request(
+            "Explain what this function does.",
+            None,
+        ));
         assert!(!should_auto_plan_agent_request(
             "build and test it",
             Some("task-1")
@@ -548,6 +620,57 @@ mod tests {
         let tracked = resolve_tracked_task_id(&manager, &session_id, "please complete", None, None);
 
         assert_eq!(tracked.as_deref(), Some(root.id.as_str()));
+    }
+
+    #[test]
+    fn resolve_resume_tracked_task_id_prefers_current_open_task() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let manager = gestura_core::TaskManager::new(temp_dir.path());
+        let session_id = format!("resume-current-task-{}", uuid::Uuid::new_v4());
+        let root = manager
+            .create_task(&session_id, "Build app", "desc", None)
+            .expect("root task");
+        manager
+            .set_current_task_id(&session_id, Some(root.id.clone()))
+            .expect("set current task");
+
+        let tracked = resolve_resume_tracked_task_id(&manager, &session_id);
+
+        assert_eq!(tracked.as_deref(), Some(root.id.as_str()));
+    }
+
+    #[test]
+    fn resolve_resume_tracked_task_id_falls_back_to_single_open_root() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let manager = gestura_core::TaskManager::new(temp_dir.path());
+        let session_id = format!("resume-root-fallback-{}", uuid::Uuid::new_v4());
+        let root = manager
+            .create_task(&session_id, "Implement flow", "desc", None)
+            .expect("root task");
+
+        let tracked = resolve_resume_tracked_task_id(&manager, &session_id);
+
+        assert_eq!(tracked.as_deref(), Some(root.id.as_str()));
+    }
+
+    #[test]
+    fn resolve_resume_tracked_task_id_ignores_closed_current_task() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let manager = gestura_core::TaskManager::new(temp_dir.path());
+        let session_id = format!("resume-closed-current-{}", uuid::Uuid::new_v4());
+        let root = manager
+            .create_task(&session_id, "Build app", "desc", None)
+            .expect("root task");
+        manager
+            .update_task_status(&session_id, &root.id, gestura_core::TaskStatus::Completed)
+            .expect("complete root");
+        manager
+            .set_current_task_id(&session_id, Some(root.id.clone()))
+            .expect("set current task");
+
+        let tracked = resolve_resume_tracked_task_id(&manager, &session_id);
+
+        assert_eq!(tracked, None);
     }
 
     #[test]
@@ -634,6 +757,37 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn get_task_hierarchy_returns_nested_task_tree() {
+        let manager = crate::task_integration::get_task_manager();
+        let session_id = format!("task-tree-{}", uuid::Uuid::new_v4());
+        let root = gestura_core::Task::new(&session_id, "Root", "Root", None);
+        let child = gestura_core::Task::new(&session_id, "Child", "Child", Some(root.id.clone()));
+        let grandchild = gestura_core::Task::new(
+            &session_id,
+            "Grandchild",
+            "Grandchild",
+            Some(child.id.clone()),
+        );
+
+        let mut task_list = gestura_core::TaskList::new(&session_id);
+        task_list.add_task(root.clone());
+        task_list.add_task(child.clone());
+        task_list.add_task(grandchild.clone());
+        manager
+            .replace_task_list(task_list)
+            .expect("replace task list");
+
+        let tree = get_task_hierarchy(session_id).expect("task hierarchy");
+
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].task.id, root.id);
+        assert_eq!(tree[0].children.len(), 1);
+        assert_eq!(tree[0].children[0].task.id, child.id);
+        assert_eq!(tree[0].children[0].children.len(), 1);
+        assert_eq!(tree[0].children[0].children[0].task.id, grandchild.id);
     }
 }
 
@@ -3440,6 +3594,8 @@ pub async fn resume_agent_streaming(
     let input_snapshot = paused.original_input.clone();
     let history_snapshot = paused.history.clone();
     let request_source = paused.source;
+    let tracked_task_id =
+        resolve_resume_tracked_task_id(crate::task_integration::get_task_manager(), &session_id);
 
     // Build the resume request.
     let mut request = AgentRequest::new(&paused.original_input)
@@ -3448,6 +3604,12 @@ pub async fn resume_agent_streaming(
         .with_resume_state(paused);
 
     request = request.with_session(&session_id);
+    if let Some(task_id) = tracked_task_id.as_deref() {
+        request = request.with_task(task_id);
+        let _ = crate::task_integration::mark_task_in_progress(&app, &session_id, task_id);
+        let _ = crate::task_integration::get_task_manager()
+            .set_current_task_id(&session_id, Some(task_id.to_string()));
+    }
     if let Some(workspace) =
         crate::window_manager::get_session_state(&session_id).and_then(|s| s.workspace_dir)
     {
@@ -3481,7 +3643,7 @@ pub async fn resume_agent_streaming(
     let cfg_clone = cfg.clone();
     let cancel_token_clone = cancel_token.clone();
     let (tx, mut rx) = mpsc::channel::<StreamChunk>(100);
-    tokio::spawn(async move {
+    let pipeline_handle = tokio::spawn(async move {
         let pipeline = AgentPipeline::with_provider_optimized_config(cfg_clone)
             .with_knowledge(get_knowledge_store(), get_knowledge_settings());
         if let Err(e) = pipeline
@@ -3501,6 +3663,7 @@ pub async fn resume_agent_streaming(
     let mut assistant_thinking: Option<String> = None;
     let mut completed_tool_calls: Vec<gestura_core::ToolCallRecord> = Vec::new();
     let mut current_tool_call: Option<(String, String, String)> = None;
+    let mut saw_terminal = false;
 
     use tokio::time::{Duration, Instant};
     let idle_timeout_normal = Duration::from_secs(90);
@@ -3563,6 +3726,7 @@ pub async fn resume_agent_streaming(
                         }
                     }
                     StreamChunk::Done(_) => {
+                        saw_terminal = true;
                         if let Some(ref sid) = resolved_session_id
                             && (!assistant_text.trim().is_empty()
                                 || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty()))
@@ -3578,10 +3742,38 @@ pub async fn resume_agent_streaming(
                                 assistant_thinking.clone(),
                             );
                         }
+
+                        if let (Some(sid), Some(task_id)) = (&resolved_session_id, &tracked_task_id) {
+                            match crate::task_integration::finalize_tracked_task_after_agent_run(
+                                &app, sid, task_id,
+                            ) {
+                                Ok(crate::task_integration::TrackedTaskFinalization::Completed) => {}
+                                Ok(crate::task_integration::TrackedTaskFinalization::StillInProgress {
+                                    open_subtasks,
+                                }) => {
+                                    tracing::info!(
+                                        session_id = %sid,
+                                        task_id = %task_id,
+                                        open_subtasks = ?open_subtasks,
+                                        "Tracked resumed task run finished but planned subtasks remain open"
+                                    );
+                                }
+                                Err(error) => {
+                                    tracing::warn!(
+                                        session_id = %sid,
+                                        task_id = %task_id,
+                                        error = %error,
+                                        "Failed to reconcile tracked task state after resumed agent run"
+                                    );
+                                }
+                            }
+                        }
+
                         emit("agent-stream-done", serde_json::json!(null));
                         break;
                     }
-                    StreamChunk::Cancelled | StreamChunk::Paused => {
+                    StreamChunk::Cancelled => {
+                        saw_terminal = true;
                         if let Some(ref sid) = resolved_session_id {
                             if !assistant_text.trim().is_empty()
                                 || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty())
@@ -3598,6 +3790,32 @@ pub async fn resume_agent_streaming(
                                     );
                                 }
                             }
+                            if let Some(task_id) = tracked_task_id.as_deref() {
+                                let _ = crate::task_integration::mark_task_cancelled(&app, sid, task_id);
+                            }
+                        }
+                        emit("agent-stream-cancelled", serde_json::json!(null));
+                        break;
+                    }
+                    StreamChunk::Paused => {
+                        saw_terminal = true;
+                        if let Some(ref sid) = resolved_session_id {
+                            if !assistant_text.trim().is_empty()
+                                || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty())
+                            {
+                                if !crate::window_manager::append_to_last_assistant_message(
+                                    sid,
+                                    &assistant_text,
+                                    assistant_thinking.clone(),
+                                ) {
+                                    crate::window_manager::add_assistant_message(
+                                        sid,
+                                        &assistant_text,
+                                        assistant_thinking.clone(),
+                                    );
+                                }
+                            }
+
                             let paused_state = gestura_core::PausedExecutionState {
                                 original_input: input_snapshot.clone(),
                                 system_prompt: None,
@@ -3608,16 +3826,19 @@ pub async fn resume_agent_streaming(
                                 iteration: 0,
                                 source: request_source,
                                 session_id: Some(sid.clone()),
-                                workspace_dir: crate::window_manager::get_session_state(sid).and_then(|s| s.workspace_dir),
+                                workspace_dir: crate::window_manager::get_session_state(sid)
+                                    .and_then(|s| s.workspace_dir),
                                 model_snapshot: None,
                                 paused_at: chrono::Utc::now(),
                             };
                             crate::window_manager::set_session_paused_execution(sid, Some(paused_state));
                         }
+
                         emit("agent-stream-paused", serde_json::json!(null));
                         break;
                     }
                     StreamChunk::Error(err) => {
+                        saw_terminal = true;
                         if let Some(ref sid) = resolved_session_id
                             && (!assistant_text.trim().is_empty()
                                 || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty()))
@@ -3633,6 +3854,11 @@ pub async fn resume_agent_streaming(
                                 assistant_thinking.clone(),
                             );
                         }
+
+                        if let (Some(sid), Some(task_id)) = (&resolved_session_id, &tracked_task_id) {
+                            let _ = crate::task_integration::mark_task_cancelled(&app, sid, task_id);
+                        }
+
                         emit("agent-stream-error", serde_json::json!(err));
                         break;
                     }
@@ -3678,9 +3904,47 @@ pub async fn resume_agent_streaming(
                 }
             }
             () = &mut idle_timer => {
-                tracing::warn!("Resume stream idle timeout");
+                saw_terminal = true;
+                tracing::error!("Resume stream idle timeout (no events for {:?})", idle_timeout);
+                cancel_token.cancel();
+                if let (Some(sid), Some(task_id)) = (&resolved_session_id, &tracked_task_id) {
+                    let _ = crate::task_integration::mark_task_cancelled(&app, sid, task_id);
+                }
+                emit(
+                    "agent-stream-error",
+                    serde_json::json!(format!(
+                        "Timed out waiting for resumed agent response (no events for {:?}).",
+                        idle_timeout
+                    )),
+                );
                 break;
             }
+        }
+    }
+
+    if !saw_terminal {
+        if let (Some(sid), Some(task_id)) = (&resolved_session_id, &tracked_task_id) {
+            let _ = crate::task_integration::mark_task_cancelled(&app, sid, task_id);
+        }
+        emit(
+            "agent-stream-error",
+            serde_json::json!("Resumed streaming ended unexpectedly (no terminal event received)"),
+        );
+    }
+
+    let mut pipeline_handle = pipeline_handle;
+    tokio::select! {
+        res = &mut pipeline_handle => {
+            if let Err(join_err) = res {
+                tracing::error!("Resumed AgentPipeline task join error: {}", join_err);
+                if !saw_terminal {
+                    emit("agent-stream-error", serde_json::json!(format!("Resumed agent task failed: {join_err}")));
+                }
+            }
+        }
+        _ = tokio::time::sleep(Duration::from_secs(2)) => {
+            tracing::warn!("Resumed AgentPipeline task did not finish after terminal event; aborting");
+            pipeline_handle.abort();
         }
     }
 
@@ -6248,14 +6512,16 @@ pub fn list_tasks(session_id: String) -> Result<Vec<Task>, String> {
     manager.list_tasks(&session_id).map_err(|e| e.to_string())
 }
 
-/// Get task hierarchy for a session (root tasks with their subtasks).
+/// Get the full recursive task hierarchy for a session.
 ///
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
-pub fn get_task_hierarchy(session_id: String) -> Result<Vec<(Task, Vec<Task>)>, String> {
+pub fn get_task_hierarchy(
+    session_id: String,
+) -> Result<Vec<gestura_core::tasks::TaskTreeNode>, String> {
     let manager = get_task_manager();
     manager
-        .get_hierarchy(&session_id)
+        .get_task_tree(&session_id)
         .map_err(|e| e.to_string())
 }
 

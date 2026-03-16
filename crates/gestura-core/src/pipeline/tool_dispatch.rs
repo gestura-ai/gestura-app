@@ -30,6 +30,68 @@ enum RecoverableToolLoopPattern {
 }
 
 impl AgentPipeline {
+    fn title_case_slug(raw: &str) -> Option<String> {
+        let words = raw
+            .split(|c: char| matches!(c, '-' | '_' | ' '))
+            .filter(|segment| !segment.is_empty())
+            .collect::<Vec<_>>();
+
+        if words.is_empty() || words.len() > 8 {
+            return None;
+        }
+
+        Some(
+            words
+                .into_iter()
+                .map(|word| {
+                    let mut chars = word.chars();
+                    let Some(first) = chars.next() else {
+                        return String::new();
+                    };
+
+                    let mut formatted = first.to_ascii_uppercase().to_string();
+                    formatted.push_str(&chars.as_str().to_ascii_lowercase());
+                    formatted
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+    }
+
+    fn recover_task_create_name(raw: &str) -> Option<String> {
+        let candidate = Self::normalize_task_reference(raw)?;
+        if uuid::Uuid::parse_str(&candidate).is_ok()
+            || candidate.len() > 80
+            || candidate.contains('/')
+            || !candidate.chars().any(|ch| ch.is_ascii_alphabetic())
+        {
+            return None;
+        }
+
+        let slug_like = candidate
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ' '));
+
+        if slug_like {
+            return Self::title_case_slug(&candidate);
+        }
+
+        None
+    }
+
+    fn derive_task_name_from_description(raw: &str) -> Option<String> {
+        let description = Self::normalize_optional_tool_string(raw)?;
+        let sentence = description
+            .split(['\n', '.', '!', '?'])
+            .next()
+            .unwrap_or(description.as_str())
+            .trim();
+        if sentence.is_empty() || sentence.len() > 80 {
+            return None;
+        }
+        Some(sentence.to_string())
+    }
+
     fn normalize_optional_tool_string(raw: &str) -> Option<String> {
         let trimmed = raw.trim();
         if trimmed.is_empty()
@@ -312,7 +374,10 @@ impl AgentPipeline {
             "task" | "tasks" => {
                 let args = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
                 let args = Self::normalize_task_tool_arguments(args);
-                let operation = args.get("operation").and_then(|v| v.as_str()).unwrap_or("list");
+                let operation = args
+                    .get("operation")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("list");
                 let explicit_name = args
                     .get("name")
                     .and_then(|v| v.as_str())
@@ -342,7 +407,8 @@ impl AgentPipeline {
         pattern: &RecoverableToolLoopPattern,
         record: &ToolCallRecord,
     ) -> bool {
-        let record_pattern = Self::detect_recoverable_tool_loop_pattern(&record.name, &record.arguments);
+        let record_pattern =
+            Self::detect_recoverable_tool_loop_pattern(&record.name, &record.arguments);
         if record_pattern.as_ref() != Some(pattern) {
             return false;
         }
@@ -419,7 +485,11 @@ impl AgentPipeline {
 
         while let Some((start, marker)) = open_markers
             .iter()
-            .filter_map(|marker| raw[cursor..].find(marker).map(|idx| (cursor + idx, *marker)))
+            .filter_map(|marker| {
+                raw[cursor..]
+                    .find(marker)
+                    .map(|idx| (cursor + idx, *marker))
+            })
             .min_by_key(|(idx, _)| *idx)
         {
             let name_start = start + marker.len();
@@ -500,7 +570,11 @@ impl AgentPipeline {
 
         while let Some((start, marker)) = open_markers
             .iter()
-            .filter_map(|marker| raw[cursor..].find(marker).map(|idx| (cursor + idx, *marker)))
+            .filter_map(|marker| {
+                raw[cursor..]
+                    .find(marker)
+                    .map(|idx| (cursor + idx, *marker))
+            })
             .min_by_key(|(idx, _)| *idx)
         {
             output.push_str(&raw[cursor..start]);
@@ -749,7 +823,67 @@ impl AgentPipeline {
             }
         }
 
+        let operation = obj
+            .get("operation")
+            .and_then(|value| value.as_str())
+            .unwrap_or("list");
+
+        if operation == "create" {
+            let missing_name = obj
+                .get("name")
+                .and_then(|value| value.as_str())
+                .is_none_or(|name| name.trim().is_empty());
+
+            if missing_name {
+                if let Some(name) = obj
+                    .get("task_id")
+                    .and_then(|value| value.as_str())
+                    .and_then(Self::recover_task_create_name)
+                    .or_else(|| {
+                        obj.get("description")
+                            .and_then(|value| value.as_str())
+                            .and_then(Self::derive_task_name_from_description)
+                    })
+                {
+                    obj.insert("name".to_string(), serde_json::Value::String(name));
+                }
+            }
+
+            obj.remove("task_id");
+        }
+
         serde_json::Value::Object(obj)
+    }
+
+    fn default_shell_timeout_secs(command: &str) -> u64 {
+        let normalized = command.to_ascii_lowercase();
+        let long_running_markers = [
+            "cargo check",
+            "cargo build",
+            "cargo test",
+            "cargo clippy",
+            "cargo tauri",
+            "tauri build",
+            "tauri dev",
+            "npm install",
+            "npm run",
+            "pnpm install",
+            "pnpm run",
+            "yarn install",
+            "yarn build",
+            "yarn test",
+            "npx create-",
+            "npx tauri",
+        ];
+
+        if long_running_markers
+            .iter()
+            .any(|marker| normalized.contains(marker))
+        {
+            300
+        } else {
+            60
+        }
     }
 
     /// Execute a tool by name with given arguments.
@@ -1604,11 +1738,11 @@ impl AgentPipeline {
                             .collect::<HashMap<_, _>>()
                     });
 
-                // Optional timeout (seconds). Default to 60s to match prior behavior.
+                // Optional timeout (seconds). Use a longer default for build/test/install flows.
                 let timeout_secs = args
                     .get("timeout_secs")
                     .and_then(|v| v.as_u64())
-                    .unwrap_or(60);
+                    .unwrap_or_else(|| Self::default_shell_timeout_secs(command));
 
                 // Streaming path: send real-time output chunks to the frontend.
                 if let Some(tx) = stream_tx {
@@ -1682,7 +1816,7 @@ impl AgentPipeline {
                         arguments,
                         cwd.as_deref(),
                         None,
-                        Some(60),
+                        Some(Self::default_shell_timeout_secs(arguments)),
                         tx.clone(),
                     )
                     .await
@@ -2022,15 +2156,18 @@ impl AgentPipeline {
                             .and_then(Self::parse_task_status);
 
                         match explicit_status {
-                            Some(status) => match manager.update_task_status(session_id, task_id, status) {
-                                Ok(_) => ToolResult::Success(format!(
-                                    "Updated task {} status to {:?}",
-                                    task_id, status
-                                )),
-                                Err(e) => {
-                                    ToolResult::Error(format!("Failed to update task status: {}", e))
+                            Some(status) => {
+                                match manager.update_task_status(session_id, task_id, status) {
+                                    Ok(_) => ToolResult::Success(format!(
+                                        "Updated task {} status to {:?}",
+                                        task_id, status
+                                    )),
+                                    Err(e) => ToolResult::Error(format!(
+                                        "Failed to update task status: {}",
+                                        e
+                                    )),
                                 }
-                            },
+                            }
                             None => ToolResult::Error(
                                 Self::format_missing_task_update_status_error(&args),
                             ),
@@ -2744,6 +2881,37 @@ mod tests {
     }
 
     #[test]
+    fn normalize_task_tool_arguments_recovers_create_name_from_slug_like_task_id() {
+        let normalized = AgentPipeline::normalize_task_tool_arguments(json!({
+            "operation": "create",
+            "task_id": "setup-tauri-env",
+            "parent_id": "e4d5f1a0-c20d-4562-aef3-b1ca3ffbdb8c"
+        }));
+
+        assert_eq!(
+            normalized.get("name").and_then(|v| v.as_str()),
+            Some("Setup Tauri Env")
+        );
+        assert!(normalized.get("task_id").is_none());
+    }
+
+    #[test]
+    fn default_shell_timeout_extends_build_commands() {
+        assert_eq!(
+            AgentPipeline::default_shell_timeout_secs("cargo check"),
+            300
+        );
+        assert_eq!(
+            AgentPipeline::default_shell_timeout_secs("npm install"),
+            300
+        );
+        assert_eq!(
+            AgentPipeline::default_shell_timeout_secs("printf hello"),
+            60
+        );
+    }
+
+    #[test]
     fn normalize_task_tool_arguments_recovers_unclosed_status_fragment() {
         let normalized = AgentPipeline::normalize_task_tool_arguments(json!({
             "operation": "update_status",
@@ -2843,7 +3011,9 @@ mod tests {
         assert!(message.contains("Missing required field 'status' for update_status operation"));
         assert!(message.contains("`update_status` requires both `task_id` and `status`"));
         assert!(message.contains("\"status\":\"inprogress\""));
-        assert!(message.contains("Do not omit `status` to ask the runtime to infer or preserve the current state"));
+        assert!(message.contains(
+            "Do not omit `status` to ask the runtime to infer or preserve the current state"
+        ));
     }
 
     #[test]
@@ -2856,7 +3026,9 @@ mod tests {
         assert!(message.contains("Missing required field 'name' for create operation"));
         assert!(message.contains("`create` requires a specific task `name`"));
         assert!(message.contains("\"name\":\"Build hello world Tauri app\""));
-        assert!(message.contains("Do not rely on the runtime to invent placeholder names like 'Untitled Task'"));
+        assert!(message.contains(
+            "Do not rely on the runtime to invent placeholder names like 'Untitled Task'"
+        ));
     }
 
     #[test]
@@ -3115,7 +3287,10 @@ mod tests {
         let manager = crate::get_global_task_manager();
         let pipeline = AgentPipeline::new(AppConfig::default());
 
-        let before = manager.list_tasks(&session_id).expect("list tasks before").len();
+        let before = manager
+            .list_tasks(&session_id)
+            .expect("list tasks before")
+            .len();
 
         let result = pipeline
             .execute_task_tool(
@@ -3135,7 +3310,10 @@ mod tests {
 
         assert!(output.contains("Missing required field 'name' for create operation"));
 
-        let after = manager.list_tasks(&session_id).expect("list tasks after").len();
+        let after = manager
+            .list_tasks(&session_id)
+            .expect("list tasks after")
+            .len();
         assert_eq!(before, after);
     }
 
@@ -3442,9 +3620,13 @@ mod tests {
         );
 
         assert!(prompt.contains("task-tracking errors must not block implementation work"));
-        assert!(prompt.contains("For `create`, provide a specific `name` and preferably a concrete `description`"));
+        assert!(prompt.contains(
+            "For `create`, provide a specific `name` and preferably a concrete `description`"
+        ));
         assert!(prompt.contains("always include both `task_id` and `status`"));
-        assert!(prompt.contains("Arguments: {\"operation\":\"update_status\",\"task_id\":\"abc\"}"));
+        assert!(
+            prompt.contains("Arguments: {\"operation\":\"update_status\",\"task_id\":\"abc\"}")
+        );
     }
 
     #[test]
@@ -3494,7 +3676,9 @@ mod tests {
 
         assert!(prompt.contains("if `task.update_status` failed because `status` was omitted"));
         assert!(prompt.contains("not a reason to keep looping on task bookkeeping"));
-        assert!(prompt.contains("Arguments: {\"operation\":\"update_status\",\"task_id\":\"abc\"}"));
+        assert!(
+            prompt.contains("Arguments: {\"operation\":\"update_status\",\"task_id\":\"abc\"}")
+        );
     }
 
     #[test]
@@ -3548,7 +3732,9 @@ mod tests {
         );
 
         assert!(prompt.contains("task tracking as temporarily disabled for this run"));
-        assert!(prompt.contains("continue the real implementation/build/test work with file/shell/code tools"));
+        assert!(prompt.contains(
+            "continue the real implementation/build/test work with file/shell/code tools"
+        ));
     }
 
     #[test]

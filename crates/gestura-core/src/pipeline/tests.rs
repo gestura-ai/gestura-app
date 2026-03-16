@@ -67,6 +67,49 @@ fn test_effective_request_max_iterations_uses_tracked_task_budget() {
 }
 
 #[test]
+fn missing_session_ids_are_synthesized_for_core_requests() {
+    let mut request = AgentRequest::new("build and test the application");
+
+    AgentPipeline::ensure_request_session_id(&mut request);
+
+    let session_id = request
+        .metadata
+        .session_id
+        .as_deref()
+        .expect("session id should be synthesized");
+    assert!(session_id.starts_with("agent-run-"));
+}
+
+#[test]
+fn core_can_auto_initialize_a_tracked_root_task() {
+    let temp = tempdir().unwrap();
+    let mut request =
+        AgentRequest::new("Carefully plan and implement the change, then build and test it")
+            .with_workspace(temp.path());
+
+    AgentPipeline::ensure_request_session_id(&mut request);
+    AgentPipeline::maybe_initialize_tracked_request_task(&mut request, true, true);
+
+    let session_id = request
+        .metadata
+        .session_id
+        .as_deref()
+        .expect("session id should be present");
+    let task_id = request
+        .metadata
+        .task_id
+        .as_deref()
+        .expect("task id should be initialized");
+    let tracked_task = crate::get_global_task_manager()
+        .get_task(session_id, task_id)
+        .expect("task lookup should succeed")
+        .expect("tracked task should exist");
+
+    assert_eq!(tracked_task.parent_id, None);
+    assert!(tracked_task.name.contains("Carefully plan and implement"));
+}
+
+#[test]
 fn test_message_constructors() {
     let user_msg = Message::user("Hello");
     assert_eq!(user_msg.role, "user");

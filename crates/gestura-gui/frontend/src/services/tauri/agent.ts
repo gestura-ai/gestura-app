@@ -11,6 +11,17 @@ import type {
   ToolConfirmationDecision,
 } from '../../features/agent/types';
 
+interface RawTaskTreeNode {
+  task: Task;
+  children: RawTaskTreeNode[];
+}
+
+const mapTaskTree = (nodes: RawTaskTreeNode[]): TaskHierarchy =>
+  nodes.map(({ task, children }) => ({
+    ...task,
+    subtasks: mapTaskTree(children),
+  }));
+
 // ─── Streaming ────────────────────────────────────────────────────────────────
 
 export interface SendMessageArgs {
@@ -427,8 +438,8 @@ export const listOpenAiSttModels = (): Promise<unknown[]> =>
 
 // ─── Tasks ────────────────────────────────────────────────────────────────────
 
-export const getTaskHierarchy = (sessionId: string): Promise<TaskHierarchy> =>
-  invokeTauri('get_task_hierarchy', { session_id: sessionId });
+export const getTaskHierarchy = async (sessionId: string): Promise<TaskHierarchy> =>
+  mapTaskTree(await invokeTauri<RawTaskTreeNode[]>('get_task_hierarchy', { session_id: sessionId }));
 
 export const createTask = (sessionId: string, name: string, description?: string | null): Promise<Task> =>
   invokeTauri('create_task', { session_id: sessionId, name, description: description ?? null });

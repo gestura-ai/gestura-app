@@ -165,12 +165,29 @@ pub struct PipelineSettings {
     pub max_context_tokens: usize,
     /// Enable token usage logging for debugging.
     pub log_token_usage: bool,
+    /// Agent-loop telemetry settings.
+    #[serde(default)]
+    pub agent_telemetry: AgentTelemetrySettings,
     /// Project guardrails settings.
     #[serde(default)]
     pub project_guardrails: ProjectGuardrailsSettings,
     /// ERL-inspired experiential reflection settings.
     #[serde(default)]
     pub reflection: ReflectionSettings,
+}
+
+/// Settings for request-level agent-loop telemetry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AgentTelemetrySettings {
+    /// Emit request-trace telemetry across the agent loop and context pipeline.
+    pub enabled: bool,
+}
+
+impl Default for AgentTelemetrySettings {
+    fn default() -> Self {
+        Self { enabled: false }
+    }
 }
 
 /// Settings for project-level guardrails discovery and prompt injection.
@@ -203,6 +220,7 @@ impl Default for PipelineSettings {
             compaction_strategy: CompactionStrategy::default(),
             max_context_tokens: 0,
             log_token_usage: true,
+            agent_telemetry: AgentTelemetrySettings::default(),
             project_guardrails: ProjectGuardrailsSettings::default(),
             reflection: ReflectionSettings::default(),
         }
@@ -958,6 +976,28 @@ impl AppConfig {
             }
             "pipeline.max_context_tokens" => Some(self.pipeline.max_context_tokens.to_string()),
             "pipeline.log_token_usage" => Some(self.pipeline.log_token_usage.to_string()),
+            "pipeline.agent_telemetry.enabled" => {
+                Some(self.pipeline.agent_telemetry.enabled.to_string())
+            }
+            "pipeline.reflection.enabled" => Some(self.pipeline.reflection.enabled.to_string()),
+            "pipeline.reflection.quality_threshold_percent" => Some(
+                self.pipeline
+                    .reflection
+                    .quality_threshold_percent
+                    .to_string(),
+            ),
+            "pipeline.reflection.max_injected" => {
+                Some(self.pipeline.reflection.max_injected.to_string())
+            }
+            "pipeline.reflection.max_retry_attempts" => {
+                Some(self.pipeline.reflection.max_retry_attempts.to_string())
+            }
+            "pipeline.reflection.promotion_confidence_percent" => Some(
+                self.pipeline
+                    .reflection
+                    .promotion_confidence_percent
+                    .to_string(),
+            ),
 
             // Developer settings
             "developer.enable_simulators" => Some(self.developer.enable_simulators.to_string()),
@@ -999,6 +1039,7 @@ impl AppConfig {
             "pipeline.compaction_strategy",
             "pipeline.max_context_tokens",
             "pipeline.log_token_usage",
+            "pipeline.agent_telemetry.enabled",
             "pipeline.reflection.enabled",
             "pipeline.reflection.quality_threshold_percent",
             "pipeline.reflection.max_injected",

@@ -40,6 +40,9 @@ const makeConfig = (): AppConfig => ({
     compaction_strategy: 'Summarize',
     max_context_tokens: 4096,
     log_token_usage: false,
+    agent_telemetry: {
+      enabled: false,
+    },
     reflection: {
       enabled: false,
       quality_threshold_percent: 60,
@@ -83,6 +86,9 @@ describe('config IPC wrappers', () => {
         enable_simulators: false,
       },
       pipeline: {
+        agent_telemetry: {
+          enabled: false,
+        },
         reflection: {
           enabled: false,
         },

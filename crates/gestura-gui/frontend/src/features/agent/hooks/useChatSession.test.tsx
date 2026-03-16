@@ -85,7 +85,7 @@ describe('useChatSession', () => {
     streamDispatch = null;
     getSessionHistoryMock.mockResolvedValue([]);
     hasSessionPausedExecutionMock.mockResolvedValue(false);
-    getTaskHierarchyMock.mockResolvedValue({ roots: [], byId: {} });
+    getTaskHierarchyMock.mockResolvedValue([]);
     listKnowledgeItemsMock.mockResolvedValue([]);
     getEnabledKnowledgeMock.mockResolvedValue([]);
     getSessionToolSettingsMock.mockResolvedValue({ mode: 'allowlist', allowlist: [], requireConfirmation: [] });

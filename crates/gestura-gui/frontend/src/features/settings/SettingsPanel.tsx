@@ -1,5 +1,13 @@
 import React from 'react';
-import { AppConfig, CompactionStrategy, LlmSettings, PipelineSettings, ReflectionSettings, UiSettings } from '../../types/config';
+import {
+  AgentTelemetrySettings,
+  AppConfig,
+  CompactionStrategy,
+  LlmSettings,
+  PipelineSettings,
+  ReflectionSettings,
+  UiSettings,
+} from '../../types/config';
 import { FormGroup } from '../../shared/components/FormGroup';
 import { PanelSection } from '../../shared/components/PanelSection';
 
@@ -39,6 +47,14 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ config, onConfigUpdate })
   const updateReflectionSettings = (updates: Partial<ReflectionSettings>) => {
     updatePipelineSettings({
       reflection: { ...config.pipeline.reflection, ...updates },
+    });
+  };
+
+  // Nested pipeline updates must preserve sibling settings so toggling telemetry
+  // does not clobber reflection/iteration/compaction configuration.
+  const updateAgentTelemetrySettings = (updates: Partial<AgentTelemetrySettings>) => {
+    updatePipelineSettings({
+      agent_telemetry: { ...config.pipeline.agent_telemetry, ...updates },
     });
   };
 
@@ -238,6 +254,24 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ config, onConfigUpdate })
             <>
               <input
                 type="checkbox"
+                aria-label="Enable agent loop telemetry"
+                checked={config.pipeline.agent_telemetry.enabled}
+                onChange={(e) => updateAgentTelemetrySettings({ enabled: e.target.checked })}
+              />{' '}
+              Enable agent loop telemetry
+            </>
+          }
+          hint="Capture request telemetry across routing, context resolution, compaction, agent iterations, tool calls, and reflection."
+        >
+          {null}
+        </FormGroup>
+
+        <FormGroup
+          label={
+            <>
+              <input
+                type="checkbox"
+                aria-label="Enable experiential reflection"
                 checked={config.pipeline.reflection.enabled}
                 onChange={(e) => updateReflectionSettings({ enabled: e.target.checked })}
               />{' '}

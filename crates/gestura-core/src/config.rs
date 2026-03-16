@@ -1178,6 +1178,10 @@ mod tests {
     fn test_config_get() {
         let c = AppConfig::default();
         assert_eq!(c.get("llm.primary"), Some("anthropic".to_string()));
+        assert_eq!(
+            c.get("pipeline.agent_telemetry.enabled"),
+            Some("false".to_string())
+        );
         assert_eq!(c.get("unknown.key"), None);
     }
 
@@ -1210,6 +1214,7 @@ mod tests {
         );
         assert_eq!(config.pipeline.max_context_tokens, 0);
         assert!(config.pipeline.log_token_usage);
+        assert!(!config.pipeline.agent_telemetry.enabled);
     }
 
     #[test]
@@ -1241,6 +1246,7 @@ mod tests {
         );
         assert_eq!(config.pipeline.max_context_tokens, 0);
         assert!(config.pipeline.log_token_usage);
+        assert!(!config.pipeline.agent_telemetry.enabled);
     }
 
     #[test]
@@ -1252,6 +1258,7 @@ mod tests {
         config.pipeline.compaction_strategy = CompactionStrategy::MemoryBank;
         config.pipeline.max_context_tokens = 50000;
         config.pipeline.log_token_usage = false;
+        config.pipeline.agent_telemetry.enabled = true;
 
         // Serialize to YAML
         let yaml = serde_yaml::to_string(&config).unwrap();
@@ -1268,6 +1275,7 @@ mod tests {
         );
         assert_eq!(deserialized.pipeline.max_context_tokens, 50000);
         assert!(!deserialized.pipeline.log_token_usage);
+        assert!(deserialized.pipeline.agent_telemetry.enabled);
     }
 
     /// Global lock used to serialize environment-variable mutation across tests.

@@ -36,6 +36,9 @@ function makeConfig(): AppConfig {
       compaction_strategy: 'Summarize',
       max_context_tokens: 0,
       log_token_usage: false,
+      agent_telemetry: {
+        enabled: false,
+      },
       reflection: {
         enabled: false,
         quality_threshold_percent: 60,
@@ -48,13 +51,41 @@ function makeConfig(): AppConfig {
 }
 
 describe('SettingsPanel reflection controls', () => {
-  it('updates nested reflection settings without dropping sibling pipeline config', () => {
+  it('updates nested agent telemetry settings without dropping sibling pipeline config', () => {
     const onConfigUpdate = vi.fn().mockResolvedValue(undefined);
-    const { getByLabelText } = render(
+    const { container } = render(
       <SettingsPanel config={makeConfig()} onConfigUpdate={onConfigUpdate} />
     );
 
-    fireEvent.click(getByLabelText(/Enable experiential reflection/i));
+    const telemetryCheckbox = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Enable agent loop telemetry"]'
+    );
+
+    expect(telemetryCheckbox).not.toBeNull();
+    fireEvent.click(telemetryCheckbox!);
+
+    expect(onConfigUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pipeline: expect.objectContaining({
+          max_history_messages: 10,
+          agent_telemetry: expect.objectContaining({ enabled: true }),
+        }),
+      })
+    );
+  });
+
+  it('updates nested reflection settings without dropping sibling pipeline config', () => {
+    const onConfigUpdate = vi.fn().mockResolvedValue(undefined);
+    const { container } = render(
+      <SettingsPanel config={makeConfig()} onConfigUpdate={onConfigUpdate} />
+    );
+
+    const reflectionCheckbox = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Enable experiential reflection"]'
+    );
+
+    expect(reflectionCheckbox).not.toBeNull();
+    fireEvent.click(reflectionCheckbox!);
 
     expect(onConfigUpdate).toHaveBeenCalledWith(
       expect.objectContaining({

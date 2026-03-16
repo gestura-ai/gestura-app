@@ -59,7 +59,7 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                     "command": {"type": "string", "description": "Shell command to run. Commands must be non-interactive: this tool cannot answer prompts or confirmations, so include unattended flags such as -y/--yes/CI=1 when needed."},
                     "cwd": {"type": "string", "description": "Working directory (optional)"},
                     "env": {"type": "object", "description": "Environment variables", "additionalProperties": {"type": "string"}},
-                    "timeout_secs": {"type": "integer", "description": "Timeout in seconds (optional, default 60). Interactive commands are not supported; if a command may prompt, use non-interactive flags or ask the user first."}
+                    "timeout_secs": {"type": "integer", "description": "Timeout in seconds (optional). Quick commands can use short timeouts, but install/build/test/scaffold commands should usually use about 300 seconds. Interactive commands are not supported; if a command may prompt, use non-interactive flags or ask the user first."}
                 },
                 "required": ["command"],
                 "additionalProperties": true
@@ -72,7 +72,7 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "description": "File operation to perform. 'write' requires 'path' and the full file 'content' (or clear aliases like 'contents'/'text'); do not send 'pattern' or line numbers for write. 'edit' requires 'path', 'old', and 'new'. 'search' requires 'path' and 'pattern'. 'read', 'list', and 'tree' require 'path' (defaults to '.' if omitted).",
+                        "description": "File operation to perform. After reading an existing file, prefer 'edit' for targeted changes. 'write' requires 'path' and the full file 'content' (or clear aliases like 'contents'/'text'); do not send 'pattern' or line numbers for write. 'edit' requires 'path', 'old', and 'new'. 'search' requires 'path' and 'pattern'. 'read', 'list', and 'tree' require 'path' (defaults to '.' if omitted).",
                         "enum": ["read", "write", "edit", "list", "tree", "search"]
                     },
                     "path": {
@@ -81,7 +81,7 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                     },
                     "content": {
                         "type": "string",
-                        "description": "Full content to write to the file. REQUIRED when operation='write'. For partial changes, use operation='edit' with 'old' and 'new' instead."
+                        "description": "Full content to write to the file. REQUIRED when operation='write'. Never call write without full replacement content. For partial changes to an existing file, use operation='edit' with 'old' and 'new' instead."
                     },
                     "old": {
                         "type": "string",
@@ -271,7 +271,7 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
             }),
         ),
         "task" | "tasks" => (
-            "Create, update, list, and organize tasks for the current session. For `update_status`, ALWAYS provide both `task_id` and `status` in the same call. Correct example: {\"operation\":\"update_status\",\"task_id\":\"abc123\",\"status\":\"completed\"}. Invalid example: {\"operation\":\"update_status\",\"task_id\":\"abc123\"}. Do not call `update_status` just to confirm or preserve the current state; if no status changed, continue the real work instead of repeating bookkeeping.",
+            "Create, update, list, and organize tasks for the current session. For `create`, provide `name` and let the runtime assign the `task_id`; do not send `task_id` in create calls. For `update_status`, ALWAYS provide both `task_id` and `status` in the same call. Correct example: {\"operation\":\"update_status\",\"task_id\":\"abc123\",\"status\":\"completed\"}. Invalid example: {\"operation\":\"update_status\",\"task_id\":\"abc123\"}. Do not call `update_status` just to confirm or preserve the current state; if no status changed, continue the real work instead of repeating bookkeeping.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -286,7 +286,7 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                     },
                     "name": {
                         "type": "string",
-                        "description": "Task name. REQUIRED for create operation. Provide plain text only; do not wrap it in XML or parameter tags."
+                        "description": "Task name. REQUIRED for create operation. Provide plain text only; do not wrap it in XML or parameter tags. For create, send `name` and optional `description`; do not send a `task_id`."
                     },
                     "description": {
                         "type": "string",
@@ -636,17 +636,17 @@ mod tests {
         assert!(function_description.contains("ALWAYS provide both `task_id` and `status`"));
         assert!(function_description.contains("Invalid example"));
 
-        let operation_description = schemas.openai[0]["function"]["parameters"]["properties"]
-            ["operation"]["description"]
-            .as_str()
-            .expect("task operation description should exist");
+        let operation_description =
+            schemas.openai[0]["function"]["parameters"]["properties"]["operation"]["description"]
+                .as_str()
+                .expect("task operation description should exist");
         assert!(operation_description.contains("requires BOTH `task_id` and `status`"));
         assert!(operation_description.contains("do not use it just to confirm the current state"));
 
-        let status_description = schemas.openai[0]["function"]["parameters"]["properties"]
-            ["status"]["description"]
-            .as_str()
-            .expect("task status description should exist");
+        let status_description =
+            schemas.openai[0]["function"]["parameters"]["properties"]["status"]["description"]
+                .as_str()
+                .expect("task status description should exist");
         assert!(status_description.contains("Do not omit this field"));
         assert!(status_description.contains("skip the task update and continue the real work"));
 

@@ -1,4 +1,4 @@
-use super::*;
+use super::{request_telemetry::AgentLoopContinuation, *};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IncompleteRunReason {
@@ -71,6 +71,190 @@ impl AgentPipeline {
         ]
         .iter()
         .any(|needle| normalized.contains(needle))
+    }
+
+    fn tracked_task_context<'a>(
+        session_id: Option<&'a str>,
+        task_id: Option<&'a str>,
+    ) -> Option<(&'a str, &'a str)> {
+        let session_id = session_id?.trim();
+        let task_id = task_id?.trim();
+        if session_id.is_empty() || task_id.is_empty() {
+            return None;
+        }
+        Some((session_id, task_id))
+    }
+
+    fn mark_tracked_task_in_progress(session_id: Option<&str>, task_id: Option<&str>) {
+        let Some((session_id, task_id)) = Self::tracked_task_context(session_id, task_id) else {
+            return;
+        };
+
+        let manager = crate::get_global_task_manager();
+        match manager.get_task(session_id, task_id) {
+            Ok(Some(task)) => {
+                if task.status != crate::TaskStatus::InProgress
+                    && let Err(error) = manager.update_task_status(
+                        session_id,
+                        task_id,
+                        crate::TaskStatus::InProgress,
+                    )
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        task_id = %task_id,
+                        error = %error,
+                        "Failed to mark tracked task in progress"
+                    );
+                }
+
+                if let Err(error) =
+                    manager.set_current_task_id(session_id, Some(task_id.to_string()))
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        task_id = %task_id,
+                        error = %error,
+                        "Failed to set current tracked task"
+                    );
+                }
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    task_id = %task_id,
+                    "Tracked task was not found when attempting to mark it in progress"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    task_id = %task_id,
+                    error = %error,
+                    "Failed to load tracked task before marking it in progress"
+                );
+            }
+        }
+    }
+
+    fn reconcile_tracked_task_after_success(session_id: Option<&str>, task_id: Option<&str>) {
+        let Some((session_id, task_id)) = Self::tracked_task_context(session_id, task_id) else {
+            return;
+        };
+
+        let manager = crate::get_global_task_manager();
+        let tracked_task = match manager.get_task(session_id, task_id) {
+            Ok(Some(task)) => task,
+            Ok(None) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    task_id = %task_id,
+                    "Tracked task was not found during success reconciliation"
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    task_id = %task_id,
+                    error = %error,
+                    "Failed to load tracked task during success reconciliation"
+                );
+                return;
+            }
+        };
+
+        let open_descendants = match manager.list_descendants(session_id, task_id) {
+            Ok(tasks) => tasks.into_iter().filter(|task| !task.is_terminal()).count(),
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    task_id = %task_id,
+                    error = %error,
+                    "Failed to inspect tracked task descendants during success reconciliation"
+                );
+                return;
+            }
+        };
+
+        let target_status = if open_descendants == 0 {
+            crate::TaskStatus::Completed
+        } else {
+            crate::TaskStatus::InProgress
+        };
+
+        if tracked_task.status != target_status
+            && let Err(error) = manager.update_task_status(session_id, task_id, target_status)
+        {
+            tracing::warn!(
+                session_id = %session_id,
+                task_id = %task_id,
+                error = %error,
+                "Failed to reconcile tracked task status after successful agent run"
+            );
+            return;
+        }
+
+        if open_descendants == 0 {
+            if let Ok(Some(current_task_id)) = manager.get_current_task_id(session_id)
+                && current_task_id == task_id
+            {
+                let _ = manager.set_current_task_id(session_id, None);
+            }
+        } else {
+            let _ = manager.set_current_task_id(session_id, Some(task_id.to_string()));
+        }
+    }
+
+    fn cancel_tracked_task(session_id: Option<&str>, task_id: Option<&str>, reason: &str) {
+        let Some((session_id, task_id)) = Self::tracked_task_context(session_id, task_id) else {
+            return;
+        };
+
+        let manager = crate::get_global_task_manager();
+        match manager.get_task(session_id, task_id) {
+            Ok(Some(task)) => {
+                if !task.is_terminal()
+                    && let Err(error) = manager.update_task_status(
+                        session_id,
+                        task_id,
+                        crate::TaskStatus::Cancelled,
+                    )
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        task_id = %task_id,
+                        error = %error,
+                        cancellation_reason = reason,
+                        "Failed to cancel tracked task after interrupted agent run"
+                    );
+                    return;
+                }
+
+                if let Ok(Some(current_task_id)) = manager.get_current_task_id(session_id)
+                    && current_task_id == task_id
+                {
+                    let _ = manager.set_current_task_id(session_id, None);
+                }
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    task_id = %task_id,
+                    cancellation_reason = reason,
+                    "Tracked task was not found when attempting to cancel it"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    task_id = %task_id,
+                    error = %error,
+                    cancellation_reason = reason,
+                    "Failed to load tracked task before cancellation"
+                );
+            }
+        }
     }
 
     fn active_task_has_open_descendants(
@@ -241,7 +425,9 @@ impl AgentPipeline {
         }
 
         let mut filtered = schemas.clone();
-        filtered.openai.retain(|entry| openai_name(entry) != Some(tool_name));
+        filtered
+            .openai
+            .retain(|entry| openai_name(entry) != Some(tool_name));
         filtered
             .anthropic
             .retain(|entry| named_entry(entry) != Some(tool_name));
@@ -303,10 +489,31 @@ impl AgentPipeline {
         false
     }
 
+    fn is_file_loop_breaker_skip(tool_call: &ToolCallRecord) -> bool {
+        tool_call.name == "file"
+            && matches!(
+                &tool_call.result,
+                ToolResult::Skipped(message)
+                    if message.contains("Loop breaker:") && message.contains("file.write")
+            )
+    }
+
+    fn should_suspend_file_tool(tool_calls: &[ToolCallRecord]) -> bool {
+        tool_calls.iter().rev().any(Self::is_file_loop_breaker_skip)
+    }
+
     fn with_task_tool_disabled_instruction(current_prompt: &str) -> String {
         let mut prompt = current_prompt.to_string();
         prompt.push_str(
             "\nUser: Repeated malformed task bookkeeping calls mean the `task` tool is disabled for the rest of this run. Do not call `task` again. Continue the real implementation, build, or test work with the other available tools instead.\n",
+        );
+        prompt
+    }
+
+    fn with_file_tool_disabled_instruction(current_prompt: &str) -> String {
+        let mut prompt = current_prompt.to_string();
+        prompt.push_str(
+            "\nUser: Repeated malformed `file.write` calls mean the `file` tool is disabled for the rest of this run. Do not call `file` again in this run. Continue with other available tools such as `shell` or `code`, or provide a concise user-facing summary if you cannot safely proceed further.\n",
         );
         prompt
     }
@@ -386,7 +593,10 @@ impl AgentPipeline {
         task_id: Option<String>,
         max_iterations: Option<usize>,
         permission_level: PermissionLevel,
+        telemetry: &AgentRequestTelemetry,
     ) -> Result<AgentResponse, AppError> {
+        Self::mark_tracked_task_in_progress(session_id.as_deref(), task_id.as_deref());
+
         let mut response = AgentResponse {
             content: String::new(),
             thinking: None,
@@ -425,10 +635,6 @@ impl AgentPipeline {
             }
             Some(schemas)
         };
-        let tool_schemas_without_task = tool_schemas
-            .as_ref()
-            .map(|schemas| Self::without_tool_schema(schemas, "task"));
-
         tracing::debug!(
             builtin_tool_count = tools.len(),
             has_schemas = tool_schemas.is_some(),
@@ -451,6 +657,11 @@ impl AgentPipeline {
             }
 
             if cancel_token.is_cancelled() {
+                Self::cancel_tracked_task(
+                    session_id.as_deref(),
+                    task_id.as_deref(),
+                    "cancel token raised before iteration",
+                );
                 let _ = tx.send(cancel_token.interruption_chunk()).await;
                 return Ok(response);
             }
@@ -478,22 +689,40 @@ impl AgentPipeline {
             let streaming_cfg = crate::streaming::streaming_config_from(&self.config);
             let enable_fallback = self.pipeline_config.enable_fallback;
             let task_tool_suspended = Self::should_suspend_task_tool(&response.tool_calls);
+            let file_tool_suspended = Self::should_suspend_file_tool(&response.tool_calls);
+            telemetry
+                .record_iteration_start(iteration, max_iterations, task_tool_suspended)
+                .await;
             if task_tool_suspended {
                 tracing::warn!(
                     iteration = iteration,
                     "[AgentLoop] Temporarily disabling task tool schema after repeated malformed task bookkeeping calls"
                 );
             }
-            let tool_schemas_for_iteration = if task_tool_suspended {
-                tool_schemas_without_task.clone()
-            } else {
-                tool_schemas.clone()
-            };
-            let prompt = if task_tool_suspended {
-                Self::with_task_tool_disabled_instruction(&current_prompt)
-            } else {
-                current_prompt.clone()
-            };
+            if file_tool_suspended {
+                tracing::warn!(
+                    iteration = iteration,
+                    "[AgentLoop] Temporarily disabling file tool schema after repeated malformed file-write calls"
+                );
+            }
+            let mut tool_schemas_for_iteration = tool_schemas.clone();
+            if task_tool_suspended {
+                tool_schemas_for_iteration = tool_schemas_for_iteration
+                    .as_ref()
+                    .map(|schemas| Self::without_tool_schema(schemas, "task"));
+            }
+            if file_tool_suspended {
+                tool_schemas_for_iteration = tool_schemas_for_iteration
+                    .as_ref()
+                    .map(|schemas| Self::without_tool_schema(schemas, "file"));
+            }
+            let mut prompt = current_prompt.clone();
+            if task_tool_suspended {
+                prompt = Self::with_task_tool_disabled_instruction(&prompt);
+            }
+            if file_tool_suspended {
+                prompt = Self::with_file_tool_disabled_instruction(&prompt);
+            }
 
             // Spawn streaming task (with or without fallback)
             let stream_handle = tokio::spawn(async move {
@@ -557,6 +786,7 @@ impl AgentPipeline {
                                 tool = %pending.name,
                                 "[AgentLoop] Defensive finalize of previous pending tool call"
                             );
+                            let previous_tool_call_count = tool_calls_in_iteration.len();
                             self.finalize_pending_tool_call(
                                 pending,
                                 FinalizePendingToolCallCtx {
@@ -570,6 +800,12 @@ impl AgentPipeline {
                                 },
                             )
                             .await;
+                            telemetry
+                                .record_tool_calls(
+                                    iteration,
+                                    &tool_calls_in_iteration[previous_tool_call_count..],
+                                )
+                                .await;
                         }
 
                         pending_tool_call = Some(PendingToolCall {
@@ -600,6 +836,7 @@ impl AgentPipeline {
                                 args_len = args_len_log,
                                 "[AgentLoop] ToolCallEnd: calling finalize_pending_tool_call"
                             );
+                            let previous_tool_call_count = tool_calls_in_iteration.len();
                             self.finalize_pending_tool_call(
                                 pending,
                                 FinalizePendingToolCallCtx {
@@ -613,6 +850,12 @@ impl AgentPipeline {
                                 },
                             )
                             .await;
+                            telemetry
+                                .record_tool_calls(
+                                    iteration,
+                                    &tool_calls_in_iteration[previous_tool_call_count..],
+                                )
+                                .await;
                             tracing::debug!(
                                 tool = %tool_name_log,
                                 "[AgentLoop] finalize_pending_tool_call returned"
@@ -688,6 +931,7 @@ impl AgentPipeline {
                                 tool = %pending.name,
                                 "[AgentLoop] Done received with pending tool call — implicit ToolCallEnd"
                             );
+                            let previous_tool_call_count = tool_calls_in_iteration.len();
                             self.finalize_pending_tool_call(
                                 pending,
                                 FinalizePendingToolCallCtx {
@@ -701,6 +945,12 @@ impl AgentPipeline {
                                 },
                             )
                             .await;
+                            telemetry
+                                .record_tool_calls(
+                                    iteration,
+                                    &tool_calls_in_iteration[previous_tool_call_count..],
+                                )
+                                .await;
                         }
 
                         if let Some(u) = usage {
@@ -708,16 +958,27 @@ impl AgentPipeline {
                         }
                     }
                     StreamChunk::Error(e) => {
+                        Self::cancel_tracked_task(
+                            session_id.as_deref(),
+                            task_id.as_deref(),
+                            "provider emitted error chunk",
+                        );
                         tracing::error!(error = %e, iteration = iteration, "[AgentLoop] Error chunk received from inner stream");
                         let _ = tx.send(StreamChunk::Error(e.clone())).await;
                         return Err(AppError::Llm(e.clone()));
                     }
                     StreamChunk::Cancelled => {
+                        Self::cancel_tracked_task(
+                            session_id.as_deref(),
+                            task_id.as_deref(),
+                            "provider emitted cancelled chunk",
+                        );
                         tracing::debug!(
                             iteration = iteration,
                             "[AgentLoop] Cancelled chunk — aborting loop"
                         );
                         let _ = tx.send(chunk).await;
+                        telemetry.mark_outcome(RequestOutcome::Cancelled);
                         return Ok(response);
                     }
                     StreamChunk::Paused => {
@@ -726,6 +987,7 @@ impl AgentPipeline {
                             "[AgentLoop] Paused chunk — suspending loop"
                         );
                         let _ = tx.send(chunk).await;
+                        telemetry.mark_outcome(RequestOutcome::Paused);
                         return Ok(response);
                     }
                 }
@@ -744,6 +1006,7 @@ impl AgentPipeline {
                     tool = %pending.name,
                     "[AgentLoop] Channel closed with pending tool call — unexpected; executing anyway"
                 );
+                let previous_tool_call_count = tool_calls_in_iteration.len();
                 self.finalize_pending_tool_call(
                     pending,
                     FinalizePendingToolCallCtx {
@@ -757,6 +1020,12 @@ impl AgentPipeline {
                     },
                 )
                 .await;
+                telemetry
+                    .record_tool_calls(
+                        iteration,
+                        &tool_calls_in_iteration[previous_tool_call_count..],
+                    )
+                    .await;
             }
 
             // Wait for stream task
@@ -778,6 +1047,20 @@ impl AgentPipeline {
                     && !Self::text_signals_user_blocker_or_question(&iteration_content)
                     && Self::has_iteration_headroom(iteration, max_iterations)
                 {
+                    telemetry
+                        .record_iteration_completed(
+                            iteration,
+                            0,
+                            iteration_content.chars().count(),
+                            false,
+                        )
+                        .await;
+                    telemetry
+                        .record_iteration_continuation(
+                            iteration,
+                            AgentLoopContinuation::OpenSubtasks,
+                        )
+                        .await;
                     tracing::warn!(
                         iteration = iteration,
                         "[AgentLoop] Tracked task still has open subtasks after a no-tool response — forcing execution continuation"
@@ -798,6 +1081,20 @@ impl AgentPipeline {
                     && Self::text_defers_remaining_work(&iteration_content)
                     && Self::has_iteration_headroom(iteration, max_iterations)
                 {
+                    telemetry
+                        .record_iteration_completed(
+                            iteration,
+                            0,
+                            iteration_content.chars().count(),
+                            false,
+                        )
+                        .await;
+                    telemetry
+                        .record_iteration_continuation(
+                            iteration,
+                            AgentLoopContinuation::DeferredTrackedWork,
+                        )
+                        .await;
                     tracing::warn!(
                         iteration = iteration,
                         "[AgentLoop] Terminal status update deferred remaining tracked task work — forcing execution continuation"
@@ -817,6 +1114,20 @@ impl AgentPipeline {
                     && !forced_execution_after_empty_response
                     && Self::has_iteration_headroom(iteration, max_iterations)
                 {
+                    telemetry
+                        .record_iteration_completed(
+                            iteration,
+                            0,
+                            iteration_content.chars().count(),
+                            false,
+                        )
+                        .await;
+                    telemetry
+                        .record_iteration_continuation(
+                            iteration,
+                            AgentLoopContinuation::EmptyTerminalRetry,
+                        )
+                        .await;
                     tracing::warn!(
                         iteration = iteration,
                         "[AgentLoop] Empty/non-substantive terminal iteration after tool use — forcing execution continuation before summary"
@@ -837,6 +1148,20 @@ impl AgentPipeline {
                     && !forced_final_summary_requested
                     && Self::has_iteration_headroom(iteration, max_iterations)
                 {
+                    telemetry
+                        .record_iteration_completed(
+                            iteration,
+                            0,
+                            iteration_content.chars().count(),
+                            false,
+                        )
+                        .await;
+                    telemetry
+                        .record_iteration_continuation(
+                            iteration,
+                            AgentLoopContinuation::ForcedFinalSummary,
+                        )
+                        .await;
                     tracing::warn!(
                         iteration = iteration,
                         "[AgentLoop] Empty/non-substantive terminal iteration after tool use — forcing one final summary attempt"
@@ -853,12 +1178,31 @@ impl AgentPipeline {
                     "[AgentLoop] No tool calls in iteration — breaking loop"
                 );
                 delivered_terminal_summary = terminal_text_is_meaningful;
+                telemetry
+                    .record_iteration_completed(
+                        iteration,
+                        0,
+                        iteration_content.chars().count(),
+                        delivered_terminal_summary,
+                    )
+                    .await;
                 break;
             }
 
             saw_any_tool_calls = true;
             forced_execution_after_empty_response = false;
             forced_final_summary_requested = false;
+            telemetry
+                .record_iteration_completed(
+                    iteration,
+                    tool_calls_in_iteration.len(),
+                    iteration_content.chars().count(),
+                    false,
+                )
+                .await;
+            telemetry
+                .record_iteration_continuation(iteration, AgentLoopContinuation::ToolResults)
+                .await;
 
             // Build continuation prompt with tool results
             current_prompt = self.build_tool_continuation_prompt(
@@ -882,6 +1226,19 @@ impl AgentPipeline {
 
             if let Some(summary) = self.build_synthetic_final_summary(&response.tool_calls, reason)
             {
+                telemetry
+                    .record_synthetic_summary(
+                        match reason {
+                            IncompleteRunReason::MissingTerminalSummary => {
+                                "missing_terminal_summary"
+                            }
+                            IncompleteRunReason::IterationBudgetExhausted { .. } => {
+                                "iteration_budget_exhausted"
+                            }
+                        },
+                        response.tool_calls.len(),
+                    )
+                    .await;
                 let emitted = if response.content.trim().is_empty() {
                     summary.clone()
                 } else {
@@ -891,6 +1248,8 @@ impl AgentPipeline {
                 let _ = tx.send(StreamChunk::Text(emitted)).await;
             }
         }
+
+        Self::reconcile_tracked_task_after_success(session_id.as_deref(), task_id.as_deref());
 
         Ok(response)
     }
@@ -910,7 +1269,10 @@ impl AgentPipeline {
         session_id: Option<String>,
         task_id: Option<String>,
         max_iterations: Option<usize>,
+        telemetry: &AgentRequestTelemetry,
     ) -> Result<AgentResponse, AppError> {
+        Self::mark_tracked_task_in_progress(session_id.as_deref(), task_id.as_deref());
+
         let mut response = AgentResponse {
             content: String::new(),
             thinking: None,
@@ -944,10 +1306,6 @@ impl AgentPipeline {
             }
             Some(schemas)
         };
-        let tool_schemas_without_task = tool_schemas
-            .as_ref()
-            .map(|schemas| Self::without_tool_schema(schemas, "task"));
-
         let mut current_prompt = initial_prompt;
         let mut saw_any_tool_calls = false;
         let mut forced_execution_after_empty_response = false;
@@ -966,19 +1324,38 @@ impl AgentPipeline {
 
             // Call LLM with fallback support, passing tool schemas.
             let task_tool_suspended = Self::should_suspend_task_tool(&response.tool_calls);
-            let active_tool_schemas = if task_tool_suspended {
-                tool_schemas_without_task.as_ref()
-            } else {
-                tool_schemas.as_ref()
-            };
-            let prompt = if task_tool_suspended {
-                Self::with_task_tool_disabled_instruction(&current_prompt)
-            } else {
-                current_prompt.clone()
-            };
+            let file_tool_suspended = Self::should_suspend_file_tool(&response.tool_calls);
+            telemetry
+                .record_iteration_start(iteration, max_iterations, task_tool_suspended)
+                .await;
+            let mut active_tool_schemas = tool_schemas.clone();
+            if task_tool_suspended {
+                active_tool_schemas = active_tool_schemas
+                    .as_ref()
+                    .map(|schemas| Self::without_tool_schema(schemas, "task"));
+            }
+            if file_tool_suspended {
+                active_tool_schemas = active_tool_schemas
+                    .as_ref()
+                    .map(|schemas| Self::without_tool_schema(schemas, "file"));
+            }
+            let mut prompt = current_prompt.clone();
+            if task_tool_suspended {
+                prompt = Self::with_task_tool_disabled_instruction(&prompt);
+            }
+            if file_tool_suspended {
+                prompt = Self::with_file_tool_disabled_instruction(&prompt);
+            }
             let llm_response = self
-                .call_llm_with_fallback(&prompt, active_tool_schemas)
-                .await?;
+                .call_llm_with_fallback(&prompt, active_tool_schemas.as_ref())
+                .await
+                .inspect_err(|_| {
+                    Self::cancel_tracked_task(
+                        session_id.as_deref(),
+                        task_id.as_deref(),
+                        "blocking LLM call failed",
+                    );
+                })?;
             let (content, thinking) = crate::streaming::split_think_blocks(&llm_response.text);
 
             // Accumulate token usage across iterations.
@@ -1005,6 +1382,15 @@ impl AgentPipeline {
                     && !Self::text_signals_user_blocker_or_question(&content)
                     && Self::has_iteration_headroom(iteration, max_iterations)
                 {
+                    telemetry
+                        .record_iteration_completed(iteration, 0, content.chars().count(), false)
+                        .await;
+                    telemetry
+                        .record_iteration_continuation(
+                            iteration,
+                            AgentLoopContinuation::OpenSubtasks,
+                        )
+                        .await;
                     current_prompt = self.build_forced_execution_prompt(
                         &current_prompt,
                         &response.content,
@@ -1021,6 +1407,15 @@ impl AgentPipeline {
                     && Self::text_defers_remaining_work(&content)
                     && Self::has_iteration_headroom(iteration, max_iterations)
                 {
+                    telemetry
+                        .record_iteration_completed(iteration, 0, content.chars().count(), false)
+                        .await;
+                    telemetry
+                        .record_iteration_continuation(
+                            iteration,
+                            AgentLoopContinuation::DeferredTrackedWork,
+                        )
+                        .await;
                     current_prompt = self.build_forced_execution_prompt(
                         &current_prompt,
                         &response.content,
@@ -1036,6 +1431,15 @@ impl AgentPipeline {
                     && !forced_execution_after_empty_response
                     && Self::has_iteration_headroom(iteration, max_iterations)
                 {
+                    telemetry
+                        .record_iteration_completed(iteration, 0, content.chars().count(), false)
+                        .await;
+                    telemetry
+                        .record_iteration_continuation(
+                            iteration,
+                            AgentLoopContinuation::EmptyTerminalRetry,
+                        )
+                        .await;
                     current_prompt = self.build_forced_execution_prompt(
                         &current_prompt,
                         &response.content,
@@ -1052,6 +1456,15 @@ impl AgentPipeline {
                     && !forced_final_summary_requested
                     && Self::has_iteration_headroom(iteration, max_iterations)
                 {
+                    telemetry
+                        .record_iteration_completed(iteration, 0, content.chars().count(), false)
+                        .await;
+                    telemetry
+                        .record_iteration_continuation(
+                            iteration,
+                            AgentLoopContinuation::ForcedFinalSummary,
+                        )
+                        .await;
                     current_prompt =
                         self.build_forced_final_summary_prompt(&current_prompt, &response.content);
                     forced_final_summary_requested = true;
@@ -1062,6 +1475,14 @@ impl AgentPipeline {
                 response.content = content;
                 response.thinking = thinking;
                 delivered_terminal_summary = terminal_text_is_meaningful;
+                telemetry
+                    .record_iteration_completed(
+                        iteration,
+                        0,
+                        response.content.chars().count(),
+                        delivered_terminal_summary,
+                    )
+                    .await;
                 break;
             }
 
@@ -1104,6 +1525,20 @@ impl AgentPipeline {
                     duration_ms,
                 });
             }
+            telemetry
+                .record_tool_calls(iteration, &iteration_tool_calls)
+                .await;
+            telemetry
+                .record_iteration_completed(
+                    iteration,
+                    iteration_tool_calls.len(),
+                    content.chars().count(),
+                    false,
+                )
+                .await;
+            telemetry
+                .record_iteration_continuation(iteration, AgentLoopContinuation::ToolResults)
+                .await;
 
             // Build continuation prompt with tool results for the next iteration.
             current_prompt = self.build_tool_continuation_prompt(
@@ -1130,6 +1565,19 @@ impl AgentPipeline {
 
             if let Some(summary) = self.build_synthetic_final_summary(&response.tool_calls, reason)
             {
+                telemetry
+                    .record_synthetic_summary(
+                        match reason {
+                            IncompleteRunReason::MissingTerminalSummary => {
+                                "missing_terminal_summary"
+                            }
+                            IncompleteRunReason::IterationBudgetExhausted { .. } => {
+                                "iteration_budget_exhausted"
+                            }
+                        },
+                        response.tool_calls.len(),
+                    )
+                    .await;
                 if response.content.trim().is_empty() {
                     response.content = summary;
                 } else {
@@ -1138,6 +1586,8 @@ impl AgentPipeline {
                 }
             }
         }
+
+        Self::reconcile_tracked_task_after_success(session_id.as_deref(), task_id.as_deref());
 
         Ok(response)
     }
@@ -1307,9 +1757,7 @@ mod tests {
             )
             .expect("summary should be generated");
 
-        assert!(summary.contains(
-            "runtime ended the run without a terminal user-facing summary"
-        ));
+        assert!(summary.contains("runtime ended the run without a terminal user-facing summary"));
         assert!(summary.contains("Last tool `file` was skipped while trying to write a file."));
     }
 
@@ -1426,6 +1874,35 @@ mod tests {
     }
 
     #[test]
+    fn file_tool_is_suspended_after_file_loop_breaker_skip() {
+        let tool_calls = vec![ToolCallRecord {
+            id: "1".to_string(),
+            name: "file".to_string(),
+            arguments: serde_json::json!({
+                "operation": "write",
+                "path": "src/index.html",
+                "pattern": "none"
+            })
+            .to_string(),
+            result: ToolResult::Skipped(
+                "Loop breaker: skipped a repeated malformed `file.write` call without `content` after 2 prior similar non-successful attempts in this run."
+                    .to_string(),
+            ),
+            duration_ms: 1,
+        }];
+
+        assert!(AgentPipeline::should_suspend_file_tool(&tool_calls));
+    }
+
+    #[test]
+    fn file_tool_disabled_instruction_is_appended_to_prompt() {
+        let prompt = AgentPipeline::with_file_tool_disabled_instruction("User: update index.html");
+
+        assert!(prompt.contains("`file` tool is disabled for the rest of this run"));
+        assert!(prompt.contains("Do not call `file` again"));
+    }
+
+    #[test]
     fn active_task_open_descendants_detects_nested_open_tasks() {
         let manager = crate::get_global_task_manager();
         let session_id = format!("agent-loop-descendants-{}", uuid::Uuid::new_v4());
@@ -1451,5 +1928,69 @@ mod tests {
 
         let pipeline = AgentPipeline::new(AppConfig::default());
         assert!(pipeline.active_task_has_open_descendants(Some(&session_id), Some(&root.id)));
+    }
+
+    #[test]
+    fn tracked_task_reconciliation_completes_root_when_descendants_are_done() {
+        let manager = crate::get_global_task_manager();
+        let session_id = format!("agent-loop-finalize-{}", uuid::Uuid::new_v4());
+        let mut root = crate::Task::new(&session_id, "Root", "Root", None);
+        let mut child = crate::Task::new(&session_id, "Child", "Child", Some(root.id.clone()));
+        root.set_status(crate::TaskStatus::InProgress);
+        child.set_status(crate::TaskStatus::Completed);
+
+        let mut task_list = crate::TaskList::new(&session_id);
+        task_list.add_task(root.clone());
+        task_list.add_task(child);
+        manager
+            .replace_task_list(task_list)
+            .expect("replace task list");
+        manager
+            .set_current_task_id(&session_id, Some(root.id.clone()))
+            .expect("set current task");
+
+        AgentPipeline::reconcile_tracked_task_after_success(Some(&session_id), Some(&root.id));
+
+        let updated_root = manager
+            .get_task(&session_id, &root.id)
+            .expect("task lookup should succeed")
+            .expect("root should exist");
+        assert_eq!(updated_root.status, crate::TaskStatus::Completed);
+        assert_eq!(
+            manager
+                .get_current_task_id(&session_id)
+                .expect("current task lookup should succeed"),
+            None
+        );
+    }
+
+    #[test]
+    fn tracked_task_cancellation_marks_root_cancelled() {
+        let manager = crate::get_global_task_manager();
+        let session_id = format!("agent-loop-cancel-{}", uuid::Uuid::new_v4());
+        let root = crate::Task::new(&session_id, "Root", "Root", None);
+
+        let mut task_list = crate::TaskList::new(&session_id);
+        task_list.add_task(root.clone());
+        manager
+            .replace_task_list(task_list)
+            .expect("replace task list");
+        manager
+            .set_current_task_id(&session_id, Some(root.id.clone()))
+            .expect("set current task");
+
+        AgentPipeline::cancel_tracked_task(Some(&session_id), Some(&root.id), "test cancellation");
+
+        let updated_root = manager
+            .get_task(&session_id, &root.id)
+            .expect("task lookup should succeed")
+            .expect("root should exist");
+        assert_eq!(updated_root.status, crate::TaskStatus::Cancelled);
+        assert_eq!(
+            manager
+                .get_current_task_id(&session_id)
+                .expect("current task lookup should succeed"),
+            None
+        );
     }
 }

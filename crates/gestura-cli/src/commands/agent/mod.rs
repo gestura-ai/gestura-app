@@ -1147,6 +1147,7 @@ fn run_basic_mode(opts: AgentOptions<'_>) -> Result<()> {
                 let mut request = AgentRequest::new(&input)
                     .with_streaming(true)
                     .with_source(RequestSource::CliBasic)
+                    .with_session(agent_session.id.clone())
                     .with_history(history);
 
                 // Set workspace directory for sandboxed operations
