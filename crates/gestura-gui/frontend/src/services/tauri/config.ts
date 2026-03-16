@@ -76,6 +76,11 @@ const defaultConfig = (): AppConfig => ({
     // much richer metric stream until the user explicitly enables it.
     agent_telemetry: {
       enabled: false,
+      trace_export: {
+        enabled: false,
+        protocol: 'grpc',
+        endpoint: 'http://127.0.0.1:4317',
+      },
     },
     reflection: {
       enabled: false,
@@ -124,6 +129,11 @@ const normalizeConfig = (raw: PartialConfig): AppConfig => {
       agent_telemetry: {
         ...defaults.pipeline.agent_telemetry,
         ...((raw.pipeline as AppConfig['pipeline'] | undefined)?.agent_telemetry ?? {}),
+        trace_export: {
+          ...defaults.pipeline.agent_telemetry.trace_export,
+          ...((raw.pipeline as AppConfig['pipeline'] | undefined)?.agent_telemetry
+            ?.trace_export ?? {}),
+        },
       },
       reflection: {
         ...defaults.pipeline.reflection,

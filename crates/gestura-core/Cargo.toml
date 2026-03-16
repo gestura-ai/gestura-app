@@ -106,6 +106,8 @@ serde_yaml.workspace = true
 gestura-core-audio.workspace = true
 dashmap = "6.1.0"
 blake3 = "1.8.3"
+tracing-opentelemetry = "0.32.1"
+opentelemetry = "0.31.0"
 
 [target.'cfg(unix)'.dependencies]
 # Unix signal handling (for screen recording on Unix platforms)

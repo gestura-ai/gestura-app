@@ -123,10 +123,6 @@ notify = { version = "8.2.0", features = ["macos_fsevent"] }
 objc = "0.2"
 cocoa = "0.25"
 
-# Linux specific - xdg-desktop-portal integration
-ashpd = "0.10.3"
-zbus = "5"
-
 # Windows specific - WinRT APIs (defined in target-specific section below)
 # Note: windows crate is added directly in gestura-core/Cargo.toml with target cfg
 

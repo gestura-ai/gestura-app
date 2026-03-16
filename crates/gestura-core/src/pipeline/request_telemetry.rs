@@ -4,11 +4,14 @@ use gestura_core_foundation::{
     context::{RequestAnalysis, ResolvedContext},
     telemetry::get_telemetry_manager,
 };
+use opentelemetry::trace::TraceContextExt as _;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     time::Instant,
 };
+use tracing::Span;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 /// Request-scoped telemetry helper for the agent pipeline.
 ///
@@ -38,8 +41,10 @@ pub(super) enum RequestRunMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AgentLoopContinuation {
     ToolResults,
+    InitialExecutionRequired,
     OpenSubtasks,
     DeferredTrackedWork,
+    RequiredVerificationPending,
     EmptyTerminalRetry,
     ForcedFinalSummary,
 }
@@ -51,14 +56,16 @@ pub(super) struct AgentRequestTelemetry {
     started_at: Instant,
     common_tags: HashMap<String, String>,
     outcome: Arc<Mutex<RequestOutcome>>,
+    request_span: Option<Span>,
 }
 
 impl AgentRequestTelemetry {
     /// Creates a new request trace and emits the initial `request.started`
     /// event with stable per-request tags.
     pub(super) async fn start(request: &AgentRequest, mode: RequestRunMode, enabled: bool) -> Self {
+        let request_id = uuid::Uuid::new_v4().to_string();
         let mut common_tags = HashMap::from([
-            ("request_id".into(), uuid::Uuid::new_v4().to_string()),
+            ("request_id".into(), request_id.clone()),
             (
                 "mode".into(),
                 match mode {
@@ -85,11 +92,37 @@ impl AgentRequestTelemetry {
                 common_tags.insert(key.into(), value.clone());
             }
         }
+        let request_span = enabled.then(|| {
+            tracing::info_span!(
+                "agent.pipeline.request",
+                request_id = %request_id,
+                session_id = %tag_value(request.metadata.session_id.as_deref()),
+                task_id = %tag_value(request.metadata.task_id.as_deref()),
+                directive_id = %tag_value(request.metadata.directive_id.as_deref()),
+                agent_id = %tag_value(request.metadata.agent_id.as_deref()),
+                mode = %run_mode_tag(mode),
+                source = %source_tag(request.metadata.source),
+                streaming = request.streaming,
+                history_messages = request.history.len(),
+                has_resume_state = request.resume_from.is_some(),
+                outcome = tracing::field::Empty,
+            )
+        });
+        if let Some(request_span) = request_span.as_ref() {
+            let context = request_span.context();
+            let span = context.span();
+            let span_context = span.span_context();
+            if span_context.is_valid() {
+                common_tags.insert("trace_id".into(), span_context.trace_id().to_string());
+                common_tags.insert("trace_span_id".into(), span_context.span_id().to_string());
+            }
+        }
         let telemetry = Self {
             enabled,
             started_at: Instant::now(),
             common_tags,
             outcome: Arc::new(Mutex::new(RequestOutcome::Running)),
+            request_span,
         };
         telemetry
             .event(
@@ -114,6 +147,9 @@ impl AgentRequestTelemetry {
     pub(super) fn mark_outcome(&self, outcome: RequestOutcome) {
         if self.enabled {
             *self.outcome.lock().expect("telemetry lock poisoned") = outcome;
+            if let Some(request_span) = self.request_span.as_ref() {
+                request_span.record("outcome", outcome.as_str());
+            }
         }
     }
 
@@ -322,16 +358,31 @@ impl AgentRequestTelemetry {
     /// Emits one completion event per finalized tool call in the iteration.
     pub(super) async fn record_tool_calls(&self, iteration: usize, tool_calls: &[ToolCallRecord]) {
         for tool_call in tool_calls {
-            self.event(
-                "agent.pipeline.tool_call.completed",
-                vec![
-                    ("iteration", iteration.to_string()),
-                    ("tool_name", tool_call.name.clone()),
-                    ("outcome", tool_result_tag(&tool_call.result).into()),
-                    ("duration_ms", tool_call.duration_ms.to_string()),
-                ],
-            )
-            .await;
+            let mut tags = vec![
+                ("iteration", iteration.to_string()),
+                ("tool_name", tool_call.name.clone()),
+                ("outcome", tool_result_tag(&tool_call.result).into()),
+                ("duration_ms", tool_call.duration_ms.to_string()),
+                (
+                    "arguments_chars",
+                    tool_call.arguments.chars().count().to_string(),
+                ),
+            ];
+
+            if matches!(
+                tool_call.result,
+                ToolResult::Error(_) | ToolResult::Skipped(_)
+            ) {
+                tags.push((
+                    "arguments_preview",
+                    preview_telemetry_text(&tool_call.arguments, 240),
+                ));
+                if let Some(result_preview) = preview_tool_result(&tool_call.result) {
+                    tags.push(("result_preview", result_preview));
+                }
+            }
+
+            self.event("agent.pipeline.tool_call.completed", tags).await;
         }
     }
 
@@ -407,6 +458,9 @@ impl AgentRequestTelemetry {
             }
             *state
         };
+        if let Some(request_span) = self.request_span.as_ref() {
+            request_span.record("outcome", outcome.as_str());
+        }
         let mut tags = vec![("outcome", outcome.as_str().into())];
         if let Some(response) = response {
             tags.push(("iterations", response.iterations.to_string()));
@@ -445,6 +499,7 @@ impl AgentRequestTelemetry {
     /// Best-effort counter emission with the request's stable tag set.
     async fn event(&self, name: &str, extra_tags: Vec<(&'static str, String)>) {
         if self.enabled {
+            self.trace_event(name, &extra_tags, None);
             get_telemetry_manager()
                 .await
                 .increment_counter(name, 1.0, self.tags(extra_tags))
@@ -455,6 +510,7 @@ impl AgentRequestTelemetry {
     /// Best-effort histogram emission with the request's stable tag set.
     async fn histogram(&self, name: &str, value: f64, extra_tags: Vec<(&'static str, String)>) {
         if self.enabled {
+            self.trace_event(name, &extra_tags, Some(value));
             get_telemetry_manager()
                 .await
                 .record_histogram(name, value, self.tags(extra_tags))
@@ -469,6 +525,33 @@ impl AgentRequestTelemetry {
             tags.insert(key.into(), value);
         }
         tags
+    }
+
+    /// Emits a structured trace event on the request span so OTLP backends can
+    /// follow the request lifecycle using the same correlation ids as local metrics.
+    fn trace_event(&self, name: &str, extra_tags: &[(&'static str, String)], value: Option<f64>) {
+        let Some(request_span) = self.request_span.as_ref() else {
+            return;
+        };
+
+        let tags_json = serde_json::to_string(&self.tags(extra_tags.to_vec()))
+            .unwrap_or_else(|_| "{}".to_string());
+
+        match value {
+            Some(value) => tracing::info!(
+                parent: request_span,
+                telemetry_event = name,
+                telemetry_value = value,
+                telemetry_attributes_json = %tags_json,
+                "agent pipeline telemetry histogram"
+            ),
+            None => tracing::info!(
+                parent: request_span,
+                telemetry_event = name,
+                telemetry_attributes_json = %tags_json,
+                "agent pipeline telemetry event"
+            ),
+        }
     }
 }
 
@@ -501,12 +584,26 @@ fn source_tag(source: RequestSource) -> &'static str {
 fn continuation_tag(kind: AgentLoopContinuation) -> &'static str {
     match kind {
         AgentLoopContinuation::ToolResults => "tool_results",
+        AgentLoopContinuation::InitialExecutionRequired => "initial_execution_required",
         AgentLoopContinuation::OpenSubtasks => "open_subtasks",
         AgentLoopContinuation::DeferredTrackedWork => "deferred_tracked_work",
+        AgentLoopContinuation::RequiredVerificationPending => "required_verification_pending",
         AgentLoopContinuation::EmptyTerminalRetry => "empty_terminal_retry",
         AgentLoopContinuation::ForcedFinalSummary => "forced_final_summary",
     }
 }
+
+fn run_mode_tag(mode: RequestRunMode) -> &'static str {
+    match mode {
+        RequestRunMode::Streaming => "streaming",
+        RequestRunMode::Blocking => "blocking",
+    }
+}
+
+fn tag_value(value: Option<&str>) -> &str {
+    value.unwrap_or("")
+}
+
 fn tool_result_tag(result: &ToolResult) -> &'static str {
     match result {
         ToolResult::Success(_) => "success",
@@ -514,6 +611,26 @@ fn tool_result_tag(result: &ToolResult) -> &'static str {
         ToolResult::Skipped(_) => "skipped",
     }
 }
+
+fn preview_tool_result(result: &ToolResult) -> Option<String> {
+    match result {
+        ToolResult::Error(message) | ToolResult::Skipped(message) => {
+            Some(preview_telemetry_text(message, 200))
+        }
+        ToolResult::Success(_) => None,
+    }
+}
+
+fn preview_telemetry_text(raw: &str, max_chars: usize) -> String {
+    let trimmed = raw.trim();
+    let truncated = trimmed.chars().take(max_chars).collect::<String>();
+    if trimmed.chars().count() > max_chars {
+        format!("{}…", truncated.trim_end())
+    } else {
+        truncated
+    }
+}
+
 fn error_tag(error: &AppError) -> &'static str {
     match error {
         AppError::Io(_) => "io",
@@ -533,5 +650,29 @@ fn error_tag(error: &AppError) -> &'static str {
         AppError::Timeout(_) => "timeout",
         AppError::InvalidInput(_) => "invalid_input",
         AppError::Internal(_) => "internal",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_telemetry_text_truncates_long_values() {
+        let preview = preview_telemetry_text("  abcdefghijklmnopqrstuvwxyz  ", 8);
+        assert_eq!(preview, "abcdefgh…");
+    }
+
+    #[test]
+    fn preview_tool_result_only_emits_for_error_and_skipped() {
+        assert!(preview_tool_result(&ToolResult::Success("ok".into())).is_none());
+        assert_eq!(
+            preview_tool_result(&ToolResult::Error("boom".into())).as_deref(),
+            Some("boom")
+        );
+        assert_eq!(
+            preview_tool_result(&ToolResult::Skipped("later".into())).as_deref(),
+            Some("later")
+        );
     }
 }

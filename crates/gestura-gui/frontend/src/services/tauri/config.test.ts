@@ -42,6 +42,11 @@ const makeConfig = (): AppConfig => ({
     log_token_usage: false,
     agent_telemetry: {
       enabled: false,
+      trace_export: {
+        enabled: false,
+        protocol: 'grpc',
+        endpoint: 'http://127.0.0.1:4317',
+      },
     },
     reflection: {
       enabled: false,
@@ -88,6 +93,11 @@ describe('config IPC wrappers', () => {
       pipeline: {
         agent_telemetry: {
           enabled: false,
+          trace_export: {
+            enabled: false,
+            protocol: 'grpc',
+            endpoint: 'http://127.0.0.1:4317',
+          },
         },
         reflection: {
           enabled: false,

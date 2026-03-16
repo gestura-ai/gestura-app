@@ -93,6 +93,12 @@ pipeline:
   compaction_strategy: Summarize
   max_context_tokens: 0
   log_token_usage: false
+  agent_telemetry:
+    enabled: false
+    trace_export:
+      enabled: false
+      protocol: grpc
+      endpoint: http://127.0.0.1:4317
   reflection:
     enabled: false
     quality_threshold_percent: 60
@@ -137,6 +143,39 @@ pipeline:
 | `compaction_strategy` | string | Overflow handling strategy such as `Summarize`, `Truncate`, `Clear`, `Prompt`, or `MemoryBank` |
 | `max_context_tokens` | integer | Maximum context tokens (0 uses provider defaults) |
 | `log_token_usage` | boolean | Enable token usage logging for debugging/monitoring |
+
+#### Agent Telemetry Settings (`pipeline.agent_telemetry`)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | boolean | Emit request-level agent pipeline telemetry to the local in-memory metric store |
+| `trace_export.enabled` | boolean | Attach OTLP trace export to `tracing` so agent requests can be inspected in a collector such as SigNoz |
+| `trace_export.protocol` | string | OTLP transport to use: `grpc` or `http`; defaults to `grpc` |
+| `trace_export.endpoint` | string | Collector endpoint for the selected transport; defaults are `http://127.0.0.1:4317` for gRPC and `http://127.0.0.1:4318/v1/traces` for HTTP |
+
+Example:
+
+```yaml
+pipeline:
+  agent_telemetry:
+    enabled: true
+    trace_export:
+      enabled: true
+      protocol: grpc
+      endpoint: http://127.0.0.1:4317
+```
+
+When both toggles are enabled, Gestura emits request-correlated spans that include identifiers such as `request_id`, `session_id`, `task_id`, `directive_id`, and `agent_id`.
+
+For HTTP collectors, switch to:
+
+```yaml
+pipeline:
+  agent_telemetry:
+    trace_export:
+      protocol: http
+      endpoint: http://127.0.0.1:4318/v1/traces
+```
 
 #### Reflection Settings (`pipeline.reflection`)
 

@@ -4,6 +4,7 @@
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use colored::Colorize;
+use gestura_core::config::{AgentTelemetryTraceExportProtocol, AppConfigSecurityExt};
 
 mod commands;
 
@@ -1060,33 +1061,43 @@ fn main() {
     // The TUI uses an alternate screen; any writes to stdout/stderr from tracing can corrupt the
     // layout. When running `agent` in TUI mode, we default tracing output to a sink.
     let is_tui_agent = matches!(&cli.command, Some(Commands::Agent { basic, .. }) if !*basic);
+    let app_config = gestura_core::AppConfig::load();
 
     // Initialize logging
-    if cli.verbose {
-        if is_tui_agent {
-            tracing_subscriber::fmt()
-                .with_max_level(tracing::Level::DEBUG)
-                .with_writer(std::io::sink)
-                .init();
-        } else {
-            tracing_subscriber::fmt()
-                .with_max_level(tracing::Level::DEBUG)
-                .init();
-        }
-    } else if !cli.quiet {
-        if is_tui_agent {
-            tracing_subscriber::fmt()
-                .with_max_level(tracing::Level::INFO)
-                .with_target(false)
-                .with_writer(std::io::sink)
-                .init();
-        } else {
-            tracing_subscriber::fmt()
-                .with_max_level(tracing::Level::INFO)
-                .with_target(false)
-                .init();
-        }
-    }
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new(if cli.verbose { "debug" } else { "info" })
+    });
+    let writer = if is_tui_agent || cli.quiet {
+        tracing_subscriber::fmt::writer::BoxMakeWriter::new(std::io::sink)
+    } else {
+        tracing_subscriber::fmt::writer::BoxMakeWriter::new(std::io::stderr)
+    };
+    let trace_export = app_config
+        .pipeline
+        .agent_telemetry
+        .trace_export
+        .enabled
+        .then(|| gestura_core::telemetry::TraceExportConfig {
+            enabled: true,
+            protocol: match app_config.pipeline.agent_telemetry.trace_export.protocol {
+                AgentTelemetryTraceExportProtocol::Http => {
+                    gestura_core::telemetry::TraceExportProtocol::Http
+                }
+                AgentTelemetryTraceExportProtocol::Grpc => {
+                    gestura_core::telemetry::TraceExportProtocol::Grpc
+                }
+            },
+            endpoint: app_config
+                .pipeline
+                .agent_telemetry
+                .trace_export
+                .endpoint
+                .clone(),
+            service_name: "gestura-cli".to_string(),
+            service_version: env!("CARGO_PKG_VERSION").to_string(),
+        });
+    gestura_core::telemetry::init_tracing_subscriber(filter, writer, cli.verbose, trace_export)
+        .expect("failed to initialize tracing");
 
     // Handle commands
     let result = match &cli.command {
@@ -1465,6 +1476,9 @@ fn main() {
         } else {
             eprintln!("{} {}", "error:".red().bold(), e);
         }
+        gestura_core::telemetry::shutdown_tracing();
         std::process::exit(1);
     }
+
+    gestura_core::telemetry::shutdown_tracing();
 }

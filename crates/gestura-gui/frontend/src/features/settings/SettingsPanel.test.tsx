@@ -38,6 +38,11 @@ function makeConfig(): AppConfig {
       log_token_usage: false,
       agent_telemetry: {
         enabled: false,
+        trace_export: {
+          enabled: false,
+          protocol: 'grpc',
+          endpoint: 'http://127.0.0.1:4317',
+        },
       },
       reflection: {
         enabled: false,
@@ -69,6 +74,65 @@ describe('SettingsPanel reflection controls', () => {
         pipeline: expect.objectContaining({
           max_history_messages: 10,
           agent_telemetry: expect.objectContaining({ enabled: true }),
+        }),
+      })
+    );
+  });
+
+  it('updates nested OTLP trace export settings without dropping sibling telemetry config', () => {
+    const onConfigUpdate = vi.fn().mockResolvedValue(undefined);
+    const { container } = render(
+      <SettingsPanel config={makeConfig()} onConfigUpdate={onConfigUpdate} />
+    );
+
+    const endpointInput = container.querySelector<HTMLInputElement>(
+      'input[aria-label="OTLP Trace Endpoint"]'
+    );
+
+    expect(endpointInput).not.toBeNull();
+    fireEvent.change(endpointInput!, {
+      target: { value: 'http://localhost:4318/v1/traces' },
+    });
+
+    expect(onConfigUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pipeline: expect.objectContaining({
+          agent_telemetry: expect.objectContaining({
+            enabled: false,
+            trace_export: expect.objectContaining({
+              protocol: 'grpc',
+              endpoint: 'http://localhost:4318/v1/traces',
+            }),
+          }),
+        }),
+      })
+    );
+  });
+
+  it('switches OTLP transport and updates the default endpoint accordingly', () => {
+    const onConfigUpdate = vi.fn().mockResolvedValue(undefined);
+    const { container } = render(
+      <SettingsPanel config={makeConfig()} onConfigUpdate={onConfigUpdate} />
+    );
+
+    const transportSelect = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="OTLP Trace Transport"]'
+    );
+
+    expect(transportSelect).not.toBeNull();
+    fireEvent.change(transportSelect!, {
+      target: { value: 'http' },
+    });
+
+    expect(onConfigUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pipeline: expect.objectContaining({
+          agent_telemetry: expect.objectContaining({
+            trace_export: expect.objectContaining({
+              protocol: 'http',
+              endpoint: 'http://127.0.0.1:4318/v1/traces',
+            }),
+          }),
         }),
       })
     );

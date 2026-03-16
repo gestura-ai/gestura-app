@@ -2192,7 +2192,7 @@ pub async fn get_system_health() -> Result<serde_json::Value, String> {
 #[tauri::command]
 pub async fn get_metrics_summary() -> Result<serde_json::Value, String> {
     let telemetry = crate::telemetry::get_telemetry_manager().await;
-    Ok(telemetry.get_metrics_summary().await)
+    serde_json::to_value(telemetry.get_metrics_summary().await).map_err(|e| e.to_string())
 }
 
 /// Get recent telemetry metrics

@@ -119,6 +119,14 @@ export interface ReflectionSettings {
   promotion_confidence_percent: number;
 }
 
+export type AgentTelemetryTraceExportProtocol = 'http' | 'grpc';
+
+export interface AgentTelemetryTraceExportSettings {
+  enabled: boolean;
+  protocol: AgentTelemetryTraceExportProtocol;
+  endpoint: string;
+}
+
 /**
  * Opt-in request tracing for the core agent loop.
  *
@@ -127,6 +135,7 @@ export interface ReflectionSettings {
  */
 export interface AgentTelemetrySettings {
   enabled: boolean;
+  trace_export: AgentTelemetryTraceExportSettings;
 }
 
 export type CompactionStrategy = 'Summarize' | 'Truncate' | 'Clear' | 'Prompt' | 'MemoryBank';

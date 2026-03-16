@@ -3,9 +3,9 @@
 use super::Result;
 use crate::ConfigAction;
 use colored::Colorize;
-use gestura_core::AppConfig;
 use gestura_core::AppConfigSecurityExt;
 use gestura_core::config_env::{is_secret_key, redact_secret};
+use gestura_core::{AppConfig, config::AgentTelemetryTraceExportProtocol};
 use std::path::PathBuf;
 
 /// Get the config file path
@@ -104,6 +104,28 @@ pub fn run(action: &ConfigAction) -> Result<()> {
                     (
                         "agent_telemetry.enabled",
                         &config.pipeline.agent_telemetry.enabled.to_string(),
+                    ),
+                    (
+                        "agent_telemetry.trace_export.enabled",
+                        &config
+                            .pipeline
+                            .agent_telemetry
+                            .trace_export
+                            .enabled
+                            .to_string(),
+                    ),
+                    (
+                        "agent_telemetry.trace_export.protocol",
+                        config
+                            .pipeline
+                            .agent_telemetry
+                            .trace_export
+                            .protocol
+                            .as_str(),
+                    ),
+                    (
+                        "agent_telemetry.trace_export.endpoint",
+                        &config.pipeline.agent_telemetry.trace_export.endpoint,
                     ),
                 ],
             );
@@ -218,6 +240,31 @@ fn get_config_value(config: &AppConfig, key: &str) -> Option<String> {
         "pipeline.agent_telemetry.enabled" => {
             Some(config.pipeline.agent_telemetry.enabled.to_string())
         }
+        "pipeline.agent_telemetry.trace_export.enabled" => Some(
+            config
+                .pipeline
+                .agent_telemetry
+                .trace_export
+                .enabled
+                .to_string(),
+        ),
+        "pipeline.agent_telemetry.trace_export.protocol" => Some(
+            config
+                .pipeline
+                .agent_telemetry
+                .trace_export
+                .protocol
+                .as_str()
+                .to_string(),
+        ),
+        "pipeline.agent_telemetry.trace_export.endpoint" => Some(
+            config
+                .pipeline
+                .agent_telemetry
+                .trace_export
+                .endpoint
+                .clone(),
+        ),
         "llm.openai.api_key" => config
             .llm
             .openai
@@ -326,6 +373,26 @@ fn set_config_value(config: &mut AppConfig, key: &str, value: &str) -> bool {
             } else {
                 false
             }
+        }
+        "pipeline.agent_telemetry.trace_export.enabled" => {
+            if let Ok(val) = value.parse::<bool>() {
+                config.pipeline.agent_telemetry.trace_export.enabled = val;
+                true
+            } else {
+                false
+            }
+        }
+        "pipeline.agent_telemetry.trace_export.protocol" => {
+            if let Some(protocol) = AgentTelemetryTraceExportProtocol::parse(value) {
+                config.pipeline.agent_telemetry.trace_export.protocol = protocol;
+                true
+            } else {
+                false
+            }
+        }
+        "pipeline.agent_telemetry.trace_export.endpoint" => {
+            config.pipeline.agent_telemetry.trace_export.endpoint = value.to_string();
+            true
         }
         "llm.openai.api_key" => {
             config.llm.openai.get_or_insert(Default::default()).api_key = value.to_string();

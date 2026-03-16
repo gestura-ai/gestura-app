@@ -341,6 +341,7 @@ impl AppConfigSecurityExt for AppConfig {
                 Self::default()
             }
         };
+        config.normalize_derived_defaults();
 
         // Hydrate secrets from keychain (if empty in file)
         #[cfg(feature = "security")]
@@ -432,6 +433,7 @@ impl AppConfigSecurityExt for AppConfig {
         } else {
             Self::default()
         };
+        config.normalize_derived_defaults();
 
         // Async hydration/migration
         #[cfg(feature = "security")]
@@ -1182,6 +1184,14 @@ mod tests {
             c.get("pipeline.agent_telemetry.enabled"),
             Some("false".to_string())
         );
+        assert_eq!(
+            c.get("pipeline.agent_telemetry.trace_export.enabled"),
+            Some("false".to_string())
+        );
+        assert_eq!(
+            c.get("pipeline.agent_telemetry.trace_export.protocol"),
+            Some("grpc".to_string())
+        );
         assert_eq!(c.get("unknown.key"), None);
     }
 
@@ -1215,6 +1225,11 @@ mod tests {
         assert_eq!(config.pipeline.max_context_tokens, 0);
         assert!(config.pipeline.log_token_usage);
         assert!(!config.pipeline.agent_telemetry.enabled);
+        assert!(!config.pipeline.agent_telemetry.trace_export.enabled);
+        assert_eq!(
+            config.pipeline.agent_telemetry.trace_export.protocol,
+            AgentTelemetryTraceExportProtocol::Grpc
+        );
     }
 
     #[test]
@@ -1247,6 +1262,14 @@ mod tests {
         assert_eq!(config.pipeline.max_context_tokens, 0);
         assert!(config.pipeline.log_token_usage);
         assert!(!config.pipeline.agent_telemetry.enabled);
+        assert_eq!(
+            config.pipeline.agent_telemetry.trace_export.protocol,
+            AgentTelemetryTraceExportProtocol::Grpc
+        );
+        assert_eq!(
+            config.pipeline.agent_telemetry.trace_export.endpoint,
+            gestura_core_foundation::telemetry::DEFAULT_OTLP_TRACE_ENDPOINT
+        );
     }
 
     #[test]
@@ -1259,6 +1282,10 @@ mod tests {
         config.pipeline.max_context_tokens = 50000;
         config.pipeline.log_token_usage = false;
         config.pipeline.agent_telemetry.enabled = true;
+        config.pipeline.agent_telemetry.trace_export.enabled = true;
+        config.pipeline.agent_telemetry.trace_export.protocol =
+            AgentTelemetryTraceExportProtocol::Grpc;
+        config.pipeline.agent_telemetry.trace_export.endpoint = "http://localhost:4317".to_string();
 
         // Serialize to YAML
         let yaml = serde_yaml::to_string(&config).unwrap();
@@ -1276,6 +1303,15 @@ mod tests {
         assert_eq!(deserialized.pipeline.max_context_tokens, 50000);
         assert!(!deserialized.pipeline.log_token_usage);
         assert!(deserialized.pipeline.agent_telemetry.enabled);
+        assert!(deserialized.pipeline.agent_telemetry.trace_export.enabled);
+        assert_eq!(
+            deserialized.pipeline.agent_telemetry.trace_export.protocol,
+            AgentTelemetryTraceExportProtocol::Grpc
+        );
+        assert_eq!(
+            deserialized.pipeline.agent_telemetry.trace_export.endpoint,
+            "http://localhost:4317"
+        );
     }
 
     /// Global lock used to serialize environment-variable mutation across tests.

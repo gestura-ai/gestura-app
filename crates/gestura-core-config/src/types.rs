@@ -182,11 +182,107 @@ pub struct PipelineSettings {
 pub struct AgentTelemetrySettings {
     /// Emit request-trace telemetry across the agent loop and context pipeline.
     pub enabled: bool,
+    /// Optional OTLP trace export for correlated request/session tracing.
+    pub trace_export: AgentTelemetryTraceExportSettings,
+}
+
+/// OTLP trace export settings for request-level agent telemetry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentTelemetryTraceExportProtocol {
+    /// Export traces via OTLP/HTTP.
+    Http,
+    /// Export traces via OTLP/gRPC.
+    Grpc,
+}
+
+impl AgentTelemetryTraceExportProtocol {
+    /// Returns the canonical string form used by config and CLI surfaces.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Grpc => "grpc",
+        }
+    }
+
+    /// Parses a user-provided transport value.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        if value.eq_ignore_ascii_case("http") {
+            Some(Self::Http)
+        } else if value.eq_ignore_ascii_case("grpc") {
+            Some(Self::Grpc)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the default collector endpoint for this transport.
+    #[must_use]
+    pub const fn default_endpoint(&self) -> &'static str {
+        match self {
+            Self::Http => gestura_core_foundation::telemetry::DEFAULT_OTLP_HTTP_TRACE_ENDPOINT,
+            Self::Grpc => gestura_core_foundation::telemetry::DEFAULT_OTLP_GRPC_TRACE_ENDPOINT,
+        }
+    }
+}
+
+impl Default for AgentTelemetryTraceExportProtocol {
+    fn default() -> Self {
+        Self::Grpc
+    }
+}
+
+/// OTLP trace export settings for request-level agent telemetry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct AgentTelemetryTraceExportSettings {
+    /// Export `tracing` spans to a local or remote OTLP collector.
+    pub enabled: bool,
+    /// OTLP transport protocol used when exporting spans.
+    pub protocol: AgentTelemetryTraceExportProtocol,
+    /// OTLP collector endpoint for the selected protocol.
+    pub endpoint: String,
 }
 
 impl Default for AgentTelemetrySettings {
     fn default() -> Self {
-        Self { enabled: false }
+        Self {
+            enabled: false,
+            trace_export: AgentTelemetryTraceExportSettings::default(),
+        }
+    }
+}
+
+impl Default for AgentTelemetryTraceExportSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            protocol: AgentTelemetryTraceExportProtocol::default(),
+            endpoint: AgentTelemetryTraceExportProtocol::default()
+                .default_endpoint()
+                .to_string(),
+        }
+    }
+}
+
+impl AgentTelemetryTraceExportSettings {
+    /// Normalizes the endpoint when it is empty or still set to the stock
+    /// default for the wrong transport.
+    pub fn normalize_endpoint(&mut self) {
+        let http_default = AgentTelemetryTraceExportProtocol::Http.default_endpoint();
+        let grpc_default = AgentTelemetryTraceExportProtocol::Grpc.default_endpoint();
+        let endpoint = self.endpoint.trim();
+
+        if endpoint.is_empty()
+            || (self.protocol == AgentTelemetryTraceExportProtocol::Http
+                && endpoint == grpc_default)
+            || (self.protocol == AgentTelemetryTraceExportProtocol::Grpc
+                && endpoint == http_default)
+        {
+            self.endpoint = self.protocol.default_endpoint().to_string();
+        }
     }
 }
 
@@ -863,11 +959,13 @@ impl AppConfig {
                     .and_then(|e| e.to_str())
                     .is_some_and(|e| e.eq_ignore_ascii_case("json"));
 
-                if is_json {
+                let mut config: AppConfig = if is_json {
                     serde_json::from_str(&s).unwrap_or_default()
                 } else {
                     serde_yaml::from_str(&s).unwrap_or_default()
-                }
+                };
+                config.normalize_derived_defaults();
+                config
             }
             Err(_) => Self::default(),
         }
@@ -886,11 +984,13 @@ impl AppConfig {
                     .and_then(|e| e.to_str())
                     .is_some_and(|e| e.eq_ignore_ascii_case("json"));
 
-                if is_json {
+                let mut config: AppConfig = if is_json {
                     serde_json::from_str(&s).unwrap_or_default()
                 } else {
                     serde_yaml::from_str(&s).unwrap_or_default()
-                }
+                };
+                config.normalize_derived_defaults();
+                config
             }
             Err(_) => Self::default(),
         }
@@ -979,6 +1079,24 @@ impl AppConfig {
             "pipeline.agent_telemetry.enabled" => {
                 Some(self.pipeline.agent_telemetry.enabled.to_string())
             }
+            "pipeline.agent_telemetry.trace_export.enabled" => Some(
+                self.pipeline
+                    .agent_telemetry
+                    .trace_export
+                    .enabled
+                    .to_string(),
+            ),
+            "pipeline.agent_telemetry.trace_export.protocol" => Some(
+                self.pipeline
+                    .agent_telemetry
+                    .trace_export
+                    .protocol
+                    .as_str()
+                    .to_string(),
+            ),
+            "pipeline.agent_telemetry.trace_export.endpoint" => {
+                Some(self.pipeline.agent_telemetry.trace_export.endpoint.clone())
+            }
             "pipeline.reflection.enabled" => Some(self.pipeline.reflection.enabled.to_string()),
             "pipeline.reflection.quality_threshold_percent" => Some(
                 self.pipeline
@@ -1040,6 +1158,9 @@ impl AppConfig {
             "pipeline.max_context_tokens",
             "pipeline.log_token_usage",
             "pipeline.agent_telemetry.enabled",
+            "pipeline.agent_telemetry.trace_export.enabled",
+            "pipeline.agent_telemetry.trace_export.protocol",
+            "pipeline.agent_telemetry.trace_export.endpoint",
             "pipeline.reflection.enabled",
             "pipeline.reflection.quality_threshold_percent",
             "pipeline.reflection.max_injected",
@@ -1180,6 +1301,23 @@ impl AppConfig {
             self.ui.accent = Some(v);
         }
 
+        // Pipeline telemetry settings
+        if let Some(v) = get_env_bool("PIPELINE_AGENT_TELEMETRY_ENABLED") {
+            self.pipeline.agent_telemetry.enabled = v;
+        }
+        if let Some(v) = get_env_bool("PIPELINE_AGENT_TELEMETRY_TRACE_EXPORT_ENABLED") {
+            self.pipeline.agent_telemetry.trace_export.enabled = v;
+        }
+        if let Some(v) = get_env("PIPELINE_AGENT_TELEMETRY_TRACE_EXPORT_PROTOCOL") {
+            if let Some(protocol) = AgentTelemetryTraceExportProtocol::parse(&v) {
+                self.pipeline.agent_telemetry.trace_export.protocol = protocol;
+            }
+        }
+        if let Some(v) = get_env("PIPELINE_AGENT_TELEMETRY_TRACE_EXPORT_ENDPOINT") {
+            self.pipeline.agent_telemetry.trace_export.endpoint = v;
+        }
+        self.normalize_derived_defaults();
+
         // Developer settings
         if let Some(v) = get_env_bool("DEVELOPER_MODE") {
             self.developer.developer_mode = v;
@@ -1200,6 +1338,14 @@ impl AppConfig {
         }
 
         self
+    }
+
+    /// Normalizes configuration fields whose defaults depend on sibling values.
+    pub fn normalize_derived_defaults(&mut self) {
+        self.pipeline
+            .agent_telemetry
+            .trace_export
+            .normalize_endpoint();
     }
 
     // -----------------------------------------------------------------------

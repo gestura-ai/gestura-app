@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  AgentTelemetryTraceExportProtocol,
   AgentTelemetrySettings,
   AppConfig,
   CompactionStrategy,
@@ -15,6 +16,11 @@ interface SettingsPanelProps {
   config: AppConfig;
   onConfigUpdate: (config: AppConfig) => Promise<void>;
 }
+
+const OTLP_DEFAULT_ENDPOINTS: Record<AgentTelemetryTraceExportProtocol, string> = {
+  http: 'http://127.0.0.1:4318/v1/traces',
+  grpc: 'http://127.0.0.1:4317',
+};
 
 const SettingsPanel: React.FC<SettingsPanelProps> = ({ config, onConfigUpdate }) => {
   const parseIntegerOr = (value: string, fallback: number) => {
@@ -55,6 +61,30 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ config, onConfigUpdate })
   const updateAgentTelemetrySettings = (updates: Partial<AgentTelemetrySettings>) => {
     updatePipelineSettings({
       agent_telemetry: { ...config.pipeline.agent_telemetry, ...updates },
+    });
+  };
+
+  const updateAgentTelemetryTraceExportSettings = (
+    updates: Partial<AgentTelemetrySettings['trace_export']>
+  ) => {
+    updateAgentTelemetrySettings({
+      trace_export: {
+        ...config.pipeline.agent_telemetry.trace_export,
+        ...updates,
+      },
+    });
+  };
+
+  const updateAgentTelemetryTraceExportProtocol = (
+    protocol: AgentTelemetryTraceExportProtocol
+  ) => {
+    const { endpoint } = config.pipeline.agent_telemetry.trace_export;
+    const followsKnownDefault =
+      endpoint.trim().length === 0 || Object.values(OTLP_DEFAULT_ENDPOINTS).includes(endpoint);
+
+    updateAgentTelemetryTraceExportSettings({
+      protocol,
+      endpoint: followsKnownDefault ? OTLP_DEFAULT_ENDPOINTS[protocol] : endpoint,
     });
   };
 
@@ -247,6 +277,57 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ config, onConfigUpdate })
           hint="Log token usage for debugging and monitoring"
         >
           {null}
+        </FormGroup>
+
+        <FormGroup
+          label={
+            <>
+              <input
+                type="checkbox"
+                aria-label="Enable OTLP trace export"
+                checked={config.pipeline.agent_telemetry.trace_export.enabled}
+                onChange={(e) =>
+                  updateAgentTelemetryTraceExportSettings({ enabled: e.target.checked })
+                }
+              />{' '}
+              Export agent traces via OTLP
+            </>
+          }
+          hint="Send correlated request traces to a local collector such as SigNoz. Trace attributes include request_id, session_id, task_id, directive_id, and agent_id."
+        >
+          {null}
+        </FormGroup>
+
+        <FormGroup
+          label="OTLP Trace Endpoint"
+          hint="Collector endpoint for the selected OTLP transport. HTTP commonly uses :4318/v1/traces, while gRPC commonly uses :4317."
+        >
+          <select
+            aria-label="OTLP Trace Transport"
+            value={config.pipeline.agent_telemetry.trace_export.protocol}
+            onChange={(e) =>
+              updateAgentTelemetryTraceExportProtocol(
+                e.target.value as AgentTelemetryTraceExportProtocol
+              )
+            }
+          >
+            <option value="http">OTLP/HTTP</option>
+            <option value="grpc">OTLP/gRPC</option>
+          </select>
+        </FormGroup>
+
+        <FormGroup
+          label="OTLP Trace Endpoint"
+          hint="Collector endpoint for the selected transport. Keep request telemetry enabled to emit agent request spans."
+        >
+          <input
+            type="text"
+            aria-label="OTLP Trace Endpoint"
+            value={config.pipeline.agent_telemetry.trace_export.endpoint}
+            onChange={(e) =>
+              updateAgentTelemetryTraceExportSettings({ endpoint: e.target.value })
+            }
+          />
         </FormGroup>
 
         <FormGroup

@@ -8,6 +8,7 @@ use std::sync::Arc;
 #[allow(unused_imports)]
 use tauri::{Builder, Manager, RunEvent};
 
+use gestura_core::config::AgentTelemetryTraceExportProtocol;
 use gestura_gui::agents::AgentManager;
 #[allow(unused_imports)]
 use gestura_gui::commands;
@@ -143,7 +144,33 @@ async fn main() {
             tracing_subscriber::EnvFilter::new("info")
         }
     });
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    let trace_export = config
+        .pipeline
+        .agent_telemetry
+        .trace_export
+        .enabled
+        .then(|| gestura_gui::telemetry::TraceExportConfig {
+            enabled: true,
+            protocol: match config.pipeline.agent_telemetry.trace_export.protocol {
+                AgentTelemetryTraceExportProtocol::Http => {
+                    gestura_gui::telemetry::TraceExportProtocol::Http
+                }
+                AgentTelemetryTraceExportProtocol::Grpc => {
+                    gestura_gui::telemetry::TraceExportProtocol::Grpc
+                }
+            },
+            endpoint: config
+                .pipeline
+                .agent_telemetry
+                .trace_export
+                .endpoint
+                .clone(),
+            service_name: "gestura-gui".to_string(),
+            service_version: env!("CARGO_PKG_VERSION").to_string(),
+        });
+    gestura_gui::telemetry::init_tracing_subscriber(filter, std::io::stderr, true, trace_export)
+        .expect("failed to initialize tracing");
+    gestura_gui::telemetry::start_system_monitoring().await;
     tracing::info!("Starting Gestura app");
 
     // Build Tauri
@@ -512,4 +539,5 @@ async fn main() {
             }
         }
     });
+    gestura_gui::telemetry::shutdown_tracing();
 }
