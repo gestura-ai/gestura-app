@@ -37,7 +37,7 @@ pub struct ToolDefinition {
 
 /// Return the set of built-in tools.
 pub fn all_tools() -> &'static [ToolDefinition] {
-    static TOOLS: [ToolDefinition; 13] = [
+    static TOOLS: &[ToolDefinition] = &[
         ToolDefinition {
             name: "file",
             summary: "Read/write/list files and directories (workspace & sandbox-aware)",
@@ -146,99 +146,136 @@ pub fn all_tools() -> &'static [ToolDefinition] {
             ],
         },
         ToolDefinition {
-            name: "code",
-            summary: "Industry-grade code intelligence: glob search, grep, batch read/edit, \
-                symbol extraction, references, definitions, outlines, stats, repo map, \
-                dependency analysis, lint, and test runner",
-            description: "Full-featured code intelligence tool complementary to Cursor, \
-                Claude Code, and Aider. Use it to navigate, search, analyze, and edit \
-                large codebases efficiently.\n\n\
-                OPERATIONS:\n\
-                • glob        — find files by pattern (e.g. **/*.rs, src/**/*.ts)\n\
-                • grep        — regex search in file contents with context lines and file-glob filtering\n\
-                • batch_read  — read many files in a single call; ideal for multi-file context gathering\n\
-                • batch_edit  — apply multiple str-replace edits atomically across files\n\
-                • outline     — structured symbol outline (functions, structs, enums, impls) for a file\n\
-                • symbols     — extract all top-level symbols from a file\n\
-                • references  — find every reference to a named symbol across the codebase\n\
-                • definition  — jump to the first definition of a symbol\n\
-                • map         — repository structure map: file types, counts, and key files\n\
-                • stats       — line and language statistics for a directory\n\
-                • deps        — parse Cargo.toml dependency groups\n\
-                • lint        — run cargo clippy (optionally auto-fix)\n\
-                • test        — run cargo test with an optional filter\n\n\
-                WORKFLOW GUIDANCE:\n\
-                1. Start with 'map' or 'stats' to understand the codebase structure.\n\
-                2. Use 'glob' to discover relevant files by pattern before reading them.\n\
-                3. Use 'grep' with context_lines to locate logic without reading whole files.\n\
-                4. Use 'batch_read' to pull in multiple related files at once.\n\
-                5. Use 'outline' or 'symbols' to understand a file's API surface quickly.\n\
-                6. Use 'references' + 'definition' for precise symbol navigation.\n\
-                7. Use 'batch_edit' for multi-file refactors; each edit is a str-replace.\n\
-                8. After changes run 'lint' then 'test' to verify correctness.",
+            name: "code_read_files",
+            summary: "Read one or more exact source files with a strict file-only contract",
+            description: "Read exact file contents for known source files. Use this after you know the specific file paths you need. Pass `paths`; do not pass directory roots or edit-style arguments.",
             keywords: &[
-                "code",
-                "glob",
-                "grep",
-                "search",
-                "find",
-                "batch",
-                "read",
-                "edit",
-                "refactor",
-                "symbol",
-                "function",
-                "struct",
-                "enum",
-                "trait",
-                "impl",
-                "reference",
-                "definition",
-                "outline",
-                "map",
-                "stats",
-                "lines",
-                "dependency",
-                "cargo",
-                "clippy",
-                "lint",
-                "test",
-                "codebase",
-                "architecture",
-                "module",
-                "import",
-                "class",
-                "method",
-                "navigate",
+                "code", "read", "file", "source", "contents", "open", "inspect",
             ],
+            inputs: &["paths"],
+            side_effects: &["Reads local code files"],
+            examples: &["Read files: {paths:[src/main.rs, src/lib.rs]}"],
+        },
+        ToolDefinition {
+            name: "code_edit_files",
+            summary: "Apply exact str-replace edits across one or more files with a strict schema",
+            description: "Edit existing files using an `edits` array. Each edit must include only `path`, `old_str`, and `new_str`. This tool is strict: do not pass directories, `pattern`, `symbol`, or read-style fields.",
+            keywords: &["code", "edit", "replace", "refactor", "rewrite", "modify"],
+            inputs: &["edits"],
+            side_effects: &["Writes local code files"],
+            examples: &[
+                "Edit files: {edits:[{path:src/lib.rs, old_str:old_name, new_str:new_name}]}",
+            ],
+        },
+        ToolDefinition {
+            name: "code_outline",
+            summary: "Return a structured outline for one exact source file",
+            description: "Extract the outline of a single file, including functions, structs, enums, and impls. Requires an exact file path.",
+            keywords: &["code", "outline", "api", "file", "structure", "symbols"],
+            inputs: &["path"],
+            side_effects: &["Reads local code files"],
+            examples: &["Outline a file: {path:crates/my-crate/src/lib.rs}"],
+        },
+        ToolDefinition {
+            name: "code_symbols",
+            summary: "Extract top-level symbols from one exact source file",
+            description: "List the top-level symbols from a file. Requires an exact file path.",
+            keywords: &["code", "symbols", "file", "function", "struct", "enum"],
+            inputs: &["path"],
+            side_effects: &["Reads local code files"],
+            examples: &["Symbols: {path:crates/my-crate/src/lib.rs}"],
+        },
+        ToolDefinition {
+            name: "code_references",
+            summary: "Find references to a symbol across an existing code path",
+            description: "Find references for a symbol inside a file or directory path.",
+            keywords: &["code", "references", "symbol", "usage", "find"],
+            inputs: &["symbol", "path"],
+            side_effects: &["Reads local code files"],
+            examples: &["References: {symbol:MyStruct, path:.}"],
+        },
+        ToolDefinition {
+            name: "code_definition",
+            summary: "Jump to the first definition of a symbol across an existing code path",
+            description: "Find the first definition for a symbol inside a file or directory path.",
+            keywords: &["code", "definition", "symbol", "declare", "where"],
+            inputs: &["symbol", "path"],
+            side_effects: &["Reads local code files"],
+            examples: &["Definition: {symbol:execute_tool, path:.}"],
+        },
+        ToolDefinition {
+            name: "code_glob",
+            summary: "Find files by glob pattern inside a directory",
+            description: "Search for files using a glob pattern relative to a directory root.",
+            keywords: &["code", "glob", "files", "match", "pattern", "discover"],
+            inputs: &["path", "pattern", "max_results"],
+            side_effects: &["Reads local code metadata"],
+            examples: &["Glob files: {path:., pattern:**/*.rs}"],
+        },
+        ToolDefinition {
+            name: "code_grep",
+            summary: "Regex search code contents inside a directory",
+            description: "Search file contents with a regex pattern, optional file glob filtering, and context lines.",
+            keywords: &["code", "grep", "search", "regex", "text", "pattern"],
             inputs: &[
-                "operation",
                 "path",
                 "pattern",
-                "symbol",
-                "paths",
-                "edits",
-                "options",
+                "file_glob",
+                "context_lines",
+                "max_results",
             ],
-            side_effects: &[
-                "Reads local code files",
-                "batch_edit writes to local files",
-                "lint and test execute cargo subprocesses",
-            ],
+            side_effects: &["Reads local code files"],
             examples: &[
-                "Find all Rust files: {operation:glob, pattern:**/*.rs, path:.}",
-                "Grep for a function: {operation:grep, pattern:fn handle_request, file_glob:*.rs, context_lines:3}",
-                "Read multiple files: {operation:batch_read, paths:[src/main.rs, src/lib.rs]}",
-                "Batch edit refactor: {operation:batch_edit, edits:[{path:src/lib.rs, old_str:old_name, new_str:new_name}]}",
-                "Outline a file: {operation:outline, path:crates/my-crate/src/lib.rs}",
-                "Find references: {operation:references, symbol:MyStruct, path:.}",
-                "Jump to definition: {operation:definition, symbol:execute_tool, path:.}",
-                "Repo map: {operation:map, path:., max_depth:3}",
-                "Code stats: {operation:stats, path:.}",
-                "Cargo deps: {operation:deps, path:.}",
-                "Run clippy: {operation:lint, path:.}",
-                "Run tests: {operation:test, path:., filter:my_test_name}",
+                "Grep code: {path:., pattern:fn handle_request, file_glob:*.rs, context_lines:3}",
             ],
+        },
+        ToolDefinition {
+            name: "code_map",
+            summary: "Summarize repository structure for a directory",
+            description: "Build a repository map for a directory root.",
+            keywords: &["code", "map", "repo", "structure", "directory", "overview"],
+            inputs: &["path", "max_depth"],
+            side_effects: &["Reads local code metadata"],
+            examples: &["Map repo: {path:., max_depth:3}"],
+        },
+        ToolDefinition {
+            name: "code_stats",
+            summary: "Compute line and language statistics for an existing path",
+            description: "Compute language and line-count statistics for a file or directory path.",
+            keywords: &["code", "stats", "lines", "languages", "count"],
+            inputs: &["path"],
+            side_effects: &["Reads local code metadata"],
+            examples: &["Code stats: {path:.}"],
+        },
+        ToolDefinition {
+            name: "code_deps",
+            summary: "Inspect Cargo dependencies for an existing path",
+            description: "Inspect Cargo dependencies for a manifest or project path.",
+            keywords: &["code", "deps", "dependencies", "cargo", "manifest"],
+            inputs: &["path"],
+            side_effects: &["Reads local manifests"],
+            examples: &["Dependencies: {path:.}"],
+        },
+        ToolDefinition {
+            name: "code_lint",
+            summary: "Run linting for a project directory",
+            description: "Run cargo clippy for a project directory. This executes a subprocess.",
+            keywords: &["code", "lint", "clippy", "cargo", "verify"],
+            inputs: &["path", "fix"],
+            side_effects: &[
+                "Executes local lint subprocesses",
+                "May modify files when fix=true",
+            ],
+            examples: &["Lint: {path:.}"],
+        },
+        ToolDefinition {
+            name: "code_test",
+            summary: "Run tests for a project directory",
+            description: "Run cargo test for a project directory, optionally filtered.",
+            keywords: &["code", "test", "cargo", "verify", "unit", "integration"],
+            inputs: &["path", "filter"],
+            side_effects: &["Executes local test subprocesses"],
+            examples: &["Test: {path:., filter:my_test_name}"],
         },
         ToolDefinition {
             name: "web",
@@ -615,7 +652,7 @@ pub fn all_tools() -> &'static [ToolDefinition] {
             ],
         },
     ];
-    &TOOLS
+    TOOLS
 }
 
 /// Find a tool definition by name (case-insensitive).

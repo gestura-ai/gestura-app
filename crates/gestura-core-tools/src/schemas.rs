@@ -357,6 +357,153 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                 "additionalProperties": false
             }),
         ),
+        "code_read_files" => (
+            summary,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Exact file paths to read. This tool is file-only; do not pass directories."
+                    }
+                },
+                "required": ["paths"],
+                "additionalProperties": false,
+                "examples": [
+                    {"paths": ["src/main.rs", "src/lib.rs"]}
+                ]
+            }),
+        ),
+        "code_edit_files" => (
+            summary,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "edits": {
+                        "type": "array",
+                        "description": "Strict array of exact str-replace edits. Each edit must include only `path`, `old_str`, and `new_str`.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "description": "Exact file path to edit. Must not be a directory."},
+                                "old_str": {"type": "string", "description": "Exact string to find."},
+                                "new_str": {"type": "string", "description": "Replacement string."}
+                            },
+                            "required": ["path", "old_str", "new_str"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["edits"],
+                "additionalProperties": false,
+                "examples": [
+                    {"edits": [{"path": "src/index.html", "old_str": "<h1>Hello</h1>", "new_str": "<h1>Hello World</h1>"}]}
+                ]
+            }),
+        ),
+        "code_outline" | "code_symbols" => (
+            summary,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Exact file path. This tool is file-only; do not pass a directory."
+                    }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+        ),
+        "code_references" | "code_definition" => (
+            summary,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "Symbol name to search for."},
+                    "path": {"type": "string", "description": "Existing file or directory path to search within."}
+                },
+                "required": ["symbol", "path"],
+                "additionalProperties": false
+            }),
+        ),
+        "code_glob" => (
+            summary,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Existing directory path to search within."},
+                    "pattern": {"type": "string", "description": "Glob pattern such as **/*.rs."},
+                    "max_results": {"type": "integer", "default": 100}
+                },
+                "required": ["path", "pattern"],
+                "additionalProperties": false
+            }),
+        ),
+        "code_grep" => (
+            summary,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Existing directory path to search within."},
+                    "pattern": {"type": "string", "description": "Regex pattern to search for."},
+                    "file_glob": {"type": "string"},
+                    "context_lines": {"type": "integer", "default": 2},
+                    "case_sensitive": {"type": "boolean", "default": false},
+                    "max_results": {"type": "integer", "default": 100}
+                },
+                "required": ["path", "pattern"],
+                "additionalProperties": false
+            }),
+        ),
+        "code_map" => (
+            summary,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Existing directory path to map."},
+                    "max_depth": {"type": "integer", "default": 4}
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+        ),
+        "code_stats" | "code_deps" => (
+            summary,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Existing path to inspect."}
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+        ),
+        "code_lint" => (
+            summary,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Existing project directory path."},
+                    "fix": {"type": "boolean", "default": false}
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+        ),
+        "code_test" => (
+            summary,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Existing project directory path."},
+                    "filter": {"type": "string"}
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+        ),
         "task" | "tasks" => (
             "Create, update, list, and organize tasks for the current session. For `create`, provide `name` and let the runtime assign the `task_id`; do not send `task_id` in create calls. For `update_status`, ALWAYS provide both `task_id` and `status` in the same call. Correct example: {\"operation\":\"update_status\",\"task_id\":\"abc123\",\"status\":\"completed\"}. Invalid example: {\"operation\":\"update_status\",\"task_id\":\"abc123\"}. Do not call `update_status` just to confirm or preserve the current state; if no status changed, continue the real work instead of repeating bookkeeping.",
             serde_json::json!({
@@ -790,34 +937,26 @@ mod tests {
 
     #[test]
     fn code_schema_requires_edits_for_batch_edit_operation() {
-        let code = find_tool("code").unwrap();
+        let code = find_tool("code_edit_files").unwrap();
         let schemas = build_provider_tool_schemas(&[code]);
 
-        let branches = schemas.openai[0]["function"]["parameters"]["oneOf"]
+        let parameters = &schemas.openai[0]["function"]["parameters"];
+        let required = parameters["required"]
             .as_array()
-            .expect("code schema should define oneOf branches");
-        let batch_edit_branch = branches
-            .iter()
-            .find(|branch| branch["properties"]["operation"]["enum"][0] == "batch_edit")
-            .expect("missing batch_edit branch");
-        let required = batch_edit_branch["required"]
-            .as_array()
-            .expect("batch_edit branch should have required fields");
+            .expect("code_edit_files schema should have required fields");
 
         assert!(required.iter().any(|value| value == "edits"));
 
-        let description = batch_edit_branch["description"]
+        let description = parameters["properties"]["edits"]["description"]
             .as_str()
-            .expect("batch_edit branch description should exist");
-        assert!(description.contains("`edits` must be an array even for one change"));
+            .expect("edits description should exist");
+        assert!(description.contains("Strict array of exact str-replace edits"));
 
-        let examples = schemas.openai[0]["function"]["parameters"]["examples"]
+        let examples = parameters["examples"]
             .as_array()
-            .expect("code schema should include examples");
+            .expect("code_edit_files schema should include examples");
         assert!(examples.iter().any(|example| {
-            example["operation"] == "batch_edit"
-                && example["edits"].is_array()
-                && example["edits"][0]["old_str"].is_string()
+            example["edits"].is_array() && example["edits"][0]["old_str"].is_string()
         }));
     }
 }
