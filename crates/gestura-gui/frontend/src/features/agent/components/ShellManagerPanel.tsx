@@ -258,14 +258,13 @@ export const ShellManagerPanel: React.FC<ShellManagerPanelProps> = ({
         <div className="shell-dock__actions">
           <button
             type="button"
-            className="shell-dock__toolbar-button primary"
+            className="shell-dock__toolbar-button shell-dock__toolbar-button--icon"
             onClick={() => void handleStartShell()}
             disabled={isStartingShell}
             aria-label={isStartingShell ? 'Starting terminal session' : 'Start new terminal session'}
             title={isStartingShell ? 'Starting terminal session' : 'New Terminal'}
           >
             <PlusIcon />
-            <span>{isStartingShell ? 'Starting…' : 'New Terminal'}</span>
           </button>
         </div>
       </header>

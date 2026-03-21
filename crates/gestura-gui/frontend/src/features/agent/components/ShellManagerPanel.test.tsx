@@ -90,6 +90,7 @@ describe('ShellManagerPanel', () => {
     expect(screen.getByText('/workspace/app')).toBeInTheDocument();
     expect(screen.getByText('proc')).toBeInTheDocument();
     expect(screen.getByText('proc process-shell-001')).toBeInTheDocument();
+    expect(screen.queryByText('New Terminal')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Start new terminal session' }));
 
