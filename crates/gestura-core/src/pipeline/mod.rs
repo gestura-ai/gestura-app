@@ -27,6 +27,7 @@ use std::path::Path;
 use std::time::Instant;
 use tokio::sync::mpsc;
 pub use tool_router::{RoutingResult, ToolRouter, build_tool_router};
+use tracing::Instrument as _;
 
 use crate::agent_sessions::{AgentSessionStore, FileAgentSessionStore};
 use crate::checkpoints::{CheckpointManager, CheckpointRetentionPolicy, FileCheckpointStore};
@@ -88,7 +89,98 @@ pub struct AgentPipeline {
     tool_router: Option<Box<dyn tool_router::ToolRouter>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoTrackedRequestShape {
+    CreateOrModify,
+    InvestigateOrFix,
+    AnalyzeOrCompare,
+    ResearchOrFetch,
+    PlanOrDraft,
+    GeneralExecution,
+}
+
 impl AgentPipeline {
+    fn message_contains_any(text: &str, signals: &[&str]) -> bool {
+        signals.iter().any(|signal| text.contains(signal))
+    }
+
+    fn infer_auto_tracked_request_shape(message: &str) -> AutoTrackedRequestShape {
+        let text = message.trim().to_ascii_lowercase();
+
+        if Self::message_contains_any(
+            &text,
+            &[
+                "fix",
+                "debug",
+                "troubleshoot",
+                "resolve",
+                "repair",
+                "investigate why",
+                "diagnose",
+            ],
+        ) {
+            return AutoTrackedRequestShape::InvestigateOrFix;
+        }
+
+        if Self::message_contains_any(
+            &text,
+            &[
+                "compare", "review", "audit", "assess", "analyze", "analyse", "evaluate", "inspect",
+            ],
+        ) {
+            return AutoTrackedRequestShape::AnalyzeOrCompare;
+        }
+
+        if Self::message_contains_any(
+            &text,
+            &[
+                "research", "find", "look up", "lookup", "search", "fetch", "gather", "collect",
+                "explore",
+            ],
+        ) {
+            return AutoTrackedRequestShape::ResearchOrFetch;
+        }
+
+        if Self::message_contains_any(
+            &text,
+            &[
+                "create",
+                "implement",
+                "build",
+                "set up",
+                "setup",
+                "scaffold",
+                "write",
+                "draft",
+                "compose",
+                "update",
+                "change",
+                "modify",
+                "refactor",
+                "migrate",
+            ],
+        ) {
+            return AutoTrackedRequestShape::CreateOrModify;
+        }
+
+        if Self::message_contains_any(
+            &text,
+            &[
+                "plan",
+                "design",
+                "outline",
+                "document",
+                "summarize",
+                "summarise",
+                "propose",
+            ],
+        ) {
+            return AutoTrackedRequestShape::PlanOrDraft;
+        }
+
+        AutoTrackedRequestShape::GeneralExecution
+    }
+
     fn ensure_request_session_id(request: &mut AgentRequest) {
         let missing_session_id = request
             .metadata
@@ -119,24 +211,71 @@ impl AgentPipeline {
             return false;
         }
 
-        let planning_signals = [
-            "plan and implement",
-            "carefully plan",
-            "build and test",
-            "implement then",
-            "step by step",
-            "break this down",
-            "end to end",
-            "scaffold",
-            "refactor",
-            "fix",
-            "debug",
-            "build",
-            "test",
-        ];
+        Self::message_contains_any(
+            &text,
+            &[
+                "plan and implement",
+                "carefully plan",
+                "build and test",
+                "implement then",
+                "step by step",
+                "break this down",
+                "end to end",
+                "scaffold",
+                "refactor",
+                "fix",
+                "debug",
+                "build",
+                "test",
+                "compare",
+                "review",
+                "audit",
+                "analyze",
+                "analyse",
+                "assess",
+                "evaluate",
+                "inspect",
+                "research",
+                "search",
+                "find",
+                "fetch",
+                "gather",
+                "collect",
+                "explore",
+                "plan",
+                "design",
+                "outline",
+                "document",
+                "write",
+                "draft",
+                "summarize",
+                "summarise",
+                "propose",
+                "investigate",
+                "troubleshoot",
+            ],
+        ) && text.split_whitespace().count() >= 6
+    }
 
-        planning_signals.iter().any(|signal| text.contains(signal))
-            && text.split_whitespace().count() >= 6
+    fn should_offer_task_tool_for_request(analysis: &crate::context::RequestAnalysis) -> bool {
+        analysis.needs_tools && Self::should_auto_track_request(&analysis.request, None)
+    }
+
+    fn append_task_tool_for_auto_tracked_request(
+        analysis: &crate::context::RequestAnalysis,
+        candidate_names: &HashSet<&str>,
+        tools: &mut Vec<&'static ToolDefinition>,
+    ) {
+        if !candidate_names.contains("task")
+            || !Self::should_offer_task_tool_for_request(analysis)
+            || tools.iter().any(|tool| tool.name == "task")
+        {
+            return;
+        }
+
+        if let Some(task_tool) = crate::tools::registry::find_tool("task") {
+            tools.push(task_tool);
+        }
     }
 
     fn derive_agent_request_task_name(message: &str) -> String {
@@ -159,6 +298,213 @@ impl AgentPipeline {
         }
     }
 
+    fn default_auto_tracked_execution_subtasks(message: &str) -> Vec<(String, String)> {
+        let request = message.trim();
+        let mentions_validation = Self::message_contains_any(
+            &request.to_ascii_lowercase(),
+            &[
+                "build",
+                "test",
+                "verify",
+                "validation",
+                "validate",
+                "check",
+                "run",
+                "compile",
+                "lint",
+                "smoke",
+            ],
+        );
+
+        match Self::infer_auto_tracked_request_shape(request) {
+            AutoTrackedRequestShape::CreateOrModify => vec![
+                (
+                    "Inspect the current state and constraints".to_string(),
+                    format!(
+                        "Inspect the current environment, relevant context, and constraints before acting on:\n\n{}",
+                        request
+                    ),
+                ),
+                (
+                    "Prepare the starting point or prerequisites".to_string(),
+                    format!(
+                        "Set up the starting point, prerequisites, or scaffolding needed to complete:\n\n{}",
+                        request
+                    ),
+                ),
+                (
+                    "Carry out the requested work".to_string(),
+                    format!(
+                        "Create, modify, draft, or otherwise perform the primary work needed for:\n\n{}",
+                        request
+                    ),
+                ),
+                (
+                    "Validate the result and summarize follow-up".to_string(),
+                    if mentions_validation {
+                        format!(
+                            "Run the appropriate verification steps, checks, or commands and summarize the final outcome for:\n\n{}",
+                            request
+                        )
+                    } else {
+                        format!(
+                            "Review the completed result, verify it in the most appropriate way, and summarize any follow-up for:\n\n{}",
+                            request
+                        )
+                    },
+                ),
+            ],
+            AutoTrackedRequestShape::InvestigateOrFix => vec![
+                (
+                    "Investigate the current issue or constraints".to_string(),
+                    format!(
+                        "Gather the evidence needed to understand the problem, failure, or constraints involved in:\n\n{}",
+                        request
+                    ),
+                ),
+                (
+                    "Apply the fix or adjustment".to_string(),
+                    format!(
+                        "Make the change, adjustment, or corrective action needed to address:\n\n{}",
+                        request
+                    ),
+                ),
+                (
+                    "Validate the fix and remaining risk".to_string(),
+                    format!(
+                        "Verify whether the issue is resolved and summarize any remaining risk or follow-up for:\n\n{}",
+                        request
+                    ),
+                ),
+            ],
+            AutoTrackedRequestShape::AnalyzeOrCompare => vec![
+                (
+                    "Inspect the relevant inputs and criteria".to_string(),
+                    format!(
+                        "Gather the materials, context, and comparison criteria needed to evaluate:\n\n{}",
+                        request
+                    ),
+                ),
+                (
+                    "Analyze the findings and identify gaps".to_string(),
+                    format!(
+                        "Analyze the relevant differences, patterns, tradeoffs, or gaps involved in:\n\n{}",
+                        request
+                    ),
+                ),
+                (
+                    "Summarize conclusions and recommended actions".to_string(),
+                    format!(
+                        "Deliver a clear summary of the conclusions, recommendations, or next steps for:\n\n{}",
+                        request
+                    ),
+                ),
+            ],
+            AutoTrackedRequestShape::ResearchOrFetch => vec![
+                (
+                    "Gather the relevant context and sources".to_string(),
+                    format!(
+                        "Collect the most relevant information, evidence, or source material needed for:\n\n{}",
+                        request
+                    ),
+                ),
+                (
+                    "Extract the information that matters".to_string(),
+                    format!(
+                        "Filter and organize the most useful details, signals, or facts for:\n\n{}",
+                        request
+                    ),
+                ),
+                (
+                    "Summarize findings and next steps".to_string(),
+                    format!(
+                        "Present the findings clearly and include any recommended next steps for:\n\n{}",
+                        request
+                    ),
+                ),
+            ],
+            AutoTrackedRequestShape::PlanOrDraft => vec![
+                (
+                    "Clarify the goal, audience, and constraints".to_string(),
+                    format!(
+                        "Identify the intent, audience, constraints, and success criteria behind:\n\n{}",
+                        request
+                    ),
+                ),
+                (
+                    "Draft the requested output".to_string(),
+                    format!(
+                        "Produce the requested plan, document, draft, or structured output for:\n\n{}",
+                        request
+                    ),
+                ),
+                (
+                    "Review and refine the result".to_string(),
+                    format!(
+                        "Review the draft for completeness, quality, and alignment with the request:\n\n{}",
+                        request
+                    ),
+                ),
+            ],
+            AutoTrackedRequestShape::GeneralExecution => vec![
+                (
+                    "Inspect the current state and gather context".to_string(),
+                    format!(
+                        "Inspect the current state, gather the needed context, and identify the concrete next steps for:\n\n{}",
+                        request
+                    ),
+                ),
+                (
+                    "Carry out the requested work".to_string(),
+                    format!(
+                        "Perform the primary work needed to complete:\n\n{}",
+                        request
+                    ),
+                ),
+                (
+                    "Verify the outcome and summarize next steps".to_string(),
+                    if mentions_validation {
+                        format!(
+                            "Run the appropriate checks or commands, verify the outcome, and summarize what remains for:\n\n{}",
+                            request
+                        )
+                    } else {
+                        format!(
+                            "Review the outcome, verify that it satisfies the request, and summarize next steps for:\n\n{}",
+                            request
+                        )
+                    },
+                ),
+            ],
+        }
+    }
+
+    fn build_auto_tracked_execution_handoff_message(
+        original_message: &str,
+        root_task_name: &str,
+        planned_subtasks: &[String],
+    ) -> String {
+        let mut handoff = String::new();
+        handoff.push_str(original_message.trim());
+        handoff.push_str("\n\n[Runtime execution handoff]\n");
+        handoff.push_str(&format!(
+            "A task plan already exists for this request under the tracked task \"{}\". Execute that plan now instead of creating a fresh plan from scratch.\n",
+            root_task_name
+        ));
+        if !planned_subtasks.is_empty() {
+            handoff.push_str("Planned tracked subtasks:\n");
+            for subtask in planned_subtasks {
+                handoff.push_str("- ");
+                handoff.push_str(subtask);
+                handoff.push('\n');
+            }
+        }
+        handoff.push_str(
+            "Update task statuses as you start and finish each concrete subtask. If you create new work, create a concrete subtask with a specific name. Do not mark the tracked root task complete until every planned subtask is completed or explicitly cancelled for a real reason. Begin concrete work immediately. If the request is primarily analysis or research, gather evidence first and summarize the outcome clearly instead of forcing unnecessary edits or commands."
+        );
+        handoff
+    }
+
     fn maybe_initialize_tracked_request_task(
         request: &mut AgentRequest,
         analysis_needs_tools: bool,
@@ -179,6 +525,7 @@ impl AgentPipeline {
 
         let manager = crate::get_global_task_manager();
         let task_name = Self::derive_agent_request_task_name(&request.input);
+        let execution_subtasks = Self::default_auto_tracked_execution_subtasks(&request.input);
         let description = format!(
             "Autogenerated tracked execution task for request:\n\n{}",
             request.input.trim()
@@ -186,13 +533,96 @@ impl AgentPipeline {
 
         match manager.create_task(session_id, &task_name, &description, None) {
             Ok(task) => {
+                let mut planned_subtasks = Vec::new();
                 request.metadata.task_id = Some(task.id.clone());
-                let _ = manager.set_current_task_id(session_id, Some(task.id.clone()));
+
+                if let Err(error) =
+                    manager.update_task_status(session_id, &task.id, crate::TaskStatus::InProgress)
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        task_id = %task.id,
+                        error = %error,
+                        "Failed to mark tracked root task in progress during initialization"
+                    );
+                }
+
+                let mut first_subtask_id: Option<String> = None;
+                for (index, (name, subtask_description)) in execution_subtasks.iter().enumerate() {
+                    match manager.create_task(
+                        session_id,
+                        name,
+                        subtask_description,
+                        Some(task.id.clone()),
+                    ) {
+                        Ok(subtask) => {
+                            if index == 0 {
+                                if let Err(error) = manager.update_task_status(
+                                    session_id,
+                                    &subtask.id,
+                                    crate::TaskStatus::InProgress,
+                                ) {
+                                    tracing::warn!(
+                                        session_id = %session_id,
+                                        task_id = %subtask.id,
+                                        error = %error,
+                                        "Failed to mark initial execution subtask in progress"
+                                    );
+                                } else {
+                                    first_subtask_id = Some(subtask.id.clone());
+                                    planned_subtasks.push(format!("{} [inprogress]", subtask.name));
+                                    continue;
+                                }
+                            }
+                            planned_subtasks.push(format!("{} [notstarted]", subtask.name));
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                session_id = %session_id,
+                                root_task_id = %task.id,
+                                subtask_name = %name,
+                                error = %error,
+                                "Failed to initialize default execution subtask for tracked request"
+                            );
+                        }
+                    }
+                }
+
+                let current_task_id = first_subtask_id.unwrap_or_else(|| task.id.clone());
+                let _ = manager.set_current_task_id(session_id, Some(current_task_id));
+                if let Err(error) = manager.record_memory_event(
+                    session_id,
+                    &task.id,
+                    crate::tasks::TaskMemoryEvent::new(
+                        crate::tasks::TaskMemoryPhase::Handoff,
+                        format!(
+                            "Initialized tracked request with {} planned tracked subtasks",
+                            planned_subtasks.len()
+                        ),
+                        Some("session".to_string()),
+                        Some("handoff".to_string()),
+                        None,
+                    ),
+                ) {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        task_id = %task.id,
+                        error = %error,
+                        "Failed to record tracked request initialization memory event"
+                    );
+                }
+
+                request.input = Self::build_auto_tracked_execution_handoff_message(
+                    &request.input,
+                    &task.name,
+                    &planned_subtasks,
+                );
                 tracing::info!(
                     session_id = %session_id,
                     task_id = %task.id,
                     task_name = %task.name,
-                    "Initialized tracked root task for agent request"
+                    planned_subtasks = planned_subtasks.len(),
+                    "Initialized tracked root task and default tracked subtasks for agent request"
                 );
             }
             Err(error) => {
@@ -588,15 +1018,18 @@ impl AgentPipeline {
             self.config.pipeline.agent_telemetry.enabled,
         )
         .await;
-        let result = async {
+        let result = telemetry.in_request_scope(async {
 
         // 1. Analyze the request
-        let mut analysis = self.analyzer.analyze(&request.input);
+        let mut analysis = tracing::info_span!("agent.pipeline.analyze_request").in_scope(|| {
+            let mut analysis = self.analyzer.analyze(&request.input);
 
-        // Heuristic: if the user is replying with an approval ("ok", "please proceed")
-        // and the previous assistant turn proposed using a tool, promote this turn into
-        // a tool-enabled follow-up so the agent can actually execute the intended tool.
-        self.promote_approval_to_tool_followup(&request, &mut analysis);
+            // Heuristic: if the user is replying with an approval ("ok", "please proceed")
+            // and the previous assistant turn proposed using a tool, promote this turn into
+            // a tool-enabled follow-up so the agent can actually execute the intended tool.
+            self.promote_approval_to_tool_followup(&request, &mut analysis);
+            analysis
+        });
         // Emit analysis telemetry after local request-shaping heuristics have run
         // so the trace reflects the final analyzer state for this request.
         telemetry.record_analysis(&analysis).await;
@@ -616,6 +1049,7 @@ impl AgentPipeline {
             let all: Vec<&'static ToolDefinition> = all_tools().iter().collect();
             let routing = router
                 .route(&request.input, &all, analysis.confidence)
+                .instrument(tracing::info_span!("agent.pipeline.route_tools"))
                 .await;
             if routing.has_selection() {
                 tracing::debug!(
@@ -711,16 +1145,23 @@ impl AgentPipeline {
         // streaming keepalive status so we never silently block before the first LLM chunk.
         if include_mcp_tool_schemas {
             self.ensure_mcp_servers_connected_streaming(&tx, &cancel_token)
+                .instrument(tracing::info_span!("agent.pipeline.connect_mcp"))
                 .await;
         }
 
         // 3. Resolve context
-        let mut resolved_context = self.context_manager.resolve_context(
-            &request.input,
-            &analysis,
-            &request.history,
-            request.metadata.workspace_dir.as_deref(),
-        );
+        let mut resolved_context = tracing::info_span!(
+            "agent.pipeline.resolve_context",
+            phase = "initial"
+        )
+        .in_scope(|| {
+            self.context_manager.resolve_context(
+                &request.input,
+                &analysis,
+                &request.history,
+                request.metadata.workspace_dir.as_deref(),
+            )
+        });
 
         // 3.1+3.2. Enrich context with memory bank and enabled knowledge items.
         self.enrich_resolved_context(
@@ -729,6 +1170,10 @@ impl AgentPipeline {
             &request.input,
             &request.metadata,
         )
+        .instrument(tracing::info_span!(
+            "agent.pipeline.enrich_context",
+            phase = "initial"
+        ))
         .await;
         // Capture the enriched context before compaction/prompt construction.
         telemetry
@@ -737,9 +1182,11 @@ impl AgentPipeline {
 
         // 3.5. Check for auto-compaction before building prompt
         // Build a preview prompt to estimate tokens
-        let preview_prompt = self.build_prompt(&request, &resolved_context);
+        let preview_prompt = tracing::info_span!("agent.pipeline.build_preview_prompt")
+            .in_scope(|| self.build_prompt(&request, &resolved_context));
         if let Some(compaction_chunk) = self
             .check_and_apply_auto_compaction(&request.history, &preview_prompt, &request.metadata)
+            .instrument(tracing::info_span!("agent.pipeline.auto_compaction"))
             .await
         {
             telemetry.record_compaction(&compaction_chunk).await;
@@ -752,18 +1199,28 @@ impl AgentPipeline {
 
             // Re-resolve context after compaction and re-enrich (G4: enrichment
             // must run again so memory bank + knowledge survive compaction).
-            resolved_context = self.context_manager.resolve_context(
-                &request.input,
-                &analysis,
-                &request.history,
-                request.metadata.workspace_dir.as_deref(),
-            );
+            resolved_context = tracing::info_span!(
+                "agent.pipeline.resolve_context",
+                phase = "post_compaction"
+            )
+            .in_scope(|| {
+                self.context_manager.resolve_context(
+                    &request.input,
+                    &analysis,
+                    &request.history,
+                    request.metadata.workspace_dir.as_deref(),
+                )
+            });
             self.enrich_resolved_context(
                 &mut resolved_context,
                 request.metadata.workspace_dir.as_deref(),
                 &request.input,
                 &request.metadata,
             )
+            .instrument(tracing::info_span!(
+                "agent.pipeline.enrich_context",
+                phase = "post_compaction"
+            ))
             .await;
             telemetry
                 .record_context_resolved("post_compaction", &resolved_context)
@@ -771,7 +1228,8 @@ impl AgentPipeline {
         }
 
         // 4. Build the optimized prompt with token limit checking
-        let (prompt, truncated) = self.truncate_prompt_if_needed(&request, &mut resolved_context);
+        let (prompt, truncated) = tracing::info_span!("agent.pipeline.prepare_prompt")
+            .in_scope(|| self.truncate_prompt_if_needed(&request, &mut resolved_context));
         telemetry
             .record_prompt_prepared(&prompt, truncated, &resolved_context)
             .await;
@@ -814,9 +1272,24 @@ impl AgentPipeline {
         let reflection_retry_context = resolved_context.clone();
         let effective_max_iterations = self.effective_request_max_iterations(&request);
         let reflection_quality_budget = effective_max_iterations.unwrap_or(0);
+        let relevant_tool_count = relevant_tools.len();
+        let requires_build_and_test = Self::prompt_requires_build_and_test(&request.input);
+        let requires_mutating_file_tool_success =
+            Self::request_requires_mutating_file_tool_success(&request.input);
+        if requires_build_and_test {
+            tracing::warn!(
+                request_input_preview = %request.input.chars().take(160).collect::<String>(),
+                source = ?request.metadata.source,
+                session_id = ?request.metadata.session_id,
+                task_id = ?request.metadata.task_id,
+                "Agent request seeded requires_build_and_test=true from request.input"
+            );
+        }
         let mut response = self
             .execute_agentic_loop_streaming(
                 prompt,
+                requires_build_and_test,
+                requires_mutating_file_tool_success,
                 relevant_tools,
                 include_mcp_tool_schemas,
                 resolved_context,
@@ -829,6 +1302,12 @@ impl AgentPipeline {
                 request.metadata.permission_level,
                 &telemetry,
             )
+            .instrument(tracing::info_span!(
+                "agent.pipeline.execute_agent_loop",
+                mode = "streaming",
+                tools = relevant_tool_count,
+                max_iterations = ?effective_max_iterations
+            ))
             .await?;
 
         response.truncated = truncated;
@@ -847,6 +1326,7 @@ impl AgentPipeline {
                 &reflection_cancel_token,
                 reflection_quality_budget,
             )
+            .instrument(tracing::info_span!("agent.pipeline.reflection", mode = "streaming"))
             .await
         {
             telemetry
@@ -982,7 +1462,7 @@ impl AgentPipeline {
         }
 
         Ok(response)
-        }
+        })
         .await;
 
         match &result {
@@ -1117,27 +1597,30 @@ impl AgentPipeline {
         let enable_fallback = self.pipeline_config.enable_fallback;
         let inner_cancel = cancel_token.clone();
 
-        let stream_handle = tokio::spawn(async move {
-            if enable_fallback {
-                let _ = start_streaming_with_fallback(
-                    &streaming_cfg,
-                    &continuation_prompt,
-                    None,
-                    inner_tx,
-                    inner_cancel,
-                )
-                .await;
-            } else {
-                let _ = start_streaming(
-                    &streaming_cfg,
-                    &continuation_prompt,
-                    None,
-                    inner_tx,
-                    inner_cancel,
-                )
-                .await;
+        let stream_handle = tokio::spawn(
+            async move {
+                if enable_fallback {
+                    let _ = start_streaming_with_fallback(
+                        &streaming_cfg,
+                        &continuation_prompt,
+                        None,
+                        inner_tx,
+                        inner_cancel,
+                    )
+                    .await;
+                } else {
+                    let _ = start_streaming(
+                        &streaming_cfg,
+                        &continuation_prompt,
+                        None,
+                        inner_tx,
+                        inner_cancel,
+                    )
+                    .await;
+                }
             }
-        });
+            .instrument(tracing::Span::current()),
+        );
 
         let mut synthesis_text = String::new();
         let mut synthesis_usage = None;
@@ -1331,10 +1814,12 @@ impl AgentPipeline {
             self.config.pipeline.agent_telemetry.enabled,
         )
         .await;
-        let result = async {
+        let result = telemetry.in_request_scope(async {
 
         // 1. Analyze the request
-        let mut analysis = self.analyzer.analyze(&request.input);
+        let mut analysis = tracing::info_span!("agent.pipeline.analyze_request").in_scope(|| {
+            self.analyzer.analyze(&request.input)
+        });
         telemetry.record_analysis(&analysis).await;
 
         // 1b. Pre-flight LLM tool routing (only when strategy != Keyword).
@@ -1344,6 +1829,7 @@ impl AgentPipeline {
             let all: Vec<&'static ToolDefinition> = all_tools().iter().collect();
             let routing = router
                 .route(&request.input, &all, analysis.confidence)
+                .instrument(tracing::info_span!("agent.pipeline.route_tools"))
                 .await;
             if routing.has_selection() {
                 tracing::debug!(
@@ -1390,16 +1876,24 @@ impl AgentPipeline {
 
         // Blocking mode: connect MCP servers only when MCP is relevant/allowed.
         if include_mcp_tool_schemas {
-            self.ensure_mcp_servers_connected().await;
+            self.ensure_mcp_servers_connected()
+                .instrument(tracing::info_span!("agent.pipeline.connect_mcp"))
+                .await;
         }
 
         // 3. Resolve context
-        let mut resolved_context = self.context_manager.resolve_context(
-            &request.input,
-            &analysis,
-            &request.history,
-            request.metadata.workspace_dir.as_deref(),
-        );
+        let mut resolved_context = tracing::info_span!(
+            "agent.pipeline.resolve_context",
+            phase = "initial"
+        )
+        .in_scope(|| {
+            self.context_manager.resolve_context(
+                &request.input,
+                &analysis,
+                &request.history,
+                request.metadata.workspace_dir.as_deref(),
+            )
+        });
 
         // 3.1+3.2. Enrich context with memory bank and enabled knowledge items.
         self.enrich_resolved_context(
@@ -1408,6 +1902,10 @@ impl AgentPipeline {
             &request.input,
             &request.metadata,
         )
+        .instrument(tracing::info_span!(
+            "agent.pipeline.enrich_context",
+            phase = "initial"
+        ))
         .await;
         telemetry
             .record_context_resolved("initial", &resolved_context)
@@ -1415,9 +1913,11 @@ impl AgentPipeline {
 
         // 3.5. Check for auto-compaction before building prompt
         // Build a preview prompt to estimate tokens
-        let preview_prompt = self.build_prompt(&request, &resolved_context);
+        let preview_prompt = tracing::info_span!("agent.pipeline.build_preview_prompt")
+            .in_scope(|| self.build_prompt(&request, &resolved_context));
         if let Some(compaction_chunk) = self
             .check_and_apply_auto_compaction(&request.history, &preview_prompt, &request.metadata)
+            .instrument(tracing::info_span!("agent.pipeline.auto_compaction"))
             .await
         {
             telemetry.record_compaction(&compaction_chunk).await;
@@ -1456,18 +1956,28 @@ impl AgentPipeline {
 
             // Re-resolve context after compaction and re-enrich (G4: enrichment
             // must run again so memory bank + knowledge survive compaction).
-            resolved_context = self.context_manager.resolve_context(
-                &request.input,
-                &analysis,
-                &request.history,
-                request.metadata.workspace_dir.as_deref(),
-            );
+            resolved_context = tracing::info_span!(
+                "agent.pipeline.resolve_context",
+                phase = "post_compaction"
+            )
+            .in_scope(|| {
+                self.context_manager.resolve_context(
+                    &request.input,
+                    &analysis,
+                    &request.history,
+                    request.metadata.workspace_dir.as_deref(),
+                )
+            });
             self.enrich_resolved_context(
                 &mut resolved_context,
                 request.metadata.workspace_dir.as_deref(),
                 &request.input,
                 &request.metadata,
             )
+            .instrument(tracing::info_span!(
+                "agent.pipeline.enrich_context",
+                phase = "post_compaction"
+            ))
             .await;
             telemetry
                 .record_context_resolved("post_compaction", &resolved_context)
@@ -1475,7 +1985,8 @@ impl AgentPipeline {
         }
 
         // 4. Build prompt with token limit checking
-        let (prompt, truncated) = self.truncate_prompt_if_needed(&request, &mut resolved_context);
+        let (prompt, truncated) = tracing::info_span!("agent.pipeline.prepare_prompt")
+            .in_scope(|| self.truncate_prompt_if_needed(&request, &mut resolved_context));
         telemetry
             .record_prompt_prepared(&prompt, truncated, &resolved_context)
             .await;
@@ -1543,10 +2054,25 @@ impl AgentPipeline {
         let reflection_retry_context = resolved_context.clone();
         let effective_max_iterations = self.effective_request_max_iterations(&request);
         let reflection_quality_budget = effective_max_iterations.unwrap_or(0);
+        let relevant_tool_count = relevant_tools.len();
+        let requires_build_and_test = Self::prompt_requires_build_and_test(&request.input);
+        let requires_mutating_file_tool_success =
+            Self::request_requires_mutating_file_tool_success(&request.input);
+        if requires_build_and_test {
+            tracing::warn!(
+                request_input_preview = %request.input.chars().take(160).collect::<String>(),
+                source = ?request.metadata.source,
+                session_id = ?request.metadata.session_id,
+                task_id = ?request.metadata.task_id,
+                "Agent request seeded requires_build_and_test=true from request.input"
+            );
+        }
 
         let mut response = self
             .execute_agentic_loop_blocking(
                 prompt,
+                requires_build_and_test,
+                requires_mutating_file_tool_success,
                 relevant_tools,
                 include_mcp_tool_schemas,
                 resolved_context,
@@ -1556,6 +2082,12 @@ impl AgentPipeline {
                 effective_max_iterations,
                 &telemetry,
             )
+            .instrument(tracing::info_span!(
+                "agent.pipeline.execute_agent_loop",
+                mode = "blocking",
+                tools = relevant_tool_count,
+                max_iterations = ?effective_max_iterations
+            ))
             .await?;
 
         response.truncated = truncated;
@@ -1569,6 +2101,7 @@ impl AgentPipeline {
                 &crate::streaming::CancellationToken::new(),
                 reflection_quality_budget,
             )
+            .instrument(tracing::info_span!("agent.pipeline.reflection", mode = "blocking"))
             .await
         {
             telemetry
@@ -1648,7 +2181,7 @@ impl AgentPipeline {
         }
 
         Ok(response)
-        }
+        })
         .await;
 
         match &result {
@@ -1695,14 +2228,22 @@ impl AgentPipeline {
         // directly (skipping the category map entirely for this request), but keep
         // the selection inside the candidate pool.
         if !analysis.suggested_tools.is_empty() {
-            let resolved: Vec<_> = analysis
+            let mut resolved: Vec<_> = analysis
                 .suggested_tools
                 .iter()
                 .filter(|name| candidate_names.contains(name.as_str()))
                 .filter_map(|name| crate::tools::registry::find_tool(name))
                 .collect();
 
+            Self::append_task_tool_for_auto_tracked_request(
+                analysis,
+                &candidate_names,
+                &mut resolved,
+            );
+
             if !resolved.is_empty() {
+                resolved.sort_by_key(|tool| tool.name);
+                resolved.dedup_by_key(|tool| tool.name);
                 if self.pipeline_config.log_token_usage {
                     tracing::debug!(
                         suggested = ?analysis.suggested_tools,
@@ -1728,7 +2269,11 @@ impl AgentPipeline {
                 ContextCategory::FileSystem => push_if_allowed("file"),
                 ContextCategory::Shell => push_if_allowed("shell"),
                 ContextCategory::Git => push_if_allowed("git"),
-                ContextCategory::Code => push_if_allowed("code"),
+                ContextCategory::Code => {
+                    for tool_name in crate::tools::registry::code_tool_names() {
+                        push_if_allowed(tool_name);
+                    }
+                }
                 ContextCategory::Web => {
                     push_if_allowed("web");
                     // Also include web_search for search-related queries
@@ -1766,6 +2311,8 @@ impl AgentPipeline {
                 );
             }
         }
+
+        Self::append_task_tool_for_auto_tracked_request(analysis, &candidate_names, &mut tools);
 
         if self.pipeline_config.log_token_usage {
             tracing::debug!(

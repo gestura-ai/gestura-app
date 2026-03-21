@@ -59,6 +59,14 @@ enum Commands {
         #[arg(long)]
         basic: bool,
 
+        /// Execute a single prompt in basic mode and exit.
+        #[arg(long, conflicts_with = "prompt_file")]
+        prompt: Option<String>,
+
+        /// Read a single prompt from a file, execute it in basic mode, and exit.
+        #[arg(long, value_name = "PATH", conflicts_with = "prompt")]
+        prompt_file: Option<std::path::PathBuf>,
+
         /// Enable voice input
         #[arg(long)]
         voice: bool,
@@ -1060,8 +1068,16 @@ fn main() {
 
     // The TUI uses an alternate screen; any writes to stdout/stderr from tracing can corrupt the
     // layout. When running `agent` in TUI mode, we default tracing output to a sink.
-    let is_tui_agent = matches!(&cli.command, Some(Commands::Agent { basic, .. }) if !*basic);
-    let app_config = gestura_core::AppConfig::load();
+    let is_tui_agent = matches!(
+        &cli.command,
+        Some(Commands::Agent {
+            basic,
+            prompt,
+            prompt_file,
+            ..
+        }) if !*basic && prompt.is_none() && prompt_file.is_none()
+    );
+    let app_config = gestura_core::AppConfig::load_with_env();
 
     // Initialize logging
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
@@ -1096,8 +1112,21 @@ fn main() {
             service_name: "gestura-cli".to_string(),
             service_version: env!("CARGO_PKG_VERSION").to_string(),
         });
-    gestura_core::telemetry::init_tracing_subscriber(filter, writer, cli.verbose, trace_export)
-        .expect("failed to initialize tracing");
+    let _telemetry_runtime = trace_export.as_ref().map(|_| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("gestura-cli-otel")
+            .build()
+            .expect("failed to create telemetry runtime")
+    });
+    if let Some(runtime) = _telemetry_runtime.as_ref() {
+        let _guard = runtime.enter();
+        gestura_core::telemetry::init_tracing_subscriber(filter, writer, cli.verbose, trace_export)
+            .expect("failed to initialize tracing");
+    } else {
+        gestura_core::telemetry::init_tracing_subscriber(filter, writer, cli.verbose, trace_export)
+            .expect("failed to initialize tracing");
+    }
 
     // Handle commands
     let result = match &cli.command {
@@ -1106,6 +1135,8 @@ fn main() {
             resume,
             session,
             basic,
+            prompt,
+            prompt_file,
             voice,
             system,
             permission_level,
@@ -1116,7 +1147,9 @@ fn main() {
             model: model.as_deref(),
             resume: *resume,
             session: session.as_deref(),
-            tui: !*basic, // TUI is default, --basic disables it
+            tui: !*basic && prompt.is_none() && prompt_file.is_none(),
+            prompt: prompt.as_deref(),
+            prompt_file: prompt_file.as_deref(),
             voice: *voice,
             system: system.as_deref(),
             permission_level_override: permission_level.map(|p| p.to_session()).or(

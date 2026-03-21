@@ -286,6 +286,191 @@ impl SessionWorkingMemory {
         format!("{}…", truncated.trim_end())
     }
 
+    fn trim_formatting_markers(text: &str) -> &str {
+        text.trim()
+            .trim_start_matches('#')
+            .trim()
+            .trim_matches(|c: char| matches!(c, '*' | '_' | '`'))
+            .trim()
+    }
+
+    fn strip_list_prefix(line: &str) -> Option<&str> {
+        let trimmed = line.trim();
+
+        for prefix in ["- ", "* ", "+ "] {
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                return Some(rest.trim());
+            }
+        }
+
+        let digit_count = trimmed.chars().take_while(|c| c.is_ascii_digit()).count();
+        if digit_count > 0 {
+            let rest = &trimmed[digit_count..];
+            if let Some(without_marker) = rest.strip_prefix(". ") {
+                return Some(without_marker.trim());
+            }
+            if let Some(without_marker) = rest.strip_prefix(") ") {
+                return Some(without_marker.trim());
+            }
+        }
+
+        None
+    }
+
+    fn strip_task_checkbox_prefix(line: &str) -> &str {
+        for prefix in ["[ ] ", "[x] ", "[X] ", "[-] ", "[/] "] {
+            if let Some(rest) = line.strip_prefix(prefix) {
+                return rest.trim();
+            }
+        }
+
+        line.trim()
+    }
+
+    fn heading_section(line: &str) -> Option<AssistantMemorySection> {
+        let normalized = Self::trim_formatting_markers(line)
+            .trim_end_matches(':')
+            .trim()
+            .to_ascii_lowercase();
+
+        match normalized.as_str() {
+            "decision" | "decisions" => Some(AssistantMemorySection::Decision),
+            "blocker" | "blockers" => Some(AssistantMemorySection::Blocker),
+            "resolved blocker" | "resolved blockers" | "unblocked" => {
+                Some(AssistantMemorySection::ResolvedBlocker)
+            }
+            "next action" | "next actions" | "next step" | "next steps" => {
+                Some(AssistantMemorySection::NextAction)
+            }
+            "open question" | "open questions" | "question" | "questions" => {
+                Some(AssistantMemorySection::OpenQuestion)
+            }
+            _ => None,
+        }
+    }
+
+    fn prefixed_section(line: &str) -> Option<(AssistantMemorySection, String)> {
+        let normalized = Self::trim_formatting_markers(line);
+        let normalized_lower = normalized.to_ascii_lowercase();
+
+        for (prefix, section) in [
+            ("decision:", AssistantMemorySection::Decision),
+            ("decision -", AssistantMemorySection::Decision),
+            ("decision —", AssistantMemorySection::Decision),
+            ("blocker:", AssistantMemorySection::Blocker),
+            ("blocked:", AssistantMemorySection::Blocker),
+            ("blocked by:", AssistantMemorySection::Blocker),
+            ("resolved blocker:", AssistantMemorySection::ResolvedBlocker),
+            ("unblocked:", AssistantMemorySection::ResolvedBlocker),
+            ("next action:", AssistantMemorySection::NextAction),
+            ("next actions:", AssistantMemorySection::NextAction),
+            ("next step:", AssistantMemorySection::NextAction),
+            ("next steps:", AssistantMemorySection::NextAction),
+            ("open question:", AssistantMemorySection::OpenQuestion),
+            ("open questions:", AssistantMemorySection::OpenQuestion),
+            ("question:", AssistantMemorySection::OpenQuestion),
+        ] {
+            if normalized_lower.starts_with(prefix) {
+                let value = normalized[prefix.len()..].trim();
+                if !value.is_empty() {
+                    return Some((section, value.to_string()));
+                }
+            }
+        }
+
+        None
+    }
+
+    fn split_decision_rationale(text: &str) -> (String, Option<String>) {
+        let trimmed = text.trim();
+        for delimiter in [" because ", " so that "] {
+            if let Some((summary, rationale)) = trimmed.split_once(delimiter) {
+                let summary = summary.trim();
+                let rationale = rationale.trim();
+                if !summary.is_empty() && !rationale.is_empty() {
+                    return (
+                        summary.to_string(),
+                        Some(format!("{} {}", delimiter.trim(), rationale)),
+                    );
+                }
+            }
+        }
+
+        (trimmed.to_string(), None)
+    }
+
+    fn split_blocker_detail(text: &str) -> (String, Option<String>) {
+        let trimmed = text.trim();
+        for delimiter in [" — ", " – ", " -- "] {
+            if let Some((summary, detail)) = trimmed.split_once(delimiter) {
+                let summary = summary.trim();
+                let detail = detail.trim();
+                if !summary.is_empty() && !detail.is_empty() {
+                    return (summary.to_string(), Some(detail.to_string()));
+                }
+            }
+        }
+
+        (trimmed.to_string(), None)
+    }
+
+    fn store_assistant_memory_item(&mut self, section: AssistantMemorySection, value: &str) {
+        let value = Self::truncate_text(value, 220);
+        if value.is_empty() {
+            return;
+        }
+
+        match section {
+            AssistantMemorySection::Decision => {
+                let (summary, rationale) = Self::split_decision_rationale(&value);
+                self.remember_decision(summary, rationale, vec!["assistant_signaled".to_string()]);
+            }
+            AssistantMemorySection::Blocker => {
+                let (summary, detail) = Self::split_blocker_detail(&value);
+                self.remember_blocker(summary, detail);
+            }
+            AssistantMemorySection::ResolvedBlocker => {
+                let (summary, _) = Self::split_blocker_detail(&value);
+                self.resolve_blocker(&summary);
+            }
+            AssistantMemorySection::NextAction => self.add_next_action(value),
+            AssistantMemorySection::OpenQuestion => self.add_open_question(value),
+        }
+    }
+
+    fn extract_assistant_memory_signals(&mut self, content: &str) {
+        let mut active_section: Option<AssistantMemorySection> = None;
+
+        for raw_line in content.lines() {
+            let trimmed = raw_line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if let Some(section) = Self::heading_section(trimmed) {
+                active_section = Some(section);
+                continue;
+            }
+
+            let list_or_plain = Self::strip_list_prefix(trimmed).unwrap_or(trimmed);
+            let candidate = Self::strip_task_checkbox_prefix(list_or_plain);
+
+            if let Some((section, value)) = Self::prefixed_section(candidate) {
+                self.store_assistant_memory_item(section, &value);
+                continue;
+            }
+
+            if let Some(section) = active_section {
+                if Self::strip_list_prefix(trimmed).is_some() {
+                    self.store_assistant_memory_item(section, candidate);
+                    continue;
+                }
+            }
+
+            active_section = None;
+        }
+    }
+
     fn push_bounded<T>(items: &mut Vec<T>, item: T, max_len: usize) {
         items.push(item);
         if items.len() > max_len {
@@ -490,6 +675,8 @@ impl SessionWorkingMemory {
             },
             Self::MAX_TIMELINE,
         );
+
+        self.extract_assistant_memory_signals(content);
     }
 
     /// Track a tool call in short-term memory.
@@ -514,6 +701,16 @@ impl SessionWorkingMemory {
             },
             Self::MAX_TIMELINE,
         );
+
+        let blocker_summary = format!("Tool '{}' failed", call.name);
+        if call.success {
+            self.resolve_blocker(&blocker_summary);
+        } else {
+            self.remember_blocker(
+                blocker_summary,
+                Some(Self::truncate_text(&call.result, 280)),
+            );
+        }
     }
 
     /// Track a tool result message in short-term memory.
@@ -724,6 +921,15 @@ impl SessionWorkingMemory {
         candidates.truncate(limit);
         candidates
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AssistantMemorySection {
+    Decision,
+    Blocker,
+    ResolvedBlocker,
+    NextAction,
+    OpenQuestion,
 }
 
 /// Session-scoped LLM configuration override.
@@ -1169,6 +1375,84 @@ mod tests {
                 .resources
                 .iter()
                 .any(|resource| resource.tool_call_id.as_deref() == Some("tool-1"))
+        );
+    }
+
+    #[test]
+    fn assistant_messages_extract_structured_decisions_blockers_and_actions() {
+        let mut state = SessionState::default();
+
+        state.add_assistant_message(
+            "Decisions:\n- Keep knowledge injection in the prompt builder because it already owns prompt assembly.\n\nBlockers:\n- Waiting on a reproduction fixture — no failing test case yet.\n\nNext steps:\n- Add a regression test for enabled knowledge injection.\n\nOpen questions:\n- Should working-memory extraction also parse tool-blocked events?",
+            None,
+        );
+
+        assert_eq!(state.working_memory.decisions.len(), 1);
+        assert_eq!(
+            state.working_memory.decisions[0].summary,
+            "Keep knowledge injection in the prompt builder"
+        );
+        assert_eq!(
+            state.working_memory.decisions[0].rationale.as_deref(),
+            Some("because it already owns prompt assembly.")
+        );
+        assert_eq!(state.working_memory.blockers.len(), 1);
+        assert_eq!(
+            state.working_memory.blockers[0].summary,
+            "Waiting on a reproduction fixture"
+        );
+        assert_eq!(
+            state.working_memory.blockers[0].detail.as_deref(),
+            Some("no failing test case yet.")
+        );
+        assert_eq!(
+            state.working_memory.next_actions,
+            vec!["Add a regression test for enabled knowledge injection."]
+        );
+        assert_eq!(
+            state.working_memory.open_questions,
+            vec!["Should working-memory extraction also parse tool-blocked events?"]
+        );
+    }
+
+    #[test]
+    fn failed_tool_calls_create_and_resolve_blockers() {
+        let mut state = SessionState::default();
+
+        state.record_tool_call(SessionToolCall {
+            id: "tool-fail".to_string(),
+            name: "cargo-check".to_string(),
+            arguments: "{}".to_string(),
+            result: "E0432 unresolved import gestura_core::foo".to_string(),
+            success: false,
+            duration_ms: 45,
+            timestamp: Utc::now(),
+        });
+
+        assert_eq!(state.working_memory.blockers.len(), 1);
+        assert_eq!(
+            state.working_memory.blockers[0].summary,
+            "Tool 'cargo-check' failed"
+        );
+        assert_eq!(
+            state.working_memory.blockers[0].status,
+            SessionBlockerStatus::Open
+        );
+
+        state.record_tool_call(SessionToolCall {
+            id: "tool-pass".to_string(),
+            name: "cargo-check".to_string(),
+            arguments: "{}".to_string(),
+            result: "Finished dev profile target(s) in 2.1s".to_string(),
+            success: true,
+            duration_ms: 21,
+            timestamp: Utc::now(),
+        });
+
+        assert_eq!(state.working_memory.blockers.len(), 1);
+        assert_eq!(
+            state.working_memory.blockers[0].status,
+            SessionBlockerStatus::Resolved
         );
     }
 

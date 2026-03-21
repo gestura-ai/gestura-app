@@ -126,6 +126,15 @@ fn run_read(path: &Path, lines: Option<&str>) -> Result<()> {
 fn run_write(path: &Path, content: &str) -> Result<()> {
     let result = get_file_tools().write(path, content)?;
 
+    if !result.changed {
+        println!(
+            "{} No changes to {} (content already matched)",
+            "✓".green(),
+            result.path.display().to_string().cyan()
+        );
+        return Ok(());
+    }
+
     let action = if result.created { "Created" } else { "Wrote" };
     println!(
         "{} {} {} bytes to {}",
@@ -139,6 +148,16 @@ fn run_write(path: &Path, content: &str) -> Result<()> {
 
 fn run_edit(path: &Path, old_str: &str, new_str: &str) -> Result<()> {
     let result = get_file_tools().edit(path, old_str, new_str)?;
+
+    if !result.changed {
+        println!(
+            "{} Edited {} (no changes)",
+            "✓".green(),
+            result.path.display().to_string().cyan()
+        );
+        println!("  Replacement matched, but produced identical content");
+        return Ok(());
+    }
 
     println!(
         "{} Edited {}",

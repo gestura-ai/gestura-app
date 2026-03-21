@@ -104,9 +104,89 @@ fn core_can_auto_initialize_a_tracked_root_task() {
         .get_task(session_id, task_id)
         .expect("task lookup should succeed")
         .expect("tracked task should exist");
+    let descendants = crate::get_global_task_manager()
+        .list_descendants(session_id, task_id)
+        .expect("descendant lookup should succeed");
+    let lifecycle = crate::get_global_task_manager()
+        .get_memory_lifecycle(session_id, task_id)
+        .expect("memory lifecycle lookup should succeed")
+        .expect("tracked task should record a lifecycle event");
 
     assert_eq!(tracked_task.parent_id, None);
     assert!(tracked_task.name.contains("Carefully plan and implement"));
+    assert_eq!(tracked_task.status, crate::TaskStatus::InProgress);
+    assert_eq!(descendants.len(), 4);
+    assert_eq!(lifecycle.events.len(), 1);
+    assert_eq!(
+        lifecycle.events[0].phase,
+        crate::tasks::TaskMemoryPhase::Handoff
+    );
+    assert!(
+        lifecycle.events[0]
+            .summary
+            .contains("Initialized tracked request with 4 planned tracked subtasks")
+    );
+    assert!(descendants.iter().any(|task| {
+        task.name == "Inspect the current state and constraints"
+            && task.status == crate::TaskStatus::InProgress
+    }));
+    assert!(request.input.contains("[Runtime execution handoff]"));
+    assert!(request.input.contains("Planned tracked subtasks:"));
+    assert!(
+        request
+            .input
+            .contains("Validate the result and summarize follow-up [notstarted]")
+    );
+}
+
+#[test]
+fn compare_requests_can_be_auto_tracked_generically() {
+    assert!(AgentPipeline::should_auto_track_request(
+        "Please compare these two logs, identify the main differences, and recommend next steps.",
+        None,
+    ));
+}
+
+#[test]
+fn analysis_requests_receive_analysis_subtasks() {
+    let subtasks = AgentPipeline::default_auto_tracked_execution_subtasks(
+        "Compare these two session logs and recommend improvements.",
+    );
+
+    assert_eq!(subtasks.len(), 3);
+    assert_eq!(subtasks[0].0, "Inspect the relevant inputs and criteria");
+    assert_eq!(subtasks[1].0, "Analyze the findings and identify gaps");
+    assert_eq!(
+        subtasks[2].0,
+        "Summarize conclusions and recommended actions"
+    );
+}
+
+#[test]
+fn create_requests_expand_into_preparation_execution_and_validation() {
+    let subtasks = AgentPipeline::default_auto_tracked_execution_subtasks(
+        "Create a reusable workflow, then build and test it end to end.",
+    );
+
+    assert_eq!(subtasks.len(), 4);
+    assert_eq!(subtasks[0].0, "Inspect the current state and constraints");
+    assert_eq!(subtasks[1].0, "Prepare the starting point or prerequisites");
+    assert_eq!(subtasks[2].0, "Carry out the requested work");
+    assert_eq!(subtasks[3].0, "Validate the result and summarize follow-up");
+    assert!(subtasks[3].1.contains("verification steps"));
+}
+
+#[test]
+fn auto_tracked_handoff_supports_analysis_or_research_requests() {
+    let handoff = AgentPipeline::build_auto_tracked_execution_handoff_message(
+        "Compare the two reports and summarize the differences.",
+        "Compare the reports",
+        &["Inspect the relevant inputs and criteria [not_started]".to_string()],
+    );
+
+    assert!(handoff.contains("Planned tracked subtasks"));
+    assert!(handoff.contains("analysis or research"));
+    assert!(!handoff.contains("Begin concrete implementation work immediately"));
 }
 
 #[test]
@@ -307,6 +387,58 @@ async fn enrich_resolved_context_bounds_shared_coordination_memory_to_three_entr
         .count();
     assert!(shared_sections >= 1);
     assert!(shared_sections <= 3);
+}
+
+#[tokio::test]
+async fn enrich_resolved_context_includes_enabled_session_knowledge_in_prompt() {
+    let temp = tempdir().unwrap();
+    let store = Box::leak(Box::new(crate::knowledge::KnowledgeStore::new(
+        temp.path().join("knowledge"),
+    )));
+    crate::knowledge::register_builtin_knowledge(store);
+
+    let settings = Box::leak(Box::new(crate::knowledge::KnowledgeSettingsManager::new(
+        temp.path().to_path_buf(),
+    )));
+    let mut session_settings =
+        crate::knowledge::SessionKnowledgeSettings::new("session-knowledge".to_string());
+    session_settings.enable("rust-expert".to_string());
+    settings.save(&session_settings).unwrap();
+
+    let pipeline = AgentPipeline::new(AppConfig::default()).with_knowledge(store, settings);
+    let metadata = RequestMetadata {
+        session_id: Some("session-knowledge".to_string()),
+        ..Default::default()
+    };
+    let mut context = crate::context::ResolvedContext::default();
+
+    pipeline
+        .enrich_resolved_context(
+            &mut context,
+            Some(temp.path()),
+            "help me fix async rust ownership issues",
+            &metadata,
+        )
+        .await;
+
+    assert!(
+        context
+            .knowledge
+            .iter()
+            .any(|section| section.contains("## Specialized Knowledge"))
+    );
+    assert!(
+        context
+            .knowledge
+            .iter()
+            .any(|section| section.contains("Rust Expert"))
+    );
+
+    let request = AgentRequest::new("help me fix async rust ownership issues")
+        .with_session("session-knowledge");
+    let prompt = pipeline.build_prompt(&request, &context);
+    assert!(prompt.contains("## Specialized Knowledge"));
+    assert!(prompt.contains("Rust Expert"));
 }
 
 #[tokio::test]
@@ -597,6 +729,7 @@ async fn restricted_mode_write_tool_denied_emits_tool_call_result_and_skips() {
                         workspace: Some(workspace.as_ref()),
                         session_id: Some(spawned_session_id.clone()),
                         permission_level: PermissionLevel::Restricted,
+                        required_verification_retry_pending: false,
                         cancel_token: &cancel,
                         tool_calls_in_iteration: &mut tool_calls_in_iteration,
                         response: &mut response,
@@ -725,6 +858,7 @@ async fn restricted_mode_write_tool_times_out_and_emits_tool_call_result() {
                         workspace: Some(workspace.as_ref()),
                         session_id: Some(spawned_session_id.clone()),
                         permission_level: PermissionLevel::Restricted,
+                        required_verification_retry_pending: false,
                         cancel_token: &cancel,
                         tool_calls_in_iteration: &mut tool_calls_in_iteration,
                         response: &mut response,
@@ -1077,7 +1211,7 @@ fn test_tool_filtering_by_category() {
 }
 
 #[test]
-fn build_and_test_request_uses_session_tool_pool_without_exposing_task() {
+fn build_and_test_request_uses_session_tool_pool_and_exposes_task() {
     use crate::context::ContextCategory;
 
     let pipeline = AgentPipeline::new(AppConfig::default());
@@ -1109,11 +1243,11 @@ fn build_and_test_request_uses_session_tool_pool_without_exposing_task() {
     assert!(tool_names.contains(&"file"));
     assert!(tool_names.contains(&"code"));
     assert!(tool_names.contains(&"shell"));
-    assert!(!tool_names.contains(&"task"));
+    assert!(tool_names.contains(&"task"));
 }
 
 #[test]
-fn analyzed_build_and_test_request_exposes_file_code_and_shell() {
+fn analyzed_build_and_test_request_exposes_file_code_shell_and_task() {
     let pipeline = AgentPipeline::new(AppConfig::default());
     let analysis = ContextManager::new().analyze(
         "I want to create a small tauri gui that says hello world. Please carefully plan and implement then build and test it.",
@@ -1138,7 +1272,34 @@ fn analyzed_build_and_test_request_exposes_file_code_and_shell() {
     assert!(tool_names.contains(&"file"));
     assert!(tool_names.contains(&"code"));
     assert!(tool_names.contains(&"shell"));
-    assert!(!tool_names.contains(&"task"));
+    assert!(tool_names.contains(&"task"));
+}
+
+#[test]
+fn code_category_uses_split_code_tools_when_session_pool_excludes_legacy_code() {
+    use crate::context::ContextCategory;
+
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let mut analysis = crate::context::RequestAnalysis::new("inspect and edit Rust code");
+    analysis.needs_tools = true;
+    analysis.confidence = 0.8;
+    analysis.categories.insert(ContextCategory::Code);
+
+    let allowed_tools = vec![
+        "code_read_files".to_string(),
+        "code_edit_files".to_string(),
+        "shell".to_string(),
+    ];
+
+    let tool_names: Vec<_> = pipeline
+        .get_tools_for_analysis(&analysis, &allowed_tools)
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+
+    assert!(tool_names.contains(&"code_read_files"));
+    assert!(tool_names.contains(&"code_edit_files"));
+    assert!(!tool_names.contains(&"code"));
 }
 
 #[test]

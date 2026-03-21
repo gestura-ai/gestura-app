@@ -35,6 +35,8 @@ pub struct AgentOptions<'a> {
     pub resume: bool,
     pub session: Option<&'a str>,
     pub tui: bool,
+    pub prompt: Option<&'a str>,
+    pub prompt_file: Option<&'a Path>,
     pub voice: bool,
     pub system: Option<&'a str>,
 
@@ -187,6 +189,40 @@ fn load_last_cli_session() -> Result<Option<AgentSession>> {
     session_store()
         .load_last()
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+}
+
+fn resolve_session_active_task_id(session: &AgentSession) -> Option<String> {
+    let session_task_id = session
+        .state
+        .working_memory
+        .active_task_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|task_id| !task_id.is_empty())
+        .map(str::to_string);
+
+    let session_id = session.id.trim();
+    if session_id.is_empty() {
+        return session_task_id;
+    }
+
+    gestura_core::get_global_task_manager()
+        .get_current_task_id(session_id)
+        .ok()
+        .flatten()
+        .map(|task_id| task_id.trim().to_string())
+        .filter(|task_id| !task_id.is_empty())
+        .or(session_task_id)
+}
+
+fn sync_session_active_task_id(session: &mut AgentSession) -> bool {
+    let resolved = resolve_session_active_task_id(session);
+    if session.state.working_memory.active_task_id == resolved {
+        return false;
+    }
+
+    session.state.working_memory.active_task_id = resolved;
+    true
 }
 
 /// Delete a session by ID.
@@ -345,11 +381,70 @@ enum BasicModeCommandOutcome {
     },
 }
 
+struct BasicModeRuntime<'a> {
+    model_hint: Option<&'a str>,
+    config: &'a mut AppConfig,
+    agent_session: &'a mut AgentSession,
+    voice: &'a mut bool,
+    system_prompt: Option<&'a str>,
+    rt: &'a tokio::runtime::Runtime,
+}
+
+impl BasicModeRuntime<'_> {
+    fn run_input(&mut self, input: String, input_source: MessageSource) -> Result<bool> {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Ok(false);
+        }
+
+        let mut input = trimmed.to_string();
+        let mut input_source = input_source;
+
+        if let Some(rest) = input.strip_prefix("/exec ") {
+            input = rest.to_string();
+        }
+
+        if let Some(outcome) = handle_basic_mode_slash_command(
+            input.clone(),
+            input_source,
+            self.model_hint,
+            self.config,
+            self.agent_session,
+            self.voice,
+            self.rt,
+        )? {
+            match outcome {
+                BasicModeCommandOutcome::Continue => return Ok(false),
+                BasicModeCommandOutcome::Break => return Ok(true),
+                BasicModeCommandOutcome::Submit {
+                    input: next_input,
+                    input_source: next_source,
+                } => {
+                    input = next_input;
+                    input_source = next_source;
+                }
+            }
+        }
+
+        execute_basic_mode_turn(
+            self.agent_session,
+            input,
+            input_source,
+            self.config,
+            self.system_prompt,
+            self.rt,
+        )?;
+        Ok(false)
+    }
+}
+
 fn run_basic_mode(opts: AgentOptions<'_>) -> Result<()> {
     let AgentOptions {
         model,
         resume,
         session,
+        prompt,
+        prompt_file,
         voice,
         system,
         permission_level_override,
@@ -589,6 +684,18 @@ fn run_basic_mode(opts: AgentOptions<'_>) -> Result<()> {
     // Create tokio runtime for async LLM calls
     let rt = tokio::runtime::Runtime::new()?;
 
+    if let Some(prompt) = load_one_shot_prompt(prompt, prompt_file)? {
+        return run_basic_mode_one_shot(
+            model,
+            &mut config,
+            &mut agent_session,
+            &mut voice,
+            system_prompt.as_deref(),
+            prompt,
+            &rt,
+        );
+    }
+
     if !io::stdin().is_terminal() {
         return run_basic_mode_noninteractive(
             model,
@@ -724,6 +831,54 @@ fn run_basic_mode(opts: AgentOptions<'_>) -> Result<()> {
     Ok(())
 }
 
+fn load_one_shot_prompt(
+    prompt: Option<&str>,
+    prompt_file: Option<&Path>,
+) -> Result<Option<String>> {
+    match (prompt, prompt_file) {
+        (Some(prompt), None) => Ok(Some(prompt.to_string())),
+        (None, Some(path)) => fs::read_to_string(path).map(Some).map_err(|error| {
+            format!("Failed to read prompt file {}: {error}", path.display()).into()
+        }),
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => Err("--prompt and --prompt-file cannot be used together".into()),
+    }
+}
+
+fn run_basic_mode_one_shot(
+    model_hint: Option<&str>,
+    config: &mut AppConfig,
+    agent_session: &mut AgentSession,
+    voice: &mut bool,
+    system_prompt: Option<&str>,
+    prompt: String,
+    rt: &tokio::runtime::Runtime,
+) -> Result<()> {
+    let trimmed = prompt.trim();
+    if trimmed.is_empty() {
+        return Err("One-shot prompt cannot be empty".into());
+    }
+
+    let should_exit = BasicModeRuntime {
+        model_hint,
+        config,
+        agent_session,
+        voice,
+        system_prompt,
+        rt,
+    }
+    .run_input(trimmed.to_string(), MessageSource::Text)?;
+
+    if should_exit {
+        return Ok(());
+    }
+
+    println!();
+    println!("{} {}", "✓".green(), "Session saved. Goodbye!".dimmed());
+    save_cli_session(agent_session)?;
+    Ok(())
+}
+
 fn run_basic_mode_noninteractive(
     model_hint: Option<&str>,
     config: &mut AppConfig,
@@ -734,50 +889,21 @@ fn run_basic_mode_noninteractive(
 ) -> Result<()> {
     let mut script = String::new();
     io::stdin().read_to_string(&mut script)?;
-
-    for raw_line in script.lines() {
-        let trimmed = raw_line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let mut input = trimmed.to_string();
-        let mut input_source = MessageSource::Text;
-
-        if let Some(rest) = input.strip_prefix("/exec ") {
-            input = rest.to_string();
-        }
-
-        if let Some(outcome) = handle_basic_mode_slash_command(
-            input.clone(),
-            input_source,
+    {
+        let mut runtime = BasicModeRuntime {
             model_hint,
             config,
             agent_session,
             voice,
-            rt,
-        )? {
-            match outcome {
-                BasicModeCommandOutcome::Continue => continue,
-                BasicModeCommandOutcome::Break => return Ok(()),
-                BasicModeCommandOutcome::Submit {
-                    input: next_input,
-                    input_source: next_source,
-                } => {
-                    input = next_input;
-                    input_source = next_source;
-                }
-            }
-        }
-
-        execute_basic_mode_turn(
-            agent_session,
-            input,
-            input_source,
-            config,
             system_prompt,
             rt,
-        )?;
+        };
+
+        for raw_line in script.lines() {
+            if runtime.run_input(raw_line.to_string(), MessageSource::Text)? {
+                return Ok(());
+            }
+        }
     }
 
     println!();
@@ -1080,17 +1206,19 @@ fn handle_basic_mode_slash_command(
             if args.is_empty() {
                 basic_mode_tasks_command(agent_session, rt);
             } else {
-                use gestura_core::tasks::TaskManager;
-
-                let task_manager =
-                    TaskManager::new(dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")));
+                let task_manager = gestura_core::get_global_task_manager();
                 match slash::run_tasks_subcommand(
                     &args,
-                    &task_manager,
+                    task_manager,
                     &agent_session.id,
                     agent_session.workspace_dir().map(|path| path.as_path()),
                 ) {
                     Ok(out) => {
+                        let task_context_changed = if out.changed {
+                            sync_session_active_task_id(agent_session)
+                        } else {
+                            false
+                        };
                         let lines = match out.live_action {
                             Some(act) => match slash::execute_tasks_live_action(rt, act) {
                                 Ok(lines) => lines,
@@ -1103,6 +1231,9 @@ fn handle_basic_mode_slash_command(
                         };
                         for line in lines {
                             println!("{line}");
+                        }
+                        if task_context_changed && let Err(e) = save_cli_session(agent_session) {
+                            println!("{} Failed to save session: {}", "✗".red(), e);
                         }
                     }
                     Err(e) => {
@@ -1181,9 +1312,16 @@ fn execute_basic_mode_turn(
     let provider_name = effective.provider;
     let model_name = effective.model;
     let (permission_level, allowed_tools) = derive_request_policy(agent_session);
+    let active_task_id = resolve_session_active_task_id(agent_session);
+    if sync_session_active_task_id(agent_session) {
+        let _ = save_cli_session(agent_session);
+    }
     request = request
         .with_session_llm_config(provider_name, model_name)
         .with_permission_level(permission_level);
+    if let Some(task_id) = active_task_id {
+        request = request.with_task(task_id);
+    }
     if !allowed_tools.is_empty() {
         request = request.with_allowed_tools(allowed_tools);
     }
@@ -1195,7 +1333,11 @@ fn execute_basic_mode_turn(
 
     let session_id_for_tool_confirm = agent_session.id.clone();
     let config_clone = config_for_pipeline;
-    let response: Result<gestura_core::AgentResponse> = rt.block_on(async move {
+    let response: Result<(
+        gestura_core::AgentResponse,
+        Vec<gestura_core::agent_sessions::SessionToolCall>,
+        Vec<(String, String)>,
+    )> = rt.block_on(async move {
         let (tx, mut rx) = mpsc::channel::<StreamChunk>(100);
         let cancel_token = CancellationToken::new();
         let cancel_for_task = cancel_token.clone();
@@ -1209,11 +1351,20 @@ fn execute_basic_mode_turn(
         });
 
         let mut saw_done = false;
+        let mut current_tool_call: Option<(String, String, String)> = None;
+        let mut completed_tool_calls = Vec::new();
+        let mut tool_result_messages = Vec::new();
         while let Some(chunk) = rx.recv().await {
             match chunk {
                 StreamChunk::Status { message } => {
                     println!();
                     println!("  {} {}", "ℹ".cyan(), message.dimmed());
+                    print!("  ");
+                    let _ = std::io::stdout().flush();
+                }
+                StreamChunk::Narration { message, .. } => {
+                    println!();
+                    println!("  {} {}", "◇".cyan(), message.dimmed());
                     print!("  ");
                     let _ = std::io::stdout().flush();
                 }
@@ -1223,20 +1374,53 @@ fn execute_basic_mode_turn(
                     let _ = std::io::stdout().flush();
                 }
                 StreamChunk::Thinking(_) => {}
-                StreamChunk::ToolCallStart { name, .. } => {
+                StreamChunk::TaskRuntimeSnapshot { snapshot } => {
+                    println!();
+                    println!("  {} {}", "☰".cyan(), snapshot.status_message.dimmed());
+                    if let Some(current_task) = snapshot.current_task {
+                        println!(
+                            "  {} current: {} [{}]",
+                            "•".cyan(),
+                            current_task.name.dimmed(),
+                            current_task.status
+                        );
+                    }
+                    print!("  ");
+                    let _ = std::io::stdout().flush();
+                }
+                StreamChunk::ToolCallStart { id, name } => {
+                    current_tool_call = Some((id, name.clone(), String::new()));
                     println!();
                     println!("  {} {}", "→".cyan(), format!("tool: {name}").dimmed());
                     print!("  ");
                     let _ = std::io::stdout().flush();
                 }
                 StreamChunk::ToolCallEnd => {}
-                StreamChunk::ToolCallArgs(_) => {}
+                StreamChunk::ToolCallArgs(args) => {
+                    if let Some((_, _, ref mut acc)) = current_tool_call {
+                        acc.push_str(&args);
+                    }
+                }
                 StreamChunk::ToolCallResult {
                     name,
                     success,
                     output,
                     duration_ms,
                 } => {
+                    if let Some((tool_call_id, tool_name, arguments)) = current_tool_call.take() {
+                        completed_tool_calls.push(gestura_core::agent_sessions::SessionToolCall {
+                            id: tool_call_id.clone(),
+                            name: tool_name,
+                            arguments,
+                            result: output.clone(),
+                            success,
+                            duration_ms,
+                            timestamp: chrono::Utc::now(),
+                        });
+                        if !output.trim().is_empty() {
+                            tool_result_messages.push((tool_call_id, output.clone()));
+                        }
+                    }
                     if success {
                         println!("  {} {} ({}ms)", "✓".green(), name.dimmed(), duration_ms);
                         if !output.is_empty() {
@@ -1404,8 +1588,6 @@ fn execute_basic_mode_turn(
                 }
                 StreamChunk::AgentLoopIteration { iteration } => {
                     if iteration > 0 {
-                        println!();
-                        println!("  {} {}", "◆".cyan(), "Reviewing results…".dimmed());
                         print!("  ");
                         let _ = std::io::stdout().flush();
                     }
@@ -1441,6 +1623,44 @@ fn execute_basic_mode_turn(
                     print!("  ");
                     let _ = std::io::stdout().flush();
                 }
+                StreamChunk::ShellSessionLifecycle {
+                    shell_session_id,
+                    state,
+                    cwd,
+                    active_command,
+                    available_for_reuse,
+                    ..
+                } => {
+                    println!();
+                    let cwd = cwd.unwrap_or_else(|| "<unknown cwd>".to_string());
+                    let reuse = if available_for_reuse {
+                        "reusable"
+                    } else {
+                        "reserved"
+                    };
+                    if let Some(command) = active_command {
+                        println!(
+                            "  {} shell session {} {:?} ({}, cwd: {}, active: {})",
+                            "🖥".dimmed(),
+                            shell_session_id.dimmed(),
+                            state,
+                            reuse.dimmed(),
+                            cwd.dimmed(),
+                            command.dimmed()
+                        );
+                    } else {
+                        println!(
+                            "  {} shell session {} {:?} ({}, cwd: {})",
+                            "🖥".dimmed(),
+                            shell_session_id.dimmed(),
+                            state,
+                            reuse.dimmed(),
+                            cwd.dimmed()
+                        );
+                    }
+                    print!("  ");
+                    let _ = std::io::stdout().flush();
+                }
                 StreamChunk::Paused => {
                     println!();
                     println!("  {} {}", "⏸".yellow(), "Session paused".dimmed());
@@ -1459,11 +1679,11 @@ fn execute_basic_mode_turn(
         if !saw_done {
             // The channel can close without an explicit Done; still return whatever we have.
         }
-        Ok(agent_response)
+        Ok((agent_response, completed_tool_calls, tool_result_messages))
     });
 
     match response {
-        Ok(agent_response) => {
+        Ok((agent_response, completed_tool_calls, tool_result_messages)) => {
             println!();
             if let Some(usage) = &agent_response.usage {
                 println!(
@@ -1474,7 +1694,16 @@ fn execute_basic_mode_turn(
                 );
             }
 
+            for tool_call in completed_tool_calls {
+                agent_session.state.record_tool_call(tool_call);
+            }
+            for (tool_call_id, content) in tool_result_messages {
+                agent_session
+                    .state
+                    .add_tool_message(&tool_call_id, &content);
+            }
             agent_session.add_assistant_message(&agent_response.content, agent_response.thinking);
+            let _ = save_cli_session(agent_session);
         }
         Err(e) => {
             println!();
@@ -1482,6 +1711,10 @@ fn execute_basic_mode_turn(
         }
     }
     println!();
+
+    if sync_session_active_task_id(agent_session) {
+        let _ = save_cli_session(agent_session);
+    }
 
     if agent_session.message_count() % 5 == 0 {
         let _ = save_cli_session(agent_session);
@@ -3551,8 +3784,11 @@ fn basic_mode_set_config_value(config: &mut AppConfig, key: &str, value: &str) -
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
-    use super::basic_mode_set_config_value;
+    use super::{
+        basic_mode_set_config_value, resolve_session_active_task_id, sync_session_active_task_id,
+    };
     use gestura_core::AppConfig;
 
     #[test]
@@ -3595,6 +3831,42 @@ mod tests {
             config.pipeline.agent_telemetry.trace_export.endpoint,
             "http://127.0.0.1:4318/v1/traces"
         );
+    }
+
+    #[test]
+    fn resolve_session_active_task_id_falls_back_to_session_working_memory() {
+        let workspace = std::env::temp_dir().join(format!(
+            "gestura-cli-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut session = super::AgentSession::new_with_workspace(workspace, None).unwrap();
+        session.state.working_memory.active_task_id = Some("task-123".to_string());
+
+        assert_eq!(
+            resolve_session_active_task_id(&session),
+            Some("task-123".to_string())
+        );
+    }
+
+    #[test]
+    fn sync_session_active_task_id_normalizes_empty_values_to_none() {
+        let workspace = std::env::temp_dir().join(format!(
+            "gestura-cli-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut session = super::AgentSession::new_with_workspace(workspace, None).unwrap();
+        session.state.working_memory.active_task_id = Some("   ".to_string());
+
+        assert!(sync_session_active_task_id(&mut session));
+        assert_eq!(session.state.working_memory.active_task_id, None);
     }
 }
 
@@ -4030,7 +4302,7 @@ fn basic_mode_permissions_command() {
 /// Basic mode `/tasks` slash command handler — interactive browser.
 fn basic_mode_tasks_command(session: &AgentSession, rt: &tokio::runtime::Runtime) {
     use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
-    use gestura_core::tasks::{TaskManager, TaskStatus};
+    use gestura_core::tasks::TaskStatus;
 
     #[derive(Clone)]
     struct Entry {
@@ -4063,12 +4335,12 @@ fn basic_mode_tasks_command(session: &AgentSession, rt: &tokio::runtime::Runtime
     }
 
     let theme = ColorfulTheme::default();
-    let task_manager = TaskManager::new(dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")));
+    let task_manager = gestura_core::get_global_task_manager();
 
     let run_canonical = |args: &[&str]| {
         match slash::run_tasks_subcommand(
             args,
-            &task_manager,
+            task_manager,
             &session.id,
             session.workspace_dir().map(|path| path.as_path()),
         ) {
@@ -4092,7 +4364,7 @@ fn basic_mode_tasks_command(session: &AgentSession, rt: &tokio::runtime::Runtime
                 // Print usage to guide recovery.
                 if let Ok(out) = slash::run_tasks_subcommand(
                     &["help"],
-                    &task_manager,
+                    task_manager,
                     &session.id,
                     session.workspace_dir().map(|path| path.as_path()),
                 ) {

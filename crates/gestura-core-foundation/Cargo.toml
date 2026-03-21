@@ -19,7 +19,7 @@ chrono = { workspace = true, features = ["serde"] }
 tracing.workspace = true
 async-trait.workspace = true
 opentelemetry = "0.31.0"
-opentelemetry_sdk = "0.31.0"
+opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.31.0", features = ["grpc-tonic"] }
 tracing-opentelemetry = "0.32.1"
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

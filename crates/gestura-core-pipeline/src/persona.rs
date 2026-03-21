@@ -127,7 +127,7 @@ pub fn default_system_prompt(meta: &RequestMetadata) -> String {
     if is_full {
         // Full-access mode: execute autonomously, don't ask for confirmation
         s.push_str(
-            "- You are in FULL ACCESS mode. Execute tools directly without asking for permission or describing your plan first. Do NOT say 'shall I proceed?', 'would you like me to…', or ask for approval — just act.\n",
+            "- You are in FULL ACCESS mode. Execute tools directly without asking for permission. Do NOT say 'shall I proceed?', 'would you like me to…', or ask for approval — just act. Before a materially new batch of tool work or when your direction changes, briefly tell the user what you are about to do and why in 1-2 public-facing sentences.\n",
         );
         s.push_str(
             "- Treat every user request as an end-to-end task: investigate, execute all necessary tool calls, synthesize results, and complete the work autonomously in a single flow.\n",
@@ -197,6 +197,10 @@ mod tests {
         assert!(
             p.contains("Execute tools directly"),
             "Full mode prompt should instruct direct tool execution"
+        );
+        assert!(
+            p.contains("briefly tell the user what you are about to do and why"),
+            "Full mode prompt should require short public narration before major tool shifts"
         );
         assert!(
             p.contains("end-to-end task"),

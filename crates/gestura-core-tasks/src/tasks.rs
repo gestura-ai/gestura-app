@@ -188,6 +188,188 @@ pub struct TaskMemoryLifecycle {
     pub last_memory_file_path: Option<String>,
 }
 
+/// Runtime-owned execution kind inferred or assigned for a tracked task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskExecutionKind {
+    /// Investigation, analysis, or planning work.
+    Planning,
+    /// Concrete implementation or file mutation work.
+    Implementation,
+    /// Build, test, lint, or other verification work.
+    Verification,
+    /// Fallback when no stronger runtime classification is available.
+    #[default]
+    General,
+}
+
+/// Runtime-authored verification requirements for a tracked task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TaskVerificationProfile {
+    /// Primary execution kind for the task.
+    #[serde(default)]
+    pub execution_kind: TaskExecutionKind,
+    /// Whether the task requires a successful source mutation.
+    #[serde(default)]
+    pub requires_mutation: bool,
+    /// Whether the task requires a successful build/check command.
+    #[serde(default)]
+    pub requires_build: bool,
+    /// Whether the task requires a successful test command.
+    #[serde(default)]
+    pub requires_test: bool,
+    /// Whether the runtime considers the task safe to run in parallel with other
+    /// ready tasks.
+    #[serde(default)]
+    pub parallel_safe: bool,
+}
+
+/// Structured runtime evidence recorded for a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskExecutionEvidenceKind {
+    /// Some successful tool work occurred for the task.
+    ToolActivity,
+    /// A source mutation completed successfully.
+    Mutation,
+    /// A build or compile verification command succeeded.
+    Build,
+    /// A test command succeeded.
+    Test,
+    /// An artifact was produced or discovered.
+    Artifact,
+}
+
+/// A single execution evidence record stored in task metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskExecutionEvidence {
+    /// Kind of runtime evidence observed.
+    pub kind: TaskExecutionEvidenceKind,
+    /// Human-readable summary of what happened.
+    pub summary: String,
+    /// Tool responsible for the evidence, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    /// Command associated with the evidence, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Whether the evidence corresponds to a successful outcome.
+    #[serde(default = "default_true")]
+    pub success: bool,
+    /// Timestamp when the evidence was recorded.
+    pub recorded_at: DateTime<Utc>,
+}
+
+/// Runtime-owned execution state persisted in task metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TaskExecutionState {
+    /// Verification requirements currently assigned to the task.
+    #[serde(default)]
+    pub verification_profile: TaskVerificationProfile,
+    /// Whether any successful tool activity has been observed for the task.
+    #[serde(default)]
+    pub saw_tool_activity: bool,
+    /// Whether successful source mutation evidence has been observed.
+    #[serde(default)]
+    pub saw_mutation: bool,
+    /// Whether successful build/check evidence has been observed.
+    #[serde(default)]
+    pub build_succeeded: bool,
+    /// Whether successful test evidence has been observed.
+    #[serde(default)]
+    pub test_succeeded: bool,
+    /// Optional runtime note for UI/status surfaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_runtime_note: Option<String>,
+    /// Structured evidence history, capped to a small rolling window.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<TaskExecutionEvidence>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl TaskExecutionEvidence {
+    /// Create a new task execution evidence record.
+    pub fn new(
+        kind: TaskExecutionEvidenceKind,
+        summary: impl Into<String>,
+        tool_name: Option<String>,
+        command: Option<String>,
+    ) -> Self {
+        Self {
+            kind,
+            summary: summary.into(),
+            tool_name,
+            command,
+            success: true,
+            recorded_at: Utc::now(),
+        }
+    }
+}
+
+impl TaskExecutionState {
+    /// Merge a runtime-authored verification profile into the current state.
+    pub fn merge_profile(&mut self, profile: TaskVerificationProfile) {
+        self.verification_profile = profile;
+    }
+
+    /// Record evidence and update the derived boolean summary.
+    pub fn record_evidence(&mut self, evidence: TaskExecutionEvidence) -> bool {
+        let duplicate = self.evidence.iter().any(|existing| {
+            existing.kind == evidence.kind
+                && existing.summary == evidence.summary
+                && existing.tool_name == evidence.tool_name
+                && existing.command == evidence.command
+                && existing.success == evidence.success
+        });
+        if duplicate {
+            return false;
+        }
+
+        match evidence.kind {
+            TaskExecutionEvidenceKind::ToolActivity => self.saw_tool_activity = true,
+            TaskExecutionEvidenceKind::Mutation => {
+                self.saw_tool_activity = true;
+                self.saw_mutation = true;
+            }
+            TaskExecutionEvidenceKind::Build => {
+                self.saw_tool_activity = true;
+                self.build_succeeded = true;
+            }
+            TaskExecutionEvidenceKind::Test => {
+                self.saw_tool_activity = true;
+                self.test_succeeded = true;
+            }
+            TaskExecutionEvidenceKind::Artifact => self.saw_tool_activity = true,
+        }
+
+        self.evidence.push(evidence);
+        if self.evidence.len() > 32 {
+            let excess = self.evidence.len() - 32;
+            self.evidence.drain(0..excess);
+        }
+        true
+    }
+
+    /// Return `true` when the observed runtime evidence satisfies the task's
+    /// assigned verification profile.
+    pub fn satisfies_profile(&self) -> bool {
+        let requires_progress = matches!(
+            self.verification_profile.execution_kind,
+            TaskExecutionKind::Planning | TaskExecutionKind::General
+        ) && !self.verification_profile.requires_mutation
+            && !self.verification_profile.requires_build
+            && !self.verification_profile.requires_test;
+
+        (!self.verification_profile.requires_mutation || self.saw_mutation)
+            && (!self.verification_profile.requires_build || self.build_succeeded)
+            && (!self.verification_profile.requires_test || self.test_succeeded)
+            && (!requires_progress || self.saw_tool_activity)
+    }
+}
+
 impl TaskBackgroundJob {
     /// Create a new background job record.
     pub fn new(
@@ -499,12 +681,22 @@ impl TaskList {
             .collect()
     }
 
+    fn sort_task_refs_by_priority(tasks: &mut [&Task]) {
+        tasks.sort_by(|a, b| {
+            a.sort_order
+                .cmp(&b.sort_order)
+                .then_with(|| a.created_at.cmp(&b.created_at))
+        });
+    }
+
     /// Get all descendant tasks of a given task in depth-first order.
     pub fn descendants(&self, task_id: &str) -> Vec<&Task> {
         let mut descendants = Vec::new();
-        let mut pending_ids = self
-            .subtasks(task_id)
+        let mut root_children = self.subtasks(task_id);
+        Self::sort_task_refs_by_priority(&mut root_children);
+        let mut pending_ids = root_children
             .into_iter()
+            .rev()
             .map(|task| task.id.clone())
             .collect::<Vec<_>>();
         let mut seen = HashSet::new();
@@ -519,7 +711,9 @@ impl TaskList {
             };
             descendants.push(task);
 
-            for child in self.subtasks(&current_id) {
+            let mut children = self.subtasks(&current_id);
+            Self::sort_task_refs_by_priority(&mut children);
+            for child in children.into_iter().rev() {
                 pending_ids.push(child.id.clone());
             }
         }
@@ -1136,6 +1330,67 @@ impl TaskManager {
         Ok(Some(serde_json::from_value(value.clone())?))
     }
 
+    /// Update the runtime execution state stored in task metadata.
+    pub fn update_execution_state<F>(
+        &self,
+        session_id: &str,
+        task_id: &str,
+        update: F,
+    ) -> Result<TaskExecutionState, TaskError>
+    where
+        F: FnOnce(&mut TaskExecutionState),
+    {
+        let mut task_list = self.get_or_load(session_id)?;
+        let task = task_list
+            .find_task_mut(task_id)
+            .ok_or_else(|| TaskError::NotFound(task_id.to_string()))?;
+
+        let metadata = task.metadata.get_or_insert_with(|| serde_json::json!({}));
+        if !metadata.is_object() {
+            *metadata = serde_json::json!({});
+        }
+
+        let Some(metadata_map) = metadata.as_object_mut() else {
+            return Err(TaskError::InvalidInput(
+                "task metadata could not be represented as an object".to_string(),
+            ));
+        };
+
+        let mut state: TaskExecutionState = metadata_map
+            .get("execution_state")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default();
+
+        update(&mut state);
+
+        metadata_map.insert("execution_state".to_string(), serde_json::to_value(&state)?);
+        task.updated_at = Utc::now();
+        self.update_and_save(task_list)?;
+        Ok(state)
+    }
+
+    /// Read runtime execution state from task metadata.
+    pub fn get_execution_state(
+        &self,
+        session_id: &str,
+        task_id: &str,
+    ) -> Result<Option<TaskExecutionState>, TaskError> {
+        let task = self.get_task(session_id, task_id)?;
+        let Some(task) = task else {
+            return Ok(None);
+        };
+        let Some(metadata) = task.metadata else {
+            return Ok(None);
+        };
+        let Some(value) = metadata.get("execution_state") else {
+            return Ok(None);
+        };
+
+        Ok(Some(serde_json::from_value(value.clone())?))
+    }
+
     /// Get a specific task by ID
     pub fn get_task(&self, session_id: &str, task_id: &str) -> Result<Option<Task>, TaskError> {
         let task_list = self.get_or_load(session_id)?;
@@ -1497,6 +1752,52 @@ mod tests {
     }
 
     #[test]
+    fn test_task_list_descendants_preserve_priority_order_depth_first() {
+        let mut list = TaskList::new("session-priority-123");
+        let root = Task::new("session-priority-123", "Root", "Root", None);
+        let root_id = root.id.clone();
+
+        let mut first = Task::new(
+            "session-priority-123",
+            "First",
+            "First",
+            Some(root.id.clone()),
+        );
+        first.sort_order = 0;
+
+        let mut second = Task::new(
+            "session-priority-123",
+            "Second",
+            "Second",
+            Some(root.id.clone()),
+        );
+        second.sort_order = 10;
+
+        let mut nested = Task::new(
+            "session-priority-123",
+            "Nested",
+            "Nested",
+            Some(first.id.clone()),
+        );
+        nested.sort_order = 0;
+
+        let expected = vec![first.id.clone(), nested.id.clone(), second.id.clone()];
+
+        list.add_task(root);
+        list.add_task(first);
+        list.add_task(second);
+        list.add_task(nested);
+
+        let ordered = list
+            .descendants(&root_id)
+            .into_iter()
+            .map(|task| task.id.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ordered, expected);
+    }
+
+    #[test]
     fn test_task_manager_rejects_completion_with_open_nested_descendants() {
         let temp_dir = TempDir::new().unwrap();
         let manager = TaskManager::new(temp_dir.path());
@@ -1635,5 +1936,46 @@ mod tests {
         assert_eq!(lifecycle.events.len(), 1);
         assert_eq!(lifecycle.events[0].phase, TaskMemoryPhase::Delegated);
         assert_eq!(lifecycle.events[0].summary, "Delegated to subagent");
+    }
+
+    #[test]
+    fn test_update_execution_state_records_profile_and_evidence() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let session_id = "session-execution-state";
+
+        let task = manager
+            .create_task(session_id, "Implement feature", "Edit and verify", None)
+            .unwrap();
+
+        manager
+            .update_execution_state(session_id, &task.id, |state| {
+                state.merge_profile(TaskVerificationProfile {
+                    execution_kind: TaskExecutionKind::Implementation,
+                    requires_mutation: true,
+                    ..TaskVerificationProfile::default()
+                });
+                state.record_evidence(TaskExecutionEvidence::new(
+                    TaskExecutionEvidenceKind::Mutation,
+                    "Edited src/main.rs",
+                    Some("file".to_string()),
+                    None,
+                ));
+            })
+            .unwrap();
+
+        let state = manager
+            .get_execution_state(session_id, &task.id)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            state.verification_profile.execution_kind,
+            TaskExecutionKind::Implementation
+        );
+        assert!(state.verification_profile.requires_mutation);
+        assert!(state.saw_mutation);
+        assert!(state.satisfies_profile());
+        assert_eq!(state.evidence.len(), 1);
     }
 }

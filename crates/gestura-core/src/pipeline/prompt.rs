@@ -3,7 +3,7 @@ use super::*;
 impl AgentPipeline {
     fn append_tool_discipline(&self, prompt: &mut String) {
         prompt.push_str(
-            "Tool usage discipline:\n- For `task.create`, provide `name` (and preferably `description`); do not send `task_id` because the runtime assigns it.\n- For `task.update_status`, always include both `task_id` and `status`; do not omit `status` and expect the runtime to infer it.\n- After reading an existing file, prefer `file.edit` for targeted changes. Use `file.write` only when you provide the full replacement `content`.\n- `code.batch_edit` requires `edits`, and `edits` must be an array even for a single change. Each entry needs `path`, `old_str`, and `new_str`.\n- For install/build/test/scaffold shell commands, include non-interactive flags when needed and set a generous `timeout_secs` (for example 300). Do not wrap commands with shell `timeout`; use the tool's `timeout_secs` field instead.\n- Do not manually synthesize a Tauri scaffold with shell heredocs or `mkdir`/`cargo init` fallback scripts. If `create-tauri-app` is non-interactive-sensitive, inspect `--help` and then use one known-good non-interactive scaffold command.\nCanonical JSON tool call shapes:\n- `task.create`: {\"operation\":\"create\",\"name\":\"Implement Hello World UI\",\"description\":\"Update the scaffolded Tauri app, then build and test it\"}\n- `task.update_status`: {\"operation\":\"update_status\",\"task_id\":\"abc123\",\"status\":\"inprogress\"}\n- `file.write`: {\"operation\":\"write\",\"path\":\"src/index.html\",\"content\":\"<h1>Hello World</h1>\\n\"}\n- `file.edit`: {\"operation\":\"edit\",\"path\":\"src/index.html\",\"old\":\"<h1>Hello</h1>\",\"new\":\"<h1>Hello World</h1>\"}\n- `code.batch_edit`: {\"operation\":\"batch_edit\",\"edits\":[{\"path\":\"src/index.html\",\"old_str\":\"<h1>Hello</h1>\",\"new_str\":\"<h1>Hello World</h1>\"}]}\n\n",
+            "Tool usage discipline:\n- For `task.create`, provide `name` (and preferably `description`); do not send `task_id` because the runtime assigns it.\n- For `task.update_status`, always include both `task_id` and `status`; do not omit `status` and expect the runtime to infer it.\n- Use `read_file` to read one exact file. After reading an existing file, prefer `edit_file` for targeted changes. Use `write_file` only when you provide the full replacement `content`. Reserve the generic `file` tool for list/tree/search-style inspection.\n- `code.batch_edit` requires `edits`, and `edits` must be an array even for a single change. Each entry needs `path`, `old_str`, and `new_str`.\n- For install/build/test/scaffold shell commands, include non-interactive flags when needed and set a generous `timeout_secs` (for example 300). When the command is expected to run long but should keep going while showing shell activity, set `allow_long_running=true` and optionally `stall_timeout_secs`. Do not wrap commands with shell `timeout`; use the tool's own timeout fields instead.\n- Do not manually synthesize a project scaffold with shell heredocs, bulk `mkdir`/`touch` scripts, or ad-hoc file creation when an official scaffold or init tool is still the right tool. If a scaffold tool is non-interactive-sensitive, inspect `--help` and then use one documented non-interactive scaffold/init command.\nCanonical JSON tool call shapes:\n- `task.create`: {\"operation\":\"create\",\"name\":\"Apply requested project changes\",\"description\":\"Inspect the relevant files, implement the request, and run the appropriate verification\"}\n- `task.update_status`: {\"operation\":\"update_status\",\"task_id\":\"abc123\",\"status\":\"inprogress\"}\n- `read_file`: {\"path\":\"README.md\"}\n- `write_file`: {\"path\":\"README.md\",\"content\":\"# Project notes\\n\"}\n- `edit_file`: {\"path\":\"app/main.py\",\"old\":\"print(\\\"Hello\\\")\",\"new\":\"print(\\\"Hello, world!\\\")\"}\n- `code.batch_edit`: {\"operation\":\"batch_edit\",\"edits\":[{\"path\":\"src/lib.rs\",\"old_str\":\"fn greet() {}\",\"new_str\":\"fn greet() { println!(\\\"hello\\\"); }\"}]}\n\n",
         );
     }
 
@@ -199,7 +199,7 @@ impl AgentPipeline {
 
         let mut section = String::from("Tracked task context:\n");
         section.push_str(
-            "Use these exact task IDs when calling the task tool to update progress. For `update_status`, ALWAYS send both the exact `task_id` and an explicit `status` (`notstarted`, `inprogress`, `completed`, or `cancelled`). Do not call `update_status` just to confirm or preserve the current state; task updates are bookkeeping only, so if no status changed, continue the real work instead. Keep the tracked root task in progress until every planned descendant is completed or cancelled.\n",
+            "Use these exact task IDs when calling the task tool to update progress. For `update_status`, ALWAYS send both the exact `task_id` and an explicit `status` (`notstarted`, `inprogress`, `completed`, or `cancelled`). The runtime already manages the tracked root task's overall lifecycle during this run, so do not call `task.update_status` on the root task just to keep it `InProgress` or preserve the current state. Reserve manual task updates for genuine status changes, especially on concrete subtasks; if no status changed, continue the real work instead.\n",
         );
 
         let mut remaining = 12usize;
@@ -472,13 +472,12 @@ impl AgentPipeline {
         // Build context from enabled knowledge items
         let mut context = String::from("## Specialized Knowledge\n\n");
         context.push_str("The following specialized knowledge is available for this session:\n\n");
+        let mut added_any = false;
 
         for knowledge_id in enabled_ids {
             if let Some(item) = store.get(&knowledge_id) {
-                context.push_str(&format!(
-                    "### {}\n\n",
-                    knowledge_id.replace('-', " ").to_uppercase()
-                ));
+                added_any = true;
+                context.push_str(&format!("### {}\n\n", item.name));
 
                 // Add category
                 context.push_str(&format!("**Category**: {}\n\n", item.category));
@@ -500,7 +499,7 @@ impl AgentPipeline {
             }
         }
 
-        Some(context)
+        added_any.then_some(context)
     }
 }
 
@@ -512,7 +511,7 @@ mod tests {
     #[test]
     fn build_prompt_includes_tool_discipline_guidance() {
         let pipeline = AgentPipeline::new(AppConfig::default());
-        let request = AgentRequest::new("Build a hello world Tauri app");
+        let request = AgentRequest::new("Apply the requested project changes and verify them");
         let context = crate::context::ResolvedContext::default();
 
         let prompt = pipeline.build_prompt(&request, &context);
@@ -520,10 +519,14 @@ mod tests {
         assert!(prompt.contains("Tool usage discipline:"));
         assert!(prompt.contains("do not send `task_id` because the runtime assigns it"));
         assert!(prompt.contains("always include both `task_id` and `status`"));
-        assert!(prompt.contains("prefer `file.edit` for targeted changes"));
+        assert!(prompt.contains("prefer `edit_file` for targeted changes"));
+        assert!(
+            prompt
+                .contains("Reserve the generic `file` tool for list/tree/search-style inspection")
+        );
         assert!(prompt.contains("`code.batch_edit` requires `edits`"));
         assert!(prompt.contains("set a generous `timeout_secs`"));
-        assert!(prompt.contains("Do not manually synthesize a Tauri scaffold"));
+        assert!(prompt.contains("Do not manually synthesize a project scaffold"));
         assert!(prompt.contains("Canonical JSON tool call shapes:"));
         assert!(prompt.contains("\"operation\":\"batch_edit\""));
     }
@@ -570,9 +573,11 @@ mod tests {
         assert!(section.contains("Run build"));
         assert!(section.contains("ALWAYS send both the exact `task_id` and an explicit `status`"));
         assert!(
-            section.contains(
-                "Do not call `update_status` just to confirm or preserve the current state"
-            )
+            section.contains("runtime already manages the tracked root task's overall lifecycle")
         );
+        assert!(section.contains(
+            "do not call `task.update_status` on the root task just to keep it `InProgress`"
+        ));
+        assert!(!section.contains("Keep the tracked root task in progress until every planned descendant is completed or cancelled"));
     }
 }

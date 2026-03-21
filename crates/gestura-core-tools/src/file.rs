@@ -26,6 +26,7 @@ pub struct FileWriteResult {
     pub path: PathBuf,
     pub bytes_written: usize,
     pub created: bool,
+    pub changed: bool,
 }
 
 /// Result of editing a file
@@ -35,6 +36,7 @@ pub struct FileEditResult {
     pub replacements: usize,
     pub old_content: String,
     pub new_content: String,
+    pub changed: bool,
 }
 
 /// A file entry in directory listing
@@ -120,6 +122,8 @@ impl FileTools {
     /// Write content to file
     pub fn write(&self, path: &Path, content: &str) -> Result<FileWriteResult> {
         let created = !path.exists();
+        let prior_bytes = (!created).then(|| fs::read(path)).transpose()?;
+        let changed = created || prior_bytes.as_deref() != Some(content.as_bytes());
 
         // Create parent directories if needed
         if let Some(parent) = path.parent()
@@ -128,12 +132,15 @@ impl FileTools {
             fs::create_dir_all(parent)?;
         }
 
-        fs::write(path, content)?;
+        if changed {
+            fs::write(path, content)?;
+        }
 
         Ok(FileWriteResult {
             path: path.to_path_buf(),
             bytes_written: content.len(),
             created,
+            changed,
         })
     }
 
@@ -157,13 +164,17 @@ impl FileTools {
         }
 
         let new_content = old_content.replace(old_str, new_str);
-        fs::write(path, &new_content)?;
+        let changed = old_content != new_content;
+        if changed {
+            fs::write(path, &new_content)?;
+        }
 
         Ok(FileEditResult {
             path: path.to_path_buf(),
             replacements,
             old_content,
             new_content,
+            changed,
         })
     }
 
@@ -403,8 +414,37 @@ mod tests {
         let path = dir.path().join("new_file.txt");
         let result = tools.write(&path, "new content").unwrap();
         assert!(result.created);
+        assert!(result.changed);
         assert_eq!(result.bytes_written, 11);
         assert_eq!(fs::read_to_string(&path).unwrap(), "new content");
+    }
+
+    #[test]
+    fn test_write_file_reports_unchanged_when_content_matches() {
+        let dir = setup_test_dir();
+        let tools = FileTools::new();
+        let path = dir.path().join("same.txt");
+        fs::write(&path, "same content").unwrap();
+
+        let result = tools.write(&path, "same content").unwrap();
+
+        assert!(!result.created);
+        assert!(!result.changed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "same content");
+    }
+
+    #[test]
+    fn test_edit_file_reports_unchanged_when_replacement_is_identical() {
+        let dir = setup_test_dir();
+        let tools = FileTools::new();
+        let path = dir.path().join("edit_same.txt");
+        fs::write(&path, "hello world\n").unwrap();
+
+        let result = tools.edit(&path, "world", "world").unwrap();
+
+        assert_eq!(result.replacements, 1);
+        assert!(!result.changed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello world\n");
     }
 
     #[test]

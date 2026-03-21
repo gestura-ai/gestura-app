@@ -26,9 +26,18 @@ struct TreeDirOutput {
 }
 
 #[derive(Debug, Serialize)]
+struct WriteFileOutput {
+    path: String,
+    bytes_written: usize,
+    created: bool,
+    changed: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct EditFileOutput {
     path: String,
     replacements: usize,
+    changed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -63,12 +72,24 @@ pub async fn read_file_range(
 }
 
 /// Write to a file asynchronously.
-pub async fn write_file(path: &str, content: &str) -> Result<()> {
+pub async fn write_file(path: &str, content: &str) -> Result<String> {
     let path = path.to_string();
     let content = content.to_string();
     tokio::task::spawn_blocking(move || {
         let tools = FileTools::new();
-        tools.write(Path::new(&path), &content).map(|_| ())
+        let res = tools.write(Path::new(&path), &content)?;
+
+        let out = WriteFileOutput {
+            path,
+            bytes_written: res.bytes_written,
+            created: res.created,
+            changed: res.changed,
+        };
+        serde_json::to_string_pretty(&out).map_err(|e| {
+            AppError::Io(std::io::Error::other(format!(
+                "Failed to serialize write output: {e}"
+            )))
+        })
     })
     .await
     .map_err(|e| AppError::Io(std::io::Error::other(format!("Task join error: {}", e))))?
@@ -88,6 +109,7 @@ pub async fn edit_file(path: &str, old_str: &str, new_str: &str) -> Result<Strin
         let out = EditFileOutput {
             path,
             replacements: res.replacements,
+            changed: res.changed,
         };
         serde_json::to_string_pretty(&out).map_err(|e| {
             AppError::Io(std::io::Error::other(format!(

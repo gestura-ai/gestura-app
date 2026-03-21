@@ -6,11 +6,11 @@
 //!   SigNoz
 
 use crate::error::AppError;
-use opentelemetry::{KeyValue, global, trace::TracerProvider as _};
+use opentelemetry::{InstrumentationScope, KeyValue, global, trace::TracerProvider as _};
 use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig};
 use opentelemetry_sdk::{Resource, trace::SdkTracerProvider};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 use tracing_subscriber::{EnvFilter, fmt::MakeWriter, prelude::*};
@@ -25,6 +25,9 @@ pub const DEFAULT_OTLP_TRACE_ENDPOINT: &str = DEFAULT_OTLP_GRPC_TRACE_ENDPOINT;
 
 /// Default OTLP/gRPC endpoint for local trace collection.
 pub const DEFAULT_OTLP_GRPC_TRACE_ENDPOINT: &str = "http://127.0.0.1:4317";
+
+/// Current OpenTelemetry semantic-conventions schema URL used for traces.
+pub const OTEL_SEMCONV_SCHEMA_URL: &str = "https://opentelemetry.io/schemas/1.40.0";
 
 /// Supported OTLP transport protocols for trace export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,6 +358,7 @@ impl TelemetryManager {
 /// Global telemetry manager instance
 static TELEMETRY_MANAGER: tokio::sync::OnceCell<TelemetryManager> =
     tokio::sync::OnceCell::const_new();
+static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 
 /// Get the global telemetry manager
 pub async fn get_telemetry_manager() -> &'static TelemetryManager {
@@ -417,9 +421,11 @@ where
 
 /// Flush and shut down the global tracer provider.
 pub fn shutdown_tracing() {
-    // OTLP export uses the simple span processor, which exports on span end.
-    // There is no global shutdown helper in `opentelemetry` 0.31, so the
-    // remaining shutdown path is intentionally a no-op.
+    if let Some(tracer_provider) = TRACER_PROVIDER.get()
+        && let Err(error) = tracer_provider.shutdown()
+    {
+        eprintln!("failed to shut down tracer provider: {error}");
+    }
 }
 
 /// Convenience function to increment a counter
@@ -461,19 +467,28 @@ fn build_otlp_tracer(
     .map_err(|error| AppError::Config(format!("failed to build OTLP trace exporter: {error}")))?;
 
     let tracer_provider = SdkTracerProvider::builder()
-        .with_simple_exporter(exporter)
+        .with_batch_exporter(exporter)
         .with_resource(
             Resource::builder()
                 .with_service_name(config.service_name.clone())
-                .with_attributes([KeyValue::new(
-                    "service.version",
-                    config.service_version.clone(),
-                )])
+                .with_schema_url(
+                    [KeyValue::new(
+                        "service.version",
+                        config.service_version.clone(),
+                    )],
+                    OTEL_SEMCONV_SCHEMA_URL,
+                )
                 .build(),
         )
         .build();
 
-    let tracer = tracer_provider.tracer(config.service_name.clone());
+    let tracer = tracer_provider.tracer_with_scope(
+        InstrumentationScope::builder(config.service_name.clone())
+            .with_version(config.service_version.clone())
+            .with_schema_url(OTEL_SEMCONV_SCHEMA_URL)
+            .build(),
+    );
+    let _ = TRACER_PROVIDER.set(tracer_provider.clone());
     global::set_tracer_provider(tracer_provider);
 
     Ok(tracer)

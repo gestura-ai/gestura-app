@@ -177,7 +177,7 @@ pub struct PipelineSettings {
 }
 
 /// Settings for request-level agent-loop telemetry.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(default)]
 pub struct AgentTelemetrySettings {
     /// Emit request-trace telemetry across the agent loop and context pipeline.
@@ -244,15 +244,6 @@ pub struct AgentTelemetryTraceExportSettings {
     pub protocol: AgentTelemetryTraceExportProtocol,
     /// OTLP collector endpoint for the selected protocol.
     pub endpoint: String,
-}
-
-impl Default for AgentTelemetrySettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            trace_export: AgentTelemetryTraceExportSettings::default(),
-        }
-    }
 }
 
 impl Default for AgentTelemetryTraceExportSettings {
@@ -1308,10 +1299,10 @@ impl AppConfig {
         if let Some(v) = get_env_bool("PIPELINE_AGENT_TELEMETRY_TRACE_EXPORT_ENABLED") {
             self.pipeline.agent_telemetry.trace_export.enabled = v;
         }
-        if let Some(v) = get_env("PIPELINE_AGENT_TELEMETRY_TRACE_EXPORT_PROTOCOL") {
-            if let Some(protocol) = AgentTelemetryTraceExportProtocol::parse(&v) {
-                self.pipeline.agent_telemetry.trace_export.protocol = protocol;
-            }
+        if let Some(v) = get_env("PIPELINE_AGENT_TELEMETRY_TRACE_EXPORT_PROTOCOL")
+            && let Some(protocol) = AgentTelemetryTraceExportProtocol::parse(&v)
+        {
+            self.pipeline.agent_telemetry.trace_export.protocol = protocol;
         }
         if let Some(v) = get_env("PIPELINE_AGENT_TELEMETRY_TRACE_EXPORT_ENDPOINT") {
             self.pipeline.agent_telemetry.trace_export.endpoint = v;

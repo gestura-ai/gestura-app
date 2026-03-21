@@ -81,6 +81,10 @@ mod tests {
                 .iter()
                 .any(|v| v == "command")
         );
+        assert_eq!(
+            schemas.openai[0]["function"]["parameters"]["properties"]["allow_long_running"]["type"],
+            "boolean"
+        );
 
         // Gemini format: {name, description, parameters}
         assert_eq!(schemas.gemini[0]["name"], "shell");
@@ -90,6 +94,10 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|v| v == "command")
+        );
+        assert_eq!(
+            schemas.gemini[0]["parameters"]["properties"]["stall_timeout_secs"]["type"],
+            "integer"
         );
     }
 }

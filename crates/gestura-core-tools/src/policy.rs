@@ -124,8 +124,8 @@ pub fn is_write_operation(tool_name: &str, arguments: &str) -> bool {
 
         // File operations depend on the operation type.
         // IMPORTANT: Keep this aligned with `execute_file_tool` and the tool schema.
-        "file" | "write_file" => {
-            if tool_name == "write_file" {
+        "file" | "write_file" | "edit_file" => {
+            if matches!(tool_name, "write_file" | "edit_file") {
                 return true;
             }
 

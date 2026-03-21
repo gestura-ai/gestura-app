@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tracing::Instrument as _;
 
 /// Default timeout for streaming LLM API calls
 const STREAMING_TIMEOUT_SECS: u64 = 300;
@@ -108,11 +109,110 @@ pub enum ShellProcessState {
     Resumed,
 }
 
+/// Lifecycle state of a long-lived interactive shell session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellSessionState {
+    /// PTY shell process is starting.
+    Starting,
+    /// PTY shell is alive and available for reuse.
+    Idle,
+    /// PTY shell currently has an active command lease.
+    Busy,
+    /// PTY shell is attempting to interrupt the active foreground job.
+    Interrupting,
+    /// PTY shell is shutting down.
+    Stopping,
+    /// PTY shell was stopped intentionally.
+    Stopped,
+    /// PTY shell terminated unexpectedly or became unusable.
+    Failed,
+}
+
+/// Compact task view for runtime-authored task-state updates.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TaskRuntimeTaskView {
+    /// Stable task identifier.
+    pub id: String,
+    /// Human-readable task name.
+    pub name: String,
+    /// Runtime task status string.
+    pub status: String,
+}
+
+/// Runtime-authored task scheduler snapshot streamed to UI surfaces.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TaskRuntimeSnapshot {
+    /// Root task driving the current run.
+    pub root_task_id: String,
+    /// Current runtime-selected task, if any.
+    pub current_task: Option<TaskRuntimeTaskView>,
+    /// Ready tasks the runtime deems actionable now.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ready_tasks: Vec<TaskRuntimeTaskView>,
+    /// Tasks the runtime considers safe to batch in parallel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parallel_ready_tasks: Vec<TaskRuntimeTaskView>,
+    /// Tasks currently blocked by dependencies or parent ordering.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_tasks: Vec<TaskRuntimeTaskView>,
+    /// Open tasks that are not yet terminal.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_tasks: Vec<TaskRuntimeTaskView>,
+    /// Recently completed tasks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub completed_tasks: Vec<TaskRuntimeTaskView>,
+    /// Runtime-detected missing completion requirements.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_requirements: Vec<String>,
+    /// Human-readable scheduler summary.
+    pub status_message: String,
+}
+
+/// Public-facing narration stage for brief between-tool updates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NarrationStage {
+    /// Gathering local or external context before the next step.
+    Context,
+    /// Planning or scoping the next action.
+    Planning,
+    /// Executing the primary requested work.
+    Execution,
+    /// Verifying or validating the result.
+    Verification,
+    /// Waiting on a blocker or missing requirement.
+    Blocked,
+    /// General progress update.
+    Progress,
+}
+
+impl NarrationStage {
+    /// Return the stable snake_case label used by the UI.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Context => "context",
+            Self::Planning => "planning",
+            Self::Execution => "execution",
+            Self::Verification => "verification",
+            Self::Blocked => "blocked",
+            Self::Progress => "progress",
+        }
+    }
+}
+
 /// A chunk of streaming response
 #[derive(Debug, Clone)]
 pub enum StreamChunk {
     /// Content from the model's thinking process
     Thinking(String),
+    /// Public-facing narration explaining the current direction.
+    Narration {
+        /// Short collapsed heading for the narration block.
+        title: String,
+        message: String,
+        stage: NarrationStage,
+    },
     /// A text chunk from the LLM
     Text(String),
     /// Start of a tool call
@@ -244,6 +344,11 @@ pub enum StreamChunk {
         /// Zero-based iteration index (0 = first LLM call, 1+ = continuation after tools)
         iteration: u32,
     },
+    /// Runtime-authored task-state snapshot.
+    TaskRuntimeSnapshot {
+        /// Authoritative runtime snapshot for the tracked task tree.
+        snapshot: TaskRuntimeSnapshot,
+    },
     /// Real-time shell output chunk (stdout or stderr).
     ///
     /// Emitted while a shell command is executing so the UI can stream output
@@ -252,6 +357,8 @@ pub enum StreamChunk {
     ShellOutput {
         /// Unique identifier for the shell process (matches `ShellLifecycle`).
         process_id: String,
+        /// Long-lived shell session that produced this output, if any.
+        shell_session_id: Option<String>,
         /// Whether this chunk comes from stdout or stderr.
         stream: ShellOutputStream,
         /// The raw text data (may contain ANSI escape sequences).
@@ -266,6 +373,8 @@ pub enum StreamChunk {
     ShellLifecycle {
         /// Unique identifier for the shell process (matches `ShellOutput`).
         process_id: String,
+        /// Long-lived shell session that owns this command run, if any.
+        shell_session_id: Option<String>,
         /// New state of the process.
         state: ShellProcessState,
         /// Exit code (only meaningful when `state` is `Completed` or `Failed`).
@@ -276,6 +385,21 @@ pub enum StreamChunk {
         command: String,
         /// Working directory for the command.
         cwd: Option<String>,
+    },
+    /// Interactive shell session lifecycle event.
+    ShellSessionLifecycle {
+        /// Long-lived shell session identifier.
+        shell_session_id: String,
+        /// New state of the shell session.
+        state: ShellSessionState,
+        /// Current working directory tracked for the session.
+        cwd: Option<String>,
+        /// Active command process id, when the session is busy.
+        active_process_id: Option<String>,
+        /// Active command string, when the session is busy.
+        active_command: Option<String>,
+        /// Whether the session is currently eligible for reuse.
+        available_for_reuse: bool,
     },
     /// Stream completed successfully with optional token usage
     Done(Option<TokenUsage>),
@@ -388,6 +512,14 @@ async fn forward_attempt_stream(
                 // Forward agent loop iteration markers without marking as output
                 let _ = tx.send(chunk).await;
             }
+            StreamChunk::Narration { .. } => {
+                // Forward narration updates without marking as model output.
+                let _ = tx.send(chunk).await;
+            }
+            StreamChunk::TaskRuntimeSnapshot { .. } => {
+                // Forward runtime task-state updates without marking as output
+                let _ = tx.send(chunk).await;
+            }
             StreamChunk::ReflectionStarted { .. } | StreamChunk::ReflectionComplete { .. } => {
                 // Forward reflection events without marking as output
                 let _ = tx.send(chunk).await;
@@ -400,6 +532,10 @@ async fn forward_attempt_stream(
             }
             StreamChunk::ShellLifecycle { .. } => {
                 // Forward shell lifecycle events without marking as output
+                let _ = tx.send(chunk).await;
+            }
+            StreamChunk::ShellSessionLifecycle { .. } => {
+                // Forward shell session lifecycle events without marking as output
                 let _ = tx.send(chunk).await;
             }
             StreamChunk::Done(_) => {
@@ -1247,23 +1383,26 @@ pub async fn stream_ollama(
     // so the idle timer keeps getting reset during the model-loading phase.
     let pre_conn_tx = tx.clone();
     let pre_conn_model = model.to_string();
-    let pre_conn_handle = tokio::spawn({
-        let interval = Duration::from_secs(OLLAMA_KEEPALIVE_INTERVAL_SECS);
-        async move {
-            loop {
-                tokio::time::sleep(interval).await;
-                tracing::debug!(
-                    model = %pre_conn_model,
-                    "[Ollama] Pre-connection keepalive: model still loading"
-                );
-                let _ = pre_conn_tx
-                    .send(StreamChunk::Status {
-                        message: format!("Loading model '{pre_conn_model}'…"),
-                    })
-                    .await;
+    let pre_conn_handle = tokio::spawn(
+        {
+            let interval = Duration::from_secs(OLLAMA_KEEPALIVE_INTERVAL_SECS);
+            async move {
+                loop {
+                    tokio::time::sleep(interval).await;
+                    tracing::debug!(
+                        model = %pre_conn_model,
+                        "[Ollama] Pre-connection keepalive: model still loading"
+                    );
+                    let _ = pre_conn_tx
+                        .send(StreamChunk::Status {
+                            message: format!("Loading model '{pre_conn_model}'…"),
+                        })
+                        .await;
+                }
             }
         }
-    });
+        .instrument(tracing::Span::current()),
+    );
 
     let send_result = client.post(&url).json(&body).send().await;
 
@@ -1475,92 +1614,100 @@ pub async fn start_streaming(
     tx: mpsc::Sender<StreamChunk>,
     cancel_token: CancellationToken,
 ) -> Result<(), AppError> {
-    match config.primary.as_str() {
-        "openai" => {
-            if let Some(c) = &config.openai {
-                stream_openai(
-                    &c.api_key,
-                    c.base_url.as_deref().unwrap_or("https://api.openai.com"),
-                    &c.model,
-                    prompt,
-                    tool_schemas.as_ref().map(|s| s.openai.as_slice()),
-                    tx,
-                    cancel_token,
-                )
-                .await
-            } else {
-                stream_unconfigured_error("openai", tx).await
+    async {
+        match config.primary.as_str() {
+            "openai" => {
+                if let Some(c) = &config.openai {
+                    stream_openai(
+                        &c.api_key,
+                        c.base_url.as_deref().unwrap_or("https://api.openai.com"),
+                        &c.model,
+                        prompt,
+                        tool_schemas.as_ref().map(|s| s.openai.as_slice()),
+                        tx,
+                        cancel_token,
+                    )
+                    .await
+                } else {
+                    stream_unconfigured_error("openai", tx).await
+                }
             }
-        }
-        "anthropic" => {
-            if let Some(c) = &config.anthropic {
-                stream_anthropic(AnthropicStreamRequest {
-                    api_key: &c.api_key,
-                    base_url: c.base_url.as_deref().unwrap_or("https://api.anthropic.com"),
-                    model: &c.model,
-                    thinking_budget_tokens: c.thinking_budget_tokens,
-                    prompt,
-                    tools: tool_schemas.as_ref().map(|s| s.anthropic.as_slice()),
-                    tx,
-                    cancel_token,
-                })
-                .await
-            } else {
-                stream_unconfigured_error("anthropic", tx).await
+            "anthropic" => {
+                if let Some(c) = &config.anthropic {
+                    stream_anthropic(AnthropicStreamRequest {
+                        api_key: &c.api_key,
+                        base_url: c.base_url.as_deref().unwrap_or("https://api.anthropic.com"),
+                        model: &c.model,
+                        thinking_budget_tokens: c.thinking_budget_tokens,
+                        prompt,
+                        tools: tool_schemas.as_ref().map(|s| s.anthropic.as_slice()),
+                        tx,
+                        cancel_token,
+                    })
+                    .await
+                } else {
+                    stream_unconfigured_error("anthropic", tx).await
+                }
             }
-        }
-        "grok" => {
-            // Grok uses OpenAI-compatible API
-            if let Some(c) = &config.grok {
-                stream_openai(
-                    &c.api_key,
-                    c.base_url.as_deref().unwrap_or("https://api.x.ai"),
-                    &c.model,
-                    prompt,
-                    tool_schemas.as_ref().map(|s| s.openai.as_slice()),
-                    tx,
-                    cancel_token,
-                )
-                .await
-            } else {
-                stream_unconfigured_error("grok", tx).await
+            "grok" => {
+                // Grok uses OpenAI-compatible API
+                if let Some(c) = &config.grok {
+                    stream_openai(
+                        &c.api_key,
+                        c.base_url.as_deref().unwrap_or("https://api.x.ai"),
+                        &c.model,
+                        prompt,
+                        tool_schemas.as_ref().map(|s| s.openai.as_slice()),
+                        tx,
+                        cancel_token,
+                    )
+                    .await
+                } else {
+                    stream_unconfigured_error("grok", tx).await
+                }
             }
-        }
-        "gemini" => {
-            if let Some(c) = &config.gemini {
-                stream_gemini(
-                    &c.api_key,
-                    c.base_url
-                        .as_deref()
-                        .unwrap_or("https://generativelanguage.googleapis.com"),
-                    &c.model,
-                    prompt,
-                    tool_schemas.as_ref().map(|s| s.gemini.as_slice()),
-                    tx,
-                    cancel_token,
-                )
-                .await
-            } else {
-                stream_unconfigured_error("gemini", tx).await
+            "gemini" => {
+                if let Some(c) = &config.gemini {
+                    stream_gemini(
+                        &c.api_key,
+                        c.base_url
+                            .as_deref()
+                            .unwrap_or("https://generativelanguage.googleapis.com"),
+                        &c.model,
+                        prompt,
+                        tool_schemas.as_ref().map(|s| s.gemini.as_slice()),
+                        tx,
+                        cancel_token,
+                    )
+                    .await
+                } else {
+                    stream_unconfigured_error("gemini", tx).await
+                }
             }
-        }
-        "ollama" => {
-            if let Some(c) = &config.ollama {
-                stream_ollama(
-                    &c.base_url,
-                    &c.model,
-                    prompt,
-                    tool_schemas.as_ref().map(|s| s.openai.as_slice()),
-                    tx,
-                    cancel_token,
-                )
-                .await
-            } else {
-                stream_unconfigured_error("ollama", tx).await
+            "ollama" => {
+                if let Some(c) = &config.ollama {
+                    stream_ollama(
+                        &c.base_url,
+                        &c.model,
+                        prompt,
+                        tool_schemas.as_ref().map(|s| s.openai.as_slice()),
+                        tx,
+                        cancel_token,
+                    )
+                    .await
+                } else {
+                    stream_unconfigured_error("ollama", tx).await
+                }
             }
+            other => stream_unconfigured_error(other, tx).await,
         }
-        other => stream_unconfigured_error(other, tx).await,
     }
+    .instrument(tracing::info_span!(
+        "agent.streaming.request",
+        provider = %config.primary,
+        has_tool_schemas = tool_schemas.is_some()
+    ))
+    .await
 }
 
 /// Start streaming with fallback to secondary provider on failure
@@ -1591,16 +1738,24 @@ pub async fn start_streaming_with_fallback(
         let tool_schemas_clone = tool_schemas.clone();
 
         // Spawn the streaming attempt
-        let handle = tokio::spawn(async move {
-            start_streaming(
-                &config_clone,
-                &prompt_clone,
-                tool_schemas_clone,
-                attempt_tx,
-                attempt_cancel,
-            )
-            .await
-        });
+        let attempt_span = tracing::info_span!(
+            "agent.streaming.fallback_attempt",
+            attempt = attempt + 1,
+            delay_seconds = *delay
+        );
+        let handle = tokio::spawn(
+            async move {
+                start_streaming(
+                    &config_clone,
+                    &prompt_clone,
+                    tool_schemas_clone,
+                    attempt_tx,
+                    attempt_cancel,
+                )
+                .await
+            }
+            .instrument(attempt_span),
+        );
 
         // Forward chunks to the caller in real-time.
         // If the attempt fails before producing any output, we can retry.

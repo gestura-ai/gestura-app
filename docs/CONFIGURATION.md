@@ -167,6 +167,20 @@ pipeline:
 
 When both toggles are enabled, Gestura emits request-correlated spans that include identifiers such as `request_id`, `session_id`, `task_id`, `directive_id`, and `agent_id`.
 
+For local Jaeger testing, use the current v2 all-in-one image:
+
+```bash
+docker run --rm --name jaeger \
+  -p 16686:16686 \
+  -p 4317:4317 \
+  -p 4318:4318 \
+  -p 5778:5778 \
+  -p 9411:9411 \
+  cr.jaegertracing.io/jaegertracing/jaeger:2.11.0
+```
+
+Jaeger v2 exposes both the classic `/api/*` endpoints and the newer `/api/v3/*` query APIs on port `16686`, so either `http://127.0.0.1:16686/api/services` or `http://127.0.0.1:16686/api/v3/services` can be used to confirm exported services.
+
 For HTTP collectors, switch to:
 
 ```yaml

@@ -35,6 +35,36 @@ pub struct ToolDefinition {
     pub examples: &'static [&'static str],
 }
 
+/// Canonical built-in code tool names, including the legacy aggregate `code`
+/// entry and the newer split code tools.
+pub fn code_tool_names() -> &'static [&'static str] {
+    const CODE_TOOL_NAMES: &[&str] = &[
+        "code",
+        "code_read_files",
+        "code_edit_files",
+        "code_outline",
+        "code_symbols",
+        "code_references",
+        "code_definition",
+        "code_glob",
+        "code_grep",
+        "code_map",
+        "code_stats",
+        "code_deps",
+        "code_lint",
+        "code_test",
+    ];
+
+    CODE_TOOL_NAMES
+}
+
+/// Return whether a tool name belongs to the code tool family.
+pub fn is_code_tool_name(name: &str) -> bool {
+    code_tool_names()
+        .iter()
+        .any(|tool_name| tool_name.eq_ignore_ascii_case(name.trim()))
+}
+
 /// Return the set of built-in tools.
 pub fn all_tools() -> &'static [ToolDefinition] {
     static TOOLS: &[ToolDefinition] = &[
@@ -143,6 +173,47 @@ pub fn all_tools() -> &'static [ToolDefinition] {
             examples: &[
                 "gestura tools git status",
                 "gestura tools git diff --staged",
+            ],
+        },
+        ToolDefinition {
+            name: "code",
+            summary: "Analyze, search, edit, lint, and test code with a compatibility-friendly aggregate interface",
+            description: "Inspect and operate on source code using the legacy aggregate code tool interface. Use this when the model or session configuration expects a single `code` tool that can route to operations like stats, map, symbols, grep, batch_read, batch_edit, lint, and test. The runtime also exposes stricter split code tools, but this compatibility entry remains available for existing prompts, policies, and sessions.",
+            keywords: &[
+                "code",
+                "source",
+                "read",
+                "edit",
+                "refactor",
+                "search",
+                "grep",
+                "symbols",
+                "definition",
+                "references",
+                "outline",
+                "map",
+                "stats",
+                "deps",
+                "lint",
+                "test",
+                "batch",
+                "files",
+            ],
+            inputs: &[
+                "operation",
+                "path",
+                "symbol / pattern (operation-specific)",
+                "paths / edits / options (operation-specific)",
+            ],
+            side_effects: &[
+                "Reads local code files",
+                "May write local code files for batch_edit",
+                "May execute local subprocesses for lint/test",
+            ],
+            examples: &[
+                "Code stats: {operation:stats, path:.}",
+                "Read files: {operation:batch_read, paths:[src/main.rs, src/lib.rs]}",
+                "Edit files: {operation:batch_edit, edits:[{path:src/lib.rs, old_str:old, new_str:new}]}",
             ],
         },
         ToolDefinition {
@@ -749,6 +820,15 @@ mod tests {
         assert!(find_tool("file").is_some());
         assert!(find_tool("shell").is_some());
         assert!(find_tool("git").is_some());
+        assert!(find_tool("code").is_some());
+    }
+
+    #[test]
+    fn code_tool_helpers_cover_legacy_and_split_names() {
+        assert!(is_code_tool_name("code"));
+        assert!(is_code_tool_name("code_edit_files"));
+        assert!(is_code_tool_name("code_read_files"));
+        assert!(!is_code_tool_name("shell"));
     }
 
     #[test]

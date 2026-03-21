@@ -37,6 +37,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio::time::{Duration as TokioDuration, sleep};
+use tracing::Instrument;
 use uuid::Uuid;
 
 use self::persistence::{
@@ -1491,7 +1492,6 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
     pub async fn delegate_task(&self, mut task: DelegatedTask) -> Result<String, String> {
         let task_id = task.id.clone();
         let agent_id = task.agent_id.clone();
-        let session_id = task.session_id.clone();
 
         if task.run_id.is_none() {
             task.run_id = Some(Uuid::new_v4().to_string());
@@ -1505,6 +1505,29 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 task.role.clone().unwrap_or_default().label()
             ));
         }
+
+        if let Some(run_id) = task.run_id.as_deref() {
+            let runs = self.supervisor_runs.lock().await;
+            if let Some(run) = runs.get(run_id) {
+                if task.session_id.is_none() {
+                    task.session_id = run.session_id.clone();
+                }
+                if task.workspace_dir.is_none() {
+                    task.workspace_dir = run
+                        .workspace_dir
+                        .clone()
+                        .or_else(|| self.default_workspace_dir.clone());
+                }
+                if let Some(policy) = run.inherited_policy.as_ref() {
+                    policy.apply_to_task(&mut task);
+                }
+            }
+        }
+        if task.workspace_dir.is_none() {
+            task.workspace_dir = self.default_workspace_dir.clone();
+        }
+
+        let session_id = task.session_id.clone();
 
         tracing::info!(
             task_id = %task_id,
@@ -1582,6 +1605,15 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             }
             if run.name.is_none() {
                 run.name = task.name.clone();
+            }
+            if task.session_id.is_none() {
+                task.session_id = run.session_id.clone();
+            }
+            if task.workspace_dir.is_none() {
+                task.workspace_dir = run
+                    .workspace_dir
+                    .clone()
+                    .or_else(|| self.default_workspace_dir.clone());
             }
             if let Some(policy) = run.inherited_policy.as_ref() {
                 policy.apply_to_task(&mut task);
@@ -3367,35 +3399,46 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         }
 
         let orchestrator = self.clone();
-        tokio::spawn(async move {
-            let start = std::time::Instant::now();
-            let (task_result, preserve_existing_checkpoint) =
-                if matches!(task.execution_mode, AgentExecutionMode::Remote) {
-                    (orchestrator.execute_remote_task(&task, start).await, false)
-                } else {
-                    let execution = execute_delegated_task(
-                        &orchestrator,
-                        &task,
-                        local_cancel_token
-                            .clone()
-                            .expect("local delegated task missing cancellation token"),
-                    )
-                    .await;
-                    let duration_ms = start.elapsed().as_millis() as u64;
-                    let preserve_existing_checkpoint = execution.preserve_existing_checkpoint;
-                    (
-                        execution.into_task_result(&task, duration_ms),
-                        preserve_existing_checkpoint,
-                    )
-                };
+        let execution_span = tracing::info_span!(
+            "delegated_task_execution",
+            run_id = %run_id,
+            task_id = %task.id,
+            agent_id = %task.agent_id,
+            execution_mode = ?task.execution_mode,
+            tracking_task_id = %task.tracking_task_id.as_deref().unwrap_or("n/a"),
+        );
+        tokio::spawn(
+            async move {
+                let start = std::time::Instant::now();
+                let (task_result, preserve_existing_checkpoint) =
+                    if matches!(task.execution_mode, AgentExecutionMode::Remote) {
+                        (orchestrator.execute_remote_task(&task, start).await, false)
+                    } else {
+                        let execution = execute_delegated_task(
+                            &orchestrator,
+                            &task,
+                            local_cancel_token
+                                .clone()
+                                .expect("local delegated task missing cancellation token"),
+                        )
+                        .await;
+                        let duration_ms = start.elapsed().as_millis() as u64;
+                        let preserve_existing_checkpoint = execution.preserve_existing_checkpoint;
+                        (
+                            execution.into_task_result(&task, duration_ms),
+                            preserve_existing_checkpoint,
+                        )
+                    };
 
-            if let Err(error) = orchestrator
-                .complete_task_execution(task, task_result, preserve_existing_checkpoint)
-                .await
-            {
-                tracing::error!(error = %error, "Failed to finalize delegated task execution");
+                if let Err(error) = orchestrator
+                    .complete_task_execution(task, task_result, preserve_existing_checkpoint)
+                    .await
+                {
+                    tracing::error!(error = %error, "Failed to finalize delegated task execution");
+                }
             }
-        });
+            .instrument(execution_span),
+        );
 
         Ok(())
     }
@@ -3781,6 +3824,13 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             )
             .await;
         }
+        self.publish_delegated_task_memory_handoff(
+            &run_id,
+            &task_snapshot,
+            &task_result,
+            memory_file_path.as_deref(),
+        )
+        .await?;
         let should_preserve_blocked_checkpoint =
             preserve_existing_checkpoint && matches!(finalized_state, SupervisorTaskState::Blocked);
         if !matches!(task.execution_mode, AgentExecutionMode::Remote)
@@ -3807,13 +3857,105 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         Ok(())
     }
 
+    async fn publish_delegated_task_memory_handoff(
+        &self,
+        run_id: &str,
+        task_record: &SupervisorTaskRecord,
+        task_result: &TaskResult,
+        memory_file_path: Option<&Path>,
+    ) -> Result<(), String> {
+        let kind = match task_record.state {
+            SupervisorTaskState::Completed
+            | SupervisorTaskState::ReviewPending
+            | SupervisorTaskState::TestPending => TeamMessageKind::Handoff,
+            SupervisorTaskState::Failed
+            | SupervisorTaskState::Cancelled
+            | SupervisorTaskState::Blocked => TeamMessageKind::Blocker,
+            _ => return Ok(()),
+        };
+
+        let recipient_agent_id = {
+            let runs = self.supervisor_runs.lock().await;
+            runs.get(run_id).and_then(|run| run.lead_agent_id.clone())
+        };
+        let mut message = TeamMessage::new(
+            run_id.to_string(),
+            Some(task_record.task.id.clone()),
+            kind,
+            Some(task_record.task.agent_id.clone()),
+            recipient_agent_id.clone(),
+            build_delegated_task_memory_handoff_content(task_record, task_result, memory_file_path),
+        )
+        .with_result_reference(TeamResultReference::from_task_result(task_result))
+        .with_artifact_references(
+            task_result
+                .artifacts
+                .iter()
+                .map(|artifact| {
+                    TeamArtifactReference::from_task_artifact(
+                        Some(task_record.task.id.clone()),
+                        artifact,
+                    )
+                })
+                .collect(),
+        );
+
+        let unread_by_agent_ids = recipient_agent_id
+            .into_iter()
+            .filter(|agent_id| agent_id != &task_record.task.agent_id)
+            .collect::<Vec<_>>();
+        if !unread_by_agent_ids.is_empty() {
+            message = message.with_unread_by_agent_ids(unread_by_agent_ids);
+        }
+
+        let run_snapshot = {
+            let mut runs = self.supervisor_runs.lock().await;
+            let run = runs
+                .get_mut(run_id)
+                .ok_or_else(|| format!("Run '{}' not found", run_id))?;
+            insert_team_message(run, message.clone())?;
+            apply_collaboration_retention(run);
+            run.clone()
+        };
+
+        self.persist_run_with_hierarchy_sync(run_snapshot).await?;
+        self.capture_shared_cognition_from_message(run_id, &message)
+            .await;
+
+        let memory_file_path_display = memory_file_path.map(|path| path.display().to_string());
+        tracing::info!(
+            run_id = %run_id,
+            task_id = %task_record.task.id,
+            agent_id = %task_record.task.agent_id,
+            message_id = %message.id,
+            message_kind = ?kind,
+            memory_file_path = %memory_file_path_display.as_deref().unwrap_or("n/a"),
+            "Published delegated task memory handoff"
+        );
+
+        self.notify_team_message(message).await;
+        Ok(())
+    }
+
     fn schedule_task_execution(&self, task: DelegatedTask) {
         let orchestrator = self.clone();
-        tokio::spawn(async move {
-            if let Err(error) = orchestrator.start_task_execution(task).await {
-                tracing::error!(error = %error, "Failed to start ready task");
+        let run_id = task.run_id.clone().unwrap_or_else(|| "n/a".to_string());
+        let task_id = task.id.clone();
+        let agent_id = task.agent_id.clone();
+        let schedule_span = tracing::info_span!(
+            "schedule_ready_task",
+            run_id = %run_id,
+            task_id = %task_id,
+            agent_id = %agent_id,
+        );
+        tokio::spawn(
+            async move {
+                if let Err(error) = orchestrator.start_task_execution(task).await {
+                    tracing::error!(error = %error, "Failed to start ready task");
+                }
             }
-        });
+            .instrument(schedule_span),
+        );
     }
 
     fn persist_run(&self, run: &SupervisorRun) -> Result<(), String> {
@@ -4744,7 +4886,16 @@ async fn persist_delegated_task_memory(record: &SupervisorTaskRecord) -> Option<
         });
 
     match crate::save_to_memory_bank(workspace_dir, &entry).await {
-        Ok(path) => Some(path),
+        Ok(path) => {
+            tracing::info!(
+                task_id = %task.id,
+                agent_id = %task.agent_id,
+                session_id = %session_id,
+                memory_file_path = %path.display(),
+                "Persisted delegated task memory"
+            );
+            Some(path)
+        }
         Err(error) => {
             tracing::warn!(
                 task_id = %task.id,
@@ -5195,7 +5346,7 @@ fn record_task_dispatch(task: &DelegatedTask, record: &SupervisorTaskRecord, run
         ),
     );
     merge_task_metadata(
-        &manager,
+        manager,
         session_id,
         tracking_task_id,
         json!({
@@ -5286,7 +5437,7 @@ fn record_task_progress(task: &DelegatedTask, record: &SupervisorTaskRecord, run
         )),
     );
     merge_task_metadata(
-        &manager,
+        manager,
         session_id,
         tracking_task_id,
         json!({
@@ -5372,7 +5523,7 @@ fn record_task_completion(
         ),
     );
     merge_task_metadata(
-        &manager,
+        manager,
         session_id,
         tracking_task_id,
         json!({
@@ -6931,6 +7082,67 @@ fn build_gate_request_message(
     message
 }
 
+fn build_delegated_task_memory_handoff_content(
+    record: &SupervisorTaskRecord,
+    task_result: &TaskResult,
+    memory_file_path: Option<&Path>,
+) -> String {
+    let task_name = record
+        .task
+        .name
+        .as_deref()
+        .or(task_result.summary.as_deref())
+        .unwrap_or(record.task.id.as_str());
+    let outcome = format!("{:?}", record.state).to_ascii_lowercase();
+    let mut lines = vec![format!("Delegated task handoff for {task_name}")];
+    lines.push(format!("Outcome: {outcome}"));
+    lines.push(format!("Duration: {} ms", task_result.duration_ms));
+
+    if let Some(summary) = task_result
+        .summary
+        .as_deref()
+        .filter(|summary| !summary.trim().is_empty())
+    {
+        lines.push(format!(
+            "Summary: {}",
+            truncate_delegated_task_message(summary, 240)
+        ));
+    }
+
+    if !task_result.output.trim().is_empty() {
+        lines.push(format!(
+            "Result: {}",
+            truncate_delegated_task_message(&task_result.output, 400)
+        ));
+    }
+
+    if !task_result.artifacts.is_empty() {
+        let artifact_names = task_result
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!("Artifacts: {artifact_names}"));
+    }
+
+    if let Some(path) = memory_file_path {
+        lines.push(format!("Memory: {}", path.display()));
+    }
+
+    lines.join("\n")
+}
+
+fn truncate_delegated_task_message(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    let truncated = trimmed.chars().take(max_chars).collect::<String>();
+    if trimmed.chars().count() > max_chars {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
+
 fn resolve_open_gate_request(
     record: &mut SupervisorTaskRecord,
     scope: ApprovalScope,
@@ -8039,30 +8251,30 @@ mod tests {
             .get_supervisor_run("run-hypothesis")
             .await
             .unwrap();
-        assert_eq!(run.shared_cognition.len(), 2);
+        let hypothesis_notes = run
+            .shared_cognition
+            .iter()
+            .filter(|note| note.kind == SharedCognitionKind::Hypothesis)
+            .collect::<Vec<_>>();
+        assert_eq!(hypothesis_notes.len(), 2);
         assert!(
-            run.shared_cognition
-                .iter()
-                .all(|note| note.kind == SharedCognitionKind::Hypothesis)
-        );
-        assert!(
-            run.shared_cognition
+            hypothesis_notes
                 .iter()
                 .any(|note| note.sender_agent_id.as_deref() == Some("agent-a"))
         );
         assert!(
-            run.shared_cognition
+            hypothesis_notes
                 .iter()
                 .any(|note| note.sender_agent_id.as_deref() == Some("agent-b"))
         );
 
         assert!(
-            run.shared_cognition
+            hypothesis_notes
                 .iter()
                 .any(|note| note.summary.contains("Hypothesis A"))
         );
         assert!(
-            run.shared_cognition
+            hypothesis_notes
                 .iter()
                 .any(|note| note.summary.contains("Hypothesis B"))
         );
@@ -8070,11 +8282,48 @@ mod tests {
 
     #[tokio::test]
     async fn test_child_supervisor_run_inherits_policy_and_task_defaults() {
+        use std::process::Command;
+
         let tmp = tempdir().unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "-b", "main"])
+                .current_dir(tmp.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(tmp.path().join("README.md"), "workspace root\n").unwrap();
+        assert!(
+            Command::new("git")
+                .args(["add", "."])
+                .current_dir(tmp.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Gestura Tests",
+                    "-c",
+                    "user.email=tests@example.com",
+                    "commit",
+                    "-m",
+                    "Initial commit",
+                ])
+                .current_dir(tmp.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+
         let manager = crate::agents::AgentManager::new(tmp.path().join("child-hierarchy.db"));
         let orchestrator = AgentOrchestrator::new(manager, AppConfig::default());
 
         let mut parent_run = empty_supervisor_run("run-parent", tmp.path().to_path_buf());
+        parent_run.session_id = Some("session-child-hierarchy".to_string());
         parent_run.inherited_policy = Some(SupervisorInheritancePolicy {
             approval_required: true,
             reviewer_required: false,
@@ -8154,6 +8403,9 @@ mod tests {
         let child_run = orchestrator.get_supervisor_run("run-child").await.unwrap();
         let record = child_run.tasks.first().unwrap();
         assert_eq!(record.state, SupervisorTaskState::PendingApproval);
+        assert_eq!(record.task.session_id, child_run.session_id);
+        assert_eq!(record.task.workspace_dir, child_run.workspace_dir);
+        assert!(record.task.tracking_task_id.is_some());
         assert_eq!(record.task.execution_mode, AgentExecutionMode::GitWorktree);
         assert!(record.task.memory_tags.contains(&"root-tag".to_string()));
         assert!(record.task.memory_tags.contains(&"child-tag".to_string()));
@@ -8227,6 +8479,7 @@ mod tests {
         let shell_progress = local_execution_progress_from_chunk(
             &StreamChunk::ShellLifecycle {
                 process_id: "cmd-1".to_string(),
+                shell_session_id: None,
                 duration_ms: None,
                 command: "cargo test".to_string(),
                 state: crate::streaming::ShellProcessState::Started,
@@ -9696,6 +9949,149 @@ mod tests {
             checkpoint_available_actions(&persisted_checkpoint, SupervisorTaskState::Blocked,)
                 .contains(&DelegatedCheckpointAction::ResumeFromCheckpoint)
         );
+    }
+
+    #[tokio::test]
+    async fn complete_task_execution_publishes_memory_handoff_to_supervisor() {
+        let tmp = tempdir().unwrap();
+        let manager = crate::agents::AgentManager::new(tmp.path().join("memory-handoff.db"));
+        let orchestrator = AgentOrchestrator::new_with_workspace_root(
+            manager,
+            AppConfig::default(),
+            Some(tmp.path().to_path_buf()),
+        );
+
+        let task = DelegatedTask {
+            id: "task-memory-handoff".to_string(),
+            agent_id: "agent-impl".to_string(),
+            prompt: "Implement the requested fix".to_string(),
+            context: None,
+            required_tools: vec![],
+            priority: 1,
+            session_id: Some("session-memory-handoff".to_string()),
+            directive_id: Some("directive-memory-handoff".to_string()),
+            tracking_task_id: Some("tracking-memory-handoff".to_string()),
+            run_id: Some("run-memory-handoff".to_string()),
+            parent_task_id: None,
+            depends_on: vec![],
+            role: Some(AgentRole::Implementer),
+            delegation_brief: None,
+            planning_only: false,
+            approval_required: false,
+            reviewer_required: false,
+            test_required: false,
+            workspace_dir: Some(tmp.path().to_path_buf()),
+            execution_mode: AgentExecutionMode::SharedWorkspace,
+            environment_id: None,
+            remote_target: None,
+            memory_tags: vec!["delegation".to_string()],
+            name: Some("Implement delegated fix".to_string()),
+        };
+        let now = Utc::now();
+        let mut run = empty_supervisor_run("run-memory-handoff", tmp.path().to_path_buf());
+        run.session_id = task.session_id.clone();
+        run.lead_agent_id = Some("supervisor-root".to_string());
+        run.status = SupervisorRunStatus::Running;
+        run.task_summary = SupervisorRunTaskSummary {
+            total: 1,
+            queued: 0,
+            blocked: 0,
+            pending_approval: 0,
+            running: 1,
+            review_pending: 0,
+            test_pending: 0,
+            completed: 0,
+            failed: 0,
+            cancelled: 0,
+        };
+        run.tasks.push(SupervisorTaskRecord {
+            task: task.clone(),
+            state: SupervisorTaskState::Running,
+            approval: TaskApprovalRecord::default(),
+            environment_id: "env-memory-handoff".to_string(),
+            environment: test_environment("env-memory-handoff", tmp.path().to_path_buf()),
+            claimed_by: Some(task.agent_id.clone()),
+            attempts: 1,
+            blocked_reasons: vec![],
+            result: None,
+            remote_execution: None,
+            local_execution: Some(local_execution_record_for_start()),
+            messages: vec![],
+            checkpoint: None,
+            created_at: now,
+            updated_at: now,
+            started_at: Some(now),
+            completed_at: None,
+        });
+        orchestrator
+            .supervisor_runs
+            .lock()
+            .await
+            .insert(run.id.clone(), run);
+
+        orchestrator
+            .complete_task_execution(
+                task.clone(),
+                TaskResult {
+                    task_id: task.id.clone(),
+                    agent_id: task.agent_id.clone(),
+                    success: true,
+                    run_id: task.run_id.clone(),
+                    tracking_task_id: task.tracking_task_id.clone(),
+                    output: "Applied the fix and verified the targeted path.".to_string(),
+                    summary: Some("Delegated fix applied".to_string()),
+                    tool_calls: vec![],
+                    artifacts: vec![TaskArtifactRecord {
+                        name: "summary.md".to_string(),
+                        kind: "report".to_string(),
+                        uri: Some("memory://summary".to_string()),
+                        summary: Some("Delegated completion summary".to_string()),
+                    }],
+                    terminal_state_hint: Some(TaskTerminalStateHint::Completed),
+                    duration_ms: 25,
+                },
+                false,
+            )
+            .await
+            .unwrap();
+
+        let run = orchestrator
+            .supervisor_runs
+            .lock()
+            .await
+            .get("run-memory-handoff")
+            .cloned()
+            .unwrap();
+        let record = &run.tasks[0];
+        assert!(record.messages.iter().any(|message| {
+            message.kind == TeamMessageKind::Handoff
+                && message.sender_agent_id.as_deref() == Some("agent-impl")
+                && message
+                    .result_reference
+                    .as_ref()
+                    .is_some_and(|result| result.success)
+        }));
+        assert!(
+            record
+                .messages
+                .iter()
+                .any(|message| message.content.contains("Memory:"))
+        );
+        assert!(run.shared_cognition.iter().any(|note| {
+            note.kind == SharedCognitionKind::Handoff
+                && note.sender_agent_id.as_deref() == Some("agent-impl")
+        }));
+
+        let shared_query = crate::memory_bank::MemoryBankQuery::default()
+            .with_category(SHARED_COGNITION_CATEGORY)
+            .with_task("task-memory-handoff")
+            .with_tags(vec![workflow_run_memory_tag("run-memory-handoff")])
+            .with_limit(5);
+        let shared_results =
+            crate::memory_bank::search_memory_bank_with_query(tmp.path(), &shared_query)
+                .await
+                .unwrap();
+        assert_eq!(shared_results.len(), 1);
     }
 
     #[test]

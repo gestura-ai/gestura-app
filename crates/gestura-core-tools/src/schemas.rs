@@ -38,6 +38,24 @@ pub fn build_provider_tool_schemas(tools: &[&'static ToolDefinition]) -> Provide
     let mut out = ProviderToolSchemas::default();
 
     for tool in tools {
+        if tool.name == "file" {
+            if let Some((openai, anthropic, gemini)) = schema_for_tool(tool.name, tool.description)
+            {
+                out.openai.push(openai);
+                out.anthropic.push(anthropic);
+                out.gemini.push(gemini);
+            }
+
+            for (name, description, input_schema) in split_file_tool_schemas() {
+                let (openai, anthropic, gemini) =
+                    build_provider_schema(name.as_str(), description.as_str(), input_schema);
+                out.openai.push(openai);
+                out.anthropic.push(anthropic);
+                out.gemini.push(gemini);
+            }
+            continue;
+        }
+
         if let Some((openai, anthropic, gemini)) = schema_for_tool(tool.name, tool.description) {
             out.openai.push(openai);
             out.anthropic.push(anthropic);
@@ -59,7 +77,9 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                     "command": {"type": "string", "description": "Shell command to run. Commands must be non-interactive: this tool cannot answer prompts or confirmations, so include unattended flags such as -y/--yes/CI=1 when needed."},
                     "cwd": {"type": "string", "description": "Working directory (optional)"},
                     "env": {"type": "object", "description": "Environment variables", "additionalProperties": {"type": "string"}},
-                    "timeout_secs": {"type": "integer", "description": "Timeout in seconds (optional). Quick commands can use short timeouts, but install/build/test/scaffold commands should usually use about 300 seconds. Interactive commands are not supported; if a command may prompt, use non-interactive flags or ask the user first."}
+                    "timeout_secs": {"type": "integer", "description": "Timeout in seconds (optional). Quick commands can use short timeouts, but install/build/test/scaffold commands should usually use about 300 seconds. Interactive commands are not supported; if a command may prompt, use non-interactive flags or ask the user first."},
+                    "allow_long_running": {"type": "boolean", "description": "When true, active PTY-backed shell commands may continue beyond timeout_secs while output activity is still arriving. Use this for long-running builds, tests, installs, or scaffolds that should only be interrupted if they appear stalled."},
+                    "stall_timeout_secs": {"type": "integer", "description": "Optional quiet-period threshold used with allow_long_running. If the command produces no shell activity for this many seconds, it is treated as stalled and interrupted."}
                 },
                 "required": ["command"],
                 "additionalProperties": true
@@ -72,110 +92,176 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "description": "File operation to perform. After reading an existing file, prefer 'edit' for targeted changes. 'write' requires 'path' and the full file 'content' (or clear aliases like 'contents'/'text'); do not send 'pattern' or line numbers for write. 'edit' requires 'path', 'old', and 'new'. 'search' requires 'path' and 'pattern'. 'read', 'list', and 'tree' require 'path' (defaults to '.' if omitted).",
-                        "enum": ["read", "write", "edit", "list", "tree", "search"]
+                        "description": "Inspection-oriented file operation to perform. Use `read`, `list`, `tree`, or `search`. For writes, use the strict `write_file` tool; for targeted replacements, use the strict `edit_file` tool.",
+                        "enum": ["read", "list", "tree", "search"]
                     },
                     "path": {
                         "type": "string",
-                        "description": "Path to file or directory. REQUIRED for most operations (defaults to '.' for list/tree/search if omitted)."
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Full content to write to the file. REQUIRED when operation='write'. Never call write without full replacement content. For partial changes to an existing file, use operation='edit' with 'old' and 'new' instead."
-                    },
-                    "old": {
-                        "type": "string",
-                        "description": "Old string to find and replace. REQUIRED when operation='edit'."
-                    },
-                    "new": {
-                        "type": "string",
-                        "description": "New string to replace with. REQUIRED when operation='edit'."
+                        "minLength": 1,
+                        "description": "Path to the target file or directory. Required for `read` and `search`. Optional for `list` and `tree`, where it defaults to '.'."
                     },
                     "pattern": {
                         "type": "string",
-                        "description": "Search pattern (regex). REQUIRED when operation='search'."
+                        "minLength": 1,
+                        "description": "Search pattern (regex) for `search`."
                     },
                     "recursive": {
                         "type": "boolean",
-                        "description": "Whether to search recursively in subdirectories (optional, for search operation, default true)"
+                        "description": "Whether `search` should recurse into subdirectories."
                     },
                     "max_matches": {
                         "type": "integer",
-                        "description": "Maximum number of matches to return (optional, for search operation)"
+                        "minimum": 1,
+                        "description": "Maximum number of `search` matches to return."
                     },
                     "show_hidden": {
                         "type": "boolean",
-                        "description": "Whether to include hidden files/directories (optional, for list/tree operations, default false)"
+                        "description": "Whether `list` or `tree` should include hidden files and directories."
                     },
                     "max_entries": {
                         "type": "integer",
-                        "description": "Maximum number of entries to return (optional, for list operation)"
+                        "minimum": 1,
+                        "description": "Maximum number of entries to return for `list`."
                     },
                     "max_depth": {
                         "type": "integer",
-                        "description": "Maximum directory depth to traverse (optional, for tree operation)"
+                        "minimum": 1,
+                        "description": "Maximum traversal depth for `tree`."
                     },
                     "start": {
                         "type": "integer",
-                        "description": "Starting line number for partial file read (optional, for read operation, 1-based)"
+                        "minimum": 1,
+                        "description": "Starting line number for partial `read` (1-based)."
                     },
                     "end": {
                         "type": "integer",
-                        "description": "Ending line number for partial file read (optional, for read operation, 1-based, inclusive)"
+                        "minimum": 1,
+                        "description": "Ending line number for partial `read` (1-based, inclusive)."
                     }
                 },
                 "oneOf": [
                     {
-                        "description": "Read a file. REQUIRED fields: `operation`, `path`.",
+                        "type": "object",
+                        "description": "Read a file. REQUIRED fields: `operation`, `path`. Optional fields: `start`, `end`.",
                         "properties": {
-                            "operation": { "enum": ["read"] }
+                            "operation": {
+                                "type": "string",
+                                "description": "Read a file.",
+                                "enum": ["read"]
+                            },
+                            "path": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Exact file path to read."
+                            },
+                            "start": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "Starting line number for a partial read (1-based)."
+                            },
+                            "end": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "Ending line number for a partial read (1-based, inclusive)."
+                            }
                         },
-                        "required": ["operation", "path"]
+                        "required": ["operation", "path"],
+                        "additionalProperties": false
                     },
                     {
-                        "description": "Write a full file. REQUIRED fields: `operation`, `path`, `content`. Do not use `write` for partial replacements.",
+                        "type": "object",
+                        "description": "List directory contents. REQUIRED field: `operation`. `path` defaults to '.'. Optional fields: `show_hidden`, `max_entries`.",
                         "properties": {
-                            "operation": { "enum": ["write"] }
+                            "operation": {
+                                "type": "string",
+                                "description": "List directory contents.",
+                                "enum": ["list"]
+                            },
+                            "path": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Directory path. Defaults to '.'."
+                            },
+                            "show_hidden": {
+                                "type": "boolean",
+                                "description": "Whether to include hidden files and directories."
+                            },
+                            "max_entries": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "Maximum number of entries to return."
+                            }
                         },
-                        "required": ["operation", "path", "content"]
+                        "required": ["operation"],
+                        "additionalProperties": false
                     },
                     {
-                        "description": "Edit part of an existing file. REQUIRED fields: `operation`, `path`, `old`, `new`.",
+                        "type": "object",
+                        "description": "Show a directory tree. REQUIRED field: `operation`. `path` defaults to '.'. Optional fields: `show_hidden`, `max_depth`.",
                         "properties": {
-                            "operation": { "enum": ["edit"] }
+                            "operation": {
+                                "type": "string",
+                                "description": "Show a directory tree.",
+                                "enum": ["tree"]
+                            },
+                            "path": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Directory path. Defaults to '.'."
+                            },
+                            "show_hidden": {
+                                "type": "boolean",
+                                "description": "Whether to include hidden files and directories."
+                            },
+                            "max_depth": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "Maximum directory depth to traverse."
+                            }
                         },
-                        "required": ["operation", "path", "old", "new"]
+                        "required": ["operation"],
+                        "additionalProperties": false
                     },
                     {
-                        "description": "List directory contents. REQUIRED field: `operation`. `path` defaults to '.'.",
+                        "type": "object",
+                        "description": "Search for text in files. REQUIRED fields: `operation`, `path`, `pattern`. Optional fields: `recursive`, `max_matches`. Use this for discovery only; do not use `pattern` as a substitute for file edits.",
                         "properties": {
-                            "operation": { "enum": ["list"] }
+                            "operation": {
+                                "type": "string",
+                                "description": "Search files for text or regex matches.",
+                                "enum": ["search"]
+                            },
+                            "path": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "File or directory path to search within."
+                            },
+                            "pattern": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Search pattern (regex)."
+                            },
+                            "recursive": {
+                                "type": "boolean",
+                                "description": "Whether to search recursively in subdirectories."
+                            },
+                            "max_matches": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "Maximum number of matches to return."
+                            }
                         },
-                        "required": ["operation"]
-                    },
-                    {
-                        "description": "Show a directory tree. REQUIRED field: `operation`. `path` defaults to '.'.",
-                        "properties": {
-                            "operation": { "enum": ["tree"] }
-                        },
-                        "required": ["operation"]
-                    },
-                    {
-                        "description": "Search for text in files. REQUIRED fields: `operation`, `path`, `pattern`.",
-                        "properties": {
-                            "operation": { "enum": ["search"] }
-                        },
-                        "required": ["operation", "path", "pattern"]
+                        "required": ["operation", "path", "pattern"],
+                        "additionalProperties": false
                     }
                 ],
                 "examples": [
-                    {"operation": "read", "path": "src/index.html"},
-                    {"operation": "write", "path": "src/index.html", "content": "<h1>Hello World</h1>\n"},
-                    {"operation": "edit", "path": "src/index.html", "old": "<h1>Hello</h1>", "new": "<h1>Hello World</h1>"},
-                    {"operation": "search", "path": "src", "pattern": "Hello World"}
+                    {"operation": "read", "path": "README.md"},
+                    {"operation": "list", "path": ".", "show_hidden": false},
+                    {"operation": "search", "path": "src", "pattern": "TODO"}
                 ],
                 "required": ["operation"],
-                "additionalProperties": true
+                "additionalProperties": false
             }),
         ),
         "git" => (
@@ -348,10 +434,10 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                     }
                 ],
                 "examples": [
-                    {"operation": "batch_read", "paths": ["src/main.rs", "src/lib.rs"]},
-                    {"operation": "batch_edit", "edits": [{"path": "src/index.html", "old_str": "<h1>Hello</h1>", "new_str": "<h1>Hello World</h1>"}]},
-                    {"operation": "grep", "pattern": "Hello World", "path": ".", "max_results": 20},
-                    {"operation": "test", "path": ".", "filter": "hello_world"}
+                    {"operation": "batch_read", "paths": ["src/lib.rs", "app/main.py"]},
+                    {"operation": "batch_edit", "edits": [{"path": "src/lib.rs", "old_str": "fn greet() {}", "new_str": "fn greet() { println!(\"hello\"); }"}]},
+                    {"operation": "grep", "pattern": "TODO", "path": ".", "max_results": 20},
+                    {"operation": "test", "path": ".", "filter": "integration"}
                 ],
                 "required": ["operation"],
                 "additionalProperties": false
@@ -371,7 +457,7 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                 "required": ["paths"],
                 "additionalProperties": false,
                 "examples": [
-                    {"paths": ["src/main.rs", "src/lib.rs"]}
+                    {"paths": ["src/lib.rs", "app/main.py"]}
                 ]
             }),
         ),
@@ -398,7 +484,7 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                 "required": ["edits"],
                 "additionalProperties": false,
                 "examples": [
-                    {"edits": [{"path": "src/index.html", "old_str": "<h1>Hello</h1>", "new_str": "<h1>Hello World</h1>"}]}
+                    {"edits": [{"path": "src/lib.rs", "old_str": "fn greet() {}", "new_str": "fn greet() { println!(\"hello\"); }"}]}
                 ]
             }),
         ),
@@ -774,6 +860,14 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
         _ => return None,
     };
 
+    Some(build_provider_schema(name, description, input_schema))
+}
+
+fn build_provider_schema(
+    name: &str,
+    description: &str,
+    input_schema: Value,
+) -> (Value, Value, Value) {
     let openai = serde_json::json!({
         "type": "function",
         "function": {
@@ -795,7 +889,94 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
         "parameters": input_schema
     });
 
-    Some((openai, anthropic, gemini))
+    (openai, anthropic, gemini)
+}
+
+fn split_file_tool_schemas() -> Vec<(String, String, Value)> {
+    vec![
+        (
+            "read_file".to_string(),
+            "Read one exact file with an optional line range. Strict file-only contract; do not pass directory, search, or edit fields.".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Exact file path to read. Must not be a directory."
+                    },
+                    "start": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Starting line number for a partial read (1-based)."
+                    },
+                    "end": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Ending line number for a partial read (1-based, inclusive)."
+                    }
+                },
+                "required": ["path"],
+                "additionalProperties": false,
+                "examples": [
+                    {"path": "src/main.rs"},
+                    {"path": "src/main.rs", "start": 1, "end": 80}
+                ]
+            }),
+        ),
+        (
+            "write_file".to_string(),
+            "Write one exact file using the full replacement content. Strict full-document contract; include `path` and canonical `content` only.".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Destination file path."
+                    },
+                    "content": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Full replacement file content. Use this canonical field only; do not substitute `pattern`, `text`, or `contents`."
+                    }
+                },
+                "required": ["path", "content"],
+                "additionalProperties": false,
+                "examples": [
+                    {"path": "docs/summary.txt", "content": "Build completed successfully.\n"}
+                ]
+            }),
+        ),
+        (
+            "edit_file".to_string(),
+            "Apply one exact string replacement inside one existing file. Strict edit contract; include only `path`, `old`, and `new`.".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Existing file path to edit."
+                    },
+                    "old": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Exact existing text to replace."
+                    },
+                    "new": {
+                        "type": "string",
+                        "description": "Replacement text."
+                    }
+                },
+                "required": ["path", "old", "new"],
+                "additionalProperties": false,
+                "examples": [
+                    {"path": "src/lib.rs", "old": "fn greet() { println!(\"hi\"); }", "new": "fn greet() { println!(\"hello\"); }"}
+                ]
+            }),
+        ),
+    ]
 }
 
 #[cfg(test)]
@@ -911,28 +1092,118 @@ mod tests {
         let file = find_tool("file").unwrap();
         let schemas = build_provider_tool_schemas(&[file]);
 
-        let branches = schemas.openai[0]["function"]["parameters"]["oneOf"]
-            .as_array()
-            .expect("file schema should define oneOf branches");
-        let write_branch = branches
+        let write_file_schema = schemas
+            .openai
             .iter()
-            .find(|branch| branch["properties"]["operation"]["enum"][0] == "write")
-            .expect("missing write branch");
-        let required = write_branch["required"]
+            .find(|schema| schema["function"]["name"] == "write_file")
+            .expect("missing write_file schema");
+        let parameters = &write_file_schema["function"]["parameters"];
+        let required = parameters["required"]
             .as_array()
-            .expect("write branch should have required fields");
+            .expect("write_file schema should have required fields");
 
         assert!(required.iter().any(|value| value == "path"));
         assert!(required.iter().any(|value| value == "content"));
 
-        let examples = schemas.openai[0]["function"]["parameters"]["examples"]
+        let examples = parameters["examples"]
             .as_array()
-            .expect("file schema should include examples");
+            .expect("write_file schema should include examples");
         assert!(examples.iter().any(|example| {
-            example["operation"] == "write"
-                && example["path"] == "src/index.html"
-                && example["content"].is_string()
+            example["path"] == "docs/summary.txt" && example["content"].is_string()
         }));
+
+        let branch_properties = parameters["properties"]
+            .as_object()
+            .expect("write_file schema should define properties");
+        assert!(parameters["additionalProperties"] == serde_json::json!(false));
+        assert!(!branch_properties.contains_key("pattern"));
+        assert!(!branch_properties.contains_key("start"));
+
+        let description = write_file_schema["function"]["description"]
+            .as_str()
+            .expect("write_file description should exist");
+        assert!(description.contains("canonical `content` only"));
+        assert!(!description.contains("contents"));
+        assert!(!description.contains("text"));
+    }
+
+    #[test]
+    fn file_schema_uses_strict_operation_specific_branches() {
+        let file = find_tool("file").unwrap();
+        let schemas = build_provider_tool_schemas(&[file]);
+
+        let parameters = &schemas.openai[0]["function"]["parameters"];
+        let branches = parameters["oneOf"]
+            .as_array()
+            .expect("file schema should define oneOf branches");
+
+        assert_eq!(branches.len(), 4);
+        let root_properties = parameters["properties"]
+            .as_object()
+            .expect("file schema should expose top-level properties");
+        assert!(parameters["additionalProperties"] == serde_json::json!(false));
+        assert!(root_properties.contains_key("operation"));
+        assert!(root_properties.contains_key("path"));
+        assert!(root_properties.contains_key("pattern"));
+        assert!(root_properties.contains_key("start"));
+        assert!(!root_properties.contains_key("content"));
+        assert!(!root_properties.contains_key("old"));
+        assert!(!root_properties.contains_key("new"));
+
+        let search_branch = branches
+            .iter()
+            .find(|branch| branch["properties"]["operation"]["enum"][0] == "search")
+            .expect("missing search branch");
+        let search_properties = search_branch["properties"]
+            .as_object()
+            .expect("search branch should define properties");
+
+        assert!(search_branch["additionalProperties"] == serde_json::json!(false));
+        assert!(search_properties.contains_key("pattern"));
+        assert!(!search_properties.contains_key("content"));
+
+        let read_branch = branches
+            .iter()
+            .find(|branch| branch["properties"]["operation"]["enum"][0] == "read")
+            .expect("missing read branch");
+        let read_properties = read_branch["properties"]
+            .as_object()
+            .expect("read branch should define properties");
+
+        assert!(read_branch["additionalProperties"] == serde_json::json!(false));
+        assert!(read_properties.contains_key("start"));
+        assert!(read_properties.contains_key("end"));
+        assert!(!read_properties.contains_key("content"));
+    }
+
+    #[test]
+    fn file_provider_schemas_split_mutations_from_inspection_tool() {
+        let file = find_tool("file").unwrap();
+        let schemas = build_provider_tool_schemas(&[file]);
+
+        let tool_names = schemas
+            .openai
+            .iter()
+            .filter_map(|schema| schema["function"]["name"].as_str())
+            .collect::<Vec<_>>();
+
+        assert!(tool_names.contains(&"file"));
+        assert!(tool_names.contains(&"read_file"));
+        assert!(tool_names.contains(&"write_file"));
+        assert!(tool_names.contains(&"edit_file"));
+
+        let edit_file_schema = schemas
+            .openai
+            .iter()
+            .find(|schema| schema["function"]["name"] == "edit_file")
+            .expect("missing edit_file schema");
+
+        let required = edit_file_schema["function"]["parameters"]["required"]
+            .as_array()
+            .expect("edit_file required fields");
+        assert!(required.iter().any(|value| value == "path"));
+        assert!(required.iter().any(|value| value == "old"));
+        assert!(required.iter().any(|value| value == "new"));
     }
 
     #[test]

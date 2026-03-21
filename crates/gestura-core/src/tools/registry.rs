@@ -14,8 +14,9 @@ use crate::config::AppConfig;
 // We re-export it here so callers can keep using
 // `gestura_core::tools::registry::{all_tools, find_tool, ...}`.
 pub use gestura_core_tools::registry::{
-    ToolDefinition, all_tools, find_tool, looks_like_capabilities_question,
-    looks_like_tools_question, render_tool_detail, render_tools_overview,
+    ToolDefinition, all_tools, code_tool_names, find_tool, is_code_tool_name,
+    looks_like_capabilities_question, looks_like_tools_question, render_tool_detail,
+    render_tools_overview,
 };
 
 /// Render a comprehensive capabilities overview including dynamic config.

@@ -1,8 +1,20 @@
 use super::*;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use tracing::Instrument as _;
+
+#[derive(Debug, Deserialize)]
+struct FileWriteToolOutput {
+    changed: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct FileEditToolOutput {
+    path: String,
+    changed: bool,
+}
 
 /// Pending tool call being accumulated during streaming
 pub(super) struct PendingToolCall {
@@ -44,6 +56,37 @@ enum ToolPathExpectation {
     WritableFile,
 }
 
+#[cfg(test)]
+const STREAMING_TOOL_KEEPALIVE_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(250);
+
+#[cfg(not(test))]
+const STREAMING_TOOL_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+async fn emit_streaming_tool_keepalive(
+    tx: mpsc::Sender<StreamChunk>,
+    start_time: Instant,
+    tool_name: String,
+) {
+    let mut interval = tokio::time::interval(STREAMING_TOOL_KEEPALIVE_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    interval.tick().await;
+
+    loop {
+        interval.tick().await;
+        let elapsed_secs = start_time.elapsed().as_secs();
+        if tx
+            .send(StreamChunk::Status {
+                message: format!("Tool `{tool_name}` still running... ({elapsed_secs}s elapsed)"),
+            })
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
+}
+
 impl AgentPipeline {
     fn classify_code_batch_read_result(raw: String) -> ToolResult {
         match serde_json::from_str::<Vec<crate::tools::code::BatchReadEntry>>(&raw) {
@@ -78,6 +121,25 @@ impl AgentPipeline {
                 }
             }
             Err(_) => ToolResult::Success(raw),
+        }
+    }
+
+    fn classify_file_write_result(raw: String, raw_path_str: &str) -> ToolResult {
+        match serde_json::from_str::<FileWriteToolOutput>(&raw) {
+            Ok(output) if !output.changed => ToolResult::Success(format!(
+                "Write to {raw_path_str} made no changes; content already matched the existing file."
+            )),
+            Ok(_) | Err(_) => ToolResult::Success(format!("Written to {raw_path_str}")),
+        }
+    }
+
+    fn classify_file_edit_result(raw: String) -> ToolResult {
+        match serde_json::from_str::<FileEditToolOutput>(&raw) {
+            Ok(output) if !output.changed => ToolResult::Success(format!(
+                "Edited {} (unchanged; replacement produced identical content)",
+                output.path
+            )),
+            Ok(_) | Err(_) => ToolResult::Success(raw),
         }
     }
 
@@ -298,6 +360,15 @@ impl AgentPipeline {
         (!operation.is_empty()).then_some(operation)
     }
 
+    fn infer_missing_task_status(status: &crate::TaskStatus) -> Option<crate::TaskStatus> {
+        match status {
+            crate::TaskStatus::NotStarted => Some(crate::TaskStatus::InProgress),
+            crate::TaskStatus::InProgress => Some(crate::TaskStatus::InProgress),
+            crate::TaskStatus::Blocked => Some(crate::TaskStatus::InProgress),
+            crate::TaskStatus::Completed | crate::TaskStatus::Cancelled => None,
+        }
+    }
+
     fn workspace_path_suffix_components(path: &Path) -> Option<Vec<String>> {
         let mut components = Vec::new();
         for component in path.components() {
@@ -427,18 +498,109 @@ impl AgentPipeline {
             .ok()
     }
 
+    fn recover_common_source_root_file_path(
+        ws: &SessionWorkspace,
+        requested: &Path,
+        for_write: bool,
+    ) -> Option<PathBuf> {
+        let components = Self::workspace_path_suffix_components(requested)?;
+        if components.is_empty() {
+            return None;
+        }
+
+        let file_name = components.last()?.clone();
+        let source_roots = [
+            "src", "app", "web", "frontend", "client", "server", "backend",
+        ];
+        let requested_relative = components
+            .iter()
+            .fold(PathBuf::new(), |mut path, component| {
+                path.push(component);
+                path
+            });
+
+        let project_root_components = if components.len() >= 2
+            && source_roots.contains(&components[components.len() - 2].as_str())
+        {
+            &components[..components.len() - 2]
+        } else {
+            &components[..components.len() - 1]
+        };
+
+        let mut existing_candidates = Vec::new();
+        for root in std::iter::once("").chain(source_roots.iter().copied()) {
+            let mut candidate_relative = PathBuf::new();
+            for component in project_root_components {
+                candidate_relative.push(component);
+            }
+            if !root.is_empty() {
+                candidate_relative.push(root);
+            }
+            candidate_relative.push(&file_name);
+
+            if candidate_relative == requested_relative {
+                continue;
+            }
+
+            let candidate = ws.root().join(&candidate_relative);
+            if candidate.is_file() {
+                existing_candidates.push(candidate_relative);
+            }
+        }
+
+        existing_candidates.sort();
+        existing_candidates.dedup();
+
+        let [candidate_relative] = existing_candidates.as_slice() else {
+            return None;
+        };
+
+        if for_write {
+            ws.resolve_path_for_write(candidate_relative).ok()
+        } else {
+            ws.resolve_path_for_read(candidate_relative).ok()
+        }
+    }
+
     fn resolve_workspace_read_path(ws: &SessionWorkspace, raw: &str) -> Result<PathBuf, String> {
         let requested = Path::new(raw);
         ws.resolve_path_for_read(requested).or_else(|err| {
             Self::recover_workspace_read_path_by_suffix(ws, requested)
+                .or_else(|| Self::recover_common_source_root_file_path(ws, requested, false))
                 .ok_or_else(|| err.to_string())
         })
     }
 
+    fn resolve_workspace_existing_file_path(
+        ws: &SessionWorkspace,
+        requested: &Path,
+    ) -> Option<PathBuf> {
+        ws.resolve_path_for_read(requested)
+            .ok()
+            .or_else(|| Self::recover_workspace_read_path_by_suffix(ws, requested))
+            .or_else(|| Self::recover_common_source_root_file_path(ws, requested, false))
+    }
+
+    fn resolve_workspace_edit_path(ws: &SessionWorkspace, raw: &str) -> Result<PathBuf, String> {
+        let requested = Path::new(raw);
+        let direct_error = ws
+            .resolve_path_for_read(requested)
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| format!("Path does not exist: {}", requested.display()));
+
+        Self::resolve_workspace_existing_file_path(ws, requested).ok_or(direct_error)
+    }
+
     fn resolve_workspace_write_path(ws: &SessionWorkspace, raw: &str) -> Result<PathBuf, String> {
         let requested = Path::new(raw);
+        if let Some(existing_path) = Self::resolve_workspace_existing_file_path(ws, requested) {
+            return Ok(existing_path);
+        }
+
         ws.resolve_path_for_write(requested).or_else(|err| {
             Self::recover_workspace_write_path_by_suffix(ws, requested)
+                .or_else(|| Self::recover_common_source_root_file_path(ws, requested, true))
                 .ok_or_else(|| err.to_string())
         })
     }
@@ -464,6 +626,19 @@ impl AgentPipeline {
 
     fn is_code_tool_name(name: &str) -> bool {
         name == "code" || Self::forced_code_operation_for_tool(name).is_some()
+    }
+
+    fn forced_file_operation_for_tool(name: &str) -> Option<&'static str> {
+        match name {
+            "read_file" => Some("read"),
+            "write_file" => Some("write"),
+            "edit_file" => Some("edit"),
+            _ => None,
+        }
+    }
+
+    fn is_file_tool_name(name: &str) -> bool {
+        name == "file" || Self::forced_file_operation_for_tool(name).is_some()
     }
 
     fn validate_path_expectation(
@@ -599,6 +774,34 @@ impl AgentPipeline {
             .unwrap_or("read")
             .to_string();
 
+        if operation == "write"
+            && obj
+                .get("content")
+                .and_then(|value| value.as_str())
+                .and_then(Self::normalize_optional_tool_string)
+                .is_none()
+        {
+            obj.remove("content");
+            if let Some(recovered_content) = ["contents", "text"]
+                .into_iter()
+                .find_map(|alias| {
+                    obj.get(alias)
+                        .and_then(|value| value.as_str())
+                        .and_then(Self::normalize_optional_tool_string)
+                })
+                .or_else(|| {
+                    obj.get("pattern")
+                        .and_then(|value| value.as_str())
+                        .and_then(Self::recover_write_content_from_pattern)
+                })
+            {
+                obj.insert(
+                    "content".to_string(),
+                    serde_json::Value::String(recovered_content),
+                );
+            }
+        }
+
         if operation == "edit" {
             if obj
                 .get("old")
@@ -607,13 +810,120 @@ impl AgentPipeline {
                 .is_none()
             {
                 obj.remove("old");
+                if let Some(recovered_old) = ["old_str", "pattern", "search", "find"]
+                    .into_iter()
+                    .find_map(|alias| {
+                        obj.get(alias)
+                            .and_then(|value| value.as_str())
+                            .and_then(Self::normalize_optional_tool_string)
+                    })
+                {
+                    obj.insert("old".to_string(), serde_json::Value::String(recovered_old));
+                }
             }
             if obj.get("new").and_then(|value| value.as_str()).is_none() {
                 obj.remove("new");
+                if let Some(recovered_new) = ["new_str", "replacement", "replace", "replace_with"]
+                    .into_iter()
+                    .find_map(|alias| {
+                        obj.get(alias)
+                            .and_then(|value| value.as_str())
+                            .map(|value| value.to_string())
+                    })
+                {
+                    obj.insert("new".to_string(), serde_json::Value::String(recovered_new));
+                }
             }
         }
 
         serde_json::Value::Object(obj)
+    }
+
+    fn normalize_file_tool_arguments_with_forced_operation(
+        args: serde_json::Value,
+        forced_operation: Option<&str>,
+    ) -> serde_json::Value {
+        let mut obj = match args {
+            serde_json::Value::Object(map) => map,
+            other => return other,
+        };
+
+        if let Some(operation) = forced_operation {
+            obj.insert(
+                "operation".to_string(),
+                serde_json::Value::String(operation.to_string()),
+            );
+        }
+
+        Self::normalize_file_tool_arguments(serde_json::Value::Object(obj))
+    }
+
+    fn recover_write_content_from_pattern(raw: &str) -> Option<String> {
+        let normalized = Self::normalize_optional_tool_string(raw)?;
+        let lowered = normalized.to_ascii_lowercase();
+
+        if matches!(
+            lowered.as_str(),
+            "full content" | "full file content" | "placeholder"
+        ) {
+            return None;
+        }
+
+        let looks_like_markup = lowered.contains("<!doctype")
+            || lowered.contains("<html")
+            || lowered.contains("<body")
+            || lowered.contains("<head")
+            || lowered.contains("<script")
+            || lowered.contains("<style")
+            || lowered.contains("<div")
+            || lowered.contains("<h1")
+            || lowered.contains("<main")
+            || lowered.contains("<template");
+        let looks_like_program = lowered.contains("import ")
+            || lowered.contains("export ")
+            || lowered.contains("function ")
+            || lowered.contains("const ")
+            || lowered.contains("let ")
+            || lowered.contains("class ")
+            || lowered.contains("fn ")
+            || lowered.contains("use ")
+            || lowered.contains("mod ")
+            || lowered.contains("pub ");
+        let has_structure = normalized.contains('\n') || normalized.len() >= 120;
+
+        ((looks_like_markup || looks_like_program) && has_structure).then_some(normalized)
+    }
+
+    fn format_missing_file_edit_replacement_error(
+        args: &serde_json::Value,
+        missing_field: &str,
+    ) -> String {
+        let path = args
+            .get("path")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("<path>");
+
+        let provided_fields = args
+            .as_object()
+            .map(|map| {
+                let mut keys = map.keys().cloned().collect::<Vec<_>>();
+                keys.sort();
+                keys.join(", ")
+            })
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "none".to_string());
+
+        let example = serde_json::json!({
+            "path": path,
+            "old": "<exact existing text>",
+            "new": "<replacement text>"
+        })
+        .to_string();
+
+        format!(
+            "Missing required field '{missing_field}' for file edit operation. `edit_file` requires both `old` and `new` strings. Provided fields: {provided_fields}. Retry with {example}. If you only know the current text, read the file first; if you only have non-canonical aliases like `old_str`, `new_str`, `pattern`, or `replacement`, normalize them into `old`/`new` instead of sending a partial edit."
+        )
     }
 
     fn has_missing_task_update_status_issue(tool_call: &ToolCallRecord) -> bool {
@@ -652,7 +962,7 @@ impl AgentPipeline {
     }
 
     fn has_missing_file_edit_replacement_issue(tool_call: &ToolCallRecord) -> bool {
-        if tool_call.name != "file" {
+        if !matches!(tool_call.name.as_str(), "file" | "edit_file") {
             return false;
         }
 
@@ -839,6 +1149,12 @@ impl AgentPipeline {
 
         let normalized = match name {
             "file" => Self::normalize_file_tool_arguments(args),
+            other if Self::forced_file_operation_for_tool(other).is_some() => {
+                Self::normalize_file_tool_arguments_with_forced_operation(
+                    args,
+                    Self::forced_file_operation_for_tool(other),
+                )
+            }
             "code" => Self::normalize_code_tool_arguments(args),
             other if Self::forced_code_operation_for_tool(other).is_some() => {
                 Self::normalize_code_tool_arguments_with_forced_operation(
@@ -885,13 +1201,11 @@ impl AgentPipeline {
         .collect::<Vec<_>>();
 
         let write_example = serde_json::json!({
-            "operation": "write",
             "path": path,
             "content": "<full file contents here>"
         })
         .to_string();
         let edit_example = serde_json::json!({
-            "operation": "edit",
             "path": path,
             "old": "<exact existing text>",
             "new": "<replacement text>"
@@ -899,7 +1213,7 @@ impl AgentPipeline {
         .to_string();
 
         let mut message = format!(
-            "Missing required field 'content' for file write operation. `write` requires the full destination file text in `content`. Provided fields: {provided_fields}."
+            "Missing required field 'content' for file write operation. `write_file` requires the full destination file text in `content`. Provided fields: {provided_fields}."
         );
 
         if !invalid_substitutes.is_empty() {
@@ -910,7 +1224,7 @@ impl AgentPipeline {
         }
 
         message.push_str(&format!(
-            " Retry with {write_example} if you already know the full file contents, or use {edit_example} for a targeted replacement. Do not retry the same malformed `write` call without adding real `content`."
+            " Retry with {write_example} if you already know the full file contents, or use {edit_example} for a targeted replacement. Do not retry the same malformed write call without adding real `content`."
         ));
 
         message
@@ -930,9 +1244,9 @@ impl AgentPipeline {
         let example = serde_json::json!({
             "operation": "batch_edit",
             "edits": [{
-                "path": "src/index.html",
-                "old_str": "<h1>Hello</h1>",
-                "new_str": "<h1>Hello World</h1>"
+                "path": "src/lib.rs",
+                "old_str": "fn greet() {}",
+                "new_str": "fn greet() { println!(\"hello\"); }"
             }]
         })
         .to_string();
@@ -983,12 +1297,43 @@ impl AgentPipeline {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "none".to_string());
 
-        let example = serde_json::json!({
-            "operation": "create",
-            "name": "Build hello world Tauri app",
-            "description": "Initialize a small Tauri GUI project, implement a Hello World window, then build and test it"
-        })
-        .to_string();
+        let mut example = serde_json::Map::new();
+        example.insert(
+            "operation".to_string(),
+            serde_json::Value::String("create".to_string()),
+        );
+        if let Some(parent_id) = args
+            .get("parent_id")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+        {
+            example.insert(
+                "parent_id".to_string(),
+                serde_json::Value::String(parent_id.to_string()),
+            );
+        }
+        if let Some(status) = args
+            .get("status")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+        {
+            example.insert(
+                "status".to_string(),
+                serde_json::Value::String(status.to_string()),
+            );
+        }
+        example.insert(
+            "name".to_string(),
+            serde_json::Value::String("Build hello world GUI app".to_string()),
+        );
+        example.insert(
+            "description".to_string(),
+            serde_json::Value::String(
+                "Initialize a small GUI project, implement a Hello World window, then build and test it"
+                    .to_string(),
+            ),
+        );
+        let example = serde_json::Value::Object(example).to_string();
 
         format!(
             "Missing required field 'name' for create operation. `create` requires a specific task `name`; for non-trivial work it should usually also include a concrete `description`. Provided fields: {provided_fields}. Retry with {example}. Do not rely on the runtime to invent or preserve placeholder names like 'Untitled Task' or 'None But Omit'."
@@ -1000,9 +1345,12 @@ impl AgentPipeline {
         arguments: &str,
     ) -> Option<RecoverableToolLoopPattern> {
         match name {
-            "file" | "read_file" | "write_file" => {
+            name if Self::is_file_tool_name(name) => {
                 let args = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
-                let args = Self::normalize_file_tool_arguments(args);
+                let args = Self::normalize_file_tool_arguments_with_forced_operation(
+                    args,
+                    Self::forced_file_operation_for_tool(name),
+                );
                 let operation = args
                     .get("operation")
                     .and_then(|v| v.as_str())
@@ -1150,13 +1498,13 @@ impl AgentPipeline {
     ) -> String {
         match pattern {
             RecoverableToolLoopPattern::FileWriteMissingContent => format!(
-                "Loop breaker: skipped a repeated malformed `file.write` call without `content` after {prior_attempts} prior similar non-successful attempts in this run. The agent is still running. Do not retry `write` until you can provide the full destination file text in `content`. Choose a different next step instead: read the existing file, prepare the full file contents and then send one corrected `write`, or use `edit` with `old` and `new` for a targeted change."
+                "Loop breaker: skipped a repeated malformed `file.write` call without `content` after {prior_attempts} prior similar non-successful attempts in this run. The agent is still running. Do not retry `write_file` until you can provide the full destination file text in `content`. Choose a different next step instead: read the existing file, prepare the full file contents and then send one corrected `write_file`, or use `edit_file` with `old` and `new` for a targeted change."
             ),
             RecoverableToolLoopPattern::FileEditMissingOldOrNew => format!(
-                "Loop breaker: skipped a repeated malformed `file.edit` call without valid `old`/`new` replacement text after {prior_attempts} prior similar non-successful attempts in this run. The agent is still running. Do not retry `edit` until you can provide one exact `old` string from the current file and the exact replacement `new` string. Choose a different next step instead: read the file to capture the current text, then send one corrected `edit`, or use `write` with full file `content` if replacing the whole file is simpler."
+                "Loop breaker: skipped a repeated malformed `file.edit` call without valid `old`/`new` replacement text after {prior_attempts} prior similar non-successful attempts in this run. The agent is still running. Do not retry `edit_file` until you can provide one exact `old` string from the current file and the exact replacement `new` string. Choose a different next step instead: read the file to capture the current text, then send one corrected `edit_file`, or use `write_file` with full file `content` if replacing the whole file is simpler."
             ),
             RecoverableToolLoopPattern::CodeBatchEditMissingEdits => format!(
-                "Loop breaker: skipped a repeated malformed `code.batch_edit` call without a valid `edits` array after {prior_attempts} prior similar malformed attempts in this run. The agent is still running. Do not retry `batch_edit` until you can provide `edits` as an array of objects with `path`, `old_str`, and `new_str`. If you only have one replacement, wrap it in a one-element `edits` array; otherwise choose a different next step such as reading the file, preparing the exact replacement strings, or using `file.edit` for a single targeted change."
+                "Loop breaker: skipped a repeated malformed `code.batch_edit` call without a valid `edits` array after {prior_attempts} prior similar malformed attempts in this run. The agent is still running. Do not retry `batch_edit` until you can provide `edits` as an array of objects with `path`, `old_str`, and `new_str`. If you only have one replacement, wrap it in a one-element `edits` array; otherwise choose a different next step such as reading the file, preparing the exact replacement strings, or using `edit_file` for a single targeted change."
             ),
             RecoverableToolLoopPattern::TaskCreateMissingName => format!(
                 "Loop breaker: skipped a repeated malformed `task.create` call without a valid `name` after {prior_attempts} prior similar malformed attempts in this run. The agent is still running. Do not retry `create` without a specific task name. If you need task tracking, send one corrected `create` call with a concrete `name` and preferably a useful `description`; otherwise continue the real implementation work."
@@ -1229,66 +1577,107 @@ impl AgentPipeline {
         Some((operation, path))
     }
 
-    fn is_tauri_init_command(command: &str) -> bool {
+    fn is_project_init_command(command: &str) -> bool {
         let normalized = command.to_ascii_lowercase();
-        normalized.contains("cargo tauri init") || normalized.contains("cargo-tauri init")
+        normalized.contains("cargo init")
+            || normalized.contains("cargo new")
+            || normalized.contains("cargo generate")
+            || normalized.contains(" npm create ")
+            || normalized.starts_with("npm create ")
+            || normalized.contains(" pnpm create ")
+            || normalized.starts_with("pnpm create ")
+            || normalized.contains(" yarn create ")
+            || normalized.starts_with("yarn create ")
+            || normalized.contains(" bun create ")
+            || normalized.starts_with("bun create ")
+            || normalized.contains("dotnet new")
+            || normalized.contains("rails new")
+            || normalized.contains("django-admin startproject")
+            || normalized.contains("django-admin startapp")
+            || normalized.contains("poetry new")
+            || normalized.contains("uv init")
+            || normalized.contains("composer create-project")
+            || normalized.contains("ng new")
+            || normalized.contains("nuxi init")
+            || normalized.contains("flutter create")
+            || normalized.contains("gradle init")
+            || normalized.contains("./gradlew init")
+            || normalized.contains("mvn archetype:generate")
+            || normalized.contains("mix phx.new")
     }
 
-    fn is_tauri_scaffold_command(command: &str) -> bool {
+    fn is_project_scaffold_command(command: &str) -> bool {
         let normalized = command.to_ascii_lowercase();
-        normalized.contains("create-tauri-app") || Self::is_tauri_init_command(&normalized)
+        normalized.contains("create-")
+            || normalized.contains("degit ")
+            || normalized.contains("cookiecutter ")
+            || Self::is_project_init_command(&normalized)
     }
 
-    fn is_create_tauri_app_command(command: &str) -> bool {
-        command.to_ascii_lowercase().contains("create-tauri-app")
-    }
-
-    fn is_create_tauri_app_help_command(command: &str) -> bool {
+    fn is_scaffold_help_command(command: &str) -> bool {
         let normalized = command.to_ascii_lowercase();
-        Self::is_create_tauri_app_command(command)
+        Self::is_project_scaffold_command(command)
             && (normalized.contains(" --help")
                 || normalized.ends_with("--help")
                 || normalized.contains(" -h"))
     }
 
-    fn is_create_tauri_app_latest_command(command: &str) -> bool {
-        command
-            .to_ascii_lowercase()
-            .contains("create-tauri-app@latest")
+    fn is_noninteractive_scaffold_command(command: &str) -> bool {
+        let normalized = command.to_ascii_lowercase();
+        Self::is_scaffold_help_command(command)
+            || normalized.contains(" --yes")
+            || normalized.contains(" -y")
+            || normalized.contains(" --ci")
+            || normalized.contains(" --non-interactive")
+            || normalized.contains(" --no-interactive")
+            || normalized.contains(" --no-input")
+            || normalized.contains(" --defaults")
+            || normalized.contains(" --batch")
+            || normalized.contains("ci=1")
+            || normalized.contains("ci=true")
     }
 
-    fn is_known_good_tauri_alternate_scaffold_command(command: &str) -> bool {
+    fn is_manual_project_scaffold_shell_command(command: &str) -> bool {
         let normalized = command.to_ascii_lowercase();
-        Self::is_create_tauri_app_help_command(command)
-            || (Self::is_create_tauri_app_command(command)
-                && !Self::is_create_tauri_app_latest_command(command)
-                && normalized.contains(" --yes")
-                && normalized.contains("--template")
-                && normalized.contains("--tauri-version"))
-            || (Self::is_tauri_init_command(command) && normalized.contains(" --ci"))
-    }
-
-    fn is_manual_tauri_scaffold_shell_command(command: &str) -> bool {
-        let normalized = command.to_ascii_lowercase();
-        let targets_tauri_files = normalized.contains("src-tauri")
-            || normalized.contains("tauri.conf.json")
-            || normalized.contains("src/index.html")
+        let targets_project_files = normalized.contains("index.html")
             || normalized.contains("src/main.js")
+            || normalized.contains("src/main.ts")
+            || normalized.contains("src/main.py")
+            || normalized.contains("src/main.rs")
             || normalized.contains("src/styles.css")
+            || normalized.contains("src/app.")
+            || normalized.contains("public/")
+            || normalized.contains("src/")
+            || normalized.contains("app/")
+            || normalized.contains("web/")
+            || normalized.contains("frontend/")
+            || normalized.contains("backend/")
+            || normalized.contains("client/")
+            || normalized.contains("server/")
             || normalized.contains("package.json")
-            || normalized.contains("cargo.toml");
+            || normalized.contains("cargo.toml")
+            || normalized.contains("pyproject.toml")
+            || normalized.contains("requirements.txt")
+            || normalized.contains("go.mod")
+            || normalized.contains("pom.xml")
+            || normalized.contains("build.gradle")
+            || normalized.contains("composer.json")
+            || normalized.contains("mix.exs")
+            || normalized.contains("pubspec.yaml")
+            || normalized.contains(".csproj")
+            || normalized.contains(".sln");
         let uses_manual_shell_synthesis = normalized.contains("<<")
             || normalized.contains("cat >")
             || normalized.contains("tee ")
-            || (normalized.contains("mkdir -p") && normalized.contains("src-tauri"))
-            || (normalized.contains("cargo init") && normalized.contains("src-tauri"));
+            || normalized.contains("mkdir -p")
+            || normalized.contains("touch ");
 
-        targets_tauri_files
+        targets_project_files
             && uses_manual_shell_synthesis
-            && !Self::is_tauri_scaffold_command(command)
+            && !Self::is_project_scaffold_command(command)
     }
 
-    fn is_non_tty_tauri_scaffold_failure(record: &ToolCallRecord) -> bool {
+    fn is_non_tty_scaffold_failure(record: &ToolCallRecord) -> bool {
         if record.name != "shell" {
             return false;
         }
@@ -1296,7 +1685,7 @@ impl AgentPipeline {
         let Some(command) = Self::extract_shell_command_from_arguments(&record.arguments) else {
             return false;
         };
-        if !Self::is_create_tauri_app_command(&command) {
+        if !Self::is_project_scaffold_command(&command) {
             return false;
         }
 
@@ -1311,38 +1700,20 @@ impl AgentPipeline {
         )
     }
 
-    fn count_non_tty_tauri_scaffold_failures<'a, I>(prior_records: I) -> usize
+    fn count_non_tty_scaffold_failures<'a, I>(prior_records: I) -> usize
     where
         I: IntoIterator<Item = &'a ToolCallRecord>,
     {
         prior_records
             .into_iter()
-            .filter(|record| Self::is_non_tty_tauri_scaffold_failure(record))
+            .filter(|record| Self::is_non_tty_scaffold_failure(record))
             .count()
     }
 
-    fn build_tauri_scaffold_recovery_message(prior_failures: usize) -> String {
+    fn build_scaffold_recovery_message(prior_failures: usize) -> String {
         format!(
-            "Loop breaker: skipped a fallback shell scaffolding command after {prior_failures} prior non-interactive `create-tauri-app` failure(s) in this run. Do not synthesize a Tauri project with `cat <<EOF`, `tee`, `cargo init src-tauri`, or `mkdir`-only shell scripts. Use one specific alternate strategy next: run `npx create-tauri-app --help` (or `npx create-tauri-app@latest --help`) to confirm supported flags, then run a single non-interactive scaffold command like `npx create-tauri-app <app-dir> --yes --template vanilla --tauri-version 2`; if you already have a frontend project, use `cargo tauri init --ci ...` instead. After scaffold succeeds, move on to editing files and running build/test verification."
+            "Loop breaker: skipped a fallback shell scaffolding command after {prior_failures} prior non-interactive scaffold/init failure(s) in this run. Do not synthesize a project structure with `cat <<EOF`, `tee`, `mkdir`-only scripts, or ad-hoc file creation when an official scaffold/init command is still the right tool. Use one specific alternate strategy next: check the scaffold command's `--help` output, rerun one documented non-interactive scaffold/init command with explicit confirmation flags and CI-style env if needed, and only after scaffold succeeds move on to editing files and running build/test verification."
         )
-    }
-
-    fn extract_tauri_scaffold_target(command: &str) -> Option<String> {
-        let tokens = command.split_whitespace().collect::<Vec<_>>();
-        let scaffold_index = tokens
-            .iter()
-            .position(|token| token.to_ascii_lowercase().contains("create-tauri-app"))?;
-
-        tokens
-            .iter()
-            .skip(scaffold_index + 1)
-            .find(|token| !token.starts_with('-'))
-            .map(|token| {
-                token
-                    .trim_matches(|ch| matches!(ch, '"' | '\''))
-                    .to_string()
-            })
-            .filter(|token| !token.is_empty())
     }
 
     fn repeated_redundant_tool_call_skip_message<'a, I>(
@@ -1356,27 +1727,51 @@ impl AgentPipeline {
         if name == "shell" {
             let command = Self::extract_shell_command_from_arguments(arguments)?;
             let prior_records = prior_records.into_iter().collect::<Vec<_>>();
+            let normalized_command = command.to_ascii_lowercase();
 
             let prior_non_tty_failures =
-                Self::count_non_tty_tauri_scaffold_failures(prior_records.iter().copied());
+                Self::count_non_tty_scaffold_failures(prior_records.iter().copied());
 
-            if prior_non_tty_failures >= 2 && Self::is_manual_tauri_scaffold_shell_command(&command)
+            if prior_non_tty_failures >= 2
+                && Self::is_manual_project_scaffold_shell_command(&command)
             {
-                return Some(Self::build_tauri_scaffold_recovery_message(
+                return Some(Self::build_scaffold_recovery_message(
                     prior_non_tty_failures,
                 ));
             }
 
             if prior_non_tty_failures >= 2
-                && Self::is_create_tauri_app_command(&command)
-                && !Self::is_known_good_tauri_alternate_scaffold_command(&command)
+                && Self::is_project_scaffold_command(&command)
+                && !Self::is_noninteractive_scaffold_command(&command)
             {
-                return Some(Self::build_tauri_scaffold_recovery_message(
+                return Some(Self::build_scaffold_recovery_message(
                     prior_non_tty_failures,
                 ));
             }
 
-            if !Self::is_tauri_init_command(&command) {
+            if prior_non_tty_failures >= 2
+                && Self::is_project_scaffold_command(&command)
+                && !Self::is_scaffold_help_command(&command)
+            {
+                let repeated_failed_scaffold_attempts = prior_records
+                    .iter()
+                    .copied()
+                    .filter(|record| Self::is_non_tty_scaffold_failure(record))
+                    .filter_map(|record| {
+                        Self::extract_shell_command_from_arguments(&record.arguments)
+                    })
+                    .map(|prior_command| prior_command.to_ascii_lowercase())
+                    .filter(|prior_command| prior_command == &normalized_command)
+                    .count();
+
+                if repeated_failed_scaffold_attempts >= 2 {
+                    return Some(Self::build_scaffold_recovery_message(
+                        repeated_failed_scaffold_attempts,
+                    ));
+                }
+            }
+
+            if !Self::is_project_scaffold_command(&command) {
                 return None;
             }
 
@@ -1386,12 +1781,13 @@ impl AgentPipeline {
                 .filter(|record| record.name == "shell")
                 .filter(|record| matches!(record.result, ToolResult::Success(_)))
                 .filter_map(|record| Self::extract_shell_command_from_arguments(&record.arguments))
-                .filter(|prior_command| Self::is_tauri_init_command(prior_command))
+                .map(|prior_command| prior_command.to_ascii_lowercase())
+                .filter(|prior_command| prior_command == &normalized_command)
                 .count();
 
             return (prior_successes >= 1).then(|| {
                 format!(
-                    "Loop breaker: skipped a redundant repeated `cargo tauri init` scaffold command after {prior_successes} prior successful init command(s) in this run. The Tauri scaffold already exists. Do not run `cargo tauri init` again; move on to editing files and running build/test verification."
+                    "Loop breaker: skipped a redundant repeated project scaffold/init command after {prior_successes} prior successful identical scaffold/init command(s) in this run. The scaffold likely already exists. Do not rerun the same scaffold/init command; move on to editing files and running build/test verification."
                 )
             });
         }
@@ -1427,7 +1823,15 @@ impl AgentPipeline {
         env: Option<HashMap<String, String>>,
     ) -> (String, Option<HashMap<String, String>>) {
         let normalized = command.to_ascii_lowercase();
-        let looks_like_direct_scaffold_command = normalized.contains("create-tauri-app")
+        let looks_like_direct_scaffold_command = (normalized.contains("create-")
+            || normalized.contains(" npm create ")
+            || normalized.starts_with("npm create ")
+            || normalized.contains(" pnpm create ")
+            || normalized.starts_with("pnpm create ")
+            || normalized.contains(" yarn create ")
+            || normalized.starts_with("yarn create ")
+            || normalized.contains(" bun create ")
+            || normalized.starts_with("bun create "))
             && !command.contains('\n')
             && !command.contains(';')
             && !command.contains("&&")
@@ -1684,6 +2088,179 @@ impl AgentPipeline {
         .any(|needle| normalized.contains(needle))
     }
 
+    fn is_portable_shell_env_name(name: &str) -> bool {
+        let mut chars = name.chars();
+        match chars.next() {
+            Some(first) if first == '_' || first.is_ascii_alphabetic() => {}
+            _ => return false,
+        }
+
+        chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn render_session_shell_command(
+        command: &str,
+        env: Option<&std::collections::HashMap<String, String>>,
+    ) -> Option<String> {
+        let env = env?;
+        if env.is_empty() {
+            return Some(command.to_string());
+        }
+
+        let mut prefix = String::new();
+        for (key, value) in env {
+            if !Self::is_portable_shell_env_name(key) || value.contains(['\n', '\r']) {
+                return None;
+            }
+
+            let escaped = value.replace('\'', "'\"'\"'");
+            prefix.push_str(&format!("export {key}='{escaped}'; "));
+        }
+
+        Some(format!("{prefix}{command}"))
+    }
+
+    #[cfg(target_os = "windows")]
+    fn render_session_shell_command(
+        command: &str,
+        env: Option<&std::collections::HashMap<String, String>>,
+    ) -> Option<String> {
+        let env = env?;
+        if env.is_empty() {
+            return Some(command.to_string());
+        }
+
+        let mut prefix = String::new();
+        for (key, value) in env {
+            if !Self::is_portable_shell_env_name(key) || value.contains(['\n', '\r', '"', '%']) {
+                return None;
+            }
+
+            prefix.push_str(&format!(r#"set \"{}={}\" && "#, key, value));
+        }
+
+        Some(format!("{prefix}{command}"))
+    }
+
+    fn strip_redundant_shell_cwd_prefix(
+        workspace: Option<&SessionWorkspace>,
+        command: &str,
+        cwd: Option<&str>,
+    ) -> String {
+        let Some(cwd) = cwd else {
+            return command.to_string();
+        };
+
+        let trimmed = command.trim_start();
+        let Some(rest) = trimmed.strip_prefix("cd") else {
+            return command.to_string();
+        };
+
+        let rest = rest.trim_start();
+        let Some((target, remainder)) = Self::parse_leading_cd_target(rest) else {
+            return command.to_string();
+        };
+
+        let Some(resolved_target) = Self::resolve_leading_shell_cd_target(workspace, &target)
+        else {
+            return command.to_string();
+        };
+
+        if !Self::shell_paths_equivalent(&resolved_target, Path::new(cwd)) {
+            return command.to_string();
+        }
+
+        remainder.trim_start().to_string()
+    }
+
+    fn shell_paths_equivalent(left: &Path, right: &Path) -> bool {
+        match (fs::canonicalize(left), fs::canonicalize(right)) {
+            (Ok(left), Ok(right)) => left == right,
+            _ => left == right,
+        }
+    }
+
+    fn parse_leading_cd_target(rest: &str) -> Option<(String, &str)> {
+        let rest = rest.trim_start();
+        if rest.is_empty() {
+            return None;
+        }
+
+        let (target, tail) = if let Some(stripped) = rest.strip_prefix('"') {
+            let end = stripped.find('"')?;
+            (stripped[..end].to_string(), &stripped[end + 1..])
+        } else if let Some(stripped) = rest.strip_prefix('\'') {
+            let end = stripped.find('\'')?;
+            (stripped[..end].to_string(), &stripped[end + 1..])
+        } else {
+            let end = rest
+                .find(|ch: char| ch.is_whitespace() || ch == ';' || ch == '&')
+                .unwrap_or(rest.len());
+            (rest[..end].to_string(), &rest[end..])
+        };
+
+        let tail = tail.trim_start();
+        if let Some(remainder) = tail.strip_prefix("&&") {
+            return Some((target, remainder));
+        }
+        if let Some(remainder) = tail.strip_prefix(';') {
+            return Some((target, remainder));
+        }
+
+        None
+    }
+
+    fn resolve_leading_shell_cd_target(
+        workspace: Option<&SessionWorkspace>,
+        target: &str,
+    ) -> Option<PathBuf> {
+        let target_path = Path::new(target);
+        if target_path.is_absolute() {
+            return Some(target_path.to_path_buf());
+        }
+
+        workspace.and_then(|ws| ws.resolve_path_for_read(target_path).ok())
+    }
+
+    async fn execute_shell_stream_via_session(
+        workspace: &SessionWorkspace,
+        command: &str,
+        cwd: Option<&str>,
+        env: Option<&std::collections::HashMap<String, String>>,
+        execution_options: crate::tools::shell_sessions::ShellExecutionOptions,
+        tx: mpsc::Sender<StreamChunk>,
+    ) -> Option<ToolResult> {
+        let session_command = Self::render_session_shell_command(command, env)
+            .or_else(|| env.is_none().then(|| command.to_string()))?;
+
+        let workspace_root = workspace.root().to_string_lossy().to_string();
+        let result = crate::tools::shell_sessions::execute_in_session_with_options(
+            workspace.session_id.as_str(),
+            Some(workspace_root.as_str()),
+            &session_command,
+            cwd,
+            execution_options,
+            tx,
+        )
+        .await;
+
+        Some(match result {
+            Ok(result) => {
+                if result.success {
+                    ToolResult::Success(result.stdout)
+                } else {
+                    ToolResult::Error(Self::format_shell_failure(
+                        result.exit_code,
+                        &result.stdout,
+                        &result.stderr,
+                    ))
+                }
+            }
+            Err(error) => ToolResult::Error(error.to_string()),
+        })
+    }
+
     fn format_shell_failure(exit_code: i32, stdout: &str, stderr: &str) -> String {
         let stdout = stdout.trim_end();
         let stderr = stderr.trim_end();
@@ -1899,16 +2476,13 @@ impl AgentPipeline {
         serde_json::Value::Object(obj)
     }
 
-    fn default_shell_timeout_secs(command: &str) -> u64 {
+    fn shell_command_looks_long_running(command: &str) -> bool {
         let normalized = command.to_ascii_lowercase();
         let long_running_markers = [
             "cargo check",
             "cargo build",
             "cargo test",
             "cargo clippy",
-            "cargo tauri",
-            "tauri build",
-            "tauri dev",
             "npm install",
             "npm run",
             "pnpm install",
@@ -1917,13 +2491,15 @@ impl AgentPipeline {
             "yarn build",
             "yarn test",
             "npx create-",
-            "npx tauri",
         ];
 
-        if long_running_markers
+        long_running_markers
             .iter()
             .any(|marker| normalized.contains(marker))
-        {
+    }
+
+    fn default_shell_timeout_secs(command: &str) -> u64 {
+        if Self::shell_command_looks_long_running(command) {
             300
         } else {
             60
@@ -1938,6 +2514,27 @@ impl AgentPipeline {
             Some(requested) => requested,
             None => default_timeout,
         }
+    }
+
+    fn default_shell_long_running_allowed(command: &str) -> bool {
+        Self::shell_command_looks_long_running(command)
+    }
+
+    fn effective_shell_long_running_allowed(
+        command: &str,
+        requested_allow_long_running: Option<bool>,
+    ) -> bool {
+        requested_allow_long_running
+            .unwrap_or_else(|| Self::default_shell_long_running_allowed(command))
+    }
+
+    fn effective_shell_stall_timeout_secs(
+        timeout_secs: u64,
+        requested_stall_timeout_secs: Option<u64>,
+    ) -> u64 {
+        requested_stall_timeout_secs
+            .unwrap_or(timeout_secs.clamp(30, 300))
+            .clamp(15, 900)
     }
 
     /// Execute a tool by name with given arguments.
@@ -2384,6 +2981,13 @@ impl AgentPipeline {
         stream_tx: Option<&mpsc::Sender<StreamChunk>>,
     ) -> ToolResult {
         let start = Instant::now();
+        let keepalive_handle = stream_tx.map(|tx| {
+            tokio::spawn(emit_streaming_tool_keepalive(
+                tx.clone(),
+                start,
+                name.to_string(),
+            ))
+        });
         tracing::info!(
             tool = name,
             workspace = ?workspace.map(|w| w.root()),
@@ -2397,7 +3001,7 @@ impl AgentPipeline {
                     self.execute_shell_tool(arguments, workspace, stream_tx)
                         .await
                 }
-                "file" | "read_file" | "write_file" => {
+                "file" | "read_file" | "write_file" | "edit_file" => {
                     self.execute_file_tool(arguments, workspace).await
                 }
                 "git" => self.execute_git_tool(arguments, workspace).await,
@@ -2419,6 +3023,11 @@ impl AgentPipeline {
         }
         .instrument(tracing::info_span!("agent.tool.execute", tool = %name))
         .await;
+
+        if let Some(keepalive_handle) = keepalive_handle {
+            keepalive_handle.abort();
+            let _ = keepalive_handle.await;
+        }
 
         let duration = start.elapsed();
         tracing::info!("Tool {} completed in {:?}: {:?}", name, duration, result);
@@ -2971,9 +3580,10 @@ impl AgentPipeline {
 
     /// Execute shell tool with workspace sandboxing.
     ///
-    /// When `stream_tx` is `Some`, the command is executed via the streaming
-    /// path (`shell_streaming`) so that stdout/stderr lines are emitted in
-    /// real-time as `ShellOutput` / `ShellLifecycle` chunks.  When `None`,
+    /// When `stream_tx` is `Some`, the command is executed via PTY session
+    /// streaming when a session workspace is available so chunks carry a
+    /// stable `shell_session_id` for the UI. Otherwise it falls back to the
+    /// legacy streaming path (`shell_streaming`). When `None`,
     /// the legacy blocking path (`shell_async`) is used.
     async fn execute_shell_tool(
         &self,
@@ -3039,38 +3649,69 @@ impl AgentPipeline {
                             .collect::<HashMap<_, _>>()
                     });
                 let (command, env) = Self::harden_noninteractive_shell_command(command, env);
+                let command =
+                    Self::strip_redundant_shell_cwd_prefix(workspace, &command, cwd.as_deref());
 
                 // Optional timeout (seconds). Use a longer default for build/test/install flows.
                 let timeout_secs = Self::effective_shell_timeout_secs(
                     &command,
                     args.get("timeout_secs").and_then(|v| v.as_u64()),
                 );
+                let allow_long_running = Self::effective_shell_long_running_allowed(
+                    &command,
+                    args.get("allow_long_running").and_then(|v| v.as_bool()),
+                );
+                let stall_timeout_secs = allow_long_running.then(|| {
+                    Self::effective_shell_stall_timeout_secs(
+                        timeout_secs,
+                        args.get("stall_timeout_secs").and_then(|v| v.as_u64()),
+                    )
+                });
+                let execution_options = crate::tools::shell_sessions::ShellExecutionOptions {
+                    timeout_secs: Some(timeout_secs),
+                    allow_long_running,
+                    stall_timeout_secs,
+                };
 
                 // Streaming path: send real-time output chunks to the frontend.
                 if let Some(tx) = stream_tx {
                     use crate::tools::shell_streaming;
 
-                    match shell_streaming::execute_streaming(
-                        &command,
-                        cwd.as_deref(),
-                        env.as_ref(),
-                        Some(timeout_secs),
-                        tx.clone(),
-                    )
-                    .await
+                    if let Some(workspace) = workspace
+                        && let Some(result) = Self::execute_shell_stream_via_session(
+                            workspace,
+                            &command,
+                            cwd.as_deref(),
+                            env.as_ref(),
+                            execution_options,
+                            tx.clone(),
+                        )
+                        .await
                     {
-                        Ok(r) => {
-                            if r.success {
-                                ToolResult::Success(r.stdout)
-                            } else {
-                                ToolResult::Error(Self::format_shell_failure(
-                                    r.exit_code,
-                                    &r.stdout,
-                                    &r.stderr,
-                                ))
+                        result
+                    } else {
+                        match shell_streaming::execute_streaming(
+                            &command,
+                            cwd.as_deref(),
+                            env.as_ref(),
+                            Some(timeout_secs),
+                            tx.clone(),
+                        )
+                        .await
+                        {
+                            Ok(r) => {
+                                if r.success {
+                                    ToolResult::Success(r.stdout)
+                                } else {
+                                    ToolResult::Error(Self::format_shell_failure(
+                                        r.exit_code,
+                                        &r.stdout,
+                                        &r.stderr,
+                                    ))
+                                }
                             }
+                            Err(e) => ToolResult::Error(e.to_string()),
                         }
-                        Err(e) => ToolResult::Error(e.to_string()),
                     }
                 } else {
                     // Legacy non-streaming path.
@@ -3110,32 +3751,55 @@ impl AgentPipeline {
 
                 let cwd = workspace.map(|ws| ws.root().to_string_lossy().to_string());
                 let (command, env) = Self::harden_noninteractive_shell_command(arguments, None);
+                let timeout_secs = Self::default_shell_timeout_secs(&command);
+                let execution_options = crate::tools::shell_sessions::ShellExecutionOptions {
+                    timeout_secs: Some(timeout_secs),
+                    allow_long_running: Self::default_shell_long_running_allowed(&command),
+                    stall_timeout_secs: Some(Self::effective_shell_stall_timeout_secs(
+                        timeout_secs,
+                        None,
+                    )),
+                };
 
                 // Streaming path for raw-argument commands.
                 if let Some(tx) = stream_tx {
                     use crate::tools::shell_streaming;
 
-                    match shell_streaming::execute_streaming(
-                        &command,
-                        cwd.as_deref(),
-                        env.as_ref(),
-                        Some(Self::default_shell_timeout_secs(&command)),
-                        tx.clone(),
-                    )
-                    .await
+                    if let Some(workspace) = workspace
+                        && let Some(result) = Self::execute_shell_stream_via_session(
+                            workspace,
+                            &command,
+                            cwd.as_deref(),
+                            env.as_ref(),
+                            execution_options,
+                            tx.clone(),
+                        )
+                        .await
                     {
-                        Ok(r) => {
-                            if r.success {
-                                ToolResult::Success(r.stdout)
-                            } else {
-                                ToolResult::Error(Self::format_shell_failure(
-                                    r.exit_code,
-                                    &r.stdout,
-                                    &r.stderr,
-                                ))
+                        result
+                    } else {
+                        match shell_streaming::execute_streaming(
+                            &command,
+                            cwd.as_deref(),
+                            env.as_ref(),
+                            Some(Self::default_shell_timeout_secs(&command)),
+                            tx.clone(),
+                        )
+                        .await
+                        {
+                            Ok(r) => {
+                                if r.success {
+                                    ToolResult::Success(r.stdout)
+                                } else {
+                                    ToolResult::Error(Self::format_shell_failure(
+                                        r.exit_code,
+                                        &r.stdout,
+                                        &r.stderr,
+                                    ))
+                                }
                             }
+                            Err(e) => ToolResult::Error(e.to_string()),
                         }
-                        Err(e) => ToolResult::Error(e.to_string()),
                     }
                 } else {
                     match shell_async::execute_command_with_options(
@@ -3205,7 +3869,8 @@ impl AgentPipeline {
                 let resolved_path = if let Some(ws) = workspace {
                     let resolved = match operation {
                         "read" => Self::resolve_workspace_read_path(ws, path_str),
-                        "write" | "edit" => Self::resolve_workspace_write_path(ws, path_str),
+                        "write" => Self::resolve_workspace_write_path(ws, path_str),
+                        "edit" => Self::resolve_workspace_edit_path(ws, path_str),
                         _ => ws
                             .resolve_path(Path::new(path_str))
                             .map_err(|e| e.to_string()),
@@ -3244,7 +3909,7 @@ impl AgentPipeline {
                         };
 
                         match file_async::write_file(&resolved_path, content).await {
-                            Ok(_) => ToolResult::Success(format!("Written to {}", raw_path_str)),
+                            Ok(out) => Self::classify_file_write_result(out, raw_path_str),
                             Err(e) => ToolResult::Error(e.to_string()),
                         }
                     }
@@ -3330,8 +3995,7 @@ impl AgentPipeline {
                             Some(s) if !s.is_empty() => s,
                             _ => {
                                 return ToolResult::Error(
-                                    "Missing required field 'old' for file edit operation"
-                                        .to_string(),
+                                    Self::format_missing_file_edit_replacement_error(&args, "old"),
                                 );
                             }
                         };
@@ -3339,14 +4003,13 @@ impl AgentPipeline {
                             Some(s) => s,
                             _ => {
                                 return ToolResult::Error(
-                                    "Missing required field 'new' for file edit operation"
-                                        .to_string(),
+                                    Self::format_missing_file_edit_replacement_error(&args, "new"),
                                 );
                             }
                         };
 
                         match file_async::edit_file(&resolved_path, old_str, new_str).await {
-                            Ok(out) => ToolResult::Success(out),
+                            Ok(out) => Self::classify_file_edit_result(out),
                             Err(e) => ToolResult::Error(e.to_string()),
                         }
                     }
@@ -3537,42 +4200,34 @@ impl AgentPipeline {
                                 }
                             }
                             None => match manager.get_task(session_id, task_id) {
-                                Ok(Some(task)) if task.status == crate::TaskStatus::NotStarted => {
-                                    match manager.update_task_status(
-                                        session_id,
-                                        task_id,
-                                        crate::TaskStatus::InProgress,
-                                    ) {
-                                        Ok(_) => ToolResult::Success(format!(
-                                            "Recovered omitted `status` on task {} by promoting it from NotStarted to InProgress. Future `update_status` calls should include explicit `status`.",
-                                            task_id
-                                        )),
-                                        Err(e) => ToolResult::Error(format!(
-                                            "Failed to recover missing task status for {}: {}",
-                                            task_id, e
-                                        )),
-                                    }
-                                }
-                                Ok(Some(task)) if task.status == crate::TaskStatus::InProgress => {
-                                    match manager.update_task_status(
-                                        session_id,
-                                        task_id,
-                                        crate::TaskStatus::Completed,
-                                    ) {
-                                        Ok(_) => ToolResult::Success(format!(
-                                            "Recovered omitted `status` on task {} by promoting it from InProgress to Completed because that was the next valid workflow state.",
-                                            task_id
-                                        )),
-                                        Err(e) => ToolResult::Skipped(format!(
-                                            "Skipped malformed `task.update_status` without explicit `status` for task {} because auto-advancing from InProgress to Completed was not valid: {}. Retry with explicit `status` or resolve the remaining subtasks/dependencies first.",
-                                            task_id, e
+                                Ok(Some(task)) => {
+                                    match Self::infer_missing_task_status(&task.status) {
+                                        Some(inferred_status) if inferred_status == task.status => {
+                                            ToolResult::Skipped(format!(
+                                                "Skipped malformed `task.update_status` without explicit `status` for task {} because it is already {:?}. The runtime preserved the current status, but this bookkeeping no-op should not be retried without an explicit `status`.",
+                                                task_id, task.status
+                                            ))
+                                        }
+                                        Some(inferred_status) => match manager.update_task_status(
+                                            session_id,
+                                            task_id,
+                                            inferred_status,
+                                        ) {
+                                            Ok(_) => ToolResult::Success(format!(
+                                                "Recovered omitted `status` on task {} by promoting it from {:?} to {:?}. Future `update_status` calls should include explicit `status`.",
+                                                task_id, task.status, inferred_status
+                                            )),
+                                            Err(e) => ToolResult::Error(format!(
+                                                "Failed to recover missing task status for {}: {}",
+                                                task_id, e
+                                            )),
+                                        },
+                                        None => ToolResult::Skipped(format!(
+                                            "Skipped malformed `task.update_status` without explicit `status` for task {} because its current status is {:?}. Retry with an explicit `status` so the runtime does not guess the wrong transition.",
+                                            task_id, task.status
                                         )),
                                     }
                                 }
-                                Ok(Some(task)) => ToolResult::Skipped(format!(
-                                    "Skipped malformed `task.update_status` without explicit `status` for task {} because its current status is {:?}. Retry with an explicit `status` so the runtime does not guess the wrong transition.",
-                                    task_id, task.status
-                                )),
                                 Ok(None) => ToolResult::Error(format!(
                                     "Task {} not found for update_status operation",
                                     task_id
@@ -4178,17 +4833,18 @@ impl AgentPipeline {
 
         if had_task_loop_breaker_skip {
             prompt.push_str(
-                "Important: repeated malformed task bookkeeping calls triggered the loop breaker. Treat task tracking as temporarily disabled for this run and continue the real implementation/build/test work with file/shell/code tools instead of calling `task` again. Do not stall trying to clean up stale task bookkeeping manually; the runtime will reconcile leftover tracked-task bookkeeping when the run ends successfully.\n",
+                "Important: repeated malformed task bookkeeping calls triggered the loop breaker for that malformed call shape, but task tracking is still available. Do not repeat the blocked malformed `task` arguments. If you know the exact next subtask name or status, send one corrected `task.create` or `task.update_status` call; otherwise continue the real implementation/build/test work and keep task bookkeeping current when the next concrete state change is known.\n",
             );
         }
 
         let had_file_tool_error = tool_calls.iter().any(|tool_call| {
-            tool_call.name == "file" && matches!(tool_call.result, ToolResult::Error(_))
+            Self::is_file_tool_name(&tool_call.name)
+                && matches!(tool_call.result, ToolResult::Error(_))
         });
 
         if had_file_tool_error {
             prompt.push_str(
-                "Important: file-tool errors must not block implementation work. For `write`, always include the destination `path` and the full file `content` (aliases like `contents` or `text` are okay, but `pattern`/`start` do not make a valid write). For partial updates, use `edit` with `path`, `old`, and `new`; reserve `pattern` for `search`.\n",
+                "Important: file-tool errors must not block implementation work. For `write_file`, always include the destination `path` and the full file `content` (aliases like `contents` or `text` are okay, but `pattern`/`start` do not make a valid write). For partial updates, use `edit_file` with `path`, `old`, and `new`; reserve `pattern` for `file` search operations.\n",
             );
         }
 
@@ -4198,12 +4854,12 @@ impl AgentPipeline {
 
         if had_code_tool_error {
             prompt.push_str(
-                "Important: code-tool errors must not block implementation work. For `code.batch_edit`, always send `edits` as an array, even for one change, and each entry must include `path`, `old_str`, and `new_str`. If you only need one targeted replacement in one file, `file.edit` may be simpler.\n",
+                "Important: code-tool errors must not block implementation work. For `code.batch_edit`, always send `edits` as an array, even for one change, and each entry must include `path`, `old_str`, and `new_str`. If you only need one targeted replacement in one file, `edit_file` may be simpler.\n",
             );
         }
 
         let had_missing_file_write_content_error = tool_calls.iter().any(|tool_call| {
-            tool_call.name == "file"
+            matches!(tool_call.name.as_str(), "file" | "write_file")
                 && matches!(
                     &tool_call.result,
                     ToolResult::Error(message)
@@ -4213,7 +4869,7 @@ impl AgentPipeline {
 
         if had_missing_file_write_content_error {
             prompt.push_str(
-                "Important: the malformed file-write arguments are echoed above. Do not repeat the same `write` call unchanged. If you do not yet know the full destination file text, read the existing file or prepare the full content first, then send one corrected `write` call with real `content`; otherwise use `edit` for a targeted change. Placeholders like `pattern: \"none\"` or `pattern: \"full content\"` are invalid.\n",
+                "Important: the malformed file-write arguments are echoed above. Do not repeat the same write call unchanged. If you do not yet know the full destination file text, read the existing file or prepare the full content first, then send one corrected `write_file` call with real `content`; otherwise use `edit_file` for a targeted change. Placeholders like `pattern: \"none\"` or `pattern: \"full content\"` are invalid.\n",
             );
         }
 
@@ -4223,7 +4879,7 @@ impl AgentPipeline {
 
         if had_missing_file_edit_replacement_error {
             prompt.push_str(
-                "Important: the malformed file-edit arguments are echoed above. Do not repeat the same `edit` call unchanged. For `edit`, send one exact `path`, one exact current-file `old` string, and one exact replacement `new` string. Placeholder values like `pattern: \"none\"`, line numbers, or natural-language repair notes are not valid replacements; if needed, read the file first and then send one corrected `edit`.\n",
+                "Important: the malformed file-edit arguments are echoed above. Do not repeat the same edit call unchanged. For `edit_file`, send one exact `path`, one exact current-file `old` string, and one exact replacement `new` string. Placeholder values like `pattern: \"none\"`, line numbers, or natural-language repair notes are not valid replacements; if needed, read the file first and then send one corrected `edit_file`. If you already read the full file and the change is simple, prefer one corrected `write_file` with full `content` instead of repeating partial edit attempts.\n",
             );
         }
 
@@ -4238,7 +4894,7 @@ impl AgentPipeline {
 
         if had_missing_code_batch_edit_edits_error {
             prompt.push_str(
-                "Important: the malformed code batch-edit arguments are echoed above. Do not retry `code.batch_edit` without a valid `edits` array. Retry only with one corrected `edits` array containing objects shaped like `{\"path\":...,\"old_str\":...,\"new_str\":...}`. Do not use aliases like `changes` or top-level edit fields in place of `edits`. For one targeted single-file replacement, `file.edit` is also acceptable.\n",
+                "Important: the malformed code batch-edit arguments are echoed above. Do not retry `code.batch_edit` without a valid `edits` array. Retry only with one corrected `edits` array containing objects shaped like `{\"path\":...,\"old_str\":...,\"new_str\":...}`. Do not use aliases like `changes` or top-level edit fields in place of `edits`. For one targeted single-file replacement, `edit_file` is also acceptable; for a small whole-file rewrite after you already read the file, a single `write_file` with full `content` is often simpler than looping on malformed batch edits.\n",
             );
         }
 
@@ -4269,40 +4925,40 @@ impl AgentPipeline {
             );
         }
 
-        let non_tty_tauri_failures = Self::count_non_tty_tauri_scaffold_failures(tool_calls.iter());
-        if non_tty_tauri_failures >= 2 {
+        let non_tty_scaffold_failures = Self::count_non_tty_scaffold_failures(tool_calls.iter());
+        if non_tty_scaffold_failures >= 2 {
             prompt.push_str(
-                "Important: `create-tauri-app` has already failed multiple times because the shell is non-interactive. Stop retrying the same scaffold shape and do not manually synthesize Tauri files with `cat <<EOF`, `tee`, `cargo init src-tauri`, or `mkdir`-only shell scripts. Use one specific alternate strategy next: run `npx create-tauri-app --help` (or `npx create-tauri-app@latest --help`) to confirm flags, then run a single `npx create-tauri-app <app-dir> --yes --template vanilla --tauri-version 2` command; if you already have a frontend project, use `cargo tauri init --ci ...` instead. After the scaffold succeeds, move directly to edits and build/test verification.\n",
+                "Important: the scaffold/init command has already failed multiple times because the shell is non-interactive. Stop retrying the same scaffold shape and do not manually synthesize the project with `cat <<EOF`, `tee`, or `mkdir`-only shell scripts. Use one specific alternate strategy next: check the scaffold tool's `--help`, rerun one documented non-interactive scaffold/init command with explicit confirmation flags and CI-style env if needed, and after scaffold succeeds move directly to edits and build/test verification.\n",
             );
         }
 
-        let had_redundant_tauri_init_skip = tool_calls.iter().any(|tool_call| {
+        let had_redundant_scaffold_skip = tool_calls.iter().any(|tool_call| {
             tool_call.name == "shell"
                 && matches!(
                     &tool_call.result,
                     ToolResult::Skipped(message)
-                        if message.contains("redundant repeated `cargo tauri init`")
+                        if message.contains("redundant repeated project scaffold/init command")
                 )
         });
 
-        if had_redundant_tauri_init_skip {
+        if had_redundant_scaffold_skip {
             prompt.push_str(
-                "Important: the Tauri scaffold has already been initialized in this run. Do not call `cargo tauri init` again. Move on to editing the frontend files and then run the requested build/test verification.\n",
+                "Important: a scaffold/init command has already succeeded in this run. Do not call the same scaffold/init command again. Move on to editing the relevant files and then run the requested build/test verification.\n",
             );
         }
 
-        let successful_tauri_scaffold_target = tool_calls.iter().find_map(|tool_call| {
+        let had_successful_scaffold_command = tool_calls.iter().any(|tool_call| {
             (tool_call.name == "shell" && matches!(tool_call.result, ToolResult::Success(_)))
                 .then(|| Self::extract_shell_command_from_arguments(&tool_call.arguments))
                 .flatten()
-                .filter(|command| Self::is_tauri_scaffold_command(command))
-                .and_then(|command| Self::extract_tauri_scaffold_target(&command))
+                .map(|command| Self::is_project_scaffold_command(&command))
+                .unwrap_or(false)
         });
 
-        if let Some(target) = successful_tauri_scaffold_target {
-            prompt.push_str(&format!(
-                "Important: the Tauri scaffold now exists at `{target}`. Do not spend another turn repeatedly listing or treeing that directory. Read only the minimum files needed to implement the request (for example `src/index.html`, `src/main.js`, `src/styles.css`, and `src-tauri/src/lib.rs` or `src-tauri/src/main.rs`), then make the Hello World change and run the remaining build/test verification.\n"
-            ));
+        if had_successful_scaffold_command {
+            prompt.push_str(
+                "Important: a project scaffold/init command has already succeeded in this run. Do not spend another turn repeatedly listing or treeing the scaffold root. Read only the minimum concrete files implicated by the request and the scaffold that actually exists in the workspace. Prefer the repo's real entrypoints, manifests, and changed surface area over generic example paths, then make the requested change and run the remaining build/test verification.\n",
+            );
         }
 
         let had_redundant_file_inspection_skip = tool_calls.iter().any(|tool_call| {
@@ -4330,8 +4986,9 @@ impl AgentPipeline {
 
 #[cfg(test)]
 mod tests {
-    use super::AgentPipeline;
+    use super::{AgentPipeline, emit_streaming_tool_keepalive};
     use crate::config::AppConfig;
+    use crate::pipeline::Instant;
     use crate::pipeline::{ToolCallRecord, ToolResult};
     use crate::session_workspace::SessionWorkspace;
     use serde_json::json;
@@ -4343,7 +5000,7 @@ mod tests {
             "operation": "create",
             "parent_id": "None",
             "status": "notstarted",
-            "task_id": "None</parameter><parameter name=\"name\">Create Tauri Hello World GUI Application</parameter>\n<parameter name=\"description\">Plan, implement, build, and test a small Tauri v2 GUI that displays \"Hello World\"</parameter>",
+            "task_id": "None</parameter><parameter name=\"name\">Create Hello World GUI Application</parameter>\n<parameter name=\"description\">Plan, implement, build, and test a small GUI that displays \"Hello World\"</parameter>",
         }));
 
         assert_eq!(
@@ -4354,13 +5011,11 @@ mod tests {
         assert_eq!(normalized.get("task_id"), None);
         assert_eq!(
             normalized.get("name").and_then(|v| v.as_str()),
-            Some("Create Tauri Hello World GUI Application")
+            Some("Create Hello World GUI Application")
         );
         assert_eq!(
             normalized.get("description").and_then(|v| v.as_str()),
-            Some(
-                "Plan, implement, build, and test a small Tauri v2 GUI that displays \"Hello World\""
-            )
+            Some("Plan, implement, build, and test a small GUI that displays \"Hello World\"")
         );
     }
 
@@ -4410,13 +5065,13 @@ mod tests {
     fn normalize_task_tool_arguments_recovers_create_name_from_slug_like_task_id() {
         let normalized = AgentPipeline::normalize_task_tool_arguments(json!({
             "operation": "create",
-            "task_id": "setup-tauri-env",
+            "task_id": "setup-gui-env",
             "parent_id": "e4d5f1a0-c20d-4562-aef3-b1ca3ffbdb8c"
         }));
 
         assert_eq!(
             normalized.get("name").and_then(|v| v.as_str()),
-            Some("Setup Tauri Env")
+            Some("Setup Gui Env")
         );
         assert!(normalized.get("task_id").is_none());
     }
@@ -4436,7 +5091,7 @@ mod tests {
     fn normalize_task_tool_arguments_does_not_derive_create_name_from_natural_language_task_id() {
         let normalized = AgentPipeline::normalize_task_tool_arguments(json!({
             "operation": "create",
-            "task_id": "\"tauri-hello-world\" wait no, task_id not for create."
+            "task_id": "\"hello-world-gui\" wait no, task_id not for create."
         }));
 
         assert!(normalized.get("name").is_none());
@@ -4474,6 +5129,19 @@ mod tests {
     }
 
     #[test]
+    fn default_shell_long_running_mode_tracks_build_commands() {
+        assert!(AgentPipeline::default_shell_long_running_allowed(
+            "cargo test -p gestura-gui"
+        ));
+        assert!(AgentPipeline::default_shell_long_running_allowed(
+            "npm run build"
+        ));
+        assert!(!AgentPipeline::default_shell_long_running_allowed(
+            "printf hello"
+        ));
+    }
+
+    #[test]
     fn effective_shell_timeout_clamps_long_running_commands() {
         assert_eq!(
             AgentPipeline::effective_shell_timeout_secs("cargo test -p gestura-gui", Some(120)),
@@ -4490,9 +5158,21 @@ mod tests {
     }
 
     #[test]
-    fn harden_noninteractive_shell_command_normalizes_create_tauri_app() {
+    fn effective_shell_long_running_mode_respects_explicit_override() {
+        assert!(!AgentPipeline::effective_shell_long_running_allowed(
+            "cargo test",
+            Some(false)
+        ));
+        assert!(AgentPipeline::effective_shell_long_running_allowed(
+            "printf hello",
+            Some(true)
+        ));
+    }
+
+    #[test]
+    fn harden_noninteractive_shell_command_normalizes_scaffold_command() {
         let (command, env) = AgentPipeline::harden_noninteractive_shell_command(
-            "npx create-tauri-app@latest hello-world --template vanilla",
+            "npx create-project-app@latest hello-world --template basic",
             None,
         );
 
@@ -4504,7 +5184,7 @@ mod tests {
 
     #[test]
     fn harden_noninteractive_shell_command_does_not_mutate_echoed_prompt_text() {
-        let command = "printf 'Need to install the following packages:\ncreate-tauri-app@4.6.2\nOk to proceed? (y)\n'; sleep 2";
+        let command = "printf 'Need to install the following packages:\ncreate-project-app@4.6.2\nOk to proceed? (y)\n'; sleep 2";
         let (hardened_command, env) =
             AgentPipeline::harden_noninteractive_shell_command(command, None);
 
@@ -4513,10 +5193,48 @@ mod tests {
     }
 
     #[test]
+    fn strip_redundant_shell_cwd_prefix_removes_matching_leading_cd() {
+        let temp = TempDir::new().expect("temp dir");
+        let project_dir = temp.path().join("sample-app");
+        std::fs::create_dir_all(&project_dir).expect("create project dir");
+        let workspace =
+            SessionWorkspace::from_directory("shell-strip-cwd", temp.path().to_path_buf())
+                .expect("workspace");
+
+        let command = AgentPipeline::strip_redundant_shell_cwd_prefix(
+            Some(&workspace),
+            "cd sample-app && python -m build",
+            Some(project_dir.to_string_lossy().as_ref()),
+        );
+
+        assert_eq!(command, "npm install --silent");
+    }
+
+    #[test]
+    fn strip_redundant_shell_cwd_prefix_preserves_nonmatching_leading_cd() {
+        let temp = TempDir::new().expect("temp dir");
+        let project_dir = temp.path().join("sample-app");
+        let other_dir = temp.path().join("other-dir");
+        std::fs::create_dir_all(&project_dir).expect("create project dir");
+        std::fs::create_dir_all(&other_dir).expect("create other dir");
+        let workspace =
+            SessionWorkspace::from_directory("shell-keep-cwd", temp.path().to_path_buf())
+                .expect("workspace");
+
+        let command = AgentPipeline::strip_redundant_shell_cwd_prefix(
+            Some(&workspace),
+            "cd other-dir && npm install --silent",
+            Some(project_dir.to_string_lossy().as_ref()),
+        );
+
+        assert_eq!(command, "cd other-dir && npm install --silent");
+    }
+
+    #[test]
     fn normalize_task_tool_arguments_recovers_unclosed_status_fragment() {
         let normalized = AgentPipeline::normalize_task_tool_arguments(json!({
             "operation": "update_status",
-            "task_id": "1c0a1ed3-e355-4117-9881-3632a2765199\"  <!-- Install Tauri prerequisites -->\n<parameter name=\"status\">inprogress",
+            "task_id": "1c0a1ed3-e355-4117-9881-3632a2765199\"  <!-- Install GUI prerequisites -->\n<parameter name=\"status\">inprogress",
         }));
 
         assert_eq!(
@@ -4550,9 +5268,9 @@ mod tests {
     fn normalize_file_tool_arguments_sanitizes_paths_and_preserves_canonical_edit_fields() {
         let normalized = AgentPipeline::normalize_file_tool_arguments(json!({
             "operation": "EDIT",
-            "path": "\"src/index.html\"",
-            "old": "<h1>Hello</h1>",
-            "new": "<h1>Hello, Gestura</h1>",
+            "path": "\"app/main.py\"",
+            "old": "print('hello')",
+            "new": "print('hello world')",
         }));
 
         assert_eq!(
@@ -4561,30 +5279,52 @@ mod tests {
         );
         assert_eq!(
             normalized.get("path").and_then(|v| v.as_str()),
-            Some("src/index.html")
+            Some("app/main.py")
         );
         assert_eq!(
             normalized.get("old").and_then(|v| v.as_str()),
-            Some("<h1>Hello</h1>")
+            Some("print('hello')")
         );
         assert_eq!(
             normalized.get("new").and_then(|v| v.as_str()),
-            Some("<h1>Hello, Gestura</h1>")
+            Some("print('hello world')")
         );
     }
 
     #[test]
-    fn normalize_file_tool_arguments_does_not_recover_write_content_aliases() {
+    fn normalize_file_tool_arguments_recovers_common_edit_aliases() {
         let normalized = AgentPipeline::normalize_file_tool_arguments(json!({
-            "operation": "write",
-            "path": "src/index.html",
-            "text": "<h1>Hello, Gestura</h1>",
+            "operation": "edit",
+            "path": "service/main.py",
+            "old_str": "print('hello')",
+            "replacement": "print('hello world')",
         }));
 
-        assert!(normalized.get("content").is_none());
+        assert_eq!(
+            normalized.get("old").and_then(|v| v.as_str()),
+            Some("print('hello')")
+        );
+        assert_eq!(
+            normalized.get("new").and_then(|v| v.as_str()),
+            Some("print('hello world')")
+        );
+    }
+
+    #[test]
+    fn normalize_file_tool_arguments_recovers_write_content_aliases() {
+        let normalized = AgentPipeline::normalize_file_tool_arguments(json!({
+            "operation": "write",
+            "path": "docs/summary.txt",
+            "text": "Release summary",
+        }));
+
+        assert_eq!(
+            normalized.get("content").and_then(|v| v.as_str()),
+            Some("Release summary")
+        );
         assert_eq!(
             normalized.get("text").and_then(|v| v.as_str()),
-            Some("<h1>Hello, Gestura</h1>")
+            Some("Release summary")
         );
     }
 
@@ -4592,9 +5332,9 @@ mod tests {
     fn normalize_file_tool_arguments_does_not_recover_inline_edit_replacement() {
         let normalized = AgentPipeline::normalize_file_tool_arguments(json!({
             "operation": "edit",
-            "path": "hello-tauri/src/index.html",
+            "path": "sample-app/app/main.py",
             "pattern": "None",
-            "start": "1.0\" No. The correct is: old is <h1>Welcome to Tauri</h1> new is <h1>Hello, World!</h1>"
+            "start": "1.0\" No. The correct is: old is print('hello') new is print('hello world')"
         }));
 
         assert_eq!(
@@ -4611,7 +5351,7 @@ mod tests {
             "file",
             &json!({
                 "operation": "write",
-                "path": "tauri-hello-world/src/index.html",
+                "path": "sample-app/app/main.py",
                 "pattern": "None",
                 "recursive": false,
                 "show_hidden": false,
@@ -4627,7 +5367,7 @@ mod tests {
         );
         assert_eq!(
             normalized.get("path").and_then(|v| v.as_str()),
-            Some("tauri-hello-world/src/index.html")
+            Some("sample-app/app/main.py")
         );
         assert_eq!(
             normalized.get("pattern").and_then(|v| v.as_str()),
@@ -4641,7 +5381,7 @@ mod tests {
             "code",
             &json!({
                 "operation": "batch_edit",
-                "path": "tauri-hello-world/src/index.html",
+                "path": "sample-app/app/main.py",
                 "pattern": "None",
                 "symbol": "None",
             })
@@ -4655,7 +5395,7 @@ mod tests {
         );
         assert_eq!(
             normalized.get("path").and_then(|v| v.as_str()),
-            Some("tauri-hello-world/src/index.html")
+            Some("sample-app/app/main.py")
         );
         assert!(normalized.get("paths").is_none());
         assert!(normalized.get("edits").is_none());
@@ -4668,9 +5408,9 @@ mod tests {
             &json!({
                 "operation": "stats",
                 "edits": [{
-                    "path": "src/index.html",
-                    "old_str": "<h1>Hello</h1>",
-                    "new_str": "<h1>Hello, Gestura</h1>"
+                    "path": "src/lib.rs",
+                    "old_str": "fn greet() {}",
+                    "new_str": "fn greet() { println!(\"hello\"); }"
                 }]
             })
             .to_string(),
@@ -4685,13 +5425,41 @@ mod tests {
     }
 
     #[test]
+    fn normalize_tool_arguments_for_execution_forces_split_file_tool_operation() {
+        let normalized = AgentPipeline::normalize_tool_arguments_for_execution(
+            "edit_file",
+            &json!({
+                "operation": "search",
+                "path": "src/lib.rs",
+                "pattern": "fn greet() {}",
+                "replacement": "fn greet() { println!(\"hello\"); }"
+            })
+            .to_string(),
+        );
+
+        let normalized = serde_json::from_str::<serde_json::Value>(&normalized).expect("json");
+        assert_eq!(
+            normalized.get("operation").and_then(|v| v.as_str()),
+            Some("edit")
+        );
+        assert_eq!(
+            normalized.get("old").and_then(|v| v.as_str()),
+            Some("fn greet() {}")
+        );
+        assert_eq!(
+            normalized.get("new").and_then(|v| v.as_str()),
+            Some("fn greet() { println!(\"hello\"); }")
+        );
+    }
+
+    #[test]
     fn normalize_code_tool_arguments_does_not_recover_batch_edit_aliases() {
         let normalized = AgentPipeline::normalize_code_tool_arguments(json!({
             "operation": "edit",
             "changes": [{
-                "file": "\"src/index.html\"",
-                "old": "<h1>Hello</h1>",
-                "replacement": "<h1>Hello, Gestura</h1>",
+                "file": "\"app/main.py\"",
+                "old": "print('hello')",
+                "replacement": "print('hello world')",
             }]
         }));
 
@@ -4740,7 +5508,7 @@ mod tests {
     fn missing_file_write_content_error_explains_how_to_recover() {
         let message = AgentPipeline::format_missing_file_write_content_error(&json!({
             "operation": "write",
-            "path": "tauri-hello-world/src/index.html",
+            "path": "sample-app/app/main.py",
             "pattern": "none",
             "start": 1,
         }));
@@ -4749,6 +5517,24 @@ mod tests {
         assert!(message.contains("pattern, start"));
         assert!(message.contains("\"content\":\"<full file contents here>\""));
         assert!(message.contains("Do not retry the same malformed `write` call"));
+    }
+
+    #[test]
+    fn missing_file_edit_replacement_error_explains_how_to_recover() {
+        let message = AgentPipeline::format_missing_file_edit_replacement_error(
+            &json!({
+                "operation": "edit",
+                "path": "sample-app/app/main.py",
+                "pattern": "print('hello')",
+            }),
+            "new",
+        );
+
+        assert!(message.contains("Missing required field 'new' for file edit operation"));
+        assert!(message.contains("Provided fields: operation, path, pattern"));
+        assert!(message.contains("\"old\":\"<exact existing text>\""));
+        assert!(message.contains("\"new\":\"<replacement text>\""));
+        assert!(message.contains("`old_str`, `new_str`, `pattern`, or `replacement`"));
     }
 
     #[test]
@@ -4770,12 +5556,15 @@ mod tests {
     fn missing_task_create_name_error_explains_how_to_recover() {
         let message = AgentPipeline::format_missing_task_create_name_error(&json!({
             "operation": "create",
-            "task_id": "oops",
+            "parent_id": "root-123",
+            "status": "notstarted",
         }));
 
         assert!(message.contains("Missing required field 'name' for create operation"));
         assert!(message.contains("`create` requires a specific task `name`"));
-        assert!(message.contains("\"name\":\"Build hello world Tauri app\""));
+        assert!(message.contains("\"parent_id\":\"root-123\""));
+        assert!(message.contains("\"status\":\"notstarted\""));
+        assert!(message.contains("\"name\":\"Build hello world GUI app\""));
         assert!(message.contains(
             "Do not rely on the runtime to invent or preserve placeholder names like 'Untitled Task' or 'None But Omit'"
         ));
@@ -4785,7 +5574,7 @@ mod tests {
     fn missing_code_batch_edit_edits_error_explains_how_to_recover() {
         let message = AgentPipeline::format_missing_code_batch_edit_edits_error(&json!({
             "operation": "batch_edit",
-            "path": "src/index.html",
+            "path": "src/lib.rs",
             "note": "replace the greeting",
         }));
 
@@ -4802,7 +5591,7 @@ mod tests {
     fn repeated_malformed_tool_call_skip_message_trips_on_second_attempt() {
         let malformed_args = json!({
             "operation": "write",
-            "path": "tauri-hello-world/src/index.html",
+            "path": "sample-app/app/main.py",
             "pattern": "replace the greeting later",
             "start": 1,
         })
@@ -4815,7 +5604,7 @@ mod tests {
             result: crate::pipeline::ToolResult::Error(
                 AgentPipeline::format_missing_file_write_content_error(&json!({
                     "operation": "write",
-                    "path": "tauri-hello-world/src/index.html",
+                    "path": "sample-app/app/main.py",
                     "pattern": "replace the greeting later",
                     "start": 1,
                 })),
@@ -4841,7 +5630,7 @@ mod tests {
     fn repeated_malformed_tool_call_skip_message_does_not_trip_on_first_attempt() {
         let malformed_args = json!({
             "operation": "write",
-            "path": "tauri-hello-world/src/index.html",
+            "path": "sample-app/app/main.py",
             "pattern": "none",
             "start": 1,
         })
@@ -4857,8 +5646,8 @@ mod tests {
     fn repeated_malformed_file_edit_without_replacement_does_not_trip_on_first_attempt() {
         let malformed_args = json!({
             "operation": "edit",
-            "path": "tauri-hello-world/src/index.html",
-            "pattern": "<h1>Welcome to Tauri</h1>",
+            "path": "sample-app/app/main.py",
+            "pattern": "print('hello')",
             "start": 1
         })
         .to_string();
@@ -4904,7 +5693,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_omitted_status_task_update_trips_after_prior_noop_success() {
+    fn repeated_omitted_status_task_update_trips_after_prior_noop_skip() {
         let malformed_args = json!({
             "operation": "update_status",
             "task_id": "6073f304-388d-408c-82d0-f49f8679656a",
@@ -4915,8 +5704,8 @@ mod tests {
             id: "1".to_string(),
             name: "task".to_string(),
             arguments: malformed_args.clone(),
-            result: crate::pipeline::ToolResult::Success(
-                "Task 6073f304-388d-408c-82d0-f49f8679656a is already InProgress, so omitted `status` caused no change. Treated this `task.update_status` call as a bookkeeping no-op.".to_string(),
+            result: crate::pipeline::ToolResult::Skipped(
+                "Skipped malformed `task.update_status` without explicit `status` for task 6073f304-388d-408c-82d0-f49f8679656a because it is already InProgress. The runtime preserved the current status, but this bookkeeping no-op should not be retried without an explicit `status`.".to_string(),
             ),
             duration_ms: 1,
         }];
@@ -4937,7 +5726,7 @@ mod tests {
     fn repeated_malformed_task_create_without_name_trips_on_second_attempt() {
         let malformed_args = json!({
             "operation": "create",
-            "task_id": "\"tauri-hello-world\" wait no, task_id not for create.",
+            "task_id": "\"sample-app\" wait no, task_id not for create.",
         })
         .to_string();
 
@@ -4948,7 +5737,7 @@ mod tests {
             result: crate::pipeline::ToolResult::Error(
                 AgentPipeline::format_missing_task_create_name_error(&json!({
                     "operation": "create",
-                    "task_id": "\"tauri-hello-world\" wait no, task_id not for create.",
+                    "task_id": "\"sample-app\" wait no, task_id not for create.",
                 })),
             ),
             duration_ms: 1,
@@ -4970,8 +5759,8 @@ mod tests {
     fn repeated_malformed_code_batch_edit_without_edits_does_not_trip_on_first_attempt() {
         let malformed_args = json!({
             "operation": "batch_edit",
-            "path": "src/index.html",
-            "pattern": "<h1>Hello</h1>",
+            "path": "src/lib.rs",
+            "pattern": "fn greet() {}",
             "note": "replace the heading",
         })
         .to_string();
@@ -4983,9 +5772,9 @@ mod tests {
     }
 
     #[test]
-    fn repeated_redundant_tauri_init_trips_after_first_success() {
+    fn repeated_redundant_project_init_trips_after_first_success() {
         let args = json!({
-            "command": "cargo tauri init --ci --app-name hello-world --window-title \"Hello World\" --force"
+            "command": "cargo new hello-world --bin"
         })
         .to_string();
         let prior_records = vec![ToolCallRecord {
@@ -5001,20 +5790,20 @@ mod tests {
             &args,
             &prior_records,
         )
-        .expect("second successful tauri init should trip loop breaker");
+        .expect("second successful project init should trip loop breaker");
 
-        assert!(message.contains("redundant repeated `cargo tauri init`"));
+        assert!(message.contains("redundant repeated project scaffold/init command"));
         assert!(message.contains("move on to editing files and running build/test verification"));
     }
 
     #[test]
-    fn manual_tauri_shell_scaffold_is_blocked_after_repeated_non_tty_failures() {
+    fn manual_project_scaffold_is_blocked_after_repeated_non_tty_failures() {
         let prior_records = vec![
             ToolCallRecord {
                 id: "1".to_string(),
                 name: "shell".to_string(),
                 arguments: json!({
-                    "command": "npx create-tauri-app@latest hello-tauri --template vanilla --yes"
+                    "command": "npx create-project-app@latest sample-app --template basic --yes"
                 })
                 .to_string(),
                 result: ToolResult::Error("Exit 1: Shell command failed because it expected a terminal. stderr: IO error: not a terminal".to_string()),
@@ -5024,7 +5813,7 @@ mod tests {
                 id: "2".to_string(),
                 name: "shell".to_string(),
                 arguments: json!({
-                    "command": "npx create-tauri-app@latest hello-tauri --template vanilla --yes"
+                    "command": "npx create-project-app@latest sample-app --template basic --yes"
                 })
                 .to_string(),
                 result: ToolResult::Error("Exit 1: command likely waited for interactive input".to_string()),
@@ -5032,7 +5821,7 @@ mod tests {
             },
         ];
         let manual_args = json!({
-            "command": "mkdir -p hello-tauri/src-tauri/src && cat <<'EOF' > hello-tauri/src-tauri/Cargo.toml\n[package]\nname = \"hello-tauri\"\nEOF"
+            "command": "mkdir -p sample-app/app && cat <<'EOF' > sample-app/pyproject.toml\n[project]\nname = \"sample-app\"\nEOF"
         })
         .to_string();
 
@@ -5041,21 +5830,21 @@ mod tests {
             &manual_args,
             &prior_records,
         )
-        .expect("manual tauri shell fallback should be blocked after repeated non-tty failures");
+        .expect("manual project shell fallback should be blocked after repeated non-tty failures");
 
-        assert!(message.contains("Do not synthesize a Tauri project with `cat <<EOF`"));
-        assert!(message.contains("npx create-tauri-app --help"));
-        assert!(message.contains("cargo tauri init --ci"));
+        assert!(message.contains("Do not synthesize a project structure with `cat <<EOF`"));
+        assert!(message.contains("check the scaffold command's `--help` output"));
+        assert!(message.contains("documented non-interactive scaffold/init command"));
     }
 
     #[test]
-    fn repeated_create_tauri_app_latest_is_blocked_after_two_non_tty_failures() {
+    fn repeated_scaffold_retry_is_blocked_after_two_non_tty_failures() {
         let prior_records = vec![
             ToolCallRecord {
                 id: "1".to_string(),
                 name: "shell".to_string(),
                 arguments: json!({
-                    "command": "npx create-tauri-app@latest hello-tauri --template vanilla --yes"
+                    "command": "npx create-project-app@latest sample-app --template basic --yes"
                 })
                 .to_string(),
                 result: ToolResult::Error("Exit 1: stderr: IO error: not a terminal".to_string()),
@@ -5065,7 +5854,7 @@ mod tests {
                 id: "2".to_string(),
                 name: "shell".to_string(),
                 arguments: json!({
-                    "command": "npx create-tauri-app@latest hello-tauri --template vanilla --yes"
+                    "command": "npx create-project-app@latest sample-app --template basic --yes"
                 })
                 .to_string(),
                 result: ToolResult::Error(
@@ -5075,7 +5864,7 @@ mod tests {
             },
         ];
         let retry_args = json!({
-            "command": "npx create-tauri-app@latest hello-tauri --template vanilla --yes"
+            "command": "npx create-project-app@latest sample-app --template basic --yes"
         })
         .to_string();
 
@@ -5084,14 +5873,11 @@ mod tests {
             &retry_args,
             &prior_records,
         )
-        .expect("same create-tauri-app retry should be blocked after repeated non-tty failures");
+        .expect("same scaffold retry should be blocked after repeated non-tty failures");
 
         assert!(message.contains("Use one specific alternate strategy next"));
-        assert!(
-            message.contains(
-                "npx create-tauri-app <app-dir> --yes --template vanilla --tauri-version 2"
-            )
-        );
+        assert!(message.contains("check the scaffold command's `--help` output"));
+        assert!(message.contains("documented non-interactive scaffold/init command"));
     }
 
     #[test]
@@ -5112,7 +5898,7 @@ mod tests {
     fn repeated_file_tree_inspection_trips_after_two_successes() {
         let args = json!({
             "operation": "tree",
-            "path": "hello-tauri"
+            "path": "sample-app"
         })
         .to_string();
         let prior_records = vec![
@@ -5137,7 +5923,7 @@ mod tests {
                 .expect("third identical file.tree should trip loop breaker");
 
         assert!(message.contains("redundant repeated `file.tree` inspection"));
-        assert!(message.contains("hello-tauri"));
+        assert!(message.contains("sample-app"));
         assert!(message.contains("move on to reading the specific file you need to edit"));
     }
 
@@ -5286,7 +6072,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_status_without_status_auto_completes_in_progress_leaf_task() {
+    async fn update_status_without_status_skips_in_progress_leaf_task_noop() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("tool-dispatch-autocomplete-test-{}", uuid::Uuid::new_v4());
         let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
@@ -5312,22 +6098,24 @@ mod tests {
             .await;
 
         let output = match result {
-            crate::pipeline::ToolResult::Success(output) => output,
-            other => panic!("expected success result, got {other:?}"),
+            crate::pipeline::ToolResult::Skipped(output) => output,
+            other => panic!("expected skipped result, got {other:?}"),
         };
 
-        assert!(output.contains("Recovered omitted `status`"));
-        assert!(output.contains("InProgress to Completed"));
+        assert!(
+            output.contains("Skipped malformed `task.update_status` without explicit `status`")
+        );
+        assert!(output.contains("already InProgress"));
 
         let task_after = manager
             .get_task(&session_id, &task.id)
             .expect("get task")
             .expect("task exists");
-        assert_eq!(task_after.status, crate::TaskStatus::Completed);
+        assert_eq!(task_after.status, crate::TaskStatus::InProgress);
     }
 
     #[tokio::test]
-    async fn update_status_without_status_does_not_auto_complete_task_with_open_subtasks() {
+    async fn update_status_without_status_skips_in_progress_parent_task_with_open_subtasks() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("tool-dispatch-parent-skip-test-{}", uuid::Uuid::new_v4());
         let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
@@ -5363,7 +6151,10 @@ mod tests {
             other => panic!("expected skipped result, got {other:?}"),
         };
 
-        assert!(output.contains("auto-advancing from InProgress to Completed was not valid"));
+        assert!(
+            output.contains("Skipped malformed `task.update_status` without explicit `status`")
+        );
+        assert!(output.contains("already InProgress"));
 
         let parent_after = manager
             .get_task(&session_id, &parent.id)
@@ -5416,7 +6207,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn file_edit_requires_canonical_old_and_new_keys() {
+    async fn file_edit_recovers_old_str_and_new_str_aliases() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("file-edit-alias-test-{}", uuid::Uuid::new_v4());
         let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
@@ -5439,12 +6230,48 @@ mod tests {
             .await;
 
         match result {
-            crate::pipeline::ToolResult::Error(output) => {
-                assert!(output.contains("Missing required field 'old' for file edit operation"));
-                let updated = std::fs::read_to_string(&file_path).expect("read unchanged file");
-                assert!(updated.contains("<h1>Hello</h1>"));
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("index.html"));
+                let updated = std::fs::read_to_string(&file_path).expect("read updated file");
+                assert!(updated.contains("Hello, Gestura"));
             }
-            other => panic!("expected error, got {other:?}"),
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn file_edit_recovers_pattern_and_replacement_aliases() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!(
+            "file-edit-pattern-replacement-test-{}",
+            uuid::Uuid::new_v4()
+        );
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let file_path = temp.path().join("index.html");
+        std::fs::write(&file_path, "<h1>Welcome to the app</h1>\n").expect("seed file");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_file_tool(
+                &json!({
+                    "operation": "edit",
+                    "path": "index.html",
+                    "pattern": "<h1>Welcome to the app</h1>",
+                    "replacement": "<h1>Hello, World!</h1>",
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("index.html"));
+                let updated = std::fs::read_to_string(&file_path).expect("read updated file");
+                assert!(updated.contains("Hello, World!"));
+            }
+            other => panic!("expected success, got {other:?}"),
         }
     }
 
@@ -5456,17 +6283,17 @@ mod tests {
             .expect("workspace");
         let project_dir = temp.path().join("hello-world").join("src");
         std::fs::create_dir_all(&project_dir).expect("create nested src dir");
-        let file_path = project_dir.join("index.html");
-        std::fs::write(&file_path, "<h1>Hello</h1>\n").expect("write seed file");
+        let file_path = project_dir.join("settings.json");
+        std::fs::write(&file_path, "{\"greeting\":\"hello\"}\n").expect("write seed file");
         let pipeline = AgentPipeline::new(AppConfig::default());
 
         let result = pipeline
             .execute_file_tool(
                 &json!({
                     "operation": "edit",
-                    "path": "src/index.html",
-                    "old": "<h1>Hello</h1>",
-                    "new": "<h1>Hello, Gestura</h1>",
+                    "path": "src/settings.json",
+                    "old": "{\"greeting\":\"hello\"}",
+                    "new": "{\"greeting\":\"hello world\"}",
                 })
                 .to_string(),
                 Some(&workspace),
@@ -5475,9 +6302,181 @@ mod tests {
 
         match result {
             crate::pipeline::ToolResult::Success(output) => {
-                assert!(output.contains("src/index.html"));
+                assert!(output.contains("src/settings.json"));
                 let updated = std::fs::read_to_string(&file_path).expect("read updated file");
-                assert!(updated.contains("Hello, Gestura"));
+                assert!(updated.contains("hello world"));
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn file_edit_recovers_flat_root_settings_path() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("file-edit-flat-settings-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        std::fs::create_dir_all(temp.path().join("hello-world-app")).expect("create app dir");
+        let file_path = temp.path().join("hello-world-app").join("settings.json");
+        std::fs::write(&file_path, "{\"greeting\":\"hello\"}\n").expect("write seed file");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_file_tool(
+                &json!({
+                    "operation": "edit",
+                    "path": "hello-world-app/src/settings.json",
+                    "old": "{\"greeting\":\"hello\"}",
+                    "new": "{\"greeting\":\"hello world\"}",
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("hello-world-app/settings.json"));
+                let updated = std::fs::read_to_string(&file_path).expect("read updated file");
+                assert!(updated.contains("hello world"));
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn file_read_recovers_src_settings_path() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("file-read-src-settings-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let project_dir = temp.path().join("hello-world");
+        std::fs::create_dir_all(project_dir.join("src")).expect("create src dir");
+        let file_path = project_dir.join("src").join("settings.json");
+        std::fs::write(&file_path, "{\"greeting\":\"hello\"}\n").expect("write seed file");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_file_tool(
+                &json!({
+                    "operation": "read",
+                    "path": "hello-world/settings.json"
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("hello"));
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn file_edit_recovers_src_settings_path() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("file-edit-src-settings-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let project_dir = temp.path().join("hello-world");
+        std::fs::create_dir_all(project_dir.join("src")).expect("create src dir");
+        let file_path = project_dir.join("src").join("settings.json");
+        std::fs::write(&file_path, "{\"greeting\":\"hello\"}\n").expect("write seed file");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_file_tool(
+                &json!({
+                    "operation": "edit",
+                    "path": "hello-world/settings.json",
+                    "old": "{\"greeting\":\"hello\"}",
+                    "new": "{\"greeting\":\"hello world\"}",
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("hello-world/src/settings.json"));
+                let updated = std::fs::read_to_string(&file_path).expect("read updated file");
+                assert!(updated.contains("hello world"));
+                assert!(!project_dir.join("settings.json").exists());
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn file_edit_recovers_common_source_root_main_py_path() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("file-edit-src-main-py-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let project_dir = temp.path().join("hello-world");
+        std::fs::create_dir_all(project_dir.join("src")).expect("create src dir");
+        let file_path = project_dir.join("src").join("main.py");
+        std::fs::write(&file_path, "print('hello')\n").expect("write seed file");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_file_tool(
+                &json!({
+                    "operation": "edit",
+                    "path": "hello-world/main.py",
+                    "old": "print('hello')",
+                    "new": "print('hello world')",
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("hello-world/src/main.py"));
+                let updated = std::fs::read_to_string(&file_path).expect("read updated file");
+                assert!(updated.contains("hello world"));
+                assert!(!project_dir.join("main.py").exists());
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn file_write_prefers_existing_src_settings_path() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("file-write-src-settings-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let project_dir = temp.path().join("hello-world");
+        std::fs::create_dir_all(project_dir.join("src")).expect("create src dir");
+        let file_path = project_dir.join("src").join("settings.json");
+        std::fs::write(&file_path, "{\"greeting\":\"hello\"}\n").expect("write seed file");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_file_tool(
+                &json!({
+                    "operation": "write",
+                    "path": "hello-world/settings.json",
+                    "content": "{\"greeting\":\"hello world\"}\n",
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("hello-world/settings.json"));
+                let updated = std::fs::read_to_string(&file_path).expect("read updated file");
+                assert_eq!(updated, "{\"greeting\":\"hello world\"}\n");
+                assert!(!project_dir.join("settings.json").exists());
             }
             other => panic!("expected success, got {other:?}"),
         }
@@ -5490,9 +6489,8 @@ mod tests {
         let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
             .expect("workspace");
         let file_path = temp.path().join("main.js");
-        let old =
-            "const { invoke } = window.__TAURI__.core;\n\nlet greetInputEl;\nlet greetMsgEl;\n";
-        let new = "const { invoke } = window.__TAURI__.core;\n\nlet greetMsgEl;\n";
+        let old = "const appApi = window.appApi;\n\nlet greetInputEl;\nlet greetMsgEl;\n";
+        let new = "const appApi = window.appApi;\n\nlet greetMsgEl;\n";
         std::fs::write(&file_path, old).expect("seed file");
         let pipeline = AgentPipeline::new(AppConfig::default());
 
@@ -5565,8 +6563,8 @@ mod tests {
             .expect("workspace");
         let project_dir = temp.path().join("hello-world").join("src");
         std::fs::create_dir_all(&project_dir).expect("create nested src dir");
-        let file_path = project_dir.join("index.html");
-        std::fs::write(&file_path, "<h1>Hello</h1>\n").expect("write seed file");
+        let file_path = project_dir.join("settings.json");
+        std::fs::write(&file_path, "{\"greeting\":\"hello\"}\n").expect("write seed file");
         let pipeline = AgentPipeline::new(AppConfig::default());
 
         let result = pipeline
@@ -5574,9 +6572,9 @@ mod tests {
                 &json!({
                     "operation": "batch_edit",
                     "edits": [{
-                        "path": "src/index.html",
-                        "old_str": "<h1>Hello</h1>",
-                        "new_str": "<h1>Hello, Gestura</h1>",
+                        "path": "src/settings.json",
+                        "old_str": "{\"greeting\":\"hello\"}",
+                        "new_str": "{\"greeting\":\"hello world\"}",
                     }]
                 })
                 .to_string(),
@@ -5586,9 +6584,82 @@ mod tests {
 
         match result {
             crate::pipeline::ToolResult::Success(output) => {
-                assert!(output.contains("index.html"));
+                assert!(output.contains("settings.json"));
                 let updated = std::fs::read_to_string(&file_path).expect("read updated file");
-                assert!(updated.contains("Hello, Gestura"));
+                assert!(updated.contains("hello world"));
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn code_batch_edit_recovers_flat_root_settings_path() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("code-edit-flat-settings-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        std::fs::create_dir_all(temp.path().join("hello-world-app")).expect("create app dir");
+        let file_path = temp.path().join("hello-world-app").join("settings.json");
+        std::fs::write(&file_path, "{\"greeting\":\"hello\"}\n").expect("write seed file");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_code_tool(
+                &json!({
+                    "operation": "batch_edit",
+                    "edits": [{
+                        "path": "hello-world-app/src/settings.json",
+                        "old_str": "{\"greeting\":\"hello\"}",
+                        "new_str": "{\"greeting\":\"hello world\"}",
+                    }]
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("settings.json"));
+                let updated = std::fs::read_to_string(&file_path).expect("read updated file");
+                assert!(updated.contains("hello world"));
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn code_batch_edit_recovers_src_settings_path() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("code-edit-src-settings-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let project_dir = temp.path().join("hello-world");
+        std::fs::create_dir_all(project_dir.join("src")).expect("create src dir");
+        let file_path = project_dir.join("src").join("settings.json");
+        std::fs::write(&file_path, "{\"greeting\":\"hello\"}\n").expect("write seed file");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_code_tool(
+                &json!({
+                    "operation": "batch_edit",
+                    "edits": [{
+                        "path": "hello-world/settings.json",
+                        "old_str": "{\"greeting\":\"hello\"}",
+                        "new_str": "{\"greeting\":\"hello world\"}",
+                    }]
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("settings.json"));
+                let updated = std::fs::read_to_string(&file_path).expect("read updated file");
+                assert!(updated.contains("hello world"));
             }
             other => panic!("expected success, got {other:?}"),
         }
@@ -5601,7 +6672,7 @@ mod tests {
         let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
             .expect("workspace");
         let file_path = temp.path().join("index.html");
-        let old = "<h1>Welcome to Tauri</h1>\n";
+        let old = "<h1>Welcome to the app</h1>\n";
         let new = "<h1>Hello, World!</h1>\n";
         std::fs::write(&file_path, old).expect("write seed file");
         let pipeline = AgentPipeline::new(AppConfig::default());
@@ -5685,7 +6756,7 @@ mod tests {
                 &json!({
                     "operation": "update_status",
                     "task_id": format!(
-                        "{}\"  <!-- Install Tauri prerequisites -->\n<parameter name=\"status\">inprogress",
+                        "{}\"  <!-- Install GUI prerequisites -->\n<parameter name=\"status\">inprogress",
                         task.id
                     ),
                 })
@@ -5849,7 +6920,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn file_write_requires_canonical_content_field() {
+    async fn file_write_recovers_text_alias() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("file-write-alias-test-{}", uuid::Uuid::new_v4());
         let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
@@ -5870,13 +6941,81 @@ mod tests {
             .await;
 
         match result {
-            crate::pipeline::ToolResult::Error(output) => {
-                assert!(
-                    output.contains("Missing required field 'content' for file write operation")
-                );
-                assert!(!file_path.exists());
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("index.html"));
+                let written = std::fs::read_to_string(&file_path).expect("read written file");
+                assert!(written.contains("Hello, Gestura"));
             }
-            other => panic!("expected error, got {other:?}"),
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn file_write_reports_noop_when_content_is_unchanged() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("file-write-noop-test-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let file_path = temp.path().join("index.html");
+        std::fs::write(&file_path, "<h1>Hello, Gestura</h1>\n").expect("seed file");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_file_tool(
+                &json!({
+                    "operation": "write",
+                    "path": "index.html",
+                    "content": "<h1>Hello, Gestura</h1>\n",
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("made no changes"));
+                assert_eq!(
+                    std::fs::read_to_string(&file_path).expect("read unchanged file"),
+                    "<h1>Hello, Gestura</h1>\n"
+                );
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn file_edit_reports_noop_when_replacement_is_identical() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("file-edit-noop-test-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let file_path = temp.path().join("index.html");
+        std::fs::write(&file_path, "<h1>Hello, Gestura</h1>\n").expect("seed file");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_file_tool(
+                &json!({
+                    "operation": "edit",
+                    "path": "index.html",
+                    "old": "Gestura",
+                    "new": "Gestura",
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        match result {
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("unchanged"));
+                assert_eq!(
+                    std::fs::read_to_string(&file_path).expect("read unchanged file"),
+                    "<h1>Hello, Gestura</h1>\n"
+                );
+            }
+            other => panic!("expected success, got {other:?}"),
         }
     }
 
@@ -5887,7 +7026,7 @@ mod tests {
         let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
             .expect("workspace");
         let file_path = temp.path().join("index.html");
-        std::fs::write(&file_path, "<h1>Welcome to Tauri</h1>\n").expect("seed file");
+        std::fs::write(&file_path, "<h1>Welcome to the app</h1>\n").expect("seed file");
         let pipeline = AgentPipeline::new(AppConfig::default());
 
         let result = pipeline
@@ -5896,7 +7035,7 @@ mod tests {
                     "operation": "edit",
                     "path": "index.html",
                     "pattern": "None",
-                    "start": "1.0\" No. The correct is: old is <h1>Welcome to Tauri</h1> new is <h1>Hello, World!</h1>"
+                    "start": "1.0\" No. The correct is: old is <h1>Welcome to the app</h1> new is <h1>Hello, World!</h1>"
                 })
                 .to_string(),
                 Some(&workspace),
@@ -5907,14 +7046,14 @@ mod tests {
             crate::pipeline::ToolResult::Error(output) => {
                 assert!(output.contains("Missing required field 'old' for file edit operation"));
                 let updated = std::fs::read_to_string(&file_path).expect("read updated file");
-                assert!(updated.contains("<h1>Welcome to Tauri</h1>"));
+                assert!(updated.contains("<h1>Welcome to the app</h1>"));
             }
             other => panic!("expected error, got {other:?}"),
         }
     }
 
     #[tokio::test]
-    async fn file_write_does_not_treat_pattern_as_content_fallback() {
+    async fn file_write_recovers_full_document_pattern_payload() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("file-write-pattern-fallback-{}", uuid::Uuid::new_v4());
         let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
@@ -5935,18 +7074,18 @@ mod tests {
             .await;
 
         match result {
-            crate::pipeline::ToolResult::Error(output) => {
-                assert!(
-                    output.contains("Missing required field 'content' for file write operation")
-                );
-                assert!(!file_path.exists());
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("index.html"));
+                let written = std::fs::read_to_string(&file_path).expect("read written file");
+                assert!(written.contains("<!doctype html>"));
+                assert!(written.contains("Hello, Gestura"));
             }
-            other => panic!("expected error, got {other:?}"),
+            other => panic!("expected success, got {other:?}"),
         }
     }
 
     #[tokio::test]
-    async fn file_write_rejects_pattern_even_with_extra_non_write_fields() {
+    async fn file_write_recovers_full_document_pattern_even_with_extra_fields() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("file-write-pattern-benign-fields-{}", uuid::Uuid::new_v4());
         let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
@@ -5968,13 +7107,13 @@ mod tests {
             .await;
 
         match result {
-            crate::pipeline::ToolResult::Error(output) => {
-                assert!(
-                    output.contains("Missing required field 'content' for file write operation")
-                );
-                assert!(!file_path.exists());
+            crate::pipeline::ToolResult::Success(output) => {
+                assert!(output.contains("index.html"));
+                let written = std::fs::read_to_string(&file_path).expect("read written file");
+                assert!(written.contains("<!doctype html>"));
+                assert!(written.contains("Hello, Gestura"));
             }
-            other => panic!("expected error, got {other:?}"),
+            other => panic!("expected success, got {other:?}"),
         }
     }
 
@@ -6084,13 +7223,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn file_edit_without_new_errors_for_partial_edit_intent() {
+    async fn file_edit_without_new_errors_after_pattern_recovers_old_text() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("file-edit-partial-demote-read-{}", uuid::Uuid::new_v4());
         let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
             .expect("workspace");
         let file_path = temp.path().join("index.html");
-        std::fs::write(&file_path, "<h1>Welcome to Tauri</h1>\n").expect("write seed file");
+        std::fs::write(&file_path, "<h1>Welcome to the app</h1>\n").expect("write seed file");
         let pipeline = AgentPipeline::new(AppConfig::default());
 
         let result = pipeline
@@ -6098,7 +7237,7 @@ mod tests {
                 &json!({
                     "operation": "edit",
                     "path": "index.html",
-                    "pattern": "<h1>Welcome to Tauri</h1>",
+                    "pattern": "<h1>Welcome to the app</h1>",
                     "start": 1,
                 })
                 .to_string(),
@@ -6108,9 +7247,9 @@ mod tests {
 
         match result {
             crate::pipeline::ToolResult::Error(output) => {
-                assert!(output.contains("Missing required field 'old' for file edit operation"));
+                assert!(output.contains("Missing required field 'new' for file edit operation"));
                 let updated = std::fs::read_to_string(&file_path).expect("read unchanged file");
-                assert_eq!(updated, "<h1>Welcome to Tauri</h1>\n");
+                assert_eq!(updated, "<h1>Welcome to the app</h1>\n");
             }
             other => panic!("expected error, got {other:?}"),
         }
@@ -6155,14 +7294,14 @@ mod tests {
         let session_id = format!("code-edit-demote-read-error-{}", uuid::Uuid::new_v4());
         let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
             .expect("workspace");
-        std::fs::create_dir_all(temp.path().join("tauri-hello-world")).expect("create dir");
+        std::fs::create_dir_all(temp.path().join("sample-app")).expect("create dir");
         let pipeline = AgentPipeline::new(AppConfig::default());
 
         let result = pipeline
             .execute_code_tool(
                 &json!({
                     "operation": "batch_edit",
-                    "path": "tauri-hello-world",
+                    "path": "sample-app",
                     "pattern": "",
                     "symbol": "",
                 })
@@ -6354,8 +7493,8 @@ mod tests {
                     "task_id": "abc",
                 })
                 .to_string(),
-                result: crate::pipeline::ToolResult::Success(
-                    "Task abc is already InProgress, so omitted `status` caused no change. Treated this `task.update_status` call as a bookkeeping no-op.".to_string(),
+                result: crate::pipeline::ToolResult::Skipped(
+                    "Skipped malformed `task.update_status` without explicit `status` for task abc because it is already InProgress. The runtime preserved the current status, but this bookkeeping no-op should not be retried without an explicit `status`.".to_string(),
                 ),
                 duration_ms: 1,
             }],
@@ -6363,7 +7502,7 @@ mod tests {
 
         assert!(prompt.contains("if `task.update_status` was sent without explicit `status`"));
         assert!(prompt.contains("do not call `task` on the next step"));
-        assert!(prompt.contains("successful task update is only bookkeeping"));
+        assert!(prompt.contains("not a reason to keep looping on task bookkeeping"));
     }
 
     #[test]
@@ -6396,7 +7535,7 @@ mod tests {
     }
 
     #[test]
-    fn continuation_prompt_warns_task_tool_is_temporarily_disabled_after_loop_breaker() {
+    fn continuation_prompt_keeps_task_tracking_available_after_loop_breaker() {
         let pipeline = AgentPipeline::new(AppConfig::default());
         let prompt = pipeline.build_tool_continuation_prompt(
             "User: build the app",
@@ -6416,11 +7555,9 @@ mod tests {
             }],
         );
 
-        assert!(prompt.contains("task tracking as temporarily disabled for this run"));
-        assert!(prompt.contains(
-            "continue the real implementation/build/test work with file/shell/code tools"
-        ));
-        assert!(prompt.contains("runtime will reconcile leftover tracked-task bookkeeping"));
+        assert!(prompt.contains("task tracking is still available"));
+        assert!(prompt.contains("Do not repeat the blocked malformed `task` arguments"));
+        assert!(prompt.contains("send one corrected `task.create` or `task.update_status` call"));
     }
 
     #[test]
@@ -6464,7 +7601,7 @@ mod tests {
                 name: "file".to_string(),
                 arguments: json!({
                     "operation": "write",
-                    "path": "tauri-hello-world/src/index.html",
+                    "path": "sample-app/app/main.py",
                     "pattern": "none",
                     "start": 1,
                 })
@@ -6472,7 +7609,7 @@ mod tests {
                 result: crate::pipeline::ToolResult::Error(
                     AgentPipeline::format_missing_file_write_content_error(&json!({
                         "operation": "write",
-                        "path": "tauri-hello-world/src/index.html",
+                        "path": "sample-app/app/main.py",
                         "pattern": "none",
                         "start": 1,
                     })),
@@ -6499,7 +7636,7 @@ mod tests {
                 name: "file".to_string(),
                 arguments: json!({
                     "operation": "write",
-                    "path": "tauri-hello-world/src/index.html",
+                    "path": "sample-app/app/main.py",
                     "pattern": "none",
                     "start": 1,
                 })
@@ -6519,16 +7656,16 @@ mod tests {
     }
 
     #[test]
-    fn continuation_prompt_pushes_implementation_after_successful_tauri_scaffold() {
+    fn continuation_prompt_pushes_implementation_after_successful_project_scaffold() {
         let pipeline = AgentPipeline::new(AppConfig::default());
         let prompt = pipeline.build_tool_continuation_prompt(
-            "User: create a tauri hello world app and build/test it",
+            "User: create a hello world app and build/test it",
             "I scaffolded the app and will inspect the files.",
             &[ToolCallRecord {
                 id: "1".to_string(),
                 name: "shell".to_string(),
                 arguments: json!({
-                    "command": "npx create-tauri-app@latest hello-tauri --yes --template vanilla --tauri-version 2"
+                    "command": "npx create-project-app@latest sample-app --yes --template basic"
                 })
                 .to_string(),
                 result: ToolResult::Success("Scaffold created".to_string()),
@@ -6536,14 +7673,22 @@ mod tests {
             }],
         );
 
-        assert!(prompt.contains("the Tauri scaffold now exists at `hello-tauri`"));
         assert!(
-            prompt
-                .contains("Do not spend another turn repeatedly listing or treeing that directory")
+            prompt.contains("a project scaffold/init command has already succeeded in this run")
         );
         assert!(
             prompt.contains(
-                "make the Hello World change and run the remaining build/test verification"
+                "Do not spend another turn repeatedly listing or treeing the scaffold root"
+            )
+        );
+        assert!(
+            prompt.contains(
+                "Prefer the repo's real entrypoints, manifests, and changed surface area over generic example paths"
+            )
+        );
+        assert!(
+            prompt.contains(
+                "make the requested change and run the remaining build/test verification"
             )
         );
     }
@@ -6552,18 +7697,18 @@ mod tests {
     fn continuation_prompt_explains_redundant_file_inspection_skip() {
         let pipeline = AgentPipeline::new(AppConfig::default());
         let prompt = pipeline.build_tool_continuation_prompt(
-            "User: finish the tauri app",
+            "User: finish the app",
             "I will inspect the scaffold again.",
             &[ToolCallRecord {
                 id: "1".to_string(),
                 name: "file".to_string(),
                 arguments: json!({
                     "operation": "tree",
-                    "path": "hello-tauri"
+                    "path": "sample-app"
                 })
                 .to_string(),
                 result: ToolResult::Skipped(
-                    "Loop breaker: skipped a redundant repeated `file.tree` inspection of `hello-tauri` after 2 prior successful identical inspections in this run.".to_string(),
+                    "Loop breaker: skipped a redundant repeated `file.tree` inspection of `sample-app` after 2 prior successful identical inspections in this run.".to_string(),
                 ),
                 duration_ms: 1,
             }],
@@ -6574,6 +7719,72 @@ mod tests {
         );
         assert!(prompt.contains("Stop re-listing the scaffold root"));
         assert!(prompt.contains("edit it, then run the requested verification commands"));
+    }
+
+    #[test]
+    fn continuation_prompt_pushes_full_write_after_malformed_file_edit_loop() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let prompt = pipeline.build_tool_continuation_prompt(
+            "User: create a hello world app",
+            "I will try editing the file again.",
+            &[
+                ToolCallRecord {
+                    id: "1".to_string(),
+                    name: "file".to_string(),
+                    arguments: json!({
+                        "operation": "edit",
+                        "path": "sample-app/app/main.py",
+                        "old": "print('hello')",
+                    })
+                    .to_string(),
+                    result: ToolResult::Error(
+                        "Missing required field 'new' for file edit operation".to_string(),
+                    ),
+                    duration_ms: 1,
+                },
+                ToolCallRecord {
+                    id: "2".to_string(),
+                    name: "file".to_string(),
+                    arguments: json!({
+                        "operation": "edit",
+                        "path": "sample-app/app/main.py",
+                        "old": "print('hello')",
+                    })
+                    .to_string(),
+                    result: ToolResult::Skipped(
+                        "Loop breaker: skipped a repeated malformed `file.edit` call without valid `old`/`new` replacement text after 1 prior similar non-successful attempts in this run.".to_string(),
+                    ),
+                    duration_ms: 1,
+                },
+            ],
+        );
+
+        assert!(prompt.contains("prefer one corrected `write_file` with full `content`"));
+        assert!(prompt.contains("instead of repeating partial edit attempts"));
+    }
+
+    #[test]
+    fn continuation_prompt_pushes_file_write_after_malformed_code_batch_edit() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let prompt = pipeline.build_tool_continuation_prompt(
+            "User: create a hello world app",
+            "I will retry the code edit.",
+            &[ToolCallRecord {
+                id: "1".to_string(),
+                name: "code".to_string(),
+                arguments: json!({
+                    "operation": "batch_edit",
+                    "path": "sample-app/app/main.py",
+                })
+                .to_string(),
+                result: ToolResult::Error(
+                    "Missing required field 'edits' for code batch_edit operation".to_string(),
+                ),
+                duration_ms: 1,
+            }],
+        );
+
+        assert!(prompt.contains("a single `write_file` with full `content` is often simpler"));
     }
 
     #[test]
@@ -6600,17 +7811,17 @@ mod tests {
     }
 
     #[test]
-    fn continuation_prompt_forces_specific_recovery_after_repeated_non_tty_tauri_failures() {
+    fn continuation_prompt_forces_specific_recovery_after_repeated_non_tty_scaffold_failures() {
         let pipeline = AgentPipeline::new(AppConfig::default());
         let prompt = pipeline.build_tool_continuation_prompt(
-            "User: create a tauri app and build/test it",
+            "User: create an app and build/test it",
             "I will try another shell fallback.",
             &[
                 ToolCallRecord {
                     id: "1".to_string(),
                     name: "shell".to_string(),
                     arguments: json!({
-                        "command": "npx create-tauri-app@latest hello-tauri --template vanilla --yes"
+                        "command": "npx create-project-app@latest sample-app --template basic --yes"
                     })
                     .to_string(),
                     result: ToolResult::Error(
@@ -6622,7 +7833,7 @@ mod tests {
                     id: "2".to_string(),
                     name: "shell".to_string(),
                     arguments: json!({
-                        "command": "npx create-tauri-app@latest hello-tauri --template vanilla --yes"
+                        "command": "npx create-project-app@latest sample-app --template basic --yes"
                     })
                     .to_string(),
                     result: ToolResult::Error(
@@ -6633,21 +7844,17 @@ mod tests {
             ],
         );
 
-        assert!(prompt.contains("`create-tauri-app` has already failed multiple times"));
-        assert!(prompt.contains("do not manually synthesize Tauri files with `cat <<EOF`"));
-        assert!(prompt.contains("npx create-tauri-app --help"));
-        assert!(
-            prompt.contains(
-                "npx create-tauri-app <app-dir> --yes --template vanilla --tauri-version 2"
-            )
-        );
+        assert!(prompt.contains("scaffold/init command has already failed multiple times"));
+        assert!(prompt.contains("do not manually synthesize the project"));
+        assert!(prompt.contains("check the scaffold tool's `--help`"));
+        assert!(prompt.contains("documented non-interactive scaffold/init command"));
     }
 
     #[test]
     fn shell_failure_format_detects_interactive_timeout_prompts() {
         let message = AgentPipeline::format_shell_failure(
             124,
-            "Need to install the following packages:\ncreate-tauri-app@4.6.2\nOk to proceed? (y)\n",
+            "Need to install the following packages:\ncreate-project-app@4.6.2\nOk to proceed? (y)\n",
             "",
         );
 
@@ -6668,7 +7875,7 @@ mod tests {
             .execute_tool(
                 "shell",
                 &json!({
-                    "command": "printf 'Need to install the following packages:\ncreate-tauri-app@4.6.2\nOk to proceed? (y)\n'; sleep 2",
+                    "command": "printf 'Need to install the following packages:\ncreate-project-app@4.6.2\nOk to proceed? (y)\n'; sleep 2",
                     "timeout_secs": 1,
                 })
                 .to_string(),
@@ -6683,6 +7890,137 @@ mod tests {
                 assert!(message.contains("Need to install the following packages"));
             }
             other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_shell_tool_emits_keepalive_for_silent_commands() {
+        use gestura_core_streaming::StreamChunk;
+
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let temp = TempDir::new().expect("temp dir");
+        let workspace =
+            SessionWorkspace::from_directory("shell-keepalive-test", temp.path().to_path_buf())
+                .expect("workspace");
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        let silent_command = if cfg!(target_os = "windows") {
+            "powershell -NoProfile -Command \"Start-Sleep -Seconds 1\""
+        } else {
+            "sleep 1"
+        };
+
+        let result = tokio::spawn({
+            let tx = tx.clone();
+            async move {
+                pipeline
+                    .execute_tool(
+                        "shell",
+                        &json!({
+                            "command": silent_command,
+                            "timeout_secs": 5,
+                        })
+                        .to_string(),
+                        Some(&workspace),
+                        Some(&tx),
+                    )
+                    .await
+            }
+        });
+
+        let mut saw_keepalive = false;
+        for _ in 0..8 {
+            let chunk = tokio::time::timeout(tokio::time::Duration::from_secs(2), rx.recv())
+                .await
+                .expect("stream chunk timeout")
+                .expect("stream should remain open while command runs");
+
+            if let StreamChunk::Status { message } = chunk
+                && message.contains("Tool `shell` still running...")
+            {
+                saw_keepalive = true;
+                break;
+            }
+        }
+
+        let tool_result = result.await.expect("shell execution task should join");
+        assert!(matches!(tool_result, ToolResult::Success(_)));
+        assert!(
+            saw_keepalive,
+            "expected a keepalive status for silent shell work"
+        );
+
+        crate::tools::shell_sessions::shutdown_session("shell-keepalive-test")
+            .await
+            .expect("shell session should shut down cleanly");
+    }
+
+    #[tokio::test]
+    async fn generic_tool_keepalive_mentions_tool_name() {
+        use gestura_core_streaming::StreamChunk;
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let keepalive = tokio::spawn(emit_streaming_tool_keepalive(
+            tx,
+            Instant::now(),
+            "file".to_string(),
+        ));
+
+        let chunk = tokio::time::timeout(tokio::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("keepalive chunk timeout")
+            .expect("keepalive should emit a chunk");
+
+        match chunk {
+            StreamChunk::Status { message } => {
+                assert!(message.contains("Tool `file` still running..."));
+            }
+            other => panic!("expected status chunk, got {other:?}"),
+        }
+
+        keepalive.abort();
+        let _ = keepalive.await;
+    }
+
+    #[tokio::test]
+    async fn streaming_shell_tool_strips_matching_leading_cd_from_command() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let temp = TempDir::new().expect("temp dir");
+        let workspace =
+            SessionWorkspace::from_directory("shell-stream-cwd-test", temp.path().to_path_buf())
+                .expect("workspace");
+        let app_dir = temp.path().join("sample-app");
+        std::fs::create_dir_all(&app_dir).expect("create app dir");
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+
+        let result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(15),
+            pipeline.execute_tool(
+                "shell",
+                &json!({
+                    "command": "cd sample-app && pwd",
+                    "cwd": "sample-app",
+                    "timeout_secs": 10,
+                })
+                .to_string(),
+                Some(&workspace),
+                Some(&tx),
+            ),
+        )
+        .await
+        .expect("streaming shell tool should complete");
+
+        crate::tools::shell_sessions::shutdown_session(&workspace.session_id)
+            .await
+            .expect("shutdown PTY session pool");
+        drop(tx);
+        drain.await.expect("join stream drain task");
+
+        match result {
+            ToolResult::Success(stdout) => {
+                assert!(stdout.contains(app_dir.to_string_lossy().as_ref()));
+            }
+            other => panic!("expected success, got {other:?}"),
         }
     }
 

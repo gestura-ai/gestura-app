@@ -572,6 +572,25 @@ fn run_main_loop(
                             app.set_status(msg.clone());
                             push_activity_info(app, format!("ℹ️ {}", msg));
                         }
+                        StreamChunk::Narration { message, .. } => {
+                            let msg = message;
+                            app.set_status(msg.clone());
+                            push_activity_info(app, format!("🗣️ {}", msg));
+                        }
+                        StreamChunk::TaskRuntimeSnapshot { snapshot } => {
+                            app.set_status(snapshot.status_message.clone());
+                            if let Some(current_task) = snapshot.current_task {
+                                push_activity_info(
+                                    app,
+                                    format!(
+                                        "🧭 Current task: {} [{}]",
+                                        current_task.name, current_task.status
+                                    ),
+                                );
+                            } else {
+                                push_activity_info(app, format!("🧭 {}", snapshot.status_message));
+                            }
+                        }
                         StreamChunk::Text(text) => {
                             stream_state.content.push_str(&text);
                             app.update_last_message(&stream_state.content);
@@ -611,12 +630,28 @@ fn run_main_loop(
                             stream_state
                                 .completed_tool_calls
                                 .push(gestura_core::ToolCallRecord {
-                                    id: tc_id,
-                                    name: tc_name,
-                                    arguments: tc_args,
+                                    id: tc_id.clone(),
+                                    name: tc_name.clone(),
+                                    arguments: tc_args.clone(),
                                     result,
                                     duration_ms,
                                 });
+                            if !tc_id.is_empty() {
+                                app.session.state.record_tool_call(
+                                    gestura_core::agent_sessions::SessionToolCall {
+                                        id: tc_id.clone(),
+                                        name: tc_name,
+                                        arguments: tc_args,
+                                        result: output.clone(),
+                                        success,
+                                        duration_ms,
+                                        timestamp: chrono::Utc::now(),
+                                    },
+                                );
+                                if !output.trim().is_empty() {
+                                    app.session.state.add_tool_message(&tc_id, &output);
+                                }
+                            }
 
                             let formatted = format_tool_output_tui(&output);
                             let (prefix, is_error) = if success {
@@ -700,6 +735,7 @@ fn run_main_loop(
                                 );
                             }
                             app.finalize_streaming_message();
+                            let _ = super::save_cli_session(&app.session);
                             app.is_loading = false;
                             // Clear any previous error on successful completion
                             app.clear_error();
@@ -753,13 +789,6 @@ fn run_main_loop(
                         }
                         StreamChunk::AgentLoopIteration { iteration } => {
                             if iteration > 0 {
-                                push_activity_info(
-                                    app,
-                                    format!(
-                                        "◆ Iteration {} — reviewing tool results…",
-                                        iteration + 1
-                                    ),
-                                );
                                 app.set_status("Reviewing tool results…".to_string());
                             }
                         }
@@ -798,6 +827,33 @@ fn run_main_loop(
                                 format!("⚙ shell {:?}: {} (exit {})", state, command, code)
                             } else {
                                 format!("⚙ shell {:?}: {}", state, command)
+                            };
+                            push_activity_info(app, msg);
+                        }
+                        StreamChunk::ShellSessionLifecycle {
+                            shell_session_id,
+                            state,
+                            cwd,
+                            active_command,
+                            available_for_reuse,
+                            ..
+                        } => {
+                            let cwd = cwd.unwrap_or_else(|| "<unknown cwd>".to_string());
+                            let reuse = if available_for_reuse {
+                                "reusable"
+                            } else {
+                                "reserved"
+                            };
+                            let msg = if let Some(command) = active_command {
+                                format!(
+                                    "🖥 shell session {} {:?} ({}, cwd: {}, active: {})",
+                                    shell_session_id, state, reuse, cwd, command
+                                )
+                            } else {
+                                format!(
+                                    "🖥 shell session {} {:?} ({}, cwd: {})",
+                                    shell_session_id, state, reuse, cwd
+                                )
                             };
                             push_activity_info(app, msg);
                         }
@@ -2108,10 +2164,7 @@ fn open_sessions_browser(app: &mut TuiApp) {
 
 /// Open the interactive tasks browser overlay.
 fn open_tasks_browser(app: &mut TuiApp) {
-    use gestura_core::tasks::TaskManager;
-
-    let task_manager =
-        TaskManager::new(dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")));
+    let task_manager = gestura_core::get_global_task_manager();
     match task_manager.get_hierarchy(&app.session.id) {
         Ok(hierarchy) => {
             let mut entries: Vec<app::TaskBrowserEntry> = Vec::new();
@@ -2924,7 +2977,6 @@ fn handle_rewind_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
     use gestura_core::checkpoints::{
         CheckpointManager, CheckpointRetentionPolicy, FileCheckpointStore,
     };
-    use gestura_core::tasks::TaskManager;
 
     let manager = CheckpointManager::new(
         FileCheckpointStore::new_default(),
@@ -2981,10 +3033,8 @@ fn handle_rewind_command(app: &mut TuiApp, args: &[&str]) -> Result<()> {
                 1 => {
                     let cp_id = found[0].id;
                     let session_store = FileAgentSessionStore::default();
-                    let task_manager = TaskManager::new(
-                        dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
-                    );
-                    match manager.apply_session_checkpoint(&cp_id, &session_store, &task_manager) {
+                    let task_manager = gestura_core::get_global_task_manager();
+                    match manager.apply_session_checkpoint(&cp_id, &session_store, task_manager) {
                         Ok(payload) => {
                             // Update app state with restored session
                             app.session = payload.session;
@@ -3024,14 +3074,11 @@ fn handle_tasks_command(
     args: &[&str],
     rt: &tokio::runtime::Runtime,
 ) -> Result<()> {
-    use gestura_core::tasks::TaskManager;
-
-    let task_manager =
-        TaskManager::new(dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")));
+    let task_manager = gestura_core::get_global_task_manager();
 
     match super::slash::run_tasks_subcommand(
         args,
-        &task_manager,
+        task_manager,
         &app.session.id,
         app.session.workspace_dir().map(|path| path.as_path()),
     ) {
@@ -3064,7 +3111,7 @@ fn handle_tasks_command(
             app.set_error(&e);
             if let Ok(out) = super::slash::run_tasks_subcommand(
                 &["help"],
-                &task_manager,
+                task_manager,
                 &app.session.id,
                 app.session.workspace_dir().map(|path| path.as_path()),
             ) {

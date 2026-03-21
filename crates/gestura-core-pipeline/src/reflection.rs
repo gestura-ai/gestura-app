@@ -582,7 +582,7 @@ fn parse_tag_values(value: &str) -> Vec<String> {
     }
     trimmed
         .split(',')
-        .map(|tag| clean_reflection_field_value(tag))
+        .map(clean_reflection_field_value)
         .filter(|tag| !tag.is_empty())
         .collect()
 }

@@ -242,6 +242,7 @@ impl ToolInspectionManager {
             ToolMetadata::read_only("list_directory", "List files in a directory"),
             ToolMetadata::read_only("search_files", "Search for files by pattern"),
             ToolMetadata::write("write_file", "Write content to a file"),
+            ToolMetadata::write("edit_file", "Apply an exact replacement inside a file"),
             ToolMetadata::write("create_file", "Create a new file"),
             ToolMetadata::write("delete_file", "Delete a file"),
             ToolMetadata::shell("shell", "Execute a shell command"),

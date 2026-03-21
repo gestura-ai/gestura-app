@@ -5,19 +5,21 @@ use gestura_core_foundation::{
     telemetry::get_telemetry_manager,
 };
 use opentelemetry::trace::TraceContextExt as _;
+use std::future::Future;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     time::Instant,
 };
+use tracing::Instrument as _;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-/// Request-scoped telemetry helper for the agent pipeline.
-///
-/// Keeping the emission logic here lets the pipeline and agent loop report
-/// lifecycle events without duplicating metric names, tags, or best-effort
-/// guards. Every method becomes a no-op when telemetry is disabled.
+// Request-scoped telemetry helper for the agent pipeline.
+//
+// Keeping the emission logic here lets the pipeline and agent loop report
+// lifecycle events without duplicating metric names, tags, or best-effort
+// guards. Every method becomes a no-op when telemetry is disabled.
 
 /// Final outcome recorded for a single request execution.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -141,6 +143,18 @@ impl AgentRequestTelemetry {
             )
             .await;
         telemetry
+    }
+
+    /// Runs async work inside the request span so nested tracing spans inherit
+    /// the same trace context.
+    pub(super) async fn in_request_scope<F>(&self, future: F) -> F::Output
+    where
+        F: Future,
+    {
+        match self.request_span.as_ref() {
+            Some(request_span) => future.instrument(request_span.clone()).await,
+            None => future.await,
+        }
     }
 
     /// Updates the terminal outcome for early-exit paths such as cancel/pause.
@@ -656,6 +670,8 @@ fn error_tag(error: &AppError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracing::subscriber;
+    use tracing_subscriber::fmt;
 
     #[test]
     fn preview_telemetry_text_truncates_long_values() {
@@ -674,5 +690,49 @@ mod tests {
             preview_tool_result(&ToolResult::Skipped("later".into())).as_deref(),
             Some("later")
         );
+    }
+
+    #[tokio::test]
+    async fn in_request_scope_sets_current_span_for_async_work() {
+        let request = AgentRequest::new("trace this");
+        let subscriber = fmt().with_max_level(tracing::Level::TRACE).finish();
+        let _guard = subscriber::set_default(subscriber);
+
+        let outside_request_scope = Span::current()
+            .metadata()
+            .map(|meta| meta.name().to_string());
+        assert_ne!(
+            outside_request_scope.as_deref(),
+            Some("agent.pipeline.request")
+        );
+
+        let telemetry =
+            AgentRequestTelemetry::start(&request, RequestRunMode::Streaming, true).await;
+
+        let current_span_name = telemetry
+            .in_request_scope(async {
+                Span::current()
+                    .metadata()
+                    .map(|meta| meta.name().to_string())
+            })
+            .await;
+
+        let spawned_span_name = telemetry
+            .in_request_scope(async {
+                tokio::spawn(
+                    async {
+                        Span::current()
+                            .metadata()
+                            .map(|meta| meta.name().to_string())
+                    }
+                    .instrument(tracing::Span::current()),
+                )
+                .await
+                .expect("spawned task should complete successfully")
+            })
+            .await;
+
+        assert_eq!(current_span_name.as_deref(), Some("agent.pipeline.request"));
+        assert_eq!(spawned_span_name.as_deref(), Some("agent.pipeline.request"));
     }
 }

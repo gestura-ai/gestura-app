@@ -37,6 +37,9 @@ pub use web::WebTools;
 // Async wrappers from the `gestura-core-tools` domain crate.
 pub use gestura_core_tools::{code_async, file_async, git_async, screen_async, shell_async};
 
+/// PTY-backed reusable interactive shell sessions.
+pub mod shell_sessions;
+
 /// Streaming shell execution for real-time output to the frontend.
 ///
 /// Unlike `shell_async`, which blocks until the command finishes and returns a
@@ -95,6 +98,7 @@ pub mod shell_streaming {
         let _ = tx
             .send(StreamChunk::ShellLifecycle {
                 process_id: process_id.clone(),
+                shell_session_id: None,
                 state: ShellProcessState::Started,
                 exit_code: None,
                 duration_ms: None,
@@ -126,6 +130,7 @@ pub mod shell_streaming {
                 let _ = tx_out
                     .send(StreamChunk::ShellOutput {
                         process_id: pid_out.clone(),
+                        shell_session_id: None,
                         stream: ShellOutputStream::Stdout,
                         data: format!("{line}\n"),
                     })
@@ -145,6 +150,7 @@ pub mod shell_streaming {
                 let _ = tx_err
                     .send(StreamChunk::ShellOutput {
                         process_id: pid_err.clone(),
+                        shell_session_id: None,
                         stream: ShellOutputStream::Stderr,
                         data: format!("{line}\n"),
                     })
@@ -193,6 +199,7 @@ pub mod shell_streaming {
         let _ = tx
             .send(StreamChunk::ShellLifecycle {
                 process_id: process_id.clone(),
+                shell_session_id: None,
                 state: final_state,
                 exit_code: Some(exit_code),
                 duration_ms: Some(duration_ms),
