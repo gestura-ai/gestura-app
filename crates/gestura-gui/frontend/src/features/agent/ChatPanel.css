@@ -1744,7 +1744,8 @@ html[data-theme="dark"] .shell-console {
 .agent-narration-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: space-between;
+  gap: 10px;
   width: 100%;
   padding: 0;
   border: 0;
@@ -1768,6 +1769,8 @@ html[data-theme="dark"] .shell-console {
 }
 
 .agent-narration-title {
+  flex: 1 1 auto;
+  min-width: 0;
   font-weight: 700;
   color: var(--agent-text);
   overflow: hidden;

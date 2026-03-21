@@ -245,7 +245,13 @@ const IterationMarkerView: React.FC<{ block: IterationMarkerBlock }> = ({ block 
   </div>
 );
 
-const NARRATION_COLLAPSE_THRESHOLD = 220;
+const NARRATION_TITLE_THRESHOLD_WORDS = 15;
+const NARRATION_AUTO_EXPAND_THRESHOLD_WORDS = 30;
+
+function narrationWordCount(message: string): number {
+  const trimmed = message.trim();
+  return trimmed ? trimmed.split(/\s+/).length : 0;
+}
 
 function narrationFallbackTitle(stage: NarrationBlock['stage']): string {
   switch (stage) {
@@ -261,11 +267,13 @@ function narrationFallbackTitle(stage: NarrationBlock['stage']): string {
 }
 
 const NarrationBlockView: React.FC<{ block: NarrationBlock }> = ({ block }) => {
-  const [expanded, setExpanded] = useState(false);
-  const isCollapsible = block.message.trim().length > NARRATION_COLLAPSE_THRESHOLD;
+  const wordCount = narrationWordCount(block.message);
+  const usesTitle = wordCount > NARRATION_TITLE_THRESHOLD_WORDS;
+  const startsExpanded = usesTitle && wordCount <= NARRATION_AUTO_EXPAND_THRESHOLD_WORDS;
+  const [expanded, setExpanded] = useState(startsExpanded);
   const title = (block.title?.trim() || narrationFallbackTitle(block.stage)).trim();
 
-  if (!isCollapsible) {
+  if (!usesTitle) {
     return (
       <p className="agent-narration">
         <span className="agent-narration-text">{block.message}</span>
@@ -281,8 +289,8 @@ const NarrationBlockView: React.FC<{ block: NarrationBlock }> = ({ block }) => {
         aria-expanded={expanded}
         onClick={() => setExpanded((value) => !value)}
       >
-        <span className="agent-narration-chevron" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
         <strong className="agent-narration-title">{title}</strong>
+        <span className="agent-narration-chevron" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
       </button>
       {expanded && (
         <div className="agent-narration-text">{block.message}</div>

@@ -153,5 +153,30 @@ describe('MessageList', () => {
 
     expect(screen.getByText(longNarration)).toBeInTheDocument();
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(toggle.firstElementChild).toHaveClass('agent-narration-title');
+    expect(toggle.lastElementChild).toHaveClass('agent-narration-chevron');
+  });
+
+  it('auto-expands titled narration up to 30 words', () => {
+    const mediumNarration = 'I’m reviewing the latest terminal output, checking the changed files, and confirming the next safe step before I make the update in the current session.';
+
+    renderMessageList([{
+      id: 'message-5',
+      role: 'assistant',
+      rawMarkdown: '',
+      isStreaming: false,
+      timestamp: Date.now(),
+      blocks: [{
+        kind: 'narration',
+        id: 'narration-3',
+        title: 'Reviewing current progress',
+        stage: 'progress',
+        message: mediumNarration,
+      }],
+    }]);
+
+    const toggle = screen.getByRole('button', { name: 'Reviewing current progress' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText(mediumNarration)).toBeInTheDocument();
   });
 });
