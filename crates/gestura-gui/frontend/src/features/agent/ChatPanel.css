@@ -39,34 +39,19 @@
 .header-title {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 2px;
   font-weight: 600;
   font-size: 15px;
   opacity: 0.9;
 }
 
-/* Header agent icon — inline SVG, not mask-image */
-.header-title .icon-message {
+/* Header brand logo */
+.header-title .header-logo {
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1em;
-  height: 1em;
-}
-
-.header-title .icon-message::before {
-  display: none;
-}
-
-.header-title .icon-message>svg {
-  width: 1em;
-  height: 1em;
-  display: block;
-  stroke: currentColor;
-  fill: none;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  object-fit: contain;
 }
 
 .header-controls {
@@ -2088,6 +2073,33 @@ html[data-theme="dark"] .shell-console {
   font-size: 14px;
   font-weight: 600;
   margin: 0;
+}
+
+.session-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.session-panel-title-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: var(--accent-primary);
+  flex-shrink: 0;
+}
+
+.session-panel-title-copy {
+  min-width: 0;
+}
+
+.session-panel-subtitle {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 .session-panel-close {

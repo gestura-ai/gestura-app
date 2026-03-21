@@ -392,6 +392,8 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
               sessionId={sessionId}
               workspaceRoot={sessionWorkspace}
               onOpenFile={handleOpenFile}
+              onWorkspaceChanged={handleWorkspaceChanged}
+              onShowToast={toastState.showToast}
               style={explorerStyle}
             />
           )}

@@ -12,7 +12,9 @@ import {
   explorerGetRoot,
   explorerListDir,
   explorerGitStatus,
+  explorerOpenRootInFileManager,
 } from '../../../services/tauri/explorer';
+import { pickWorkspaceDirectory } from '../../../services/tauri/agent';
 import {
   editorCreateFile,
   editorDeleteFile,
@@ -168,7 +170,17 @@ export interface ExplorerPanelProps {
   sessionId: string;
   workspaceRoot?: string | null;
   onOpenFile: (relPath: string) => void;
+  onWorkspaceChanged?: (workspace: string) => void;
+  onShowToast?: (message: string, kind?: 'success' | 'error' | 'warning' | 'info') => void;
   style?: React.CSSProperties;
+}
+
+function fileManagerLabel(): string {
+  if (typeof navigator === 'undefined') return 'File Manager';
+  const platform = `${navigator.platform ?? ''} ${navigator.userAgent ?? ''}`.toLowerCase();
+  if (platform.includes('mac')) return 'Finder';
+  if (platform.includes('win')) return 'File Explorer';
+  return 'File Manager';
 }
 
 // ─── ExplorerPanel ───────────────────────────────────────────────────────────
@@ -177,6 +189,8 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({
   sessionId,
   workspaceRoot: _workspaceRoot,
   onOpenFile,
+  onWorkspaceChanged,
+  onShowToast,
   style,
 }) => {
   const [root, setRoot] = useState<string>('');
@@ -184,6 +198,7 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({
   const [rootEntries, setRootEntries] = useState<ExplorerEntry[]>([]);
   const [gitStatus, setGitStatus] = useState<Record<string, ExplorerGitPathStatus>>({});
   const [ctxMenu, setCtxMenu] = useState<ContextMenu | null>(null);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState<ExplorerEntry | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [newName, setNewName] = useState('');
@@ -191,6 +206,7 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({
   /** Entry pending delete confirmation — null means no dialog is open. */
   const [deleteConfirm, setDeleteConfirm] = useState<ExplorerEntry | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const headerMenuRef = useRef<HTMLDivElement>(null);
 
   // Incremented whenever the agent mutates the workspace (file/shell/git tool completes).
   const [refreshKey, setRefreshKey] = useState(0);
@@ -232,18 +248,25 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({
       if (ctxMenu && menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setCtxMenu(null);
       }
+      if (headerMenuOpen && headerMenuRef.current && !headerMenuRef.current.contains(e.target as Node)) {
+        setHeaderMenuOpen(false);
+      }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [ctxMenu]);
+  }, [ctxMenu, headerMenuOpen]);
 
   // Dismiss the delete-confirm dialog on Escape
   useEffect(() => {
-    if (!deleteConfirm) return;
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setDeleteConfirm(null); };
+    if (!deleteConfirm && !headerMenuOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (deleteConfirm) setDeleteConfirm(null);
+      if (headerMenuOpen) setHeaderMenuOpen(false);
+    };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [deleteConfirm]);
+  }, [deleteConfirm, headerMenuOpen]);
 
   const handleCtxMenu = useCallback((e: React.MouseEvent, entry?: ExplorerEntry) => {
     e.preventDefault();
@@ -282,7 +305,31 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({
     if (res) setRootEntries(res.entries.sort(dirFirstSort));
   }, [sessionId]);
 
-  const rootName = root.split('/').pop() ?? root;
+  const openInLabel = useMemo(() => fileManagerLabel(), []);
+
+  const handleOpenInFileManager = useCallback(async () => {
+    if (!root) return;
+    setHeaderMenuOpen(false);
+
+    try {
+      await explorerOpenRootInFileManager(sessionId);
+      onShowToast?.(`Opened project root in ${openInLabel}`, 'success');
+    } catch (error) {
+      onShowToast?.(`Failed to open project root: ${error}`, 'error');
+    }
+  }, [onShowToast, openInLabel, root, sessionId]);
+
+  const handleChangeProjectRoot = useCallback(async () => {
+    setHeaderMenuOpen(false);
+    try {
+      const dir = await pickWorkspaceDirectory(sessionId);
+      if (!dir) return;
+      onWorkspaceChanged?.(dir);
+      onShowToast?.('Workspace updated', 'success');
+    } catch (error) {
+      onShowToast?.(`Failed to change project root: ${error}`, 'error');
+    }
+  }, [onShowToast, onWorkspaceChanged, sessionId]);
 
   return (
     <div className="agent-panel agent-panel--explorer" style={style}>
@@ -290,9 +337,40 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({
         <div className="explorer-header">
           <div className="explorer-title-container">
             <span className="icon-folder" aria-hidden="true" />
-            <span className="explorer-title" title={root}>{rootName || 'Explorer'}</span>
+            <span className="explorer-title" title={root || 'Project Files'}>Project Files</span>
           </div>
-          {isGitRepo && <span className="explorer-git-badge" title="Git repository">⎇</span>}
+          <div className="explorer-header-actions">
+            {isGitRepo && <span className="explorer-git-badge" title="Git repository">⎇</span>}
+            <div className="explorer-header-menu-wrap" ref={headerMenuRef}>
+              <button
+                type="button"
+                className="explorer-header-menu-button"
+                aria-label="Project file actions"
+                aria-haspopup="menu"
+                aria-expanded={headerMenuOpen}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setHeaderMenuOpen((open) => !open);
+                }}
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                  <circle cx="8" cy="3" r="1.2" fill="currentColor" />
+                  <circle cx="8" cy="8" r="1.2" fill="currentColor" />
+                  <circle cx="8" cy="13" r="1.2" fill="currentColor" />
+                </svg>
+              </button>
+              {headerMenuOpen && (
+                <div className="explorer-header-menu" role="menu" aria-label="Project file actions menu">
+                  <button type="button" role="menuitem" onClick={() => { void handleOpenInFileManager(); }}>
+                    Open in {openInLabel}
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => { void handleChangeProjectRoot(); }}>
+                    Change project root…
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         <div className="explorer-tree" role="tree">

@@ -2,7 +2,7 @@
  * ChatPanel — agent chat panel (header + messages + overlays).
  * Orchestrates useChatSession and renders overlays using app-scoped panel/toast state.
  *
- * Header matches agent.html: inline SVG icon, "Gestura Agent", status badge,
+ * Header matches agent.html: Gestura brand logo, "Gestura Agent", status badge,
  * settings gear (opens MenuPanel). The header and quick launch bar are portaled
  * into app-level docks so they can span the full window, while the text input
  * and message list stay inside the chat panel.
@@ -22,6 +22,7 @@ import { KnowledgePanel } from './KnowledgePanel';
 import { MemoryConsolePanel } from '../../memory/components/MemoryConsolePanel';
 import { ProvidersPanel } from './ProvidersPanel';
 import { SessionSettingsPanel } from './SessionSettingsPanel';
+import { ToolsPanel } from './ToolsPanel';
 import { openShellForSession } from '../../../services/tauri/agent';
 
 export interface ChatPanelProps {
@@ -148,11 +149,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const header = (
     <div className="header">
       <div className="header-title">
-        <span className="icon-message" aria-hidden="true">
-          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
-            <path d="M21 15C21 15.5304 20.7893 16.0391 20.4142 16.4142C20.0391 16.7893 19.5304 17 19 17H7L3 21V5C3 4.46957 3.21071 3.96086 3.58579 3.58579C3.96086 3.21071 4.46957 3 5 3H19C19.5304 3 20.0391 3.21071 20.4142 3.58579C20.7893 3.96086 21 4.46957 21 5V15Z" />
-          </svg>
-        </span>
+        <img className="header-logo" src="/assets/gestura-app.svg" alt="" aria-hidden="true" />
         Gestura Agent
       </div>
       <div className="header-controls">
@@ -239,9 +236,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       <ProvidersPanel isOpen={isOpen('providers')} onClose={closePanel}
         sessionId={sessionId} onShowToast={showToast} />
 
-      <SessionSettingsPanel isOpen={isOpen('settings')} onClose={closePanel}
+      <ToolsPanel isOpen={isOpen('tools')} onClose={closePanel}
         sessionId={sessionId} toolSettings={toolSettings}
         onRefreshToolSettings={refreshToolSettings}
+        onShowToast={showToast} />
+
+      <SessionSettingsPanel isOpen={isOpen('settings')} onClose={closePanel}
+        sessionId={sessionId} toolSettings={toolSettings}
         onWorkspaceChanged={onWorkspaceChanged}
         onShowToast={showToast} />
     </div>
