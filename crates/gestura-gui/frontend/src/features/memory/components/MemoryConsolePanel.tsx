@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { Task, TaskHierarchy } from '../../agent/types';
 import {
   clearMemoryConsoleEntries,
   deleteMemoryEntry,
@@ -28,9 +29,20 @@ type TabKey = 'overview' | 'search' | 'working' | 'durable' | 'promotions' | 'ta
 interface MemoryConsolePanelProps {
   sessionId?: string | null;
   workspaceDir?: string | null;
+  tasks?: TaskHierarchy;
+  refreshSignal?: number;
   allowSessionSelection?: boolean;
   title?: string;
 }
+
+type TaskMemoryLifecycleEvent = {
+  phase?: string;
+  summary?: string;
+  scope?: string | null;
+  memory_type?: string | null;
+  memory_file_path?: string | null;
+  recorded_at?: string;
+};
 
 function promotionSourceLabel(source: SessionMemoryPromotionCandidate['source']) {
   switch (source) {
@@ -64,9 +76,42 @@ function countForKey(counts: Array<{ key: string; count: number }>, key: string)
   return counts.find((item) => item.key === key)?.count ?? 0;
 }
 
+function flattenTasks(tasks: TaskHierarchy | undefined): Task[] {
+  if (!tasks?.length) return [];
+
+  const flattened: Task[] = [];
+  const visit = (task: Task) => {
+    flattened.push(task);
+    task.subtasks?.forEach(visit);
+  };
+
+  tasks.forEach(visit);
+  return flattened;
+}
+
+function formatTaskStatus(status: Task['status']): string {
+  switch (status) {
+    case 'NotStarted': return 'not started';
+    case 'InProgress': return 'in progress';
+    case 'Completed': return 'completed';
+    case 'Cancelled': return 'cancelled';
+    case 'Blocked': return 'blocked';
+  }
+}
+
+function getTaskMemoryEvents(detail: TaskMemoryConsoleDetail | null): TaskMemoryLifecycleEvent[] {
+  return (detail?.lifecycle.events ?? []) as TaskMemoryLifecycleEvent[];
+}
+
+function formatEventPhase(phase?: string): string {
+  return phase ? phase.replace(/_/g, ' ').toLowerCase() : 'event';
+}
+
 export function MemoryConsolePanel({
   sessionId,
   workspaceDir,
+  tasks,
+  refreshSignal = 0,
   allowSessionSelection = false,
   title = 'Memory',
 }: MemoryConsolePanelProps) {
@@ -84,6 +129,16 @@ export function MemoryConsolePanel({
   const [entryDetail, setEntryDetail] = useState<MemoryConsoleEntryDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const lastRefreshSignalRef = useRef(refreshSignal);
+
+  const sessionTasks = useMemo(() => flattenTasks(tasks), [tasks]);
+  const preferredTaskId = useMemo(
+    () => sessionTasks.find((task) => task.status === 'InProgress')?.id
+      ?? sessionTasks.find((task) => task.status === 'Completed')?.id
+      ?? sessionTasks[0]?.id
+      ?? '',
+    [sessionTasks],
+  );
 
   useEffect(() => {
     setSelectedSessionId(sessionId ?? null);
@@ -129,6 +184,62 @@ export function MemoryConsolePanel({
     refreshOverview().catch((err) => setError(String(err)));
   }, [refreshOverview]);
 
+  const loadTaskDetail = useCallback(async (nextTaskId: string, suppressErrors = false) => {
+    if (!selectedSessionId || !nextTaskId) return false;
+
+    try {
+      setTaskDetail(await getMemoryTaskLifecycle(selectedSessionId, nextTaskId));
+      setTaskId(nextTaskId);
+      if (!suppressErrors) {
+        setError(null);
+      }
+      return true;
+    } catch (err) {
+      if (!suppressErrors) {
+        setError(String(err));
+      }
+      return false;
+    }
+  }, [selectedSessionId]);
+
+  const refreshActiveMemoryTab = useCallback(async () => {
+    if (!selectedSessionId && !selectedWorkspaceDir) return;
+
+    await refreshOverview();
+
+    if (activeTab === 'working' && selectedSessionId) {
+      setWorking(await getMemoryWorkingSnapshot(selectedSessionId));
+    }
+
+    if (activeTab === 'promotions' && selectedSessionId) {
+      setPromotions(await getMemoryPromotionCandidates(selectedSessionId, 12));
+    }
+
+    if (activeTab === 'task' && selectedSessionId) {
+      const candidateIds = [taskId, preferredTaskId, ...sessionTasks.map((task) => task.id)]
+        .filter((value, index, all) => Boolean(value) && all.indexOf(value) === index);
+
+      let loaded = false;
+      for (const candidateId of candidateIds) {
+        loaded = await loadTaskDetail(candidateId, true);
+        if (loaded) break;
+      }
+
+      if (!loaded) {
+        setTaskDetail(null);
+      }
+    }
+  }, [
+    activeTab,
+    loadTaskDetail,
+    preferredTaskId,
+    refreshOverview,
+    selectedSessionId,
+    selectedWorkspaceDir,
+    sessionTasks,
+    taskId,
+  ]);
+
   useEffect(() => {
     if (activeTab === 'working' && selectedSessionId) {
       getMemoryWorkingSnapshot(selectedSessionId).then(setWorking).catch((err) => setError(String(err)));
@@ -139,6 +250,49 @@ export function MemoryConsolePanel({
         .catch((err) => setError(String(err)));
     }
   }, [activeTab, selectedSessionId]);
+
+  useEffect(() => {
+    if (activeTab !== 'task' || !selectedSessionId) {
+      return;
+    }
+
+    const candidateIds = [taskId, preferredTaskId, ...sessionTasks.map((task) => task.id)]
+      .filter((value, index, all) => Boolean(value) && all.indexOf(value) === index);
+
+    if (candidateIds.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadFirstAvailableTask = async () => {
+      for (const candidateId of candidateIds) {
+        const loaded = await loadTaskDetail(candidateId, true);
+        if (loaded || cancelled) {
+          return;
+        }
+      }
+    };
+
+    loadFirstAvailableTask().catch((err) => {
+      if (!cancelled) {
+        setError(String(err));
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, loadTaskDetail, preferredTaskId, selectedSessionId, sessionTasks, taskId]);
+
+  useEffect(() => {
+    if (lastRefreshSignalRef.current === refreshSignal) {
+      return;
+    }
+
+    lastRefreshSignalRef.current = refreshSignal;
+    refreshActiveMemoryTab().catch((err) => setError(String(err)));
+  }, [refreshActiveMemoryTab, refreshSignal]);
 
   const durableEntries = useMemo(
     () => searchResults?.durable_memory ?? overview?.recent_entries ?? [],
@@ -201,8 +355,8 @@ export function MemoryConsolePanel({
   const tabs: Array<[TabKey, string]> = [
     ['overview', 'Overview'],
     ['search', 'Search'],
-    ['working', 'Working'],
-    ['durable', 'Durable'],
+    ['working', 'Working (session)'],
+    ['durable', 'Memory Bank (durable)'],
     ['promotions', 'Promotions'],
     ['task', 'Task'],
     ['maintenance', 'Maintenance'],
@@ -213,7 +367,7 @@ export function MemoryConsolePanel({
       <div className="task-panel-header">
         <div>
           <h3>{title}</h3>
-          <p className="task-panel-subtitle">One memory console across working memory, durable memory, promotions, and task lifecycle.</p>
+          <p className="task-panel-subtitle">Short-term session working memory, long-term memory bank entries, promotions, and task lifecycle in one console.</p>
         </div>
         <div className="task-header-actions">
           {allowSessionSelection && (
@@ -259,8 +413,8 @@ export function MemoryConsolePanel({
       {activeTab === 'overview' && overview && (
         <div className="task-section-card">
           <p><strong>Workspace:</strong> {overview.workspace_dir}</p>
-          <p><strong>Durable entries:</strong> {overview.durable_total}</p>
-          <p><strong>Working resources / decisions:</strong> {overview.working_resource_count} / {overview.working_decision_count}</p>
+          <p><strong>Memory bank entries:</strong> {overview.durable_total}</p>
+          <p><strong>Session working-memory resources / decisions:</strong> {overview.working_resource_count} / {overview.working_decision_count}</p>
           <p><strong>Open blockers / promotions:</strong> {overview.open_blocker_count} / {overview.promotion_candidate_count}</p>
           <p><strong>Governance review / issues:</strong> {overview.governance_review_count} / {overview.governance_issue_count}</p>
           <p><strong>Shared cognition entries:</strong> {sharedCognitionCount}</p>
@@ -293,6 +447,7 @@ export function MemoryConsolePanel({
 
       {activeTab === 'working' && working && (
         <div className="task-section-card">
+          <p><strong>Scope:</strong> Short-term working memory for the active session only. This is not the durable memory bank.</p>
           <p><strong>Summary:</strong> {working.summary || 'No summary'}</p>
           <p><strong>Resources:</strong> {working.resources.length}</p>
           <p><strong>Decisions:</strong> {working.decisions.length}</p>
@@ -303,6 +458,7 @@ export function MemoryConsolePanel({
 
       {activeTab === 'durable' && (
         <div className="task-section-card">
+          <p><strong>Scope:</strong> Durable memory-bank entries persisted beyond the active session and available for later retrieval.</p>
           {durableEntries.map((item) => (
             <button key={item.entry_id} className="task-item" onClick={() => void openEntry(item.entry_id)}>
               {item.summary}{' '}
@@ -348,20 +504,64 @@ export function MemoryConsolePanel({
 
       {activeTab === 'task' && (
         <div className="task-section-card">
+          {sessionTasks.length > 0 && (
+            <>
+              <h4>Recent session tasks</h4>
+              <div className="task-list">
+                {sessionTasks.map((task) => (
+                  <button
+                    key={task.id}
+                    className="task-item"
+                    onClick={() => void loadTaskDetail(task.id)}
+                  >
+                    {task.name}
+                    <span className="task-path-label">{task.id} · {formatTaskStatus(task.status)}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
           <div className="task-panel-filters" style={{ gap: 8 }}>
             <input value={taskId} onChange={(e) => setTaskId(e.target.value)} placeholder="Task id" />
             <button
               className="task-create-btn"
-              onClick={() => selectedSessionId && getMemoryTaskLifecycle(selectedSessionId, taskId).then(setTaskDetail).catch((err) => setError(String(err)))}
+              onClick={() => void loadTaskDetail(taskId)}
               disabled={!selectedSessionId || !taskId}
             >
               Load
             </button>
           </div>
           {taskDetail && (
-            <p>
-              {taskDetail.lifecycle.last_memory_file_path || `${taskDetail.lifecycle.events.length} memory events`}
-            </p>
+            <>
+              <p>
+                <strong>Latest durable memory:</strong> {taskDetail.lifecycle.last_memory_file_path || 'None yet'}
+              </p>
+              <p>
+                <strong>Memory events:</strong> {taskDetail.lifecycle.events.length}
+              </p>
+              {getTaskMemoryEvents(taskDetail).length > 0 ? (
+                <div className="task-list">
+                  {getTaskMemoryEvents(taskDetail).map((event, index) => (
+                    <div key={`${event.recorded_at ?? index}-${event.summary ?? index}`} className="task-item-row">
+                      <div>
+                        <strong>{event.summary || 'Memory lifecycle event'}</strong>
+                        <div className="task-item-meta">
+                          {formatEventPhase(event.phase)}
+                          {event.scope ? ` · ${event.scope}` : ''}
+                          {event.memory_type ? ` · ${event.memory_type}` : ''}
+                          {event.memory_file_path ? ` · ${event.memory_file_path}` : ''}
+                        </div>
+                      </div>
+                      {event.recorded_at && (
+                        <span className="task-path-label">{new Date(event.recorded_at).toLocaleString()}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="task-empty">No memory lifecycle events recorded for this task yet.</div>
+              )}
+            </>
           )}
         </div>
       )}

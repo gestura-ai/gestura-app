@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { LogicalSize } from '@tauri-apps/api/dpi';
@@ -7,11 +7,18 @@ import ThemeController from '../../app/ThemeController';
 import { useViewMode } from './hooks/useViewMode';
 import { useKeyboardShortcuts } from '../../shared/hooks/useKeyboardShortcuts';
 import { usePanelResize } from './hooks/usePanelResize';
+import { usePanelState } from './hooks/usePanelState';
+import { useToast } from './hooks/useToast';
+import { useShellSessions } from './hooks/useShellSessions';
 import { getConfig } from '../../services/tauri/config';
+import { getSessionWorkspaceById } from '../../services/tauri/agent';
 import type { UiSettings } from '../../types/config';
 import './AgentApp.css';
 import { ChatPanel } from './components/ChatPanel';
 import { ExplorerPanel } from './components/ExplorerPanel';
+import { ShellManagerPanel } from './components/ShellManagerPanel';
+import { ToastContainer } from './components/ToastContainer';
+import type { ShellSessionRecord } from './types';
 // Lazy-load EditorArea so that @codemirror/* (675 kB) is only fetched when the
 // user first opens the editor view — keeping the initial chat bundle small.
 const EditorArea = React.lazy(() => import('./components/EditorArea'));
@@ -86,9 +93,14 @@ class AgentErrorBoundary extends React.Component<AgentErrorBoundaryProps, AgentE
 // ─── Root shell ───────────────────────────────────────────────────────────────
 const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
   const { viewMode, toggleViewMode } = useViewMode();
+  const panelState = usePanelState();
+  const toastState = useToast();
+  const shellSessions = useShellSessions(sessionId);
   const [uiSettings, setUiSettings] = useState<UiSettings>({ theme_mode: 'system', accent: 'blue' });
   const [explorerOpen, setExplorerOpen] = useState(true);
   const [chatOpen, setChatOpen] = useState(true);
+  const [sessionWorkspace, setSessionWorkspace] = useState<string | null>(null);
+  const appRef = useRef<HTMLDivElement>(null);
 
   // Controls visibility and the CSS fade-in animation. The window is created
   // hidden by Rust (visible:false); we reveal it here once the theme tokens and
@@ -97,6 +109,29 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
 
   const explorer = usePanelResize(240, 160, 480, 'left');
   const chat = usePanelResize(340, 260, 520, 'right');
+  const {
+    shellManager,
+    syncShellTabs,
+    togglePanel,
+    toggleShellManager,
+    setShellManagerMode,
+    setShellManagerHeight,
+    setActiveShell,
+    reorderShellTabs,
+    closeShellTab,
+  } = panelState;
+
+  const orderedShellSessions = useMemo(() => {
+    const shellMap = new Map(shellSessions.map((shell) => [shell.shellSessionId, shell]));
+    const ordered = shellManager.tabOrder
+      .map((shellId) => shellMap.get(shellId) ?? null)
+      .filter((shell): shell is ShellSessionRecord => shell != null);
+    const orderedIds = new Set(ordered.map((shell) => shell.shellSessionId));
+    const extras = shellSessions.filter((shell) => (
+      !orderedIds.has(shell.shellSessionId) && !shellManager.closedShellIds.includes(shell.shellSessionId)
+    ));
+    return [...ordered, ...extras];
+  }, [shellManager.closedShellIds, shellManager.tabOrder, shellSessions]);
 
   // Load theme configuration on mount. When the IPC resolves (or fails), mark
   // the app as ready so the window-show effect can fire in the next commit.
@@ -132,6 +167,31 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
       window.clearTimeout(timer);
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    getSessionWorkspaceById(sessionId)
+      .then((workspace) => {
+        if (!cancelled) setSessionWorkspace(workspace);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.warn('[AgentApp] failed to resolve session workspace:', error);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
+  useEffect(() => {
+    syncShellTabs(
+      shellSessions.map((shell) => shell.shellSessionId),
+      shellSessions[shellSessions.length - 1]?.shellSessionId ?? null,
+    );
+  }, [shellSessions, syncShellTabs]);
 
   // Once isReady is true, ThemeController will have already committed its
   // data-theme update (child effects run before parent effects in React).
@@ -218,6 +278,20 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
         return;
       }
 
+      // Cmd/Ctrl+T — toggle tasks panel
+      if (event.key === 't' || event.key === 'T') {
+        event.preventDefault();
+        togglePanel('tasks');
+        return;
+      }
+
+      // Cmd/Ctrl+` — toggle shell manager
+      if (event.code === 'Backquote') {
+        event.preventDefault();
+        toggleShellManager();
+        return;
+      }
+
       // Cmd/Ctrl+S — forward to EditorArea via custom event; EditorArea uses
       // its own activeTabId so we don't need to duplicate tab state here.
       if ((event.key === 's' || event.key === 'S') && viewMode === 'editor') {
@@ -225,7 +299,7 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
         window.dispatchEvent(new CustomEvent('gestura:editor:save'));
       }
     },
-    [toggleViewMode, viewMode]
+    [togglePanel, toggleShellManager, toggleViewMode, viewMode]
   );
 
   useKeyboardShortcuts(handleKeyDown);
@@ -284,56 +358,87 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
     <AgentErrorBoundary sessionId={sessionId}>
       <ThemeController uiSettings={uiSettings} onUpdate={setUiSettings} />
       <div
+        ref={appRef}
         className={[
           'agent-app',
           isEditor ? 'agent-app--editor' : 'agent-app--message-only',
           isEditor && explorerOpen ? 'agent-app--explorer-open' : '',
           isEditor && chatOpen ? 'agent-app--chat-open' : '',
+          shellManager.visible ? 'agent-app--shell-open' : '',
+          shellManager.visible && shellManager.mode === 'collapsed' ? 'agent-app--shell-collapsed' : '',
           // Triggers the CSS fade-in once theme + config are committed to the DOM.
           isReady ? 'app-ready' : '',
         ]
           .filter(Boolean)
           .join(' ')}
       >
-        {isEditor && (
-          <ExplorerPanel sessionId={sessionId} onOpenFile={handleOpenFile} style={explorerStyle} />
-        )}
-        {isEditor && (
-          <div className="panel-resizer panel-resizer--left">
-            <div className="panel-resizer__track" onMouseDown={explorer.handleMouseDown} />
-            <div
-              className="panel-resizer__thumb panel-resizer__thumb--left"
-              onMouseDown={(e) => { e.stopPropagation(); explorer.handleMouseDown(e); }}
-              onClick={() => setExplorerOpen((v) => !v)}
-              title={explorerOpen ? 'Collapse Explorer (\u2318B)' : 'Expand Explorer (\u2318B)'}
-            >
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d={explorerOpen ? 'M15 18l-6-6 6-6' : 'M9 18l6-6-6-6'} />
-              </svg>
+        <div className="agent-app__main">
+          {isEditor && (
+            <ExplorerPanel sessionId={sessionId} onOpenFile={handleOpenFile} style={explorerStyle} />
+          )}
+          {isEditor && (
+            <div className="panel-resizer panel-resizer--left">
+              <div className="panel-resizer__track" onMouseDown={explorer.handleMouseDown} />
+              <div
+                className="panel-resizer__thumb panel-resizer__thumb--left"
+                onMouseDown={(e) => { e.stopPropagation(); explorer.handleMouseDown(e); }}
+                onClick={() => setExplorerOpen((v) => !v)}
+                title={explorerOpen ? 'Collapse Explorer (\u2318B)' : 'Expand Explorer (\u2318B)'}
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d={explorerOpen ? 'M15 18l-6-6 6-6' : 'M9 18l6-6-6-6'} />
+                </svg>
+              </div>
             </div>
-          </div>
-        )}
-        {isEditor && (
-          <React.Suspense fallback={null}>
-            <EditorArea sessionId={sessionId} isDark={isDark} />
-          </React.Suspense>
-        )}
-        {isEditor && (
-          <div className="panel-resizer panel-resizer--right">
-            <div className="panel-resizer__track" onMouseDown={chat.handleMouseDown} />
-            <div
-              className="panel-resizer__thumb panel-resizer__thumb--right"
-              onMouseDown={(e) => { e.stopPropagation(); chat.handleMouseDown(e); }}
-              onClick={() => setChatOpen((v) => !v)}
-              title={chatOpen ? 'Collapse Chat' : 'Expand Chat'}
-            >
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d={chatOpen ? 'M9 18l6-6-6-6' : 'M15 18l-6-6 6-6'} />
-              </svg>
+          )}
+          {isEditor && (
+            <React.Suspense fallback={null}>
+              <EditorArea sessionId={sessionId} isDark={isDark} />
+            </React.Suspense>
+          )}
+          {isEditor && (
+            <div className="panel-resizer panel-resizer--right">
+              <div className="panel-resizer__track" onMouseDown={chat.handleMouseDown} />
+              <div
+                className="panel-resizer__thumb panel-resizer__thumb--right"
+                onMouseDown={(e) => { e.stopPropagation(); chat.handleMouseDown(e); }}
+                onClick={() => setChatOpen((v) => !v)}
+                title={chatOpen ? 'Collapse Chat' : 'Expand Chat'}
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d={chatOpen ? 'M9 18l6-6-6-6' : 'M15 18l-6-6 6-6'} />
+                </svg>
+              </div>
             </div>
-          </div>
-        )}
-        <ChatPanel sessionId={sessionId} onToggleEditor={toggleViewMode} viewMode={viewMode} style={chatStyle} />
+          )}
+          <ChatPanel
+            sessionId={sessionId}
+            onToggleEditor={toggleViewMode}
+            viewMode={viewMode}
+            style={chatStyle}
+            panelState={panelState}
+            toastState={toastState}
+          />
+        </div>
+
+        <ShellManagerPanel
+          sessionId={sessionId}
+          shells={orderedShellSessions}
+          activeShellId={shellManager.activeShellId}
+          visible={shellManager.visible}
+          mode={shellManager.mode}
+          height={shellManager.height}
+          resizeBoundaryRef={appRef}
+          defaultWorkingDirectory={sessionWorkspace}
+          onSetMode={setShellManagerMode}
+          onSetHeight={setShellManagerHeight}
+          onActivateShell={setActiveShell}
+          onReorderShellTabs={reorderShellTabs}
+          onCloseShellTab={closeShellTab}
+          onShowToast={toastState.showToast}
+        />
+
+        <ToastContainer toasts={toastState.toasts} onDismiss={toastState.dismissToast} />
       </div>
     </AgentErrorBoundary>
   );

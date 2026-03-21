@@ -4408,7 +4408,7 @@
             streamWatchdogInterval = setInterval(() => {
                 if (!isProcessing || currentRequestNonce !== nonce) return;
                 if (Date.now() - lastStreamEventAt > streamWatchdogMaxIdleMs) {
-                    addMessage(`Error: Timed out waiting for agent response (no events for ${Math.round(streamWatchdogMaxIdleMs / 1000)}s).`, 'agent');
+                    addMessage(`Error: Timed out waiting for agent response (no stream events for ${Math.round(streamWatchdogMaxIdleMs / 1000)}s). The agent may be stalled or not reporting progress.`, 'agent');
                     finalizeStreamForCurrentRequest({ statusText: 'Error', statusKind: 'error' });
                 }
             }, 1000);

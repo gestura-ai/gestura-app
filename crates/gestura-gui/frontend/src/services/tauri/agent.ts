@@ -529,6 +529,40 @@ export const getSessionWorkspaceById = (sessionId: string): Promise<string | nul
 export const openShellForSession = (sessionId: string): Promise<void> =>
   invokeTauri('open_shell_for_session', { session_id: sessionId });
 
+export const startShellSessionStreaming = (sessionId: string): Promise<void> =>
+  invokeTauri('start_shell_session_streaming', {
+    session_id: sessionId,
+    cwd: null,
+  });
+
+export const shellSessionStop = (shellSessionId: string): Promise<void> =>
+  invokeTauri('shell_session_stop', {
+    shell_session_id: shellSessionId,
+  });
+
+export const shellSessionInput = (shellSessionId: string, input: string): Promise<void> =>
+  invokeTauri('shell_session_input', {
+    shell_session_id: shellSessionId,
+    input,
+  });
+
+export const shellSessionAttach = (sessionId: string, shellSessionId: string): Promise<void> =>
+  invokeTauri('shell_session_attach', {
+    session_id: sessionId,
+    shell_session_id: shellSessionId,
+  });
+
+export const shellSessionResize = (
+  shellSessionId: string,
+  cols: number,
+  rows: number,
+): Promise<void> =>
+  invokeTauri('shell_session_resize', {
+    shell_session_id: shellSessionId,
+    cols,
+    rows,
+  });
+
 export const shellProcessStop = (processId: string): Promise<void> =>
   invokeTauri('shell_process_stop', { process_id: processId });
 

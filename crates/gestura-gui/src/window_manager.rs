@@ -717,6 +717,9 @@ impl WindowManager {
             session.message_count = session.state.messages.len();
             session.last_active = chrono::Utc::now();
         }
+        drop(sessions);
+
+        self.save_sessions_to_disk();
     }
 
     /// Add an assistant message to a session
@@ -770,6 +773,9 @@ impl WindowManager {
             session.message_count = session.state.messages.len();
             session.last_active = chrono::Utc::now();
         }
+        drop(sessions);
+
+        self.save_sessions_to_disk();
     }
 
     /// Record a tool call in a session
@@ -779,6 +785,9 @@ impl WindowManager {
             session.state.record_tool_call(call);
             session.last_active = chrono::Utc::now();
         }
+        drop(sessions);
+
+        self.save_sessions_to_disk();
     }
 
     /// Update token count for a session

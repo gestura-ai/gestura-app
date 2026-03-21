@@ -67,7 +67,7 @@ export function MenuPanel({ isOpen, onClose, onNavigate }: MenuPanelProps) {
             className="menu-item"
             onClick={() => handleItem("memory")}
           >
-            <span className="icon-database-01" />
+            <span className="icon-brain" />
             <span className="menu-item-label">Memory</span>
           </div>
 

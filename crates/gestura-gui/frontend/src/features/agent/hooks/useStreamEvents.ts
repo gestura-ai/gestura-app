@@ -36,6 +36,7 @@ function unpackPayload<T = unknown>(raw: unknown): UnpackedPayload<T> {
 export type StreamEventAction =
   | { type: 'thinking'; chunk: string }
   | { type: 'chunk'; chunk: string }
+  | { type: 'narration'; title?: string | null; message: string; stage: 'context' | 'planning' | 'execution' | 'verification' | 'blocked' | 'progress' }
   | { type: 'tool-confirmation'; payload: ToolConfirmation }
   | { type: 'tool-blocked'; toolName: string; reason: string }
   | { type: 'agent-iteration'; iteration: number }
@@ -280,6 +281,18 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
           type: 'status',
           text: String(p['text'] ?? ''),
           kind: String(p['kind'] ?? 'ready'),
+        });
+      });
+
+      await safeListen('agent-stream-narration', (e) => {
+        const r = accept<Record<string, unknown>>('agent-stream-narration', e.payload);
+        if (!r.ok) return;
+        const p = r.value as Record<string, unknown>;
+        dispatch({
+          type: 'narration',
+          title: p['title'] != null ? String(p['title']) : null,
+          message: String(p['message'] ?? ''),
+          stage: (p['stage'] as 'context' | 'planning' | 'execution' | 'verification' | 'blocked' | 'progress' | undefined) ?? 'progress',
         });
       });
 

@@ -37,6 +37,7 @@ import type {
   ToolBlock,
   ShellBlock,
   IterationMarkerBlock,
+  NarrationBlock,
   ToolConfirmation,
   ToolConfirmationDecision,
   TaskHierarchy,
@@ -50,6 +51,40 @@ interface QueuedMessage {
   kind: 'text' | 'voice';
   text: string;
   taskId: string | null;
+}
+
+function looksLikeResumeRequest(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized || normalized.startsWith('/')) return false;
+
+  return [
+    'continue',
+    'please complete',
+    'complete',
+    'finish',
+    'keep going',
+    'go on',
+    'resume',
+    'proceed',
+    'carry on',
+    'keep working',
+    'pick up where you left off',
+    'where you left off',
+    'timed out',
+  ].some((signal) => normalized.includes(signal));
+}
+
+function normalizeShellState(raw: unknown): ShellBlock['state'] {
+  switch (String(raw ?? '').toLowerCase()) {
+    case 'started': return 'Started';
+    case 'running': return 'Running';
+    case 'paused': return 'Paused';
+    case 'resumed': return 'Resumed';
+    case 'completed': return 'Completed';
+    case 'failed': return 'Failed';
+    case 'stopped': return 'Stopped';
+    default: return 'Running';
+  }
 }
 
 // ─── Return type ─────────────────────────────────────────────────────────────
@@ -67,6 +102,7 @@ export interface ChatSessionState {
   tasks: TaskHierarchy;
   knowledgeItems: KnowledgeItem[];
   toolSettings: Record<string, unknown>;
+  memoryRevision: number;
   userScrolledUp: boolean;
   setUserScrolledUp: (v: boolean) => void;
   sendMessage: (text: string, taskId?: string | null) => Promise<void>;
@@ -89,101 +125,15 @@ interface LastToolContext {
   args: string;
 }
 
-function buildIterationLabel(ctx: LastToolContext | null): { label: string; detail?: string } {
-  if (!ctx) return { label: '◆ Reviewing results…' };
+function buildIterationLabel(_ctx: LastToolContext | null): { label: string; detail?: string } | null {
+  return null;
+}
 
-  const { name, success, args } = ctx;
-  const errorNote = success ? '' : ' (with errors)';
-
-  // Try to parse accumulated args JSON for richer context
-  let parsedArgs: Record<string, unknown> = {};
-  try {
-    const cleaned = args.trim();
-    if (cleaned) parsedArgs = JSON.parse(cleaned) as Record<string, unknown>;
-  } catch { /* partial / streaming JSON — ignore */ }
-
-  switch (name) {
-    case 'web': {
-      const url = String(parsedArgs['url'] ?? parsedArgs['uri'] ?? '');
-      let host = '';
-      try { host = url ? ` from ${new URL(url).hostname}` : ''; } catch { /* ignore */ }
-      return {
-        label: `◆ Reviewing web content${host}${errorNote}`,
-        detail: `Scanning the fetched page for relevant content, facts, and actionable information…`,
-      };
-    }
-    case 'web_search': {
-      const query = String(parsedArgs['query'] ?? parsedArgs['q'] ?? '');
-      const queryStr = query ? ` for "${query.slice(0, 60)}"` : '';
-      return {
-        label: `◆ Reviewing search results${queryStr}${errorNote}`,
-        detail: `Evaluating results to identify the most relevant matches and extract key information…`,
-      };
-    }
-    case 'file': {
-      const path = String(parsedArgs['path'] ?? '');
-      const fileName = path ? (path.split('/').pop() ?? path) : '';
-      const fileStr = fileName ? ` — ${fileName}` : '';
-      const op = String(parsedArgs['action'] ?? parsedArgs['operation'] ?? '');
-      const isWrite = op === 'write' || op === 'create' || op === 'append';
-      return {
-        label: `◆ Reviewing file result${fileStr}${errorNote}`,
-        detail: isWrite
-          ? `Confirming the file was written correctly and checking for any issues…`
-          : `Reading through file contents to extract the needed information…`,
-      };
-    }
-    case 'shell': {
-      const cmd = String(parsedArgs['command'] ?? parsedArgs['cmd'] ?? '');
-      const shortCmd = cmd ? `\`${cmd.split(' ')[0]}\`` : 'command';
-      return {
-        label: `◆ Reviewing ${shortCmd} output${errorNote}`,
-        detail: success
-          ? `Processing command output to extract results and plan next steps…`
-          : `Analyzing the error output to determine what went wrong and how to proceed…`,
-      };
-    }
-    case 'git': {
-      const op = String(parsedArgs['action'] ?? parsedArgs['operation'] ?? parsedArgs['command'] ?? '');
-      return {
-        label: `◆ Reviewing git ${op || 'result'}${errorNote}`,
-        detail: `Checking the git output to understand repository state and determine next actions…`,
-      };
-    }
-    case 'code': {
-      const op = String(parsedArgs['action'] ?? parsedArgs['operation'] ?? '');
-      return {
-        label: `◆ Reviewing code analysis${op ? ` (${op})` : ''}${errorNote}`,
-        detail: `Analyzing code structure, symbols, and relationships to inform the next step…`,
-      };
-    }
-    case 'mcp': {
-      const toolName = String(parsedArgs['tool'] ?? parsedArgs['tool_name'] ?? '');
-      return {
-        label: `◆ Reviewing MCP result${toolName ? ` from ${toolName}` : ''}${errorNote}`,
-        detail: `Processing the tool response to extract relevant data and decide on next actions…`,
-      };
-    }
-    case 'screenshot':
-    case 'screen_record': {
-      return {
-        label: `◆ Reviewing screen capture${errorNote}`,
-        detail: `Analyzing the captured screenshot for context and relevant visual information…`,
-      };
-    }
-    case 'task': {
-      return {
-        label: `◆ Reviewing task update${errorNote}`,
-        detail: `Confirming the task state is correct and planning the next action…`,
-      };
-    }
-    default: {
-      return {
-        label: `◆ Reviewing ${name} result${errorNote}`,
-        detail: `Processing the result to extract useful information and determine next steps…`,
-      };
-    }
-  }
+function iterationMarkerSignature(
+  contextVersion: number,
+  marker: { label: string; detail?: string },
+): string {
+  return `${contextVersion}:${marker.label}:${marker.detail ?? ''}`;
 }
 
 // ─── Helper — produce a fresh streaming AgentMessage ─────────────────────────
@@ -207,6 +157,7 @@ export function useChatSession(sessionId: string): ChatSessionState {
   const [tasks, setTasks] = useState<TaskHierarchy>([]);
   const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeItem[]>([]);
   const [toolSettings, setToolSettings] = useState<Record<string, unknown>>({});
+  const [memoryRevision, setMemoryRevision] = useState(0);
   const [userScrolledUp, setUserScrolledUp] = useState(false);
 
   // Streaming cursor refs (avoid stale closures in event listeners)
@@ -224,6 +175,8 @@ export function useChatSession(sessionId: string): ChatSessionState {
   const triggerSendRef = useRef<((text: string, taskId: string | null) => Promise<void>) | null>(null);
   /** Tracks the most recently started/completed tool for contextual iteration markers. */
   const lastToolContextRef = useRef<LastToolContext | null>(null);
+  const lastToolContextVersionRef = useRef(0);
+  const lastIterationMarkerSignatureRef = useRef<string | null>(null);
   const lastReflectionNoticeRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -239,6 +192,9 @@ export function useChatSession(sessionId: string): ChatSessionState {
     currentThinkingIdRef.current = null;
     currentTextBlockIdRef.current = null;
     currentToolBlockIdRef.current = null;
+    lastToolContextRef.current = null;
+    lastToolContextVersionRef.current = 0;
+    lastIterationMarkerSignatureRef.current = null;
     lastReflectionNoticeRef.current = null;
   }, []);
 
@@ -352,6 +308,10 @@ export function useChatSession(sessionId: string): ChatSessionState {
     }
   }, [resetStreamingCursor]);
 
+  const bumpMemoryRevision = useCallback(() => {
+    setMemoryRevision((prev) => prev + 1);
+  }, []);
+
   // ── Ensure streaming message exists ────────────────────────────────────────
   const ensureStreamingMsg = useCallback((): string => {
     if (!streamingMsgIdRef.current) {
@@ -427,6 +387,35 @@ export function useChatSession(sessionId: string): ChatSessionState {
         break;
       }
 
+      case 'narration': {
+        ensureStreamingMsg();
+        if (currentThinkingIdRef.current) {
+          const tid = currentThinkingIdRef.current;
+          updateStreamingBlocks((blocks) =>
+            blocks.map((b) => b.id === tid && b.kind === 'thinking'
+              ? { ...b, done: true, collapsed: true }
+              : b)
+          );
+          currentThinkingIdRef.current = null;
+        }
+        currentTextBlockIdRef.current = null;
+        const block: NarrationBlock = {
+          kind: 'narration',
+          id: nanoid(),
+          title: action.title ?? null,
+          message: action.message,
+          stage: action.stage,
+        };
+        updateStreamingBlocks((blocks) => {
+          const last = blocks[blocks.length - 1];
+          if (last?.kind === 'narration' && last.message === action.message && last.stage === action.stage) {
+            return blocks;
+          }
+          return [...blocks, block];
+        });
+        break;
+      }
+
       case 'tool-confirmation':
         confirmationQueueRef.current.push(action.payload);
         if (!pendingConfirmationRef.current) {
@@ -440,7 +429,7 @@ export function useChatSession(sessionId: string): ChatSessionState {
 
       case 'tool-blocked': {
         const id = nanoid();
-        const block: ToolBlock = { kind: 'tool', id, name: action.toolName, args: '', status: 'blocked', collapsed: false };
+        const block: ToolBlock = { kind: 'tool', id, name: action.toolName, args: '', status: 'blocked', collapsed: true };
         ensureStreamingMsg();
         updateStreamingBlocks((blocks) => [...blocks, block]);
         currentTextBlockIdRef.current = null;
@@ -450,9 +439,30 @@ export function useChatSession(sessionId: string): ChatSessionState {
       case 'agent-iteration': {
         if (action.iteration > 0) {
           ensureStreamingMsg();
+          const markerInfo = buildIterationLabel(lastToolContextRef.current);
+          if (!markerInfo) {
+            lastIterationMarkerSignatureRef.current = null;
+            updateStreamingBlocks((blocks) => [
+              ...blocks.map((b) =>
+                b.kind === 'tool' && (b.status === 'success' || b.status === 'error') ? { ...b, collapsed: true } : b
+              ),
+            ]);
+            currentTextBlockIdRef.current = null;
+            break;
+          }
+          const signature = iterationMarkerSignature(
+            lastToolContextVersionRef.current,
+            markerInfo,
+          );
+          if (lastIterationMarkerSignatureRef.current === signature) break;
+          lastIterationMarkerSignatureRef.current = signature;
           const markerId = nanoid();
-          const { label, detail } = buildIterationLabel(lastToolContextRef.current);
-          const marker: IterationMarkerBlock = { kind: 'iteration-marker', id: markerId, label, detail };
+          const marker: IterationMarkerBlock = {
+            kind: 'iteration-marker',
+            id: markerId,
+            label: markerInfo.label,
+            detail: markerInfo.detail,
+          };
           updateStreamingBlocks((blocks) => [
             ...blocks.map((b) =>
               b.kind === 'tool' && (b.status === 'success' || b.status === 'error') ? { ...b, collapsed: true } : b
@@ -478,7 +488,8 @@ export function useChatSession(sessionId: string): ChatSessionState {
         currentTextBlockIdRef.current = null;
         // Initialise context for this tool — args and result filled as they stream in
         lastToolContextRef.current = { name: action.toolName, success: false, output: null, args: '' };
-        const block: ToolBlock = { kind: 'tool', id, name: action.toolName, args: '', status: 'running', collapsed: false };
+        lastIterationMarkerSignatureRef.current = null;
+        const block: ToolBlock = { kind: 'tool', id, name: action.toolName, args: '', status: 'running', collapsed: true };
         updateStreamingBlocks((blocks) => [...blocks, block]);
         break;
       }
@@ -522,6 +533,7 @@ export function useChatSession(sessionId: string): ChatSessionState {
         // Finalise context so the upcoming agent-iteration can produce a rich label
         if (lastToolContextRef.current) {
           lastToolContextRef.current = { ...lastToolContextRef.current, success: action.success, output: action.output };
+          lastToolContextVersionRef.current += 1;
         }
         if (action.name === 'gui_control' && action.success && lastToolContextRef.current) {
           try {
@@ -538,22 +550,31 @@ export function useChatSession(sessionId: string): ChatSessionState {
         ensureStreamingMsg();
         const pid = action.processId;
         const p = action.payload;
+        const activityAt = Date.now();
         updateStreamingBlocks((blocks) => {
           const idx = blocks.findIndex((b) => b.kind === 'shell' && b.processId === pid);
           if (idx >= 0) {
             const existing = blocks[idx] as ShellBlock;
             const updated: ShellBlock = {
               ...existing,
-              state: String(p['state'] ?? existing.state) as ShellBlock['state'],
+              shellSessionId: p['shell_session_id'] != null
+                ? String(p['shell_session_id'])
+                : (existing.shellSessionId ?? null),
+              state: normalizeShellState(p['state'] ?? existing.state),
               exitCode: p['exit_code'] != null ? Number(p['exit_code']) : existing.exitCode,
               durationMs: p['duration_ms'] != null ? Number(p['duration_ms']) : existing.durationMs,
+              startedAt: existing.startedAt ?? activityAt,
+              lastActivityAt: activityAt,
             };
             return blocks.map((b, i) => i === idx ? updated : b);
           } else {
             const newBlock: ShellBlock = {
               kind: 'shell', id: nanoid(), processId: pid,
+              shellSessionId: p['shell_session_id'] != null ? String(p['shell_session_id']) : null,
               command: String(p['command'] ?? ''), cwd: p['cwd'] ? String(p['cwd']) : null,
-              state: 'Started', lines: [], collapsed: false,
+              state: normalizeShellState(p['state']), lines: [], collapsed: true,
+              startedAt: activityAt,
+              lastActivityAt: activityAt,
             };
             currentTextBlockIdRef.current = null;
             return [...blocks, newBlock];
@@ -564,10 +585,16 @@ export function useChatSession(sessionId: string): ChatSessionState {
 
       case 'shell-output': {
         const pid = action.processId;
+        const activityAt = Date.now();
         updateStreamingBlocks((blocks) =>
           blocks.map((b) =>
             b.kind === 'shell' && b.processId === pid
-              ? { ...b, lines: [...b.lines, { stream: action.stream, data: action.data }] }
+              ? {
+                ...b,
+                startedAt: b.startedAt ?? activityAt,
+                lastActivityAt: activityAt,
+                lines: [...b.lines, { stream: action.stream, data: action.data }],
+              }
               : b
           )
         );
@@ -607,6 +634,7 @@ export function useChatSession(sessionId: string): ChatSessionState {
           finalizeStream(prev, { statusText: 'Ready', statusKind: 'ready', canResumeAfter: false });
           return null;
         });
+        bumpMemoryRevision();
         break;
 
       case 'paused':
@@ -683,13 +711,14 @@ export function useChatSession(sessionId: string): ChatSessionState {
 
       case 'task-changed':
         getTaskHierarchy(sessionId).then(setTasks).catch(() => { });
+        bumpMemoryRevision();
         break;
 
       default:
         break;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ensureStreamingMsg, updateStreamingBlocks, finalizeStream, restorePausedMessageToStreaming, resetStreamingCursor, sessionId]);
+  }, [ensureStreamingMsg, updateStreamingBlocks, finalizeStream, restorePausedMessageToStreaming, resetStreamingCursor, sessionId, bumpMemoryRevision]);
 
   useStreamEvents(sessionId, handleStreamEvent);
 
@@ -807,15 +836,6 @@ export function useChatSession(sessionId: string): ChatSessionState {
     triggerSendRef.current = triggerSend;
   }, [triggerSend]);
 
-  const sendMessage = useCallback(async (text: string, taskId?: string | null) => {
-    if (!text.trim()) return;
-    if (isProcessingRef.current) {
-      messageQueueRef.current.push({ kind: 'text', text, taskId: taskId ?? null });
-      return;
-    }
-    await triggerSend(text, taskId ?? null);
-  }, [triggerSend]);
-
   // ── Cancel streaming ────────────────────────────────────────────────────────
   const cancelStream = useCallback(async () => {
     if (isStopping) return;
@@ -861,6 +881,21 @@ export function useChatSession(sessionId: string): ChatSessionState {
     }
   }, [sessionId, canResume, restorePausedMessageToStreaming, resetStreamingCursor]);
 
+  const sendMessage = useCallback(async (text: string, taskId?: string | null) => {
+    if (!text.trim()) return;
+    if (isProcessingRef.current) {
+      messageQueueRef.current.push({ kind: 'text', text, taskId: taskId ?? null });
+      return;
+    }
+
+    if (!taskId && canResume && looksLikeResumeRequest(text)) {
+      await resumeStream();
+      return;
+    }
+
+    await triggerSend(text, taskId ?? null);
+  }, [canResume, resumeStream, triggerSend]);
+
   // ── Tool confirmation ────────────────────────────────────────────────────────
   const resolveConfirmation = useCallback(async (decision: ToolConfirmationDecision) => {
     const conf = pendingConfirmationRef.current;
@@ -895,7 +930,7 @@ export function useChatSession(sessionId: string): ChatSessionState {
 
   return {
     messages, streamingMessage, isProcessing, isStopping, canResume, isResuming, isListening, status,
-    pendingConfirmation, tasks, knowledgeItems, toolSettings,
+    pendingConfirmation, tasks, knowledgeItems, toolSettings, memoryRevision,
     userScrolledUp, setUserScrolledUp,
     sendMessage, cancelStream, resumeStream, resolveConfirmation,
     toggleVoice, enhanceText, refreshTasks, refreshKnowledge, refreshToolSettings,

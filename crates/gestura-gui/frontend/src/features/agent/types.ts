@@ -108,6 +108,8 @@ export interface EditorGitDiffResponse {
 
 export type ShellState = 'Started' | 'Running' | 'Paused' | 'Resumed' | 'Completed' | 'Failed' | 'Stopped';
 
+export type ShellSessionState = 'Starting' | 'Idle' | 'Busy' | 'Interrupting' | 'Stopping' | 'Stopped' | 'Failed';
+
 export interface ShellLine {
   stream: 'Stdout' | 'Stderr';
   data: string;
@@ -147,20 +149,57 @@ export interface IterationMarkerBlock {
   detail?: string;
 }
 
+export interface NarrationBlock {
+  kind: 'narration';
+  id: string;
+  title?: string | null;
+  message: string;
+  stage: 'context' | 'planning' | 'execution' | 'verification' | 'blocked' | 'progress';
+}
+
 export interface ShellBlock {
   kind: 'shell';
   id: string;
   processId: string;
+  shellSessionId?: string | null;
   command: string;
   cwd: string | null;
   state: ShellState;
   exitCode?: number | null;
   durationMs?: number | null;
+  startedAt?: number | null;
+  lastActivityAt?: number | null;
   lines: ShellLine[];
   collapsed: boolean;
 }
 
-export type MsgBlock = ThinkingBlock | TextBlock | ToolBlock | IterationMarkerBlock | ShellBlock;
+export interface ShellSessionRecord {
+  kind: 'shell-session';
+  id: string;
+  shellSessionId: string;
+  cwd: string | null;
+  state: ShellSessionState;
+  interactive: boolean;
+  userManaged: boolean;
+  activeProcessId?: string | null;
+  activeCommand?: string | null;
+  lastExitCode?: number | null;
+  durationMs?: number | null;
+  startedAt?: number | null;
+  lastActivityAt?: number | null;
+  lines: ShellLine[];
+  collapsed: boolean;
+  availableForReuse: boolean;
+}
+
+export type MsgBlock =
+  | ThinkingBlock
+  | TextBlock
+  | ToolBlock
+  | IterationMarkerBlock
+  | NarrationBlock
+  | ShellBlock
+  | ShellSessionRecord;
 
 export interface AgentMessage {
   id: string;

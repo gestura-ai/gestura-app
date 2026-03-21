@@ -1,6 +1,6 @@
 /**
  * ChatPanel — agent chat panel (header + messages + input + all side panels).
- * Orchestrates useChatSession, usePanelState, useToast, and renders all overlays.
+ * Orchestrates useChatSession and renders overlays using app-scoped panel/toast state.
  *
  * Header matches agent.html: inline SVG icon, "Gestura Agent", status badge,
  * settings gear (opens MenuPanel). View-mode toggle lives in MessageInput quick-bar.
@@ -8,19 +8,17 @@
 import React, { useCallback, useEffect } from 'react';
 import '../ChatPanel.css';
 import { useChatSession } from '../hooks/useChatSession';
-import { usePanelState } from '../hooks/usePanelState';
-import { useToast } from '../hooks/useToast';
+import type { PanelName, PanelState } from '../hooks/usePanelState';
+import type { ToastState } from '../hooks/useToast';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import { ToolConfirmationDialog } from './ToolConfirmationDialog';
-import { ToastContainer } from './ToastContainer';
 import { MenuPanel } from './MenuPanel';
 import { TaskPanel } from './TaskPanel';
 import { KnowledgePanel } from './KnowledgePanel';
 import { MemoryConsolePanel } from '../../memory/components/MemoryConsolePanel';
 import { ProvidersPanel } from './ProvidersPanel';
 import { SessionSettingsPanel } from './SessionSettingsPanel';
-import type { PanelName } from '../hooks/usePanelState';
 import { openShellForSession } from '../../../services/tauri/agent';
 
 export interface ChatPanelProps {
@@ -31,32 +29,40 @@ export interface ChatPanelProps {
   viewMode?: 'message-only' | 'editor';
   /** Optional inline style — used by parent for dynamic width (resizable panel). */
   style?: React.CSSProperties;
+  /** App-scoped overlay panel state. */
+  panelState: PanelState;
+  /** App-scoped toast state. */
+  toastState: ToastState;
 }
 
-export const ChatPanel: React.FC<ChatPanelProps> = ({ sessionId, onToggleEditor, viewMode, style }) => {
+export const ChatPanel: React.FC<ChatPanelProps> = ({
+  sessionId,
+  onToggleEditor,
+  viewMode,
+  style,
+  panelState,
+  toastState,
+}) => {
   const {
     messages, streamingMessage, isProcessing, isStopping, isListening, status,
-    pendingConfirmation, tasks, knowledgeItems, toolSettings,
+    pendingConfirmation, tasks, knowledgeItems, toolSettings, memoryRevision,
     userScrolledUp, setUserScrolledUp,
     sendMessage, cancelStream, resumeStream, canResume, isResuming, resolveConfirmation,
     toggleVoice, enhanceText,
     refreshTasks, refreshKnowledge, refreshToolSettings,
   } = useChatSession(sessionId);
 
-  const { isOpen, openPanel, closePanel, togglePanel } = usePanelState();
-  const { toasts, showToast, dismissToast } = useToast();
-
-  // Cmd/Ctrl+T — open tasks panel
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && (e.key === 't' || e.key === 'T')) {
-        e.preventDefault();
-        togglePanel('tasks');
-      }
-    };
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, [togglePanel]);
+  const {
+    isOpen,
+    openPanel,
+    closePanel,
+    togglePanel,
+    shellManager,
+    toggleShellManager,
+    openShellManager,
+    setActiveShell,
+  } = panelState;
+  const { showToast } = toastState;
 
   // External link handler — open https:// links in system browser
   useEffect(() => {
@@ -104,6 +110,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ sessionId, onToggleEditor,
     }
   }, [sessionId, showToast]);
 
+  const handleRevealShellSession = useCallback((shellSessionId: string | null) => {
+    openShellManager();
+    if (shellSessionId) setActiveShell(shellSessionId);
+  }, [openShellManager, setActiveShell]);
+
   const badgeClass =
     status.kind === 'busy' ? ' busy' :
       status.kind === 'reflection' ? ' busy' :
@@ -131,11 +142,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ sessionId, onToggleEditor,
         </div>
       </div>
 
-      {/* Messages */}
-      <MessageList messages={messages} streamingMessage={streamingMessage}
-        sessionId={sessionId} onScrollChange={handleScrollChange}
-        canResume={canResume} isResuming={isResuming}
-        onResume={() => { void resumeStream(); }} />
+      <div className="chat-workspace">
+        <MessageList messages={messages} streamingMessage={streamingMessage}
+          onScrollChange={handleScrollChange}
+          onRevealShellSession={handleRevealShellSession}
+          canResume={canResume} isResuming={isResuming}
+          onResume={() => { void resumeStream(); }} />
+      </div>
 
       {/* Scroll-to-bottom indicator */}
       {userScrolledUp && (
@@ -159,6 +172,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ sessionId, onToggleEditor,
         onSend={handleSend} onCancel={handleCancel} onVoiceToggle={toggleVoice}
         onEnhance={handleEnhance} viewMode={viewMode} onToggleEditor={onToggleEditor}
         onOpenTasks={() => togglePanel('tasks')}
+        onToggleShellManager={toggleShellManager}
+        shellManagerOpen={shellManager.visible}
         onOpenTerminal={handleOpenTerminal}
         sessionId={sessionId}
       />
@@ -176,13 +191,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ sessionId, onToggleEditor,
             <div className="task-panel-header">
               <div>
                 <h3>Memory</h3>
-                <p className="task-panel-subtitle">Unified session + durable memory console</p>
+                <p className="task-panel-subtitle">Session working memory + durable memory bank</p>
               </div>
               <button className="session-panel-close" onClick={closePanel} title="Close">
                 <span className="icon-close" />
               </button>
             </div>
-            <MemoryConsolePanel sessionId={sessionId} title="Session Memory" />
+            <MemoryConsolePanel
+              sessionId={sessionId}
+              tasks={tasks}
+              refreshSignal={memoryRevision}
+              title="Session Memory"
+            />
           </div>
         </div>
       )}
@@ -198,9 +218,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ sessionId, onToggleEditor,
       <SessionSettingsPanel isOpen={isOpen('settings')} onClose={closePanel}
         sessionId={sessionId} toolSettings={toolSettings}
         onRefreshToolSettings={refreshToolSettings} onShowToast={showToast} />
-
-      {/* Toast Notifications */}
-      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 };

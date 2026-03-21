@@ -175,9 +175,29 @@ fn should_resume_active_task_request(message: &str, explicit_task_id: Option<&st
         "proceed",
         "carry on",
         "keep working",
+        "pick up where you left off",
+        "where you left off",
+        "timed out",
     ]
     .iter()
     .any(|signal| text.contains(signal))
+}
+
+const STREAM_IDLE_TIMEOUT_NORMAL_SECS: u64 = 90;
+const STREAM_IDLE_TIMEOUT_POST_TOOL_REVIEW_SECS: u64 = 5 * 60;
+const STREAM_IDLE_TIMEOUT_WAITING_FOR_USER_SECS: u64 = 10 * 60;
+
+fn stream_idle_timeout_for_chunk(chunk: &gestura_core::StreamChunk) -> std::time::Duration {
+    match chunk {
+        gestura_core::StreamChunk::ToolConfirmationRequired { .. } => {
+            std::time::Duration::from_secs(STREAM_IDLE_TIMEOUT_WAITING_FOR_USER_SECS)
+        }
+        gestura_core::StreamChunk::ToolCallResult { .. }
+        | gestura_core::StreamChunk::ReflectionStarted { .. } => {
+            std::time::Duration::from_secs(STREAM_IDLE_TIMEOUT_POST_TOOL_REVIEW_SECS)
+        }
+        _ => std::time::Duration::from_secs(STREAM_IDLE_TIMEOUT_NORMAL_SECS),
+    }
 }
 
 fn task_is_open(status: gestura_core::TaskStatus) -> bool {
@@ -311,6 +331,66 @@ fn task_tool_mutation_event(
             "operation": operation,
         }),
     ))
+}
+
+fn task_tree_refresh_signature_with_manager(
+    manager: &gestura_core::TaskManager,
+    session_id: &str,
+) -> Option<String> {
+    let mut tasks = manager.list_tasks(session_id).ok()?;
+    tasks.sort_by(|left, right| left.id.cmp(&right.id));
+    let current_task_id = manager.get_current_task_id(session_id).ok().flatten();
+
+    Some(
+        serde_json::json!({
+            "current_task_id": current_task_id,
+            "tasks": tasks
+                .into_iter()
+                .map(|task| serde_json::json!({
+                    "id": task.id,
+                    "parent_id": task.parent_id,
+                    "status": format!("{:?}", task.status),
+                    "updated_at": task.updated_at.timestamp_millis(),
+                }))
+                .collect::<Vec<_>>(),
+        })
+        .to_string(),
+    )
+}
+
+fn task_tree_refresh_signature(session_id: &str) -> Option<String> {
+    task_tree_refresh_signature_with_manager(
+        crate::task_integration::get_task_manager(),
+        session_id,
+    )
+}
+
+fn emit_task_refresh_if_changed(
+    app: &tauri::AppHandle,
+    session_id: Option<&str>,
+    last_signature: &mut Option<String>,
+) {
+    let Some(session_id) = session_id else {
+        return;
+    };
+
+    let Some(signature) = task_tree_refresh_signature(session_id) else {
+        return;
+    };
+
+    if last_signature.as_ref() == Some(&signature) {
+        return;
+    }
+
+    *last_signature = Some(signature);
+    let _ = app.emit(
+        "task-updated",
+        serde_json::json!({
+            "session_id": session_id,
+            "operation": "refresh",
+            "source": "core-task-sync",
+        }),
+    );
 }
 
 fn build_auto_plan_execution_handoff_message(
@@ -531,6 +611,33 @@ mod tests {
     }
 
     #[test]
+    fn load_memory_console_session_falls_back_to_persisted_store() {
+        use gestura_core::agent_sessions::{
+            AgentSession, AgentSessionStore, FileAgentSessionStore,
+        };
+        use tempfile::tempdir;
+
+        let temp = tempdir().unwrap();
+        let workspace_dir = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+
+        let store = FileAgentSessionStore::new(temp.path().join("sessions"));
+        let session = AgentSession::new_with_workspace(workspace_dir.clone(), None).unwrap();
+        store.save(&session).unwrap();
+
+        let loaded = load_memory_console_session(&session.id, &[], &store)
+            .expect("persisted session should be returned when not live");
+
+        assert_eq!(loaded.id, session.id);
+        assert_eq!(
+            loaded
+                .workspace_dir()
+                .and_then(|path| path.canonicalize().ok()),
+            workspace_dir.canonicalize().ok()
+        );
+    }
+
+    #[test]
     fn auto_plan_heuristic_detects_multi_step_requests() {
         assert!(should_auto_plan_agent_request(
             "I want to create a small tauri gui that says hello world. Please carefully plan and implement then build and test it.",
@@ -564,11 +671,43 @@ mod tests {
     fn continuation_heuristic_detects_resume_requests() {
         assert!(should_resume_active_task_request("please complete", None));
         assert!(should_resume_active_task_request("continue", None));
+        assert!(should_resume_active_task_request(
+            "you timed out please pick up where you left off",
+            None
+        ));
         assert!(!should_resume_active_task_request("hello there", None));
         assert!(!should_resume_active_task_request(
             "please complete",
             Some("task-1")
         ));
+    }
+
+    #[test]
+    fn stream_idle_timeout_extends_after_tool_output_and_confirmation_waits() {
+        assert_eq!(
+            stream_idle_timeout_for_chunk(&gestura_core::StreamChunk::ToolCallResult {
+                name: "shell".to_string(),
+                success: true,
+                output: "done".to_string(),
+                duration_ms: 12,
+            }),
+            std::time::Duration::from_secs(STREAM_IDLE_TIMEOUT_POST_TOOL_REVIEW_SECS)
+        );
+        assert_eq!(
+            stream_idle_timeout_for_chunk(&gestura_core::StreamChunk::ToolConfirmationRequired {
+                confirmation_id: "conf-1".to_string(),
+                tool_name: "shell".to_string(),
+                tool_args: "{}".to_string(),
+                description: "Need approval".to_string(),
+                risk_level: 2,
+                category: "execute".to_string(),
+            }),
+            std::time::Duration::from_secs(STREAM_IDLE_TIMEOUT_WAITING_FOR_USER_SECS)
+        );
+        assert_eq!(
+            stream_idle_timeout_for_chunk(&gestura_core::StreamChunk::Text("hello".to_string())),
+            std::time::Duration::from_secs(STREAM_IDLE_TIMEOUT_NORMAL_SECS)
+        );
     }
 
     #[test]
@@ -757,6 +896,33 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn task_tree_refresh_signature_changes_when_task_state_changes() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let manager = gestura_core::TaskManager::new(temp_dir.path());
+        let session_id = format!("task-refresh-signature-{}", uuid::Uuid::new_v4());
+        let task = manager
+            .create_task(&session_id, "Build hello app", "desc", None)
+            .expect("create task");
+
+        let initial = task_tree_refresh_signature_with_manager(&manager, &session_id)
+            .expect("initial signature");
+
+        manager
+            .update_task_status(&session_id, &task.id, gestura_core::TaskStatus::InProgress)
+            .expect("set in progress");
+        let after_status = task_tree_refresh_signature_with_manager(&manager, &session_id)
+            .expect("status signature");
+        assert_ne!(initial, after_status);
+
+        manager
+            .set_current_task_id(&session_id, Some(task.id.clone()))
+            .expect("set current task");
+        let after_current = task_tree_refresh_signature_with_manager(&manager, &session_id)
+            .expect("current task signature");
+        assert_ne!(after_status, after_current);
     }
 
     #[test]
@@ -2826,6 +2992,10 @@ pub async fn process_agent_message_streaming(
         _ => None,
     };
 
+    let mut last_task_tree_signature = resolved_session_id
+        .as_deref()
+        .and_then(task_tree_refresh_signature);
+
     // Create channel for streaming chunks
     let (tx, mut rx) = mpsc::channel::<StreamChunk>(100);
 
@@ -3005,10 +3175,9 @@ pub async fn process_agent_message_streaming(
     let mut current_tool_call: Option<(String, String, String)> = None; // (id, name, args)
     let mut saw_terminal = false;
     // Normal idle timeout detects backend hangs.
-    // When we are waiting for *user* tool confirmation, we extend this to avoid
-    // cancelling a healthy stream that is intentionally paused.
-    let idle_timeout_normal = Duration::from_secs(90);
-    let idle_timeout_waiting_for_user = Duration::from_secs(10 * 60);
+    // Some healthy phases are intentionally quieter, especially after a tool
+    // returns and the model is reviewing output to decide what to do next.
+    let idle_timeout_normal = Duration::from_secs(STREAM_IDLE_TIMEOUT_NORMAL_SECS);
     let mut idle_timeout = idle_timeout_normal;
     let idle_timer = tokio::time::sleep(idle_timeout);
     tokio::pin!(idle_timer);
@@ -3027,16 +3196,14 @@ pub async fn process_agent_message_streaming(
                     break;
                 };
                 // Update idle timeout based on what we just received.
-                idle_timeout = match &chunk {
-                    StreamChunk::ToolConfirmationRequired { .. } => idle_timeout_waiting_for_user,
-                    _ => idle_timeout_normal,
-                };
+                idle_timeout = stream_idle_timeout_for_chunk(&chunk);
                 idle_timer.as_mut().reset(Instant::now() + idle_timeout);
                 // Log every chunk kind so we can trace where the pipeline stalls.
                 let chunk_kind = match &chunk {
                     StreamChunk::Text(_) => "Text",
                     StreamChunk::Thinking(_) => "Thinking",
                     StreamChunk::Status { .. } => "Status",
+                    StreamChunk::Narration { .. } => "Narration",
                     StreamChunk::ToolCallStart { .. } => "ToolCallStart",
                     StreamChunk::ToolCallArgs(_) => "ToolCallArgs",
                     StreamChunk::ToolCallEnd => "ToolCallEnd",
@@ -3046,6 +3213,7 @@ pub async fn process_agent_message_streaming(
                     StreamChunk::Cancelled => "Cancelled",
                     StreamChunk::Paused => "Paused",
                     StreamChunk::AgentLoopIteration { .. } => "AgentLoopIteration",
+                    StreamChunk::TaskRuntimeSnapshot { .. } => "TaskRuntimeSnapshot",
                     StreamChunk::RetryAttempt { .. } => "RetryAttempt",
                     StreamChunk::ContextCompacted { .. } => "ContextCompacted",
                     StreamChunk::MemoryBankSaved { .. } => "MemoryBankSaved",
@@ -3057,6 +3225,7 @@ pub async fn process_agent_message_streaming(
                     StreamChunk::ToolBlocked { .. } => "ToolBlocked",
                     StreamChunk::ShellOutput { .. } => "ShellOutput",
                     StreamChunk::ShellLifecycle { .. } => "ShellLifecycle",
+                    StreamChunk::ShellSessionLifecycle { .. } => "ShellSessionLifecycle",
                 };
                 tracing::debug!(
                     chunk = chunk_kind,
@@ -3074,6 +3243,18 @@ pub async fn process_agent_message_streaming(
             StreamChunk::Status { message } => {
                 let payload = serde_json::json!({ "text": message, "kind": "busy" });
                 emit("agent-stream-status", payload);
+            }
+            StreamChunk::Narration {
+                title,
+                message,
+                stage,
+            } => {
+                let payload = serde_json::json!({
+                    "title": title,
+                    "message": message,
+                    "stage": stage.as_str(),
+                });
+                emit("agent-stream-narration", payload);
             }
             StreamChunk::Text(text) => {
                 tracing::debug!("[Stream] Text chunk: {}", &text.chars().take(100).collect::<String>());
@@ -3107,6 +3288,21 @@ pub async fn process_agent_message_streaming(
                 if let Some((tc_id, tc_name, tc_args)) = current_tool_call.take() {
                     if let Some(sid) = resolved_session_id.as_deref() {
                         task_tool_ui_event = task_tool_mutation_event(sid, &tc_name, &tc_args, success);
+                        crate::window_manager::record_tool_call(
+                            sid,
+                            gestura_core::agent_sessions::SessionToolCall {
+                                id: tc_id.clone(),
+                                name: tc_name.clone(),
+                                arguments: tc_args.clone(),
+                                result: output.clone(),
+                                success,
+                                duration_ms,
+                                timestamp: chrono::Utc::now(),
+                            },
+                        );
+                        if !output.trim().is_empty() {
+                            crate::window_manager::add_tool_message(sid, &tc_id, &output);
+                        }
                     }
                     let result = if success {
                         gestura_core::ToolResult::Success(output.clone())
@@ -3131,6 +3327,11 @@ pub async fn process_agent_message_streaming(
                 if let Some((event_name, event_payload)) = task_tool_ui_event {
                     let _ = app.emit(event_name, event_payload);
                 }
+                emit_task_refresh_if_changed(
+                    &app,
+                    resolved_session_id.as_deref(),
+                    &mut last_task_tree_signature,
+                );
             }
             StreamChunk::RetryAttempt {
                 attempt,
@@ -3270,14 +3471,35 @@ pub async fn process_agent_message_streaming(
                     "session_id": resolved_session_id
                 });
                 emit("agent-stream-agent-iteration", payload);
+                emit_task_refresh_if_changed(
+                    &app,
+                    resolved_session_id.as_deref(),
+                    &mut last_task_tree_signature,
+                );
+            }
+            StreamChunk::TaskRuntimeSnapshot { snapshot } => {
+                emit(
+                    "agent-stream-task-state",
+                    serde_json::json!({
+                        "session_id": resolved_session_id,
+                        "snapshot": snapshot
+                    }),
+                );
+                emit_task_refresh_if_changed(
+                    &app,
+                    resolved_session_id.as_deref(),
+                    &mut last_task_tree_signature,
+                );
             }
             StreamChunk::ShellOutput {
                 process_id,
+                shell_session_id,
                 stream,
                 data,
             } => {
                 let payload = serde_json::json!({
                     "process_id": process_id,
+                    "shell_session_id": shell_session_id,
                     "stream": stream,
                     "data": data,
                     "session_id": resolved_session_id
@@ -3286,6 +3508,7 @@ pub async fn process_agent_message_streaming(
             }
             StreamChunk::ShellLifecycle {
                 process_id,
+                shell_session_id,
                 state,
                 exit_code,
                 duration_ms,
@@ -3294,6 +3517,7 @@ pub async fn process_agent_message_streaming(
             } => {
                 let payload = serde_json::json!({
                     "process_id": process_id,
+                    "shell_session_id": shell_session_id,
                     "state": state,
                     "exit_code": exit_code,
                     "duration_ms": duration_ms,
@@ -3302,6 +3526,31 @@ pub async fn process_agent_message_streaming(
                     "session_id": resolved_session_id
                 });
                 emit("agent-stream-shell-lifecycle", payload);
+            }
+            StreamChunk::ShellSessionLifecycle {
+                shell_session_id,
+                state,
+                cwd,
+                active_process_id,
+                active_command,
+                available_for_reuse,
+            } => {
+                let metadata = gestura_core::tools::shell_sessions::describe_session(&shell_session_id)
+                    .await
+                    .ok()
+                    .flatten();
+                let payload = serde_json::json!({
+                    "shell_session_id": shell_session_id,
+                    "state": state,
+                    "cwd": cwd,
+                    "active_process_id": active_process_id,
+                    "active_command": active_command,
+                    "available_for_reuse": available_for_reuse,
+                    "interactive": metadata.as_ref().map(|meta| meta.interactive),
+                    "user_managed": metadata.as_ref().map(|meta| meta.user_managed),
+                    "session_id": resolved_session_id,
+                });
+                emit("agent-stream-shell-session-lifecycle", payload);
             }
             StreamChunk::Done(usage) => {
                 saw_terminal = true;
@@ -3454,18 +3703,69 @@ pub async fn process_agent_message_streaming(
                 }
             }
             _ = &mut idle_timer => {
-                // If we haven't received any stream events in a while, treat this as a backend hang.
-                // Ensure the frontend gets an explicit terminal event.
+                // If we haven't received any stream events in a while, preserve the
+                // current execution as a resumable pause instead of hard-failing it.
                 saw_terminal = true;
-                tracing::error!("Streaming agent timed out (no events for {:?})", idle_timeout);
-                cancel_token.cancel();
-                emit(
-                    "agent-stream-error",
-                    serde_json::json!(format!(
-                        "Timed out waiting for agent response (no events for {:?}).",
-                        idle_timeout
-                    )),
-                );
+                tracing::warn!("Streaming agent timed out (no events for {:?}); pausing for resume", idle_timeout);
+
+                if let Some(ref sid) = resolved_session_id {
+                    cancel_token.pause();
+
+                    if (!assistant_text.trim().is_empty()
+                        || assistant_thinking
+                            .as_ref()
+                            .is_some_and(|t| !t.trim().is_empty()))
+                        && !crate::window_manager::append_to_last_assistant_message(
+                            sid,
+                            &assistant_text,
+                            assistant_thinking.clone(),
+                        )
+                    {
+                        crate::window_manager::add_assistant_message(
+                            sid,
+                            &assistant_text,
+                            assistant_thinking.clone(),
+                        );
+                    }
+
+                    let paused_state = gestura_core::PausedExecutionState {
+                        original_input: input_snapshot.clone(),
+                        system_prompt: None,
+                        history: history_snapshot.clone(),
+                        partial_content: assistant_text.clone(),
+                        partial_thinking: assistant_thinking.clone(),
+                        completed_tool_calls: completed_tool_calls.clone(),
+                        iteration: 0,
+                        source: request_source,
+                        session_id: Some(sid.clone()),
+                        workspace_dir: crate::window_manager::get_session_state(sid)
+                            .and_then(|s| s.workspace_dir),
+                        model_snapshot: None,
+                        paused_at: chrono::Utc::now(),
+                    };
+                    crate::window_manager::set_session_paused_execution(sid, Some(paused_state));
+
+                    emit(
+                        "agent-stream-status",
+                        serde_json::json!({
+                            "text": format!(
+                                "No stream events for {:?}; paused automatically so you can resume from the same point.",
+                                idle_timeout
+                            ),
+                            "kind": "warning"
+                        }),
+                    );
+                    emit("agent-stream-paused", serde_json::json!(null));
+                } else {
+                    cancel_token.cancel();
+                    emit(
+                        "agent-stream-error",
+                        serde_json::json!(format!(
+                            "Timed out waiting for agent response (no stream events for {:?}). The agent may be stalled or a tool may not be reporting progress.",
+                            idle_timeout
+                        )),
+                    );
+                }
                 break;
             }
         }
@@ -3610,6 +3910,8 @@ pub async fn resume_agent_streaming(
         let _ = crate::task_integration::get_task_manager()
             .set_current_task_id(&session_id, Some(task_id.to_string()));
     }
+    let mut last_task_tree_signature =
+        Some(session_id.as_str()).and_then(task_tree_refresh_signature);
     if let Some(workspace) =
         crate::window_manager::get_session_state(&session_id).and_then(|s| s.workspace_dir)
     {
@@ -3666,8 +3968,7 @@ pub async fn resume_agent_streaming(
     let mut saw_terminal = false;
 
     use tokio::time::{Duration, Instant};
-    let idle_timeout_normal = Duration::from_secs(90);
-    let idle_timeout_waiting_for_user = Duration::from_secs(10 * 60);
+    let idle_timeout_normal = Duration::from_secs(STREAM_IDLE_TIMEOUT_NORMAL_SECS);
     let mut idle_timeout = idle_timeout_normal;
     let idle_timer = tokio::time::sleep(idle_timeout);
     tokio::pin!(idle_timer);
@@ -3676,10 +3977,7 @@ pub async fn resume_agent_streaming(
         tokio::select! {
             maybe_chunk = rx.recv() => {
                 let Some(chunk) = maybe_chunk else { break; };
-                idle_timeout = match &chunk {
-                    StreamChunk::ToolConfirmationRequired { .. } => idle_timeout_waiting_for_user,
-                    _ => idle_timeout_normal,
-                };
+                idle_timeout = stream_idle_timeout_for_chunk(&chunk);
                 idle_timer.as_mut().reset(Instant::now() + idle_timeout);
 
                 match chunk {
@@ -3707,6 +4005,21 @@ pub async fn resume_agent_streaming(
                         if let Some((tc_id, tc_name, tc_args)) = current_tool_call.take() {
                             if let Some(sid) = resolved_session_id.as_deref() {
                                 task_tool_ui_event = task_tool_mutation_event(sid, &tc_name, &tc_args, success);
+                                crate::window_manager::record_tool_call(
+                                    sid,
+                                    gestura_core::agent_sessions::SessionToolCall {
+                                        id: tc_id.clone(),
+                                        name: tc_name.clone(),
+                                        arguments: tc_args.clone(),
+                                        result: output.clone(),
+                                        success,
+                                        duration_ms,
+                                        timestamp: chrono::Utc::now(),
+                                    },
+                                );
+                                if !output.trim().is_empty() {
+                                    crate::window_manager::add_tool_message(sid, &tc_id, &output);
+                                }
                             }
                             let result = if success {
                                 gestura_core::ToolResult::Success(output.clone())
@@ -3724,6 +4037,11 @@ pub async fn resume_agent_streaming(
                         if let Some((event_name, event_payload)) = task_tool_ui_event {
                             let _ = app.emit(event_name, event_payload);
                         }
+                        emit_task_refresh_if_changed(
+                            &app,
+                            resolved_session_id.as_deref(),
+                            &mut last_task_tree_signature,
+                        );
                     }
                     StreamChunk::Done(_) => {
                         saw_terminal = true;
@@ -3775,20 +4093,19 @@ pub async fn resume_agent_streaming(
                     StreamChunk::Cancelled => {
                         saw_terminal = true;
                         if let Some(ref sid) = resolved_session_id {
-                            if !assistant_text.trim().is_empty()
-                                || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty())
-                            {
-                                if !crate::window_manager::append_to_last_assistant_message(
+                            if (!assistant_text.trim().is_empty()
+                                || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty()))
+                                && !crate::window_manager::append_to_last_assistant_message(
                                     sid,
                                     &assistant_text,
                                     assistant_thinking.clone(),
-                                ) {
-                                    crate::window_manager::add_assistant_message(
-                                        sid,
-                                        &assistant_text,
-                                        assistant_thinking.clone(),
-                                    );
-                                }
+                                )
+                            {
+                                crate::window_manager::add_assistant_message(
+                                    sid,
+                                    &assistant_text,
+                                    assistant_thinking.clone(),
+                                );
                             }
                             if let Some(task_id) = tracked_task_id.as_deref() {
                                 let _ = crate::task_integration::mark_task_cancelled(&app, sid, task_id);
@@ -3800,20 +4117,19 @@ pub async fn resume_agent_streaming(
                     StreamChunk::Paused => {
                         saw_terminal = true;
                         if let Some(ref sid) = resolved_session_id {
-                            if !assistant_text.trim().is_empty()
-                                || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty())
-                            {
-                                if !crate::window_manager::append_to_last_assistant_message(
+                            if (!assistant_text.trim().is_empty()
+                                || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty()))
+                                && !crate::window_manager::append_to_last_assistant_message(
                                     sid,
                                     &assistant_text,
                                     assistant_thinking.clone(),
-                                ) {
-                                    crate::window_manager::add_assistant_message(
-                                        sid,
-                                        &assistant_text,
-                                        assistant_thinking.clone(),
-                                    );
-                                }
+                                )
+                            {
+                                crate::window_manager::add_assistant_message(
+                                    sid,
+                                    &assistant_text,
+                                    assistant_thinking.clone(),
+                                );
                             }
 
                             let paused_state = gestura_core::PausedExecutionState {
@@ -3866,8 +4182,41 @@ pub async fn resume_agent_streaming(
                     StreamChunk::Status { message } => {
                         emit("agent-stream-status", serde_json::json!({ "text": message, "kind": "busy" }));
                     }
+                    StreamChunk::Narration {
+                        title,
+                        message,
+                        stage,
+                    } => {
+                        emit(
+                            "agent-stream-narration",
+                            serde_json::json!({
+                                "title": title,
+                                "message": message,
+                                "stage": stage.as_str(),
+                            }),
+                        );
+                    }
                     StreamChunk::AgentLoopIteration { iteration } => {
                         emit("agent-stream-agent-iteration", serde_json::json!({ "iteration": iteration }));
+                        emit_task_refresh_if_changed(
+                            &app,
+                            resolved_session_id.as_deref(),
+                            &mut last_task_tree_signature,
+                        );
+                    }
+                    StreamChunk::TaskRuntimeSnapshot { snapshot } => {
+                        emit(
+                            "agent-stream-task-state",
+                            serde_json::json!({
+                                "session_id": resolved_session_id,
+                                "snapshot": snapshot
+                            }),
+                        );
+                        emit_task_refresh_if_changed(
+                            &app,
+                            resolved_session_id.as_deref(),
+                            &mut last_task_tree_signature,
+                        );
                     }
                     StreamChunk::ReflectionStarted { reason } => {
                         emit(
@@ -3905,18 +4254,64 @@ pub async fn resume_agent_streaming(
             }
             () = &mut idle_timer => {
                 saw_terminal = true;
-                tracing::error!("Resume stream idle timeout (no events for {:?})", idle_timeout);
-                cancel_token.cancel();
-                if let (Some(sid), Some(task_id)) = (&resolved_session_id, &tracked_task_id) {
-                    let _ = crate::task_integration::mark_task_cancelled(&app, sid, task_id);
+                tracing::warn!("Resume stream idle timeout (no events for {:?}); pausing for resume", idle_timeout);
+
+                if let Some(ref sid) = resolved_session_id {
+                    cancel_token.pause();
+
+                    if (!assistant_text.trim().is_empty()
+                        || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty()))
+                        && !crate::window_manager::append_to_last_assistant_message(
+                            sid,
+                            &assistant_text,
+                            assistant_thinking.clone(),
+                        )
+                    {
+                        crate::window_manager::add_assistant_message(
+                            sid,
+                            &assistant_text,
+                            assistant_thinking.clone(),
+                        );
+                    }
+
+                    let paused_state = gestura_core::PausedExecutionState {
+                        original_input: input_snapshot.clone(),
+                        system_prompt: None,
+                        history: history_snapshot.clone(),
+                        partial_content: assistant_text.clone(),
+                        partial_thinking: assistant_thinking.clone(),
+                        completed_tool_calls: completed_tool_calls.clone(),
+                        iteration: 0,
+                        source: request_source,
+                        session_id: Some(sid.clone()),
+                        workspace_dir: crate::window_manager::get_session_state(sid)
+                            .and_then(|s| s.workspace_dir),
+                        model_snapshot: None,
+                        paused_at: chrono::Utc::now(),
+                    };
+                    crate::window_manager::set_session_paused_execution(sid, Some(paused_state));
+
+                    emit(
+                        "agent-stream-status",
+                        serde_json::json!({
+                            "text": format!(
+                                "No resumed stream events for {:?}; paused automatically so you can resume from the same point.",
+                                idle_timeout
+                            ),
+                            "kind": "warning"
+                        }),
+                    );
+                    emit("agent-stream-paused", serde_json::json!(null));
+                } else {
+                    cancel_token.cancel();
+                    emit(
+                        "agent-stream-error",
+                        serde_json::json!(format!(
+                            "Timed out waiting for resumed agent response (no stream events for {:?}). The agent may be stalled or a tool may not be reporting progress.",
+                            idle_timeout
+                        )),
+                    );
                 }
-                emit(
-                    "agent-stream-error",
-                    serde_json::json!(format!(
-                        "Timed out waiting for resumed agent response (no events for {:?}).",
-                        idle_timeout
-                    )),
-                );
                 break;
             }
         }
@@ -4271,9 +4666,22 @@ pub async fn list_agents(
 /// Delegate a task to a subagent
 #[tauri::command]
 pub async fn delegate_task(
-    task: crate::orchestrator::DelegatedTask,
+    mut task: crate::orchestrator::DelegatedTask,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<String, String> {
+    if task.session_id.is_none() {
+        task.session_id = crate::window_manager::get_active_agent_for_voice();
+    }
+    if task.workspace_dir.is_none() {
+        task.workspace_dir = task
+            .session_id
+            .as_deref()
+            .and_then(|session_id| {
+                crate::window_manager::get_session_state(session_id)
+                    .and_then(|session| session.workspace_dir)
+            })
+            .or_else(crate::window_manager::get_active_session_workspace);
+    }
     state.orchestrator.delegate_task(task).await
 }
 
@@ -5311,23 +5719,10 @@ fn resolve_memory_console_context(
     ),
     String,
 > {
-    let session = session_id.and_then(|target| {
-        crate::window_manager::get_all_sessions()
-            .into_iter()
-            .find(|candidate| candidate.id == target)
-            .map(|candidate| gestura_core::agent_sessions::AgentSession {
-                id: candidate.id,
-                title: candidate.title,
-                created_at: candidate.created_at,
-                last_active: candidate.last_active,
-                model: candidate
-                    .state
-                    .llm_config
-                    .as_ref()
-                    .and_then(|cfg| cfg.model.clone()),
-                state: candidate.state,
-            })
-    });
+    let live_sessions = crate::window_manager::get_all_sessions();
+    let session_store = gestura_core::agent_sessions::FileAgentSessionStore::default();
+    let session = session_id
+        .and_then(|target| load_memory_console_session(target, &live_sessions, &session_store));
 
     let workspace_dir = workspace_dir
         .map(std::path::PathBuf::from)
@@ -5339,6 +5734,32 @@ fn resolve_memory_console_context(
         .ok_or_else(|| "No workspace directory available for memory console".to_string())?;
 
     Ok((session, workspace_dir))
+}
+
+fn load_memory_console_session<S>(
+    session_id: &str,
+    live_sessions: &[crate::window_manager::AgentSession],
+    session_store: &S,
+) -> Option<gestura_core::agent_sessions::AgentSession>
+where
+    S: gestura_core::agent_sessions::AgentSessionStore,
+{
+    live_sessions
+        .iter()
+        .find(|candidate| candidate.id == session_id)
+        .map(|candidate| gestura_core::agent_sessions::AgentSession {
+            id: candidate.id.clone(),
+            title: candidate.title.clone(),
+            created_at: candidate.created_at,
+            last_active: candidate.last_active,
+            model: candidate
+                .state
+                .llm_config
+                .as_ref()
+                .and_then(|cfg| cfg.model.clone()),
+            state: candidate.state.clone(),
+        })
+        .or_else(|| session_store.load(session_id).ok())
 }
 
 /// List recent sessions for the memory console.
@@ -6108,10 +6529,259 @@ pub async fn editor_git_diff(
 // Shell Process Control Commands (stop / pause / resume inline shell consoles)
 // ============================================================================
 
+fn spawn_shell_session_event_bridge(
+    app: tauri::AppHandle,
+    calling_window_label: String,
+    target_window_label: String,
+    resolved_session_id: Option<String>,
+    mut rx: tokio::sync::mpsc::Receiver<gestura_core::StreamChunk>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let emit = |event: &str, payload: serde_json::Value| {
+            let payload =
+                crate::agent_events::attach_session_id(payload, resolved_session_id.as_deref());
+            if let Err(err) = crate::agent_events::emit_agent_event_to_window(
+                &app,
+                &target_window_label,
+                &calling_window_label,
+                event,
+                &payload,
+                resolved_session_id.as_deref(),
+            ) {
+                tracing::error!(event = %event, error = %err, "Failed to emit shell manager event");
+            }
+        };
+
+        while let Some(chunk) = rx.recv().await {
+            match chunk {
+                gestura_core::StreamChunk::ShellLifecycle {
+                    process_id,
+                    shell_session_id,
+                    state,
+                    command,
+                    cwd,
+                    exit_code,
+                    duration_ms,
+                } => emit(
+                    "agent-stream-shell-lifecycle",
+                    serde_json::json!({
+                        "process_id": process_id,
+                        "shell_session_id": shell_session_id,
+                        "state": state,
+                        "command": command,
+                        "cwd": cwd,
+                        "exit_code": exit_code,
+                        "duration_ms": duration_ms,
+                    }),
+                ),
+                gestura_core::StreamChunk::ShellOutput {
+                    process_id,
+                    shell_session_id,
+                    stream,
+                    data,
+                } => emit(
+                    "agent-stream-shell-output",
+                    serde_json::json!({
+                        "process_id": process_id,
+                        "shell_session_id": shell_session_id,
+                        "stream": stream,
+                        "data": data,
+                    }),
+                ),
+                gestura_core::StreamChunk::ShellSessionLifecycle {
+                    shell_session_id,
+                    state,
+                    cwd,
+                    active_process_id,
+                    active_command,
+                    available_for_reuse,
+                } => {
+                    let metadata =
+                        gestura_core::tools::shell_sessions::describe_session(&shell_session_id)
+                            .await
+                            .ok()
+                            .flatten();
+                    emit(
+                        "agent-stream-shell-session-lifecycle",
+                        serde_json::json!({
+                            "shell_session_id": shell_session_id,
+                            "state": state,
+                            "cwd": cwd,
+                            "active_process_id": active_process_id,
+                            "active_command": active_command,
+                            "available_for_reuse": available_for_reuse,
+                            "interactive": metadata.as_ref().map(|meta| meta.interactive),
+                            "user_managed": metadata.as_ref().map(|meta| meta.user_managed),
+                        }),
+                    )
+                }
+                _ => {}
+            }
+        }
+    });
+}
+
+/// Start a standalone PTY-backed interactive shell session for the current agent session.
+///
+/// The session starts immediately without requiring an initial command and
+/// defaults to the project/session workspace directory when no cwd is given.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn start_shell_session_streaming(
+    webview_window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    session_id: String,
+    cwd: Option<String>,
+) -> Result<(), String> {
+    use std::path::Path;
+    use tokio::sync::mpsc;
+
+    let cwd = cwd
+        .and_then(|value| {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        })
+        .or_else(|| {
+            crate::window_manager::get_session_state(&session_id)
+                .and_then(|state| state.workspace_dir.map(|dir| dir.display().to_string()))
+        });
+
+    if let Some(ref dir) = cwd {
+        let path = Path::new(dir);
+        if !path.exists() {
+            return Err(format!("Working directory does not exist: {}", dir));
+        }
+        if !path.is_dir() {
+            return Err(format!("Working directory is not a directory: {}", dir));
+        }
+    }
+
+    let calling_window_label = webview_window.label().to_string();
+    let target_window_label = crate::window_manager::get_session_window_label(&session_id)
+        .unwrap_or_else(|| calling_window_label.clone());
+    let resolved_session_id: Option<String> = Some(session_id.clone());
+    let (tx, rx) = mpsc::channel(100);
+
+    spawn_shell_session_event_bridge(
+        app.clone(),
+        calling_window_label.clone(),
+        target_window_label.clone(),
+        resolved_session_id.clone(),
+        rx,
+    );
+
+    let exec_cwd = cwd.clone();
+
+    if let Err(error) = gestura_core::tools::shell_sessions::create_session(
+        &session_id,
+        exec_cwd.as_deref(),
+        Some(tx),
+    )
+    .await
+    {
+        let payload = crate::agent_events::attach_session_id(
+            serde_json::json!({
+                "cwd": exec_cwd,
+                "error": error.to_string(),
+            }),
+            Some(session_id.as_str()),
+        );
+        crate::agent_events::emit_agent_event_to_window(
+            &app,
+            &target_window_label,
+            &calling_window_label,
+            "agent-stream-shell-launch-error",
+            &payload,
+            Some(session_id.as_str()),
+        )
+        .map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+
+    Ok(())
+}
+
 /// Stop a running shell process by sending SIGTERM (then SIGKILL after 3 s).
 #[tauri::command(rename_all = "snake_case")]
 pub async fn shell_process_stop(process_id: String) -> Result<(), String> {
+    if gestura_core::tools::shell_sessions::stop_process(&process_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        return Ok(());
+    }
+
     gestura_core::tools::shell_streaming::stop_process(&process_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Stop and remove a long-lived PTY shell session.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn shell_session_stop(shell_session_id: String) -> Result<(), String> {
+    gestura_core::tools::shell_sessions::stop_session(&shell_session_id)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Send raw terminal input to an interactive PTY shell session.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn shell_session_input(shell_session_id: String, input: String) -> Result<(), String> {
+    gestura_core::tools::shell_sessions::send_input(&shell_session_id, &input)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Claim a PTY shell session for direct user interaction in the terminal manager.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn shell_session_attach(
+    webview_window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    session_id: String,
+    shell_session_id: String,
+) -> Result<(), String> {
+    use tokio::sync::mpsc;
+
+    let calling_window_label = webview_window.label().to_string();
+    let target_window_label = crate::window_manager::get_session_window_label(&session_id)
+        .unwrap_or_else(|| calling_window_label.clone());
+    let resolved_session_id: Option<String> = Some(session_id.clone());
+    let (tx, rx) = mpsc::channel(100);
+
+    gestura_core::tools::shell_sessions::subscribe_session(&shell_session_id, tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Shell session not found: {shell_session_id}"))?;
+
+    spawn_shell_session_event_bridge(
+        app,
+        calling_window_label,
+        target_window_label,
+        resolved_session_id,
+        rx,
+    );
+
+    gestura_core::tools::shell_sessions::claim_session(&shell_session_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Shell session not found: {shell_session_id}"))?;
+
+    Ok(())
+}
+
+/// Resize an interactive PTY shell session to match the terminal viewport.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn shell_session_resize(
+    shell_session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    gestura_core::tools::shell_sessions::resize_session(&shell_session_id, cols, rows)
         .await
         .map_err(|e| e.to_string())
 }

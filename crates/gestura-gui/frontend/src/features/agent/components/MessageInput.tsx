@@ -23,6 +23,10 @@ export interface MessageInputProps {
   onToggleEditor?: () => void;
   /** Called when the Tasks quick-access button is clicked. */
   onOpenTasks?: () => void;
+  /** Called when the Shell Manager quick-access button is clicked. */
+  onToggleShellManager?: () => void;
+  /** Whether the Shell Manager is currently visible. */
+  shellManagerOpen?: boolean;
   /** Called when the Terminal quick-access button is clicked. */
   onOpenTerminal?: () => void;
   /** Session ID (used for terminal and future quick-access features). */
@@ -43,6 +47,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   viewMode,
   onToggleEditor,
   onOpenTasks,
+  onToggleShellManager,
+  shellManagerOpen = false,
   onOpenTerminal,
 }) => {
   const [text, setText] = useState('');
@@ -172,9 +178,17 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           onClick={onOpenTasks}>
           <span className="icon-checklist"></span>
         </button>
-        <button type="button" className="btn-icon" title="Open in Terminal"
+        <button
+          type="button"
+          className={`btn-icon${shellManagerOpen ? ' active' : ''}`}
+          title="Shell Manager (Cmd/Ctrl+`)"
+          onClick={onToggleShellManager}
+        >
+          <span className="icon-terminal" aria-hidden="true"></span>
+        </button>
+        <button type="button" className="btn-icon" title="Open Session in Shell"
           onClick={onOpenTerminal}>
-          <span className="icon-terminal"></span>
+          <span className="icon-terminal-square" aria-hidden="true"></span>
         </button>
       </div>
     </div>

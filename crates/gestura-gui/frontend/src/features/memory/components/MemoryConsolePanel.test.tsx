@@ -76,6 +76,22 @@ describe('MemoryConsolePanel', () => {
       strategy_key: null,
       outcome_labels: [],
     });
+    agentMocks.getMemoryTaskLifecycle.mockResolvedValue({
+      task_id: 'task-9',
+      lifecycle: {
+        events: [
+          {
+            phase: 'promoted',
+            summary: 'Promoted execution result to durable memory',
+            scope: 'workspace',
+            memory_type: 'reflection',
+            memory_file_path: '/tmp/workspace/memory/entry-1.md',
+            recorded_at: '2026-03-12T00:05:00Z',
+          },
+        ],
+        last_memory_file_path: '/tmp/workspace/memory/entry-1.md',
+      },
+    });
   });
 
   afterEach(() => {
@@ -85,6 +101,10 @@ describe('MemoryConsolePanel', () => {
 
   it('surfaces shared cognition overview counts and quick-filter search results', async () => {
     render(<MemoryConsolePanel sessionId="session-1" workspaceDir="/tmp/workspace" allowSessionSelection={false} />);
+
+    expect(
+      await screen.findByText(/Short-term session working memory, long-term memory bank entries/i),
+    ).toBeInTheDocument();
 
     const sharedSummary = await screen.findByText(/Shared cognition entries:/);
     expect(sharedSummary.parentElement).toHaveTextContent('Shared cognition entries: 2');
@@ -106,6 +126,57 @@ describe('MemoryConsolePanel', () => {
     expect(ownershipMeta.parentElement).toHaveTextContent('task-9 / directive-4 / supervisor');
     const confidenceMeta = screen.getByText(/Confidence \/ tags:/);
     expect(confidenceMeta.parentElement).toHaveTextContent('82% / shared-cognition, steering');
+  });
+
+  it('auto-loads current session task memory history and refreshes on signal changes', async () => {
+    const tasks = [
+      {
+        id: 'task-9',
+        name: 'Finalize execution chain',
+        status: 'Completed' as const,
+        subtasks: [
+          {
+            id: 'task-10',
+            name: 'Archive results',
+            status: 'Completed' as const,
+          },
+        ],
+      },
+    ];
+
+    const { rerender } = render(
+      <MemoryConsolePanel
+        sessionId="session-1"
+        workspaceDir="/tmp/workspace"
+        tasks={tasks}
+        refreshSignal={0}
+        allowSessionSelection={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Task' }));
+
+    await waitFor(() => {
+      expect(agentMocks.getMemoryTaskLifecycle).toHaveBeenCalledWith('session-1', 'task-9');
+    });
+
+    expect(await screen.findByText('Finalize execution chain')).toBeInTheDocument();
+    expect(screen.getByText(/Promoted execution result to durable memory/)).toBeInTheDocument();
+    expect(screen.getByText(/Latest durable memory:/).parentElement).toHaveTextContent('/tmp/workspace/memory/entry-1.md');
+
+    rerender(
+      <MemoryConsolePanel
+        sessionId="session-1"
+        workspaceDir="/tmp/workspace"
+        tasks={tasks}
+        refreshSignal={1}
+        allowSessionSelection={false}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(agentMocks.getMemoryConsoleOverview).toHaveBeenCalledTimes(2);
+    });
   });
 });
 

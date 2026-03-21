@@ -5,22 +5,17 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 
 import { parseMarkdown } from '../utils/markdown';
-import { ansiToHtml } from '../utils/ansi';
-import {
-  shellProcessStop,
-  shellProcessPause,
-  shellProcessResume,
-  openShellForSession,
-} from '../../../services/tauri/agent';
+import { buildToolPresentation } from '../utils/toolActivity';
 import type {
   AgentMessage,
   MsgBlock,
   ThinkingBlock,
   TextBlock,
   ToolBlock,
-  ShellBlock,
   IterationMarkerBlock,
+  NarrationBlock,
 } from '../types';
+import { ShellConsoleView } from './ShellConsoleView';
 
 // ─── Block renderers ──────────────────────────────────────────────────────────
 
@@ -50,8 +45,114 @@ const TextBlockView: React.FC<{ block: TextBlock }> = ({ block }) => (
   />
 );
 
+function toolStatusLabel(block: ToolBlock): string {
+  if (block.status === 'running') return 'Running…';
+  if (block.status === 'executing') return 'Executing…';
+  if (block.status === 'success') return `Success${block.durationMs != null ? ` • ${block.durationMs}ms` : ''}`;
+  if (block.status === 'error') return `Error${block.durationMs != null ? ` • ${block.durationMs}ms` : ''}`;
+  return 'Blocked';
+}
+
+function toolIconKey(name: string): string {
+  switch (name.toLowerCase()) {
+    case 'file': return 'file';
+    case 'git': return 'git';
+    case 'code': return 'code';
+    case 'web': return 'web';
+    case 'web_search': return 'search';
+    case 'task':
+    case 'tasks': return 'task';
+    case 'mcp': return 'mcp';
+    case 'screenshot': return 'screenshot';
+    case 'screen_record': return 'record';
+    case 'shell': return 'shell';
+    default: return 'default';
+  }
+}
+
+const ToolIcon: React.FC<{ name: string }> = ({ name }) => {
+  switch (toolIconKey(name)) {
+    case 'file':
+      return (
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M4.25 2.75h4.7l2.8 2.8v7a.7.7 0 0 1-.7.7h-6.8a.7.7 0 0 1-.7-.7v-9.1a.7.7 0 0 1 .7-.7Z" fill="none" stroke="currentColor" strokeWidth="1.2" />
+          <path d="M8.95 2.9v2.55h2.55" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+        </svg>
+      );
+    case 'git':
+      return (
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M5.2 3.1a1.5 1.5 0 1 0 0 3a1.5 1.5 0 0 0 0-3Zm5.6 6.8a1.5 1.5 0 1 0 0 3a1.5 1.5 0 0 0 0-3ZM5.2 6.1v4.1a1.5 1.5 0 1 0 1.2 0V8.6h3.2a1.5 1.5 0 1 0 0-1.2H6.4V6.1" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.2" />
+        </svg>
+      );
+    case 'code':
+      return (
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="m5.4 4.4-3 3.6 3 3.6M10.6 4.4l3 3.6-3 3.6M8.9 3 7.1 13" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.2" />
+        </svg>
+      );
+    case 'web':
+      return (
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="5.4" fill="none" stroke="currentColor" strokeWidth="1.2" />
+          <path d="M2.9 8h10.2M8 2.6c1.4 1.4 2.2 3.3 2.2 5.4 0 2.1-.8 4-2.2 5.4M8 2.6C6.6 4 5.8 5.9 5.8 8c0 2.1.8 4 2.2 5.4" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+        </svg>
+      );
+    case 'search':
+      return (
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="7" cy="7" r="3.8" fill="none" stroke="currentColor" strokeWidth="1.2" />
+          <path d="m10 10 3 3" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.2" />
+        </svg>
+      );
+    case 'task':
+      return (
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M6.2 4.2h6.1M6.2 8h6.1M6.2 11.8h6.1M3.2 4.2h.01M3.2 8h.01M3.2 11.8h.01" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.2" />
+        </svg>
+      );
+    case 'mcp':
+      return (
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <rect x="2.8" y="3" width="4.2" height="4.2" rx="0.8" fill="none" stroke="currentColor" strokeWidth="1.2" />
+          <rect x="9" y="3" width="4.2" height="4.2" rx="0.8" fill="none" stroke="currentColor" strokeWidth="1.2" />
+          <rect x="5.9" y="8.8" width="4.2" height="4.2" rx="0.8" fill="none" stroke="currentColor" strokeWidth="1.2" />
+          <path d="M7 5.1h2M8 7.2v1.6" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+        </svg>
+      );
+    case 'screenshot':
+      return (
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <rect x="2.7" y="4" width="10.6" height="8" rx="1.4" fill="none" stroke="currentColor" strokeWidth="1.2" />
+          <circle cx="8" cy="8" r="2.1" fill="none" stroke="currentColor" strokeWidth="1.2" />
+          <path d="M5.4 4 6.2 2.9h3.6L10.6 4" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    case 'record':
+      return (
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="2.4" fill="currentColor" />
+          <rect x="3.2" y="3.2" width="9.6" height="9.6" rx="2.1" fill="none" stroke="currentColor" strokeWidth="1.2" />
+        </svg>
+      );
+    case 'shell':
+      return (
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="m4.5 5.1 2 1.9-2 1.9M7.8 9h3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.2" />
+        </svg>
+      );
+    default:
+      return (
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M8 2.8 9.3 4l1.8-.2.5 1.7 1.6.9-.8 1.6.8 1.6-1.6.9-.5 1.7-1.8-.2L8 13.2l-1.3-1.2-1.8.2-.5-1.7-1.6-.9.8-1.6-.8-1.6 1.6-.9.5-1.7 1.8.2L8 2.8Zm0 3a2.2 2.2 0 1 0 0 4.4 2.2 2.2 0 0 0 0-4.4Z" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
+        </svg>
+      );
+  }
+};
+
 const ToolBlockView: React.FC<{ block: ToolBlock }> = ({ block }) => {
   const [collapsed, setCollapsed] = useState(block.collapsed);
+  const presentation = buildToolPresentation(block);
 
   // Sync with external collapse signals (e.g. parent collapses on new text content).
   // eslint-disable-next-line
@@ -75,22 +176,51 @@ const ToolBlockView: React.FC<{ block: ToolBlock }> = ({ block }) => {
           aria-expanded={!collapsed}
           onClick={() => setCollapsed((c) => !c)}
         >
-          <span className="tool-call-label">Tool</span>
-          <strong className="tool-call-name">{block.name}</strong>
-          <span className="tool-call-status">
-            {block.status === 'running' ? 'Running…' :
-              block.status === 'executing' ? 'Executing…' :
-                block.status === 'success' ? `Success${block.durationMs != null ? ` • ${block.durationMs}ms` : ''}` :
-                  block.status === 'error' ? `Error${block.durationMs != null ? ` • ${block.durationMs}ms` : ''}` :
-                    block.status === 'blocked' ? 'Blocked' : ''}
+          <span className={`tool-call-icon tool-call-icon--${toolIconKey(block.name)}`} aria-hidden="true"><ToolIcon name={block.name} /></span>
+          <span className="tool-call-copy">
+            <strong className="tool-call-name">{presentation.title}</strong>
           </span>
+          <span className={`tool-call-status tool-call-status--${block.status}`}>{toolStatusLabel(block)}</span>
           <span className="tool-call-chevron">{collapsed ? '▸' : '▾'}</span>
         </button>
         {!collapsed && (
           <div className="tool-call-details">
-            {block.args && <pre className="tool-args">{block.args}</pre>}
+            {(presentation.eyebrow || presentation.detail) && (
+              <div className="tool-call-meta">
+                <span className="tool-call-label">{presentation.eyebrow}</span>
+                {presentation.detail && (
+                  <span className="tool-call-detail" title={presentation.detail}>{presentation.detail}</span>
+                )}
+              </div>
+            )}
+            {presentation.parameterItems.length > 0 && (
+              <section className="tool-call-section" aria-label="Parameters">
+                <div className="tool-call-grid">
+                  {presentation.parameterItems.map((item) => (
+                    <div key={`${block.id}-arg-${item.label}`} className="tool-call-kv">
+                      <span>{item.label}</span>
+                      <strong title={item.value}>{item.value}</strong>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
             {block.result != null && !screenshotSrc && (
-              <div className={`tool-result ${block.status}`}>{block.result}</div>
+              <section className="tool-call-section" aria-label="Response">
+                <div className={`tool-result ${block.status}`}>
+                  <p>{presentation.responseSummary}</p>
+                  {presentation.responseItems.length > 0 && (
+                    <div className="tool-call-grid">
+                      {presentation.responseItems.map((item) => (
+                        <div key={`${block.id}-result-${item.label}`} className="tool-call-kv">
+                          <span>{item.label}</span>
+                          <strong title={item.value}>{item.value}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
             )}
             {screenshotSrc && (
               <div className="tool-result screenshot-result">
@@ -98,69 +228,6 @@ const ToolBlockView: React.FC<{ block: ToolBlock }> = ({ block }) => {
               </div>
             )}
           </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-const ShellBlockView: React.FC<{ block: ShellBlock; sessionId: string }> = ({ block, sessionId }) => {
-  const [collapsed, setCollapsed] = useState(block.collapsed);
-  const outputRef = useRef<HTMLDivElement>(null);
-  const isTerminal = block.state === 'Completed' || block.state === 'Failed' || block.state === 'Stopped';
-
-  useEffect(() => {
-    if (outputRef.current) {
-      outputRef.current.scrollTop = outputRef.current.scrollHeight;
-    }
-  }, [block.lines.length]);
-
-  return (
-    <div className={`shell-console${collapsed ? ' collapsed' : ''}`} data-process-id={block.processId}>
-      <div className="shell-console-header">
-        <span className="shell-icon">⬡</span>
-        <span className="shell-cmd" title={block.command}>{block.command || 'shell'}</span>
-        {block.cwd && <span className="shell-cwd" title={block.cwd}>{block.cwd}</span>}
-        <div className="shell-controls">
-          {!isTerminal && (
-            <>
-              <button title={block.state === 'Paused' ? 'Resume' : 'Pause'} onClick={() => {
-                if (block.state === 'Paused') shellProcessResume(block.processId).catch(console.error);
-                else shellProcessPause(block.processId).catch(console.error);
-              }}>{block.state === 'Paused' ? '▶' : '⏸'}</button>
-              <button title="Stop" onClick={() => shellProcessStop(block.processId).catch(console.error)}>⏹</button>
-            </>
-          )}
-          <button title="Copy command" onClick={() => navigator.clipboard.writeText(block.command).catch(console.error)}>⧉</button>
-          <button title="Open in terminal" onClick={() => {
-            openShellForSession(sessionId).catch(console.error);
-          }}>↗</button>
-          <button title={collapsed ? 'Expand' : 'Collapse'} onClick={() => setCollapsed((c) => !c)}>
-            {collapsed ? '▸' : '▾'}
-          </button>
-        </div>
-      </div>
-      {!collapsed && (
-        <div className="shell-console-output" ref={outputRef}>
-          {block.lines.map((line, idx) => (
-            <div
-              key={idx}
-              className={`shell-line${line.stream === 'Stderr' ? ' shell-stderr' : ''}`}
-              dangerouslySetInnerHTML={{ __html: ansiToHtml(line.data) }}
-            />
-          ))}
-        </div>
-      )}
-      <div className="shell-console-footer">
-        <span className={`shell-status-dot ${block.state === 'Paused' ? 'paused' : isTerminal ? (block.exitCode === 0 ? 'success' : 'error') : 'running'}`} />
-        <span className="shell-status-label">
-          {block.state === 'Paused' ? 'Paused' :
-            block.state === 'Completed' ? (block.exitCode === 0 ? 'Completed' : `Exit ${block.exitCode}`) :
-              block.state === 'Failed' ? 'Failed' :
-                block.state === 'Stopped' ? 'Stopped' : 'Running…'}
-        </span>
-        {block.durationMs != null && (
-          <span className="shell-duration">{(block.durationMs / 1000).toFixed(1)}s</span>
         )}
       </div>
     </div>
@@ -178,12 +245,62 @@ const IterationMarkerView: React.FC<{ block: IterationMarkerBlock }> = ({ block 
   </div>
 );
 
+const NARRATION_COLLAPSE_THRESHOLD = 220;
+
+function narrationFallbackTitle(stage: NarrationBlock['stage']): string {
+  switch (stage) {
+    case 'context': return 'Gathering context';
+    case 'planning': return 'Planning next step';
+    case 'execution': return 'Working on request';
+    case 'verification': return 'Checking results';
+    case 'blocked': return 'Waiting on blocker';
+    case 'progress':
+    default:
+      return 'Tracking progress';
+  }
+}
+
+const NarrationBlockView: React.FC<{ block: NarrationBlock }> = ({ block }) => {
+  const [expanded, setExpanded] = useState(false);
+  const isCollapsible = block.message.trim().length > NARRATION_COLLAPSE_THRESHOLD;
+  const title = (block.title?.trim() || narrationFallbackTitle(block.stage)).trim();
+
+  if (!isCollapsible) {
+    return (
+      <p className="agent-narration">
+        <span className="agent-narration-text">{block.message}</span>
+      </p>
+    );
+  }
+
+  return (
+    <div className={`agent-narration agent-narration--collapsible${expanded ? ' expanded' : ''}`}>
+      <button
+        type="button"
+        className="agent-narration-toggle"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <span className="agent-narration-chevron" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+        <strong className="agent-narration-title">{title}</strong>
+      </button>
+      {expanded && (
+        <div className="agent-narration-text">{block.message}</div>
+      )}
+    </div>
+  );
+};
+
 // ─── Single message ───────────────────────────────────────────────────────────
 
-const MessageView: React.FC<{ message: AgentMessage; sessionId: string }> = ({ message, sessionId }) => {
+const MessageView: React.FC<{
+  message: AgentMessage;
+  onRevealShellSession?: (shellSessionId: string | null) => void;
+}> = ({ message, onRevealShellSession }) => {
   const copyText = useCallback(() => {
     navigator.clipboard.writeText(message.rawMarkdown).catch(console.error);
   }, [message.rawMarkdown]);
+  const hasShellBlock = message.blocks.some((block) => block.kind === 'shell');
 
   return (
     <div
@@ -195,8 +312,19 @@ const MessageView: React.FC<{ message: AgentMessage; sessionId: string }> = ({ m
           switch (block.kind) {
             case 'thinking': return <ThinkingBlockView key={block.id} block={block} />;
             case 'text': return <TextBlockView key={block.id} block={block} />;
-            case 'tool': return <ToolBlockView key={block.id} block={block} />;
-            case 'shell': return <ShellBlockView key={block.id} block={block} sessionId={sessionId} />;
+            case 'narration': return <NarrationBlockView key={block.id} block={block} />;
+            case 'tool':
+              if (block.name === 'shell' && hasShellBlock) return null;
+              return <ToolBlockView key={block.id} block={block} />;
+            case 'shell':
+            case 'shell-session':
+              return (
+                <ShellConsoleView
+                  key={block.id}
+                  block={block}
+                  onRevealSession={onRevealShellSession}
+                />
+              );
             case 'iteration-marker': return <IterationMarkerView key={block.id} block={block} />;
             default: return null;
           }
@@ -214,8 +342,8 @@ const MessageView: React.FC<{ message: AgentMessage; sessionId: string }> = ({ m
 export interface MessageListProps {
   messages: AgentMessage[];
   streamingMessage: AgentMessage | null;
-  sessionId: string;
   onScrollChange: (scrolledUp: boolean) => void;
+  onRevealShellSession?: (shellSessionId: string | null) => void;
   canResume?: boolean;
   isResuming?: boolean;
   onResume?: () => void;
@@ -224,7 +352,13 @@ export interface MessageListProps {
 const SCROLL_THRESHOLD = 60;
 
 export const MessageList: React.FC<MessageListProps> = ({
-  messages, streamingMessage, sessionId, onScrollChange, canResume = false, isResuming = false, onResume,
+  messages,
+  streamingMessage,
+  onScrollChange,
+  onRevealShellSession,
+  canResume = false,
+  isResuming = false,
+  onResume,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [userScrolledUp, setUserScrolledUp] = useState(false);
@@ -255,7 +389,11 @@ export const MessageList: React.FC<MessageListProps> = ({
   return (
     <div className="messages-container" ref={containerRef} onScroll={handleScroll}>
       {allMessages.map((msg) => (
-        <MessageView key={msg.id} message={msg} sessionId={sessionId} />
+        <MessageView
+          key={msg.id}
+          message={msg}
+          onRevealShellSession={onRevealShellSession}
+        />
       ))}
       {canResume && (
         <div className={`paused-marker${isResuming ? ' resumed' : ''}`}>

@@ -372,7 +372,12 @@ async fn main() {
             gestura_gui::api::editor_rename_file,
             gestura_gui::api::editor_git_diff,
             // Shell process control (inline shell console)
+            gestura_gui::api::start_shell_session_streaming,
             gestura_gui::api::shell_process_stop,
+            gestura_gui::api::shell_session_stop,
+            gestura_gui::api::shell_session_input,
+            gestura_gui::api::shell_session_attach,
+            gestura_gui::api::shell_session_resize,
             gestura_gui::api::shell_process_pause,
             gestura_gui::api::shell_process_resume,
             gestura_gui::api::shell_process_rerun_info,
