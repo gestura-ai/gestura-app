@@ -100,6 +100,7 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
   const [explorerOpen, setExplorerOpen] = useState(true);
   const [chatOpen, setChatOpen] = useState(true);
   const [sessionWorkspace, setSessionWorkspace] = useState<string | null>(null);
+  const [quickAccessHost, setQuickAccessHost] = useState<HTMLDivElement | null>(null);
   const appRef = useRef<HTMLDivElement>(null);
 
   // Controls visibility and the CSS fade-in animation. The window is created
@@ -245,6 +246,11 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
     }
   }, [viewMode, toggleViewMode]);
 
+  const handleWorkspaceChanged = useCallback((workspace: string) => {
+    setSessionWorkspace(workspace);
+    window.dispatchEvent(new CustomEvent('gestura:workspace:changed'));
+  }, []);
+
   // Once editor mode is active, drain any queued file open.
   useEffect(() => {
     if (viewMode !== 'editor' || !pendingOpenRef.current) return;
@@ -374,7 +380,13 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
       >
         <div className="agent-app__main">
           {isEditor && (
-            <ExplorerPanel sessionId={sessionId} onOpenFile={handleOpenFile} style={explorerStyle} />
+            <ExplorerPanel
+              key={`explorer:${sessionId}:${sessionWorkspace ?? ''}`}
+              sessionId={sessionId}
+              workspaceRoot={sessionWorkspace}
+              onOpenFile={handleOpenFile}
+              style={explorerStyle}
+            />
           )}
           {isEditor && (
             <div className="panel-resizer panel-resizer--left">
@@ -414,8 +426,10 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
           <ChatPanel
             sessionId={sessionId}
             onToggleEditor={toggleViewMode}
+            onWorkspaceChanged={handleWorkspaceChanged}
             viewMode={viewMode}
             style={chatStyle}
+            quickAccessHost={quickAccessHost}
             panelState={panelState}
             toastState={toastState}
           />
@@ -436,6 +450,12 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
           onReorderShellTabs={reorderShellTabs}
           onCloseShellTab={closeShellTab}
           onShowToast={toastState.showToast}
+        />
+
+        <div
+          ref={setQuickAccessHost}
+          className="agent-app__quick-access-host"
+          data-testid="agent-quick-access-host"
         />
 
         <ToastContainer toasts={toastState.toasts} onDismiss={toastState.dismissToast} />

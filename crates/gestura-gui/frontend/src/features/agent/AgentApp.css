@@ -185,6 +185,13 @@ body {
   overflow: hidden;
 }
 
+.agent-app__quick-access-host {
+  display: flex;
+  flex: 0 0 auto;
+  width: 100%;
+  min-height: 0;
+}
+
 /* Fade-in triggered when isReady becomes true in AgentApp.tsx */
 @keyframes agent-app-fade-in {
   from {

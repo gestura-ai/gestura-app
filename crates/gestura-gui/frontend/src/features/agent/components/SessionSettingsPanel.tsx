@@ -24,6 +24,7 @@ interface SessionSettingsPanelProps {
   sessionId: string;
   toolSettings: Record<string, unknown>;
   onRefreshToolSettings: () => Promise<void>;
+  onWorkspaceChanged?: (workspace: string) => void;
   onShowToast: (msg: string, kind?: ToastKind) => void;
 }
 
@@ -39,6 +40,7 @@ export function SessionSettingsPanel({
   sessionId,
   toolSettings,
   onRefreshToolSettings,
+  onWorkspaceChanged,
   onShowToast,
 }: SessionSettingsPanelProps) {
   const [workspace, setWorkspace] = useState<string>("");
@@ -126,12 +128,13 @@ export function SessionSettingsPanel({
       const dir = await pickWorkspaceDirectory(sessionId);
       if (dir) {
         setWorkspace(dir);
+        onWorkspaceChanged?.(dir);
         onShowToast("Workspace updated", "success");
       }
     } catch (e) {
       onShowToast(`Failed to change workspace: ${e}`, "error");
     }
-  }, [sessionId, onShowToast]);
+  }, [sessionId, onShowToast, onWorkspaceChanged]);
 
   const handlePermissionChange = useCallback(
     async (level: string) => {

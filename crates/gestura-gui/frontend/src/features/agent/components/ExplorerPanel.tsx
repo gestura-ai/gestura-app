@@ -166,13 +166,19 @@ interface ContextMenu {
 
 export interface ExplorerPanelProps {
   sessionId: string;
+  workspaceRoot?: string | null;
   onOpenFile: (relPath: string) => void;
   style?: React.CSSProperties;
 }
 
 // ─── ExplorerPanel ───────────────────────────────────────────────────────────
 
-export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ sessionId, onOpenFile, style }) => {
+export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({
+  sessionId,
+  workspaceRoot: _workspaceRoot,
+  onOpenFile,
+  style,
+}) => {
   const [root, setRoot] = useState<string>('');
   const [isGitRepo, setIsGitRepo] = useState(false);
   const [rootEntries, setRootEntries] = useState<ExplorerEntry[]>([]);

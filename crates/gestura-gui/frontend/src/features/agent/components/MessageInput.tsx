@@ -2,8 +2,7 @@
  * MessageInput — the chat input bar matching agent.html design.
  *
  * Uses a glassmorphism pill (input-container) with icon-microphone, icon-sparkles,
- * icon-send buttons. Includes the quick access bar below the input with
- * explorer/message toggle, tasks, and terminal icons.
+ * and icon-send buttons.
  */
 import React, { useCallback, useRef, useState, KeyboardEvent } from 'react';
 import type { StatusState } from '../types';
@@ -19,6 +18,9 @@ export interface MessageInputProps {
   onEnhance: (text: string) => Promise<string>;
   /** Current view mode — drives the explorer/message icon swap. */
   viewMode?: 'message-only' | 'editor';
+}
+
+export interface QuickAccessBarProps {
   /** Called when the explorer/message toggle icon is clicked. */
   onToggleEditor?: () => void;
   /** Called when the Tasks quick-access button is clicked. */
@@ -29,8 +31,10 @@ export interface MessageInputProps {
   shellManagerOpen?: boolean;
   /** Called when the Terminal quick-access button is clicked. */
   onOpenTerminal?: () => void;
-  /** Session ID (used for terminal and future quick-access features). */
-  sessionId?: string;
+  /** Current view mode — drives the explorer/message icon swap. */
+  viewMode?: 'message-only' | 'editor';
+  /** Layout mode for rendering within the chat panel vs. the shared window-bottom dock. */
+  dockMode?: 'panel' | 'window';
 }
 
 export const MessageInput: React.FC<MessageInputProps> = ({
@@ -45,11 +49,6 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   onVoiceToggle,
   onEnhance,
   viewMode,
-  onToggleEditor,
-  onOpenTasks,
-  onToggleShellManager,
-  shellManagerOpen = false,
-  onOpenTerminal,
 }) => {
   const [text, setText] = useState('');
   const [enhancing, setEnhancing] = useState(false);
@@ -163,6 +162,28 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           </>
         )}
       </div>
+    </div>
+  );
+};
+
+export const QuickAccessBar: React.FC<QuickAccessBarProps> = ({
+  onToggleEditor,
+  onOpenTasks,
+  onToggleShellManager,
+  shellManagerOpen = false,
+  onOpenTerminal,
+  viewMode,
+  dockMode = 'panel',
+}) => {
+  const isEditor = viewMode === 'editor';
+  const dockClassName = [
+    'quick-access-dock',
+    dockMode === 'window' ? 'quick-access-dock--window' : '',
+    isEditor ? 'quick-access-dock--editor' : '',
+  ].filter(Boolean).join(' ');
+
+  return (
+    <div className={dockClassName}>
       <div className="quick-access-bar">
         {onToggleEditor && (
           <button

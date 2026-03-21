@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ShellSessionRecord } from './types';
 
 let shouldCrashChatPanel = false;
+let mockViewMode: 'message-only' | 'editor' = 'message-only';
+let latestWorkspaceChanged: ((workspace: string) => void) | undefined;
 const useShellSessionsMock = vi.fn((_: string): ShellSessionRecord[] => []);
 const getSessionWorkspaceByIdMock = vi.fn((_: string): Promise<string> => Promise.resolve('/workspace'));
 
@@ -24,7 +26,7 @@ vi.mock('../../app/ThemeController', () => ({
 
 vi.mock('./hooks/useViewMode', () => ({
   useViewMode: () => ({
-    viewMode: 'message-only',
+    viewMode: mockViewMode,
     toggleViewMode: vi.fn(),
   }),
 }));
@@ -53,17 +55,62 @@ vi.mock('../../services/tauri/agent', () => ({
 }));
 
 vi.mock('./components/ChatPanel', () => ({
-  ChatPanel: ({ sessionId }: { sessionId: string }) => {
+  ChatPanel: ({
+    sessionId,
+    quickAccessHost,
+    onWorkspaceChanged,
+  }: {
+    sessionId: string;
+    quickAccessHost?: HTMLElement | null;
+    onWorkspaceChanged?: (workspace: string) => void;
+  }) => {
     if (shouldCrashChatPanel) {
       throw new Error('chat panel boot failure');
     }
-    return <div data-testid="chat-panel">chat:{sessionId}</div>;
+    latestWorkspaceChanged = onWorkspaceChanged;
+    return (
+      <div data-testid="chat-panel" data-quick-access-host-attached={String(Boolean(quickAccessHost))}>
+        chat:{sessionId}
+        <button type="button" onClick={() => onWorkspaceChanged?.('/workspace/updated')}>
+          change workspace
+        </button>
+      </div>
+    );
+  },
+}));
+
+vi.mock('./components/ExplorerPanel', () => ({
+  ExplorerPanel: ({
+    sessionId,
+    workspaceRoot,
+  }: {
+    sessionId: string;
+    workspaceRoot?: string | null;
+  }) => {
+    return (
+      <div data-testid="explorer-panel" data-workspace-root={workspaceRoot ?? ''}>
+        explorer:{sessionId}
+      </div>
+    );
   },
 }));
 
 vi.mock('./components/ShellManagerPanel', () => ({
-  ShellManagerPanel: ({ visible, shells }: { visible: boolean; shells: Array<{ shellSessionId: string }> }) => (
-    <div data-testid="shell-manager-panel" data-visible={String(visible)} data-shell-count={shells.length} />
+  ShellManagerPanel: ({
+    visible,
+    shells,
+    defaultWorkingDirectory,
+  }: {
+    visible: boolean;
+    shells: Array<{ shellSessionId: string }>;
+    defaultWorkingDirectory?: string | null;
+  }) => (
+    <div
+      data-testid="shell-manager-panel"
+      data-visible={String(visible)}
+      data-shell-count={shells.length}
+      data-working-directory={defaultWorkingDirectory ?? ''}
+    />
   ),
 }));
 
@@ -72,6 +119,8 @@ import AgentApp from './AgentApp';
 describe('AgentApp', () => {
   beforeEach(() => {
     shouldCrashChatPanel = false;
+    mockViewMode = 'message-only';
+    latestWorkspaceChanged = undefined;
     getConfigMock.mockReset();
     useShellSessionsMock.mockReset();
     useShellSessionsMock.mockReturnValue([]);
@@ -147,6 +196,50 @@ describe('AgentApp', () => {
     expect(manager).toBeDefined();
     expect(manager).toHaveAttribute('data-visible', 'false');
     expect(manager).toHaveAttribute('data-shell-count', '1');
+  });
+
+  it('renders the shared bottom quick access host beneath the shell manager', async () => {
+    getConfigMock.mockResolvedValue({
+      ui: { theme_mode: 'system', accent: 'blue' },
+    });
+
+    const { container } = render(<AgentApp sessionId="session-layout" />);
+
+    const chatPanel = container.querySelector('[data-testid="chat-panel"]');
+    const shellManager = container.querySelector('[data-testid="shell-manager-panel"]');
+    const quickAccessHost = container.querySelector('[data-testid="agent-quick-access-host"]');
+
+    expect(chatPanel).not.toBeNull();
+    expect(shellManager).not.toBeNull();
+    expect(quickAccessHost).not.toBeNull();
+    expect(chatPanel).toHaveAttribute('data-quick-access-host-attached', 'true');
+
+    const relativePosition = shellManager!.compareDocumentPosition(quickAccessHost!);
+    expect(relativePosition & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('remounts the explorer and updates the shell workspace when the project directory changes', async () => {
+    mockViewMode = 'editor';
+    getConfigMock.mockResolvedValue({
+      ui: { theme_mode: 'system', accent: 'blue' },
+    });
+    getSessionWorkspaceByIdMock.mockImplementation(() => new Promise<string>(() => { }));
+
+    const { container } = render(<AgentApp sessionId="session-workspace" />);
+
+    const getShellManager = () => container.querySelector('[data-testid="shell-manager-panel"]');
+    const getExplorer = () => container.querySelector('[data-testid="explorer-panel"]');
+
+    expect(getExplorer()).toHaveAttribute('data-workspace-root', '');
+    expect(getShellManager()).toHaveAttribute('data-working-directory', '');
+    expect(latestWorkspaceChanged).toBeDefined();
+
+    act(() => {
+      latestWorkspaceChanged?.('/workspace/updated');
+    });
+
+    expect(getExplorer()).toHaveAttribute('data-workspace-root', '/workspace/updated');
+    expect(getShellManager()).toHaveAttribute('data-working-directory', '/workspace/updated');
   });
 
   it('renders a visible fallback instead of a blank window when the agent UI crashes', async () => {

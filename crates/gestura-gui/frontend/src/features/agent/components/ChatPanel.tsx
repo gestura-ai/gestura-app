@@ -1,17 +1,20 @@
 /**
- * ChatPanel — agent chat panel (header + messages + input + all side panels).
+ * ChatPanel — agent chat panel (header + messages + overlays).
  * Orchestrates useChatSession and renders overlays using app-scoped panel/toast state.
  *
  * Header matches agent.html: inline SVG icon, "Gestura Agent", status badge,
- * settings gear (opens MenuPanel). View-mode toggle lives in MessageInput quick-bar.
+ * settings gear (opens MenuPanel). The quick launch bar is portaled into the
+ * app-level bottom dock beneath the shell manager, while the text input stays
+ * inside the chat panel.
  */
 import React, { useCallback, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import '../ChatPanel.css';
 import { useChatSession } from '../hooks/useChatSession';
 import type { PanelName, PanelState } from '../hooks/usePanelState';
 import type { ToastState } from '../hooks/useToast';
 import { MessageList } from './MessageList';
-import { MessageInput } from './MessageInput';
+import { MessageInput, QuickAccessBar } from './MessageInput';
 import { ToolConfirmationDialog } from './ToolConfirmationDialog';
 import { MenuPanel } from './MenuPanel';
 import { TaskPanel } from './TaskPanel';
@@ -25,10 +28,14 @@ export interface ChatPanelProps {
   sessionId: string;
   /** Called when the user clicks the explorer/message toggle in the quick access bar. */
   onToggleEditor?: () => void;
+  /** Called when the session workspace changes from settings. */
+  onWorkspaceChanged?: (workspace: string) => void;
   /** Current view mode — drives the quick access bar icon swap. */
   viewMode?: 'message-only' | 'editor';
   /** Optional inline style — used by parent for dynamic width (resizable panel). */
   style?: React.CSSProperties;
+  /** Optional app-level host for the shared bottom quick-launch dock. */
+  quickAccessHost?: HTMLElement | null;
   /** App-scoped overlay panel state. */
   panelState: PanelState;
   /** App-scoped toast state. */
@@ -38,8 +45,10 @@ export interface ChatPanelProps {
 export const ChatPanel: React.FC<ChatPanelProps> = ({
   sessionId,
   onToggleEditor,
+  onWorkspaceChanged,
   viewMode,
   style,
+  quickAccessHost,
   panelState,
   toastState,
 }) => {
@@ -121,6 +130,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         status.kind === 'listening' ? ' active' :
           status.kind === 'error' ? ' error' : '';
 
+  const quickAccessDock = (
+    <QuickAccessBar
+      viewMode={viewMode}
+      onToggleEditor={onToggleEditor}
+      onOpenTasks={() => togglePanel('tasks')}
+      onToggleShellManager={toggleShellManager}
+      shellManagerOpen={shellManager.visible}
+      onOpenTerminal={handleOpenTerminal}
+      dockMode="window"
+    />
+  );
+
   return (
     <div className="agent-panel agent-panel--chat" style={style}>
       {/* Header */}
@@ -165,18 +186,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         <ToolConfirmationDialog confirmation={pendingConfirmation} onDecide={resolveConfirmation} />
       )}
 
-      {/* Input + Quick Access Bar */}
       <MessageInput
         isProcessing={isProcessing} isStopping={isStopping}
         isListening={isListening} status={status}
         onSend={handleSend} onCancel={handleCancel} onVoiceToggle={toggleVoice}
-        onEnhance={handleEnhance} viewMode={viewMode} onToggleEditor={onToggleEditor}
-        onOpenTasks={() => togglePanel('tasks')}
-        onToggleShellManager={toggleShellManager}
-        shellManagerOpen={shellManager.visible}
-        onOpenTerminal={handleOpenTerminal}
-        sessionId={sessionId}
+        onEnhance={handleEnhance} viewMode={viewMode}
       />
+
+      {/* App-level bottom quick launch dock */}
+      {quickAccessHost ? createPortal(quickAccessDock, quickAccessHost) : null}
 
       {/* ── Side Panels ── */}
       <MenuPanel isOpen={isOpen('menu')} onClose={closePanel} onNavigate={handleMenuNavigate} />
@@ -217,7 +235,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
       <SessionSettingsPanel isOpen={isOpen('settings')} onClose={closePanel}
         sessionId={sessionId} toolSettings={toolSettings}
-        onRefreshToolSettings={refreshToolSettings} onShowToast={showToast} />
+        onRefreshToolSettings={refreshToolSettings}
+        onWorkspaceChanged={onWorkspaceChanged}
+        onShowToast={showToast} />
     </div>
   );
 };
