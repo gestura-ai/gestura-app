@@ -57,10 +57,12 @@ vi.mock('../../services/tauri/agent', () => ({
 vi.mock('./components/ChatPanel', () => ({
   ChatPanel: ({
     sessionId,
+    headerHost,
     quickAccessHost,
     onWorkspaceChanged,
   }: {
     sessionId: string;
+    headerHost?: HTMLElement | null;
     quickAccessHost?: HTMLElement | null;
     onWorkspaceChanged?: (workspace: string) => void;
   }) => {
@@ -69,7 +71,11 @@ vi.mock('./components/ChatPanel', () => ({
     }
     latestWorkspaceChanged = onWorkspaceChanged;
     return (
-      <div data-testid="chat-panel" data-quick-access-host-attached={String(Boolean(quickAccessHost))}>
+      <div
+        data-testid="chat-panel"
+        data-header-host-attached={String(Boolean(headerHost))}
+        data-quick-access-host-attached={String(Boolean(quickAccessHost))}
+      >
         chat:{sessionId}
         <button type="button" onClick={() => onWorkspaceChanged?.('/workspace/updated')}>
           change workspace
@@ -198,7 +204,7 @@ describe('AgentApp', () => {
     expect(manager).toHaveAttribute('data-shell-count', '1');
   });
 
-  it('renders the shared bottom quick access host beneath the shell manager', async () => {
+  it('renders shared top and bottom dock hosts around the main content', async () => {
     getConfigMock.mockResolvedValue({
       ui: { theme_mode: 'system', accent: 'blue' },
     });
@@ -206,13 +212,21 @@ describe('AgentApp', () => {
     const { container } = render(<AgentApp sessionId="session-layout" />);
 
     const chatPanel = container.querySelector('[data-testid="chat-panel"]');
+    const headerHost = container.querySelector('[data-testid="agent-header-host"]');
+    const main = container.querySelector('.agent-app__main');
     const shellManager = container.querySelector('[data-testid="shell-manager-panel"]');
     const quickAccessHost = container.querySelector('[data-testid="agent-quick-access-host"]');
 
     expect(chatPanel).not.toBeNull();
+    expect(headerHost).not.toBeNull();
+    expect(main).not.toBeNull();
     expect(shellManager).not.toBeNull();
     expect(quickAccessHost).not.toBeNull();
+    expect(chatPanel).toHaveAttribute('data-header-host-attached', 'true');
     expect(chatPanel).toHaveAttribute('data-quick-access-host-attached', 'true');
+
+    const headerPosition = headerHost!.compareDocumentPosition(main!);
+    expect(headerPosition & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     const relativePosition = shellManager!.compareDocumentPosition(quickAccessHost!);
     expect(relativePosition & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

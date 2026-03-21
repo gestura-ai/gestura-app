@@ -185,6 +185,19 @@ body {
   overflow: hidden;
 }
 
+.agent-app__header-host {
+  display: flex;
+  flex: 0 0 auto;
+  width: 100%;
+  min-height: 0;
+  z-index: 20;
+}
+
+.agent-app__header-host>.header {
+  flex: 1 1 auto;
+  width: 100%;
+}
+
 .agent-app__quick-access-host {
   display: flex;
   flex: 0 0 auto;

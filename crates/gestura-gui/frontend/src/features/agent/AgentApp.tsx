@@ -100,6 +100,7 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
   const [explorerOpen, setExplorerOpen] = useState(true);
   const [chatOpen, setChatOpen] = useState(true);
   const [sessionWorkspace, setSessionWorkspace] = useState<string | null>(null);
+  const [headerHost, setHeaderHost] = useState<HTMLDivElement | null>(null);
   const [quickAccessHost, setQuickAccessHost] = useState<HTMLDivElement | null>(null);
   const appRef = useRef<HTMLDivElement>(null);
 
@@ -378,6 +379,12 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
           .filter(Boolean)
           .join(' ')}
       >
+        <div
+          ref={setHeaderHost}
+          className="agent-app__header-host"
+          data-testid="agent-header-host"
+        />
+
         <div className="agent-app__main">
           {isEditor && (
             <ExplorerPanel
@@ -429,6 +436,7 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
             onWorkspaceChanged={handleWorkspaceChanged}
             viewMode={viewMode}
             style={chatStyle}
+            headerHost={headerHost}
             quickAccessHost={quickAccessHost}
             panelState={panelState}
             toastState={toastState}
