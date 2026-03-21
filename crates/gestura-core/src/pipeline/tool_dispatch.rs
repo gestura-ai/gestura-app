@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use tracing::Instrument as _;
 
 #[derive(Debug, Deserialize)]
@@ -581,17 +582,6 @@ impl AgentPipeline {
             .or_else(|| Self::recover_common_source_root_file_path(ws, requested, false))
     }
 
-    fn resolve_workspace_edit_path(ws: &SessionWorkspace, raw: &str) -> Result<PathBuf, String> {
-        let requested = Path::new(raw);
-        let direct_error = ws
-            .resolve_path_for_read(requested)
-            .err()
-            .map(|error| error.to_string())
-            .unwrap_or_else(|| format!("Path does not exist: {}", requested.display()));
-
-        Self::resolve_workspace_existing_file_path(ws, requested).ok_or(direct_error)
-    }
-
     fn resolve_workspace_write_path(ws: &SessionWorkspace, raw: &str) -> Result<PathBuf, String> {
         let requested = Path::new(raw);
         if let Some(existing_path) = Self::resolve_workspace_existing_file_path(ws, requested) {
@@ -729,6 +719,66 @@ impl AgentPipeline {
                     display_path, error
                 )),
             },
+        }
+    }
+
+    async fn run_blocking_tool_op<T, F>(label: &'static str, op: F) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Result<T, String> + Send + 'static,
+    {
+        tokio::task::spawn_blocking(op)
+            .await
+            .map_err(|error| format!("{label} blocking task failed to join: {error}"))?
+    }
+
+    async fn resolve_workspace_path_async(
+        workspace: &SessionWorkspace,
+        path: &str,
+        expectation: ToolPathExpectation,
+    ) -> Result<PathBuf, String> {
+        let workspace = workspace.clone();
+        let path = path.to_string();
+        Self::run_blocking_tool_op("workspace path resolution", move || match expectation {
+            ToolPathExpectation::ExistingFile => {
+                Self::resolve_workspace_read_path(&workspace, &path)
+            }
+            ToolPathExpectation::WritableFile => {
+                Self::resolve_workspace_write_path(&workspace, &path)
+            }
+            ToolPathExpectation::ExistingDirectory => workspace
+                .resolve_path(Path::new(&path))
+                .map_err(|error| error.to_string()),
+            ToolPathExpectation::ExistingPath => workspace
+                .resolve_path(Path::new(&path))
+                .map_err(|error| error.to_string()),
+        })
+        .await
+    }
+
+    async fn validate_path_expectation_async(
+        tool_label: &'static str,
+        raw_path: String,
+        resolved_path: String,
+        expectation: ToolPathExpectation,
+    ) -> Result<(), String> {
+        Self::run_blocking_tool_op("path validation", move || {
+            Self::validate_path_expectation(tool_label, &raw_path, &resolved_path, expectation)
+        })
+        .await
+    }
+
+    async fn resolve_tool_path_async(
+        workspace: Option<&SessionWorkspace>,
+        raw_path: &str,
+        expectation: ToolPathExpectation,
+    ) -> Result<String, String> {
+        if let Some(workspace) = workspace {
+            Self::resolve_workspace_path_async(workspace, raw_path, expectation)
+                .await
+                .map(|path| path.to_string_lossy().to_string())
+        } else {
+            Ok(raw_path.to_string())
         }
     }
 
@@ -3124,6 +3174,8 @@ impl AgentPipeline {
     async fn execute_web_tool(&self, arguments: &str) -> ToolResult {
         use crate::tools::WebTools;
 
+        static WEB_TOOLS: OnceLock<WebTools> = OnceLock::new();
+
         match serde_json::from_str::<serde_json::Value>(arguments) {
             Ok(args) => {
                 let operation = args
@@ -3131,7 +3183,7 @@ impl AgentPipeline {
                     .and_then(|v| v.as_str())
                     .unwrap_or("search");
 
-                let web = WebTools::default();
+                let web = WEB_TOOLS.get_or_init(WebTools::default);
                 match operation {
                     "fetch" => {
                         let url = match args.get("url").and_then(|v| v.as_str()) {
@@ -3232,19 +3284,21 @@ impl AgentPipeline {
                     raw_path
                 };
 
-                // Resolve path within workspace if set
-                let resolved_path = if let Some(ws) = workspace {
-                    match ws.resolve_path(Path::new(raw_path)) {
-                        Ok(p) => p.to_string_lossy().to_string(),
-                        Err(e) => {
-                            return ToolResult::Error(format!(
-                                "Path '{}' is outside workspace: {}",
-                                raw_path, e
-                            ));
-                        }
+                // Resolve path within workspace if set.
+                let resolved_path = match Self::resolve_tool_path_async(
+                    workspace,
+                    raw_path,
+                    ToolPathExpectation::ExistingPath,
+                )
+                .await
+                {
+                    Ok(path) => path,
+                    Err(error) => {
+                        return ToolResult::Error(format!(
+                            "Path '{}' is outside workspace: {}",
+                            raw_path, error
+                        ));
                     }
-                } else {
-                    raw_path.to_string()
                 };
 
                 // Optional extra parameters used by specific operations.
@@ -3287,26 +3341,30 @@ impl AgentPipeline {
                                 }
                             };
 
-                            let resolved_path = if let Some(ws) = workspace {
-                                match Self::resolve_workspace_read_path(ws, raw) {
-                                    Ok(path) => path.to_string_lossy().to_string(),
-                                    Err(error) => {
-                                        return ToolResult::Error(format!(
-                                            "code.batch_read paths[{index}] '{}' could not be resolved within workspace: {}",
-                                            raw, error
-                                        ));
-                                    }
+                            let resolved_path = match Self::resolve_tool_path_async(
+                                workspace,
+                                raw,
+                                ToolPathExpectation::ExistingFile,
+                            )
+                            .await
+                            {
+                                Ok(path) => path,
+                                Err(error) => {
+                                    return ToolResult::Error(format!(
+                                        "code.batch_read paths[{index}] '{}' could not be resolved within workspace: {}",
+                                        raw, error
+                                    ));
                                 }
-                            } else {
-                                raw.to_string()
                             };
 
-                            if let Err(message) = Self::validate_path_expectation(
+                            if let Err(message) = Self::validate_path_expectation_async(
                                 "code.batch_read",
-                                raw,
-                                &resolved_path,
+                                raw.to_string(),
+                                resolved_path.clone(),
                                 ToolPathExpectation::ExistingFile,
-                            ) {
+                            )
+                            .await
+                            {
                                 return ToolResult::Error(message);
                             }
 
@@ -3331,9 +3389,15 @@ impl AgentPipeline {
                                 }
                             };
                             let raw_edit_path = edit.path.clone();
-                            if let Some(ws) = workspace {
-                                edit.path = match Self::resolve_workspace_write_path(ws, &edit.path) {
-                                    Ok(path) => path.to_string_lossy().to_string(),
+                            if workspace.is_some() {
+                                edit.path = match Self::resolve_tool_path_async(
+                                    workspace,
+                                    &edit.path,
+                                    ToolPathExpectation::WritableFile,
+                                )
+                                .await
+                                {
+                                    Ok(path) => path,
                                     Err(error) => {
                                         return ToolResult::Error(format!(
                                             "code.batch_edit edits[{index}].path '{}' could not be resolved within workspace: {}",
@@ -3343,12 +3407,14 @@ impl AgentPipeline {
                                 };
                             }
 
-                            if let Err(message) = Self::validate_path_expectation(
+                            if let Err(message) = Self::validate_path_expectation_async(
                                 "code.batch_edit",
-                                &raw_edit_path,
-                                &edit.path,
+                                raw_edit_path.clone(),
+                                edit.path.clone(),
                                 ToolPathExpectation::ExistingFile,
-                            ) {
+                            )
+                            .await
+                            {
                                 return ToolResult::Error(message);
                             }
 
@@ -3367,12 +3433,14 @@ impl AgentPipeline {
 
                 match operation {
                     "stats" => {
-                        if let Err(message) = Self::validate_path_expectation(
+                        if let Err(message) = Self::validate_path_expectation_async(
                             "code.stats",
-                            raw_path,
-                            &resolved_path,
+                            raw_path.to_string(),
+                            resolved_path.clone(),
                             ToolPathExpectation::ExistingPath,
-                        ) {
+                        )
+                        .await
+                        {
                             return ToolResult::Error(message);
                         }
                         match code_async::stats_dir(&resolved_path).await {
@@ -3381,12 +3449,14 @@ impl AgentPipeline {
                         }
                     }
                     "map" => {
-                        if let Err(message) = Self::validate_path_expectation(
+                        if let Err(message) = Self::validate_path_expectation_async(
                             "code.map",
-                            raw_path,
-                            &resolved_path,
+                            raw_path.to_string(),
+                            resolved_path.clone(),
                             ToolPathExpectation::ExistingDirectory,
-                        ) {
+                        )
+                        .await
+                        {
                             return ToolResult::Error(message);
                         }
                         match code_async::map(&resolved_path, max_depth).await {
@@ -3395,12 +3465,14 @@ impl AgentPipeline {
                         }
                     }
                     "symbols" => {
-                        if let Err(message) = Self::validate_path_expectation(
+                        if let Err(message) = Self::validate_path_expectation_async(
                             "code.symbols",
-                            raw_path,
-                            &resolved_path,
+                            raw_path.to_string(),
+                            resolved_path.clone(),
                             ToolPathExpectation::ExistingFile,
-                        ) {
+                        )
+                        .await
+                        {
                             return ToolResult::Error(message);
                         }
                         match code_async::symbols(&resolved_path).await {
@@ -3409,12 +3481,14 @@ impl AgentPipeline {
                         }
                     }
                     "references" => {
-                        if let Err(message) = Self::validate_path_expectation(
+                        if let Err(message) = Self::validate_path_expectation_async(
                             "code.references",
-                            raw_path,
-                            &resolved_path,
+                            raw_path.to_string(),
+                            resolved_path.clone(),
                             ToolPathExpectation::ExistingPath,
-                        ) {
+                        )
+                        .await
+                        {
                             return ToolResult::Error(message);
                         }
                         if symbol.is_empty() {
@@ -3428,12 +3502,14 @@ impl AgentPipeline {
                         }
                     }
                     "definition" => {
-                        if let Err(message) = Self::validate_path_expectation(
+                        if let Err(message) = Self::validate_path_expectation_async(
                             "code.definition",
-                            raw_path,
-                            &resolved_path,
+                            raw_path.to_string(),
+                            resolved_path.clone(),
                             ToolPathExpectation::ExistingPath,
-                        ) {
+                        )
+                        .await
+                        {
                             return ToolResult::Error(message);
                         }
                         if symbol.is_empty() {
@@ -3447,12 +3523,14 @@ impl AgentPipeline {
                         }
                     }
                     "deps" => {
-                        if let Err(message) = Self::validate_path_expectation(
+                        if let Err(message) = Self::validate_path_expectation_async(
                             "code.deps",
-                            raw_path,
-                            &resolved_path,
+                            raw_path.to_string(),
+                            resolved_path.clone(),
                             ToolPathExpectation::ExistingPath,
-                        ) {
+                        )
+                        .await
+                        {
                             return ToolResult::Error(message);
                         }
                         match code_async::deps(&resolved_path).await {
@@ -3461,12 +3539,14 @@ impl AgentPipeline {
                         }
                     }
                     "lint" => {
-                        if let Err(message) = Self::validate_path_expectation(
+                        if let Err(message) = Self::validate_path_expectation_async(
                             "code.lint",
-                            raw_path,
-                            &resolved_path,
+                            raw_path.to_string(),
+                            resolved_path.clone(),
                             ToolPathExpectation::ExistingDirectory,
-                        ) {
+                        )
+                        .await
+                        {
                             return ToolResult::Error(message);
                         }
                         match code_async::lint(&resolved_path, fix).await {
@@ -3475,12 +3555,14 @@ impl AgentPipeline {
                         }
                     }
                     "test" => {
-                        if let Err(message) = Self::validate_path_expectation(
+                        if let Err(message) = Self::validate_path_expectation_async(
                             "code.test",
-                            raw_path,
-                            &resolved_path,
+                            raw_path.to_string(),
+                            resolved_path.clone(),
                             ToolPathExpectation::ExistingDirectory,
-                        ) {
+                        )
+                        .await
+                        {
                             return ToolResult::Error(message);
                         }
                         match code_async::test(&resolved_path, filter).await {
@@ -3489,12 +3571,14 @@ impl AgentPipeline {
                         }
                     }
                     "glob" => {
-                        if let Err(message) = Self::validate_path_expectation(
+                        if let Err(message) = Self::validate_path_expectation_async(
                             "code.glob",
-                            raw_path,
-                            &resolved_path,
+                            raw_path.to_string(),
+                            resolved_path.clone(),
                             ToolPathExpectation::ExistingDirectory,
-                        ) {
+                        )
+                        .await
+                        {
                             return ToolResult::Error(message);
                         }
                         if pattern.is_empty() {
@@ -3508,12 +3592,14 @@ impl AgentPipeline {
                         }
                     }
                     "grep" => {
-                        if let Err(message) = Self::validate_path_expectation(
+                        if let Err(message) = Self::validate_path_expectation_async(
                             "code.grep",
-                            raw_path,
-                            &resolved_path,
+                            raw_path.to_string(),
+                            resolved_path.clone(),
                             ToolPathExpectation::ExistingDirectory,
-                        ) {
+                        )
+                        .await
+                        {
                             return ToolResult::Error(message);
                         }
                         if pattern.is_empty() {
@@ -3558,12 +3644,14 @@ impl AgentPipeline {
                         }
                     }
                     "outline" => {
-                        if let Err(message) = Self::validate_path_expectation(
+                        if let Err(message) = Self::validate_path_expectation_async(
                             "code.outline",
-                            raw_path,
-                            &resolved_path,
+                            raw_path.to_string(),
+                            resolved_path.clone(),
                             ToolPathExpectation::ExistingFile,
-                        ) {
+                        )
+                        .await
+                        {
                             return ToolResult::Error(message);
                         }
                         match code_async::outline(&resolved_path).await {
@@ -3866,37 +3954,35 @@ impl AgentPipeline {
                 }
 
                 // Resolve path within workspace if set, using stricter variants depending on operation.
-                let resolved_path = if let Some(ws) = workspace {
-                    let resolved = match operation {
-                        "read" => Self::resolve_workspace_read_path(ws, path_str),
-                        "write" => Self::resolve_workspace_write_path(ws, path_str),
-                        "edit" => Self::resolve_workspace_edit_path(ws, path_str),
-                        _ => ws
-                            .resolve_path(Path::new(path_str))
-                            .map_err(|e| e.to_string()),
-                    };
-
-                    match resolved {
-                        Ok(p) => p.to_string_lossy().to_string(),
-                        Err(e) => {
+                let resolve_expectation = match operation {
+                    "read" => ToolPathExpectation::ExistingFile,
+                    "write" => ToolPathExpectation::WritableFile,
+                    "edit" => ToolPathExpectation::ExistingFile,
+                    _ => ToolPathExpectation::ExistingPath,
+                };
+                let resolved_path =
+                    match Self::resolve_tool_path_async(workspace, path_str, resolve_expectation)
+                        .await
+                    {
+                        Ok(path) => path,
+                        Err(error) => {
                             return ToolResult::Error(format!(
                                 "Path '{}' could not be resolved within workspace: {}",
-                                path_str, e
+                                path_str, error
                             ));
                         }
-                    }
-                } else {
-                    path_str.to_string()
-                };
+                    };
 
                 match operation {
                     "write" => {
-                        if let Err(message) = Self::validate_path_expectation(
+                        if let Err(message) = Self::validate_path_expectation_async(
                             "file.write",
-                            path_str,
-                            &resolved_path,
+                            path_str.to_string(),
+                            resolved_path.clone(),
                             ToolPathExpectation::WritableFile,
-                        ) {
+                        )
+                        .await
+                        {
                             return ToolResult::Error(message);
                         }
                         let content = match args.get("content").and_then(|v| v.as_str()) {
@@ -3914,12 +4000,14 @@ impl AgentPipeline {
                         }
                     }
                     "read" => {
-                        if let Err(message) = Self::validate_path_expectation(
+                        if let Err(message) = Self::validate_path_expectation_async(
                             "file.read",
-                            path_str,
-                            &resolved_path,
+                            path_str.to_string(),
+                            resolved_path.clone(),
                             ToolPathExpectation::ExistingFile,
-                        ) {
+                        )
+                        .await
+                        {
                             return ToolResult::Error(message);
                         }
                         let start_line = args
@@ -3936,12 +4024,14 @@ impl AgentPipeline {
                         }
                     }
                     "list" => {
-                        if let Err(message) = Self::validate_path_expectation(
+                        if let Err(message) = Self::validate_path_expectation_async(
                             "file.list",
-                            path_str,
-                            &resolved_path,
+                            path_str.to_string(),
+                            resolved_path.clone(),
                             ToolPathExpectation::ExistingDirectory,
-                        ) {
+                        )
+                        .await
+                        {
                             return ToolResult::Error(message);
                         }
                         let show_hidden = args
@@ -3959,12 +4049,14 @@ impl AgentPipeline {
                         }
                     }
                     "tree" => {
-                        if let Err(message) = Self::validate_path_expectation(
+                        if let Err(message) = Self::validate_path_expectation_async(
                             "file.tree",
-                            path_str,
-                            &resolved_path,
+                            path_str.to_string(),
+                            resolved_path.clone(),
                             ToolPathExpectation::ExistingDirectory,
-                        ) {
+                        )
+                        .await
+                        {
                             return ToolResult::Error(message);
                         }
                         let max_depth = args
@@ -3983,12 +4075,14 @@ impl AgentPipeline {
                         }
                     }
                     "edit" => {
-                        if let Err(message) = Self::validate_path_expectation(
+                        if let Err(message) = Self::validate_path_expectation_async(
                             "file.edit",
-                            path_str,
-                            &resolved_path,
+                            path_str.to_string(),
+                            resolved_path.clone(),
                             ToolPathExpectation::ExistingFile,
-                        ) {
+                        )
+                        .await
+                        {
                             return ToolResult::Error(message);
                         }
                         let old_str = match args.get("old").and_then(|v| v.as_str()) {
@@ -4014,12 +4108,14 @@ impl AgentPipeline {
                         }
                     }
                     "search" => {
-                        if let Err(message) = Self::validate_path_expectation(
+                        if let Err(message) = Self::validate_path_expectation_async(
                             "file.search",
-                            path_str,
-                            &resolved_path,
+                            path_str.to_string(),
+                            resolved_path.clone(),
                             ToolPathExpectation::ExistingDirectory,
-                        ) {
+                        )
+                        .await
+                        {
                             return ToolResult::Error(message);
                         }
                         let pattern = match args.get("pattern").and_then(|v| v.as_str()) {
@@ -4089,19 +4185,21 @@ impl AgentPipeline {
 
                 let path_str = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
-                // Resolve path within workspace if set
-                let resolved_path = if let Some(ws) = workspace {
-                    match ws.resolve_path(Path::new(path_str)) {
-                        Ok(p) => p.to_string_lossy().to_string(),
-                        Err(e) => {
-                            return ToolResult::Error(format!(
-                                "Path '{}' is outside workspace: {}",
-                                path_str, e
-                            ));
-                        }
+                // Resolve path within workspace if set.
+                let resolved_path = match Self::resolve_tool_path_async(
+                    workspace,
+                    path_str,
+                    ToolPathExpectation::ExistingPath,
+                )
+                .await
+                {
+                    Ok(path) => path,
+                    Err(error) => {
+                        return ToolResult::Error(format!(
+                            "Path '{}' is outside workspace: {}",
+                            path_str, error
+                        ));
                     }
-                } else {
-                    path_str.to_string()
                 };
 
                 match git_async::execute_git(operation, &resolved_path).await {
@@ -4161,7 +4259,16 @@ impl AgentPipeline {
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string());
 
-                        match manager.create_task(session_id, name, description, parent_id) {
+                        let session_id = session_id.to_string();
+                        let name = name.to_string();
+                        let description = description.to_string();
+                        match Self::run_blocking_tool_op("task.create", move || {
+                            manager
+                                .create_task(&session_id, &name, &description, parent_id)
+                                .map_err(|error| error.to_string())
+                        })
+                        .await
+                        {
                             Ok(task) => ToolResult::Success(format!(
                                 "Created task '{}' (ID: {})\nDescription: {}\nStatus: {:?}",
                                 task.name, task.id, task.description, task.status
@@ -4188,7 +4295,15 @@ impl AgentPipeline {
 
                         match explicit_status {
                             Some(status) => {
-                                match manager.update_task_status(session_id, task_id, status) {
+                                let session_id = session_id.to_string();
+                                let task_id_owned = task_id.to_string();
+                                match Self::run_blocking_tool_op("task.update_status", move || {
+                                    manager
+                                        .update_task_status(&session_id, &task_id_owned, status)
+                                        .map_err(|error| error.to_string())
+                                })
+                                .await
+                                {
                                     Ok(_) => ToolResult::Success(format!(
                                         "Updated task {} status to {:?}",
                                         task_id, status
@@ -4199,44 +4314,69 @@ impl AgentPipeline {
                                     )),
                                 }
                             }
-                            None => match manager.get_task(session_id, task_id) {
-                                Ok(Some(task)) => {
-                                    match Self::infer_missing_task_status(&task.status) {
-                                        Some(inferred_status) if inferred_status == task.status => {
-                                            ToolResult::Skipped(format!(
-                                                "Skipped malformed `task.update_status` without explicit `status` for task {} because it is already {:?}. The runtime preserved the current status, but this bookkeeping no-op should not be retried without an explicit `status`.",
+                            None => {
+                                let session_id_for_get = session_id.to_string();
+                                let task_id_owned = task_id.to_string();
+                                match Self::run_blocking_tool_op("task.get", move || {
+                                    manager
+                                        .get_task(&session_id_for_get, &task_id_owned)
+                                        .map_err(|error| error.to_string())
+                                })
+                                .await
+                                {
+                                    Ok(Some(task)) => {
+                                        match Self::infer_missing_task_status(&task.status) {
+                                            Some(inferred_status)
+                                                if inferred_status == task.status =>
+                                            {
+                                                ToolResult::Skipped(format!(
+                                                    "Skipped malformed `task.update_status` without explicit `status` for task {} because it is already {:?}. The runtime preserved the current status, but this bookkeeping no-op should not be retried without an explicit `status`.",
+                                                    task_id, task.status
+                                                ))
+                                            }
+                                            Some(inferred_status) => {
+                                                let session_id_for_update = session_id.to_string();
+                                                let task_id_for_update = task_id.to_string();
+                                                match Self::run_blocking_tool_op(
+                                                    "task.update_status",
+                                                    move || {
+                                                        manager
+                                                            .update_task_status(
+                                                                &session_id_for_update,
+                                                                &task_id_for_update,
+                                                                inferred_status,
+                                                            )
+                                                            .map_err(|error| error.to_string())
+                                                    },
+                                                )
+                                                .await
+                                                {
+                                                    Ok(_) => ToolResult::Success(format!(
+                                                        "Recovered omitted `status` on task {} by promoting it from {:?} to {:?}. Future `update_status` calls should include explicit `status`.",
+                                                        task_id, task.status, inferred_status
+                                                    )),
+                                                    Err(e) => ToolResult::Error(format!(
+                                                        "Failed to recover missing task status for {}: {}",
+                                                        task_id, e
+                                                    )),
+                                                }
+                                            }
+                                            None => ToolResult::Skipped(format!(
+                                                "Skipped malformed `task.update_status` without explicit `status` for task {} because its current status is {:?}. Retry with an explicit `status` so the runtime does not guess the wrong transition.",
                                                 task_id, task.status
-                                            ))
+                                            )),
                                         }
-                                        Some(inferred_status) => match manager.update_task_status(
-                                            session_id,
-                                            task_id,
-                                            inferred_status,
-                                        ) {
-                                            Ok(_) => ToolResult::Success(format!(
-                                                "Recovered omitted `status` on task {} by promoting it from {:?} to {:?}. Future `update_status` calls should include explicit `status`.",
-                                                task_id, task.status, inferred_status
-                                            )),
-                                            Err(e) => ToolResult::Error(format!(
-                                                "Failed to recover missing task status for {}: {}",
-                                                task_id, e
-                                            )),
-                                        },
-                                        None => ToolResult::Skipped(format!(
-                                            "Skipped malformed `task.update_status` without explicit `status` for task {} because its current status is {:?}. Retry with an explicit `status` so the runtime does not guess the wrong transition.",
-                                            task_id, task.status
-                                        )),
                                     }
+                                    Ok(None) => ToolResult::Error(format!(
+                                        "Task {} not found for update_status operation",
+                                        task_id
+                                    )),
+                                    Err(e) => ToolResult::Error(format!(
+                                        "Failed to inspect current task status for {}: {}",
+                                        task_id, e
+                                    )),
                                 }
-                                Ok(None) => ToolResult::Error(format!(
-                                    "Task {} not found for update_status operation",
-                                    task_id
-                                )),
-                                Err(e) => ToolResult::Error(format!(
-                                    "Failed to inspect current task status for {}: {}",
-                                    task_id, e
-                                )),
-                            },
+                            }
                         }
                     }
                     "update" => {
@@ -4258,12 +4398,22 @@ impl AgentPipeline {
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string());
 
-                        match manager.update_task(
-                            session_id,
-                            task_id,
-                            name.clone(),
-                            description.clone(),
-                        ) {
+                        let session_id = session_id.to_string();
+                        let task_id_owned = task_id.to_string();
+                        let update_name = name.clone();
+                        let update_description = description.clone();
+                        match Self::run_blocking_tool_op("task.update", move || {
+                            manager
+                                .update_task(
+                                    &session_id,
+                                    &task_id_owned,
+                                    update_name,
+                                    update_description,
+                                )
+                                .map_err(|error| error.to_string())
+                        })
+                        .await
+                        {
                             Ok(_) => {
                                 let mut updates = Vec::new();
                                 if let Some(n) = name {
@@ -4292,7 +4442,15 @@ impl AgentPipeline {
                             }
                         };
 
-                        match manager.delete_task(session_id, task_id) {
+                        let session_id = session_id.to_string();
+                        let task_id_owned = task_id.to_string();
+                        match Self::run_blocking_tool_op("task.delete", move || {
+                            manager
+                                .delete_task(&session_id, &task_id_owned)
+                                .map_err(|error| error.to_string())
+                        })
+                        .await
+                        {
                             Ok(task) => ToolResult::Success(format!(
                                 "Deleted task '{}' (ID: {})",
                                 task.name, task.id
@@ -4300,7 +4458,16 @@ impl AgentPipeline {
                             Err(e) => ToolResult::Error(format!("Failed to delete task: {}", e)),
                         }
                     }
-                    "list" => match manager.list_tasks(session_id) {
+                    "list" => match Self::run_blocking_tool_op("task.list", {
+                        let session_id = session_id.to_string();
+                        move || {
+                            manager
+                                .list_tasks(&session_id)
+                                .map_err(|error| error.to_string())
+                        }
+                    })
+                    .await
+                    {
                         Ok(tasks) => {
                             if tasks.is_empty() {
                                 ToolResult::Success("No tasks found for this session".to_string())
@@ -4321,7 +4488,16 @@ impl AgentPipeline {
                         }
                         Err(e) => ToolResult::Error(format!("Failed to list tasks: {}", e)),
                     },
-                    "get_hierarchy" => match manager.get_hierarchy(session_id) {
+                    "get_hierarchy" => match Self::run_blocking_tool_op("task.get_hierarchy", {
+                        let session_id = session_id.to_string();
+                        move || {
+                            manager
+                                .get_hierarchy(&session_id)
+                                .map_err(|error| error.to_string())
+                        }
+                    })
+                    .await
+                    {
                         Ok(hierarchy) => {
                             if hierarchy.is_empty() {
                                 ToolResult::Success("No tasks found for this session".to_string())
@@ -5207,7 +5383,7 @@ mod tests {
             Some(project_dir.to_string_lossy().as_ref()),
         );
 
-        assert_eq!(command, "npm install --silent");
+        assert_eq!(command, "python -m build");
     }
 
     #[test]
@@ -5516,7 +5692,7 @@ mod tests {
         assert!(message.contains("Missing required field 'content' for file write operation"));
         assert!(message.contains("pattern, start"));
         assert!(message.contains("\"content\":\"<full file contents here>\""));
-        assert!(message.contains("Do not retry the same malformed `write` call"));
+        assert!(message.contains("Do not retry the same malformed write call"));
     }
 
     #[test]
@@ -5622,7 +5798,7 @@ mod tests {
         assert!(message.contains("Loop breaker:"));
         assert!(message.contains("agent is still running"));
         assert!(message.contains(
-            "Do not retry `write` until you can provide the full destination file text in `content`"
+            "Do not retry `write_file` until you can provide the full destination file text in `content`"
         ));
     }
 
@@ -7622,7 +7798,7 @@ mod tests {
         assert!(prompt.contains("full file `content`"));
         assert!(prompt.contains("`pattern`/`start` do not make a valid write"));
         assert!(prompt.contains("Arguments: {\"operation\":\"write\""));
-        assert!(prompt.contains("Do not repeat the same `write` call unchanged"));
+        assert!(prompt.contains("Do not retry the same malformed write call"));
     }
 
     #[test]

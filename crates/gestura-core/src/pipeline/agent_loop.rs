@@ -2,9 +2,12 @@ use super::{request_telemetry::AgentLoopContinuation, *};
 use crate::tasks::{
     TaskExecutionEvidence, TaskExecutionEvidenceKind, TaskExecutionKind, TaskVerificationProfile,
 };
+use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use tracing::Instrument as _;
+
+const MAX_PARALLEL_READ_ONLY_TOOL_CALLS: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IncompleteRunReason {
@@ -59,6 +62,8 @@ struct PublicNarrationPayload {
 struct ObservedRuntimeEvidence {
     saw_successful_tool_work: bool,
     saw_mutation: bool,
+    successful_source_mutation: bool,
+    mutation_requirement_satisfied: bool,
     build_completed: bool,
     test_completed: bool,
 }
@@ -175,15 +180,28 @@ impl AgentPipeline {
 
     fn observed_runtime_evidence(tool_calls: &[ToolCallRecord]) -> ObservedRuntimeEvidence {
         let saw_successful_tool_work = Self::has_any_successful_non_task_tool_call(tool_calls);
-        let saw_mutation = tool_calls.iter().any(|tool_call| {
+        let successful_source_mutation = tool_calls.iter().any(|tool_call| {
             Self::is_successful_mutating_file_tool_call(tool_call)
                 || Self::is_successful_mutating_code_tool_call(tool_call)
-                || Self::is_successful_mutating_shell_tool_call(tool_call)
         });
+        let attempted_source_mutation = tool_calls.iter().any(|tool_call| {
+            Self::is_file_mutation_attempt(tool_call) || Self::is_code_mutation_attempt(tool_call)
+        });
+        let successful_shell_mutation = tool_calls
+            .iter()
+            .any(Self::is_successful_mutating_shell_tool_call);
+        let saw_mutation = successful_source_mutation || successful_shell_mutation;
+        let mutation_requirement_satisfied = if attempted_source_mutation {
+            successful_source_mutation
+        } else {
+            successful_source_mutation || successful_shell_mutation
+        };
         let (build_completed, test_completed) = Self::build_and_test_completion_status(tool_calls);
         ObservedRuntimeEvidence {
             saw_successful_tool_work,
             saw_mutation,
+            successful_source_mutation,
+            mutation_requirement_satisfied,
             build_completed,
             test_completed,
         }
@@ -312,7 +330,7 @@ impl AgentPipeline {
         evidence: ObservedRuntimeEvidence,
     ) -> Vec<String> {
         let mut missing = Vec::new();
-        if requires_mutating_file_tool_success && !evidence.saw_mutation {
+        if requires_mutating_file_tool_success && !evidence.mutation_requirement_satisfied {
             missing.push("source mutation not yet verified".to_string());
         }
         if requires_build_and_test && !evidence.build_completed {
@@ -1287,7 +1305,14 @@ impl AgentPipeline {
         };
 
         if let Some((title, message)) = llm_narration {
-            Self::emit_narration_if_changed(tx, stage, title, message, fingerprint, narration_state);
+            Self::emit_narration_if_changed(
+                tx,
+                stage,
+                title,
+                message,
+                fingerprint,
+                narration_state,
+            );
             return;
         }
 
@@ -1531,6 +1556,117 @@ impl AgentPipeline {
         .any(|marker| normalized.contains(marker))
     }
 
+    fn is_frontend_source_path(path: &str) -> bool {
+        let normalized = path.trim().replace('\\', "/").to_ascii_lowercase();
+        let is_frontend_extension = [
+            ".js", ".jsx", ".ts", ".tsx", ".css", ".scss", ".sass", ".less", ".html", ".htm",
+            ".vue", ".svelte",
+        ]
+        .iter()
+        .any(|extension| normalized.ends_with(extension));
+
+        is_frontend_extension
+            && (normalized.contains("/frontend/")
+                || normalized.contains("/src/")
+                || normalized.starts_with("src/"))
+    }
+
+    fn source_paths_from_tool_call(tool_call: &ToolCallRecord) -> Vec<String> {
+        match tool_call.name.as_str() {
+            "file" | "write_file" | "edit_file" if Self::is_file_mutation_attempt(tool_call) => {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&tool_call.arguments)
+                else {
+                    return Vec::new();
+                };
+
+                value
+                    .get("path")
+                    .and_then(|path| path.as_str())
+                    .map(|path| vec![path.to_string()])
+                    .unwrap_or_default()
+            }
+            name if crate::tools::registry::is_code_tool_name(name)
+                && Self::is_code_mutation_attempt(tool_call) =>
+            {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&tool_call.arguments)
+                else {
+                    return Vec::new();
+                };
+
+                let mut paths = value
+                    .get("path")
+                    .and_then(|path| path.as_str())
+                    .map(|path| vec![path.to_string()])
+                    .unwrap_or_default();
+
+                if let Some(edits) = value.get("edits").and_then(|edits| edits.as_array()) {
+                    for edit in edits {
+                        if let Some(path) = edit.get("path").and_then(|path| path.as_str()) {
+                            paths.push(path.to_string());
+                        }
+                    }
+                }
+
+                paths
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn frontend_verification_required(tool_calls: &[ToolCallRecord]) -> bool {
+        tool_calls.iter().any(|tool_call| {
+            Self::source_paths_from_tool_call(tool_call)
+                .iter()
+                .any(|path| Self::is_frontend_source_path(path))
+        })
+    }
+
+    fn is_frontend_capable_build_command(command: &str) -> bool {
+        let normalized = Self::normalize_shell_command(command);
+        Self::is_build_or_check_command(&normalized)
+            && [
+                "npm ",
+                "pnpm ",
+                "yarn ",
+                "bun ",
+                "vite ",
+                "next ",
+                "nuxt ",
+                "astro ",
+                "webpack ",
+                "parcel ",
+                "rollup ",
+                "nx ",
+                "turbo ",
+                "tauri build",
+                "cargo tauri build",
+            ]
+            .iter()
+            .any(|marker| normalized.starts_with(marker) || normalized.contains(marker))
+    }
+
+    fn is_frontend_capable_test_command(command: &str) -> bool {
+        let normalized = Self::normalize_shell_command(command);
+        Self::is_test_command(&normalized)
+            && [
+                "npm test",
+                "npm run test",
+                "pnpm test",
+                "pnpm run test",
+                "yarn test",
+                "yarn run test",
+                "bun test",
+                "bun run test",
+                "vitest",
+                "jest",
+                "playwright test",
+                "cypress run",
+                "web-test-runner",
+            ]
+            .iter()
+            .any(|marker| normalized.starts_with(marker))
+    }
+
     fn required_build_verification_label(tool_calls: &[ToolCallRecord]) -> &'static str {
         let _ = tool_calls;
         "a successful build/check command appropriate for the changed part of the project"
@@ -1539,6 +1675,7 @@ impl AgentPipeline {
     fn build_and_test_completion_status(tool_calls: &[ToolCallRecord]) -> (bool, bool) {
         let mut build_completed = false;
         let mut test_completed = false;
+        let frontend_verification_required = Self::frontend_verification_required(tool_calls);
 
         for command in tool_calls
             .iter()
@@ -1547,11 +1684,17 @@ impl AgentPipeline {
             })
             .filter_map(Self::extract_shell_command)
         {
-            if Self::is_build_or_check_command(&command) {
+            if Self::is_build_or_check_command(&command)
+                && (!frontend_verification_required
+                    || Self::is_frontend_capable_build_command(&command))
+            {
                 build_completed = true;
             }
 
-            if Self::is_test_command(&command) {
+            if Self::is_test_command(&command)
+                && (!frontend_verification_required
+                    || Self::is_frontend_capable_test_command(&command))
+            {
                 test_completed = true;
             }
         }
@@ -1924,7 +2067,27 @@ impl AgentPipeline {
             }
         }
 
-        let current_task = ready_tasks.first().cloned();
+        let missing_requirements = Self::runtime_missing_requirements(
+            requires_build_and_test,
+            requires_mutating_file_tool_success,
+            evidence,
+        );
+        let completion_ready =
+            !open_descendant_summary.has_open() && missing_requirements.is_empty();
+
+        let mut current_task = ready_tasks.first().cloned();
+        if current_task.is_none()
+            && !completion_ready
+            && open_descendant_summary.total() == 0
+            && !missing_requirements.is_empty()
+        {
+            current_task = manager
+                .get_task(session_id, root_task_id)
+                .ok()
+                .flatten()
+                .filter(|task| !task.is_terminal());
+        }
+
         let parallel_ready_tasks = if current_task.as_ref().is_some_and(|task| {
             Self::task_execution_profile(task, requires_build_and_test).parallel_safe
         }) {
@@ -1938,14 +2101,6 @@ impl AgentPipeline {
         } else {
             Vec::new()
         };
-
-        let missing_requirements = Self::runtime_missing_requirements(
-            requires_build_and_test,
-            requires_mutating_file_tool_success,
-            evidence,
-        );
-        let completion_ready =
-            !open_descendant_summary.has_open() && missing_requirements.is_empty();
 
         if completion_ready {
             let _ =
@@ -2100,6 +2255,28 @@ impl AgentPipeline {
         .any(|needle| normalized.contains(needle))
     }
 
+    fn text_signals_failed_or_incomplete_work(text: &str) -> bool {
+        let normalized = text.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return false;
+        }
+
+        [
+            "unable to",
+            "failed to",
+            "could not",
+            "did not",
+            "no changes were made",
+            "task is incomplete",
+            "work is incomplete",
+            "incomplete",
+            "not completed",
+            "not complete",
+        ]
+        .iter()
+        .any(|needle| normalized.contains(needle))
+    }
+
     fn text_signals_user_blocker_or_question(text: &str) -> bool {
         let trimmed = text.trim();
         if trimmed.is_empty() {
@@ -2167,6 +2344,7 @@ impl AgentPipeline {
         if iteration_tool_calls.is_empty()
             || !Self::has_meaningful_final_text(iteration_content)
             || Self::text_signals_user_blocker_or_question(iteration_content)
+            || Self::text_signals_failed_or_incomplete_work(iteration_content)
             || Self::text_defers_remaining_work(iteration_content)
             || Self::is_missing_requested_build_and_test(requires_build_and_test, all_tool_calls)
             || !Self::tool_results_support_successful_completion(
@@ -2719,6 +2897,95 @@ impl AgentPipeline {
         }
     }
 
+    async fn run_blocking_task_bookkeeping<T, F>(label: &'static str, op: F) -> Option<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        match tokio::task::spawn_blocking(op).await {
+            Ok(value) => Some(value),
+            Err(error) => {
+                tracing::warn!(task = label, error = %error, "Task bookkeeping join failed");
+                None
+            }
+        }
+    }
+
+    async fn tracked_task_closeout_note_async(
+        session_id: Option<&str>,
+        task_id: Option<&str>,
+    ) -> Option<String> {
+        let session_id = session_id.map(str::to_string);
+        let task_id = task_id.map(str::to_string);
+        Self::run_blocking_task_bookkeeping("tracked_task_closeout_note", move || {
+            Self::tracked_task_closeout_note(session_id.as_deref(), task_id.as_deref())
+        })
+        .await
+        .flatten()
+    }
+
+    async fn mark_tracked_task_in_progress_async(session_id: Option<&str>, task_id: Option<&str>) {
+        let session_id = session_id.map(str::to_string);
+        let task_id = task_id.map(str::to_string);
+        let _ = Self::run_blocking_task_bookkeeping("mark_tracked_task_in_progress", move || {
+            Self::mark_tracked_task_in_progress(session_id.as_deref(), task_id.as_deref())
+        })
+        .await;
+    }
+
+    async fn reconcile_tracked_execution_progress_from_tool_activity_async(
+        requires_build_and_test: bool,
+        requires_mutating_file_tool_success: bool,
+        session_id: Option<&str>,
+        task_id: Option<&str>,
+        tool_calls: &[ToolCallRecord],
+    ) -> Option<TrackedTaskRuntimeState> {
+        let session_id = session_id.map(str::to_string);
+        let task_id = task_id.map(str::to_string);
+        let tool_calls = tool_calls.to_vec();
+        Self::run_blocking_task_bookkeeping(
+            "reconcile_tracked_execution_progress_from_tool_activity",
+            move || {
+                Self::reconcile_tracked_execution_progress_from_tool_activity(
+                    requires_build_and_test,
+                    requires_mutating_file_tool_success,
+                    session_id.as_deref(),
+                    task_id.as_deref(),
+                    &tool_calls,
+                )
+            },
+        )
+        .await
+        .flatten()
+    }
+
+    async fn cancel_tracked_task_async(
+        session_id: Option<&str>,
+        task_id: Option<&str>,
+        reason: &str,
+    ) {
+        let session_id = session_id.map(str::to_string);
+        let task_id = task_id.map(str::to_string);
+        let reason = reason.to_string();
+        let _ = Self::run_blocking_task_bookkeeping("cancel_tracked_task", move || {
+            Self::cancel_tracked_task(session_id.as_deref(), task_id.as_deref(), &reason)
+        })
+        .await;
+    }
+
+    async fn tracked_open_descendant_summary_async(
+        session_id: Option<&str>,
+        task_id: Option<&str>,
+    ) -> OpenDescendantSummary {
+        let session_id = session_id.map(str::to_string);
+        let task_id = task_id.map(str::to_string);
+        Self::run_blocking_task_bookkeeping("tracked_open_descendant_summary", move || {
+            Self::tracked_open_descendant_summary(session_id.as_deref(), task_id.as_deref())
+        })
+        .await
+        .unwrap_or_default()
+    }
+
     fn tracked_task_closeout_note(
         session_id: Option<&str>,
         task_id: Option<&str>,
@@ -2935,14 +3202,17 @@ impl AgentPipeline {
         }
 
         if let Ok(Some(execution_state)) = manager.get_execution_state(session_id, &task.id) {
-            return match task.status {
-                crate::TaskStatus::InProgress | crate::TaskStatus::NotStarted => execution_state
-                    .satisfies_profile()
-                    .then_some(crate::TaskStatus::Completed),
+            match task.status {
+                crate::TaskStatus::InProgress | crate::TaskStatus::NotStarted
+                    if execution_state.satisfies_profile() =>
+                {
+                    return Some(crate::TaskStatus::Completed);
+                }
                 crate::TaskStatus::Blocked
                 | crate::TaskStatus::Completed
-                | crate::TaskStatus::Cancelled => None,
-            };
+                | crate::TaskStatus::Cancelled => return None,
+                crate::TaskStatus::InProgress | crate::TaskStatus::NotStarted => {}
+            }
         }
 
         let inferred_profile = Self::task_execution_profile(task, false);
@@ -3144,6 +3414,7 @@ impl AgentPipeline {
     ) -> bool {
         Self::has_meaningful_final_text(final_response)
             && !Self::text_signals_user_blocker_or_question(final_response)
+            && !Self::text_signals_failed_or_incomplete_work(final_response)
             && !Self::text_defers_remaining_work(final_response)
             && !Self::is_missing_requested_build_and_test(requires_build_and_test, tool_calls)
             && Self::tool_results_support_successful_completion(
@@ -3247,6 +3518,13 @@ impl AgentPipeline {
             .unwrap_or(false)
     }
 
+    fn keep_tracked_task_open(session_id: &str, task_id: &str) {
+        let manager = crate::get_global_task_manager();
+        let _ =
+            Self::apply_tracked_phase_status(session_id, task_id, crate::TaskStatus::InProgress);
+        let _ = manager.set_current_task_id(session_id, Some(task_id.to_string()));
+    }
+
     #[allow(dead_code)]
     fn reconcile_tracked_task_after_success(
         requires_build_and_test: bool,
@@ -3267,6 +3545,12 @@ impl AgentPipeline {
             Some(task_id),
             tool_calls,
         );
+        let final_response_signals_success = Self::final_response_signals_successful_completion(
+            requires_build_and_test,
+            requires_mutating_file_tool_success,
+            final_response,
+            tool_calls,
+        );
 
         if Self::is_missing_requested_build_and_test(requires_build_and_test, tool_calls)
             || !Self::tool_results_support_successful_completion(
@@ -3281,6 +3565,7 @@ impl AgentPipeline {
                     state,
                 );
             }
+            Self::keep_tracked_task_open(session_id, task_id);
             tracing::info!(
                 session_id = %session_id,
                 task_id = %task_id,
@@ -3288,41 +3573,54 @@ impl AgentPipeline {
             );
             return;
         }
+
+        if !final_response_signals_success {
+            Self::keep_tracked_task_open(session_id, task_id);
+            tracing::info!(
+                session_id = %session_id,
+                task_id = %task_id,
+                "Skipping tracked task success reconciliation because the final response does not claim successful completion"
+            );
+            return;
+        }
+
         if let Some(state) = runtime_state {
             if !state.completion_ready {
-                let placeholder_only_open_descendants =
-                    Self::load_open_descendants(session_id, task_id)
-                        .map(|open_descendants| {
-                            !open_descendants.is_empty()
-                                && open_descendants.iter().all(|task| {
-                                    Self::looks_like_placeholder_task_name(&task.name)
-                                        || Self::looks_like_placeholder_task_name(&task.description)
-                                })
-                        })
-                        .unwrap_or(false);
-
-                if placeholder_only_open_descendants
-                    && Self::final_response_signals_successful_completion(
-                        requires_build_and_test,
-                        requires_mutating_file_tool_success,
-                        final_response,
-                        tool_calls,
-                    )
-                {
+                if state.open_descendant_summary.has_open() {
                     Self::reconcile_open_descendants_after_success(
                         session_id,
                         task_id,
                         final_response,
                         tool_calls,
                     );
-                    let _ = Self::reconcile_tracked_execution_progress_from_tool_activity(
-                        requires_build_and_test,
-                        requires_mutating_file_tool_success,
-                        Some(session_id),
-                        Some(task_id),
-                        tool_calls,
-                    );
-                    return;
+                    if let Some(updated_state) =
+                        Self::reconcile_tracked_execution_progress_from_tool_activity(
+                            requires_build_and_test,
+                            requires_mutating_file_tool_success,
+                            Some(session_id),
+                            Some(task_id),
+                            tool_calls,
+                        )
+                    {
+                        if updated_state.completion_ready {
+                            return;
+                        }
+
+                        Self::record_tracked_task_incomplete_memory_event(
+                            Some(session_id),
+                            Some(task_id),
+                            &updated_state,
+                        );
+                        Self::keep_tracked_task_open(session_id, task_id);
+                        tracing::warn!(
+                            session_id = %session_id,
+                            task_id = %task_id,
+                            open_descendants = updated_state.open_descendant_summary.total(),
+                            missing_requirements = ?updated_state.snapshot.missing_requirements,
+                            "Tracked task remains open after success closeout reconciliation"
+                        );
+                        return;
+                    }
                 }
 
                 Self::record_tracked_task_incomplete_memory_event(
@@ -3330,6 +3628,7 @@ impl AgentPipeline {
                     Some(task_id),
                     &state,
                 );
+                Self::keep_tracked_task_open(session_id, task_id);
 
                 tracing::warn!(
                     session_id = %session_id,
@@ -3404,7 +3703,6 @@ impl AgentPipeline {
     }
 
     fn tracked_open_descendant_summary(
-        &self,
         session_id: Option<&str>,
         task_id: Option<&str>,
     ) -> OpenDescendantSummary {
@@ -3451,18 +3749,7 @@ impl AgentPipeline {
         .map(|state| state.open_descendant_summary)
         .unwrap_or_default();
 
-        let placeholder_only_open_descendants = Self::load_open_descendants(session_id, task_id)
-            .map(|open_descendants| {
-                !open_descendants.is_empty()
-                    && open_descendants.iter().all(|task| {
-                        Self::looks_like_placeholder_task_name(&task.name)
-                            || Self::looks_like_placeholder_task_name(&task.description)
-                    })
-            })
-            .unwrap_or(false);
-
-        if summary.only_not_started()
-            && placeholder_only_open_descendants
+        if summary.has_open()
             && Self::final_response_signals_successful_completion(
                 requires_build_and_test,
                 requires_mutating_file_tool_success,
@@ -3479,7 +3766,7 @@ impl AgentPipeline {
             if let Some(previous_current_task_id) = previous_current_task_id {
                 let _ = manager.set_current_task_id(session_id, Some(previous_current_task_id));
             }
-            summary = self.tracked_open_descendant_summary(Some(session_id), Some(task_id));
+            summary = Self::tracked_open_descendant_summary(Some(session_id), Some(task_id));
         }
 
         summary
@@ -4171,7 +4458,7 @@ impl AgentPipeline {
     fn required_verification_retry_schemas(
         schemas: &crate::tools::schemas::ProviderToolSchemas,
     ) -> crate::tools::schemas::ProviderToolSchemas {
-        let mut disabled_tools = vec!["task", "file"];
+        let mut disabled_tools = vec!["task", "file", "read_file", "write_file", "edit_file"];
         disabled_tools.extend(crate::tools::registry::code_tool_names().iter().copied());
         Self::without_tool_schemas(schemas, &disabled_tools)
     }
@@ -4314,6 +4601,65 @@ impl AgentPipeline {
         }
     }
 
+    pub(super) fn can_parallelize_read_only_tool_call(name: &str, arguments: &str) -> bool {
+        if crate::tools::policy::is_write_operation(name, arguments) {
+            return false;
+        }
+
+        let operation = serde_json::from_str::<serde_json::Value>(arguments)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("operation")
+                    .and_then(|operation| operation.as_str())
+                    .map(|operation| operation.trim().to_ascii_lowercase())
+            });
+
+        match (name, operation.as_deref()) {
+            ("web", _) | ("web_search", _) | ("read_file", _) => true,
+            ("file", Some("read" | "list" | "tree" | "search")) => true,
+            (
+                "code",
+                Some(
+                    "stats" | "map" | "symbols" | "references" | "definition" | "deps" | "glob"
+                    | "grep" | "batch_read" | "outline",
+                ),
+            ) => true,
+            _ if name.starts_with("code_") => true,
+            _ => false,
+        }
+    }
+
+    pub(super) async fn execute_parallel_read_only_tool_batch(
+        &self,
+        batch: Vec<gestura_core_llm::ToolCallInfo>,
+        workspace: Option<&SessionWorkspace>,
+    ) -> Vec<ToolCallRecord> {
+        let mut results = stream::iter(batch.into_iter().enumerate().map(
+            |(index, tool_call)| async move {
+                let result = self
+                    .execute_tool(&tool_call.name, &tool_call.arguments, workspace, None)
+                    .await;
+                (
+                    index,
+                    ToolCallRecord {
+                        id: tool_call.id,
+                        name: tool_call.name,
+                        arguments: tool_call.arguments,
+                        result,
+                        duration_ms: 0,
+                    },
+                )
+            },
+        ))
+        .buffer_unordered(MAX_PARALLEL_READ_ONLY_TOOL_CALLS)
+        .collect::<Vec<_>>()
+        .await;
+
+        results.sort_by_key(|(index, _)| *index);
+        results.into_iter().map(|(_, record)| record).collect()
+    }
+
     /// Execute the agentic loop with streaming
     ///
     /// If `workspace` is provided, all tool operations (shell, file, git) will be
@@ -4336,7 +4682,7 @@ impl AgentPipeline {
         permission_level: PermissionLevel,
         telemetry: &AgentRequestTelemetry,
     ) -> Result<AgentResponse, AppError> {
-        Self::mark_tracked_task_in_progress(session_id.as_deref(), task_id.as_deref());
+        Self::mark_tracked_task_in_progress_async(session_id.as_deref(), task_id.as_deref()).await;
 
         let mut response = AgentResponse {
             content: String::new(),
@@ -4406,11 +4752,12 @@ impl AgentPipeline {
             }
 
             if cancel_token.is_cancelled() {
-                Self::cancel_tracked_task(
+                Self::cancel_tracked_task_async(
                     session_id.as_deref(),
                     task_id.as_deref(),
                     "cancel token raised before iteration",
-                );
+                )
+                .await;
                 let _ = tx.send(cancel_token.interruption_chunk()).await;
                 return Ok(response);
             }
@@ -4432,14 +4779,16 @@ impl AgentPipeline {
                 })
                 .await;
 
-            if let Some(state) = Self::reconcile_tracked_execution_progress_from_tool_activity(
-                requires_build_and_test,
-                requires_mutating_file_tool_success,
-                session_id.as_deref(),
-                task_id.as_deref(),
-                &response.tool_calls,
-            )
-            .as_ref()
+            if let Some(state) =
+                Self::reconcile_tracked_execution_progress_from_tool_activity_async(
+                    requires_build_and_test,
+                    requires_mutating_file_tool_success,
+                    session_id.as_deref(),
+                    task_id.as_deref(),
+                    &response.tool_calls,
+                )
+                .await
+                .as_ref()
             {
                 Self::emit_task_runtime_snapshot_if_changed(
                     &tx,
@@ -4804,21 +5153,23 @@ impl AgentPipeline {
                         }
                     }
                     StreamChunk::Error(e) => {
-                        Self::cancel_tracked_task(
+                        Self::cancel_tracked_task_async(
                             session_id.as_deref(),
                             task_id.as_deref(),
                             "provider emitted error chunk",
-                        );
+                        )
+                        .await;
                         tracing::error!(error = %e, iteration = iteration, "[AgentLoop] Error chunk received from inner stream");
                         let _ = tx.send(StreamChunk::Error(e.clone())).await;
                         return Err(AppError::Llm(e.clone()));
                     }
                     StreamChunk::Cancelled => {
-                        Self::cancel_tracked_task(
+                        Self::cancel_tracked_task_async(
                             session_id.as_deref(),
                             task_id.as_deref(),
                             "provider emitted cancelled chunk",
-                        );
+                        )
+                        .await;
                         tracing::debug!(
                             iteration = iteration,
                             "[AgentLoop] Cancelled chunk — aborting loop"
@@ -4957,13 +5308,15 @@ impl AgentPipeline {
                     iteration += 1;
                     continue;
                 }
-                let runtime_state = Self::reconcile_tracked_execution_progress_from_tool_activity(
-                    requires_build_and_test,
-                    requires_mutating_file_tool_success,
-                    session_id.as_deref(),
-                    task_id.as_deref(),
-                    &response.tool_calls,
-                );
+                let runtime_state =
+                    Self::reconcile_tracked_execution_progress_from_tool_activity_async(
+                        requires_build_and_test,
+                        requires_mutating_file_tool_success,
+                        session_id.as_deref(),
+                        task_id.as_deref(),
+                        &response.tool_calls,
+                    )
+                    .await;
                 if let Some(state) = runtime_state.as_ref() {
                     Self::emit_task_runtime_snapshot_if_changed(
                         &tx,
@@ -4974,12 +5327,16 @@ impl AgentPipeline {
                 let open_descendant_summary = runtime_state
                     .as_ref()
                     .map(|state| state.open_descendant_summary)
-                    .unwrap_or_else(|| {
-                        self.tracked_open_descendant_summary(
-                            session_id.as_deref(),
-                            task_id.as_deref(),
-                        )
-                    });
+                    .unwrap_or_else(|| OpenDescendantSummary::default());
+                let open_descendant_summary = if runtime_state.is_some() {
+                    open_descendant_summary
+                } else {
+                    Self::tracked_open_descendant_summary_async(
+                        session_id.as_deref(),
+                        task_id.as_deref(),
+                    )
+                    .await
+                };
                 let task_tool_suspended = Self::should_suspend_task_tool(&response.tool_calls);
 
                 if Self::should_force_open_subtask_continuation(OpenSubtaskContinuationInput {
@@ -5162,13 +5519,15 @@ impl AgentPipeline {
 
             let mut combined_tool_calls = response.tool_calls.clone();
             combined_tool_calls.extend(tool_calls_in_iteration.clone());
-            let runtime_state = Self::reconcile_tracked_execution_progress_from_tool_activity(
-                requires_build_and_test,
-                requires_mutating_file_tool_success,
-                session_id.as_deref(),
-                task_id.as_deref(),
-                &combined_tool_calls,
-            );
+            let runtime_state =
+                Self::reconcile_tracked_execution_progress_from_tool_activity_async(
+                    requires_build_and_test,
+                    requires_mutating_file_tool_success,
+                    session_id.as_deref(),
+                    task_id.as_deref(),
+                    &combined_tool_calls,
+                )
+                .await;
             if let Some(state) = runtime_state.as_ref() {
                 Self::emit_task_runtime_snapshot_if_changed(
                     &tx,
@@ -5179,9 +5538,16 @@ impl AgentPipeline {
             let open_descendant_summary = runtime_state
                 .as_ref()
                 .map(|state| state.open_descendant_summary)
-                .unwrap_or_else(|| {
-                    self.tracked_open_descendant_summary(session_id.as_deref(), task_id.as_deref())
-                });
+                .unwrap_or_else(|| OpenDescendantSummary::default());
+            let open_descendant_summary = if runtime_state.is_some() {
+                open_descendant_summary
+            } else {
+                Self::tracked_open_descendant_summary_async(
+                    session_id.as_deref(),
+                    task_id.as_deref(),
+                )
+                .await
+            };
             let has_open_descendants = open_descendant_summary.has_open();
             let stagnation_fingerprint = Self::tool_iteration_stagnation_fingerprint(
                 requires_build_and_test,
@@ -5574,7 +5940,7 @@ impl AgentPipeline {
         .await;
 
         if let Some(closeout_note) =
-            Self::tracked_task_closeout_note(session_id.as_deref(), task_id.as_deref())
+            Self::tracked_task_closeout_note_async(session_id.as_deref(), task_id.as_deref()).await
             && !response.content.contains(&closeout_note)
         {
             let emitted = if response.content.trim().is_empty() {
@@ -5608,7 +5974,7 @@ impl AgentPipeline {
         max_iterations: Option<usize>,
         telemetry: &AgentRequestTelemetry,
     ) -> Result<AgentResponse, AppError> {
-        Self::mark_tracked_task_in_progress(session_id.as_deref(), task_id.as_deref());
+        Self::mark_tracked_task_in_progress_async(session_id.as_deref(), task_id.as_deref()).await;
 
         let mut response = AgentResponse {
             content: String::new(),
@@ -5712,16 +6078,21 @@ impl AgentPipeline {
             if required_verification_retry_pending {
                 prompt = Self::with_required_verification_retry_instruction(&prompt);
             }
-            let llm_response = self
+            let llm_response = match self
                 .call_llm_with_fallback(&prompt, active_tool_schemas.as_ref())
                 .await
-                .inspect_err(|_| {
-                    Self::cancel_tracked_task(
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    Self::cancel_tracked_task_async(
                         session_id.as_deref(),
                         task_id.as_deref(),
                         "blocking LLM call failed",
-                    );
-                })?;
+                    )
+                    .await;
+                    return Err(error);
+                }
+            };
             let (content, thinking) = crate::streaming::split_think_blocks(&llm_response.text);
 
             // Accumulate token usage across iterations.
@@ -5799,25 +6170,31 @@ impl AgentPipeline {
                     iteration += 1;
                     continue;
                 }
-                let runtime_state = Self::reconcile_tracked_execution_progress_from_tool_activity(
-                    requires_build_and_test,
-                    requires_mutating_file_tool_success,
-                    session_id.as_deref(),
-                    task_id.as_deref(),
-                    &response.tool_calls,
-                );
+                let runtime_state =
+                    Self::reconcile_tracked_execution_progress_from_tool_activity_async(
+                        requires_build_and_test,
+                        requires_mutating_file_tool_success,
+                        session_id.as_deref(),
+                        task_id.as_deref(),
+                        &response.tool_calls,
+                    )
+                    .await;
                 if let Some(state) = runtime_state.as_ref() {
                     _last_runtime_task_snapshot = Some(state.snapshot.clone());
                 }
                 let open_descendant_summary = runtime_state
                     .as_ref()
                     .map(|state| state.open_descendant_summary)
-                    .unwrap_or_else(|| {
-                        self.tracked_open_descendant_summary(
-                            session_id.as_deref(),
-                            task_id.as_deref(),
-                        )
-                    });
+                    .unwrap_or_else(|| OpenDescendantSummary::default());
+                let open_descendant_summary = if runtime_state.is_some() {
+                    open_descendant_summary
+                } else {
+                    Self::tracked_open_descendant_summary_async(
+                        session_id.as_deref(),
+                        task_id.as_deref(),
+                    )
+                    .await
+                };
                 let task_tool_suspended = Self::should_suspend_task_tool(&response.tool_calls);
 
                 if Self::should_force_open_subtask_continuation(OpenSubtaskContinuationInput {
@@ -5962,13 +6339,40 @@ impl AgentPipeline {
 
             // Execute each structured tool call and collect records.
             let mut iteration_tool_calls: Vec<ToolCallRecord> = Vec::new();
+            let mut pending_parallel_batch = Vec::new();
+            let mut pending_parallel_signatures = HashSet::new();
             for tc in &llm_response.tool_calls {
                 tracing::info!(
                     tool = %tc.name,
                     id = %tc.id,
                     "Blocking loop: executing tool call"
                 );
+
+                let parallel_signature = format!("{}\u{1f}{}", tc.name, tc.arguments);
+                if Self::can_parallelize_read_only_tool_call(&tc.name, &tc.arguments)
+                    && pending_parallel_signatures.contains(&parallel_signature)
+                {
+                    iteration_tool_calls.extend(
+                        self.execute_parallel_read_only_tool_batch(
+                            std::mem::take(&mut pending_parallel_batch),
+                            workspace,
+                        )
+                        .await,
+                    );
+                    pending_parallel_signatures.clear();
+                }
+
                 let result = if required_verification_retry_pending && tc.name != "shell" {
+                    if !pending_parallel_batch.is_empty() {
+                        iteration_tool_calls.extend(
+                            self.execute_parallel_read_only_tool_batch(
+                                std::mem::take(&mut pending_parallel_batch),
+                                workspace,
+                            )
+                            .await,
+                        );
+                        pending_parallel_signatures.clear();
+                    }
                     tracing::warn!(
                         tool = %tc.name,
                         id = %tc.id,
@@ -5986,13 +6390,37 @@ impl AgentPipeline {
                         .iter()
                         .chain(iteration_tool_calls.iter()),
                 ) {
+                    if !pending_parallel_batch.is_empty() {
+                        iteration_tool_calls.extend(
+                            self.execute_parallel_read_only_tool_batch(
+                                std::mem::take(&mut pending_parallel_batch),
+                                workspace,
+                            )
+                            .await,
+                        );
+                        pending_parallel_signatures.clear();
+                    }
                     tracing::warn!(
                         tool = %tc.name,
                         id = %tc.id,
                         "Blocking loop: loop breaker skipped repeated malformed tool call"
                     );
                     ToolResult::Skipped(message)
+                } else if Self::can_parallelize_read_only_tool_call(&tc.name, &tc.arguments) {
+                    pending_parallel_signatures.insert(parallel_signature);
+                    pending_parallel_batch.push(tc.clone());
+                    continue;
                 } else {
+                    if !pending_parallel_batch.is_empty() {
+                        iteration_tool_calls.extend(
+                            self.execute_parallel_read_only_tool_batch(
+                                std::mem::take(&mut pending_parallel_batch),
+                                workspace,
+                            )
+                            .await,
+                        );
+                        pending_parallel_signatures.clear();
+                    }
                     self.execute_tool(&tc.name, &tc.arguments, workspace, None)
                         .await
                 };
@@ -6005,28 +6433,43 @@ impl AgentPipeline {
                     duration_ms,
                 });
             }
+            if !pending_parallel_batch.is_empty() {
+                iteration_tool_calls.extend(
+                    self.execute_parallel_read_only_tool_batch(pending_parallel_batch, workspace)
+                        .await,
+                );
+            }
             telemetry
                 .record_tool_calls(iteration, &iteration_tool_calls)
                 .await;
 
             let mut combined_tool_calls = response.tool_calls.clone();
             combined_tool_calls.extend(iteration_tool_calls.clone());
-            let runtime_state = Self::reconcile_tracked_execution_progress_from_tool_activity(
-                requires_build_and_test,
-                requires_mutating_file_tool_success,
-                session_id.as_deref(),
-                task_id.as_deref(),
-                &combined_tool_calls,
-            );
+            let runtime_state =
+                Self::reconcile_tracked_execution_progress_from_tool_activity_async(
+                    requires_build_and_test,
+                    requires_mutating_file_tool_success,
+                    session_id.as_deref(),
+                    task_id.as_deref(),
+                    &combined_tool_calls,
+                )
+                .await;
             if let Some(state) = runtime_state.as_ref() {
                 _last_runtime_task_snapshot = Some(state.snapshot.clone());
             }
             let open_descendant_summary = runtime_state
                 .as_ref()
                 .map(|state| state.open_descendant_summary)
-                .unwrap_or_else(|| {
-                    self.tracked_open_descendant_summary(session_id.as_deref(), task_id.as_deref())
-                });
+                .unwrap_or_else(|| OpenDescendantSummary::default());
+            let open_descendant_summary = if runtime_state.is_some() {
+                open_descendant_summary
+            } else {
+                Self::tracked_open_descendant_summary_async(
+                    session_id.as_deref(),
+                    task_id.as_deref(),
+                )
+                .await
+            };
             let task_tool_suspended = Self::should_suspend_task_tool(&combined_tool_calls);
             let file_tool_suspended = Self::should_suspend_file_tool(&combined_tool_calls);
             let code_tool_suspended = Self::should_suspend_code_tool(&combined_tool_calls);
@@ -6407,7 +6850,7 @@ impl AgentPipeline {
         .await;
 
         if let Some(closeout_note) =
-            Self::tracked_task_closeout_note(session_id.as_deref(), task_id.as_deref())
+            Self::tracked_task_closeout_note_async(session_id.as_deref(), task_id.as_deref()).await
             && !response.content.contains(&closeout_note)
         {
             if response.content.trim().is_empty() {
@@ -8183,8 +8626,8 @@ mod tests {
             .replace_task_list(task_list)
             .expect("replace task list");
 
-        let pipeline = AgentPipeline::new(AppConfig::default());
-        let summary = pipeline.tracked_open_descendant_summary(Some(&session_id), Some(&root.id));
+        let summary =
+            AgentPipeline::tracked_open_descendant_summary(Some(&session_id), Some(&root.id));
         assert!(summary.has_open());
         assert_eq!(
             summary,
