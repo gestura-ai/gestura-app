@@ -96,6 +96,7 @@ pub struct SearchItem {
 // ============================================================================
 
 /// Smart content extraction from HTML pages
+#[derive(Debug, Clone)]
 pub struct ContentExtractor {
     /// Selectors for main content areas (priority order)
     main_content_selectors: Vec<&'static str>,
@@ -588,7 +589,15 @@ impl LocalSearchProvider {
     /// Fetch and extract content from a URL.
     /// Returns extracted content including title, description, and main text.
     pub async fn fetch_content(&self, url: &str) -> Result<ExtractedContent> {
-        let response = self.client.get(url).send().await.map_err(|e| {
+        Self::fetch_content_with(self.client.clone(), self.extractor.clone(), url.to_string()).await
+    }
+
+    async fn fetch_content_with(
+        client: reqwest::Client,
+        extractor: ContentExtractor,
+        url: String,
+    ) -> Result<ExtractedContent> {
+        let response = client.get(&url).send().await.map_err(|e| {
             AppError::Io(std::io::Error::other(format!(
                 "Failed to fetch URL {}: {}",
                 url, e
@@ -602,7 +611,15 @@ impl LocalSearchProvider {
             )))
         })?;
 
-        Ok(self.extractor.extract(&html, url))
+        let url_for_extract = url.clone();
+        tokio::task::spawn_blocking(move || extractor.extract(&html, &url_for_extract))
+            .await
+            .map_err(|error| {
+                AppError::Io(std::io::Error::other(format!(
+                    "Content extraction task failed for {}: {}",
+                    url, error
+                )))
+            })
     }
 
     /// Enrich a search result by fetching and extracting content from its URL.
@@ -630,9 +647,36 @@ impl LocalSearchProvider {
 
         // Fetch content for top N results
         let fetch_count = fetch_content_count.min(results.len());
-        for item in results.iter_mut().take(fetch_count) {
-            let taken = std::mem::take(item);
-            *item = self.enrich_result(taken).await;
+        if fetch_count == 0 {
+            return Ok(results);
+        }
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for index in 0..fetch_count {
+            let url = results[index].url.clone();
+            let client = self.client.clone();
+            let extractor = self.extractor.clone();
+            tasks.spawn(async move {
+                let content = Self::fetch_content_with(client, extractor, url).await.ok();
+                (index, content)
+            });
+        }
+
+        while let Some(joined) = tasks.join_next().await {
+            match joined {
+                Ok((index, Some(mut extracted))) => {
+                    if extracted.main_content.len() > 500 {
+                        extracted.main_content = format!("{}...", &extracted.main_content[..500]);
+                    }
+                    if let Some(item) = results.get_mut(index) {
+                        item.content = Some(extracted);
+                    }
+                }
+                Ok((_index, None)) => {}
+                Err(error) => {
+                    tracing::warn!(error = %error, "Search content enrichment task failed");
+                }
+            }
         }
 
         Ok(results)
@@ -1128,7 +1172,17 @@ impl WebSearchService {
             .await
             .map_err(|e| AppError::Io(std::io::Error::other(format!("Read failed: {e}"))))?;
 
-        Ok(self.extractor.extract(&html, url))
+        let extractor = self.extractor.clone();
+        let url = url.to_string();
+        let error_url = url.clone();
+        tokio::task::spawn_blocking(move || extractor.extract(&html, &url))
+            .await
+            .map_err(|error| {
+                AppError::Io(std::io::Error::other(format!(
+                    "Content extraction task failed for {}: {}",
+                    error_url, error
+                )))
+            })
     }
 
     /// Fetch a web page (raw)

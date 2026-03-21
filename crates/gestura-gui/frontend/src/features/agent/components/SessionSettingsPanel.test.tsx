@@ -68,7 +68,6 @@ describe('SessionSettingsPanel', () => {
         onClose={vi.fn()}
         sessionId="session-123"
         toolSettings={{}}
-        onRefreshToolSettings={vi.fn().mockResolvedValue(undefined)}
         onWorkspaceChanged={onWorkspaceChanged}
         onShowToast={onShowToast}
       />

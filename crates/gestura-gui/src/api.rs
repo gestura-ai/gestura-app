@@ -6117,6 +6117,25 @@ pub async fn explorer_list_dir(
     })
 }
 
+/// Open the current session's explorer root in the system file manager.
+///
+/// This is scoped to the resolved session workspace/root directory so the
+/// frontend does not need direct opener plugin path permissions.
+#[tauri::command(rename_all = "snake_case")]
+pub fn explorer_open_root_in_file_manager(
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    ensure_explorer_read_allowed(&session_id)?;
+    let root = session_root_dir(&session_id)?;
+    let root_display = root.display().to_string();
+    app.opener()
+        .open_path(root_display.clone(), None::<&str>)
+        .map_err(|error| format!("Failed to open project root {}: {}", root_display, error))
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn explorer_git_status(
     session_id: String,

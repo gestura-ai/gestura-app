@@ -828,22 +828,77 @@ impl AgentPipeline {
             }
 
             let mut iteration_tool_calls = Vec::new();
+            let mut pending_parallel_batch = Vec::new();
+            let mut pending_parallel_signatures = std::collections::HashSet::new();
             for tc in &llm_response.tool_calls {
-                let result = match crate::tools::policy::evaluate_tool_call(
+                let decision = crate::tools::policy::evaluate_tool_call(
                     RETRY_READ_ONLY_PERMISSION_LEVEL,
                     &tc.name,
                     &tc.arguments,
                 )
-                .decision
+                .decision;
+
+                let parallel_signature = format!("{}\u{1f}{}", tc.name, tc.arguments);
+                if matches!(decision, crate::tools::policy::ToolCallDecision::Allowed)
+                    && Self::can_parallelize_read_only_tool_call(&tc.name, &tc.arguments)
+                    && pending_parallel_signatures.contains(&parallel_signature)
                 {
+                    iteration_tool_calls.extend(
+                        self.execute_parallel_read_only_tool_batch(
+                            std::mem::take(&mut pending_parallel_batch),
+                            workspace,
+                        )
+                        .await,
+                    );
+                    pending_parallel_signatures.clear();
+                }
+
+                let result = match decision {
+                    crate::tools::policy::ToolCallDecision::Allowed
+                        if Self::can_parallelize_read_only_tool_call(&tc.name, &tc.arguments) =>
+                    {
+                        pending_parallel_signatures.insert(parallel_signature);
+                        pending_parallel_batch.push(tc.clone());
+                        continue;
+                    }
                     crate::tools::policy::ToolCallDecision::Allowed => {
+                        if !pending_parallel_batch.is_empty() {
+                            iteration_tool_calls.extend(
+                                self.execute_parallel_read_only_tool_batch(
+                                    std::mem::take(&mut pending_parallel_batch),
+                                    workspace,
+                                )
+                                .await,
+                            );
+                            pending_parallel_signatures.clear();
+                        }
                         self.execute_tool(&tc.name, &tc.arguments, workspace, None)
                             .await
                     }
                     crate::tools::policy::ToolCallDecision::Blocked { reason } => {
+                        if !pending_parallel_batch.is_empty() {
+                            iteration_tool_calls.extend(
+                                self.execute_parallel_read_only_tool_batch(
+                                    std::mem::take(&mut pending_parallel_batch),
+                                    workspace,
+                                )
+                                .await,
+                            );
+                            pending_parallel_signatures.clear();
+                        }
                         ToolResult::Skipped(reason)
                     }
                     crate::tools::policy::ToolCallDecision::RequiresConfirmation(info) => {
+                        if !pending_parallel_batch.is_empty() {
+                            iteration_tool_calls.extend(
+                                self.execute_parallel_read_only_tool_batch(
+                                    std::mem::take(&mut pending_parallel_batch),
+                                    workspace,
+                                )
+                                .await,
+                            );
+                            pending_parallel_signatures.clear();
+                        }
                         ToolResult::Skipped(format!(
                             "Skipped during reflection retry: {}",
                             info.description
@@ -858,6 +913,12 @@ impl AgentPipeline {
                     result,
                     duration_ms: 0,
                 });
+            }
+            if !pending_parallel_batch.is_empty() {
+                iteration_tool_calls.extend(
+                    self.execute_parallel_read_only_tool_batch(pending_parallel_batch, workspace)
+                        .await,
+                );
             }
 
             current_prompt = self.build_tool_continuation_prompt(

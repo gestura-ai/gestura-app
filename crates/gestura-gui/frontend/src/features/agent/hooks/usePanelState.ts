@@ -7,6 +7,7 @@ export type PanelName =
   | 'memory'
   | 'knowledge'
   | 'providers'
+  | 'tools'
   | 'settings'
   | 'none';
 

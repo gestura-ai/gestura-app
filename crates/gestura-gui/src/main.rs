@@ -363,6 +363,7 @@ async fn main() {
             // Project explorer (agent left-side file tree)
             gestura_gui::api::explorer_get_root,
             gestura_gui::api::explorer_list_dir,
+            gestura_gui::api::explorer_open_root_in_file_manager,
             gestura_gui::api::explorer_git_status,
             // Integrated file editor (agent_v2 React window)
             gestura_gui::api::editor_read_file,

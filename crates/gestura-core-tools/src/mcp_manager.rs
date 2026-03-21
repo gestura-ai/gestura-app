@@ -284,6 +284,18 @@ fn save_config(path: &PathBuf, config: &McpJsonConfig) -> Result<()> {
     std::fs::write(path, json).map_err(AppError::Io)
 }
 
+async fn run_blocking_config_op<T, F>(label: &'static str, op: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(op).await.map_err(|error| {
+        AppError::Io(std::io::Error::other(format!(
+            "{label} blocking task failed: {error}"
+        )))
+    })?
+}
+
 // ── HTTP client helper ────────────────────────────────────────────────────────
 
 fn build_http_client() -> Result<reqwest::Client> {
@@ -687,9 +699,18 @@ pub async fn install(
 
     // 4. Write to .mcp.json.
     let config_path = resolve_config_path(scope);
-    let mut config = load_config(&config_path)?;
+    let mut config = run_blocking_config_op("mcp install load_config", {
+        let config_path = config_path.clone();
+        move || load_config(&config_path)
+    })
+    .await?;
     config.mcp_servers.insert(local_name.clone(), config_entry);
-    save_config(&config_path, &config)?;
+    run_blocking_config_op("mcp install save_config", {
+        let config_path = config_path.clone();
+        let config = config.clone();
+        move || save_config(&config_path, &config)
+    })
+    .await?;
 
     tracing::info!(
         "Installed MCP server '{}' as '{}' in {}",
@@ -996,20 +1017,41 @@ pub async fn handle(args: &serde_json::Value) -> Result<McpManagerOutput> {
             let name = args.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
                 AppError::Io(std::io::Error::other("enable requires 'name' parameter"))
             })?;
-            enable(name, scope)
+            run_blocking_config_op("mcp enable", {
+                let name = name.to_string();
+                let scope = scope.to_string();
+                move || enable(&name, &scope)
+            })
+            .await
         }
         "disable" => {
             let name = args.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
                 AppError::Io(std::io::Error::other("disable requires 'name' parameter"))
             })?;
-            disable(name, scope)
+            run_blocking_config_op("mcp disable", {
+                let name = name.to_string();
+                let scope = scope.to_string();
+                move || disable(&name, &scope)
+            })
+            .await
         }
-        "list" => list(scope),
+        "list" => {
+            run_blocking_config_op("mcp list", {
+                let scope = scope.to_string();
+                move || list(&scope)
+            })
+            .await
+        }
         "remove" => {
             let name = args.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
                 AppError::Io(std::io::Error::other("remove requires 'name' parameter"))
             })?;
-            remove(name, scope)
+            run_blocking_config_op("mcp remove", {
+                let name = name.to_string();
+                let scope = scope.to_string();
+                move || remove(&name, &scope)
+            })
+            .await
         }
         unknown => Ok(McpManagerOutput::err(
             unknown,

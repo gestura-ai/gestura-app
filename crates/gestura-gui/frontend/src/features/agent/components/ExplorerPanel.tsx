@@ -187,7 +187,6 @@ function fileManagerLabel(): string {
 
 export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({
   sessionId,
-  workspaceRoot: _workspaceRoot,
   onOpenFile,
   onWorkspaceChanged,
   onShowToast,

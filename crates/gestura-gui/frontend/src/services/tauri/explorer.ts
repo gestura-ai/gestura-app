@@ -34,6 +34,19 @@ export const explorerListDir = async (
 };
 
 /**
+ * Opens the current session workspace root in the system file manager.
+ *
+ * IPC contract: `explorer_open_root_in_file_manager` expects `{ session_id }`.
+ */
+export const explorerOpenRootInFileManager = async (
+  sessionId: string
+): Promise<void> => {
+  return invokeTauri<void>('explorer_open_root_in_file_manager', {
+    session_id: sessionId,
+  });
+};
+
+/**
  * Returns git status for all changed paths in the workspace.
  *
  * IPC contract: `explorer_git_status` expects `{ session_id }`.
