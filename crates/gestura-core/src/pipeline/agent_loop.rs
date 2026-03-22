@@ -4511,7 +4511,34 @@ impl AgentPipeline {
         Self::without_tool_schemas(schemas, &disabled_tools)
     }
 
-    fn should_suspend_task_tool(_tool_calls: &[ToolCallRecord]) -> bool {
+    fn should_suspend_task_tool(tool_calls: &[ToolCallRecord]) -> bool {
+        const TASK_BOOKKEEPING_SUSPENSION_THRESHOLD: usize = 2;
+
+        let mut malformed_attempts = 0usize;
+        for tool_call in tool_calls.iter().rev() {
+            if tool_call.name == "task" && matches!(tool_call.result, ToolResult::Success(_)) {
+                break;
+            }
+
+            if tool_call.name == "task"
+                && matches!(
+                    &tool_call.result,
+                    ToolResult::Skipped(message) if message.contains("Loop breaker:")
+                )
+            {
+                return true;
+            }
+
+            if Self::has_missing_task_update_status_issue(tool_call)
+                || Self::has_missing_task_create_name_issue(tool_call)
+            {
+                malformed_attempts += 1;
+                if malformed_attempts >= TASK_BOOKKEEPING_SUSPENSION_THRESHOLD {
+                    return true;
+                }
+            }
+        }
+
         false
     }
 
@@ -7389,7 +7416,7 @@ mod tests {
     }
 
     #[test]
-    fn task_tool_is_not_suspended_after_task_loop_breaker_skip() {
+    fn task_tool_is_suspended_after_task_loop_breaker_skip() {
         let tool_calls = vec![ToolCallRecord {
             id: "1".to_string(),
             name: "task".to_string(),
@@ -7404,11 +7431,11 @@ mod tests {
             duration_ms: 1,
         }];
 
-        assert!(!AgentPipeline::should_suspend_task_tool(&tool_calls));
+        assert!(AgentPipeline::should_suspend_task_tool(&tool_calls));
     }
 
     #[test]
-    fn task_tool_is_not_suspended_after_two_consecutive_malformed_task_errors() {
+    fn task_tool_is_suspended_after_two_consecutive_malformed_task_errors() {
         let tool_calls = vec![
             ToolCallRecord {
                 id: "1".to_string(),
@@ -7436,7 +7463,7 @@ mod tests {
             },
         ];
 
-        assert!(!AgentPipeline::should_suspend_task_tool(&tool_calls));
+        assert!(AgentPipeline::should_suspend_task_tool(&tool_calls));
     }
 
     #[test]

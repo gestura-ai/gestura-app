@@ -386,15 +386,6 @@ impl AgentPipeline {
         (!operation.is_empty()).then_some(operation)
     }
 
-    fn infer_missing_task_status(status: &crate::TaskStatus) -> Option<crate::TaskStatus> {
-        match status {
-            crate::TaskStatus::NotStarted => Some(crate::TaskStatus::InProgress),
-            crate::TaskStatus::InProgress => Some(crate::TaskStatus::InProgress),
-            crate::TaskStatus::Blocked => Some(crate::TaskStatus::InProgress),
-            crate::TaskStatus::Completed | crate::TaskStatus::Cancelled => None,
-        }
-    }
-
     fn workspace_path_suffix_components(path: &Path) -> Option<Vec<String>> {
         let mut components = Vec::new();
         for component in path.components() {
@@ -1001,7 +992,7 @@ impl AgentPipeline {
         )
     }
 
-    fn has_missing_task_update_status_issue(tool_call: &ToolCallRecord) -> bool {
+    pub(super) fn has_missing_task_update_status_issue(tool_call: &ToolCallRecord) -> bool {
         if tool_call.name != "task" {
             return false;
         }
@@ -1010,17 +1001,14 @@ impl AgentPipeline {
             ToolResult::Error(message) => {
                 message.contains("Missing required field 'status' for update_status operation")
             }
-            ToolResult::Skipped(message) => {
-                message.contains("Skipped malformed `task.update_status` without explicit `status`")
-            }
-            ToolResult::Success(message) => {
-                message.contains("Recovered omitted `status`")
-                    || message.contains("omitted `status` caused no change")
-            }
+            ToolResult::Skipped(message) => message.contains(
+                "Loop breaker: skipped a repeated malformed `task.update_status` call without explicit `status`",
+            ),
+            ToolResult::Success(_) => false,
         }
     }
 
-    fn has_missing_task_create_name_issue(tool_call: &ToolCallRecord) -> bool {
+    pub(super) fn has_missing_task_create_name_issue(tool_call: &ToolCallRecord) -> bool {
         if tool_call.name != "task" {
             return false;
         }
@@ -1331,7 +1319,6 @@ impl AgentPipeline {
         )
     }
 
-    #[cfg(test)]
     fn format_missing_task_update_status_error(args: &serde_json::Value) -> String {
         let task_id = args
             .get("task_id")
@@ -1357,7 +1344,7 @@ impl AgentPipeline {
         .to_string();
 
         format!(
-            "Missing required field 'status' for update_status operation. `update_status` requires both `task_id` and `status`. Provided fields: {provided_fields}. Retry with {example} using one of: `notstarted`, `inprogress`, `completed`, or `cancelled`. Do not omit `status` to ask the runtime to infer or preserve the current state; if no status changed, skip the task update and continue the real work."
+            "Missing required field 'status' for update_status operation. `update_status` requires both `task_id` and `status`. Provided fields: {provided_fields}. Retry with {example} using one of: `notstarted`, `blocked`, `inprogress`, `completed`, or `cancelled`. Do not omit `status` to ask the runtime to infer or preserve the current state; if no status changed, skip the task update and continue the real work."
         )
     }
 
@@ -4446,69 +4433,9 @@ impl AgentPipeline {
                                     )),
                                 }
                             }
-                            None => {
-                                let session_id_for_get = session_id.to_string();
-                                let task_id_owned = task_id.to_string();
-                                match Self::run_blocking_tool_op("task.get", move || {
-                                    manager
-                                        .get_task(&session_id_for_get, &task_id_owned)
-                                        .map_err(|error| error.to_string())
-                                })
-                                .await
-                                {
-                                    Ok(Some(task)) => {
-                                        match Self::infer_missing_task_status(&task.status) {
-                                            Some(inferred_status)
-                                                if inferred_status == task.status =>
-                                            {
-                                                ToolResult::Skipped(format!(
-                                                    "Skipped malformed `task.update_status` without explicit `status` for task {} because it is already {:?}. The runtime preserved the current status, but this bookkeeping no-op should not be retried without an explicit `status`.",
-                                                    task_id, task.status
-                                                ))
-                                            }
-                                            Some(inferred_status) => {
-                                                let session_id_for_update = session_id.to_string();
-                                                let task_id_for_update = task_id.to_string();
-                                                match Self::run_blocking_tool_op(
-                                                    "task.update_status",
-                                                    move || {
-                                                        manager
-                                                            .update_task_status(
-                                                                &session_id_for_update,
-                                                                &task_id_for_update,
-                                                                inferred_status,
-                                                            )
-                                                            .map_err(|error| error.to_string())
-                                                    },
-                                                )
-                                                .await
-                                                {
-                                                    Ok(_) => ToolResult::Success(format!(
-                                                        "Recovered omitted `status` on task {} by promoting it from {:?} to {:?}. Future `update_status` calls should include explicit `status`.",
-                                                        task_id, task.status, inferred_status
-                                                    )),
-                                                    Err(e) => ToolResult::Error(format!(
-                                                        "Failed to recover missing task status for {}: {}",
-                                                        task_id, e
-                                                    )),
-                                                }
-                                            }
-                                            None => ToolResult::Skipped(format!(
-                                                "Skipped malformed `task.update_status` without explicit `status` for task {} because its current status is {:?}. Retry with an explicit `status` so the runtime does not guess the wrong transition.",
-                                                task_id, task.status
-                                            )),
-                                        }
-                                    }
-                                    Ok(None) => ToolResult::Error(format!(
-                                        "Task {} not found for update_status operation",
-                                        task_id
-                                    )),
-                                    Err(e) => ToolResult::Error(format!(
-                                        "Failed to inspect current task status for {}: {}",
-                                        task_id, e
-                                    )),
-                                }
-                            }
+                            None => ToolResult::Error(
+                                Self::format_missing_task_update_status_error(&args),
+                            ),
                         }
                     }
                     "update" => {
@@ -6316,7 +6243,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_status_without_status_recovers_not_started_task_to_in_progress() {
+    async fn update_status_without_status_returns_actionable_error_for_not_started_task() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("tool-dispatch-test-{}", uuid::Uuid::new_v4());
         let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
@@ -6339,18 +6266,18 @@ mod tests {
             .await;
 
         let output = match result {
-            crate::pipeline::ToolResult::Success(output) => output,
-            other => panic!("expected success, got {other:?}"),
+            crate::pipeline::ToolResult::Error(output) => output,
+            other => panic!("expected error, got {other:?}"),
         };
 
-        assert!(output.contains("Recovered omitted `status`"));
-        assert!(output.contains("NotStarted to InProgress"));
+        assert!(output.contains("Missing required field 'status' for update_status operation"));
+        assert!(output.contains("`update_status` requires both `task_id` and `status`"));
 
         let task_after = manager
             .get_task(&session_id, &task.id)
             .expect("get task")
             .expect("task exists");
-        assert_eq!(task_after.status, crate::TaskStatus::InProgress);
+        assert_eq!(task_after.status, crate::TaskStatus::NotStarted);
     }
 
     #[tokio::test]
@@ -6436,7 +6363,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_status_without_status_skips_in_progress_leaf_task_noop() {
+    async fn update_status_without_status_returns_actionable_error_for_in_progress_leaf_task() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("tool-dispatch-autocomplete-test-{}", uuid::Uuid::new_v4());
         let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
@@ -6462,14 +6389,12 @@ mod tests {
             .await;
 
         let output = match result {
-            crate::pipeline::ToolResult::Skipped(output) => output,
-            other => panic!("expected skipped result, got {other:?}"),
+            crate::pipeline::ToolResult::Error(output) => output,
+            other => panic!("expected error, got {other:?}"),
         };
 
-        assert!(
-            output.contains("Skipped malformed `task.update_status` without explicit `status`")
-        );
-        assert!(output.contains("already InProgress"));
+        assert!(output.contains("Missing required field 'status' for update_status operation"));
+        assert!(output.contains("Do not omit `status`"));
 
         let task_after = manager
             .get_task(&session_id, &task.id)
@@ -6479,7 +6404,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_status_without_status_skips_in_progress_parent_task_with_open_subtasks() {
+    async fn update_status_without_status_returns_actionable_error_for_in_progress_parent_task() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("tool-dispatch-parent-skip-test-{}", uuid::Uuid::new_v4());
         let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
@@ -6511,14 +6436,12 @@ mod tests {
             .await;
 
         let output = match result {
-            crate::pipeline::ToolResult::Skipped(output) => output,
-            other => panic!("expected skipped result, got {other:?}"),
+            crate::pipeline::ToolResult::Error(output) => output,
+            other => panic!("expected error, got {other:?}"),
         };
 
-        assert!(
-            output.contains("Skipped malformed `task.update_status` without explicit `status`")
-        );
-        assert!(output.contains("already InProgress"));
+        assert!(output.contains("Missing required field 'status' for update_status operation"));
+        assert!(output.contains("Retry with"));
 
         let parent_after = manager
             .get_task(&session_id, &parent.id)
@@ -6528,7 +6451,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_status_without_status_does_not_change_completed_task() {
+    async fn update_status_without_status_returns_actionable_error_for_completed_task() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("tool-dispatch-completed-noop-test-{}", uuid::Uuid::new_v4());
         let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
@@ -6554,14 +6477,12 @@ mod tests {
             .await;
 
         let output = match result {
-            crate::pipeline::ToolResult::Skipped(output) => output,
-            other => panic!("expected skipped result, got {other:?}"),
+            crate::pipeline::ToolResult::Error(output) => output,
+            other => panic!("expected error, got {other:?}"),
         };
 
-        assert!(
-            output.contains("Skipped malformed `task.update_status` without explicit `status`")
-        );
-        assert!(output.contains("current status is Completed"));
+        assert!(output.contains("Missing required field 'status' for update_status operation"));
+        assert!(output.contains("skip the task update and continue the real work"));
 
         let task_after = manager
             .get_task(&session_id, &task.id)

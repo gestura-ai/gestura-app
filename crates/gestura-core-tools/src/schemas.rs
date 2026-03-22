@@ -614,8 +614,8 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                     },
                     "status": {
                         "type": "string",
-                        "enum": ["notstarted", "inprogress", "completed", "cancelled"],
-                        "description": "Task status. REQUIRED for update_status operation. Use plain JSON text only: 'notstarted', 'inprogress', 'completed', or 'cancelled'. Do not wrap status in XML/parameter tags. Do not omit this field to ask the runtime to infer or preserve the current state; if no status changed, skip the task update and continue the real work."
+                        "enum": ["notstarted", "blocked", "inprogress", "completed", "cancelled"],
+                        "description": "Task status. REQUIRED for update_status operation. Use plain JSON text only: 'notstarted', 'blocked', 'inprogress', 'completed', or 'cancelled'. Do not wrap status in XML/parameter tags. Do not omit this field to ask the runtime to infer or preserve the current state; if no status changed, skip the task update and continue the real work."
                     },
                     "parent_id": {
                         "type": "string",
@@ -627,14 +627,16 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                         "properties": {
                             "operation": { "enum": ["create"] }
                         },
-                        "required": ["operation", "name"]
+                        "required": ["operation", "name"],
+                        "additionalProperties": false
                     },
                     {
                         "description": "Update a task's status. REQUIRED fields: `task_id` and `status`. Correct example: {\"operation\":\"update_status\",\"task_id\":\"abc123\",\"status\":\"inprogress\"}. Invalid: {\"operation\":\"update_status\",\"task_id\":\"abc123\"}.",
                         "properties": {
                             "operation": { "enum": ["update_status"] }
                         },
-                        "required": ["operation", "task_id", "status"]
+                        "required": ["operation", "task_id", "status"],
+                        "additionalProperties": false
                     },
                     {
                         "description": "Update a task's name and/or description. REQUIRED fields: `task_id` plus at least one of `name` or `description`. Correct example: {\"operation\":\"update\",\"task_id\":\"abc123\",\"name\":\"Refine onboarding\"}. Invalid: {\"operation\":\"update\",\"task_id\":\"abc123\"}.",
@@ -645,26 +647,30 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                         "anyOf": [
                             { "required": ["name"] },
                             { "required": ["description"] }
-                        ]
+                        ],
+                        "additionalProperties": false
                     },
                     {
                         "description": "Delete a task by `task_id`.",
                         "properties": {
                             "operation": { "enum": ["delete"] }
                         },
-                        "required": ["operation", "task_id"]
+                        "required": ["operation", "task_id"],
+                        "additionalProperties": false
                     },
                     {
                         "properties": {
                             "operation": { "enum": ["list"] }
                         },
-                        "required": ["operation"]
+                        "required": ["operation"],
+                        "additionalProperties": false
                     },
                     {
                         "properties": {
                             "operation": { "enum": ["get_hierarchy"] }
                         },
-                        "required": ["operation"]
+                        "required": ["operation"],
+                        "additionalProperties": false
                     }
                 ],
                 "examples": [
@@ -677,7 +683,7 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                     {"operation": "list"}
                 ],
                 "required": ["operation"],
-                "additionalProperties": true
+                "additionalProperties": false
             }),
         ),
         "screenshot" => (
@@ -1032,8 +1038,9 @@ mod tests {
     fn task_schema_requires_name_for_create_operation() {
         let task = find_tool("task").unwrap();
         let schemas = build_provider_tool_schemas(&[task]);
+        let parameters = &schemas.openai[0]["function"]["parameters"];
 
-        let branches = schemas.openai[0]["function"]["parameters"]["oneOf"]
+        let branches = parameters["oneOf"]
             .as_array()
             .expect("task schema should define oneOf branches");
 
@@ -1046,6 +1053,11 @@ mod tests {
             .as_array()
             .expect("create branch should have required fields");
 
+        assert_eq!(parameters["additionalProperties"], serde_json::json!(false));
+        assert_eq!(
+            create_branch["additionalProperties"],
+            serde_json::json!(false)
+        );
         assert!(required.iter().any(|value| value == "name"));
     }
 
@@ -1074,6 +1086,12 @@ mod tests {
         assert!(status_description.contains("Do not omit this field"));
         assert!(status_description.contains("skip the task update and continue the real work"));
 
+        let status_enum =
+            schemas.openai[0]["function"]["parameters"]["properties"]["status"]["enum"]
+                .as_array()
+                .expect("task status enum should exist");
+        assert!(status_enum.iter().any(|value| value == "blocked"));
+
         let update_status_branch = schemas.openai[0]["function"]["parameters"]["oneOf"]
             .as_array()
             .expect("task schema should define oneOf branches")
@@ -1085,6 +1103,10 @@ mod tests {
             .expect("update_status branch description should exist");
         assert!(branch_description.contains("Correct example"));
         assert!(branch_description.contains("Invalid"));
+        assert_eq!(
+            update_status_branch["additionalProperties"],
+            serde_json::json!(false)
+        );
 
         let examples = schemas.openai[0]["function"]["parameters"]["examples"]
             .as_array()
