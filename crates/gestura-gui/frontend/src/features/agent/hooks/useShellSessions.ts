@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 
+import { getSessionActivityLog } from '../../../services/tauri/agent';
 import type {
   ShellSessionRecord,
   ShellSessionState,
@@ -95,6 +96,119 @@ function mapCommandStateToSessionState(
   }
 }
 
+function applyShellSessionLifecyclePayload(
+  current: ShellSessionRecord[],
+  payload: Record<string, unknown>,
+  activityAt: number,
+): ShellSessionRecord[] {
+  const shellSessionId = String(payload['shell_session_id'] ?? '');
+  if (!shellSessionId) return current;
+
+  return upsertShellSession(current, shellSessionId, (matched) => ({
+    kind: 'shell-session',
+    id: matched?.id ?? shellSessionId,
+    shellSessionId,
+    cwd: payload['cwd'] != null ? String(payload['cwd']) : (matched?.cwd ?? null),
+    state: payload['state'] != null
+      ? normalizeShellSessionState(payload['state'])
+      : (matched?.state ?? 'Starting'),
+    interactive: payload['interactive'] != null
+      ? Boolean(payload['interactive'])
+      : (matched?.interactive ?? false),
+    userManaged: payload['user_managed'] != null
+      ? Boolean(payload['user_managed'])
+      : (matched?.userManaged ?? false),
+    activeProcessId: payload['active_process_id'] != null
+      ? String(payload['active_process_id'])
+      : (matched?.activeProcessId ?? null),
+    activeCommand: payload['active_command'] != null
+      ? String(payload['active_command'])
+      : (matched?.activeCommand ?? null),
+    lastExitCode: matched?.lastExitCode ?? null,
+    durationMs: matched?.durationMs ?? null,
+    startedAt: matched?.startedAt ?? (payload['state'] != null && ['Busy', 'Starting'].includes(normalizeShellSessionState(payload['state']))
+      ? activityAt
+      : null),
+    lastActivityAt: activityAt,
+    lines: matched?.lines ?? [],
+    collapsed: matched?.collapsed ?? false,
+    availableForReuse: payload['available_for_reuse'] != null
+      ? Boolean(payload['available_for_reuse'])
+      : (matched?.availableForReuse ?? false),
+  }));
+}
+
+function applyShellLifecyclePayload(
+  current: ShellSessionRecord[],
+  payload: Record<string, unknown>,
+  activityAt: number,
+): ShellSessionRecord[] {
+  const shellSessionId = String(payload['shell_session_id'] ?? '');
+  if (!shellSessionId) return current;
+  const commandState = normalizeCommandState(payload['state']);
+
+  return upsertShellSession(current, shellSessionId, (matched) => ({
+    kind: 'shell-session',
+    id: matched?.id ?? shellSessionId,
+    shellSessionId,
+    cwd: payload['cwd'] != null ? String(payload['cwd']) : (matched?.cwd ?? null),
+    state: mapCommandStateToSessionState(commandState, matched),
+    interactive: matched?.interactive ?? true,
+    userManaged: matched?.userManaged ?? false,
+    activeProcessId: commandState === 'Completed' || commandState === 'Failed' || commandState === 'Stopped'
+      ? null
+      : String(payload['process_id'] ?? matched?.activeProcessId ?? ''),
+    activeCommand: commandState === 'Completed' || commandState === 'Failed' || commandState === 'Stopped'
+      ? null
+      : String(payload['command'] ?? matched?.activeCommand ?? ''),
+    lastExitCode: payload['exit_code'] != null ? Number(payload['exit_code']) : (matched?.lastExitCode ?? null),
+    durationMs: payload['duration_ms'] != null ? Number(payload['duration_ms']) : (matched?.durationMs ?? null),
+    startedAt: commandState === 'Started' || commandState === 'Running' || commandState === 'Resumed'
+      ? matched?.startedAt ?? activityAt
+      : matched?.startedAt,
+    lastActivityAt: activityAt,
+    lines: matched?.lines ?? [],
+    collapsed: matched?.collapsed ?? false,
+    availableForReuse: commandState === 'Completed' || commandState === 'Failed'
+      ? true
+      : commandState === 'Stopped'
+        ? false
+        : (matched?.availableForReuse ?? false),
+  }));
+}
+
+function applyShellOutputPayload(
+  current: ShellSessionRecord[],
+  payload: Record<string, unknown>,
+  activityAt: number,
+): ShellSessionRecord[] {
+  const shellSessionId = String(payload['shell_session_id'] ?? '');
+  if (!shellSessionId) return current;
+
+  return upsertShellSession(current, shellSessionId, (matched) => ({
+    kind: 'shell-session',
+    id: matched?.id ?? shellSessionId,
+    shellSessionId,
+    cwd: matched?.cwd ?? null,
+    state: matched?.state ?? 'Idle',
+    interactive: matched?.interactive ?? true,
+    userManaged: matched?.userManaged ?? false,
+    activeProcessId: matched?.activeProcessId ?? null,
+    activeCommand: matched?.activeCommand ?? null,
+    lastExitCode: matched?.lastExitCode ?? null,
+    durationMs: matched?.durationMs ?? null,
+    startedAt: matched?.startedAt ?? activityAt,
+    lastActivityAt: activityAt,
+    collapsed: matched?.collapsed ?? false,
+    availableForReuse: matched?.availableForReuse ?? false,
+    lines: appendShellLine(
+      matched,
+      (payload['stream'] as 'Stdout' | 'Stderr') ?? 'Stdout',
+      String(payload['data'] ?? ''),
+    ),
+  }));
+}
+
 /**
  * Tracks long-lived shell sessions for the active agent session independently
  * from chat message rendering. The Shell Manager renders session-level state,
@@ -137,123 +251,56 @@ export function useShellSessions(sessionId: string): ShellSessionRecord[] {
     }
 
     async function setup(): Promise<void> {
+      const activityLog = await getSessionActivityLog(sessionId).catch(() => []);
+      if (!cancelled && activityLog.length > 0) {
+        const restored = activityLog.reduce<ShellSessionRecord[]>((current, entry) => {
+          const { incomingSessionId, value } = unpackPayload<Record<string, unknown>>(entry.payload);
+          if (sessionId && incomingSessionId && incomingSessionId !== sessionId) {
+            return current;
+          }
+          if (!value || typeof value !== 'object') {
+            return current;
+          }
+
+          const timestamp = Date.parse(entry.timestamp);
+          const activityAt = Number.isFinite(timestamp) ? timestamp : markActivity();
+
+          switch (entry.event_type) {
+            case 'agent-stream-shell-session-lifecycle':
+              return applyShellSessionLifecyclePayload(current, value, activityAt);
+            case 'agent-stream-shell-lifecycle':
+              return applyShellLifecyclePayload(current, value, activityAt);
+            case 'agent-stream-shell-output':
+              return applyShellOutputPayload(current, value, activityAt);
+            default:
+              return current;
+          }
+        }, []);
+        setShells(restored);
+      }
+
       await safeListen('agent-stream-shell-session-lifecycle', (event) => {
         const payload = accept<Record<string, unknown>>(event.payload);
         if (!payload) return;
-
-        const shellSessionId = String(payload['shell_session_id'] ?? '');
-        if (!shellSessionId) return;
         const activityAt = markActivity();
 
-        setShells((current) => {
-          return upsertShellSession(current, shellSessionId, (matched) => ({
-            kind: 'shell-session',
-            id: matched?.id ?? shellSessionId,
-            shellSessionId,
-            cwd: payload['cwd'] != null ? String(payload['cwd']) : (matched?.cwd ?? null),
-            state: payload['state'] != null
-              ? normalizeShellSessionState(payload['state'])
-              : (matched?.state ?? 'Starting'),
-            interactive: payload['interactive'] != null
-              ? Boolean(payload['interactive'])
-              : (matched?.interactive ?? false),
-            userManaged: payload['user_managed'] != null
-              ? Boolean(payload['user_managed'])
-              : (matched?.userManaged ?? false),
-            activeProcessId: payload['active_process_id'] != null
-              ? String(payload['active_process_id'])
-              : (matched?.activeProcessId ?? null),
-            activeCommand: payload['active_command'] != null
-              ? String(payload['active_command'])
-              : (matched?.activeCommand ?? null),
-            lastExitCode: matched?.lastExitCode ?? null,
-            durationMs: matched?.durationMs ?? null,
-            startedAt: matched?.startedAt ?? (payload['state'] != null && ['Busy', 'Starting'].includes(normalizeShellSessionState(payload['state']))
-              ? activityAt
-              : null),
-            lastActivityAt: activityAt,
-            lines: matched?.lines ?? [],
-            collapsed: matched?.collapsed ?? false,
-            availableForReuse: payload['available_for_reuse'] != null
-              ? Boolean(payload['available_for_reuse'])
-              : (matched?.availableForReuse ?? false),
-          }));
-        });
+        setShells((current) => applyShellSessionLifecyclePayload(current, payload, activityAt));
       });
 
       await safeListen('agent-stream-shell-lifecycle', (event) => {
         const payload = accept<Record<string, unknown>>(event.payload);
         if (!payload) return;
-
-        const shellSessionId = String(payload['shell_session_id'] ?? '');
-        if (!shellSessionId) return;
-        const commandState = normalizeCommandState(payload['state']);
         const activityAt = markActivity();
 
-        setShells((current) => {
-          return upsertShellSession(current, shellSessionId, (matched) => ({
-            kind: 'shell-session',
-            id: matched?.id ?? shellSessionId,
-            shellSessionId,
-            cwd: payload['cwd'] != null ? String(payload['cwd']) : (matched?.cwd ?? null),
-            state: mapCommandStateToSessionState(commandState, matched),
-            interactive: matched?.interactive ?? true,
-            userManaged: matched?.userManaged ?? false,
-            activeProcessId: commandState === 'Completed' || commandState === 'Failed' || commandState === 'Stopped'
-              ? null
-              : String(payload['process_id'] ?? matched?.activeProcessId ?? ''),
-            activeCommand: commandState === 'Completed' || commandState === 'Failed' || commandState === 'Stopped'
-              ? null
-              : String(payload['command'] ?? matched?.activeCommand ?? ''),
-            lastExitCode: payload['exit_code'] != null ? Number(payload['exit_code']) : (matched?.lastExitCode ?? null),
-            durationMs: payload['duration_ms'] != null ? Number(payload['duration_ms']) : (matched?.durationMs ?? null),
-            startedAt: commandState === 'Started' || commandState === 'Running' || commandState === 'Resumed'
-              ? matched?.startedAt ?? activityAt
-              : matched?.startedAt,
-            lastActivityAt: activityAt,
-            lines: matched?.lines ?? [],
-            collapsed: matched?.collapsed ?? false,
-            availableForReuse: commandState === 'Completed' || commandState === 'Failed'
-              ? true
-              : commandState === 'Stopped'
-                ? false
-                : (matched?.availableForReuse ?? false),
-          }));
-        });
+        setShells((current) => applyShellLifecyclePayload(current, payload, activityAt));
       });
 
       await safeListen('agent-stream-shell-output', (event) => {
         const payload = accept<Record<string, unknown>>(event.payload);
         if (!payload) return;
-
-        const shellSessionId = String(payload['shell_session_id'] ?? '');
-        if (!shellSessionId) return;
         const activityAt = markActivity();
 
-        setShells((current) => {
-          return upsertShellSession(current, shellSessionId, (matched) => ({
-            kind: 'shell-session',
-            id: matched?.id ?? shellSessionId,
-            shellSessionId,
-            cwd: matched?.cwd ?? null,
-            state: matched?.state ?? 'Idle',
-            interactive: matched?.interactive ?? true,
-            userManaged: matched?.userManaged ?? false,
-            activeProcessId: matched?.activeProcessId ?? null,
-            activeCommand: matched?.activeCommand ?? null,
-            lastExitCode: matched?.lastExitCode ?? null,
-            durationMs: matched?.durationMs ?? null,
-            startedAt: matched?.startedAt ?? activityAt,
-            lastActivityAt: activityAt,
-            collapsed: matched?.collapsed ?? false,
-            availableForReuse: matched?.availableForReuse ?? false,
-            lines: appendShellLine(
-              matched,
-              (payload['stream'] as 'Stdout' | 'Stderr') ?? 'Stdout',
-              String(payload['data'] ?? ''),
-            ),
-          }));
-        });
+        setShells((current) => applyShellOutputPayload(current, payload, activityAt));
       });
     }
 

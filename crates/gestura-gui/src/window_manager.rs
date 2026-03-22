@@ -76,8 +76,8 @@ fn from_core_session(session: gestura_core::agent_sessions::AgentSession) -> Age
 /// This keeps the Tauri layer thin while preserving the existing public module paths
 /// (`crate::window_manager::ConversationMessage`, etc.) used by backend commands.
 pub use gestura_core::agent_sessions::{
-    ConversationMessage, MessageSource, SessionLlmConfig, SessionPermissionLevel, SessionState,
-    SessionToolCall, SessionToolSettings, SessionVoiceConfig,
+    ConversationMessage, MessageSource, SessionActivityEvent, SessionLlmConfig,
+    SessionPermissionLevel, SessionState, SessionToolCall, SessionToolSettings, SessionVoiceConfig,
 };
 
 /// Default session tool settings derived from the global app configuration.
@@ -709,6 +709,12 @@ impl WindowManager {
         sessions.get(session_id).map(|s| s.state.clone())
     }
 
+    /// Get the full session model for a session.
+    pub fn get_session(&self, session_id: &str) -> Option<AgentSession> {
+        let sessions = self.sessions.lock().unwrap();
+        sessions.get(session_id).cloned()
+    }
+
     /// Add a user message to a session (from text or voice)
     pub fn add_user_message(&self, session_id: &str, content: &str, source: MessageSource) {
         let mut sessions = self.sessions.lock().unwrap();
@@ -788,6 +794,21 @@ impl WindowManager {
         drop(sessions);
 
         self.save_sessions_to_disk();
+    }
+
+    /// Record a replay/export activity event for the session without forcing an immediate save.
+    pub fn record_session_activity(
+        &self,
+        session_id: &str,
+        event_type: &str,
+        payload: serde_json::Value,
+    ) {
+        let mut sessions = self.sessions.lock().unwrap();
+        if let Some(session) = sessions.get_mut(session_id) {
+            let payload = (!payload.is_null()).then_some(payload);
+            session.state.record_activity_event(event_type, payload);
+            session.last_active = chrono::Utc::now();
+        }
     }
 
     /// Update token count for a session
@@ -1363,6 +1384,18 @@ pub fn record_tool_call(session_id: &str, call: SessionToolCall) {
     if let Some(manager) = get_window_manager() {
         manager.record_tool_call(session_id, call);
     }
+}
+
+/// Record a replay/export activity event for a session without forcing an immediate save.
+pub fn record_session_activity(session_id: &str, event_type: &str, payload: serde_json::Value) {
+    if let Some(manager) = get_window_manager() {
+        manager.record_session_activity(session_id, event_type, payload);
+    }
+}
+
+/// Get the full session model for a session.
+pub fn get_session(session_id: &str) -> Option<AgentSession> {
+    get_window_manager().and_then(|manager| manager.get_session(session_id))
 }
 
 /// Update token count for a session

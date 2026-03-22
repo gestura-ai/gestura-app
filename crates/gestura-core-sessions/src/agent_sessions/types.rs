@@ -53,6 +53,38 @@ impl ConversationMessage {
     }
 }
 
+/// A durable session activity event captured for replay and export.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionActivityEvent {
+    /// Stable event discriminant (for example, `agent-stream-chunk`).
+    pub event_type: String,
+    /// Optional JSON payload captured at the time of emission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
+    /// Timestamp in UTC.
+    pub timestamp: DateTime<Utc>,
+}
+
+impl SessionActivityEvent {
+    /// Create a new activity event stamped with the current time.
+    pub fn new(event_type: impl Into<String>, payload: Option<serde_json::Value>) -> Self {
+        Self::with_timestamp(event_type, payload, Utc::now())
+    }
+
+    /// Create a new activity event with an explicit timestamp.
+    pub fn with_timestamp(
+        event_type: impl Into<String>,
+        payload: Option<serde_json::Value>,
+        timestamp: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            event_type: event_type.into(),
+            payload,
+            timestamp,
+        }
+    }
+}
+
 /// Tool call record for session history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionToolCall {
@@ -460,11 +492,11 @@ impl SessionWorkingMemory {
                 continue;
             }
 
-            if let Some(section) = active_section {
-                if Self::strip_list_prefix(trimmed).is_some() {
-                    self.store_assistant_memory_item(section, candidate);
-                    continue;
-                }
+            if let Some(section) = active_section
+                && Self::strip_list_prefix(trimmed).is_some()
+            {
+                self.store_assistant_memory_item(section, candidate);
+                continue;
             }
 
             active_section = None;
@@ -1046,6 +1078,9 @@ pub struct SessionState {
     /// Tool call history.
     #[serde(default)]
     pub tool_calls: Vec<SessionToolCall>,
+    /// Replayable session activity timeline used to restore rich UI state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activity_log: Vec<SessionActivityEvent>,
     /// Short-term working memory for this session.
     #[serde(default)]
     pub working_memory: SessionWorkingMemory,
@@ -1093,14 +1128,23 @@ impl SessionState {
 
     /// Add a user message.
     pub fn add_user_message(&mut self, content: &str, source: MessageSource) {
+        let timestamp = Utc::now();
         self.messages.push(ConversationMessage {
             role: "user".to_string(),
             content: content.to_string(),
             tool_call_id: None,
             thinking: None,
-            timestamp: Utc::now(),
+            timestamp,
             source,
         });
+        self.activity_log.push(SessionActivityEvent::with_timestamp(
+            "session-user-message",
+            Some(serde_json::json!({
+                "content": content,
+                "source": source,
+            })),
+            timestamp,
+        ));
         self.working_memory.remember_user_goal(content);
     }
 
@@ -1176,6 +1220,16 @@ impl SessionState {
     pub fn record_tool_call(&mut self, call: SessionToolCall) {
         self.working_memory.remember_tool_call(&call);
         self.tool_calls.push(call);
+    }
+
+    /// Append a replay/export activity event to the session timeline.
+    pub fn record_activity_event(
+        &mut self,
+        event_type: impl Into<String>,
+        payload: Option<serde_json::Value>,
+    ) {
+        self.activity_log
+            .push(SessionActivityEvent::new(event_type, payload));
     }
 
     /// Add a decision to session working memory.
@@ -1369,6 +1423,8 @@ mod tests {
         assert!(state.working_memory.summary.is_some());
         assert!(!state.working_memory.timeline.is_empty());
         assert!(!state.working_memory.resources.is_empty());
+        assert_eq!(state.activity_log.len(), 1);
+        assert_eq!(state.activity_log[0].event_type, "session-user-message");
         assert!(
             state
                 .working_memory
@@ -1551,5 +1607,26 @@ mod tests {
             restored.state.working_memory.blockers[0].summary,
             "Need orchestrator handoff summary"
         );
+    }
+
+    #[test]
+    fn activity_events_are_serialized_for_replay() {
+        let mut state = SessionState::default();
+        state.record_activity_event(
+            "agent-stream-tool-result",
+            Some(serde_json::json!({
+                "name": "file",
+                "success": true,
+            })),
+        );
+
+        let json = serde_json::to_value(&state).expect("session state serializes");
+        let activity_log = json["activity_log"]
+            .as_array()
+            .expect("activity_log is serialized as an array");
+
+        assert_eq!(activity_log.len(), 1);
+        assert_eq!(activity_log[0]["event_type"], "agent-stream-tool-result");
+        assert_eq!(activity_log[0]["payload"]["name"], "file");
     }
 }

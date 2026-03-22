@@ -2054,7 +2054,6 @@ html[data-theme="dark"] .shell-console {
   transition: right 0.3s ease;
   display: flex;
   flex-direction: column;
-  box-shadow: var(--shadow-md);
 }
 
 .session-panel.open {

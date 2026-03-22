@@ -2484,6 +2484,50 @@ fn cancel_key_for_window_label(window_label: &str) -> String {
     format!("window:{window_label}")
 }
 
+fn should_persist_session_activity_event(event: &str, payload: &serde_json::Value) -> bool {
+    match event {
+        "agent-stream-done"
+        | "agent-stream-paused"
+        | "agent-stream-cancelled"
+        | "agent-stream-error"
+        | "agent-stream-resumed" => true,
+        "agent-stream-shell-lifecycle" => payload
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .map(|state| {
+                matches!(
+                    state.to_ascii_lowercase().as_str(),
+                    "completed" | "failed" | "stopped"
+                )
+            })
+            .unwrap_or(false),
+        "agent-stream-shell-session-lifecycle" => payload
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .map(|state| {
+                matches!(
+                    state.to_ascii_lowercase().as_str(),
+                    "idle" | "stopped" | "failed"
+                )
+            })
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn capture_session_activity_event(
+    session_id: Option<&str>,
+    event: &str,
+    payload: &serde_json::Value,
+) {
+    if let Some(session_id) = session_id {
+        crate::window_manager::record_session_activity(session_id, event, payload.clone());
+        if should_persist_session_activity_event(event, payload) {
+            crate::window_manager::save_sessions();
+        }
+    }
+}
+
 /// Process a agent message with streaming response
 ///
 /// Emits `agent-stream-chunk` events with partial content and `agent-stream-done` when complete.
@@ -2587,6 +2631,7 @@ pub async fn process_agent_message_streaming(
     let emit = |event: &str, payload: serde_json::Value| {
         let payload =
             crate::agent_events::attach_session_id(payload, resolved_session_id.as_deref());
+        capture_session_activity_event(resolved_session_id.as_deref(), event, &payload);
         if let Err(err) = crate::agent_events::emit_agent_event_to_window(
             &app,
             &target_window_label,
@@ -3872,6 +3917,7 @@ pub async fn resume_agent_streaming(
     let emit = |event: &str, payload: serde_json::Value| {
         let payload =
             crate::agent_events::attach_session_id(payload, resolved_session_id.as_deref());
+        capture_session_activity_event(resolved_session_id.as_deref(), event, &payload);
         if let Err(err) = crate::agent_events::emit_agent_event_to_window(
             &app,
             &target_window_label,
@@ -5683,6 +5729,100 @@ pub fn get_session_history(
         .ok_or_else(|| format!("Session not found: {}", session_id))
 }
 
+/// Replay snapshot used to restore a rich session timeline in the GUI.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionReplaySnapshot {
+    /// Canonical conversation history for compatibility/fallback rendering.
+    pub history: Vec<crate::window_manager::ConversationMessage>,
+    /// Rich activity timeline captured while the session was running.
+    pub activity_log: Vec<crate::window_manager::SessionActivityEvent>,
+    /// Whether the session currently has resumable paused execution state.
+    pub has_paused_execution: bool,
+}
+
+/// Get the replay snapshot for a session.
+#[tauri::command(rename_all = "snake_case")]
+pub fn get_session_replay_snapshot(session_id: String) -> Result<SessionReplaySnapshot, String> {
+    crate::window_manager::get_session_state(&session_id)
+        .map(|state| SessionReplaySnapshot {
+            has_paused_execution: state.paused_execution.is_some(),
+            history: state.messages,
+            activity_log: state.activity_log,
+        })
+        .ok_or_else(|| format!("Session not found: {}", session_id))
+}
+
+/// Get only the captured activity log for a session.
+#[tauri::command(rename_all = "snake_case")]
+pub fn get_session_activity_log(
+    session_id: String,
+) -> Result<Vec<crate::window_manager::SessionActivityEvent>, String> {
+    crate::window_manager::get_session_state(&session_id)
+        .map(|state| state.activity_log)
+        .ok_or_else(|| format!("Session not found: {}", session_id))
+}
+
+/// Stable export envelope for saved session JSON snapshots.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionExportPayload {
+    /// Export schema version for forward-compatible imports/tooling.
+    pub schema_version: u32,
+    /// Timestamp when the export was written.
+    pub exported_at: chrono::DateTime<chrono::Utc>,
+    /// Full session payload including messages, activity log, and settings.
+    pub session: crate::window_manager::AgentSession,
+}
+
+/// Export a session as a pretty-printed JSON file chosen by the user.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn export_session_json(
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    use tokio::sync::oneshot;
+
+    let session = crate::window_manager::get_session(&session_id)
+        .ok_or_else(|| format!("Session not found: {}", session_id))?;
+    let default_name = format!("session-{}.json", session.id);
+    let export_payload = SessionExportPayload {
+        schema_version: 1,
+        exported_at: chrono::Utc::now(),
+        session,
+    };
+    let json = serde_json::to_string_pretty(&export_payload)
+        .map_err(|error| format!("Failed to serialize session export: {}", error))?;
+
+    let (tx, rx) = oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Export Session JSON")
+        .set_file_name(&default_name)
+        .add_filter("JSON", &["json"])
+        .save_file(move |result| {
+            let _ = tx.send(result);
+        });
+
+    match rx.await {
+        Ok(Some(path)) => {
+            let mut path_buf = std::path::PathBuf::from(path.to_string());
+            if path_buf.extension().is_none() {
+                path_buf.set_extension("json");
+            }
+            tokio::fs::write(&path_buf, json).await.map_err(|error| {
+                format!(
+                    "Failed to write export file {}: {}",
+                    path_buf.display(),
+                    error
+                )
+            })?;
+            Ok(Some(path_buf.display().to_string()))
+        }
+        Ok(None) => Ok(None),
+        Err(_) => Err("Failed to receive save dialog result".to_string()),
+    }
+}
+
 /// Return whether the session has an interrupted response that can be resumed.
 ///
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
@@ -6559,6 +6699,7 @@ fn spawn_shell_session_event_bridge(
         let emit = |event: &str, payload: serde_json::Value| {
             let payload =
                 crate::agent_events::attach_session_id(payload, resolved_session_id.as_deref());
+            capture_session_activity_event(resolved_session_id.as_deref(), event, &payload);
             if let Err(err) = crate::agent_events::emit_agent_event_to_window(
                 &app,
                 &target_window_label,

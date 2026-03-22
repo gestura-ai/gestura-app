@@ -4,6 +4,7 @@ interface MenuPanelProps {
   isOpen: boolean;
   onClose: () => void;
   onNavigate: (panel: PanelName) => void;
+  onExportSession: () => void;
 }
 
 /**
@@ -11,10 +12,15 @@ interface MenuPanelProps {
  * Slides in from the right when the settings gear is clicked.
  * Each menu item navigates to the corresponding settings panel.
  */
-export function MenuPanel({ isOpen, onClose, onNavigate }: MenuPanelProps) {
+export function MenuPanel({ isOpen, onClose, onNavigate, onExportSession }: MenuPanelProps) {
   function handleItem(panel: PanelName) {
     onClose();
     onNavigate(panel);
+  }
+
+  function handleExport() {
+    onClose();
+    onExportSession();
   }
 
   return (
@@ -85,6 +91,14 @@ export function MenuPanel({ isOpen, onClose, onNavigate }: MenuPanelProps) {
           >
             <span className="icon-checklist" />
             <span className="menu-item-label">Tasks</span>
+          </div>
+
+          <div
+            className="menu-item"
+            onClick={handleExport}
+          >
+            <span className="icon-download-01" />
+            <span className="menu-item-label">Export Session JSON</span>
           </div>
         </div>
       </div>

@@ -51,6 +51,18 @@ export interface HistoryMessage {
   timestamp?: string;
 }
 
+export interface SessionActivityEvent {
+  event_type: string;
+  payload?: unknown;
+  timestamp: string;
+}
+
+export interface SessionReplaySnapshot {
+  history: HistoryMessage[];
+  activity_log: SessionActivityEvent[];
+  has_paused_execution: boolean;
+}
+
 export interface MemoryConsoleSessionSummary {
   session_id: string;
   title: string;
@@ -230,8 +242,21 @@ export interface UpdateMemoryEntryRequest {
 export const getSessionHistory = (sessionId: string): Promise<HistoryMessage[]> =>
   invokeTauri('get_session_history', { session_id: sessionId });
 
+export const getSessionReplaySnapshot = (
+  sessionId: string,
+): Promise<SessionReplaySnapshot> =>
+  invokeTauri('get_session_replay_snapshot', { session_id: sessionId });
+
+export const getSessionActivityLog = (
+  sessionId: string,
+): Promise<SessionActivityEvent[]> =>
+  invokeTauri('get_session_activity_log', { session_id: sessionId });
+
 export const hasSessionPausedExecution = (sessionId: string): Promise<boolean> =>
   invokeTauri('has_session_paused_execution', { session_id: sessionId });
+
+export const exportSessionJson = (sessionId: string): Promise<string | null> =>
+  invokeTauri('export_session_json', { session_id: sessionId });
 
 export const getMemoryConsoleSessions = (limit = 12): Promise<MemoryConsoleSessionSummary[]> =>
   invokeTauri('get_memory_console_sessions', { limit });

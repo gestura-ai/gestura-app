@@ -11,8 +11,16 @@ describe('MenuPanel', () => {
   it('uses the tools icon and routes clicks to the tools panel', () => {
     const onClose = vi.fn();
     const onNavigate = vi.fn();
+    const onExportSession = vi.fn();
 
-    render(<MenuPanel isOpen onClose={onClose} onNavigate={onNavigate} />);
+    render(
+      <MenuPanel
+        isOpen
+        onClose={onClose}
+        onNavigate={onNavigate}
+        onExportSession={onExportSession}
+      />,
+    );
 
     const toolsLabel = screen.getByText('Tools');
     const toolsItem = toolsLabel.closest('.menu-item');
@@ -24,13 +32,22 @@ describe('MenuPanel', () => {
 
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(onNavigate).toHaveBeenCalledWith('tools');
+    expect(onExportSession).not.toHaveBeenCalled();
   });
 
   it('uses the brain icon for memory and routes clicks to the memory panel', () => {
     const onClose = vi.fn();
     const onNavigate = vi.fn();
+    const onExportSession = vi.fn();
 
-    render(<MenuPanel isOpen onClose={onClose} onNavigate={onNavigate} />);
+    render(
+      <MenuPanel
+        isOpen
+        onClose={onClose}
+        onNavigate={onNavigate}
+        onExportSession={onExportSession}
+      />,
+    );
 
     const memoryLabel = screen.getByText('Memory');
     const memoryItem = memoryLabel.closest('.menu-item');
@@ -42,5 +59,33 @@ describe('MenuPanel', () => {
 
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(onNavigate).toHaveBeenCalledWith('memory');
+    expect(onExportSession).not.toHaveBeenCalled();
+  });
+
+  it('exports the session JSON from the menu', () => {
+    const onClose = vi.fn();
+    const onNavigate = vi.fn();
+    const onExportSession = vi.fn();
+
+    render(
+      <MenuPanel
+        isOpen
+        onClose={onClose}
+        onNavigate={onNavigate}
+        onExportSession={onExportSession}
+      />,
+    );
+
+    const exportLabel = screen.getByText('Export Session JSON');
+    const exportItem = exportLabel.closest('.menu-item');
+
+    expect(exportItem).not.toBeNull();
+    expect(exportItem?.querySelector('.icon-download-01')).not.toBeNull();
+
+    fireEvent.click(exportItem!);
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onExportSession).toHaveBeenCalledTimes(1);
+    expect(onNavigate).not.toHaveBeenCalled();
   });
 });

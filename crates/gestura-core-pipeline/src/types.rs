@@ -22,7 +22,7 @@ pub use gestura_core_foundation::permissions::PermissionLevel;
 ///
 /// The default is [`ToolRoutingStrategy::Keyword`], which preserves existing
 /// behavior with zero additional latency.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolRoutingStrategy {
     /// Keyword-only routing using the `RequestAnalyzer` (default).
@@ -30,6 +30,7 @@ pub enum ToolRoutingStrategy {
     /// Fast (<1 ms), deterministic, and zero additional network cost.
     /// Relies on `CATEGORY_PATTERNS` in `gestura-core-context` to map
     /// keywords → categories → tools.
+    #[default]
     Keyword,
     /// Always run a pre-flight LLM call to select tools.
     ///
@@ -50,12 +51,6 @@ pub enum ToolRoutingStrategy {
         /// Range: 0.0–1.0. Requests with confidence ≥ this value bypass the LLM.
         confidence_threshold: f32,
     },
-}
-
-impl Default for ToolRoutingStrategy {
-    fn default() -> Self {
-        Self::Keyword
-    }
 }
 
 /// Strategy for handling context window overflow during auto-compaction.

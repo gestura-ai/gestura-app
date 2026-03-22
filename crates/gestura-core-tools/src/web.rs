@@ -652,8 +652,8 @@ impl LocalSearchProvider {
         }
 
         let mut tasks = tokio::task::JoinSet::new();
-        for index in 0..fetch_count {
-            let url = results[index].url.clone();
+        for (index, item) in results.iter().enumerate().take(fetch_count) {
+            let url = item.url.clone();
             let client = self.client.clone();
             let extractor = self.extractor.clone();
             tasks.spawn(async move {

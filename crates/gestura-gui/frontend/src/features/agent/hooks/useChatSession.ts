@@ -16,8 +16,7 @@ import {
   sendMessageStreaming,
   pauseStreaming,
   resumeStreaming,
-  getSessionHistory,
-  hasSessionPausedExecution,
+  getSessionReplaySnapshot,
   getTaskHierarchy,
   listKnowledgeItems,
   getEnabledKnowledge,
@@ -28,6 +27,7 @@ import {
   enhancePrompt,
   startVoiceListening,
   stopVoiceListening,
+  type SessionActivityEvent,
 } from '../../../services/tauri/agent';
 import type {
   AgentMessage,
@@ -85,6 +85,199 @@ function normalizeShellState(raw: unknown): ShellBlock['state'] {
     case 'stopped': return 'Stopped';
     default: return 'Running';
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function unwrapActivityPayload(payload: unknown): unknown {
+  if (isRecord(payload) && 'value' in payload && 'session_id' in payload) {
+    return payload.value;
+  }
+  return payload;
+}
+
+function normalizeNarrationStage(
+  raw: unknown,
+): 'context' | 'planning' | 'execution' | 'verification' | 'blocked' | 'progress' {
+  switch (raw) {
+    case 'context':
+    case 'planning':
+    case 'execution':
+    case 'verification':
+    case 'blocked':
+      return raw;
+    default:
+      return 'progress';
+  }
+}
+
+function toReplayToolConfirmation(payload: Record<string, unknown>): ToolConfirmation | null {
+  if (typeof payload.confirmation_id !== 'string' || typeof payload.tool_name !== 'string') {
+    return null;
+  }
+
+  return {
+    confirmation_id: payload.confirmation_id,
+    tool_name: payload.tool_name,
+    tool_args: payload.tool_args != null ? String(payload.tool_args) : undefined,
+    description: payload.description != null ? String(payload.description) : undefined,
+    risk_level: payload.risk_level != null ? String(payload.risk_level) : undefined,
+    category: payload.category != null ? String(payload.category) : undefined,
+    session_id: payload.session_id != null ? String(payload.session_id) : null,
+  };
+}
+
+function toReplayAction(entry: SessionActivityEvent): StreamEventAction | null {
+  const payload = unwrapActivityPayload(entry.payload);
+  const payloadRecord = isRecord(payload) ? payload : null;
+
+  switch (entry.event_type) {
+    case 'agent-stream-thinking':
+      return typeof payload === 'string' ? { type: 'thinking', chunk: payload } : null;
+    case 'agent-stream-chunk':
+      return typeof payload === 'string' ? { type: 'chunk', chunk: payload } : null;
+    case 'agent-stream-tool-blocked':
+      return payloadRecord
+        ? {
+          type: 'tool-blocked',
+          toolName: String(payloadRecord.tool_name ?? 'tool'),
+          reason: String(payloadRecord.reason ?? 'blocked'),
+        }
+        : null;
+    case 'agent-stream-agent-iteration':
+      return payloadRecord
+        ? {
+          type: 'agent-iteration',
+          iteration: Number(payloadRecord.iteration ?? 0),
+        }
+        : null;
+    case 'agent-stream-tool-start':
+      return typeof payload === 'string'
+        ? {
+          type: 'tool-start',
+          toolName: payload,
+        }
+        : payloadRecord
+          ? {
+            type: 'tool-start',
+            toolName: String(payloadRecord.name ?? 'tool'),
+          }
+          : null;
+    case 'agent-stream-tool-args':
+      return typeof payload === 'string'
+        ? { type: 'tool-args', args: payload }
+        : payloadRecord
+          ? { type: 'tool-args', args: JSON.stringify(payloadRecord, null, 2) }
+          : null;
+    case 'agent-stream-tool-end':
+      return { type: 'tool-end' };
+    case 'agent-stream-tool-result':
+      return payloadRecord
+        ? {
+          type: 'tool-result',
+          name: String(payloadRecord.name ?? ''),
+          success: Boolean(payloadRecord.success),
+          output: payloadRecord.output != null ? String(payloadRecord.output) : null,
+          durationMs: payloadRecord.duration_ms != null ? Number(payloadRecord.duration_ms) : null,
+        }
+        : null;
+    case 'agent-stream-status':
+      return payloadRecord
+        ? {
+          type: 'status',
+          text: String(payloadRecord.text ?? ''),
+          kind: String(payloadRecord.kind ?? 'ready'),
+        }
+        : null;
+    case 'agent-stream-retry':
+      return payloadRecord
+        ? {
+          type: 'retry',
+          attempt: Number(payloadRecord.attempt ?? 1),
+          reason: String(payloadRecord.reason ?? ''),
+        }
+        : null;
+    case 'agent-context-compacted':
+      return payloadRecord
+        ? { type: 'context-compacted', summary: String(payloadRecord.summary ?? '') }
+        : null;
+    case 'agent-stream-narration':
+      return payloadRecord
+        ? {
+          type: 'narration',
+          title: payloadRecord.title != null ? String(payloadRecord.title) : null,
+          message: String(payloadRecord.message ?? ''),
+          stage: normalizeNarrationStage(payloadRecord.stage),
+        }
+        : null;
+    case 'agent-stream-shell-lifecycle':
+      return payloadRecord && typeof payloadRecord.process_id === 'string'
+        ? { type: 'shell-lifecycle', processId: payloadRecord.process_id, payload: payloadRecord }
+        : null;
+    case 'agent-stream-shell-output':
+      return payloadRecord && typeof payloadRecord.process_id === 'string'
+        ? {
+          type: 'shell-output',
+          processId: payloadRecord.process_id,
+          stream: (payloadRecord.stream as 'Stdout' | 'Stderr') ?? 'Stdout',
+          data: String(payloadRecord.data ?? ''),
+        }
+        : null;
+    case 'agent-stream-tool-confirmation':
+      return payloadRecord
+        ? (() => {
+          const confirmation = toReplayToolConfirmation(payloadRecord);
+          return confirmation ? { type: 'tool-confirmation', payload: confirmation } : null;
+        })()
+        : null;
+    case 'agent-stream-agent-message':
+      return payloadRecord
+        ? {
+          type: 'agent-message',
+          role: String(payloadRecord.role ?? 'assistant'),
+          content: String(payloadRecord.content ?? ''),
+        }
+        : null;
+    case 'agent-stream-done':
+      return { type: 'done' };
+    case 'agent-stream-paused':
+      return { type: 'paused' };
+    case 'agent-stream-cancelled':
+      return { type: 'cancelled' };
+    case 'agent-stream-error':
+      return typeof payload === 'string'
+        ? { type: 'error', message: payload }
+        : payloadRecord
+          ? { type: 'error', message: String(payloadRecord.message ?? payloadRecord.error ?? 'Unknown error') }
+          : null;
+    case 'agent-stream-resumed':
+      return { type: 'resumed' };
+    default:
+      return null;
+  }
+}
+
+function toReplayUserMessage(entry: SessionActivityEvent): AgentMessage | null {
+  if (entry.event_type !== 'session-user-message') {
+    return null;
+  }
+
+  const payload = unwrapActivityPayload(entry.payload);
+  if (!isRecord(payload) || typeof payload.content !== 'string') {
+    return null;
+  }
+
+  const timestamp = Date.parse(entry.timestamp);
+  return {
+    id: nanoid(),
+    role: 'user',
+    rawMarkdown: payload.content,
+    blocks: [{ kind: 'text', id: nanoid(), content: payload.content }],
+    isStreaming: false,
+    timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
+  };
 }
 
 // ─── Return type ─────────────────────────────────────────────────────────────
@@ -725,12 +918,46 @@ export function useChatSession(sessionId: string): ChatSessionState {
   // ── Load session history on mount ───────────────────────────────────────────
   useEffect(() => {
     if (!sessionId) return;
-    Promise.all([
-      getSessionHistory(sessionId),
-      hasSessionPausedExecution(sessionId).catch(() => false),
-    ])
-      .then(([history, paused]) => {
-        const msgs: AgentMessage[] = history.map((h) => {
+    getSessionReplaySnapshot(sessionId)
+      .then((snapshot) => {
+        messagesRef.current = [];
+        streamingMessageRef.current = null;
+        isProcessingRef.current = false;
+        resetStreamingCursor();
+        pausedMessageIdRef.current = null;
+        pendingConfirmationRef.current = null;
+        setMessages([]);
+        setStreamingMessage(null);
+        setPendingConfirmation(null);
+        setIsProcessing(false);
+        setIsStopping(false);
+        setIsResuming(false);
+        setCanResume(false);
+        setStatus({ text: 'Ready', kind: 'ready' });
+
+        if (snapshot.activity_log.length > 0) {
+          snapshot.activity_log.forEach((entry) => {
+            const userMessage = toReplayUserMessage(entry);
+            if (userMessage) {
+              messagesRef.current = [...messagesRef.current, userMessage];
+              setMessages((prev) => [...prev, userMessage]);
+              return;
+            }
+
+            const action = toReplayAction(entry);
+            if (action) {
+              handleStreamEvent(action);
+            }
+          });
+
+          if (snapshot.has_paused_execution) {
+            setCanResume(true);
+            setStatus({ text: 'Interrupted — resume available', kind: 'ready' });
+          }
+          return;
+        }
+
+        const msgs: AgentMessage[] = snapshot.history.map((h) => {
           const id = nanoid();
           const blocks: MsgBlock[] = [];
           if (h.thinking?.trim()) {
@@ -754,19 +981,17 @@ export function useChatSession(sessionId: string): ChatSessionState {
             timestamp: h.timestamp ? Date.parse(h.timestamp) || Date.now() : Date.now(),
           };
         });
+        messagesRef.current = msgs;
         setMessages(msgs);
-        if (paused) {
+        if (snapshot.has_paused_execution) {
           const resumable = [...msgs].reverse().find((message) => message.role === 'assistant') ?? null;
           pausedMessageIdRef.current = resumable?.id ?? null;
           setCanResume(true);
           setStatus({ text: 'Interrupted — resume available', kind: 'ready' });
-        } else {
-          pausedMessageIdRef.current = null;
-          setCanResume(false);
         }
       })
       .catch((e) => console.warn('[useChatSession] history load failed:', e));
-  }, [sessionId]);
+  }, [handleStreamEvent, resetStreamingCursor, sessionId]);
 
   // ── Load tasks, knowledge, tool settings on mount ───────────────────────────
   const refreshTasks = useCallback(async () => {

@@ -23,7 +23,7 @@ import { MemoryConsolePanel } from '../../memory/components/MemoryConsolePanel';
 import { ProvidersPanel } from './ProvidersPanel';
 import { SessionSettingsPanel } from './SessionSettingsPanel';
 import { ToolsPanel } from './ToolsPanel';
-import { checkCliInstalled, openShellForSession } from '../../../services/tauri/agent';
+import { checkCliInstalled, exportSessionJson, openShellForSession } from '../../../services/tauri/agent';
 
 export interface ChatPanelProps {
   sessionId: string;
@@ -145,6 +145,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     }
   }, [sessionId, showToast]);
 
+  const handleExportSession = useCallback(async () => {
+    try {
+      const exportPath = await exportSessionJson(sessionId);
+      if (exportPath) {
+        showToast(`Exported session JSON to ${exportPath}`, 'success');
+      }
+    } catch (e) {
+      showToast(`Failed to export session JSON: ${e}`, 'error');
+    }
+  }, [sessionId, showToast]);
+
   const handleRevealShellSession = useCallback((shellSessionId: string | null) => {
     openShellManager();
     if (shellSessionId) setActiveShell(shellSessionId);
@@ -223,7 +234,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       {quickAccessHost ? createPortal(quickAccessDock, quickAccessHost) : null}
 
       {/* ── Side Panels ── */}
-      <MenuPanel isOpen={isOpen('menu')} onClose={closePanel} onNavigate={handleMenuNavigate} />
+      <MenuPanel
+        isOpen={isOpen('menu')}
+        onClose={closePanel}
+        onNavigate={handleMenuNavigate}
+        onExportSession={handleExportSession}
+      />
 
       <TaskPanel isOpen={isOpen('tasks')} onClose={closePanel} sessionId={sessionId}
         tasks={tasks} onRefreshTasks={refreshTasks} onSendMessage={sendMessage}
