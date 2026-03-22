@@ -551,11 +551,12 @@ pub fn all_tools() -> &'static [ToolDefinition] {
         },
         ToolDefinition {
             name: "task",
-            summary: "Manage tasks for the current session: create, update status, list, organize hierarchies",
+            summary: "Manage tasks for the current session: create, update details, update status, delete, list, inspect hierarchies",
             description: "Create, update, list, and organize tasks and work items for the \
                 current session. Use this tool when the user wants to track progress on work, \
                 create a to-do list, mark items as done, build subtask hierarchies, or manage \
-                any kind of structured checklist or work breakdown. For `update_status`, ALWAYS \
+                any kind of structured checklist or work breakdown. For `update`, provide \
+                `task_id` plus at least one of `name` or `description`. For `update_status`, ALWAYS \
                 provide both `task_id` and `status` in the same call; do not call `update_status` \
                 with only `task_id`, and do not use it just to confirm/preserve the current state. \
                 If no status changed, skip the task update and continue the real work.",
@@ -581,9 +582,9 @@ pub fn all_tools() -> &'static [ToolDefinition] {
             ],
             inputs: &[
                 "operation (create/update_status/update/delete/list/get_hierarchy)",
-                "task_id (for update/delete)",
-                "name (for create)",
-                "description (optional)",
+                "task_id (for update_status/update/delete)",
+                "name (for create, optional for update)",
+                "description (optional for create/update)",
                 "status (for update_status)",
                 "parent_id (optional, for subtasks)",
             ],
@@ -593,8 +594,10 @@ pub fn all_tools() -> &'static [ToolDefinition] {
             ],
             examples: &[
                 "task create --name 'Implement feature' --description 'Add new API endpoint'",
+                "task update --task_id abc123 --name 'Refine onboarding task'",
                 "task update_status --task_id abc123 --status inprogress",
                 "{\"operation\":\"update_status\",\"task_id\":\"abc123\",\"status\":\"completed\"}",
+                "task delete --task_id abc123",
                 "task list",
                 "task create --name 'Write tests' --parent_id abc123",
             ],
@@ -821,6 +824,23 @@ mod tests {
         assert!(find_tool("shell").is_some());
         assert!(find_tool("git").is_some());
         assert!(find_tool("code").is_some());
+    }
+
+    #[test]
+    fn task_tool_description_mentions_update_requirements() {
+        let task = find_tool("task").expect("task tool should exist");
+        assert!(task.summary.contains("update details"));
+        assert!(task.description.contains(
+            "For `update`, provide `task_id` plus at least one of `name` or `description`"
+        ));
+        assert!(task.examples.iter().any(|example| {
+            example.contains("task update --task_id abc123 --name 'Refine onboarding task'")
+        }));
+        assert!(
+            task.examples
+                .iter()
+                .any(|example| example.contains("task delete --task_id abc123"))
+        );
     }
 
     #[test]

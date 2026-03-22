@@ -35,6 +35,8 @@ export interface QuickAccessBarProps {
   viewMode?: 'message-only' | 'editor';
   /** Layout mode for rendering within the chat panel vs. the shared window-bottom dock. */
   dockMode?: 'panel' | 'window';
+  /** Whether the CLI-dependent open-in-shell action should be shown. */
+  showOpenTerminal?: boolean;
 }
 
 export const MessageInput: React.FC<MessageInputProps> = ({
@@ -174,6 +176,7 @@ export const QuickAccessBar: React.FC<QuickAccessBarProps> = ({
   onOpenTerminal,
   viewMode,
   dockMode = 'panel',
+  showOpenTerminal = true,
 }) => {
   const isEditor = viewMode === 'editor';
   const dockClassName = [
@@ -207,10 +210,12 @@ export const QuickAccessBar: React.FC<QuickAccessBarProps> = ({
         >
           <span className="icon-terminal" aria-hidden="true"></span>
         </button>
-        <button type="button" className="btn-icon" title="Open Session in Shell"
-          onClick={onOpenTerminal}>
-          <span className="icon-terminal-square" aria-hidden="true"></span>
-        </button>
+        {showOpenTerminal && (
+          <button type="button" className="btn-icon" title="Open Session in Shell"
+            onClick={onOpenTerminal}>
+            <span className="icon-terminal-square" aria-hidden="true"></span>
+          </button>
+        )}
       </div>
     </div>
   );

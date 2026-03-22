@@ -591,26 +591,26 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
             }),
         ),
         "task" | "tasks" => (
-            "Create, update, list, and organize tasks for the current session. For `create`, provide `name` and let the runtime assign the `task_id`; do not send `task_id` in create calls. For `update_status`, ALWAYS provide both `task_id` and `status` in the same call. Correct example: {\"operation\":\"update_status\",\"task_id\":\"abc123\",\"status\":\"completed\"}. Invalid example: {\"operation\":\"update_status\",\"task_id\":\"abc123\"}. Do not call `update_status` just to confirm or preserve the current state; if no status changed, continue the real work instead of repeating bookkeeping.",
+            "Create, update, delete, list, and inspect task hierarchies for the current session. For `create`, provide `name` and let the runtime assign the `task_id`; do not send `task_id` in create calls. For `update`, provide `task_id` plus at least one of `name` or `description`. For `update_status`, ALWAYS provide both `task_id` and `status` in the same call. Correct example: {\"operation\":\"update_status\",\"task_id\":\"abc123\",\"status\":\"completed\"}. Invalid example: {\"operation\":\"update_status\",\"task_id\":\"abc123\"}. Do not call `update_status` just to confirm or preserve the current state; if no status changed, continue the real work instead of repeating bookkeeping.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "operation": {
                         "type": "string",
                         "enum": ["create", "update_status", "update", "delete", "list", "get_hierarchy"],
-                        "description": "Task operation to perform. `update_status` requires BOTH `task_id` and `status`; do not call it with only `task_id`, and do not use it just to confirm the current state."
+                        "description": "Task operation to perform. `update` requires `task_id` plus at least one of `name` or `description`. `update_status` requires BOTH `task_id` and `status`; do not call it with only `task_id`, and do not use it just to confirm the current state."
                     },
                     "task_id": {
                         "type": "string",
-                        "description": "Task ID. REQUIRED for update_status, update, delete operations. For `update_status`, send this together with `status` in the same call. Omit this field entirely for create/list/get_hierarchy; do not send the string 'None' or 'null'."
+                        "description": "Task ID. REQUIRED for update_status, update, delete operations. For `update`, send this together with at least one field to change (`name` or `description`). For `update_status`, send this together with `status` in the same call. Omit this field entirely for create/list/get_hierarchy; do not send the string 'None' or 'null'."
                     },
                     "name": {
                         "type": "string",
-                        "description": "Task name. REQUIRED for create operation. Provide plain text only; do not wrap it in XML or parameter tags. For create, send `name` and optional `description`; do not send a `task_id`."
+                        "description": "Task name. REQUIRED for create operation, optional for update. Provide plain text only; do not wrap it in XML or parameter tags. For create, send `name` and optional `description`; do not send a `task_id`. For update, include `name` when renaming the task."
                     },
                     "description": {
                         "type": "string",
-                        "description": "Task description. Optional for create and update operations."
+                        "description": "Task description. Optional for create and update operations. For update, include at least one of `name` or `description`; do not call `update` with only `task_id`."
                     },
                     "status": {
                         "type": "string",
@@ -637,12 +637,18 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                         "required": ["operation", "task_id", "status"]
                     },
                     {
+                        "description": "Update a task's name and/or description. REQUIRED fields: `task_id` plus at least one of `name` or `description`. Correct example: {\"operation\":\"update\",\"task_id\":\"abc123\",\"name\":\"Refine onboarding\"}. Invalid: {\"operation\":\"update\",\"task_id\":\"abc123\"}.",
                         "properties": {
                             "operation": { "enum": ["update"] }
                         },
-                        "required": ["operation", "task_id"]
+                        "required": ["operation", "task_id"],
+                        "anyOf": [
+                            { "required": ["name"] },
+                            { "required": ["description"] }
+                        ]
                     },
                     {
+                        "description": "Delete a task by `task_id`.",
                         "properties": {
                             "operation": { "enum": ["delete"] }
                         },
@@ -663,8 +669,11 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                 ],
                 "examples": [
                     {"operation": "create", "name": "Implement feature", "description": "Add new API endpoint"},
+                    {"operation": "update", "task_id": "abc123", "name": "Refine onboarding task"},
+                    {"operation": "update", "task_id": "abc123", "description": "Add regression coverage and validation"},
                     {"operation": "update_status", "task_id": "abc123", "status": "inprogress"},
                     {"operation": "update_status", "task_id": "abc123", "status": "completed"},
+                    {"operation": "delete", "task_id": "abc123"},
                     {"operation": "list"}
                 ],
                 "required": ["operation"],
@@ -1085,6 +1094,51 @@ mod tests {
                 && example["task_id"] == "abc123"
                 && example["status"] == "inprogress"
         }));
+    }
+
+    #[test]
+    fn task_schema_describes_update_requirements_and_examples() {
+        let task = find_tool("task").unwrap();
+        let schemas = build_provider_tool_schemas(&[task]);
+
+        let function_description = schemas.openai[0]["function"]["description"]
+            .as_str()
+            .expect("task function description should exist");
+        assert!(function_description.contains(
+            "For `update`, provide `task_id` plus at least one of `name` or `description`"
+        ));
+
+        let update_branch = schemas.openai[0]["function"]["parameters"]["oneOf"]
+            .as_array()
+            .expect("task schema should define oneOf branches")
+            .iter()
+            .find(|branch| branch["properties"]["operation"]["enum"][0] == "update")
+            .expect("missing update branch");
+
+        let branch_description = update_branch["description"]
+            .as_str()
+            .expect("update branch description should exist");
+        assert!(branch_description.contains("at least one of `name` or `description`"));
+        assert!(branch_description.contains("Invalid"));
+
+        let any_of = update_branch["anyOf"]
+            .as_array()
+            .expect("update branch should require at least one mutable field");
+        assert_eq!(any_of.len(), 2);
+
+        let examples = schemas.openai[0]["function"]["parameters"]["examples"]
+            .as_array()
+            .expect("task schema should include examples");
+        assert!(examples.iter().any(|example| {
+            example["operation"] == "update"
+                && example["task_id"] == "abc123"
+                && example["name"] == "Refine onboarding task"
+        }));
+        assert!(
+            examples.iter().any(|example| {
+                example["operation"] == "delete" && example["task_id"] == "abc123"
+            })
+        );
     }
 
     #[test]

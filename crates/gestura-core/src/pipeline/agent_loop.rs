@@ -2067,13 +2067,30 @@ impl AgentPipeline {
             }
         }
 
-        let missing_requirements = Self::runtime_missing_requirements(
+        let mut missing_requirements = Self::runtime_missing_requirements(
             requires_build_and_test,
             requires_mutating_file_tool_success,
             evidence,
         );
-        let completion_ready =
+        let completion_candidate =
             !open_descendant_summary.has_open() && missing_requirements.is_empty();
+        let root_completion_error = if completion_candidate {
+            match manager.get_task(session_id, root_task_id) {
+                Ok(Some(task)) if task.status == crate::TaskStatus::Completed => None,
+                Ok(Some(_)) => manager
+                    .update_task_status(session_id, root_task_id, crate::TaskStatus::Completed)
+                    .err()
+                    .map(|error| format!("root task completion is still blocked: {error}")),
+                Ok(None) => Some("root task is no longer present in the task list".to_string()),
+                Err(error) => Some(format!("root task state could not be refreshed: {error}")),
+            }
+        } else {
+            None
+        };
+        if let Some(error) = root_completion_error.as_ref() {
+            missing_requirements.push(error.clone());
+        }
+        let completion_ready = completion_candidate && root_completion_error.is_none();
 
         let mut current_task = ready_tasks.first().cloned();
         if current_task.is_none()
@@ -2103,8 +2120,6 @@ impl AgentPipeline {
         };
 
         if completion_ready {
-            let _ =
-                manager.update_task_status(session_id, root_task_id, crate::TaskStatus::Completed);
             let _ = manager.set_current_task_id(session_id, None);
         } else {
             let _ = Self::apply_tracked_phase_status(
@@ -4277,6 +4292,13 @@ impl AgentPipeline {
         })
     }
 
+    fn should_request_incomplete_progress_narration(
+        open_descendant_summary: OpenDescendantSummary,
+        missing_requirements: &[String],
+    ) -> bool {
+        open_descendant_summary.has_open() || !missing_requirements.is_empty()
+    }
+
     fn build_forced_final_summary_prompt(
         &self,
         current_prompt: &str,
@@ -4284,14 +4306,20 @@ impl AgentPipeline {
         requires_build_and_test: bool,
         requires_mutating_file_tool_success: bool,
         tool_calls: &[ToolCallRecord],
+        runtime_missing_requirements: &[String],
         open_descendant_summary: OpenDescendantSummary,
     ) -> String {
         let mut prompt = current_prompt.to_string();
-        let missing_requirements = Self::runtime_missing_requirements(
+        let mut missing_requirements = Self::runtime_missing_requirements(
             requires_build_and_test,
             requires_mutating_file_tool_success,
             Self::observed_runtime_evidence(tool_calls),
         );
+        for requirement in runtime_missing_requirements {
+            if !missing_requirements.contains(requirement) {
+                missing_requirements.push(requirement.clone());
+            }
+        }
 
         if !response_so_far.trim().is_empty() {
             prompt.push_str(&format!(
@@ -4300,9 +4328,18 @@ impl AgentPipeline {
             ));
         }
 
-        prompt.push_str(
-            "\nUser: Before you end this turn, provide a concise final status update for the user. Summarize what you accomplished, what remains (if anything), and any build/test/verification results you observed. Do not stop without a direct closing summary. Only call another tool if it is absolutely required to finish the request.\n",
-        );
+        if Self::should_request_incomplete_progress_narration(
+            open_descendant_summary,
+            &missing_requirements,
+        ) {
+            prompt.push_str(
+                "\nUser: Before you end this turn, provide a detailed in-progress status narration for the user instead of a success summary. Describe exactly what you accomplished in this run, what tracked work or runtime requirements still remain, and any build/test/verification results you observed. Make it explicit that the overall request is still in progress. Do not use closing-success wording such as 'completed', 'done', 'finished successfully', or 'ready'. Only call another tool if it is absolutely required to finish the request.\n",
+            );
+        } else {
+            prompt.push_str(
+                "\nUser: Before you end this turn, provide a concise final status update for the user. Summarize what you accomplished, what remains (if anything), and any build/test/verification results you observed. Do not stop without a direct closing summary. Only call another tool if it is absolutely required to finish the request.\n",
+            );
+        }
 
         prompt.push_str(&format!(
             "Ground your summary strictly in the recorded results from this run. {} ",
@@ -4345,6 +4382,7 @@ impl AgentPipeline {
         requires_build_and_test: bool,
         requires_mutating_file_tool_success: bool,
         tool_calls: &[ToolCallRecord],
+        runtime_missing_requirements: &[String],
         open_descendant_summary: OpenDescendantSummary,
     ) -> String {
         let mut prompt = self.build_forced_final_summary_prompt(
@@ -4353,11 +4391,21 @@ impl AgentPipeline {
             requires_build_and_test,
             requires_mutating_file_tool_success,
             tool_calls,
+            runtime_missing_requirements,
             open_descendant_summary,
         );
-        prompt.push_str(
-            "\nUser: Tool use is disabled for this final-summary retry because the run is stuck in a tool loop. Do not call any more tools. Based only on the tool results already observed in this run, provide the best direct closing summary you can for the user now.\n",
-        );
+        if Self::should_request_incomplete_progress_narration(
+            open_descendant_summary,
+            runtime_missing_requirements,
+        ) {
+            prompt.push_str(
+                "\nUser: Tool use is disabled for this summary retry because the run is stuck in a tool loop. Do not call any more tools. Based only on the tool results already observed in this run, provide the best direct in-progress status narration you can for the user now. Make clear that the overall task is not complete yet.\n",
+            );
+        } else {
+            prompt.push_str(
+                "\nUser: Tool use is disabled for this final-summary retry because the run is stuck in a tool loop. Do not call any more tools. Based only on the tool results already observed in this run, provide the best direct closing summary you can for the user now.\n",
+            );
+        }
         prompt
     }
 
@@ -5489,6 +5537,10 @@ impl AgentPipeline {
                         requires_build_and_test,
                         requires_mutating_file_tool_success,
                         &response.tool_calls,
+                        runtime_state
+                            .as_ref()
+                            .map(|state| state.snapshot.missing_requirements.as_slice())
+                            .unwrap_or(&[]),
                         open_descendant_summary,
                     );
                     forced_final_summary_requested = true;
@@ -5791,6 +5843,10 @@ impl AgentPipeline {
                     requires_build_and_test,
                     requires_mutating_file_tool_success,
                     &response.tool_calls,
+                    runtime_state
+                        .as_ref()
+                        .map(|state| state.snapshot.missing_requirements.as_slice())
+                        .unwrap_or(&[]),
                     open_descendant_summary,
                 );
                 force_tool_free_final_summary = true;
@@ -5829,6 +5885,10 @@ impl AgentPipeline {
                     requires_build_and_test,
                     requires_mutating_file_tool_success,
                     &combined_tool_calls,
+                    runtime_state
+                        .as_ref()
+                        .map(|state| state.snapshot.missing_requirements.as_slice())
+                        .unwrap_or(&[]),
                     open_descendant_summary,
                 );
                 current_prompt = Self::with_stagnation_recovery_instruction(
@@ -6311,6 +6371,10 @@ impl AgentPipeline {
                         requires_build_and_test,
                         requires_mutating_file_tool_success,
                         &response.tool_calls,
+                        runtime_state
+                            .as_ref()
+                            .map(|state| state.snapshot.missing_requirements.as_slice())
+                            .unwrap_or(&[]),
                         open_descendant_summary,
                     );
                     forced_final_summary_requested = true;
@@ -6716,6 +6780,10 @@ impl AgentPipeline {
                     requires_build_and_test,
                     requires_mutating_file_tool_success,
                     &response.tool_calls,
+                    runtime_state
+                        .as_ref()
+                        .map(|state| state.snapshot.missing_requirements.as_slice())
+                        .unwrap_or(&[]),
                     open_descendant_summary,
                 );
                 force_tool_free_final_summary = true;
@@ -6757,6 +6825,10 @@ impl AgentPipeline {
                     requires_build_and_test,
                     requires_mutating_file_tool_success,
                     &response.tool_calls,
+                    runtime_state
+                        .as_ref()
+                        .map(|state| state.snapshot.missing_requirements.as_slice())
+                        .unwrap_or(&[]),
                     open_descendant_summary,
                 );
                 current_prompt = Self::with_stagnation_recovery_instruction(
@@ -8141,6 +8213,7 @@ mod tests {
             true,
             true,
             &tool_calls,
+            &[],
             OpenDescendantSummary {
                 not_started: 2,
                 in_progress: 1,
@@ -8153,6 +8226,45 @@ mod tests {
         assert!(prompt.contains("source mutation not yet verified"));
         assert!(prompt.contains("Tracked task bookkeeping still shows open subtasks"));
         assert!(prompt.contains("not started: 2, in progress: 1, blocked: 0"));
+    }
+
+    #[test]
+    fn forced_final_summary_prompt_requests_progress_narration_when_runtime_work_remains() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let prompt = pipeline.build_forced_final_summary_prompt(
+            "Implement the feature.",
+            "I updated the files and ran validation.",
+            false,
+            false,
+            &[],
+            &["root task completion is still blocked: dependencies remain open".to_string()],
+            OpenDescendantSummary::default(),
+        );
+
+        assert!(prompt.contains("detailed in-progress status narration"));
+        assert!(prompt.contains("overall request is still in progress"));
+        assert!(prompt.contains("Do not use closing-success wording"));
+        assert!(prompt.contains("root task completion is still blocked"));
+    }
+
+    #[test]
+    fn tool_free_final_summary_prompt_requests_progress_narration_when_work_remains() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let prompt = pipeline.build_tool_free_final_summary_prompt(
+            "Implement the feature.",
+            "I updated the files and ran validation.",
+            false,
+            false,
+            &[],
+            &["root task completion is still blocked: dependencies remain open".to_string()],
+            OpenDescendantSummary::default(),
+        );
+
+        assert!(prompt.contains("best direct in-progress status narration"));
+        assert!(prompt.contains("overall task is not complete yet"));
+        assert!(!prompt.contains("best direct closing summary"));
     }
 
     #[test]
@@ -8898,6 +9010,65 @@ mod tests {
             Some(plan_a.id.as_str())
         );
         assert!(runtime_state.snapshot.missing_requirements.is_empty());
+    }
+
+    #[test]
+    fn runtime_reconciliation_keeps_root_open_when_completion_write_is_blocked() {
+        let manager = crate::get_global_task_manager();
+        let session_id = format!(
+            "agent-loop-root-completion-blocked-{}",
+            uuid::Uuid::new_v4()
+        );
+        let mut root = crate::Task::new(&session_id, "Root", "Root", None);
+        let dependency = crate::Task::new(&session_id, "External dependency", "Still open", None);
+        root.set_status(crate::TaskStatus::InProgress);
+
+        let mut task_list = crate::TaskList::new(&session_id);
+        task_list.add_task(root.clone());
+        task_list.add_task(dependency.clone());
+        manager
+            .replace_task_list(task_list)
+            .expect("replace task list");
+        manager
+            .add_task_dependency(&session_id, &root.id, &dependency.id)
+            .expect("dependency should be added");
+
+        let runtime_state = AgentPipeline::reconcile_tracked_execution_progress_from_tool_activity(
+            false,
+            false,
+            Some(&session_id),
+            Some(&root.id),
+            &[],
+        )
+        .expect("runtime state should be available");
+
+        let stored_root = manager
+            .get_task(&session_id, &root.id)
+            .expect("root lookup should succeed")
+            .expect("root should exist");
+
+        assert_eq!(stored_root.status, crate::TaskStatus::InProgress);
+        assert!(!runtime_state.completion_ready);
+        assert_eq!(runtime_state.open_descendant_summary.total(), 0);
+        assert_eq!(
+            runtime_state
+                .snapshot
+                .current_task
+                .as_ref()
+                .map(|task| task.id.as_str()),
+            Some(root.id.as_str())
+        );
+        assert!(runtime_state.snapshot.ready_tasks.is_empty());
+        assert!(
+            runtime_state
+                .snapshot
+                .missing_requirements
+                .iter()
+                .any(|message| {
+                    message.contains("root task completion is still blocked")
+                        && message.contains("dependencies remain open")
+                })
+        );
     }
 
     #[test]

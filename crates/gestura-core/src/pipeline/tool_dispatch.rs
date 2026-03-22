@@ -325,6 +325,31 @@ impl AgentPipeline {
         Self::normalize_optional_tool_string(trimmed)
     }
 
+    fn find_normalized_task_string_alias(
+        obj: &serde_json::Map<String, serde_json::Value>,
+        aliases: &[&str],
+    ) -> Option<String> {
+        aliases.iter().find_map(|key| {
+            obj.get(*key)
+                .and_then(|value| value.as_str())
+                .and_then(|raw| {
+                    let stripped = Self::strip_parameter_fragments(&Self::strip_xml_comments(raw));
+                    Self::normalize_optional_tool_string(&stripped)
+                })
+        })
+    }
+
+    fn find_normalized_task_reference_alias(
+        obj: &serde_json::Map<String, serde_json::Value>,
+        aliases: &[&str],
+    ) -> Option<String> {
+        aliases.iter().find_map(|key| {
+            obj.get(*key)
+                .and_then(|value| value.as_str())
+                .and_then(Self::normalize_task_reference)
+        })
+    }
+
     fn normalize_tool_path(raw: &str) -> Option<String> {
         let stripped = Self::strip_parameter_fragments(raw);
         let trimmed = stripped.trim();
@@ -1333,6 +1358,37 @@ impl AgentPipeline {
 
         format!(
             "Missing required field 'status' for update_status operation. `update_status` requires both `task_id` and `status`. Provided fields: {provided_fields}. Retry with {example} using one of: `notstarted`, `inprogress`, `completed`, or `cancelled`. Do not omit `status` to ask the runtime to infer or preserve the current state; if no status changed, skip the task update and continue the real work."
+        )
+    }
+
+    fn format_missing_task_update_fields_error(args: &serde_json::Value) -> String {
+        let task_id = args
+            .get("task_id")
+            .or_else(|| args.get("id"))
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("<task-id>");
+
+        let provided_fields = args
+            .as_object()
+            .map(|map| {
+                let mut keys = map.keys().cloned().collect::<Vec<_>>();
+                keys.sort();
+                keys.join(", ")
+            })
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "none".to_string());
+
+        let example = serde_json::json!({
+            "operation": "update",
+            "task_id": task_id,
+            "name": "Refine task title",
+            "description": "Add validation and regression coverage"
+        })
+        .to_string();
+
+        format!(
+            "Missing required update fields for update operation. `update` requires `task_id` plus at least one of `name` or `description`. Provided fields: {provided_fields}. Retry with {example}. If you only need to change task status, use `update_status` with both `task_id` and `status` instead of `update`."
         )
     }
 
@@ -2448,6 +2504,87 @@ impl AgentPipeline {
             }
         }
 
+        let operation = obj
+            .get("operation")
+            .and_then(|value| value.as_str())
+            .unwrap_or("list")
+            .to_string();
+
+        if matches!(operation.as_str(), "update_status" | "update" | "delete")
+            && obj.get("task_id").is_none()
+            && let Some(task_id) =
+                Self::find_normalized_task_reference_alias(&obj, &["id", "taskId", "taskID"])
+        {
+            obj.insert("task_id".to_string(), serde_json::Value::String(task_id));
+        }
+
+        if operation == "create"
+            && obj.get("parent_id").is_none()
+            && let Some(parent_id) = Self::find_normalized_task_reference_alias(
+                &obj,
+                &["parent_task_id", "parentTaskId", "parentId"],
+            )
+        {
+            obj.insert(
+                "parent_id".to_string(),
+                serde_json::Value::String(parent_id),
+            );
+        }
+
+        if matches!(operation.as_str(), "create" | "update")
+            && obj.get("description").is_none()
+            && let Some(description) = Self::find_normalized_task_string_alias(
+                &obj,
+                &[
+                    "desc",
+                    "details",
+                    "task_description",
+                    "taskDescription",
+                    "notes",
+                ],
+            )
+        {
+            obj.insert(
+                "description".to_string(),
+                serde_json::Value::String(description),
+            );
+        }
+
+        if operation == "update"
+            && obj.get("name").is_none()
+            && let Some(name) = Self::find_normalized_task_string_alias(
+                &obj,
+                &[
+                    "title",
+                    "task_name",
+                    "taskName",
+                    "new_name",
+                    "newName",
+                    "label",
+                ],
+            )
+        {
+            obj.insert("name".to_string(), serde_json::Value::String(name));
+        }
+
+        if operation == "update_status"
+            && obj.get("status").is_none()
+            && let Some(status) = Self::find_normalized_task_string_alias(
+                &obj,
+                &[
+                    "state",
+                    "new_status",
+                    "newStatus",
+                    "target_status",
+                    "targetStatus",
+                    "task_status",
+                    "taskStatus",
+                ],
+            )
+        {
+            obj.insert("status".to_string(), serde_json::Value::String(status));
+        }
+
         let parsed_status = obj
             .get("status")
             .and_then(|value| value.as_str())
@@ -2468,11 +2605,6 @@ impl AgentPipeline {
                 );
             }
         }
-
-        let operation = obj
-            .get("operation")
-            .and_then(|value| value.as_str())
-            .unwrap_or("list");
 
         if operation == "create" {
             match obj
@@ -4398,6 +4530,12 @@ impl AgentPipeline {
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string());
 
+                        if name.is_none() && description.is_none() {
+                            return ToolResult::Error(
+                                Self::format_missing_task_update_fields_error(&args),
+                            );
+                        }
+
                         let session_id = session_id.to_string();
                         let task_id_owned = task_id.to_string();
                         let update_name = name.clone();
@@ -5289,6 +5427,42 @@ mod tests {
     }
 
     #[test]
+    fn normalize_task_tool_arguments_recovers_update_aliases() {
+        let normalized = AgentPipeline::normalize_task_tool_arguments(json!({
+            "operation": "update",
+            "id": "abc123\" ",
+            "title": "Refine onboarding task",
+            "desc": "Add regression coverage for update aliases"
+        }));
+
+        assert_eq!(
+            normalized.get("task_id").and_then(|v| v.as_str()),
+            Some("abc123")
+        );
+        assert_eq!(
+            normalized.get("name").and_then(|v| v.as_str()),
+            Some("Refine onboarding task")
+        );
+        assert_eq!(
+            normalized.get("description").and_then(|v| v.as_str()),
+            Some("Add regression coverage for update aliases")
+        );
+    }
+
+    #[test]
+    fn normalize_task_tool_arguments_recovers_delete_task_id_from_id_alias() {
+        let normalized = AgentPipeline::normalize_task_tool_arguments(json!({
+            "operation": "delete",
+            "id": "abc123\" "
+        }));
+
+        assert_eq!(
+            normalized.get("task_id").and_then(|v| v.as_str()),
+            Some("abc123")
+        );
+    }
+
+    #[test]
     fn default_shell_timeout_extends_build_commands() {
         assert_eq!(
             AgentPipeline::default_shell_timeout_secs("cargo check"),
@@ -5744,6 +5918,20 @@ mod tests {
         assert!(message.contains(
             "Do not rely on the runtime to invent or preserve placeholder names like 'Untitled Task' or 'None But Omit'"
         ));
+    }
+
+    #[test]
+    fn missing_task_update_fields_error_explains_how_to_recover() {
+        let message = AgentPipeline::format_missing_task_update_fields_error(&json!({
+            "operation": "update",
+            "task_id": "abc123",
+            "status": "completed",
+        }));
+
+        assert!(message.contains("Missing required update fields for update operation"));
+        assert!(message.contains("at least one of `name` or `description`"));
+        assert!(message.contains("\"task_id\":\"abc123\""));
+        assert!(message.contains("use `update_status` with both `task_id` and `status` instead"));
     }
 
     #[test]
@@ -6980,6 +7168,113 @@ mod tests {
 
         assert!(output.contains(task.id.as_str()));
         assert!(output.contains("status to Completed"));
+    }
+
+    #[tokio::test]
+    async fn update_succeeds_with_id_title_and_desc_aliases() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("tool-dispatch-update-alias-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let manager = crate::get_global_task_manager();
+        let task = manager
+            .create_task(&session_id, "Original task", "Original description", None)
+            .expect("create task");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_task_tool(
+                &json!({
+                    "operation": "update",
+                    "id": task.id,
+                    "title": "Renamed task",
+                    "desc": "Updated description",
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        let output = match result {
+            crate::pipeline::ToolResult::Success(output) => output,
+            other => panic!("expected success, got {other:?}"),
+        };
+
+        assert!(output.contains("Updated task"));
+        assert!(output.contains("name to 'Renamed task'"));
+        assert!(output.contains("description to 'Updated description'"));
+
+        let task_after = manager
+            .get_task(&session_id, &task.id)
+            .expect("get task")
+            .expect("task exists");
+        assert_eq!(task_after.name, "Renamed task");
+        assert_eq!(task_after.description, "Updated description");
+    }
+
+    #[tokio::test]
+    async fn update_without_name_or_description_returns_helpful_error() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("tool-dispatch-update-noop-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let manager = crate::get_global_task_manager();
+        let task = manager
+            .create_task(&session_id, "Original task", "Original description", None)
+            .expect("create task");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_task_tool(
+                &json!({
+                    "operation": "update",
+                    "task_id": task.id,
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        let output = match result {
+            crate::pipeline::ToolResult::Error(output) => output,
+            other => panic!("expected error, got {other:?}"),
+        };
+
+        assert!(output.contains("Missing required update fields for update operation"));
+        assert!(output.contains("at least one of `name` or `description`"));
+    }
+
+    #[tokio::test]
+    async fn delete_succeeds_with_id_alias() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("tool-dispatch-delete-alias-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let manager = crate::get_global_task_manager();
+        let task = manager
+            .create_task(&session_id, "Delete me", "Original description", None)
+            .expect("create task");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_task_tool(
+                &json!({
+                    "operation": "delete",
+                    "id": task.id,
+                })
+                .to_string(),
+                Some(&workspace),
+            )
+            .await;
+
+        let output = match result {
+            crate::pipeline::ToolResult::Success(output) => output,
+            other => panic!("expected success, got {other:?}"),
+        };
+
+        assert!(output.contains("Deleted task 'Delete me'"));
+        let task_after = manager.get_task(&session_id, &task.id).expect("get task");
+        assert!(task_after.is_none());
     }
 
     #[tokio::test]

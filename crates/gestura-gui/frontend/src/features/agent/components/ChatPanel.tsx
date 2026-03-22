@@ -7,7 +7,7 @@
  * into app-level docks so they can span the full window, while the text input
  * and message list stay inside the chat panel.
  */
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import '../ChatPanel.css';
 import { useChatSession } from '../hooks/useChatSession';
@@ -23,7 +23,7 @@ import { MemoryConsolePanel } from '../../memory/components/MemoryConsolePanel';
 import { ProvidersPanel } from './ProvidersPanel';
 import { SessionSettingsPanel } from './SessionSettingsPanel';
 import { ToolsPanel } from './ToolsPanel';
-import { openShellForSession } from '../../../services/tauri/agent';
+import { checkCliInstalled, openShellForSession } from '../../../services/tauri/agent';
 
 export interface ChatPanelProps {
   sessionId: string;
@@ -56,6 +56,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   panelState,
   toastState,
 }) => {
+  const [cliInstalled, setCliInstalled] = useState(false);
   const {
     messages, streamingMessage, isProcessing, isStopping, isListening, status,
     pendingConfirmation, tasks, knowledgeItems, toolSettings, memoryRevision,
@@ -78,6 +79,27 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const { showToast } = toastState;
 
   // External link handler — open https:// links in system browser
+  useEffect(() => {
+    let cancelled = false;
+
+    checkCliInstalled()
+      .then((installed) => {
+        if (!cancelled) {
+          setCliInstalled(installed);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.warn('[ChatPanel] failed to determine CLI availability:', error);
+          setCliInstalled(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
       const target = e.target as Element | null;
@@ -141,6 +163,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       onOpenTasks={() => togglePanel('tasks')}
       onToggleShellManager={toggleShellManager}
       shellManagerOpen={shellManager.visible}
+      showOpenTerminal={cliInstalled}
       onOpenTerminal={handleOpenTerminal}
       dockMode="window"
     />

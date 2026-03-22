@@ -526,6 +526,9 @@ export const pickWorkspaceDirectory = (sessionId: string): Promise<string | null
 export const getSessionWorkspaceById = (sessionId: string): Promise<string | null> =>
   invokeTauri('get_session_workspace_by_id', { session_id: sessionId });
 
+export const checkCliInstalled = (): Promise<boolean> =>
+  invokeTauri('check_cli_installed');
+
 export const openShellForSession = (sessionId: string): Promise<void> =>
   invokeTauri('open_shell_for_session', { session_id: sessionId });
 
