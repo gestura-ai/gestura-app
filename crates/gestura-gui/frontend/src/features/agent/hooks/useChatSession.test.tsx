@@ -7,6 +7,7 @@ import type { StreamEventDispatch } from './useStreamEvents';
 let streamDispatch: StreamEventDispatch | null = null;
 
 const getSessionHistoryMock = vi.fn();
+const getSessionReplaySnapshotMock = vi.fn();
 const hasSessionPausedExecutionMock = vi.fn();
 const getTaskHierarchyMock = vi.fn();
 const listKnowledgeItemsMock = vi.fn();
@@ -34,6 +35,7 @@ vi.mock('../../../services/tauri/agent', () => ({
   pauseStreaming: (...args: unknown[]) => pauseStreamingMock(...args),
   resumeStreaming: (...args: unknown[]) => resumeStreamingMock(...args),
   getSessionHistory: (...args: unknown[]) => getSessionHistoryMock(...args),
+  getSessionReplaySnapshot: (...args: unknown[]) => getSessionReplaySnapshotMock(...args),
   hasSessionPausedExecution: (...args: unknown[]) => hasSessionPausedExecutionMock(...args),
   getTaskHierarchy: (...args: unknown[]) => getTaskHierarchyMock(...args),
   listKnowledgeItems: (...args: unknown[]) => listKnowledgeItemsMock(...args),
@@ -101,6 +103,7 @@ describe('useChatSession', () => {
   beforeEach(() => {
     streamDispatch = null;
     getSessionHistoryMock.mockResolvedValue([]);
+    getSessionReplaySnapshotMock.mockResolvedValue({ history: [], activity_log: [], has_paused_execution: false });
     hasSessionPausedExecutionMock.mockResolvedValue(false);
     getTaskHierarchyMock.mockResolvedValue([]);
     listKnowledgeItemsMock.mockResolvedValue([]);
@@ -208,10 +211,13 @@ describe('useChatSession', () => {
   });
 
   it('rehydrates interrupted thinking-only messages from session history', async () => {
-    getSessionHistoryMock.mockResolvedValue([
-      { role: 'assistant', content: '', thinking: 'Working through the answer…', timestamp: '2026-03-15T12:00:00.000Z' },
-    ]);
-    hasSessionPausedExecutionMock.mockResolvedValue(true);
+    getSessionReplaySnapshotMock.mockResolvedValue({
+      history: [
+        { role: 'assistant', content: '', thinking: 'Working through the answer…', timestamp: '2026-03-15T12:00:00.000Z' },
+      ],
+      activity_log: [],
+      has_paused_execution: true,
+    });
 
     render(<Harness />);
 

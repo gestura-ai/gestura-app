@@ -2523,7 +2523,7 @@ fn capture_session_activity_event(
     if let Some(session_id) = session_id {
         crate::window_manager::record_session_activity(session_id, event, payload.clone());
         if should_persist_session_activity_event(event, payload) {
-            crate::window_manager::save_sessions();
+            crate::window_manager::schedule_save_sessions();
         }
     }
 }

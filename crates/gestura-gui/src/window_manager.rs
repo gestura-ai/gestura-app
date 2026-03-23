@@ -33,6 +33,45 @@ fn session_store() -> FileAgentSessionStore {
     FileAgentSessionStore::new_default()
 }
 
+/// Persist a snapshot of GUI sessions to the unified core session store.
+///
+/// This helper is snapshot-based so callers can release in-memory locks quickly
+/// and perform the heavier disk I/O work on a background thread.
+fn persist_session_list_to_disk(session_list: Vec<AgentSession>) {
+    let store = session_store();
+
+    // If there are no in-memory sessions, remove all persisted sessions.
+    if session_list.is_empty() {
+        if let Ok(infos) = store.list(SessionFilter::All) {
+            for info in infos {
+                let _ = store.delete(&info.id);
+            }
+        }
+        // Best-effort cleanup: also remove legacy file if present.
+        let legacy = gestura_core::agent_sessions::legacy_gui_sessions_file_path();
+        if legacy.exists() {
+            let _ = std::fs::remove_file(&legacy);
+        }
+        tracing::debug!("Removed all persisted sessions (none in memory)");
+        return;
+    }
+
+    let mut saved = 0usize;
+    for session in &session_list {
+        let core_session = to_core_session(session);
+        match store.save(&core_session) {
+            Ok(()) => saved += 1,
+            Err(e) => tracing::error!(
+                session_id = %session.id,
+                error = %e,
+                "Failed to persist session to core store"
+            ),
+        }
+    }
+
+    tracing::info!(saved, "Saved sessions to core store");
+}
+
 /// Convert the GUI session view-model into the persisted core session model.
 ///
 /// The GUI maintains ephemeral window state (`is_open`, `window_label`) and a
@@ -125,14 +164,42 @@ pub struct WindowManager {
     sessions: Arc<Mutex<HashMap<String, AgentSession>>>,
     windows: Arc<Mutex<HashMap<String, WindowInfo>>>,
     app: AppHandle,
+    save_tx: tokio::sync::mpsc::UnboundedSender<()>,
 }
 
 impl WindowManager {
     pub fn new(app: AppHandle) -> Self {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let windows = Arc::new(Mutex::new(HashMap::new()));
+        let (save_tx, mut save_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let sessions_for_save = Arc::clone(&sessions);
+
+        tauri::async_runtime::spawn(async move {
+            const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_millis(75);
+
+            while save_rx.recv().await.is_some() {
+                tokio::time::sleep(SESSION_SAVE_DEBOUNCE).await;
+                while save_rx.try_recv().is_ok() {}
+
+                let session_list = {
+                    let sessions = sessions_for_save.lock().unwrap();
+                    sessions.values().cloned().collect::<Vec<_>>()
+                };
+
+                if let Err(error) =
+                    tokio::task::spawn_blocking(move || persist_session_list_to_disk(session_list))
+                        .await
+                {
+                    tracing::error!(%error, "Session persistence worker failed");
+                }
+            }
+        });
+
         Self {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
-            windows: Arc::new(Mutex::new(HashMap::new())),
+            sessions,
+            windows,
             app,
+            save_tx,
         }
     }
 
@@ -213,41 +280,19 @@ impl WindowManager {
 
     /// Save all sessions to disk for persistence across app restarts
     pub fn save_sessions_to_disk(&self) {
-        let store = session_store();
-        let sessions = self.sessions.lock().unwrap();
-        let session_list: Vec<AgentSession> = sessions.values().cloned().collect();
-        drop(sessions);
+        let session_list = {
+            let sessions = self.sessions.lock().unwrap();
+            sessions.values().cloned().collect::<Vec<_>>()
+        };
+        persist_session_list_to_disk(session_list);
+    }
 
-        // If there are no in-memory sessions, remove all persisted sessions.
-        if session_list.is_empty() {
-            if let Ok(infos) = store.list(SessionFilter::All) {
-                for info in infos {
-                    let _ = store.delete(&info.id);
-                }
-            }
-            // Best-effort cleanup: also remove legacy file if present.
-            let legacy = gestura_core::agent_sessions::legacy_gui_sessions_file_path();
-            if legacy.exists() {
-                let _ = std::fs::remove_file(&legacy);
-            }
-            tracing::debug!("Removed all persisted sessions (none in memory)");
-            return;
+    /// Schedule session persistence on a debounced background worker.
+    fn schedule_save_sessions_to_disk(&self) {
+        if self.save_tx.send(()).is_err() {
+            tracing::warn!("Session save worker unavailable; falling back to blocking save");
+            self.save_sessions_to_disk();
         }
-
-        let mut saved = 0usize;
-        for session in &session_list {
-            let core_session = to_core_session(session);
-            match store.save(&core_session) {
-                Ok(()) => saved += 1,
-                Err(e) => tracing::error!(
-                    session_id = %session.id,
-                    error = %e,
-                    "Failed to persist session to core store"
-                ),
-            }
-        }
-
-        tracing::info!("Saved {} sessions to core store", saved);
     }
 
     /// Create a new agent session and window
@@ -725,7 +770,7 @@ impl WindowManager {
         }
         drop(sessions);
 
-        self.save_sessions_to_disk();
+        self.schedule_save_sessions_to_disk();
     }
 
     /// Add an assistant message to a session
@@ -739,7 +784,7 @@ impl WindowManager {
         drop(sessions);
 
         // Persist after assistant response (marks end of a conversation turn)
-        self.save_sessions_to_disk();
+        self.schedule_save_sessions_to_disk();
     }
 
     /// Append continuation content to the most recent assistant message.
@@ -765,7 +810,7 @@ impl WindowManager {
         drop(sessions);
 
         if updated {
-            self.save_sessions_to_disk();
+            self.schedule_save_sessions_to_disk();
         }
 
         updated
@@ -781,7 +826,7 @@ impl WindowManager {
         }
         drop(sessions);
 
-        self.save_sessions_to_disk();
+        self.schedule_save_sessions_to_disk();
     }
 
     /// Record a tool call in a session
@@ -793,7 +838,7 @@ impl WindowManager {
         }
         drop(sessions);
 
-        self.save_sessions_to_disk();
+        self.schedule_save_sessions_to_disk();
     }
 
     /// Record a replay/export activity event for the session without forcing an immediate save.
@@ -859,6 +904,13 @@ pub fn save_sessions() {
     }
 }
 
+/// Schedule a debounced background save for session persistence.
+pub fn schedule_save_sessions() {
+    if let Some(manager) = get_window_manager() {
+        manager.schedule_save_sessions_to_disk();
+    }
+}
+
 /// Get the global window manager
 pub fn get_window_manager() -> Option<WindowManager> {
     let manager = WINDOW_MANAGER.lock().unwrap();
@@ -866,6 +918,7 @@ pub fn get_window_manager() -> Option<WindowManager> {
         sessions: Arc::clone(&m.sessions),
         windows: Arc::clone(&m.windows),
         app: m.app.clone(),
+        save_tx: m.save_tx.clone(),
     })
 }
 
@@ -1007,7 +1060,7 @@ pub fn set_session_paused_execution(
                 session.state.paused_execution = paused;
             }
         }
-        manager.save_sessions_to_disk();
+        manager.schedule_save_sessions_to_disk();
     }
 }
 
