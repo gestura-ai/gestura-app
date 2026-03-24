@@ -3184,6 +3184,320 @@ html[data-theme="dark"] .confirmation-args {
   line-height: 1.4;
 }
 
+.task-panel-subtitle {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  max-width: 44ch;
+}
+
+.task-filter-select,
+.task-panel-filters input,
+.task-panel-filters textarea,
+.memory-console-field input {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--glass-border);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-size: 13px;
+  box-sizing: border-box;
+}
+
+.task-filter-select:focus,
+.task-panel-filters input:focus,
+.task-panel-filters textarea:focus,
+.memory-console-field input:focus {
+  outline: none;
+  border-color: rgba(var(--accent-primary-rgb, 99, 102, 241), 0.7);
+  box-shadow: 0 0 0 3px rgba(var(--accent-primary-rgb, 99, 102, 241), 0.12);
+}
+
+.task-panel-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.task-panel-filters>* {
+  flex: 1 1 160px;
+}
+
+.task-create-btn,
+.task-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.task-create-btn {
+  border: none;
+  background: var(--accent-primary);
+  color: white;
+}
+
+.task-create-btn:hover,
+.task-action-btn:hover {
+  transform: translateY(-1px);
+}
+
+.task-create-btn:disabled,
+.task-action-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.task-action-btn {
+  border: 1px solid var(--glass-border);
+  background: var(--bg-glass);
+  color: var(--text-primary);
+}
+
+.task-action-btn.danger {
+  color: var(--error, #ef4444);
+  border-color: rgba(239, 68, 68, 0.25);
+}
+
+.task-section-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  margin-bottom: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--glass-border);
+  background: linear-gradient(180deg, rgba(127, 127, 127, 0.07), rgba(127, 127, 127, 0.02)), var(--bg-glass);
+}
+
+.task-section-card h4,
+.task-section-card h5,
+.task-section-card p {
+  margin: 0;
+}
+
+.task-empty-state {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--error, #ef4444);
+  font-size: 12px;
+}
+
+.task-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  background: rgba(127, 127, 127, 0.05);
+  box-sizing: border-box;
+}
+
+.task-item-meta {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+.task-path-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.memory-console-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.memory-console-toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.memory-console-toolbar-row--search {
+  align-items: stretch;
+}
+
+.memory-console-field {
+  display: flex;
+  flex: 1 1 160px;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.memory-console-field>span {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.memory-console-field--wide {
+  flex-basis: 220px;
+}
+
+.memory-console-field--actions {
+  flex: 0 1 auto;
+}
+
+.memory-console-inline-actions,
+.memory-console-maintenance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.memory-console-chip-btn {
+  border: 1px solid rgba(var(--accent-primary-rgb, 99, 102, 241), 0.18);
+  background: rgba(var(--accent-primary-rgb, 99, 102, 241), 0.08);
+  color: var(--accent-primary);
+  padding: 0 10px;
+}
+
+.memory-console-active-view {
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.memory-console-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(var(--accent-primary-rgb, 99, 102, 241), 0.07);
+  border: 1px solid rgba(var(--accent-primary-rgb, 99, 102, 241), 0.14);
+}
+
+.memory-console-summary p {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.memory-console-stat-grid,
+.memory-console-split-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.memory-console-stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  background: rgba(127, 127, 127, 0.05);
+}
+
+.memory-console-stat-label {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-secondary);
+}
+
+.memory-console-stat-value {
+  font-size: 15px;
+  line-height: 1.2;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.memory-console-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.memory-console-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(var(--accent-primary-rgb, 99, 102, 241), 0.09);
+  color: var(--accent-primary);
+  font-size: 11px;
+}
+
+.memory-console-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.memory-console-row-button {
+  appearance: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.memory-console-row-button:hover,
+.memory-console-row-button:focus-visible {
+  border-color: rgba(var(--accent-primary-rgb, 99, 102, 241), 0.35);
+  background: rgba(var(--accent-primary-rgb, 99, 102, 241), 0.08);
+  outline: none;
+}
+
+.memory-console-compact-actions>*:last-child {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 760px) {
+
+  .memory-console-stat-grid,
+  .memory-console-split-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .memory-console-field,
+  .memory-console-field--actions,
+  .memory-console-field--wide {
+    flex-basis: 100%;
+  }
+
+  .memory-console-inline-actions,
+  .memory-console-maintenance-actions {
+    width: 100%;
+  }
+
+  .memory-console-inline-actions>*,
+  .memory-console-maintenance-actions>* {
+    flex: 1 1 100%;
+  }
+}
+
 
 /* ═══════════════════════════════════════════════════════════
    KNOWLEDGE PANEL

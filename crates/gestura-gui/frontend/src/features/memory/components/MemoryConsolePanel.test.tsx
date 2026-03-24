@@ -92,6 +92,15 @@ describe('MemoryConsolePanel', () => {
         last_memory_file_path: '/tmp/workspace/memory/entry-1.md',
       },
     });
+    agentMocks.getMemoryWorkingSnapshot.mockResolvedValue({
+      summary: 'Session memory is currently sparse but healthy.',
+      resources: [],
+      decisions: [],
+      blockers: [],
+      timeline: [],
+      next_actions: [],
+      open_questions: [],
+    });
   });
 
   afterEach(() => {
@@ -106,8 +115,9 @@ describe('MemoryConsolePanel', () => {
       await screen.findByText(/Short-term session working memory, long-term memory bank entries/i),
     ).toBeInTheDocument();
 
-    const sharedSummary = await screen.findByText(/Shared cognition entries:/);
-    expect(sharedSummary.parentElement).toHaveTextContent('Shared cognition entries: 2');
+    const sharedSummary = await screen.findByText(/Shared cognition entries/i);
+    expect(sharedSummary.parentElement).toHaveTextContent('Shared cognition entries');
+    expect(sharedSummary.parentElement).toHaveTextContent('2');
 
     fireEvent.click(await screen.findByRole('button', { name: 'Shared cognition' }));
 
@@ -154,7 +164,9 @@ describe('MemoryConsolePanel', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Task' }));
+    fireEvent.change(screen.getByRole('combobox', { name: 'Memory view' }), {
+      target: { value: 'task' },
+    });
 
     await waitFor(() => {
       expect(agentMocks.getMemoryTaskLifecycle).toHaveBeenCalledWith('session-1', 'task-9');
@@ -177,6 +189,25 @@ describe('MemoryConsolePanel', () => {
     await waitFor(() => {
       expect(agentMocks.getMemoryConsoleOverview).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it('renders session working memory safely when Tauri omits empty arrays', async () => {
+    agentMocks.getMemoryWorkingSnapshot.mockResolvedValue({
+      summary: 'Fresh session with no captured memory yet.',
+    });
+
+    render(<MemoryConsolePanel sessionId="session-1" workspaceDir="/tmp/workspace" allowSessionSelection={false} />);
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Memory view' }), {
+      target: { value: 'working' },
+    });
+
+    expect(await screen.findByText('Fresh session with no captured memory yet.')).toBeInTheDocument();
+    expect(screen.getByText('Resources').parentElement).toHaveTextContent('0');
+    expect(screen.getByText('Decisions').parentElement).toHaveTextContent('0');
+    expect(screen.getByText('Blockers').parentElement).toHaveTextContent('0');
+    expect(screen.getByText(/Next actions/i).parentElement).toHaveTextContent('None');
+    expect(screen.getByText(/Open questions/i).parentElement).toHaveTextContent('None');
   });
 });
 
