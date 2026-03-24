@@ -120,19 +120,29 @@ export function renderInlineMarkdown(text: string): string {
   return s;
 }
 
-function renderMarkdownListItemParts(text: string): { className: string; innerHtml: string } {
+function renderMarkdownTextLines(lines: string[]): string {
+  return lines
+    .map((line) => renderInlineMarkdown(line.trimEnd()))
+    .join('<br />');
+}
+
+function renderMarkdownListItemParts(lines: string[]): { className: string; innerHtml: string } {
+  const [firstLine = '', ...remainingLines] = lines;
+  const remainderHtml = remainingLines.length > 0
+    ? `<br />${renderMarkdownTextLines(remainingLines)}`
+    : '';
   // Support nested inline markdown in list items
-  const checkMatch = text.match(/^\[([ xX])\]\s+(.*)$/);
+  const checkMatch = firstLine.match(/^\[([ xX])\]\s+(.*)$/);
   if (checkMatch) {
     const checked = checkMatch[1].toLowerCase() === 'x';
     return {
       className: ` class="task-item${checked ? ' checked' : ''}"`,
-      innerHtml: `<input type="checkbox" ${checked ? 'checked ' : ''}disabled />${renderInlineMarkdown(checkMatch[2])}`,
+      innerHtml: `<input type="checkbox" ${checked ? 'checked ' : ''}disabled />${renderInlineMarkdown(checkMatch[2])}${remainderHtml}`,
     };
   }
   return {
     className: '',
-    innerHtml: renderInlineMarkdown(text),
+    innerHtml: renderMarkdownTextLines(lines),
   };
 }
 
@@ -231,7 +241,7 @@ function renderMarkdownList(lines: string[], startIndex: number): { html: string
       break;
     }
 
-    const itemParts = renderMarkdownListItemParts(itemLines.join(' '));
+    const itemParts = renderMarkdownListItemParts(itemLines);
     items.push(`<li${itemParts.className}>${itemParts.innerHtml}${nestedBlocks.join('')}</li>`);
   }
 
@@ -251,7 +261,7 @@ export function parseMarkdown(input: string): string {
 
   function flushParagraph(buf: string[]): void {
     if (buf.length === 0) return;
-    out.push(`<p>${renderInlineMarkdown(buf.join(' '))}</p>`);
+    out.push(`<p>${renderMarkdownTextLines(buf)}</p>`);
     buf.length = 0;
   }
 

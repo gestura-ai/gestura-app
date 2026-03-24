@@ -148,6 +148,29 @@ pub struct SessionMemoryResource {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A synthesized finding retained for the active session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionMemoryFinding {
+    /// Stable local identifier.
+    pub id: String,
+    /// Short claim or takeaway.
+    pub claim: String,
+    /// Supporting evidence snippets.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<String>,
+    /// Origin of the finding.
+    pub source: String,
+    /// Confidence score in the range 0.0 to 1.0.
+    pub confidence: f32,
+    /// Associated tool call if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
 /// A durable decision made during the session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMemoryDecision {
@@ -206,6 +229,8 @@ pub enum SessionMemoryEntryKind {
     UserGoal,
     /// Assistant-produced synthesis.
     AssistantSummary,
+    /// User-facing runtime narration captured between major steps.
+    Narration,
     /// Tool-derived insight.
     ToolInsight,
     /// Handoff or checkpoint note.
@@ -218,6 +243,8 @@ pub enum SessionMemoryEntryKind {
 pub enum SessionMemoryPromotionSource {
     /// Promoted from a remembered resource.
     Resource,
+    /// Promoted from a synthesized finding.
+    Finding,
     /// Promoted from a remembered decision.
     Decision,
     /// Promoted from a remembered blocker.
@@ -285,6 +312,9 @@ pub struct SessionWorkingMemory {
     /// Resources gathered for the active session.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<SessionMemoryResource>,
+    /// Synthesized findings gathered for the active session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<SessionMemoryFinding>,
     /// Decisions made during the session.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub decisions: Vec<SessionMemoryDecision>,
@@ -298,6 +328,7 @@ pub struct SessionWorkingMemory {
 
 impl SessionWorkingMemory {
     const MAX_RESOURCES: usize = 24;
+    const MAX_FINDINGS: usize = 16;
     const MAX_DECISIONS: usize = 16;
     const MAX_BLOCKERS: usize = 12;
     const MAX_TIMELINE: usize = 24;
@@ -316,6 +347,315 @@ impl SessionWorkingMemory {
 
         let truncated: String = trimmed.chars().take(max_chars).collect();
         format!("{}…", truncated.trim_end())
+    }
+
+    fn collapse_whitespace(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    fn concise_text(text: &str, max_chars: usize) -> String {
+        Self::truncate_text(&Self::collapse_whitespace(text), max_chars)
+    }
+
+    fn prettify_label(value: &str) -> String {
+        let normalized = value.trim().replace(['_', '-'], " ").to_ascii_lowercase();
+        match normalized.as_str() {
+            "inprogress" => "in progress".to_string(),
+            "notstarted" => "not started".to_string(),
+            other => other.to_string(),
+        }
+    }
+
+    fn argument_value_excerpt(value: &serde_json::Value, max_chars: usize) -> Option<String> {
+        match value {
+            serde_json::Value::String(text) => {
+                let text = Self::concise_text(text, max_chars);
+                (!text.is_empty() && text != "None").then_some(text)
+            }
+            serde_json::Value::Number(number) => Some(number.to_string()),
+            serde_json::Value::Bool(flag) => Some(flag.to_string()),
+            serde_json::Value::Array(items) => {
+                let excerpts: Vec<String> = items
+                    .iter()
+                    .filter_map(|item| Self::argument_value_excerpt(item, 48))
+                    .take(3)
+                    .collect();
+                if excerpts.is_empty() {
+                    None
+                } else if items.len() > excerpts.len() {
+                    Some(format!(
+                        "{} (+{} more)",
+                        excerpts.join(", "),
+                        items.len() - excerpts.len()
+                    ))
+                } else {
+                    Some(excerpts.join(", "))
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for key in [
+                    "path",
+                    "paths",
+                    "url",
+                    "query",
+                    "command",
+                    "task_id",
+                    "task_ids",
+                    "name",
+                    "title",
+                    "ref",
+                    "status",
+                    "operation",
+                    "text",
+                    "prompt",
+                ] {
+                    if let Some(value) = map.get(key)
+                        && let Some(excerpt) = Self::argument_value_excerpt(value, max_chars)
+                    {
+                        return Some(excerpt);
+                    }
+                }
+                None
+            }
+            serde_json::Value::Null => None,
+        }
+    }
+
+    fn extract_argument_focus(arguments: &str) -> Option<String> {
+        let trimmed = arguments.trim();
+        if trimmed.is_empty() || trimmed == "{}" {
+            return None;
+        }
+
+        serde_json::from_str::<serde_json::Value>(trimmed)
+            .ok()
+            .and_then(|value| Self::argument_value_excerpt(&value, 96))
+            .or_else(|| {
+                let fallback = Self::concise_text(trimmed, 96);
+                (!fallback.is_empty()).then_some(fallback)
+            })
+    }
+
+    fn extract_argument_field(arguments: &str, field: &str) -> Option<String> {
+        let value = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
+        value
+            .get(field)
+            .and_then(|value| Self::argument_value_excerpt(value, 96))
+    }
+
+    fn finding_confidence_for_narration_stage(stage: Option<&str>) -> f32 {
+        match stage.map(|value| value.to_ascii_lowercase()) {
+            Some(stage) if stage == "verification" => 0.9,
+            Some(stage) if stage == "blocked" => 0.55,
+            Some(stage) if stage == "planning" => 0.6,
+            Some(stage) if stage == "context" => 0.68,
+            Some(stage) if stage == "execution" => 0.74,
+            _ => 0.7,
+        }
+    }
+
+    fn finding_evidence_excerpt(text: &str) -> Option<String> {
+        let excerpt = Self::truncate_text(text, 140);
+        (!excerpt.is_empty()).then_some(excerpt)
+    }
+
+    fn should_remember_tool_call_finding(call: &SessionToolCall) -> bool {
+        if !call.success {
+            return false;
+        }
+
+        match call.name.to_ascii_lowercase().as_str() {
+            "web" | "web_search" | "fetch" => true,
+            "shell" | "command" => Self::extract_argument_focus(&call.arguments)
+                .map(|focus| {
+                    let focus = focus.to_ascii_lowercase();
+                    [
+                        "test", "check", "clippy", "build", "lint", "verify", "validate",
+                    ]
+                    .iter()
+                    .any(|needle| focus.contains(needle))
+                })
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    fn tool_call_finding_confidence(call: &SessionToolCall) -> f32 {
+        match call.name.to_ascii_lowercase().as_str() {
+            "web" | "web_search" | "fetch" => 0.66,
+            "shell" | "command" => 0.62,
+            _ => 0.58,
+        }
+    }
+
+    fn tool_call_finding_evidence(call: &SessionToolCall) -> Vec<String> {
+        let mut evidence = Vec::new();
+        if let Some(focus) = Self::extract_argument_focus(&call.arguments) {
+            evidence.push(format!("Observed focus: {focus}"));
+        }
+        if let Some(excerpt) = Self::finding_evidence_excerpt(&call.result) {
+            evidence.push(format!("Observed result excerpt: {excerpt}"));
+        }
+        evidence.truncate(3);
+        evidence
+    }
+
+    fn summarize_tool_call(call: &SessionToolCall) -> String {
+        let tool_name = call.name.to_ascii_lowercase();
+        let focus = Self::extract_argument_focus(&call.arguments);
+
+        let mut summary = if tool_name.contains("task_update_status") {
+            let task_id = Self::extract_argument_field(&call.arguments, "task_id")
+                .unwrap_or_else(|| "task".to_string());
+            let status = Self::extract_argument_field(&call.arguments, "status")
+                .map(|value| Self::prettify_label(&value))
+                .unwrap_or_else(|| "updated".to_string());
+            format!("Updated task {task_id} to {status}")
+        } else if tool_name.contains("search") {
+            focus
+                .map(|value| format!("Searched for {value}"))
+                .unwrap_or_else(|| format!("Ran {}", call.name.replace('_', " ")))
+        } else if tool_name.contains("read") || tool_name.contains("view") {
+            focus
+                .map(|value| format!("Inspected {value}"))
+                .unwrap_or_else(|| format!("Inspected output from {}", call.name.replace('_', " ")))
+        } else if tool_name.contains("write")
+            || tool_name.contains("save")
+            || tool_name.contains("patch")
+            || tool_name.contains("edit")
+        {
+            focus
+                .map(|value| format!("Updated {value}"))
+                .unwrap_or_else(|| format!("Updated content with {}", call.name.replace('_', " ")))
+        } else if tool_name.contains("fetch") || tool_name == "web" {
+            focus
+                .map(|value| format!("Fetched {value}"))
+                .unwrap_or_else(|| format!("Fetched content with {}", call.name.replace('_', " ")))
+        } else if tool_name.contains("shell")
+            || tool_name.contains("command")
+            || tool_name.contains("terminal")
+            || tool_name.contains("process")
+        {
+            focus
+                .map(|value| format!("Ran command {value}"))
+                .unwrap_or_else(|| format!("Ran {}", call.name.replace('_', " ")))
+        } else if tool_name.contains("task") {
+            focus
+                .map(|value| format!("Updated task context for {value}"))
+                .unwrap_or_else(|| {
+                    format!("Updated task state with {}", call.name.replace('_', " "))
+                })
+        } else {
+            focus
+                .map(|value| format!("Ran {} for {value}", call.name.replace('_', " ")))
+                .unwrap_or_else(|| format!("Ran {}", call.name.replace('_', " ")))
+        };
+
+        if !call.success {
+            summary.push_str(" (failed)");
+        }
+
+        summary
+    }
+
+    fn remember_narration_event(&mut self, payload: &serde_json::Value, timestamp: DateTime<Utc>) {
+        let Some(payload) = payload.as_object() else {
+            return;
+        };
+
+        let stage = payload
+            .get("stage")
+            .and_then(serde_json::Value::as_str)
+            .map(Self::prettify_label);
+        let title = payload
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .map(|value| Self::concise_text(value, 96));
+        let summary = payload
+            .get("summary")
+            .and_then(serde_json::Value::as_str)
+            .map(|value| Self::concise_text(value, 220));
+        let reason = payload
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .map(|value| Self::concise_text(value, 220));
+        let next_step = payload
+            .get("next_step")
+            .and_then(serde_json::Value::as_str)
+            .map(|value| Self::concise_text(value, 160));
+        let message = payload
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .map(|value| Self::concise_text(value, 220));
+        let evidence = payload
+            .get("evidence")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str())
+                    .map(|item| Self::concise_text(item, 120))
+                    .filter(|item| !item.is_empty())
+                    .take(3)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let Some(summary_text) = summary.or(title).or(message) else {
+            return;
+        };
+
+        if self.timeline.iter().rev().take(3).any(|entry| {
+            entry.kind == SessionMemoryEntryKind::Narration && entry.summary == summary_text
+        }) {
+            return;
+        }
+
+        let mut detail_parts = Vec::new();
+        if let Some(stage) = stage.as_deref() {
+            detail_parts.push(format!("Stage: {stage}"));
+        }
+        if let Some(reason) = reason.as_deref() {
+            detail_parts.push(format!("Why it matters: {reason}"));
+        }
+        if let Some(next_step) = next_step.as_deref() {
+            detail_parts.push(format!("Next: {next_step}"));
+            self.add_next_action(next_step.to_string());
+        }
+        if !evidence.is_empty() {
+            detail_parts.push(format!("Evidence: {}", evidence.join(" | ")));
+        }
+
+        let detail =
+            (!detail_parts.is_empty()).then(|| Self::truncate_text(&detail_parts.join("\n"), 280));
+
+        self.summary = Some(summary_text.clone());
+        Self::push_bounded(
+            &mut self.timeline,
+            SessionMemoryEntry {
+                id: Self::new_id(),
+                kind: SessionMemoryEntryKind::Narration,
+                summary: summary_text.clone(),
+                detail,
+                tool_call_id: None,
+                created_at: timestamp,
+            },
+            Self::MAX_TIMELINE,
+        );
+
+        if !evidence.is_empty() {
+            self.remember_finding(
+                summary_text.clone(),
+                evidence,
+                "narration",
+                None,
+                Self::finding_confidence_for_narration_stage(stage.as_deref()),
+            );
+        }
+
+        if stage.as_deref() == Some("blocked") {
+            self.remember_blocker(summary_text, reason);
+        }
     }
 
     fn trim_formatting_markers(text: &str) -> &str {
@@ -366,6 +706,8 @@ impl SessionWorkingMemory {
             .to_ascii_lowercase();
 
         match normalized.as_str() {
+            "finding" | "findings" | "key finding" | "key findings" | "research finding"
+            | "research findings" | "evidence" => Some(AssistantMemorySection::Finding),
             "decision" | "decisions" => Some(AssistantMemorySection::Decision),
             "blocker" | "blockers" => Some(AssistantMemorySection::Blocker),
             "resolved blocker" | "resolved blockers" | "unblocked" => {
@@ -386,6 +728,13 @@ impl SessionWorkingMemory {
         let normalized_lower = normalized.to_ascii_lowercase();
 
         for (prefix, section) in [
+            ("finding:", AssistantMemorySection::Finding),
+            ("findings:", AssistantMemorySection::Finding),
+            ("key finding:", AssistantMemorySection::Finding),
+            ("key findings:", AssistantMemorySection::Finding),
+            ("research finding:", AssistantMemorySection::Finding),
+            ("research findings:", AssistantMemorySection::Finding),
+            ("evidence:", AssistantMemorySection::Finding),
             ("decision:", AssistantMemorySection::Decision),
             ("decision -", AssistantMemorySection::Decision),
             ("decision —", AssistantMemorySection::Decision),
@@ -446,6 +795,21 @@ impl SessionWorkingMemory {
         (trimmed.to_string(), None)
     }
 
+    fn split_finding_claim_and_evidence(text: &str) -> (String, Vec<String>) {
+        let trimmed = text.trim();
+        for delimiter in [" — ", " – ", " -- "] {
+            if let Some((claim, evidence)) = trimmed.split_once(delimiter) {
+                let claim = claim.trim();
+                let evidence = evidence.trim();
+                if !claim.is_empty() && !evidence.is_empty() {
+                    return (claim.to_string(), vec![evidence.to_string()]);
+                }
+            }
+        }
+
+        (trimmed.to_string(), Vec::new())
+    }
+
     fn store_assistant_memory_item(&mut self, section: AssistantMemorySection, value: &str) {
         let value = Self::truncate_text(value, 220);
         if value.is_empty() {
@@ -453,6 +817,10 @@ impl SessionWorkingMemory {
         }
 
         match section {
+            AssistantMemorySection::Finding => {
+                let (claim, evidence) = Self::split_finding_claim_and_evidence(&value);
+                self.remember_finding(claim, evidence, "assistant_summary", None, 0.76);
+            }
             AssistantMemorySection::Decision => {
                 let (summary, rationale) = Self::split_decision_rationale(&value);
                 self.remember_decision(summary, rationale, vec!["assistant_signaled".to_string()]);
@@ -472,14 +840,33 @@ impl SessionWorkingMemory {
 
     fn extract_assistant_memory_signals(&mut self, content: &str) {
         let mut active_section: Option<AssistantMemorySection> = None;
+        let mut active_section_paragraph = String::new();
+
+        let flush_active_section_paragraph =
+            |working_memory: &mut Self,
+             section: Option<AssistantMemorySection>,
+             paragraph: &mut String| {
+                let Some(section) = section else {
+                    paragraph.clear();
+                    return;
+                };
+
+                let candidate = paragraph.trim();
+                if !candidate.is_empty() {
+                    working_memory.store_assistant_memory_item(section, candidate);
+                }
+                paragraph.clear();
+            };
 
         for raw_line in content.lines() {
             let trimmed = raw_line.trim();
             if trimmed.is_empty() {
+                flush_active_section_paragraph(self, active_section, &mut active_section_paragraph);
                 continue;
             }
 
             if let Some(section) = Self::heading_section(trimmed) {
+                flush_active_section_paragraph(self, active_section, &mut active_section_paragraph);
                 active_section = Some(section);
                 continue;
             }
@@ -488,6 +875,8 @@ impl SessionWorkingMemory {
             let candidate = Self::strip_task_checkbox_prefix(list_or_plain);
 
             if let Some((section, value)) = Self::prefixed_section(candidate) {
+                flush_active_section_paragraph(self, active_section, &mut active_section_paragraph);
+                active_section = Some(section);
                 self.store_assistant_memory_item(section, &value);
                 continue;
             }
@@ -495,12 +884,24 @@ impl SessionWorkingMemory {
             if let Some(section) = active_section
                 && Self::strip_list_prefix(trimmed).is_some()
             {
+                flush_active_section_paragraph(self, active_section, &mut active_section_paragraph);
                 self.store_assistant_memory_item(section, candidate);
                 continue;
             }
 
+            if active_section.is_some() {
+                if !active_section_paragraph.is_empty() {
+                    active_section_paragraph.push(' ');
+                }
+                active_section_paragraph.push_str(candidate);
+                continue;
+            }
+
+            flush_active_section_paragraph(self, active_section, &mut active_section_paragraph);
             active_section = None;
         }
+
+        flush_active_section_paragraph(self, active_section, &mut active_section_paragraph);
     }
 
     fn push_bounded<T>(items: &mut Vec<T>, item: T, max_len: usize) {
@@ -549,6 +950,65 @@ impl SessionWorkingMemory {
                 updated_at: now,
             },
             Self::MAX_RESOURCES,
+        );
+    }
+
+    /// Track a synthesized finding for the active session.
+    pub fn remember_finding(
+        &mut self,
+        claim: impl Into<String>,
+        evidence: Vec<String>,
+        source: impl Into<String>,
+        tool_call_id: Option<String>,
+        confidence: f32,
+    ) {
+        let now = Utc::now();
+        let claim = Self::truncate_text(&claim.into(), 220);
+        if claim.is_empty() {
+            return;
+        }
+
+        let evidence = evidence
+            .into_iter()
+            .filter_map(|item| Self::finding_evidence_excerpt(&item))
+            .take(4)
+            .collect::<Vec<_>>();
+        let source = source.into();
+        let confidence = confidence.clamp(0.0, 1.0);
+        let tool_call_id_ref = tool_call_id.as_deref();
+
+        if let Some(existing) = self.findings.iter_mut().find(|finding| {
+            finding.claim == claim
+                || tool_call_id_ref
+                    .is_some_and(|call_id| finding.tool_call_id.as_deref() == Some(call_id))
+        }) {
+            if !evidence.is_empty() {
+                existing.evidence = evidence;
+            }
+            if confidence >= existing.confidence {
+                existing.source = source;
+            }
+            existing.confidence = existing.confidence.max(confidence);
+            if existing.tool_call_id.is_none() {
+                existing.tool_call_id = tool_call_id;
+            }
+            existing.updated_at = now;
+            return;
+        }
+
+        Self::push_bounded(
+            &mut self.findings,
+            SessionMemoryFinding {
+                id: Self::new_id(),
+                claim,
+                evidence,
+                source,
+                confidence,
+                tool_call_id,
+                created_at: now,
+                updated_at: now,
+            },
+            Self::MAX_FINDINGS,
         );
     }
 
@@ -713,10 +1173,10 @@ impl SessionWorkingMemory {
 
     /// Track a tool call in short-term memory.
     pub fn remember_tool_call(&mut self, call: &SessionToolCall) {
-        let summary = format!("{} executed", call.name);
+        let summary = Self::summarize_tool_call(call);
         self.remember_resource(
             SessionMemoryResourceKind::ToolCall,
-            call.name.clone(),
+            summary.clone(),
             call.result.clone(),
             "tool_call",
             Some(call.id.clone()),
@@ -726,13 +1186,23 @@ impl SessionWorkingMemory {
             SessionMemoryEntry {
                 id: Self::new_id(),
                 kind: SessionMemoryEntryKind::ToolInsight,
-                summary,
+                summary: summary.clone(),
                 detail: Some(Self::truncate_text(&call.result, 220)),
                 tool_call_id: Some(call.id.clone()),
                 created_at: Utc::now(),
             },
             Self::MAX_TIMELINE,
         );
+
+        if Self::should_remember_tool_call_finding(call) {
+            self.remember_finding(
+                summary.clone(),
+                Self::tool_call_finding_evidence(call),
+                call.name.clone(),
+                Some(call.id.clone()),
+                Self::tool_call_finding_confidence(call),
+            );
+        }
 
         let blocker_summary = format!("Tool '{}' failed", call.name);
         if call.success {
@@ -785,6 +1255,36 @@ impl SessionWorkingMemory {
                     resource.source, resource.label, resource.value
                 ),
             ));
+        }
+
+        for finding in &self.findings {
+            let haystack = format!(
+                "{} {} {} {:.2}",
+                finding.claim,
+                finding.evidence.join(" "),
+                finding.source,
+                finding.confidence
+            )
+            .to_ascii_lowercase();
+            let score = if query_lower.is_empty() || haystack.contains(&query_lower) {
+                3.4
+            } else {
+                0.95
+            };
+            let detail = if finding.evidence.is_empty() {
+                format!(
+                    " (source={}; confidence={:.2})",
+                    finding.source, finding.confidence
+                )
+            } else {
+                format!(
+                    " (source={}; confidence={:.2}; evidence={})",
+                    finding.source,
+                    finding.confidence,
+                    finding.evidence.join(" | ")
+                )
+            };
+            scored_sections.push((score, format!("Finding: {}{}", finding.claim, detail)));
         }
 
         for decision in &self.decisions {
@@ -882,6 +1382,27 @@ impl SessionWorkingMemory {
     pub fn promotion_candidates(&self, limit: usize) -> Vec<SessionMemoryPromotionCandidate> {
         let mut candidates = Vec::new();
 
+        for finding in &self.findings {
+            let mut tags = vec!["finding".to_string(), finding.source.clone()];
+            if finding.tool_call_id.is_some() {
+                tags.push("tool_backed".to_string());
+            }
+            candidates.push(SessionMemoryPromotionCandidate {
+                source: SessionMemoryPromotionSource::Finding,
+                summary: finding.claim.clone(),
+                detail: (!finding.evidence.is_empty()).then(|| {
+                    format!(
+                        "source={}; confidence={:.2}; evidence={}",
+                        finding.source,
+                        finding.confidence,
+                        finding.evidence.join(" | ")
+                    )
+                }),
+                tags,
+                score: 3.3,
+            });
+        }
+
         for decision in &self.decisions {
             let mut tags = decision.tags.clone();
             if tags.is_empty() {
@@ -927,6 +1448,7 @@ impl SessionWorkingMemory {
 
         for entry in &self.timeline {
             if entry.kind == SessionMemoryEntryKind::AssistantSummary
+                || entry.kind == SessionMemoryEntryKind::Narration
                 || entry.kind == SessionMemoryEntryKind::Handoff
             {
                 candidates.push(SessionMemoryPromotionCandidate {
@@ -957,6 +1479,7 @@ impl SessionWorkingMemory {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AssistantMemorySection {
+    Finding,
     Decision,
     Blocker,
     ResolvedBlocker,
@@ -1228,8 +1751,14 @@ impl SessionState {
         event_type: impl Into<String>,
         payload: Option<serde_json::Value>,
     ) {
-        self.activity_log
-            .push(SessionActivityEvent::new(event_type, payload));
+        let event = SessionActivityEvent::new(event_type, payload);
+        if event.event_type == "agent-stream-narration"
+            && let Some(payload) = event.payload.as_ref()
+        {
+            self.working_memory
+                .remember_narration_event(payload, event.timestamp);
+        }
+        self.activity_log.push(event);
     }
 
     /// Add a decision to session working memory.
@@ -1472,6 +2001,30 @@ mod tests {
     }
 
     #[test]
+    fn assistant_messages_extract_findings_and_plaintext_section_body() {
+        let mut state = SessionState::default();
+
+        state.add_assistant_message(
+            "## Key findings\nThe markdown parser was flattening paragraph lines before rendering them.\n\n### Next steps\nAdd a regression test for preserved line breaks.\n\n### Open questions\nShould narration updates also preserve authored markdown blocks?",
+            None,
+        );
+
+        assert_eq!(state.working_memory.findings.len(), 1);
+        assert_eq!(
+            state.working_memory.findings[0].claim,
+            "The markdown parser was flattening paragraph lines before rendering them."
+        );
+        assert_eq!(
+            state.working_memory.next_actions,
+            vec!["Add a regression test for preserved line breaks."]
+        );
+        assert_eq!(
+            state.working_memory.open_questions,
+            vec!["Should narration updates also preserve authored markdown blocks?"]
+        );
+    }
+
+    #[test]
     fn failed_tool_calls_create_and_resolve_blockers() {
         let mut state = SessionState::default();
 
@@ -1509,6 +2062,148 @@ mod tests {
         assert_eq!(
             state.working_memory.blockers[0].status,
             SessionBlockerStatus::Resolved
+        );
+    }
+
+    #[test]
+    fn tool_call_timeline_summaries_capture_user_facing_context() {
+        let mut state = SessionState::default();
+
+        state.record_tool_call(SessionToolCall {
+            id: "tool-search".to_string(),
+            name: "web_search".to_string(),
+            arguments: serde_json::json!({
+                "operation": "search",
+                "query": "smart home lighting market trends 2025 2026"
+            })
+            .to_string(),
+            result: "Found several market reports".to_string(),
+            success: true,
+            duration_ms: 18,
+            timestamp: Utc::now(),
+        });
+
+        let entry = state
+            .working_memory
+            .timeline
+            .last()
+            .expect("tool call adds timeline entry");
+        assert_eq!(entry.kind, SessionMemoryEntryKind::ToolInsight);
+        assert_eq!(
+            entry.summary,
+            "Searched for smart home lighting market trends 2025 2026"
+        );
+        assert_eq!(
+            state.working_memory.resources[0].label,
+            "Searched for smart home lighting market trends 2025 2026"
+        );
+    }
+
+    #[test]
+    fn narration_activity_events_enrich_working_memory() {
+        let mut state = SessionState::default();
+
+        state.record_activity_event(
+            "agent-stream-narration",
+            Some(serde_json::json!({
+                "stage": "verification",
+                "title": "Locking in the evidence",
+                "summary": "I confirmed enough market-growth evidence to draft the SWOT.",
+                "reason": "This keeps the final write-up grounded in current market data.",
+                "next_step": "Turn the verified research into the final markdown deliverable.",
+                "evidence": [
+                    "Two recent market reports agree on double-digit CAGR growth.",
+                    "Consumer-demand sources reinforce the $30-$80 positioning."
+                ]
+            })),
+        );
+
+        assert_eq!(state.activity_log.len(), 1);
+        assert_eq!(state.working_memory.timeline.len(), 1);
+        assert_eq!(
+            state.working_memory.timeline[0].kind,
+            SessionMemoryEntryKind::Narration
+        );
+        assert_eq!(
+            state.working_memory.timeline[0].summary,
+            "I confirmed enough market-growth evidence to draft the SWOT."
+        );
+        assert!(
+            state.working_memory.timeline[0]
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains(
+                    "Next: Turn the verified research into the final markdown deliverable."
+                ))
+        );
+        assert_eq!(
+            state.working_memory.next_actions,
+            vec!["Turn the verified research into the final markdown deliverable."]
+        );
+        assert_eq!(state.working_memory.findings.len(), 1);
+        assert_eq!(
+            state.working_memory.findings[0].claim,
+            "I confirmed enough market-growth evidence to draft the SWOT."
+        );
+        assert_eq!(state.working_memory.findings[0].evidence.len(), 2);
+    }
+
+    #[test]
+    fn successful_research_tool_calls_capture_structured_findings() {
+        let mut state = SessionState::default();
+
+        state.record_tool_call(SessionToolCall {
+            id: "tool-search".to_string(),
+            name: "web_search".to_string(),
+            arguments: r#"{"query":"smart lighting market 2025 consumer drivers"}"#.to_string(),
+            result: "Market reports and retail analyses both point to strong consumer demand in smart lighting upgrades.".to_string(),
+            success: true,
+            duration_ms: 31,
+            timestamp: Utc::now(),
+        });
+
+        assert_eq!(state.working_memory.findings.len(), 1);
+        assert_eq!(
+            state.working_memory.findings[0].claim,
+            "Searched for smart lighting market 2025 consumer drivers"
+        );
+        assert!(
+            state.working_memory.findings[0]
+                .evidence
+                .iter()
+                .any(|item| item.contains("Observed result excerpt"))
+        );
+        assert_eq!(
+            state
+                .promotion_candidates(3)
+                .into_iter()
+                .find(|candidate| candidate.source == SessionMemoryPromotionSource::Finding)
+                .map(|candidate| candidate.summary),
+            Some("Searched for smart lighting market 2025 consumer drivers".to_string())
+        );
+    }
+
+    #[test]
+    fn blocked_narration_activity_events_open_blockers() {
+        let mut state = SessionState::default();
+
+        state.record_activity_event(
+            "agent-stream-narration",
+            Some(serde_json::json!({
+                "stage": "blocked",
+                "summary": "I still need one clean market-size source before finalizing the report.",
+                "reason": "The current search results conflict on the 2025 baseline."
+            })),
+        );
+
+        assert_eq!(state.working_memory.blockers.len(), 1);
+        assert_eq!(
+            state.working_memory.blockers[0].summary,
+            "I still need one clean market-size source before finalizing the report."
+        );
+        assert_eq!(
+            state.working_memory.blockers[0].detail.as_deref(),
+            Some("The current search results conflict on the 2025 baseline.")
         );
     }
 

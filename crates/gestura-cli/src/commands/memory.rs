@@ -871,6 +871,7 @@ fn parse_scope(value: &str) -> Result<MemoryScope> {
 fn promotion_source_label(source: SessionMemoryPromotionSource) -> &'static str {
     match source {
         SessionMemoryPromotionSource::Resource => "resource",
+        SessionMemoryPromotionSource::Finding => "finding",
         SessionMemoryPromotionSource::Decision => "decision",
         SessionMemoryPromotionSource::Blocker => "blocker",
         SessionMemoryPromotionSource::Timeline => "timeline",
@@ -881,6 +882,7 @@ fn promotion_source_label(source: SessionMemoryPromotionSource) -> &'static str 
 fn promotion_candidate_memory_type(candidate: &SessionMemoryPromotionCandidate) -> MemoryType {
     match candidate.source {
         SessionMemoryPromotionSource::Resource => MemoryType::Resource,
+        SessionMemoryPromotionSource::Finding => MemoryType::Semantic,
         SessionMemoryPromotionSource::Decision => MemoryType::Decision,
         SessionMemoryPromotionSource::Blocker => MemoryType::Blocker,
         SessionMemoryPromotionSource::Timeline => MemoryType::Episodic,

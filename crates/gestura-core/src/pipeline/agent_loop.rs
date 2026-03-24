@@ -1069,14 +1069,15 @@ impl AgentPipeline {
         if !snapshot.open_tasks.is_empty() {
             return (
                 crate::streaming::NarrationStage::Progress,
-                "There’s still work in progress, so I’m checking the current state before I choose the next step.".to_string(),
+                "There’s still work moving, and I want to keep the story accurate, so I’m checking the current state before I choose the next step."
+                    .to_string(),
                 fingerprint,
             );
         }
 
         (
             crate::streaming::NarrationStage::Progress,
-            "This looks complete from what I’ve confirmed, so I’m preparing the final summary."
+            "I’ve confirmed the main checks I needed, so I’m turning the work into a final summary without losing the evidence trail."
                 .to_string(),
             fingerprint,
         )
@@ -1142,6 +1143,7 @@ impl AgentPipeline {
 
     fn tool_narration_fingerprint(
         tool_name: &str,
+        tool_arguments: Option<&str>,
         stage: crate::streaming::NarrationStage,
         snapshot: Option<&crate::streaming::TaskRuntimeSnapshot>,
     ) -> String {
@@ -1160,9 +1162,12 @@ impl AgentPipeline {
         let missing_requirements = snapshot
             .map(|state| Self::narration_requirements_fingerprint(&state.missing_requirements))
             .unwrap_or_else(|| "clear".to_string());
+        let focus = tool_arguments
+            .and_then(|arguments| Self::public_tool_focus_phrase(tool_name, Some(arguments)))
+            .unwrap_or_default();
 
         format!(
-            "tool:{tool_family}:{}:{current_task}:{missing_requirements}",
+            "tool:{tool_family}:{}:{current_task}:{missing_requirements}:{focus}",
             stage.as_str()
         )
     }
@@ -1186,7 +1191,7 @@ impl AgentPipeline {
             "file" | "read_file" | "code" => (
                 crate::streaming::NarrationStage::Context,
                 format!(
-                    "I’m checking local project context{focus_suffix}{task_suffix} before the next concrete step.",
+                    "I found the next local context to inspect{focus_suffix}{task_suffix}, so I’m reading it now before I decide whether the safest next move is an edit or a verification pass.",
                 ),
             ),
             "shell" => (
@@ -1202,24 +1207,25 @@ impl AgentPipeline {
                     crate::streaming::NarrationStage::Execution
                 },
                 format!(
-                    "I’m running a concrete command{focus_suffix}{task_suffix} to gather direct proof and move the work forward.",
+                    "I’m running a direct command{focus_suffix}{task_suffix} because this is the quickest way to get proof about whether the current path is working, failing, or needs another change.",
                 ),
             ),
             "web" | "web_search" => (
                 crate::streaming::NarrationStage::Context,
                 format!(
-                    "I’m gathering outside context{focus_suffix}{task_suffix} before I choose the next concrete action.",
+                    "I’m pulling in outside evidence{focus_suffix}{task_suffix} so I can compare the current assumption against something concrete before I lock the next step.",
                 ),
             ),
             _ => (
                 crate::streaming::NarrationStage::Progress,
                 format!(
-                    "I’m taking the next tool step{focus_suffix}{task_suffix} to move the request forward safely.",
+                    "I’m taking the next tool step{focus_suffix}{task_suffix} so I can turn the current question into something concrete and decide what should happen next.",
                 ),
             ),
         };
 
-        let fingerprint = Self::tool_narration_fingerprint(tool_name, stage, snapshot);
+        let fingerprint =
+            Self::tool_narration_fingerprint(tool_name, tool_arguments, stage, snapshot);
         Some((stage, message, fingerprint))
     }
 
@@ -1292,6 +1298,7 @@ impl AgentPipeline {
                         "{}:{}",
                         Self::tool_narration_fingerprint(
                             name,
+                            tool_arguments,
                             Self::public_narration_stage(
                                 trigger,
                                 Some(name),
@@ -2063,16 +2070,16 @@ impl AgentPipeline {
         };
         let summary_hint = match tool_name.as_str() {
             "shell" => Self::sanitize_public_narration_section(&format!(
-                "I’m running a concrete command{task_suffix} so I can gather direct proof before I explain the next decision."
+                "I’m running a direct command{task_suffix} so the next decision is grounded in proof instead of guesswork."
             )),
             "file" | "read_file" | "code" => Self::sanitize_public_narration_section(&format!(
-                "I’m pulling project context{task_suffix} so the next step is grounded in the actual workspace state."
+                "I found the next local context to inspect{task_suffix}, so I’m reading the real workspace state before I decide whether to edit or verify next."
             )),
             "web" | "web_search" => Self::sanitize_public_narration_section(&format!(
-                "I’m gathering outside context{task_suffix} so I can anchor the next step in concrete evidence."
+                "I’m pulling in outside evidence{task_suffix} so I can test the current assumption against something concrete before I move on."
             )),
             _ => Self::sanitize_public_narration_section(&format!(
-                "I’m taking the next concrete tool step{task_suffix} so the work keeps moving with real evidence."
+                "I’m taking the next concrete tool step{task_suffix} so the work keeps moving on observed evidence instead of loose summaries."
             )),
         };
         let reason_hint = if let Some(current_task) = current_task.as_ref() {
@@ -14275,6 +14282,40 @@ mod tests {
             Some("{\"path\":\"src/lib.rs\"}"),
             Some(&snapshot),
             &[],
+        );
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn tool_narration_fingerprint_changes_when_tool_arguments_change() {
+        let snapshot = crate::streaming::TaskRuntimeSnapshot {
+            root_task_id: "root".to_string(),
+            current_task: Some(crate::streaming::TaskRuntimeTaskView {
+                id: "task-1".to_string(),
+                name: "Inspect the current state and constraints".to_string(),
+                status: "in_progress".to_string(),
+            }),
+            ready_tasks: Vec::new(),
+            parallel_ready_tasks: Vec::new(),
+            blocked_tasks: Vec::new(),
+            open_tasks: Vec::new(),
+            completed_tasks: Vec::new(),
+            missing_requirements: vec!["test command not yet observed".to_string()],
+            status_message: "Inspect task is active".to_string(),
+        };
+
+        let first = AgentPipeline::tool_narration_fingerprint(
+            "web_search",
+            Some(r#"{"query":"smart lighting market 2025"}"#),
+            crate::streaming::NarrationStage::Context,
+            Some(&snapshot),
+        );
+        let second = AgentPipeline::tool_narration_fingerprint(
+            "web_search",
+            Some(r#"{"query":"smart lighting market 2026"}"#),
+            crate::streaming::NarrationStage::Context,
+            Some(&snapshot),
         );
 
         assert_ne!(first, second);

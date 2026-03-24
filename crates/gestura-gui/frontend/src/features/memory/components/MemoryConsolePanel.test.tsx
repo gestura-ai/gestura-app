@@ -95,6 +95,7 @@ describe('MemoryConsolePanel', () => {
     agentMocks.getMemoryWorkingSnapshot.mockResolvedValue({
       summary: 'Session memory is currently sparse but healthy.',
       resources: [],
+      findings: [],
       decisions: [],
       blockers: [],
       timeline: [],
@@ -204,10 +205,48 @@ describe('MemoryConsolePanel', () => {
 
     expect(await screen.findByText('Fresh session with no captured memory yet.')).toBeInTheDocument();
     expect(screen.getByText('Resources').parentElement).toHaveTextContent('0');
+    expect(screen.getAllByText(/^Findings$/)[0].parentElement).toHaveTextContent('0');
     expect(screen.getByText('Decisions').parentElement).toHaveTextContent('0');
     expect(screen.getByText('Blockers').parentElement).toHaveTextContent('0');
-    expect(screen.getByText(/Next actions/i).parentElement).toHaveTextContent('None');
+    expect(screen.getAllByText(/Next actions/i)[0].parentElement).toHaveTextContent('None');
     expect(screen.getByText(/Open questions/i).parentElement).toHaveTextContent('None');
+    expect(screen.getAllByText(/^Findings$/)[1].parentElement).toHaveTextContent('No structured findings captured yet.');
+  });
+
+  it('renders structured findings in the working-memory tab', async () => {
+    agentMocks.getMemoryWorkingSnapshot.mockResolvedValue({
+      summary: 'The session has captured concrete research findings.',
+      resources: [],
+      findings: [
+        {
+          id: 'finding-1',
+          claim: 'Smart-lighting demand is still being driven by retrofit upgrades.',
+          evidence: [
+            'Observed result excerpt: Retail and market reports both point to retrofit demand.',
+            'Observed focus: smart lighting market 2025 consumer drivers',
+          ],
+          source: 'web_search',
+          confidence: 0.82,
+          tool_call_id: 'tool-search',
+        },
+      ],
+      decisions: [],
+      blockers: [],
+      timeline: [],
+      next_actions: ['Turn the finding into a concise SWOT strength.'],
+      open_questions: ['Do we have enough price-sensitivity evidence?'],
+    });
+
+    render(<MemoryConsolePanel sessionId="session-1" workspaceDir="/tmp/workspace" allowSessionSelection={false} />);
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Memory view' }), {
+      target: { value: 'working' },
+    });
+
+    expect(await screen.findByText('Smart-lighting demand is still being driven by retrofit upgrades.')).toBeInTheDocument();
+    expect(screen.getByText(/web search · 82% confidence · tool tool-search/i)).toBeInTheDocument();
+    expect(screen.getByText(/Retail and market reports both point to retrofit demand/i)).toBeInTheDocument();
+    expect(screen.getByText(/smart lighting market 2025 consumer drivers/i)).toBeInTheDocument();
   });
 });
 

@@ -52,7 +52,7 @@ vi.mock('../../../services/tauri/agent', () => ({
 function blocksToText(
   blocks: Array<{
     kind: string;
-    title?: string;
+    title?: string | null;
     content?: string;
     label?: string;
     detail?: string;

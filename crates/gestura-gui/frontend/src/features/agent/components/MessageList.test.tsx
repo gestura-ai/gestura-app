@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentMessage } from '../types';
+import { parseMarkdown } from '../utils/markdown';
 import { MessageList } from './MessageList';
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -327,6 +328,20 @@ describe('MessageList', () => {
     expect(nestedItem?.parentElement?.tagName).toBe('UL');
     expect(nestedItem?.parentElement?.parentElement?.tagName).toBe('LI');
     expect(deeplyNestedItem?.parentElement?.tagName).toBe('UL');
+  });
+
+  it('preserves paragraph line breaks and list continuation lines in markdown output', () => {
+    const html = parseMarkdown([
+      'First line of the walkthrough',
+      'Second line that should stay on its own line',
+      '',
+      '- parent bullet',
+      '  continuation detail',
+      '  - nested bullet',
+    ].join('\n'));
+
+    expect(html).toContain('<p>First line of the walkthrough<br />Second line that should stay on its own line</p>');
+    expect(html).toContain('parent bullet<br />continuation detail<ul><li>nested bullet</li></ul>');
   });
 
   it('preserves markdown in structured task-management narrations assembled from fields', () => {

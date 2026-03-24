@@ -21,6 +21,7 @@ import {
   type MemoryConsoleSearchResponse,
   type MemoryConsoleSessionSummary,
   type SessionMemoryPromotionCandidate,
+  type SessionMemoryFinding,
   type SessionWorkingMemory,
   type TaskMemoryConsoleDetail,
 } from '../../../services/tauri/agent';
@@ -49,6 +50,7 @@ type TaskMemoryLifecycleEvent = {
 
 const emptyWorkingMemory: SessionWorkingMemory = {
   resources: [],
+  findings: [],
   decisions: [],
   blockers: [],
   timeline: [],
@@ -98,12 +100,22 @@ function normalizeWorkingMemory(next: SessionWorkingMemory | null | undefined): 
     ...emptyWorkingMemory,
     ...next,
     resources: arrayOrEmpty(next.resources),
+    findings: arrayOrEmpty(next.findings),
     decisions: arrayOrEmpty(next.decisions),
     blockers: arrayOrEmpty(next.blockers),
     timeline: arrayOrEmpty(next.timeline),
     next_actions: arrayOrEmpty(next.next_actions),
     open_questions: arrayOrEmpty(next.open_questions),
   };
+}
+
+function formatConfidencePercent(confidence: number | null | undefined): string {
+  return `${Math.round(Math.max(0, Math.min(1, confidence ?? 0)) * 100)}%`;
+}
+
+function formatMemorySourceLabel(source: string | null | undefined): string {
+  const normalized = (source ?? '').trim();
+  return normalized ? normalized.replace(/_/g, ' ') : 'unknown source';
 }
 
 function normalizePromotions(next: SessionMemoryPromotionCandidate[]): SessionMemoryPromotionCandidate[] {
@@ -136,6 +148,7 @@ function normalizeEntryDetail(next: MemoryConsoleEntryDetail): MemoryConsoleEntr
 function promotionSourceLabel(source: SessionMemoryPromotionCandidate['source']) {
   switch (source) {
     case 'resource': return 'resource';
+    case 'finding': return 'finding';
     case 'decision': return 'decision';
     case 'blocker': return 'blocker';
     case 'timeline': return 'timeline';
@@ -146,6 +159,7 @@ function promotionSourceLabel(source: SessionMemoryPromotionCandidate['source'])
 function promotionMemoryType(source: SessionMemoryPromotionCandidate['source']) {
   switch (source) {
     case 'resource': return 'resource';
+    case 'finding': return 'semantic';
     case 'decision': return 'decision';
     case 'blocker': return 'blocker';
     case 'timeline': return 'episodic';
@@ -458,6 +472,7 @@ export function MemoryConsolePanel({
   const activeTabLabel = tabs.find(([key]) => key === activeTab)?.[1] ?? 'Overview';
   const workingStats = working ? [
     ['Resources', working.resources.length],
+    ['Findings', working.findings.length],
     ['Decisions', working.decisions.length],
     ['Blockers', working.blockers.length],
     ['Timeline', working.timeline.length],
@@ -662,6 +677,33 @@ export function MemoryConsolePanel({
                   <strong>Open questions</strong>
                   <p>{working.open_questions.join(', ') || 'None'}</p>
                 </div>
+              </div>
+              <div className="memory-console-summary">
+                <strong>Findings</strong>
+                {working.findings.length > 0 ? (
+                  <div className="task-list" style={{ marginTop: 12 }}>
+                    {working.findings.map((finding: SessionMemoryFinding) => (
+                      <div key={finding.id} className="task-item-row">
+                        <div style={{ width: '100%', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
+                          <strong>{finding.claim}</strong>
+                          <div className="task-item-meta">
+                            {formatMemorySourceLabel(finding.source)} · {formatConfidencePercent(finding.confidence)} confidence
+                            {finding.tool_call_id ? ` · tool ${finding.tool_call_id}` : ''}
+                          </div>
+                          {finding.evidence.length > 0 && (
+                            <ul style={{ margin: '8px 0 0 18px' }}>
+                              {finding.evidence.map((item, index) => (
+                                <li key={`${finding.id}-evidence-${index}`}>{item}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p>No structured findings captured yet.</p>
+                )}
               </div>
             </div>
           )}

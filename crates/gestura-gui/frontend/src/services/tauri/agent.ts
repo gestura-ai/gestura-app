@@ -182,8 +182,20 @@ export interface MemoryConsoleSearchResponse {
   durable_memory: MemoryConsoleEntrySummary[];
 }
 
+export interface SessionMemoryFinding {
+  id: string;
+  claim: string;
+  evidence: string[];
+  source: string;
+  confidence: number;
+  tool_call_id?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface SessionWorkingMemory {
   resources: Array<Record<string, unknown>>;
+  findings: SessionMemoryFinding[];
   decisions: Array<Record<string, unknown>>;
   blockers: Array<Record<string, unknown>>;
   timeline: Array<Record<string, unknown>>;
@@ -193,7 +205,7 @@ export interface SessionWorkingMemory {
 }
 
 export interface SessionMemoryPromotionCandidate {
-  source: 'resource' | 'decision' | 'blocker' | 'timeline' | 'next_action';
+  source: 'resource' | 'finding' | 'decision' | 'blocker' | 'timeline' | 'next_action';
   summary: string;
   detail?: string | null;
   tags: string[];

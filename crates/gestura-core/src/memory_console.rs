@@ -1096,6 +1096,7 @@ fn timeline_kind_label(kind: SessionMemoryEntryKind) -> &'static str {
     match kind {
         SessionMemoryEntryKind::UserGoal => "user_goal",
         SessionMemoryEntryKind::AssistantSummary => "assistant_summary",
+        SessionMemoryEntryKind::Narration => "narration",
         SessionMemoryEntryKind::ToolInsight => "tool_insight",
         SessionMemoryEntryKind::Handoff => "handoff",
     }
