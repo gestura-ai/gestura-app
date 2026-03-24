@@ -3,7 +3,7 @@ use super::*;
 impl AgentPipeline {
     fn append_tool_discipline(&self, prompt: &mut String) {
         prompt.push_str(
-            "Tool usage discipline:\n- For `task.create`, provide `name` (and preferably `description`); do not send `task_id` because the runtime assigns it.\n- For `task.update_status`, always include both `task_id` and `status`; do not omit `status` and expect the runtime to infer it.\n- Use `read_file` to read one exact file. After reading an existing file, prefer `edit_file` for targeted changes. Use `write_file` only when you provide the full replacement `content`. Reserve the generic `file` tool for list/tree/search-style inspection.\n- `code.batch_edit` requires `edits`, and `edits` must be an array even for a single change. Each entry needs `path`, `old_str`, and `new_str`.\n- For install/build/test/scaffold shell commands, include non-interactive flags when needed and set a generous `timeout_secs` (for example 300). When the command is expected to run long but should keep going while showing shell activity, set `allow_long_running=true` and optionally `stall_timeout_secs`. Do not wrap commands with shell `timeout`; use the tool's own timeout fields instead.\n- Do not manually synthesize a project scaffold with shell heredocs, bulk `mkdir`/`touch` scripts, or ad-hoc file creation when an official scaffold or init tool is still the right tool. If a scaffold tool is non-interactive-sensitive, inspect `--help` and then use one documented non-interactive scaffold/init command.\nCanonical JSON tool call shapes:\n- `task.create`: {\"operation\":\"create\",\"name\":\"Apply requested project changes\",\"description\":\"Inspect the relevant files, implement the request, and run the appropriate verification\"}\n- `task.update_status`: {\"operation\":\"update_status\",\"task_id\":\"abc123\",\"status\":\"inprogress\"}\n- `read_file`: {\"path\":\"README.md\"}\n- `write_file`: {\"path\":\"README.md\",\"content\":\"# Project notes\\n\"}\n- `edit_file`: {\"path\":\"app/main.py\",\"old\":\"print(\\\"Hello\\\")\",\"new\":\"print(\\\"Hello, world!\\\")\"}\n- `code.batch_edit`: {\"operation\":\"batch_edit\",\"edits\":[{\"path\":\"src/lib.rs\",\"old_str\":\"fn greet() {}\",\"new_str\":\"fn greet() { println!(\\\"hello\\\"); }\"}]}\n\n",
+            "Tool usage discipline:\n- For `task_create`, provide `name` (and preferably `description`); do not send `task_id` because the runtime assigns it.\n- For `task_update`, provide `task_id` plus at least one of `name` or `description`; do not use it when the only intended change is state.\n- For `task_update_status`, always include both `task_id` and `status`; do not omit `status` and expect the runtime to infer it.\n- Use `read_file` to read one exact file. After reading an existing file, prefer `edit_file` for targeted changes. Use `write_file` only when you provide the full replacement `content`. Reserve the generic `file` tool for list/tree/search-style inspection.\n- `code.batch_edit` requires `edits`, and `edits` must be an array even for a single change. Each entry needs `path`, `old_str`, and `new_str`.\n- For install/build/test/scaffold shell commands, include non-interactive flags when needed and set a generous `timeout_secs` (for example 300). When the command is expected to run long but should keep going while showing shell activity, set `allow_long_running=true` and optionally `stall_timeout_secs`. Do not wrap commands with shell `timeout`; use the tool's own timeout fields instead.\n- Do not manually synthesize a project scaffold with shell heredocs, bulk `mkdir`/`touch` scripts, or ad-hoc file creation when an official scaffold or init tool is still the right tool. If a scaffold tool is non-interactive-sensitive, inspect `--help` and then use one documented non-interactive scaffold/init command.\nCanonical JSON tool call shapes:\n- `task_create`: {\"name\":\"Apply requested project changes\",\"description\":\"Inspect the relevant files, implement the request, and run the appropriate verification\"}\n- `task_update`: {\"task_id\":\"abc123\",\"description\":\"Rename or clarify the task text\"}\n- `task_update_status`: {\"task_id\":\"abc123\",\"status\":\"inprogress\"}\n- `read_file`: {\"path\":\"README.md\"}\n- `write_file`: {\"path\":\"README.md\",\"content\":\"# Project notes\\n\"}\n- `edit_file`: {\"path\":\"app/main.py\",\"old\":\"print(\\\"Hello\\\")\",\"new\":\"print(\\\"Hello, world!\\\")\"}\n- `code.batch_edit`: {\"operation\":\"batch_edit\",\"edits\":[{\"path\":\"src/lib.rs\",\"old_str\":\"fn greet() {}\",\"new_str\":\"fn greet() { println!(\\\"hello\\\"); }\"}]}\n\n",
         );
     }
 
@@ -196,23 +196,36 @@ impl AgentPipeline {
         let session_id = metadata.session_id.as_deref()?;
         let task_id = metadata.task_id.as_deref()?;
         let tracked_task = manager.get_task(session_id, task_id).ok().flatten()?;
+        let tracked_root =
+            Self::resolve_tracked_task_root_with_manager(manager, session_id, &tracked_task);
 
         let mut section = String::from("Tracked task context:\n");
         section.push_str(
-            "Use these exact task IDs when calling the task tool to update progress. For `update_status`, ALWAYS send both the exact `task_id` and an explicit `status` (`notstarted`, `inprogress`, `completed`, or `cancelled`). The runtime already manages the tracked root task's overall lifecycle during this run, so do not call `task.update_status` on the root task just to keep it `InProgress` or preserve the current state. Reserve manual task updates for genuine status changes, especially on concrete subtasks; if no status changed, continue the real work instead.\n",
+            "Use these exact task IDs when calling task tools to update progress. For `task_update_status`, ALWAYS send both the exact `task_id` and an explicit `status` (`notstarted`, `inprogress`, `completed`, or `cancelled`). The runtime already manages the tracked root task's overall lifecycle during this run, so do not call `task_update_status` on the root task just to keep it `InProgress` or preserve the current state. Reserve manual task updates for genuine status changes, especially on concrete subtasks; if no status changed, continue the real work instead.\n",
         );
+        if tracked_root.id != tracked_task.id {
+            section.push_str(&format!(
+                "Current execution task: {} (ID: {}, Status: {:?}).\nOwning tracked root task: {} (ID: {}, Status: {:?}). If you discover follow-on execution work while finishing the current task, create it under the tracked root with `parent_id` set to the root task ID so the current execution task can be completed once that handoff is done. Only nest new work under the current execution task when it is a true blocking prerequisite that must finish before the current task itself can be completed.\n",
+                tracked_task.name,
+                tracked_task.id,
+                tracked_task.status,
+                tracked_root.name,
+                tracked_root.id,
+                tracked_root.status,
+            ));
+        }
 
         let mut remaining = 12usize;
         if let Some(node) = manager
             .get_task_tree(session_id)
             .ok()
-            .and_then(|nodes| Self::find_task_tree_node(&nodes, task_id).cloned())
+            .and_then(|nodes| Self::find_task_tree_node(&nodes, &tracked_root.id).cloned())
         {
             Self::append_task_tree_node_prompt(&mut section, &node, 0, &mut remaining);
         } else {
             section.push_str(&format!(
                 "- {} (ID: {}, Status: {:?})\n",
-                tracked_task.name, tracked_task.id, tracked_task.status
+                tracked_root.name, tracked_root.id, tracked_root.status
             ));
             remaining = remaining.saturating_sub(1);
         }
@@ -222,6 +235,28 @@ impl AgentPipeline {
         }
 
         Some(section)
+    }
+
+    fn resolve_tracked_task_root_with_manager(
+        manager: &crate::TaskManager,
+        session_id: &str,
+        tracked_task: &crate::Task,
+    ) -> crate::Task {
+        let mut current = tracked_task.clone();
+
+        for _ in 0..64 {
+            let Some(parent_id) = current.parent_id.clone() else {
+                break;
+            };
+
+            let Some(parent_task) = manager.get_task(session_id, &parent_id).ok().flatten() else {
+                break;
+            };
+
+            current = parent_task;
+        }
+
+        current
     }
 
     fn find_task_tree_node<'a>(
@@ -518,7 +553,11 @@ mod tests {
 
         assert!(prompt.contains("Tool usage discipline:"));
         assert!(prompt.contains("do not send `task_id` because the runtime assigns it"));
+        assert!(prompt.contains(
+            "For `task_update`, provide `task_id` plus at least one of `name` or `description`"
+        ));
         assert!(prompt.contains("always include both `task_id` and `status`"));
+        assert!(prompt.contains("`task_update_status`"));
         assert!(prompt.contains("prefer `edit_file` for targeted changes"));
         assert!(
             prompt
@@ -576,8 +615,66 @@ mod tests {
             section.contains("runtime already manages the tracked root task's overall lifecycle")
         );
         assert!(section.contains(
-            "do not call `task.update_status` on the root task just to keep it `InProgress`"
+            "do not call `task_update_status` on the root task just to keep it `InProgress`"
         ));
         assert!(!section.contains("Keep the tracked root task in progress until every planned descendant is completed or cancelled"));
+    }
+
+    #[test]
+    fn descendant_tracked_task_context_exposes_root_for_follow_on_work() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let manager = crate::TaskManager::new(temp_dir.path());
+        let session_id = format!("prompt-task-descendant-context-{}", uuid::Uuid::new_v4());
+
+        let root = manager
+            .create_task(&session_id, "Build hello app", "desc", None)
+            .expect("root task");
+        let child = manager
+            .create_task(
+                &session_id,
+                "Inspect the current state",
+                "desc",
+                Some(root.id.clone()),
+            )
+            .expect("child task");
+        let sibling = manager
+            .create_task(
+                &session_id,
+                "Carry out the requested work",
+                "desc",
+                Some(root.id.clone()),
+            )
+            .expect("sibling task");
+
+        manager
+            .update_task_status(&session_id, &root.id, TaskStatus::InProgress)
+            .expect("root in progress");
+        manager
+            .update_task_status(&session_id, &child.id, TaskStatus::InProgress)
+            .expect("child in progress");
+
+        let metadata = RequestMetadata {
+            session_id: Some(session_id),
+            task_id: Some(child.id.clone()),
+            ..Default::default()
+        };
+
+        let section = AgentPipeline::build_tracked_task_context_with_manager(&manager, &metadata)
+            .expect("tracked task context");
+
+        assert!(section.contains("Current execution task: Inspect the current state"));
+        assert!(section.contains(child.id.as_str()));
+        assert!(section.contains("Owning tracked root task: Build hello app"));
+        assert!(section.contains(root.id.as_str()));
+        assert!(
+            section.contains(
+                "create it under the tracked root with `parent_id` set to the root task ID"
+            )
+        );
+        assert!(section.contains(
+            "Only nest new work under the current execution task when it is a true blocking prerequisite"
+        ));
+        assert!(section.contains("Carry out the requested work"));
+        assert!(section.contains(sibling.id.as_str()));
     }
 }

@@ -52,9 +52,27 @@ pub mod shell_streaming {
     #[cfg(unix)]
     use nix::libc;
     use std::collections::HashMap;
+    use std::time::Duration;
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::process::Command;
     use tokio::sync::mpsc;
+
+    const SHELL_OUTPUT_SEND_TIMEOUT: Duration = Duration::from_millis(100);
+
+    async fn send_shell_output_chunk_best_effort(
+        tx: &mpsc::Sender<StreamChunk>,
+        chunk: StreamChunk,
+    ) {
+        match tokio::time::timeout(SHELL_OUTPUT_SEND_TIMEOUT, tx.send(chunk)).await {
+            Ok(Ok(())) | Ok(Err(_)) => {}
+            Err(_) => {
+                tracing::debug!(
+                    timeout_ms = SHELL_OUTPUT_SEND_TIMEOUT.as_millis(),
+                    "Dropping shell output chunk because the stream receiver is not draining fast enough"
+                );
+            }
+        }
+    }
 
     /// Spawn a shell command and stream its output.
     ///
@@ -127,14 +145,16 @@ pub mod shell_streaming {
             while let Ok(Some(line)) = lines.next_line().await {
                 collected.push_str(&line);
                 collected.push('\n');
-                let _ = tx_out
-                    .send(StreamChunk::ShellOutput {
+                send_shell_output_chunk_best_effort(
+                    &tx_out,
+                    StreamChunk::ShellOutput {
                         process_id: pid_out.clone(),
                         shell_session_id: None,
                         stream: ShellOutputStream::Stdout,
                         data: format!("{line}\n"),
-                    })
-                    .await;
+                    },
+                )
+                .await;
             }
             collected
         });
@@ -147,14 +167,16 @@ pub mod shell_streaming {
             while let Ok(Some(line)) = lines.next_line().await {
                 collected.push_str(&line);
                 collected.push('\n');
-                let _ = tx_err
-                    .send(StreamChunk::ShellOutput {
+                send_shell_output_chunk_best_effort(
+                    &tx_err,
+                    StreamChunk::ShellOutput {
                         process_id: pid_err.clone(),
                         shell_session_id: None,
                         stream: ShellOutputStream::Stderr,
                         data: format!("{line}\n"),
-                    })
-                    .await;
+                    },
+                )
+                .await;
             }
             collected
         });

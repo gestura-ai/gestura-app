@@ -187,12 +187,13 @@ pub struct AgentTelemetrySettings {
 }
 
 /// OTLP trace export settings for request-level agent telemetry.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentTelemetryTraceExportProtocol {
     /// Export traces via OTLP/HTTP.
     Http,
     /// Export traces via OTLP/gRPC.
+    #[default]
     Grpc,
 }
 
@@ -225,12 +226,6 @@ impl AgentTelemetryTraceExportProtocol {
             Self::Http => gestura_core_foundation::telemetry::DEFAULT_OTLP_HTTP_TRACE_ENDPOINT,
             Self::Grpc => gestura_core_foundation::telemetry::DEFAULT_OTLP_GRPC_TRACE_ENDPOINT,
         }
-    }
-}
-
-impl Default for AgentTelemetryTraceExportProtocol {
-    fn default() -> Self {
-        Self::Grpc
     }
 }
 

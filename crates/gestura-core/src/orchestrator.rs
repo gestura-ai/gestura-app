@@ -4390,6 +4390,13 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
         .with_agent(task.agent_id.clone())
         .with_memory_tags(task.memory_tags.clone());
 
+    if !task.prompt.trim().is_empty() {
+        request.metadata.hints.insert(
+            "requirement_detection_input".to_string(),
+            task.prompt.clone(),
+        );
+    }
+
     if let Some(session_id) = task.session_id.as_deref() {
         request = request.with_session(session_id.to_string());
     }

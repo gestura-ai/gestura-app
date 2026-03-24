@@ -66,6 +66,22 @@ mod imp {
     const DEFAULT_EXECUTION_TIMEOUT_SECS: u64 = 300;
     const MIN_STALL_TIMEOUT_SECS: u64 = 30;
     const MAX_STALL_TIMEOUT_SECS: u64 = 300;
+    const SHELL_OUTPUT_SEND_TIMEOUT: Duration = Duration::from_millis(100);
+
+    async fn send_shell_output_chunk_best_effort(
+        tx: &mpsc::Sender<StreamChunk>,
+        chunk: StreamChunk,
+    ) {
+        match tokio::time::timeout(SHELL_OUTPUT_SEND_TIMEOUT, tx.send(chunk)).await {
+            Ok(Ok(())) | Ok(Err(_)) => {}
+            Err(_) => {
+                tracing::debug!(
+                    timeout_ms = SHELL_OUTPUT_SEND_TIMEOUT.as_millis(),
+                    "Dropping PTY shell output chunk because the stream receiver is not draining fast enough"
+                );
+            }
+        }
+    }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum SessionMode {
@@ -147,6 +163,7 @@ mod imp {
         Ok(session.handle())
     }
 
+    #[allow(dead_code)]
     pub(super) async fn execute_in_session(
         pool_key: &str,
         initial_cwd: Option<&str>,
@@ -624,6 +641,8 @@ mod imp {
                 active_process_id: self.current_active_process_id(),
                 active_command: self.current_active_command(),
                 available_for_reuse: self.is_available_for_reuse(),
+                interactive: self.is_interactive(),
+                user_managed: self.is_user_managed(),
             }
         }
 
@@ -777,7 +796,7 @@ mod imp {
                                 data: parsed.output,
                             };
                             self.emit_broadcast(output_chunk.clone());
-                            let _ = tx.send(output_chunk).await;
+                            send_shell_output_chunk_best_effort(&tx, output_chunk).await;
                         }
 
                         if let Some(exit_code) = parsed.exit_code {
@@ -838,7 +857,7 @@ mod imp {
                                 data: flushed,
                             };
                             self.emit_broadcast(output_chunk.clone());
-                            let _ = tx.send(output_chunk).await;
+                            send_shell_output_chunk_best_effort(&tx, output_chunk).await;
                         }
 
                         let user_stopped = self.user_stop_requested.swap(false, Ordering::SeqCst);
@@ -901,7 +920,7 @@ mod imp {
                                 data: flushed,
                             };
                             self.emit_broadcast(output_chunk.clone());
-                            let _ = tx.send(output_chunk).await;
+                            send_shell_output_chunk_best_effort(&tx, output_chunk).await;
                         }
 
                         let duration_ms = start.elapsed().as_millis() as u64;
@@ -1360,20 +1379,22 @@ mod imp {
     mod tests {
         use super::*;
 
-        async fn recv_session_id(
+        async fn recv_session_lifecycle(
             rx: &mut mpsc::Receiver<StreamChunk>,
-        ) -> (String, ShellSessionState) {
+        ) -> (String, ShellSessionState, bool, bool) {
             loop {
                 if let StreamChunk::ShellSessionLifecycle {
                     shell_session_id,
                     state,
+                    interactive,
+                    user_managed,
                     ..
                 } = tokio::time::timeout(Duration::from_secs(10), rx.recv())
                     .await
                     .expect("timed out waiting for shell event")
                     .expect("channel closed while waiting for shell event")
                 {
-                    return (shell_session_id, state);
+                    return (shell_session_id, state, interactive, user_managed);
                 }
             }
         }
@@ -1444,9 +1465,12 @@ mod imp {
             .await
             .expect("create PTY session");
 
-            let (shell_session_id, state) = recv_session_id(&mut rx).await;
+            let (shell_session_id, state, interactive, user_managed) =
+                recv_session_lifecycle(&mut rx).await;
             assert_eq!(shell_session_id, handle.shell_session_id);
             assert_eq!(state, ShellSessionState::Idle);
+            assert!(interactive);
+            assert!(user_managed);
 
             stop_session(&handle.shell_session_id)
                 .await
@@ -1514,15 +1538,21 @@ mod imp {
             .expect("command result");
             assert!(result.stdout.contains("streamed"));
 
-            let (busy_session_id, busy_state) = recv_session_id(&mut rx).await;
+            let (busy_session_id, busy_state, interactive, user_managed) =
+                recv_session_lifecycle(&mut rx).await;
             assert_eq!(busy_state, ShellSessionState::Busy);
+            assert!(!interactive);
+            assert!(!user_managed);
 
             let (_, started_session_id) = recv_command_started(&mut rx).await;
             assert_eq!(started_session_id, busy_session_id);
 
-            let (idle_session_id, idle_state) = recv_session_id(&mut rx).await;
+            let (idle_session_id, idle_state, interactive, user_managed) =
+                recv_session_lifecycle(&mut rx).await;
             assert_eq!(idle_session_id, busy_session_id);
             assert_eq!(idle_state, ShellSessionState::Idle);
+            assert!(!interactive);
+            assert!(!user_managed);
 
             shutdown_session("pty-session-lifecycle-stream")
                 .await

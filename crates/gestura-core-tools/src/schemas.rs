@@ -56,6 +56,24 @@ pub fn build_provider_tool_schemas(tools: &[&'static ToolDefinition]) -> Provide
             continue;
         }
 
+        if tool.name == "task" || tool.name == "tasks" {
+            if let Some((openai, anthropic, gemini)) = schema_for_tool(tool.name, tool.description)
+            {
+                out.openai.push(openai);
+                out.anthropic.push(anthropic);
+                out.gemini.push(gemini);
+            }
+
+            for (name, description, input_schema) in split_task_tool_schemas() {
+                let (openai, anthropic, gemini) =
+                    build_provider_schema(name.as_str(), description.as_str(), input_schema);
+                out.openai.push(openai);
+                out.anthropic.push(anthropic);
+                out.gemini.push(gemini);
+            }
+            continue;
+        }
+
         if let Some((openai, anthropic, gemini)) = schema_for_tool(tool.name, tool.description) {
             out.openai.push(openai);
             out.anthropic.push(anthropic);
@@ -591,14 +609,14 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
             }),
         ),
         "task" | "tasks" => (
-            "Create, update, delete, list, and inspect task hierarchies for the current session. For `create`, provide `name` and let the runtime assign the `task_id`; do not send `task_id` in create calls. For `update`, provide `task_id` plus at least one of `name` or `description`. For `update_status`, ALWAYS provide both `task_id` and `status` in the same call. Correct example: {\"operation\":\"update_status\",\"task_id\":\"abc123\",\"status\":\"completed\"}. Invalid example: {\"operation\":\"update_status\",\"task_id\":\"abc123\"}. Do not call `update_status` just to confirm or preserve the current state; if no status changed, continue the real work instead of repeating bookkeeping.",
+            "Create, update, delete, list, and inspect task hierarchies for the current session. For `create`, provide `name` and let the runtime assign the `task_id`; do not send `task_id` in create calls. For `update`, provide `task_id` plus at least one of `name` or `description`; do not send `status` with `update` if the only intended change is state. For `update_status`, ALWAYS provide both `task_id` and `status` in the same call. Correct example: {\"operation\":\"update_status\",\"task_id\":\"abc123\",\"status\":\"completed\"}. Invalid examples: {\"operation\":\"update_status\",\"task_id\":\"abc123\"} and {\"operation\":\"update\",\"task_id\":\"abc123\",\"status\":\"completed\"}. Do not call `update_status` just to confirm or preserve the current state; if no status changed, continue the real work instead of repeating bookkeeping.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "operation": {
                         "type": "string",
                         "enum": ["create", "update_status", "update", "delete", "list", "get_hierarchy"],
-                        "description": "Task operation to perform. `update` requires `task_id` plus at least one of `name` or `description`. `update_status` requires BOTH `task_id` and `status`; do not call it with only `task_id`, and do not use it just to confirm the current state."
+                        "description": "Task operation to perform. `update` requires `task_id` plus at least one of `name` or `description`; if you only need to change task state, use `update_status` instead of sending `status` to `update`. `update_status` requires BOTH `task_id` and `status`; do not call it with only `task_id`, and do not use it just to confirm the current state."
                     },
                     "task_id": {
                         "type": "string",
@@ -639,7 +657,7 @@ fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
                         "additionalProperties": false
                     },
                     {
-                        "description": "Update a task's name and/or description. REQUIRED fields: `task_id` plus at least one of `name` or `description`. Correct example: {\"operation\":\"update\",\"task_id\":\"abc123\",\"name\":\"Refine onboarding\"}. Invalid: {\"operation\":\"update\",\"task_id\":\"abc123\"}.",
+                        "description": "Update a task's name and/or description. REQUIRED fields: `task_id` plus at least one of `name` or `description`. Correct example: {\"operation\":\"update\",\"task_id\":\"abc123\",\"name\":\"Refine onboarding\"}. Invalid: {\"operation\":\"update\",\"task_id\":\"abc123\"} and {\"operation\":\"update\",\"task_id\":\"abc123\",\"status\":\"completed\"}. If you only need to change status, use `update_status` with both `task_id` and `status`.",
                         "properties": {
                             "operation": { "enum": ["update"] }
                         },
@@ -994,6 +1012,90 @@ fn split_file_tool_schemas() -> Vec<(String, String, Value)> {
     ]
 }
 
+fn split_task_tool_schemas() -> Vec<(String, String, Value)> {
+    vec![
+        (
+            "task_create".to_string(),
+            "Create a new task in the current session hierarchy. Do not provide a task_id; one will be generated.".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Task name"},
+                    "description": {"type": "string", "description": "Task description"},
+                    "parent_id": {"type": "string", "description": "Optional parent task ID"}
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            })
+        ),
+        (
+            "task_update_status".to_string(),
+            "Update ONLY the state/status of an existing task. ALWAYS provide both `task_id` and `status` in the same call. Do not omit `status` to ask the runtime to infer or preserve the current state; if no status changed, skip the task update and continue the real work instead.".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "The ID of the task to update. Required together with `status`."},
+                    "status": {
+                        "type": "string",
+                        "enum": ["notstarted", "blocked", "inprogress", "completed", "cancelled"],
+                        "description": "The new status. Required together with `task_id`; do not omit it and do not wrap it in XML or parameter tags."
+                    }
+                },
+                "required": ["task_id", "status"],
+                "additionalProperties": false
+            })
+        ),
+        (
+            "task_update".to_string(),
+            "Update the name or description of an existing task. Do not use this to change status.".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "The ID of the task to update"},
+                    "name": {"type": "string", "description": "New task name"},
+                    "description": {"type": "string", "description": "New task description"}
+                },
+                "required": ["task_id"],
+                "anyOf": [
+                    {"required": ["name"]},
+                    {"required": ["description"]}
+                ],
+                "additionalProperties": false
+            })
+        ),
+        (
+            "task_delete".to_string(),
+            "Delete an existing task.".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "The ID of the task to delete"}
+                },
+                "required": ["task_id"],
+                "additionalProperties": false
+            })
+        ),
+        (
+            "task_list".to_string(),
+            "List all tasks in the current session.".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            })
+        ),
+        (
+            "task_get_hierarchy".to_string(),
+            "Get the current session's task hierarchy.".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            })
+        ),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1071,12 +1173,16 @@ mod tests {
             .expect("task function description should exist");
         assert!(function_description.contains("ALWAYS provide both `task_id` and `status`"));
         assert!(function_description.contains("Invalid example"));
+        assert!(function_description.contains(
+            "{\"operation\":\"update\",\"task_id\":\"abc123\",\"status\":\"completed\"}"
+        ));
 
         let operation_description =
             schemas.openai[0]["function"]["parameters"]["properties"]["operation"]["description"]
                 .as_str()
                 .expect("task operation description should exist");
         assert!(operation_description.contains("requires BOTH `task_id` and `status`"));
+        assert!(operation_description.contains("use `update_status` instead"));
         assert!(operation_description.contains("do not use it just to confirm the current state"));
 
         let status_description =
@@ -1142,6 +1248,12 @@ mod tests {
             .expect("update branch description should exist");
         assert!(branch_description.contains("at least one of `name` or `description`"));
         assert!(branch_description.contains("Invalid"));
+        assert!(branch_description.contains(
+            "{\"operation\":\"update\",\"task_id\":\"abc123\",\"status\":\"completed\"}"
+        ));
+        assert!(
+            branch_description.contains("use `update_status` with both `task_id` and `status`")
+        );
 
         let any_of = update_branch["anyOf"]
             .as_array()
@@ -1161,6 +1273,30 @@ mod tests {
                 example["operation"] == "delete" && example["task_id"] == "abc123"
             })
         );
+    }
+
+    #[test]
+    fn split_task_update_status_schema_requires_explicit_status() {
+        let task = find_tool("task").unwrap();
+        let schemas = build_provider_tool_schemas(&[task]);
+
+        let split_schema = schemas
+            .openai
+            .iter()
+            .find(|schema| schema["function"]["name"] == "task_update_status")
+            .expect("task_update_status split schema should exist");
+
+        let description = split_schema["function"]["description"]
+            .as_str()
+            .expect("split schema description should exist");
+        assert!(description.contains("ALWAYS provide both `task_id` and `status`"));
+        assert!(description.contains("if no status changed, skip the task update"));
+
+        let status_description =
+            split_schema["function"]["parameters"]["properties"]["status"]["description"]
+                .as_str()
+                .expect("split status description should exist");
+        assert!(status_description.contains("Required together with `task_id`"));
     }
 
     #[test]

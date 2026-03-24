@@ -32,6 +32,8 @@ interface MemoryConsolePanelProps {
   tasks?: TaskHierarchy;
   refreshSignal?: number;
   allowSessionSelection?: boolean;
+  isOpen?: boolean;
+  onClose?: () => void;
   title?: string;
 }
 
@@ -113,6 +115,8 @@ export function MemoryConsolePanel({
   tasks,
   refreshSignal = 0,
   allowSessionSelection = false,
+  isOpen = true,
+  onClose,
   title = 'Memory',
 }: MemoryConsolePanelProps) {
   const [activeTab, setActiveTab] = useState<TabKey>('overview');
@@ -363,8 +367,10 @@ export function MemoryConsolePanel({
   ];
 
   return (
-    <div className="session-panel">
-      <div className="task-panel-header">
+    <>
+      {onClose && <div className={`session-panel-overlay${isOpen ? " visible" : ""}`} onClick={onClose} />}
+      <div className={`session-panel${isOpen ? " open" : ""}`}>
+        <div className="session-panel-header">
         <div>
           <h3>{title}</h3>
           <p className="task-panel-subtitle">Short-term session working memory, long-term memory bank entries, promotions, and task lifecycle in one console.</p>
@@ -389,9 +395,15 @@ export function MemoryConsolePanel({
           )}
           <button className="task-header-btn" onClick={() => void refreshOverview()} disabled={busy}>Refresh</button>
         </div>
+        {onClose && (
+          <button className="session-panel-close" onClick={onClose} title="Close">
+            <span className="icon-close" />
+          </button>
+        )}
       </div>
 
-      <div className="task-panel-filters" style={{ gap: 8, alignItems: 'center' }}>
+      <div className="session-panel-content">
+        <div className="task-panel-filters" style={{ gap: 8, alignItems: 'center' }}>
         {tabs.map(([key, label]) => (
           <button key={key} className="task-header-btn" onClick={() => setActiveTab(key)}>{label}</button>
         ))}
@@ -431,16 +443,18 @@ export function MemoryConsolePanel({
           {searchResults.working_memory.map((item) => <p key={item.id}>{item.section}: {item.summary}</p>)}
           <h4>Durable-memory matches</h4>
           {searchResults.durable_memory.map((item) => (
-            <button key={item.entry_id} className="task-item" onClick={() => void openEntry(item.entry_id)}>
-              {item.summary}
-              <span className="task-path-label">
-                {item.scope} · {item.memory_type}
-                {item.category ? ` · ${item.category}` : ''} · {Math.round(item.confidence * 100)}% · {governanceLabel(item.governance_state)}
-                {item.task_id ? ` · task ${item.task_id}` : ''}
-                {item.directive_id ? ` · directive ${item.directive_id}` : ''}
-                {item.governance_issue_count > 0 ? ` · ${item.governance_issue_count} issues` : ''}
-              </span>
-            </button>
+            <div key={item.entry_id} className="task-item-row" style={{ cursor: 'pointer', alignItems: 'flex-start' }} onClick={() => void openEntry(item.entry_id)}>
+              <div style={{ wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
+                <strong>{item.summary}</strong>
+                <div className="task-item-meta">
+                  {item.scope} · {item.memory_type}
+                  {item.category ? ` · ${item.category}` : ''} · {Math.round(item.confidence * 100)}% · {governanceLabel(item.governance_state)}
+                  {item.task_id ? ` · task ${item.task_id}` : ''}
+                  {item.directive_id ? ` · directive ${item.directive_id}` : ''}
+                  {item.governance_issue_count > 0 ? ` · ${item.governance_issue_count} issues` : ''}
+                </div>
+              </div>
+            </div>
           ))}
         </div>
       )}
@@ -460,16 +474,18 @@ export function MemoryConsolePanel({
         <div className="task-section-card">
           <p><strong>Scope:</strong> Durable memory-bank entries persisted beyond the active session and available for later retrieval.</p>
           {durableEntries.map((item) => (
-            <button key={item.entry_id} className="task-item" onClick={() => void openEntry(item.entry_id)}>
-              {item.summary}{' '}
-              <span className="task-path-label">
-                {item.scope} · {item.memory_type}
-                {item.category ? ` · ${item.category}` : ''} · {Math.round(item.confidence * 100)}% · {governanceLabel(item.governance_state)}
-                {item.task_id ? ` · task ${item.task_id}` : ''}
-                {item.directive_id ? ` · directive ${item.directive_id}` : ''}
-                {item.governance_issue_count > 0 ? ` · ${item.governance_issue_count} issues` : ''}
-              </span>
-            </button>
+            <div key={item.entry_id} className="task-item-row" style={{ cursor: 'pointer', alignItems: 'flex-start' }} onClick={() => void openEntry(item.entry_id)}>
+              <div style={{ wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
+                <strong>{item.summary}</strong>
+                <div className="task-item-meta">
+                  {item.scope} · {item.memory_type}
+                  {item.category ? ` · ${item.category}` : ''} · {Math.round(item.confidence * 100)}% · {governanceLabel(item.governance_state)}
+                  {item.task_id ? ` · task ${item.task_id}` : ''}
+                  {item.directive_id ? ` · directive ${item.directive_id}` : ''}
+                  {item.governance_issue_count > 0 ? ` · ${item.governance_issue_count} issues` : ''}
+                </div>
+              </div>
+            </div>
           ))}
         </div>
       )}
@@ -509,14 +525,17 @@ export function MemoryConsolePanel({
               <h4>Recent session tasks</h4>
               <div className="task-list">
                 {sessionTasks.map((task) => (
-                  <button
+                  <div
                     key={task.id}
-                    className="task-item"
+                    className="task-item-row"
+                    style={{ cursor: 'pointer', alignItems: 'flex-start' }}
                     onClick={() => void loadTaskDetail(task.id)}
                   >
-                    {task.name}
-                    <span className="task-path-label">{task.id} · {formatTaskStatus(task.status)}</span>
-                  </button>
+                    <div>
+                      <strong>{task.name}</strong>
+                      <div className="task-item-meta">{task.id} · {formatTaskStatus(task.status)}</div>
+                    </div>
+                  </div>
                 ))}
               </div>
             </>
@@ -615,6 +634,7 @@ export function MemoryConsolePanel({
           <input
             value={entryDetail.summary.summary}
             onChange={(e) => setEntryDetail({ ...entryDetail, summary: { ...entryDetail.summary, summary: e.target.value } })}
+            style={{ width: '100%', padding: '8px', marginBottom: '8px', borderRadius: '4px', border: '1px solid var(--glass-border)', background: 'var(--bg-base)', color: 'var(--text-primary)' }}
           />
           <select
             value={entryDetail.summary.governance_state}
@@ -625,6 +645,7 @@ export function MemoryConsolePanel({
                 governance_state: e.target.value as MemoryConsoleEntryDetail['summary']['governance_state'],
               },
             })}
+            style={{ width: '100%', padding: '8px', marginBottom: '8px', borderRadius: '4px', border: '1px solid var(--glass-border)', background: 'var(--bg-base)', color: 'var(--text-primary)' }}
           >
             <option value="active">active</option>
             <option value="pinned">pinned</option>
@@ -636,12 +657,14 @@ export function MemoryConsolePanel({
             value={entryDetail.content}
             onChange={(e) => setEntryDetail({ ...entryDetail, content: e.target.value })}
             rows={8}
+            style={{ width: '100%', padding: '8px', marginBottom: '8px', borderRadius: '4px', border: '1px solid var(--glass-border)', background: 'var(--bg-base)', color: 'var(--text-primary)', resize: 'vertical' }}
           />
           <textarea
             value={entryDetail.governance_note ?? ''}
             onChange={(e) => setEntryDetail({ ...entryDetail, governance_note: e.target.value || null })}
             rows={3}
             placeholder="Governance note"
+            style={{ width: '100%', padding: '8px', marginBottom: '8px', borderRadius: '4px', border: '1px solid var(--glass-border)', background: 'var(--bg-base)', color: 'var(--text-primary)', resize: 'vertical' }}
           />
           {entryDetail.governance_suggestions.length > 0 && (
             <div>
@@ -668,7 +691,9 @@ export function MemoryConsolePanel({
           </div>
         </div>
       )}
-    </div>
+      </div>
+      </div>
+    </>
   );
 }
 

@@ -46,6 +46,7 @@ enum RecoverableToolLoopPattern {
     FileEditMissingOldOrNew,
     CodeBatchEditMissingEdits,
     TaskCreateMissingName,
+    TaskUpdateMissingFields,
     TaskUpdateStatusMissingExplicitStatus,
 }
 
@@ -76,13 +77,15 @@ async fn emit_streaming_tool_keepalive(
     loop {
         interval.tick().await;
         let elapsed_secs = start_time.elapsed().as_secs();
-        if tx
-            .send(StreamChunk::Status {
+        super::send_status_chunk_best_effort(
+            &tx,
+            StreamChunk::Status {
                 message: format!("Tool `{tool_name}` still running... ({elapsed_secs}s elapsed)"),
-            })
-            .await
-            .is_err()
-        {
+            },
+        )
+        .await;
+
+        if tx.is_closed() {
             break;
         }
     }
@@ -630,7 +633,7 @@ impl AgentPipeline {
         }
     }
 
-    fn is_code_tool_name(name: &str) -> bool {
+    pub(super) fn is_code_tool_name(name: &str) -> bool {
         name == "code" || Self::forced_code_operation_for_tool(name).is_some()
     }
 
@@ -643,8 +646,46 @@ impl AgentPipeline {
         }
     }
 
-    fn is_file_tool_name(name: &str) -> bool {
+    pub(super) fn is_file_tool_name(name: &str) -> bool {
         name == "file" || Self::forced_file_operation_for_tool(name).is_some()
+    }
+
+    fn forced_task_operation_for_tool(name: &str) -> Option<&'static str> {
+        match name {
+            "task_create" => Some("create"),
+            "task_update_status" => Some("update_status"),
+            "task_update" => Some("update"),
+            "task_delete" => Some("delete"),
+            "task_list" => Some("list"),
+            "task_get_hierarchy" => Some("get_hierarchy"),
+            _ => None,
+        }
+    }
+
+    pub(super) fn is_task_tool_name(name: &str) -> bool {
+        name == "task" || name == "tasks" || Self::forced_task_operation_for_tool(name).is_some()
+    }
+
+    fn normalize_task_tool_arguments_with_forced_operation(
+        mut args: serde_json::Value,
+        forced_operation: Option<&'static str>,
+    ) -> serde_json::Value {
+        if let Some(op) = forced_operation {
+            if let Some(obj) = args.as_object_mut() {
+                obj.insert(
+                    "operation".to_string(),
+                    serde_json::Value::String(op.to_string()),
+                );
+            } else {
+                let mut map = serde_json::Map::new();
+                map.insert(
+                    "operation".to_string(),
+                    serde_json::Value::String(op.to_string()),
+                );
+                args = serde_json::Value::Object(map);
+            }
+        }
+        Self::normalize_task_tool_arguments(args)
     }
 
     fn validate_path_expectation(
@@ -993,7 +1034,7 @@ impl AgentPipeline {
     }
 
     pub(super) fn has_missing_task_update_status_issue(tool_call: &ToolCallRecord) -> bool {
-        if tool_call.name != "task" {
+        if !Self::is_task_tool_name(&tool_call.name) {
             return false;
         }
 
@@ -1001,15 +1042,39 @@ impl AgentPipeline {
             ToolResult::Error(message) => {
                 message.contains("Missing required field 'status' for update_status operation")
             }
-            ToolResult::Skipped(message) => message.contains(
-                "Loop breaker: skipped a repeated malformed `task.update_status` call without explicit `status`",
-            ),
+            ToolResult::Skipped(message) => {
+                message.contains(
+                    "Loop breaker: skipped a repeated malformed `task.update_status` call without explicit `status`",
+                ) || message.contains(
+                    "Skipped malformed `task.update_status` without explicit `status`",
+                )
+            }
+            ToolResult::Success(_) => false,
+        }
+    }
+
+    pub(super) fn has_missing_task_update_fields_issue(tool_call: &ToolCallRecord) -> bool {
+        if !Self::is_task_tool_name(&tool_call.name) {
+            return false;
+        }
+
+        match &tool_call.result {
+            ToolResult::Error(message) => {
+                message.contains("Missing required update fields for update operation")
+            }
+            ToolResult::Skipped(message) => {
+                message.contains(
+                    "Loop breaker: skipped a repeated malformed `task.update` call without `name` or `description`",
+                ) || message.contains(
+                    "Skipped malformed `task.update` without `name` or `description`",
+                )
+            }
             ToolResult::Success(_) => false,
         }
     }
 
     pub(super) fn has_missing_task_create_name_issue(tool_call: &ToolCallRecord) -> bool {
-        if tool_call.name != "task" {
+        if !Self::is_task_tool_name(&tool_call.name) {
             return false;
         }
 
@@ -1017,9 +1082,11 @@ impl AgentPipeline {
             ToolResult::Error(message) => {
                 message.contains("Missing required field 'name' for create operation")
             }
-            ToolResult::Skipped(message) => message.contains(
-                "Loop breaker: skipped a repeated malformed `task.create` call without a valid `name`",
-            ),
+            ToolResult::Skipped(message) => {
+                message.contains(
+                    "Loop breaker: skipped a repeated malformed `task.create` call without a valid `name`",
+                ) || message.contains("Skipped malformed `task.create` without a valid `name`")
+            }
             ToolResult::Success(_) => false,
         }
     }
@@ -1226,6 +1293,12 @@ impl AgentPipeline {
                 )
             }
             "task" | "tasks" => Self::normalize_task_tool_arguments(args),
+            other if Self::forced_task_operation_for_tool(other).is_some() => {
+                Self::normalize_task_tool_arguments_with_forced_operation(
+                    args,
+                    Self::forced_task_operation_for_tool(other),
+                )
+            }
             _ => return arguments.to_string(),
         };
 
@@ -1505,9 +1578,12 @@ impl AgentPipeline {
                     None
                 }
             }
-            "task" | "tasks" => {
+            name if Self::is_task_tool_name(name) => {
                 let args = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
-                let args = Self::normalize_task_tool_arguments(args);
+                let args = Self::normalize_task_tool_arguments_with_forced_operation(
+                    args,
+                    Self::forced_task_operation_for_tool(name),
+                );
                 let operation = args
                     .get("operation")
                     .and_then(|v| v.as_str())
@@ -1525,8 +1601,19 @@ impl AgentPipeline {
                     .and_then(|v| v.as_str())
                     .and_then(Self::parse_task_status);
 
+                let explicit_description = args
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|description| !description.is_empty());
+
                 if operation == "create" && explicit_name.is_none() {
                     Some(RecoverableToolLoopPattern::TaskCreateMissingName)
+                } else if operation == "update"
+                    && explicit_name.is_none()
+                    && explicit_description.is_none()
+                {
+                    Some(RecoverableToolLoopPattern::TaskUpdateMissingFields)
                 } else if operation == "update_status" && explicit_status.is_none() {
                     Some(RecoverableToolLoopPattern::TaskUpdateStatusMissingExplicitStatus)
                 } else {
@@ -1560,14 +1647,11 @@ impl AgentPipeline {
             RecoverableToolLoopPattern::TaskCreateMissingName => {
                 matches!(record.result, ToolResult::Error(_) | ToolResult::Skipped(_))
             }
+            RecoverableToolLoopPattern::TaskUpdateMissingFields => {
+                matches!(record.result, ToolResult::Error(_) | ToolResult::Skipped(_))
+            }
             RecoverableToolLoopPattern::TaskUpdateStatusMissingExplicitStatus => {
                 matches!(record.result, ToolResult::Error(_) | ToolResult::Skipped(_))
-                    || matches!(
-                        &record.result,
-                        ToolResult::Success(message)
-                            if message.contains("Recovered omitted `status`")
-                                || message.contains("omitted `status` caused no change")
-                    )
             }
         }
     }
@@ -1602,6 +1686,9 @@ impl AgentPipeline {
             RecoverableToolLoopPattern::TaskCreateMissingName => format!(
                 "Loop breaker: skipped a repeated malformed `task.create` call without a valid `name` after {prior_attempts} prior similar malformed attempts in this run. The agent is still running. Do not retry `create` without a specific task name. If you need task tracking, send one corrected `create` call with a concrete `name` and preferably a useful `description`; otherwise continue the real implementation work."
             ),
+            RecoverableToolLoopPattern::TaskUpdateMissingFields => format!(
+                "Loop breaker: skipped a repeated malformed `task.update` call without `name` or `description` after {prior_attempts} prior similar malformed attempts in this run. The agent is still running. Do not retry `update` without at least one field to change. If you need to edit task text, send one corrected `update` call with `task_id` and at least one of `name` or `description`; if you only need to change task status, use `update_status` with both `task_id` and `status`; otherwise continue the real implementation or verification work instead of repeating task bookkeeping."
+            ),
             RecoverableToolLoopPattern::TaskUpdateStatusMissingExplicitStatus => format!(
                 "Loop breaker: skipped a repeated malformed `task.update_status` call without explicit `status` after {prior_attempts} prior similar malformed attempts in this run. The agent is still running. Do not retry `update_status` without `status`. If you intend a status change, send one corrected call with both `task_id` and `status`; otherwise continue the real implementation or verification work instead of repeating task bookkeeping."
             ),
@@ -1614,6 +1701,7 @@ impl AgentPipeline {
             | RecoverableToolLoopPattern::FileEditMissingOldOrNew
             | RecoverableToolLoopPattern::CodeBatchEditMissingEdits
             | RecoverableToolLoopPattern::TaskCreateMissingName
+            | RecoverableToolLoopPattern::TaskUpdateMissingFields
             | RecoverableToolLoopPattern::TaskUpdateStatusMissingExplicitStatus => 1,
         }
     }
@@ -1951,8 +2039,15 @@ impl AgentPipeline {
         (hardened_command, Some(hardened_env))
     }
 
+    fn should_suppress_tool_call_argument_echo(record: &ToolCallRecord) -> bool {
+        Self::has_missing_task_update_status_issue(record)
+            || Self::has_missing_task_update_fields_issue(record)
+            || Self::has_missing_task_create_name_issue(record)
+    }
+
     fn should_echo_tool_call_arguments(record: &ToolCallRecord) -> bool {
         matches!(record.result, ToolResult::Error(_) | ToolResult::Skipped(_))
+            && !Self::should_suppress_tool_call_argument_echo(record)
     }
 
     fn extract_parameter_fragments(raw: &str) -> Vec<(String, String)> {
@@ -3181,6 +3276,10 @@ impl AgentPipeline {
                         .await
                 }
                 "task" | "tasks" => self.execute_task_tool(arguments, workspace).await,
+                other if Self::forced_task_operation_for_tool(other).is_some() => {
+                    self.execute_named_task_tool(other, arguments, workspace)
+                        .await
+                }
                 "screenshot" | "screen_record" => {
                     self.execute_screen_tool(name, arguments, workspace).await
                 }
@@ -4336,6 +4435,16 @@ impl AgentPipeline {
         arguments: &str,
         workspace: Option<&SessionWorkspace>,
     ) -> ToolResult {
+        self.execute_named_task_tool("task", arguments, workspace)
+            .await
+    }
+
+    async fn execute_named_task_tool(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        workspace: Option<&SessionWorkspace>,
+    ) -> ToolResult {
         // Use the process-wide shared TaskManager so all subsystems share one cache.
         let manager = crate::get_global_task_manager();
 
@@ -4351,7 +4460,10 @@ impl AgentPipeline {
 
         match serde_json::from_str::<serde_json::Value>(arguments) {
             Ok(args) => {
-                let args = Self::normalize_task_tool_arguments(args);
+                let args = Self::normalize_task_tool_arguments_with_forced_operation(
+                    args,
+                    Self::forced_task_operation_for_tool(tool_name),
+                );
                 let operation = args
                     .get("operation")
                     .and_then(|v| v.as_str())
@@ -5018,7 +5130,8 @@ impl AgentPipeline {
         }
 
         let had_task_tool_error = tool_calls.iter().any(|tool_call| {
-            tool_call.name == "task" && matches!(tool_call.result, ToolResult::Error(_))
+            Self::is_task_tool_name(&tool_call.name)
+                && matches!(tool_call.result, ToolResult::Error(_))
         });
 
         prompt.push_str(
@@ -5030,12 +5143,13 @@ impl AgentPipeline {
 
         if had_task_tool_error {
             prompt.push_str(
-                "Important: task-tracking errors must not block implementation work. The runtime already keeps the tracked root task aligned with overall run progress, so do not use `task` just to preserve momentum. If a task operation fails, continue the real work with file/shell/code tools and only retry the task tool when you have one exact bookkeeping action ready. For `create`, provide a specific `name` and preferably a concrete `description`; for `update_status`, always include both `task_id` and `status`.\n",
+                "Important: task-tracking errors must not block implementation work. The runtime already keeps the tracked root task aligned with overall run progress, so do not use `task` just to preserve momentum. If a task operation fails, continue the real work with file/shell/code tools and only retry the task tool when you have one exact bookkeeping action ready. For `create`, provide a specific `name` and preferably a concrete `description`. For `update`, provide `task_id` plus at least one of `name` or `description`. For `update_status`, always include both `task_id` and `status`.\n",
             );
         }
 
         let had_task_tool_success = tool_calls.iter().any(|tool_call| {
-            tool_call.name == "task" && matches!(tool_call.result, ToolResult::Success(_))
+            Self::is_task_tool_name(&tool_call.name)
+                && matches!(tool_call.result, ToolResult::Success(_))
         });
 
         if had_task_tool_success {
@@ -5050,7 +5164,17 @@ impl AgentPipeline {
 
         if had_missing_task_update_status_issue {
             prompt.push_str(
-                "Important: if `task.update_status` was sent without explicit `status`, treat that as malformed or auto-recovered bookkeeping, not a reason to keep looping on task bookkeeping. The task-update arguments are echoed above. If you already know the new status, send one corrected `update_status` call with both `task_id` and `status`; otherwise do not call `task` on the next step and continue the real work now.\n",
+                "Important: if `task.update_status` was sent without explicit `status`, treat that as malformed task bookkeeping, not a reason to keep looping on task bookkeeping. The malformed task-update arguments are intentionally not echoed back into this prompt; use the concrete recovery example in the task-tool result above. If you already know the new status, send one corrected `update_status` call with both `task_id` and `status`; otherwise do not call `task` on the next step and continue the real work now.\n",
+            );
+        }
+
+        let had_missing_task_update_fields_issue = tool_calls
+            .iter()
+            .any(Self::has_missing_task_update_fields_issue);
+
+        if had_missing_task_update_fields_issue {
+            prompt.push_str(
+                "Important: if `task.update` was sent without `name` or `description`, treat that as malformed task bookkeeping, not a reason to keep looping on task bookkeeping. The malformed task-update arguments are intentionally not echoed back into this prompt; use the concrete recovery example in the task-tool result above. If you need to edit task text, send one corrected `update` call with `task_id` and at least one of `name` or `description`; if you only need to change status, use `update_status` with both `task_id` and `status`; otherwise do not call `task` on the next step and continue the real work now.\n",
             );
         }
 
@@ -5060,12 +5184,12 @@ impl AgentPipeline {
 
         if had_missing_task_create_name_issue {
             prompt.push_str(
-                "Important: if `task.create` was sent without a valid `name`, treat that as malformed task bookkeeping, not a reason to keep looping on planning. The task-create arguments are echoed above. Retry only with one corrected `create` call that includes a specific task `name` and, for non-trivial work, a concrete `description`; otherwise do not call `task` on the next step and continue the real work now.\n",
+                "Important: if `task.create` was sent without a valid `name`, treat that as malformed task bookkeeping, not a reason to keep looping on planning. The malformed task-create arguments are intentionally not echoed back into this prompt; use the concrete recovery example in the task-tool result above. Retry only with one corrected `create` call that includes a specific task `name` and, for non-trivial work, a concrete `description`; otherwise do not call `task` on the next step and continue the real work now.\n",
             );
         }
 
         let had_task_loop_breaker_skip = tool_calls.iter().any(|tool_call| {
-            tool_call.name == "task"
+            Self::is_task_tool_name(&tool_call.name)
                 && matches!(
                     &tool_call.result,
                     ToolResult::Skipped(message) if message.contains("Loop breaker:")
@@ -5074,7 +5198,7 @@ impl AgentPipeline {
 
         if had_task_loop_breaker_skip {
             prompt.push_str(
-                "Important: repeated malformed task bookkeeping calls triggered the loop breaker for that malformed call shape, but task tracking is still available. Do not repeat the blocked malformed `task` arguments. If you know the exact next subtask name or status, send one corrected `task.create` or `task.update_status` call; otherwise continue the real implementation/build/test work and keep task bookkeeping current when the next concrete state change is known.\n",
+                "Important: repeated malformed task bookkeeping calls triggered the loop breaker for that malformed call shape, but task tracking is still available. Do not repeat the blocked malformed `task` arguments. If you know the exact next bookkeeping change, send one corrected `task.create`, `task.update`, or `task.update_status` call with all required fields; otherwise continue the real implementation/build/test work and keep task bookkeeping current when the next concrete state change is known.\n",
             );
         }
 
@@ -5984,7 +6108,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_omitted_status_task_update_trips_after_prior_noop_skip() {
+    fn repeated_omitted_status_task_update_trips_after_prior_malformed_skip() {
         let malformed_args = json!({
             "operation": "update_status",
             "task_id": "6073f304-388d-408c-82d0-f49f8679656a",
@@ -5996,7 +6120,8 @@ mod tests {
             name: "task".to_string(),
             arguments: malformed_args.clone(),
             result: crate::pipeline::ToolResult::Skipped(
-                "Skipped malformed `task.update_status` without explicit `status` for task 6073f304-388d-408c-82d0-f49f8679656a because it is already InProgress. The runtime preserved the current status, but this bookkeeping no-op should not be retried without an explicit `status`.".to_string(),
+                "Skipped malformed `task.update_status` without explicit `status`; retry only with both `task_id` and `status`."
+                    .to_string(),
             ),
             duration_ms: 1,
         }];
@@ -6011,6 +6136,42 @@ mod tests {
         assert!(message.contains("Loop breaker:"));
         assert!(message.contains("task.update_status"));
         assert!(message.contains("Do not retry `update_status` without `status`"));
+    }
+
+    #[test]
+    fn repeated_malformed_task_update_without_fields_trips_on_second_attempt() {
+        let malformed_args = json!({
+            "operation": "update",
+            "task_id": "6073f304-388d-408c-82d0-f49f8679656a",
+            "status": "completed",
+        })
+        .to_string();
+
+        let prior_records = [crate::pipeline::ToolCallRecord {
+            id: "1".to_string(),
+            name: "task".to_string(),
+            arguments: malformed_args.clone(),
+            result: crate::pipeline::ToolResult::Error(
+                AgentPipeline::format_missing_task_update_fields_error(&json!({
+                    "operation": "update",
+                    "task_id": "6073f304-388d-408c-82d0-f49f8679656a",
+                    "status": "completed",
+                })),
+            ),
+            duration_ms: 1,
+        }];
+
+        let message = AgentPipeline::repeated_malformed_tool_call_skip_message(
+            "task",
+            &malformed_args,
+            prior_records.iter(),
+        )
+        .expect("loop breaker should trigger");
+
+        assert!(message.contains("Loop breaker:"));
+        assert!(message.contains("task.update"));
+        assert!(message.contains("Do not retry `update` without at least one field to change"));
+        assert!(message.contains("use `update_status` with both `task_id` and `status`"));
     }
 
     #[test]
@@ -7199,6 +7360,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn task_update_status_split_tool_dispatches_successfully() {
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("task-update-status-split-test-{}", uuid::Uuid::new_v4());
+        let workspace = SessionWorkspace::from_directory(&session_id, temp.path().to_path_buf())
+            .expect("workspace");
+        let manager = crate::get_global_task_manager();
+        let task = manager
+            .create_task(&session_id, "Test task", "desc", None)
+            .expect("create task");
+        let pipeline = AgentPipeline::new(AppConfig::default());
+
+        let result = pipeline
+            .execute_tool(
+                "task_update_status",
+                &json!({
+                    "task_id": task.id,
+                    "status": "completed",
+                })
+                .to_string(),
+                Some(&workspace),
+                None,
+            )
+            .await;
+
+        let output = match result {
+            crate::pipeline::ToolResult::Success(output) => output,
+            other => panic!("expected success, got {other:?}"),
+        };
+
+        assert!(output.contains("Updated task"));
+        assert!(output.contains("Completed"));
+
+        let task_after = manager
+            .get_task(&session_id, &task.id)
+            .expect("get task")
+            .expect("task exists");
+        assert_eq!(task_after.status, crate::TaskStatus::Completed);
+    }
+
+    #[tokio::test]
     async fn code_read_files_split_tool_reads_files() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("code-read-files-test-{}", uuid::Uuid::new_v4());
@@ -7811,9 +8012,13 @@ mod tests {
         assert!(prompt.contains(
             "For `create`, provide a specific `name` and preferably a concrete `description`"
         ));
+        assert!(prompt.contains(
+            "For `update`, provide `task_id` plus at least one of `name` or `description`"
+        ));
         assert!(prompt.contains("always include both `task_id` and `status`"));
+        assert!(!prompt.contains("Tool task call:"));
         assert!(
-            prompt.contains("Arguments: {\"operation\":\"update_status\",\"task_id\":\"abc\"}")
+            !prompt.contains("Arguments: {\"operation\":\"update_status\",\"task_id\":\"abc\"}")
         );
     }
 
@@ -7866,13 +8071,77 @@ mod tests {
         assert!(prompt.contains("if `task.update_status` was sent without explicit `status`"));
         assert!(prompt.contains("not a reason to keep looping on task bookkeeping"));
         assert!(prompt.contains("do not call `task` on the next step"));
+        assert!(prompt.contains("intentionally not echoed back into this prompt"));
         assert!(
-            prompt.contains("Arguments: {\"operation\":\"update_status\",\"task_id\":\"abc\"}")
+            !prompt.contains("Arguments: {\"operation\":\"update_status\",\"task_id\":\"abc\"}")
         );
+        assert!(!prompt.contains("auto-recovered bookkeeping"));
     }
 
     #[test]
-    fn continuation_prompt_warns_recovered_missing_task_status_should_not_cause_looping() {
+    fn continuation_prompt_warns_missing_named_task_status_should_not_cause_looping() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let prompt = pipeline.build_tool_continuation_prompt(
+            "User: build the app",
+            "I updated the task status.",
+            &[crate::pipeline::ToolCallRecord {
+                id: "1".to_string(),
+                name: "task_update_status".to_string(),
+                arguments: json!({
+                    "task_id": "abc",
+                })
+                .to_string(),
+                result: crate::pipeline::ToolResult::Error(
+                    AgentPipeline::format_missing_task_update_status_error(&json!({
+                        "task_id": "abc",
+                    })),
+                ),
+                duration_ms: 1,
+            }],
+        );
+
+        assert!(prompt.contains("task-tracking errors must not block implementation work"));
+        assert!(prompt.contains("if `task.update_status` was sent without explicit `status`"));
+        assert!(prompt.contains("send one corrected `update_status` call"));
+    }
+
+    #[test]
+    fn continuation_prompt_warns_missing_task_update_fields_should_not_cause_looping() {
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let prompt = pipeline.build_tool_continuation_prompt(
+            "User: build the app",
+            "I updated the task.",
+            &[crate::pipeline::ToolCallRecord {
+                id: "1".to_string(),
+                name: "task".to_string(),
+                arguments: json!({
+                    "operation": "update",
+                    "task_id": "abc",
+                    "status": "completed",
+                })
+                .to_string(),
+                result: crate::pipeline::ToolResult::Error(
+                    AgentPipeline::format_missing_task_update_fields_error(&json!({
+                        "operation": "update",
+                        "task_id": "abc",
+                        "status": "completed",
+                    })),
+                ),
+                duration_ms: 1,
+            }],
+        );
+
+        assert!(prompt.contains("if `task.update` was sent without `name` or `description`"));
+        assert!(prompt.contains("not a reason to keep looping on task bookkeeping"));
+        assert!(prompt.contains("use `update_status` with both `task_id` and `status`"));
+        assert!(prompt.contains("do not call `task` on the next step"));
+        assert!(!prompt.contains(
+            "Arguments: {\"operation\":\"update\",\"task_id\":\"abc\",\"status\":\"completed\"}"
+        ));
+    }
+
+    #[test]
+    fn continuation_prompt_warns_skipped_missing_task_status_should_not_cause_looping() {
         let pipeline = AgentPipeline::new(AppConfig::default());
         let prompt = pipeline.build_tool_continuation_prompt(
             "User: build the app",
@@ -7886,7 +8155,8 @@ mod tests {
                 })
                 .to_string(),
                 result: crate::pipeline::ToolResult::Skipped(
-                    "Skipped malformed `task.update_status` without explicit `status` for task abc because it is already InProgress. The runtime preserved the current status, but this bookkeeping no-op should not be retried without an explicit `status`.".to_string(),
+                    "Skipped malformed `task.update_status` without explicit `status`; retry only with both `task_id` and `status`."
+                        .to_string(),
                 ),
                 duration_ms: 1,
             }],
@@ -7895,6 +8165,8 @@ mod tests {
         assert!(prompt.contains("if `task.update_status` was sent without explicit `status`"));
         assert!(prompt.contains("do not call `task` on the next step"));
         assert!(prompt.contains("not a reason to keep looping on task bookkeeping"));
+        assert!(prompt.contains("intentionally not echoed back into this prompt"));
+        assert!(!prompt.contains("auto-recovered bookkeeping"));
     }
 
     #[test]
@@ -7923,7 +8195,8 @@ mod tests {
 
         assert!(prompt.contains("if `task.create` was sent without a valid `name`"));
         assert!(prompt.contains("otherwise do not call `task` on the next step"));
-        assert!(prompt.contains("Arguments: {\"operation\":\"create\",\"task_id\":\"abc\"}"));
+        assert!(prompt.contains("intentionally not echoed back into this prompt"));
+        assert!(!prompt.contains("Arguments: {\"operation\":\"create\",\"task_id\":\"abc\"}"));
     }
 
     #[test]
@@ -7949,11 +8222,13 @@ mod tests {
 
         assert!(prompt.contains("task tracking is still available"));
         assert!(prompt.contains("Do not repeat the blocked malformed `task` arguments"));
-        assert!(prompt.contains("send one corrected `task.create` or `task.update_status` call"));
+        assert!(prompt.contains(
+            "send one corrected `task.create`, `task.update`, or `task.update_status` call"
+        ));
     }
 
     #[test]
-    fn continuation_prompt_echoes_missing_status_task_error_arguments() {
+    fn continuation_prompt_does_not_echo_missing_status_task_error_arguments() {
         let pipeline = AgentPipeline::new(AppConfig::default());
         let prompt = pipeline.build_tool_continuation_prompt(
             "User: build the app",
@@ -7976,10 +8251,12 @@ mod tests {
             }],
         );
 
-        assert!(prompt.contains("Tool task call:"));
-        assert!(prompt.contains("\"operation\":\"update_status\""));
-        assert!(prompt.contains("\"task_id\":\"6073f304-388d-408c-82d0-f49f8679656a\""));
+        assert!(prompt.contains("Tool task result:"));
         assert!(prompt.contains("Missing required field 'status' for update_status operation"));
+        assert!(!prompt.contains("Tool task call:"));
+        assert!(!prompt.contains(
+            "Arguments: {\"operation\":\"update_status\",\"task_id\":\"6073f304-388d-408c-82d0-f49f8679656a\"}"
+        ));
     }
 
     #[test]

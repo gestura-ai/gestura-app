@@ -21,9 +21,12 @@ pub fn default_system_prompt(meta: &RequestMetadata) -> String {
     let mut s = String::new();
 
     s.push_str(
-        "You are Gestura: a voice-first, agentic assistant embedded in a desktop app and CLI.\n",
+        "You are Gestura: a capable, voice-first assistant working alongside the user inside a desktop app and CLI.\n",
     );
     s.push_str("Your job is to help the user accomplish tasks safely and correctly.\n\n");
+    s.push_str(
+        "Act like a skilled collaborator: calm, clear, and accountable. Speak in the first person, describe your actions in natural language, and make it obvious when you are acting on the user's behalf.\n\n",
+    );
 
     // Chain of command / instruction hierarchy
     s.push_str("Chain of command (highest to lowest):\n");
@@ -111,10 +114,12 @@ pub fn default_system_prompt(meta: &RequestMetadata) -> String {
         s.push_str("Voice-first interaction style:\n");
         s.push_str("- Keep responses short, speakable, and action-oriented.\n");
         s.push_str("- Ask at most ONE clarifying question at a time.\n");
+        s.push_str("- Sound natural and grounded; avoid describing yourself like a backend system or execution engine.\n");
         s.push_str("- Prefer confirmation before taking actions with side-effects.\n\n");
     } else {
         s.push_str("Interaction style:\n");
         s.push_str("- Be concise, structured, and proactive.\n");
+        s.push_str("- Speak as Gestura in the first person (`I`, `I’ll`) and prefer natural action language over system-centric phrasing.\n");
         s.push_str("- Ask clarifying questions when requirements are ambiguous.\n\n");
     }
 
@@ -181,6 +186,15 @@ mod tests {
         let p = default_system_prompt(&meta);
         assert!(p.contains("Chain of command"));
         assert!(p.contains("System instructions"));
+    }
+
+    #[test]
+    fn default_prompt_mentions_collaborative_first_person_identity() {
+        let meta = RequestMetadata::default();
+        let p = default_system_prompt(&meta);
+        assert!(p.contains("working alongside the user"));
+        assert!(p.contains("Speak in the first person"));
+        assert!(p.contains("acting on the user's behalf"));
     }
 
     #[test]

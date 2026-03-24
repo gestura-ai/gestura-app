@@ -245,8 +245,7 @@ const IterationMarkerView: React.FC<{ block: IterationMarkerBlock }> = ({ block 
   </div>
 );
 
-const NARRATION_TITLE_THRESHOLD_WORDS = 15;
-const NARRATION_AUTO_EXPAND_THRESHOLD_WORDS = 30;
+const NARRATION_COLLAPSE_THRESHOLD_WORDS = 60;
 
 function narrationWordCount(message: string): number {
   const trimmed = message.trim();
@@ -266,38 +265,87 @@ function narrationFallbackTitle(stage: NarrationBlock['stage']): string {
   }
 }
 
-const NarrationBlockView: React.FC<{ block: NarrationBlock }> = ({ block }) => {
-  const wordCount = narrationWordCount(block.message);
-  const usesTitle = wordCount > NARRATION_TITLE_THRESHOLD_WORDS;
-  const startsExpanded = usesTitle && wordCount <= NARRATION_AUTO_EXPAND_THRESHOLD_WORDS;
-  const [expanded, setExpanded] = useState(startsExpanded);
-  const title = (block.title?.trim() || narrationFallbackTitle(block.stage)).trim();
+function narrationDisplayMessage(block: NarrationBlock): string {
+  const message = block.message.trim();
+  if (message) return message;
 
-  if (!usesTitle) {
-    return (
-      <p className="agent-narration">
-        <span className="agent-narration-text">{block.message}</span>
-      </p>
-    );
+  const sections = [block.summary, block.reason, block.nextStep]
+    .map((part) => part?.trim() ?? '')
+    .filter((part) => part.length > 0);
+
+  const evidenceLines = block.evidence
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .map((item) => (/^([-+*]|\d+\.)\s+/.test(item) ? item : `- ${item}`));
+
+  if (evidenceLines.length > 0) {
+    sections.push(evidenceLines.join('\n'));
   }
 
-  return (
-    <div className={`agent-narration agent-narration--collapsible${expanded ? ' expanded' : ''}`}>
-      <button
-        type="button"
-        className="agent-narration-toggle"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((value) => !value)}
-      >
-        <strong className="agent-narration-title">{title}</strong>
-        <span className="agent-narration-chevron" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
-      </button>
-      {expanded && (
-        <div className="agent-narration-text">{block.message}</div>
-      )}
-    </div>
-  );
-};
+  return sections.join('\n\n');
+}
+
+const NarrationMarkdown: React.FC<{
+  content: string;
+  indented?: boolean;
+}> = ({ content, indented = false }) => (
+  <div
+    className={`agent-narration-text markdown-body${indented ? ' agent-narration-text--indented' : ''}`}
+    dangerouslySetInnerHTML={{ __html: parseMarkdown(content) }}
+  />
+);
+
+const NarrationBlockView: React.FC<{
+  block: NarrationBlock;
+  isFirstNarrationInMessage: boolean;
+  hasPreviousNarration: boolean;
+  hasNextNarration: boolean;
+}> = ({
+  block,
+  isFirstNarrationInMessage,
+  hasPreviousNarration,
+  hasNextNarration,
+}) => {
+    const displayMessage = narrationDisplayMessage(block);
+    const wordCount = narrationWordCount(displayMessage);
+    const usesTitle = wordCount > NARRATION_COLLAPSE_THRESHOLD_WORDS;
+    const shouldStayInline = isFirstNarrationInMessage || block.stage === 'planning';
+    const startsExpanded = shouldStayInline;
+    const [expanded, setExpanded] = useState(startsExpanded);
+    const title = (block.title?.trim() || narrationFallbackTitle(block.stage)).trim();
+    const narrationClassName = [
+      'agent-narration',
+      hasPreviousNarration ? 'agent-narration--after-narration' : '',
+      hasNextNarration ? 'agent-narration--before-narration' : '',
+      usesTitle && !shouldStayInline ? 'agent-narration--collapsible' : '',
+      expanded && usesTitle && !shouldStayInline ? 'expanded' : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+
+    if (!usesTitle || shouldStayInline) {
+      return (
+        <div className={narrationClassName}>
+          <NarrationMarkdown content={displayMessage} />
+        </div>
+      );
+    }
+
+    return (
+      <div className={narrationClassName}>
+        <button
+          type="button"
+          className="agent-narration-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <strong className="agent-narration-title">{title}</strong>
+          <span className="agent-narration-chevron" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+        </button>
+        {expanded && <NarrationMarkdown content={displayMessage} indented />}
+      </div>
+    );
+  };
 
 // ─── Single message ───────────────────────────────────────────────────────────
 
@@ -309,6 +357,7 @@ const MessageView: React.FC<{
     navigator.clipboard.writeText(message.rawMarkdown).catch(console.error);
   }, [message.rawMarkdown]);
   const hasShellBlock = message.blocks.some((block) => block.kind === 'shell');
+  const firstNarrationIndex = message.blocks.findIndex((block) => block.kind === 'narration');
 
   return (
     <div
@@ -316,11 +365,22 @@ const MessageView: React.FC<{
       data-raw-markdown={message.rawMarkdown}
     >
       <div className="message-content">
-        {message.blocks.map((block: MsgBlock) => {
+        {message.blocks.map((block: MsgBlock, index) => {
+          const previousBlock = message.blocks[index - 1];
+          const nextBlock = message.blocks[index + 1];
           switch (block.kind) {
             case 'thinking': return <ThinkingBlockView key={block.id} block={block} />;
             case 'text': return <TextBlockView key={block.id} block={block} />;
-            case 'narration': return <NarrationBlockView key={block.id} block={block} />;
+            case 'narration':
+              return (
+                <NarrationBlockView
+                  key={block.id}
+                  block={block}
+                  isFirstNarrationInMessage={message.blocks[firstNarrationIndex]?.id === block.id}
+                  hasPreviousNarration={previousBlock?.kind === 'narration'}
+                  hasNextNarration={nextBlock?.kind === 'narration'}
+                />
+              );
             case 'tool':
               if (block.name === 'shell' && hasShellBlock) return null;
               return <ToolBlockView key={block.id} block={block} />;

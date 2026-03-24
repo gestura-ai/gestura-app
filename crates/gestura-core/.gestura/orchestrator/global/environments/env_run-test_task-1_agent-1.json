@@ -1,0 +1,28 @@
+{
+  "id": "env_run-test_task-1_agent-1",
+  "spec": {
+    "id": "env_run-test_task-1_agent-1",
+    "execution_mode": "shared_workspace",
+    "workspace_root": "/Users/bc/Documents/gestura/code/gestura-app/crates/gestura-core",
+    "prepared_path": "/Users/bc/Documents/gestura/code/gestura-app/crates/gestura-core",
+    "run_id": "run-test",
+    "task_id": "task-1",
+    "agent_id": "agent-1",
+    "cleanup_policy": "keep_always",
+    "write_access": true
+  },
+  "state": "ready",
+  "health": "clean",
+  "prepared_path": "/Users/bc/Documents/gestura/code/gestura-app/crates/gestura-core",
+  "lease": {
+    "task_id": "task-1",
+    "agent_id": "agent-1",
+    "lease_kind": "execution",
+    "acquired_at": "2026-03-24T02:27:20.522876Z",
+    "released_at": "2026-03-24T02:27:20.526942Z"
+  },
+  "recovery_status": "reconciled",
+  "created_at": "2026-03-24T02:27:20.521553Z",
+  "updated_at": "2026-03-24T02:27:20.701835Z",
+  "last_verified_at": "2026-03-24T02:27:20.701836Z"
+}

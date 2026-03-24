@@ -50,6 +50,45 @@ use request_telemetry::{AgentRequestTelemetry, RequestOutcome, RequestRunMode};
 use tool_dispatch::{FinalizePendingToolCallCtx, PendingToolCall};
 pub use types::*;
 
+pub(super) const STREAM_CHUNK_BUFFER_CAPACITY: usize = 256;
+const REQUIREMENT_DETECTION_INPUT_HINT_KEY: &str = "requirement_detection_input";
+const NONCRITICAL_STREAM_CHUNK_SEND_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(100);
+
+pub(super) async fn send_status_chunk_best_effort(
+    tx: &mpsc::Sender<StreamChunk>,
+    chunk: StreamChunk,
+) {
+    debug_assert!(matches!(chunk, StreamChunk::Status { .. }));
+
+    match tokio::time::timeout(NONCRITICAL_STREAM_CHUNK_SEND_TIMEOUT, tx.send(chunk)).await {
+        Ok(Ok(())) | Ok(Err(_)) => {}
+        Err(_) => {
+            tracing::debug!(
+                timeout_ms = NONCRITICAL_STREAM_CHUNK_SEND_TIMEOUT.as_millis(),
+                "Dropping transient status chunk because the stream receiver is not draining fast enough"
+            );
+        }
+    }
+}
+
+pub(super) async fn send_token_usage_chunk_best_effort(
+    tx: &mpsc::Sender<StreamChunk>,
+    chunk: StreamChunk,
+) {
+    debug_assert!(matches!(chunk, StreamChunk::TokenUsageUpdate { .. }));
+
+    match tokio::time::timeout(NONCRITICAL_STREAM_CHUNK_SEND_TIMEOUT, tx.send(chunk)).await {
+        Ok(Ok(())) | Ok(Err(_)) => {}
+        Err(_) => {
+            tracing::debug!(
+                timeout_ms = NONCRITICAL_STREAM_CHUNK_SEND_TIMEOUT.as_millis(),
+                "Dropping transient token-usage chunk because the stream receiver is not draining fast enough"
+            );
+        }
+    }
+}
+
 /// Select the correct tool schema slice for a provider name.
 ///
 /// Each provider family has its own tool definition format:
@@ -65,6 +104,16 @@ fn tools_slice_for_provider(
         "gemini" => schemas.gemini.clone(),
         _ => schemas.openai.clone(),
     }
+}
+
+fn requirement_detection_input(request: &AgentRequest) -> &str {
+    request
+        .metadata
+        .hints
+        .get(REQUIREMENT_DETECTION_INPUT_HINT_KEY)
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&request.input)
 }
 
 /// The main agent pipeline for processing requests
@@ -500,7 +549,7 @@ impl AgentPipeline {
             }
         }
         handoff.push_str(
-            "Update task statuses as you start and finish each concrete subtask. If you create new work, create a concrete subtask with a specific name. Do not mark the tracked root task complete until every planned subtask is completed or explicitly cancelled for a real reason. Begin concrete work immediately. If the request is primarily analysis or research, gather evidence first and summarize the outcome clearly instead of forcing unnecessary edits or commands."
+            "Update task statuses as you start and finish each concrete subtask. If you create new work, create a concrete subtask with a specific name. When that new work is follow-on execution discovered while finishing the current task, attach it to the tracked root plan rather than nesting it under the currently executing task unless it is a true blocking prerequisite. That keeps the current execution task completable once the handoff is recorded. Do not mark the tracked root task complete until every planned subtask is completed or explicitly cancelled for a real reason. Begin concrete work immediately. If the request is primarily analysis or research, gather evidence first and summarize the outcome clearly instead of forcing unnecessary edits or commands."
         );
         handoff
     }
@@ -1244,7 +1293,7 @@ impl AgentPipeline {
 
         // 4.6. Emit token usage update for user visibility
         let token_usage_chunk = self.create_token_usage_update(&prompt);
-        let _ = tx.send(token_usage_chunk).await;
+        send_token_usage_chunk_best_effort(&tx, token_usage_chunk).await;
 
         // 4.7. Run PrePipeline hooks (if enabled)
         let hook_engine = self.create_hook_engine();
@@ -1273,16 +1322,17 @@ impl AgentPipeline {
         let effective_max_iterations = self.effective_request_max_iterations(&request);
         let reflection_quality_budget = effective_max_iterations.unwrap_or(0);
         let relevant_tool_count = relevant_tools.len();
-        let requires_build_and_test = Self::prompt_requires_build_and_test(&request.input);
+        let requirement_detection_input = requirement_detection_input(&request);
+        let requires_build_and_test = Self::prompt_requires_build_and_test(requirement_detection_input);
         let requires_mutating_file_tool_success =
-            Self::request_requires_mutating_file_tool_success(&request.input);
+            Self::request_requires_mutating_file_tool_success(requirement_detection_input);
         if requires_build_and_test {
             tracing::warn!(
-                request_input_preview = %request.input.chars().take(160).collect::<String>(),
+                request_input_preview = %requirement_detection_input.chars().take(160).collect::<String>(),
                 source = ?request.metadata.source,
                 session_id = ?request.metadata.session_id,
                 task_id = ?request.metadata.task_id,
-                "Agent request seeded requires_build_and_test=true from request.input"
+                "Agent request seeded requires_build_and_test=true from requirement-detection input"
             );
         }
         let mut response = self
@@ -1592,7 +1642,7 @@ impl AgentPipeline {
         );
 
         // Stream one more LLM call for synthesis (no tool schemas — text only).
-        let (inner_tx, mut inner_rx) = mpsc::channel::<StreamChunk>(100);
+        let (inner_tx, mut inner_rx) = mpsc::channel::<StreamChunk>(STREAM_CHUNK_BUFFER_CAPACITY);
         let streaming_cfg = crate::streaming::streaming_config_from(&self.config);
         let enable_fallback = self.pipeline_config.enable_fallback;
         let inner_cancel = cancel_token.clone();
@@ -1633,6 +1683,12 @@ impl AgentPipeline {
                 }
                 StreamChunk::Thinking(_) => {
                     let _ = tx.send(chunk).await;
+                }
+                StreamChunk::Status { .. } => {
+                    send_status_chunk_best_effort(tx, chunk).await;
+                }
+                StreamChunk::TokenUsageUpdate { .. } => {
+                    send_token_usage_chunk_best_effort(tx, chunk).await;
                 }
                 StreamChunk::Done(usage) => {
                     synthesis_usage = usage.clone();
@@ -2055,16 +2111,17 @@ impl AgentPipeline {
         let effective_max_iterations = self.effective_request_max_iterations(&request);
         let reflection_quality_budget = effective_max_iterations.unwrap_or(0);
         let relevant_tool_count = relevant_tools.len();
-        let requires_build_and_test = Self::prompt_requires_build_and_test(&request.input);
+        let requirement_detection_input = requirement_detection_input(&request);
+        let requires_build_and_test = Self::prompt_requires_build_and_test(requirement_detection_input);
         let requires_mutating_file_tool_success =
-            Self::request_requires_mutating_file_tool_success(&request.input);
+            Self::request_requires_mutating_file_tool_success(requirement_detection_input);
         if requires_build_and_test {
             tracing::warn!(
-                request_input_preview = %request.input.chars().take(160).collect::<String>(),
+                request_input_preview = %requirement_detection_input.chars().take(160).collect::<String>(),
                 source = ?request.metadata.source,
                 session_id = ?request.metadata.session_id,
                 task_id = ?request.metadata.task_id,
-                "Agent request seeded requires_build_and_test=true from request.input"
+                "Agent request seeded requires_build_and_test=true from requirement-detection input"
             );
         }
 

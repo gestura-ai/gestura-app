@@ -14,6 +14,11 @@ export interface ToolPresentation {
   responseItems: ToolSummaryItem[];
 }
 
+interface TaskToolResultPresentation {
+  summary: string;
+  items: ToolSummaryItem[];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -25,6 +30,33 @@ function collapseWhitespace(text: string): string {
 function truncate(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   return `${text.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function titleTokens(text: string | null | undefined, maxWords: number): string | null {
+  const compact = collapseWhitespace(text ?? '');
+  if (!compact) return null;
+
+  const tokens = compact
+    .split(/[^A-Za-z0-9._/-]+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .slice(0, maxWords);
+
+  return tokens.length >= 2 ? tokens.join(' ') : null;
+}
+
+function contextualVerbTitle(verb: string, detail: string | null | undefined, fallback: string, maxWords = 3): string {
+  const tokens = titleTokens(detail, maxWords);
+  return tokens ? `${verb} ${tokens}` : fallback;
+}
+
+function urlHost(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).host || null;
+  } catch {
+    return null;
+  }
 }
 
 function prettifyKey(key: string): string {
@@ -56,6 +88,169 @@ function readString(source: Record<string, unknown> | null, keys: string[]): str
   }
 
   return null;
+}
+
+function isUuidLike(value: string | null | undefined): boolean {
+  if (!value) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.trim());
+}
+
+function humanizeTaskStatus(status: string | null | undefined): string | null {
+  const normalized = status?.trim().toLowerCase();
+  if (!normalized) return null;
+
+  switch (normalized) {
+    case 'notstarted':
+    case 'not_started':
+      return 'Not started';
+    case 'inprogress':
+    case 'in_progress':
+      return 'In progress';
+    case 'completed':
+      return 'Completed';
+    case 'blocked':
+      return 'Blocked';
+    case 'cancelled':
+      return 'Cancelled';
+    default:
+      return normalized.replace(/_/g, ' ');
+  }
+}
+
+function taskDetailCandidate(args: Record<string, unknown> | null): string | null {
+  const name = readString(args, ['name']);
+  if (name) return name;
+
+  const taskId = readString(args, ['task_id']);
+  return taskId && !isUuidLike(taskId) ? taskId : null;
+}
+
+function describeTaskActivity(args: Record<string, unknown> | null): Pick<ToolPresentation, 'eyebrow' | 'title' | 'detail'> {
+  const operation = (readString(args, ['operation', 'action', 'mode', 'subcommand']) ?? '').toLowerCase();
+  const detail = taskDetailCandidate(args);
+  const status = humanizeTaskStatus(readString(args, ['status', 'state', 'new_status', 'target_status']));
+
+  switch (operation) {
+    case 'create':
+      return { eyebrow: 'task tool', title: 'Creating task', detail };
+    case 'update_status':
+      if (status === 'In progress') return { eyebrow: 'task tool', title: 'Starting task work', detail };
+      if (status === 'Completed') return { eyebrow: 'task tool', title: 'Marking task complete', detail };
+      if (status === 'Blocked') return { eyebrow: 'task tool', title: 'Marking task blocked', detail };
+      if (status === 'Cancelled') return { eyebrow: 'task tool', title: 'Cancelling task', detail };
+      if (status === 'Not started') return { eyebrow: 'task tool', title: 'Resetting task status', detail };
+      return { eyebrow: 'task tool', title: 'Updating task status', detail };
+    case 'update':
+      return { eyebrow: 'task tool', title: 'Editing task details', detail };
+    case 'delete':
+      return { eyebrow: 'task tool', title: 'Removing task', detail };
+    case 'list':
+    case 'get_hierarchy':
+      return { eyebrow: 'task tool', title: 'Reviewing task plan', detail };
+    default:
+      return { eyebrow: 'task tool', title: 'Shaping task plan', detail };
+  }
+}
+
+function extractTaskToolResultPresentation(args: Record<string, unknown> | null, result: unknown, status: ToolBlock['status']): TaskToolResultPresentation | null {
+  if (typeof result !== 'string') return null;
+
+  const compact = collapseWhitespace(result);
+  if (!compact) {
+    return {
+      summary: status === 'success' ? 'Task update completed.' : 'Task update failed.',
+      items: [],
+    };
+  }
+
+  const taskId = readString(args, ['task_id']);
+
+  if (compact.startsWith("Missing required field 'status' for update_status operation.")) {
+    const providedFields = compact.match(/Provided fields: ([^.]+)\./)?.[1] ?? null;
+    const retryExample = compact.match(/Retry with (\{.+?\}) using one of:/)?.[1] ?? null;
+
+    return {
+      summary: 'Task status update needs an explicit status value.',
+      items: [
+        taskId ? { label: 'task id', value: taskId } : null,
+        providedFields ? { label: 'provided fields', value: providedFields } : null,
+        retryExample ? { label: 'retry example', value: retryExample } : null,
+      ].filter((item): item is ToolSummaryItem => item != null),
+    };
+  }
+
+  if (compact.startsWith('Missing required update fields for update operation.')) {
+    const providedFields = compact.match(/Provided fields: ([^.]+)\./)?.[1] ?? null;
+    const retryExample = compact.match(/Retry with (\{.+?\})\./)?.[1] ?? null;
+
+    return {
+      summary: 'Task detail update needs a name or description change.',
+      items: [
+        taskId ? { label: 'task id', value: taskId } : null,
+        providedFields ? { label: 'provided fields', value: providedFields } : null,
+        retryExample ? { label: 'retry example', value: retryExample } : null,
+      ].filter((item): item is ToolSummaryItem => item != null),
+    };
+  }
+
+  const createdMatch = compact.match(/^Created task '(.+?)' \(ID: ([^)]+)\)(?: Description: (.+?))?(?: Status: (.+))?$/);
+  if (createdMatch) {
+    return {
+      summary: `Created task “${createdMatch[1]}”.`,
+      items: [
+        { label: 'task', value: createdMatch[1] },
+        { label: 'task id', value: createdMatch[2] },
+        createdMatch[4] ? { label: 'status', value: createdMatch[4] } : null,
+      ].filter((item): item is ToolSummaryItem => item != null),
+    };
+  }
+
+  const statusUpdateMatch = compact.match(/^Updated task ([^ ]+) status to ([A-Za-z_]+)$/);
+  if (statusUpdateMatch) {
+    const humanStatus = humanizeTaskStatus(statusUpdateMatch[2]) ?? statusUpdateMatch[2];
+    return {
+      summary: `Updated task status to ${humanStatus}.`,
+      items: [
+        { label: 'task id', value: statusUpdateMatch[1] },
+        { label: 'status', value: humanStatus },
+      ],
+    };
+  }
+
+  const updateMatch = compact.match(/^Updated task ([^:]+): (.+)$/);
+  if (updateMatch) {
+    return {
+      summary: 'Updated task details.',
+      items: [
+        { label: 'task id', value: updateMatch[1] },
+        { label: 'changes', value: updateMatch[2] },
+      ],
+    };
+  }
+
+  const deletedMatch = compact.match(/^Deleted task '(.+?)' \(ID: ([^)]+)\)$/);
+  if (deletedMatch) {
+    return {
+      summary: `Deleted task “${deletedMatch[1]}”.`,
+      items: [
+        { label: 'task', value: deletedMatch[1] },
+        { label: 'task id', value: deletedMatch[2] },
+      ],
+    };
+  }
+
+  const failedPrefix = compact.match(/^Failed to (create task|update task status|update task|delete task): (.+)$/);
+  if (failedPrefix) {
+    return {
+      summary: truncate(failedPrefix[2], 160),
+      items: failedPrefix[1] ? [{ label: 'operation', value: failedPrefix[1] }] : [],
+    };
+  }
+
+  return {
+    summary: truncate(compact, 160),
+    items: taskId ? [{ label: 'task id', value: taskId }] : [],
+  };
 }
 
 function formatValue(value: unknown, key?: string, maxLength = 88): string {
@@ -208,12 +403,20 @@ function describeActivity(toolName: string, parsedArgs: unknown): Pick<ToolPrese
           return { eyebrow: 'code tool', title: 'Analyzing code context', detail: path };
       }
     case 'web_search':
-      return { eyebrow: 'web search', title: 'Searching the web', detail: query };
+      return {
+        eyebrow: 'web search',
+        title: contextualVerbTitle('Researching', query, 'Reviewing research findings'),
+        detail: query,
+      };
     case 'web':
-      return { eyebrow: 'web tool', title: 'Fetching web page', detail: url };
+      return {
+        eyebrow: 'web tool',
+        title: contextualVerbTitle('Reviewing', urlHost(url) ?? url, 'Reviewing source material', 4),
+        detail: url,
+      };
     case 'task':
     case 'tasks':
-      return { eyebrow: 'task tool', title: 'Updating task plan', detail: readString(args, ['task_id', 'name']) };
+      return describeTaskActivity(args);
     case 'mcp':
       return {
         eyebrow: 'mcp tool',
@@ -235,13 +438,16 @@ export function buildToolPresentation(block: ToolBlock): ToolPresentation {
   const parsedArgs = parseStructuredText(block.args);
   const parsedResult = parseStructuredText(block.result);
   const activity = describeActivity(block.name, parsedArgs);
+  const taskResult = ['task', 'tasks'].includes(block.name.toLowerCase()) && isRecord(parsedArgs)
+    ? extractTaskToolResultPresentation(parsedArgs, parsedResult, block.status)
+    : null;
 
   return {
     eyebrow: activity.eyebrow,
     title: activity.title,
     detail: activity.detail,
     parameterItems: buildSummaryItems(parsedArgs, 'input'),
-    responseSummary: summarizeResponse(block.status, parsedResult),
-    responseItems: buildSummaryItems(parsedResult, 'response'),
+    responseSummary: taskResult?.summary ?? summarizeResponse(block.status, parsedResult),
+    responseItems: taskResult?.items ?? buildSummaryItems(parsedResult, 'response'),
   };
 }

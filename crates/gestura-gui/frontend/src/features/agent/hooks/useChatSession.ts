@@ -36,11 +36,11 @@ import type {
   TextBlock,
   ToolBlock,
   ShellBlock,
-  IterationMarkerBlock,
   NarrationBlock,
   ToolConfirmation,
   ToolConfirmationDecision,
   TaskHierarchy,
+  TaskRuntimeSnapshot,
   KnowledgeItem,
   StatusState,
 } from '../types';
@@ -111,6 +111,51 @@ function normalizeNarrationStage(
     default:
       return 'progress';
   }
+}
+
+function toTaskRuntimeTaskView(value: unknown): TaskRuntimeSnapshot['current_task'] {
+  if (!isRecord(value)) return null;
+  return {
+    id: String(value['id'] ?? ''),
+    name: String(value['name'] ?? ''),
+    status: String(value['status'] ?? ''),
+  };
+}
+
+function toTaskRuntimeTaskViews(value: unknown): TaskRuntimeSnapshot['ready_tasks'] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => toTaskRuntimeTaskView(entry))
+    .filter((entry): entry is NonNullable<TaskRuntimeSnapshot['current_task']> => {
+      return Boolean(entry && entry.id && entry.name);
+    });
+}
+
+function toTaskRuntimeSnapshot(value: unknown): TaskRuntimeSnapshot | null {
+  const payload = isRecord(value) && isRecord(value['snapshot'])
+    ? value['snapshot']
+    : value;
+  if (!isRecord(payload)) return null;
+
+  const rootTaskId = typeof payload['root_task_id'] === 'string' ? payload['root_task_id'] : '';
+  const statusMessage = typeof payload['status_message'] === 'string' ? payload['status_message'] : '';
+  if (!rootTaskId || !statusMessage) return null;
+
+  return {
+    root_task_id: rootTaskId,
+    current_task: toTaskRuntimeTaskView(payload['current_task']),
+    ready_tasks: toTaskRuntimeTaskViews(payload['ready_tasks']),
+    parallel_ready_tasks: toTaskRuntimeTaskViews(payload['parallel_ready_tasks']),
+    blocked_tasks: toTaskRuntimeTaskViews(payload['blocked_tasks']),
+    open_tasks: toTaskRuntimeTaskViews(payload['open_tasks']),
+    completed_tasks: toTaskRuntimeTaskViews(payload['completed_tasks']),
+    missing_requirements: Array.isArray(payload['missing_requirements'])
+      ? payload['missing_requirements']
+        .map((entry) => String(entry))
+        .filter((entry) => entry.trim().length > 0)
+      : [],
+    status_message: statusMessage,
+  };
 }
 
 function toReplayToolConfirmation(payload: Record<string, unknown>): ToolConfirmation | null {
@@ -209,9 +254,19 @@ function toReplayAction(entry: SessionActivityEvent): StreamEventAction | null {
           type: 'narration',
           title: payloadRecord.title != null ? String(payloadRecord.title) : null,
           message: String(payloadRecord.message ?? ''),
+          summary: payloadRecord.summary != null ? String(payloadRecord.summary) : null,
+          reason: payloadRecord.reason != null ? String(payloadRecord.reason) : null,
+          nextStep: payloadRecord.next_step != null ? String(payloadRecord.next_step) : null,
+          evidence: Array.isArray(payloadRecord.evidence)
+            ? payloadRecord.evidence.map((entry) => String(entry)).filter((entry) => entry.trim().length > 0)
+            : [],
           stage: normalizeNarrationStage(payloadRecord.stage),
         }
         : null;
+    case 'agent-stream-task-state': {
+      const snapshot = toTaskRuntimeSnapshot(payload);
+      return snapshot ? { type: 'task-runtime-state', snapshot } : null;
+    }
     case 'agent-stream-shell-lifecycle':
       return payloadRecord && typeof payloadRecord.process_id === 'string'
         ? { type: 'shell-lifecycle', processId: payloadRecord.process_id, payload: payloadRecord }
@@ -293,6 +348,7 @@ export interface ChatSessionState {
   status: StatusState;
   pendingConfirmation: ToolConfirmation | null;
   tasks: TaskHierarchy;
+  runtimeTaskSnapshot: TaskRuntimeSnapshot | null;
   knowledgeItems: KnowledgeItem[];
   toolSettings: Record<string, unknown>;
   memoryRevision: number;
@@ -316,10 +372,279 @@ interface LastToolContext {
   success: boolean;
   output: string | null;
   args: string;
+  completed: boolean;
 }
 
-function buildIterationLabel(_ctx: LastToolContext | null): { label: string; detail?: string } | null {
+interface ReviewNarrationDraft {
+  title: string;
+  message: string;
+  stage: NarrationBlock['stage'];
+}
+
+function collapseIterationWhitespace(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function truncateIterationDetail(text: string, maxLength = 96): string {
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function parseIterationArgs(raw: string): unknown {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return trimmed;
+  }
+}
+
+function readIterationString(source: Record<string, unknown> | null, keys: string[]): string | null {
+  if (!source) return null;
+
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'string' && value.trim()) {
+      return collapseIterationWhitespace(value);
+    }
+  }
+
   return null;
+}
+
+function firstIterationDetail(...candidates: Array<string | null | undefined>): string | undefined {
+  for (const candidate of candidates) {
+    const compact = collapseIterationWhitespace(candidate ?? '');
+    if (compact) return truncateIterationDetail(compact);
+  }
+
+  return undefined;
+}
+
+function iterationTitleTokens(text: string | null | undefined, maxWords: number): string | null {
+  const compact = collapseIterationWhitespace(text ?? '');
+  if (!compact) return null;
+
+  const tokens = compact
+    .split(/[^A-Za-z0-9._/-]+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .slice(0, maxWords);
+
+  return tokens.length >= 2 ? tokens.join(' ') : null;
+}
+
+function iterationContextualTitle(verb: string, detail: string | null | undefined, fallback: string, maxWords = 3): string {
+  const tokens = iterationTitleTokens(detail, maxWords);
+  return tokens ? `${verb} ${tokens}` : fallback;
+}
+
+function iterationUrlHost(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).host || null;
+  } catch {
+    return null;
+  }
+}
+
+function quotedDetail(detail: string | null | undefined): string {
+  const compact = collapseIterationWhitespace(detail ?? '');
+  return compact ? `"${truncateIterationDetail(compact, 120)}"` : 'the latest result';
+}
+
+function buildIterationReviewNarration(ctx: LastToolContext | null): ReviewNarrationDraft | null {
+  const marker = buildIterationLabel(ctx);
+  if (!marker || !ctx?.completed) return null;
+
+  const toolName = collapseIterationWhitespace(ctx.name).toLowerCase();
+  const parsedArgs = parseIterationArgs(ctx.args);
+  const args = isRecord(parsedArgs) ? parsedArgs : null;
+  const operation = readIterationString(args, ['operation', 'action', 'mode', 'subcommand'])?.toLowerCase() ?? null;
+  const detail = marker.detail ?? null;
+  const focus = quotedDetail(detail);
+
+  if (!ctx.success) {
+    return {
+      title: marker.label,
+      stage: 'blocked',
+      message: `I hit a problem while working through ${focus}, so I’m checking whether the issue came from the tool input, the environment, or the current branch of the task before I try again. I want the next move to change the situation instead of replaying the same failed step.`,
+    };
+  }
+
+  switch (toolName) {
+    case 'shell':
+      return {
+        title: marker.label,
+        stage: 'verification',
+        message: `I have the latest command result from ${focus} in hand, so I’m checking what it actually proved before I decide whether to keep executing, make a code change, or move into verification. That result should tell me whether this branch of the work really advanced or whether it only narrowed the next decision.`,
+      };
+    case 'file':
+      if (operation === 'write' || operation === 'edit' || operation === 'update' || operation === 'delete' || operation === 'remove') {
+        return {
+          title: marker.label,
+          stage: 'execution',
+          message: `I’m reviewing the workspace change around ${focus} so I can tell whether it actually moved the implementation forward or only covered part of the request. That should tell me whether the next step stays in code, branches into another file, or shifts into validation.`,
+        };
+      }
+      return {
+        title: marker.label,
+        stage: 'context',
+        message: `I’m going through the file context around ${focus} and pulling out the details that matter for the next decision. I want to use this read to choose a concrete follow-up step instead of treating the inspection itself like progress.`,
+      };
+    case 'git':
+      return {
+        title: marker.label,
+        stage: 'verification',
+        message: `I’m reviewing the repository signal around ${focus} to see how the current workspace state lines up with the work I think I just moved. That should tell me whether the branch is ready for validation or whether there is still another implementation step hiding behind the diff.`,
+      };
+    case 'code':
+      return {
+        title: marker.label,
+        stage: 'context',
+        message: `I’m checking the code context around ${focus} so I can separate the signal that matters from the surrounding noise before I act on it. That should tell me whether I already have enough evidence to change code or whether I need one more targeted inspection first.`,
+      };
+    case 'web_search':
+      return {
+        title: marker.label,
+        stage: 'context',
+        message: `I’m reading through the research returned for ${focus} and filtering down to the findings that actually matter for this request. Once I know which pieces are strong enough to trust, I can fold them back into the plan and decide whether I already have enough signal to move or need one more targeted lookup.`,
+      };
+    case 'web':
+      return {
+        title: marker.label,
+        stage: 'context',
+        message: `I’m reviewing the source material from ${focus} and checking which parts are concrete enough to guide the next action. That should tell me whether this evidence is ready to shape the plan now or whether I need to cross-check it before I commit to the next step.`,
+      };
+    case 'mcp':
+      return {
+        title: marker.label,
+        stage: 'progress',
+        message: `I’m going through the MCP result around ${focus} so I can see what new capability or evidence it actually unlocked for this request. That should tell me whether I can use this result directly or whether it only set up the next concrete action.`,
+      };
+    case 'gui_control':
+      return {
+        title: marker.label,
+        stage: 'progress',
+        message: `I’m checking the UI action around ${focus} to confirm what changed and whether it gave me the state I needed. That should tell me whether the interface is ready for the next step or whether I need to correct the interaction before moving on.`,
+      };
+    case 'screenshot':
+    case 'screen_record':
+      return {
+        title: marker.label,
+        stage: 'context',
+        message: `I’m reviewing the captured screen context around ${focus} so I can anchor the next step in what the interface actually shows instead of relying on assumptions. That should tell me whether the screen already confirms the path forward or whether I need one more targeted action to resolve the ambiguity.`,
+      };
+    default:
+      return {
+        title: marker.label,
+        stage: 'progress',
+        message: `I’m reviewing ${focus} to understand what this latest result changed before I commit to the next move. That should tell me whether this work actually unlocked progress or whether I need to take a different kind of step next.`,
+      };
+  }
+}
+
+function buildIterationLabel(ctx: LastToolContext | null): { label: string; detail?: string } | null {
+  if (!ctx?.completed) return null;
+
+  const toolName = collapseIterationWhitespace(ctx.name);
+  if (!toolName) return null;
+
+  const normalizedToolName = toolName.toLowerCase();
+  const parsedArgs = parseIterationArgs(ctx.args);
+  const args = isRecord(parsedArgs) ? parsedArgs : null;
+  const operation = readIterationString(args, ['operation', 'action', 'mode', 'subcommand'])?.toLowerCase() ?? null;
+  const path = readIterationString(args, ['path', 'target', 'file_path']);
+  const command = readIterationString(args, ['command']);
+  const query = readIterationString(args, ['query', 'search']);
+  const url = readIterationString(args, ['url']);
+  const guiAction = readIterationString(args, ['action']);
+  const mcpTarget = readIterationString(args, ['tool', 'tool_name', 'server', 'server_name']);
+  const detail = firstIterationDetail(path, command, query, url, guiAction, mcpTarget, ctx.output);
+
+  if (normalizedToolName === 'task' || normalizedToolName === 'tasks') {
+    return null;
+  }
+
+  if (!ctx.success) {
+    switch (normalizedToolName) {
+      case 'shell':
+        return {
+          label: iterationContextualTitle('Reviewing', command ?? detail, 'Reviewing shell failure', 4),
+          detail,
+        };
+      case 'file':
+        return { label: 'Resolving file operation issue', detail };
+      case 'git':
+        return { label: 'Resolving repository issue', detail };
+      case 'code':
+        return { label: 'Resolving code analysis issue', detail };
+      case 'web_search':
+      case 'web':
+        return { label: 'Reviewing incomplete research', detail };
+      case 'mcp':
+        return { label: 'Reviewing MCP tool failure', detail };
+      case 'gui_control':
+        return { label: 'Reviewing UI action outcome', detail };
+      default:
+        return { label: `Following up on ${toolName}`, detail };
+    }
+  }
+
+  switch (normalizedToolName) {
+    case 'shell':
+      return {
+        label: iterationContextualTitle('Checking', command ?? detail, 'Checking command results', 3),
+        detail,
+      };
+    case 'file':
+      switch (operation) {
+        case 'write':
+        case 'edit':
+        case 'update':
+        case 'delete':
+        case 'remove':
+          return { label: 'Reviewing workspace changes', detail };
+        case 'search':
+          return { label: 'Reviewing file search results', detail };
+        case 'list':
+        case 'tree':
+          return { label: 'Reviewing workspace context', detail };
+        default:
+          return { label: 'Reviewing file context', detail };
+      }
+    case 'git':
+      return {
+        label: operation === 'diff' ? 'Reviewing repository changes' : 'Reviewing repository state',
+        detail,
+      };
+    case 'code':
+      return { label: 'Reviewing code context', detail };
+    case 'web_search':
+      return {
+        label: iterationContextualTitle('Researching', query ?? detail, 'Reviewing research findings'),
+        detail,
+      };
+    case 'web':
+      return {
+        label: iterationContextualTitle('Reviewing', iterationUrlHost(url) ?? detail, 'Reviewing fetched page', 4),
+        detail,
+      };
+    case 'mcp':
+      return { label: 'Reviewing MCP results', detail };
+    case 'gui_control':
+      return { label: 'Confirming UI update', detail };
+    case 'permissions':
+      return { label: 'Reviewing permission status', detail };
+    case 'screenshot':
+      return { label: 'Reviewing captured screen context', detail };
+    case 'screen_record':
+      return { label: 'Reviewing recorded screen activity', detail };
+    default:
+      return { label: `Reviewing ${toolName} results`, detail };
+  }
 }
 
 function iterationMarkerSignature(
@@ -348,6 +673,7 @@ export function useChatSession(sessionId: string): ChatSessionState {
   const [status, setStatus] = useState<StatusState>({ text: 'Ready', kind: 'ready' });
   const [pendingConfirmation, setPendingConfirmation] = useState<ToolConfirmation | null>(null);
   const [tasks, setTasks] = useState<TaskHierarchy>([]);
+  const [runtimeTaskSnapshot, setRuntimeTaskSnapshot] = useState<TaskRuntimeSnapshot | null>(null);
   const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeItem[]>([]);
   const [toolSettings, setToolSettings] = useState<Record<string, unknown>>({});
   const [memoryRevision, setMemoryRevision] = useState(0);
@@ -597,11 +923,27 @@ export function useChatSession(sessionId: string): ChatSessionState {
           id: nanoid(),
           title: action.title ?? null,
           message: action.message,
+          summary: action.summary ?? null,
+          reason: action.reason ?? null,
+          nextStep: action.nextStep ?? null,
+          evidence: action.evidence,
           stage: action.stage,
+          source: 'llm',
         };
         updateStreamingBlocks((blocks) => {
           const last = blocks[blocks.length - 1];
-          if (last?.kind === 'narration' && last.message === action.message && last.stage === action.stage) {
+          if (last?.kind === 'narration' && last.source === 'review-fallback') {
+            return [...blocks.slice(0, -1), block];
+          }
+          if (
+            last?.kind === 'narration' &&
+            last.message === action.message &&
+            last.stage === action.stage &&
+            (last.summary ?? null) === (action.summary ?? null) &&
+            (last.reason ?? null) === (action.reason ?? null) &&
+            (last.nextStep ?? null) === (action.nextStep ?? null) &&
+            last.evidence.join('|') === action.evidence.join('|')
+          ) {
             return blocks;
           }
           return [...blocks, block];
@@ -632,8 +974,8 @@ export function useChatSession(sessionId: string): ChatSessionState {
       case 'agent-iteration': {
         if (action.iteration > 0) {
           ensureStreamingMsg();
-          const markerInfo = buildIterationLabel(lastToolContextRef.current);
-          if (!markerInfo) {
+          const reviewNarration = buildIterationReviewNarration(lastToolContextRef.current);
+          if (!reviewNarration) {
             lastIterationMarkerSignatureRef.current = null;
             updateStreamingBlocks((blocks) => [
               ...blocks.map((b) =>
@@ -645,22 +987,24 @@ export function useChatSession(sessionId: string): ChatSessionState {
           }
           const signature = iterationMarkerSignature(
             lastToolContextVersionRef.current,
-            markerInfo,
+            { label: reviewNarration.title, detail: reviewNarration.message },
           );
           if (lastIterationMarkerSignatureRef.current === signature) break;
           lastIterationMarkerSignatureRef.current = signature;
-          const markerId = nanoid();
-          const marker: IterationMarkerBlock = {
-            kind: 'iteration-marker',
-            id: markerId,
-            label: markerInfo.label,
-            detail: markerInfo.detail,
+          const block: NarrationBlock = {
+            kind: 'narration',
+            id: nanoid(),
+            title: reviewNarration.title,
+            message: reviewNarration.message,
+            evidence: [],
+            stage: reviewNarration.stage,
+            source: 'review-fallback',
           };
           updateStreamingBlocks((blocks) => [
             ...blocks.map((b) =>
               b.kind === 'tool' && (b.status === 'success' || b.status === 'error') ? { ...b, collapsed: true } : b
             ),
-            marker,
+            block,
           ]);
           currentTextBlockIdRef.current = null;
         }
@@ -680,7 +1024,13 @@ export function useChatSession(sessionId: string): ChatSessionState {
         currentToolBlockIdRef.current = id;
         currentTextBlockIdRef.current = null;
         // Initialise context for this tool — args and result filled as they stream in
-        lastToolContextRef.current = { name: action.toolName, success: false, output: null, args: '' };
+        lastToolContextRef.current = {
+          name: action.toolName,
+          success: false,
+          output: null,
+          args: '',
+          completed: false,
+        };
         lastIterationMarkerSignatureRef.current = null;
         const block: ToolBlock = { kind: 'tool', id, name: action.toolName, args: '', status: 'running', collapsed: true };
         updateStreamingBlocks((blocks) => [...blocks, block]);
@@ -725,7 +1075,12 @@ export function useChatSession(sessionId: string): ChatSessionState {
         }
         // Finalise context so the upcoming agent-iteration can produce a rich label
         if (lastToolContextRef.current) {
-          lastToolContextRef.current = { ...lastToolContextRef.current, success: action.success, output: action.output };
+          lastToolContextRef.current = {
+            ...lastToolContextRef.current,
+            success: action.success,
+            output: action.output,
+            completed: true,
+          };
           lastToolContextVersionRef.current += 1;
         }
         if (action.name === 'gui_control' && action.success && lastToolContextRef.current) {
@@ -902,6 +1257,10 @@ export function useChatSession(sessionId: string): ChatSessionState {
         setIsListening(action.listening);
         break;
 
+      case 'task-runtime-state':
+        setRuntimeTaskSnapshot(action.snapshot);
+        break;
+
       case 'task-changed':
         getTaskHierarchy(sessionId).then(setTasks).catch(() => { });
         bumpMemoryRevision();
@@ -1048,13 +1407,11 @@ export function useChatSession(sessionId: string): ChatSessionState {
       isStreaming: false, timestamp: Date.now(),
     };
     setMessages((prev) => [...prev, userMsg]);
-    try {
-      await sendMessageStreaming({ session_id: sessionId, message: text, task_id: taskId ?? null });
-    } catch (err) {
+    void sendMessageStreaming({ session_id: sessionId, message: text, task_id: taskId ?? null }).catch((err) => {
       setStatus({ text: `Error: ${String(err)}`, kind: 'error' });
       setIsProcessing(false);
       isProcessingRef.current = false;
-    }
+    });
   }, [resetStreamingCursor, sessionId]);
 
   useEffect(() => {
@@ -1155,7 +1512,7 @@ export function useChatSession(sessionId: string): ChatSessionState {
 
   return {
     messages, streamingMessage, isProcessing, isStopping, canResume, isResuming, isListening, status,
-    pendingConfirmation, tasks, knowledgeItems, toolSettings, memoryRevision,
+    pendingConfirmation, tasks, runtimeTaskSnapshot, knowledgeItems, toolSettings, memoryRevision,
     userScrolledUp, setUserScrolledUp,
     sendMessage, cancelStream, resumeStream, resolveConfirmation,
     toggleVoice, enhanceText, refreshTasks, refreshKnowledge, refreshToolSettings,

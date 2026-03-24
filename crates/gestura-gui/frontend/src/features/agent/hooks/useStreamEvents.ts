@@ -9,6 +9,7 @@ import { useEffect } from 'react';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import type {
+  TaskRuntimeSnapshot,
   ToolConfirmation,
   StreamHealthPayload,
 } from '../types';
@@ -31,12 +32,73 @@ function unpackPayload<T = unknown>(raw: unknown): UnpackedPayload<T> {
   };
 }
 
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+    .filter((entry) => entry.length > 0);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readTaskRuntimeTaskView(value: unknown): TaskRuntimeSnapshot['current_task'] {
+  if (!isRecord(value)) return null;
+  return {
+    id: String(value['id'] ?? ''),
+    name: String(value['name'] ?? ''),
+    status: String(value['status'] ?? ''),
+  };
+}
+
+function readTaskRuntimeTaskViews(value: unknown): TaskRuntimeSnapshot['ready_tasks'] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => readTaskRuntimeTaskView(entry))
+    .filter((entry): entry is NonNullable<TaskRuntimeSnapshot['current_task']> => {
+      return Boolean(entry && entry.id && entry.name);
+    });
+}
+
+function readTaskRuntimeSnapshot(value: unknown): TaskRuntimeSnapshot | null {
+  const payload = isRecord(value) && isRecord(value['snapshot'])
+    ? value['snapshot']
+    : value;
+  if (!isRecord(payload)) return null;
+
+  const rootTaskId = typeof payload['root_task_id'] === 'string' ? payload['root_task_id'] : '';
+  const statusMessage = typeof payload['status_message'] === 'string' ? payload['status_message'] : '';
+  if (!rootTaskId || !statusMessage) return null;
+
+  return {
+    root_task_id: rootTaskId,
+    current_task: readTaskRuntimeTaskView(payload['current_task']),
+    ready_tasks: readTaskRuntimeTaskViews(payload['ready_tasks']),
+    parallel_ready_tasks: readTaskRuntimeTaskViews(payload['parallel_ready_tasks']),
+    blocked_tasks: readTaskRuntimeTaskViews(payload['blocked_tasks']),
+    open_tasks: readTaskRuntimeTaskViews(payload['open_tasks']),
+    completed_tasks: readTaskRuntimeTaskViews(payload['completed_tasks']),
+    missing_requirements: readStringArray(payload['missing_requirements']),
+    status_message: statusMessage,
+  };
+}
+
 // ─── Event type discriminants ─────────────────────────────────────────────────
 
 export type StreamEventAction =
   | { type: 'thinking'; chunk: string }
   | { type: 'chunk'; chunk: string }
-  | { type: 'narration'; title?: string | null; message: string; stage: 'context' | 'planning' | 'execution' | 'verification' | 'blocked' | 'progress' }
+  | {
+    type: 'narration';
+    title?: string | null;
+    message: string;
+    summary?: string | null;
+    reason?: string | null;
+    nextStep?: string | null;
+    evidence: string[];
+    stage: 'context' | 'planning' | 'execution' | 'verification' | 'blocked' | 'progress';
+  }
   | { type: 'tool-confirmation'; payload: ToolConfirmation }
   | { type: 'tool-blocked'; toolName: string; reason: string }
   | { type: 'agent-iteration'; iteration: number }
@@ -57,6 +119,7 @@ export type StreamEventAction =
   | { type: 'health'; payload: StreamHealthPayload }
   | { type: 'agent-message'; role: string; content: string }
   | { type: 'listening-state'; listening: boolean }
+  | { type: 'task-runtime-state'; snapshot: TaskRuntimeSnapshot }
   | { type: 'task-changed' };
 
 export type StreamEventDispatch = (action: StreamEventAction) => void;
@@ -292,8 +355,20 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
           type: 'narration',
           title: p['title'] != null ? String(p['title']) : null,
           message: String(p['message'] ?? ''),
+          summary: p['summary'] != null ? String(p['summary']) : null,
+          reason: p['reason'] != null ? String(p['reason']) : null,
+          nextStep: p['next_step'] != null ? String(p['next_step']) : null,
+          evidence: readStringArray(p['evidence']),
           stage: (p['stage'] as 'context' | 'planning' | 'execution' | 'verification' | 'blocked' | 'progress' | undefined) ?? 'progress',
         });
+      });
+
+      await safeListen('agent-stream-task-state', (e) => {
+        const r = accept<Record<string, unknown>>('agent-stream-task-state', e.payload);
+        if (!r.ok) return;
+        const snapshot = readTaskRuntimeSnapshot(r.value);
+        if (!snapshot) return;
+        dispatch({ type: 'task-runtime-state', snapshot });
       });
 
       await safeListen('agent-context-compacted', (e) => {

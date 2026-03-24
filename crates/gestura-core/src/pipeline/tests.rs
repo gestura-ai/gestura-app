@@ -16,6 +16,64 @@ fn test_agent_request_builder() {
 }
 
 #[test]
+fn requirement_detection_input_defaults_to_request_input() {
+    let request = AgentRequest::new("Please build and test the project before finishing.");
+
+    assert_eq!(
+        super::requirement_detection_input(&request),
+        "Please build and test the project before finishing."
+    );
+    assert!(AgentPipeline::prompt_requires_build_and_test(
+        super::requirement_detection_input(&request)
+    ));
+}
+
+#[test]
+fn requirement_detection_input_prefers_orchestrator_hint_over_composed_prompt() {
+    let mut request = AgentRequest::new(
+        "Role:\nImplementer\n\nDelegation Brief:\nBefore finishing, build and test the project.\n\nTask:\nCreate a concise SWOT markdown file from the research.",
+    )
+    .with_source(RequestSource::Orchestrator);
+    request.metadata.hints.insert(
+        "requirement_detection_input".to_string(),
+        "Create a concise SWOT markdown file from the research.".to_string(),
+    );
+
+    assert_eq!(
+        super::requirement_detection_input(&request),
+        "Create a concise SWOT markdown file from the research."
+    );
+    assert!(!AgentPipeline::prompt_requires_build_and_test(
+        super::requirement_detection_input(&request)
+    ));
+    assert!(AgentPipeline::request_requires_mutating_file_tool_success(
+        super::requirement_detection_input(&request)
+    ));
+}
+
+#[test]
+fn markdown_response_requests_do_not_require_source_mutation_without_file_context() {
+    let request = AgentRequest::new(
+        "I want to create a concise SWOT analysis for launching a new category of smart home lighting products priced between $30 and $80. Please carefully plan the structure (Strengths, Weaknesses, Opportunities, Threats — with 4–6 bullet points each), research current 2025–2026 market trends, major players, and consumer drivers using reliable sources, implement the full SWOT in clear markdown format with brief explanations for each point, then verify by cross-checking at least three facts against independent sources and note any conflicting data or assumptions.",
+    );
+
+    assert!(!AgentPipeline::request_requires_mutating_file_tool_success(
+        super::requirement_detection_input(&request)
+    ));
+}
+
+#[test]
+fn ambiguous_create_language_still_requires_mutation_when_file_context_is_explicit() {
+    let request = AgentRequest::new(
+        "Create a markdown file named smart_home_lighting_swot.md in the repo and write the final SWOT analysis there.",
+    );
+
+    assert!(AgentPipeline::request_requires_mutating_file_tool_success(
+        super::requirement_detection_input(&request)
+    ));
+}
+
+#[test]
 fn test_pipeline_new_honors_user_reflection_settings() {
     let mut config = AppConfig::default();
     config.pipeline.reflection.enabled = true;
@@ -186,6 +244,7 @@ fn auto_tracked_handoff_supports_analysis_or_research_requests() {
 
     assert!(handoff.contains("Planned tracked subtasks"));
     assert!(handoff.contains("analysis or research"));
+    assert!(handoff.contains("attach it to the tracked root plan"));
     assert!(!handoff.contains("Begin concrete implementation work immediately"));
 }
 

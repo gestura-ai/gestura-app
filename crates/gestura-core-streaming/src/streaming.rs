@@ -17,6 +17,37 @@ use tracing::Instrument as _;
 
 /// Default timeout for streaming LLM API calls
 const STREAMING_TIMEOUT_SECS: u64 = 300;
+const STREAM_CHUNK_BUFFER_CAPACITY: usize = 256;
+const STATUS_CHUNK_SEND_TIMEOUT: Duration = Duration::from_millis(100);
+const TOKEN_USAGE_CHUNK_SEND_TIMEOUT: Duration = Duration::from_millis(100);
+
+async fn send_status_chunk_best_effort(tx: &mpsc::Sender<StreamChunk>, chunk: StreamChunk) {
+    debug_assert!(matches!(chunk, StreamChunk::Status { .. }));
+
+    match tokio::time::timeout(STATUS_CHUNK_SEND_TIMEOUT, tx.send(chunk)).await {
+        Ok(Ok(())) | Ok(Err(_)) => {}
+        Err(_) => {
+            tracing::debug!(
+                timeout_ms = STATUS_CHUNK_SEND_TIMEOUT.as_millis(),
+                "Dropping transient status chunk because the stream receiver is not draining fast enough"
+            );
+        }
+    }
+}
+
+async fn send_token_usage_chunk_best_effort(tx: &mpsc::Sender<StreamChunk>, chunk: StreamChunk) {
+    debug_assert!(matches!(chunk, StreamChunk::TokenUsageUpdate { .. }));
+
+    match tokio::time::timeout(TOKEN_USAGE_CHUNK_SEND_TIMEOUT, tx.send(chunk)).await {
+        Ok(Ok(())) | Ok(Err(_)) => {}
+        Err(_) => {
+            tracing::debug!(
+                timeout_ms = TOKEN_USAGE_CHUNK_SEND_TIMEOUT.as_millis(),
+                "Dropping transient token-usage chunk because the stream receiver is not draining fast enough"
+            );
+        }
+    }
+}
 
 /// Pricing per 1M tokens (input/output) for various providers
 /// Prices are in USD and updated as of January 2026
@@ -201,6 +232,27 @@ impl NarrationStage {
     }
 }
 
+/// Structured public narration content rendered between major loop events.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PublicNarration {
+    /// Short collapsed heading for the narration block.
+    pub title: String,
+    /// Natural prose fallback used by plain-text surfaces.
+    pub message: String,
+    /// Concise statement of what changed or what the agent is doing now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Why the current step matters or why it was chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// What the agent expects to do immediately after this point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_step: Option<String>,
+    /// Short evidence bullets grounding the narration in observed runtime facts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<String>,
+}
+
 /// A chunk of streaming response
 #[derive(Debug, Clone)]
 pub enum StreamChunk {
@@ -208,9 +260,8 @@ pub enum StreamChunk {
     Thinking(String),
     /// Public-facing narration explaining the current direction.
     Narration {
-        /// Short collapsed heading for the narration block.
-        title: String,
-        message: String,
+        /// Structured public narration content for user-facing progress updates.
+        narration: PublicNarration,
         stage: NarrationStage,
     },
     /// A text chunk from the LLM
@@ -400,6 +451,10 @@ pub enum StreamChunk {
         active_command: Option<String>,
         /// Whether the session is currently eligible for reuse.
         available_for_reuse: bool,
+        /// Whether the session is a user-facing interactive shell.
+        interactive: bool,
+        /// Whether the session is currently reserved for direct user management.
+        user_managed: bool,
     },
     /// Stream completed successfully with optional token usage
     Done(Option<TokenUsage>),
@@ -486,11 +541,11 @@ async fn forward_attempt_stream(
             }
             StreamChunk::TokenUsageUpdate { .. } => {
                 // Forward token usage updates without marking as output
-                let _ = tx.send(chunk).await;
+                send_token_usage_chunk_best_effort(tx, chunk).await;
             }
             StreamChunk::Status { .. } => {
                 // Forward status updates without marking as output
-                let _ = tx.send(chunk).await;
+                send_status_chunk_best_effort(tx, chunk).await;
             }
             StreamChunk::ConfigRequest { .. } => {
                 // Forward config requests without marking as output
@@ -514,11 +569,11 @@ async fn forward_attempt_stream(
             }
             StreamChunk::Narration { .. } => {
                 // Forward narration updates without marking as model output.
-                let _ = tx.send(chunk).await;
+                let _ = tx.try_send(chunk);
             }
             StreamChunk::TaskRuntimeSnapshot { .. } => {
                 // Forward runtime task-state updates without marking as output
-                let _ = tx.send(chunk).await;
+                let _ = tx.try_send(chunk);
             }
             StreamChunk::ReflectionStarted { .. } | StreamChunk::ReflectionComplete { .. } => {
                 // Forward reflection events without marking as output
@@ -1393,11 +1448,13 @@ pub async fn stream_ollama(
                         model = %pre_conn_model,
                         "[Ollama] Pre-connection keepalive: model still loading"
                     );
-                    let _ = pre_conn_tx
-                        .send(StreamChunk::Status {
+                    send_status_chunk_best_effort(
+                        &pre_conn_tx,
+                        StreamChunk::Status {
                             message: format!("Loading model '{pre_conn_model}'…"),
-                        })
-                        .await;
+                        },
+                    )
+                    .await;
                 }
             }
         }
@@ -1423,11 +1480,13 @@ pub async fn stream_ollama(
     // Immediately notify the caller that we have a connection. This resets
     // the caller's idle timer, which is critical because Ollama may spend a
     // long time loading the model into memory before sending any tokens.
-    let _ = tx
-        .send(StreamChunk::Status {
+    send_status_chunk_best_effort(
+        &tx,
+        StreamChunk::Status {
             message: format!("Connected to Ollama — loading model '{}'…", model),
-        })
-        .await;
+        },
+    )
+    .await;
     tracing::debug!(
         model = model,
         "[Ollama] HTTP connection established; 'Connected' status sent"
@@ -1546,12 +1605,15 @@ pub async fn stream_ollama(
                     return Ok(());
                 }
                 tracing::debug!(model = model, "[Ollama] Keepalive firing — sending Status chunk");
-                let keepalive_send = tx.send(StreamChunk::Status {
-                    message: format!("Working… (model '{}')", model),
-                }).await;
+                send_status_chunk_best_effort(
+                    &tx,
+                    StreamChunk::Status {
+                        message: format!("Working… (model '{}')", model),
+                    },
+                )
+                .await;
                 tracing::debug!(
                     model = model,
-                    send_ok = keepalive_send.is_ok(),
                     "[Ollama] Keepalive Status sent"
                 );
                 // Reset the keepalive timer for the next interval.
@@ -1579,11 +1641,13 @@ async fn stream_unconfigured_error(
         provider_name
     );
     // Status chunk does not count as output for retry purposes
-    let _ = tx
-        .send(StreamChunk::Status {
+    send_status_chunk_best_effort(
+        &tx,
+        StreamChunk::Status {
             message: message.clone(),
-        })
-        .await;
+        },
+    )
+    .await;
     let _ = tx.send(StreamChunk::Error(message.clone())).await;
     Err(AppError::Llm(message))
 }
@@ -1731,7 +1795,8 @@ pub async fn start_streaming_with_fallback(
         }
 
         // Create a new channel for this attempt
-        let (attempt_tx, mut attempt_rx) = mpsc::channel::<StreamChunk>(100);
+        let (attempt_tx, mut attempt_rx) =
+            mpsc::channel::<StreamChunk>(STREAM_CHUNK_BUFFER_CAPACITY);
         let attempt_cancel = cancel_token.clone();
         let config_clone = config.clone();
         let prompt_clone = prompt.to_string();
@@ -2278,5 +2343,113 @@ mod tests {
 
         let result = forward_handle.await.unwrap();
         assert_eq!(result.outcome, AttemptOutcome::FatalError);
+    }
+
+    #[tokio::test]
+    async fn forward_attempt_stream_drops_status_under_backpressure_without_blocking_retry() {
+        let (outer_tx, mut outer_rx) = mpsc::channel::<StreamChunk>(1);
+        outer_tx
+            .send(StreamChunk::Status {
+                message: "occupied".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let (attempt_tx, mut attempt_rx) = mpsc::channel::<StreamChunk>(10);
+        let forward_handle =
+            tokio::spawn(async move { forward_attempt_stream(&mut attempt_rx, &outer_tx).await });
+
+        attempt_tx
+            .send(StreamChunk::Status {
+                message: "keepalive".to_string(),
+            })
+            .await
+            .unwrap();
+        attempt_tx
+            .send(StreamChunk::Error("retry me".to_string()))
+            .await
+            .unwrap();
+        drop(attempt_tx);
+
+        let result = tokio::time::timeout(Duration::from_millis(300), forward_handle)
+            .await
+            .expect("status backpressure should not stall forwarder")
+            .expect("forwarder join should succeed");
+
+        assert_eq!(result.outcome, AttemptOutcome::RetryableError);
+        assert!(!result.forwarded_output);
+        assert_eq!(result.error.as_deref(), Some("retry me"));
+
+        match outer_rx.recv().await {
+            Some(StreamChunk::Status { message }) => assert_eq!(message, "occupied"),
+            other => panic!("expected only the pre-filled status chunk, got: {other:?}"),
+        }
+
+        let recv = tokio::time::timeout(Duration::from_millis(50), outer_rx.recv()).await;
+        match recv {
+            Err(_) => {}
+            Ok(None) => {}
+            Ok(Some(other)) => {
+                panic!("did not expect forwarded status/error chunk, got: {other:?}")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn forward_attempt_stream_drops_token_usage_under_backpressure_without_blocking_retry() {
+        let (outer_tx, mut outer_rx) = mpsc::channel::<StreamChunk>(1);
+        outer_tx
+            .send(StreamChunk::TokenUsageUpdate {
+                estimated: 42,
+                limit: 100,
+                percentage: 42,
+                status: TokenUsageStatus::Green,
+                estimated_cost: 0.0001,
+            })
+            .await
+            .unwrap();
+
+        let (attempt_tx, mut attempt_rx) = mpsc::channel::<StreamChunk>(10);
+        let forward_handle =
+            tokio::spawn(async move { forward_attempt_stream(&mut attempt_rx, &outer_tx).await });
+
+        attempt_tx
+            .send(StreamChunk::TokenUsageUpdate {
+                estimated: 50,
+                limit: 100,
+                percentage: 50,
+                status: TokenUsageStatus::Green,
+                estimated_cost: 0.0002,
+            })
+            .await
+            .unwrap();
+        attempt_tx
+            .send(StreamChunk::Error("retry me".to_string()))
+            .await
+            .unwrap();
+        drop(attempt_tx);
+
+        let result = tokio::time::timeout(Duration::from_millis(300), forward_handle)
+            .await
+            .expect("token-usage backpressure should not stall forwarder")
+            .expect("forwarder join should succeed");
+
+        assert_eq!(result.outcome, AttemptOutcome::RetryableError);
+        assert!(!result.forwarded_output);
+        assert_eq!(result.error.as_deref(), Some("retry me"));
+
+        match outer_rx.recv().await {
+            Some(StreamChunk::TokenUsageUpdate { estimated, .. }) => assert_eq!(estimated, 42),
+            other => panic!("expected only the pre-filled token-usage chunk, got: {other:?}"),
+        }
+
+        let recv = tokio::time::timeout(Duration::from_millis(50), outer_rx.recv()).await;
+        match recv {
+            Err(_) => {}
+            Ok(None) => {}
+            Ok(Some(other)) => {
+                panic!("did not expect forwarded token-usage/error chunk, got: {other:?}")
+            }
+        }
     }
 }

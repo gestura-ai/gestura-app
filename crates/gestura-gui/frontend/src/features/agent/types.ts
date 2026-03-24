@@ -154,7 +154,12 @@ export interface NarrationBlock {
   id: string;
   title?: string | null;
   message: string;
+  summary?: string | null;
+  reason?: string | null;
+  nextStep?: string | null;
+  evidence: string[];
   stage: 'context' | 'planning' | 'execution' | 'verification' | 'blocked' | 'progress';
+  source?: 'llm' | 'review-fallback';
 }
 
 export interface ShellBlock {
@@ -224,6 +229,24 @@ export interface Task {
 }
 
 export type TaskHierarchy = Task[];
+
+export interface TaskRuntimeTaskView {
+  id: string;
+  name: string;
+  status: string;
+}
+
+export interface TaskRuntimeSnapshot {
+  root_task_id: string;
+  current_task?: TaskRuntimeTaskView | null;
+  ready_tasks: TaskRuntimeTaskView[];
+  parallel_ready_tasks: TaskRuntimeTaskView[];
+  blocked_tasks: TaskRuntimeTaskView[];
+  open_tasks: TaskRuntimeTaskView[];
+  completed_tasks: TaskRuntimeTaskView[];
+  missing_requirements: string[];
+  status_message: string;
+}
 
 // ─── Knowledge types ──────────────────────────────────────────────────────────
 

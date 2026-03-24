@@ -50,7 +50,19 @@ vi.mock('../../../services/tauri/agent', () => ({
 }));
 
 function blocksToText(
-  blocks: Array<{ kind: string; content?: string; label?: string; detail?: string; name?: string }>,
+  blocks: Array<{
+    kind: string;
+    title?: string;
+    content?: string;
+    label?: string;
+    detail?: string;
+    name?: string;
+    message?: string;
+    summary?: string | null;
+    reason?: string | null;
+    nextStep?: string | null;
+    evidence?: string[];
+  }>,
 ) {
   return blocks
     .map((block) => {
@@ -59,6 +71,17 @@ function blocksToText(
       }
       if (block.kind === 'tool') {
         return `${block.kind}:${block.name ?? ''}:${block.content ?? ''}`;
+      }
+      if (block.kind === 'narration') {
+        return [
+          block.kind,
+          block.title ?? '',
+          block.message ?? '',
+          block.summary ?? '',
+          block.reason ?? '',
+          block.nextStep ?? '',
+          (block.evidence ?? []).join('&'),
+        ].join(':');
       }
       return `${block.kind}:${block.content ?? ''}`;
     })
@@ -74,6 +97,7 @@ function Harness() {
       <div data-testid="can-resume">{String(state.canResume)}</div>
       <div data-testid="is-processing">{String(state.isProcessing)}</div>
       <div data-testid="is-stopping">{String(state.isStopping)}</div>
+      <div data-testid="runtime-task-snapshot">{JSON.stringify(state.runtimeTaskSnapshot)}</div>
       <div data-testid="messages">
         {JSON.stringify(state.messages.map((message) => ({
           role: message.role,
@@ -82,6 +106,15 @@ function Harness() {
         })))}
       </div>
       <div data-testid="streaming">{state.streamingMessage ? blocksToText(state.streamingMessage.blocks) : ''}</div>
+      <div data-testid="streaming-narration-titles">
+        {state.streamingMessage
+          ? JSON.stringify(
+            state.streamingMessage.blocks
+              .filter((block) => block.kind === 'narration')
+              .map((block) => block.title ?? ''),
+          )
+          : ''}
+      </div>
       <button type="button" onClick={() => { void state.resumeStream(); }}>
         Resume
       </button>
@@ -90,6 +123,9 @@ function Harness() {
       </button>
       <button type="button" onClick={() => { void state.sendMessage('you timed out please pick up where you left off'); }}>
         Send resume-like prompt
+      </button>
+      <button type="button" onClick={() => { void state.sendMessage('Run the tool workflow'); }}>
+        Send
       </button>
     </div>
   );
@@ -134,10 +170,67 @@ describe('useChatSession', () => {
     expect(screen.getByTestId('streaming')).toHaveTextContent('Partial answer');
   });
 
+  it('stores structured narration fields on the streaming message', async () => {
+    render(<Harness />);
+
+    await waitFor(() => {
+      expect(streamDispatch).not.toBeNull();
+    });
+
+    await act(async () => {
+      streamDispatch?.({
+        type: 'narration',
+        title: 'Verification is active',
+        message: 'I’m reviewing the latest result before I close this task out.',
+        summary: 'The latest result kept the work in verification.',
+        reason: 'That matters because the task still needs one more piece of proof.',
+        nextStep: 'I’ll run the targeted validation check next.',
+        evidence: ['Current step: "Run targeted verification".'],
+        stage: 'verification',
+      });
+    });
+
+    expect(screen.getByTestId('streaming')).toHaveTextContent(
+      'narration:Verification is active:I’m reviewing the latest result before I close this task out.:The latest result kept the work in verification.:That matters because the task still needs one more piece of proof.:I’ll run the targeted validation check next.:Current step: "Run targeted verification".',
+    );
+  });
+
+  it('stores runtime task snapshots from streaming events', async () => {
+    render(<Harness />);
+
+    await waitFor(() => {
+      expect(streamDispatch).not.toBeNull();
+    });
+
+    await act(async () => {
+      streamDispatch?.({
+        type: 'task-runtime-state',
+        snapshot: {
+          root_task_id: 'root-task',
+          current_task: { id: 'verify-task', name: 'Verify facts', status: 'not_started' },
+          ready_tasks: [{ id: 'verify-task', name: 'Verify facts', status: 'not_started' }],
+          parallel_ready_tasks: [],
+          blocked_tasks: [],
+          open_tasks: [{ id: 'verify-task', name: 'Verify facts', status: 'not_started' }],
+          completed_tasks: [],
+          missing_requirements: ['verification still required'],
+          status_message: 'Verification remains open',
+        },
+      });
+    });
+
+    expect(screen.getByTestId('runtime-task-snapshot')).toHaveTextContent('Verify facts');
+    expect(screen.getByTestId('runtime-task-snapshot')).toHaveTextContent('verification still required');
+  });
+
   it('marks stop as in progress on the first click and ignores repeated clicks', async () => {
     pauseStreamingMock.mockResolvedValue(undefined);
 
     render(<Harness />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('Ready');
+    });
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
@@ -210,6 +303,41 @@ describe('useChatSession', () => {
     expect(sendMessageStreamingMock).not.toHaveBeenCalled();
   });
 
+  it('does not await the full streaming invoke before marking the send as active', async () => {
+    let rejectStreaming: ((reason?: unknown) => void) | null = null;
+    sendMessageStreamingMock.mockImplementation(
+      () => new Promise((_, reject: (reason?: unknown) => void) => { rejectStreaming = reject; }),
+    );
+
+    render(<Harness />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('Ready');
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    });
+
+    expect(sendMessageStreamingMock).toHaveBeenCalledWith({
+      session_id: 'session-123',
+      message: 'Run the tool workflow',
+      task_id: null,
+    });
+    expect(screen.getByTestId('is-processing')).toHaveTextContent('true');
+    expect(screen.getByTestId('status')).toHaveTextContent('Thinking…');
+    expect(screen.getByTestId('messages')).toHaveTextContent('Run the tool workflow');
+
+    await act(async () => {
+      rejectStreaming?.(new Error('invoke failed'));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('is-processing')).toHaveTextContent('false');
+      expect(screen.getByTestId('status')).toHaveTextContent('Error: Error: invoke failed');
+    });
+  });
+
   it('rehydrates interrupted thinking-only messages from session history', async () => {
     getSessionReplaySnapshotMock.mockResolvedValue({
       history: [
@@ -229,7 +357,7 @@ describe('useChatSession', () => {
     expect(screen.getByTestId('messages')).toHaveTextContent('thinking:Working through the answer…');
   });
 
-  it('suppresses generic review markers and relies on narration instead', async () => {
+  it('emits one review narration per completed tool result', async () => {
     render(<Harness />);
 
     await waitFor(() => {
@@ -245,7 +373,8 @@ describe('useChatSession', () => {
     });
 
     const streaming = screen.getByTestId('streaming').textContent ?? '';
-    expect(streaming).not.toContain('iteration-marker:');
+    expect(streaming).toContain('narration:Checking cargo check:I have the latest command result from "cargo check" in hand');
+    expect(streaming.match(/narration:/g)).toHaveLength(1);
 
     await act(async () => {
       streamDispatch?.({ type: 'tool-start', toolName: 'shell' });
@@ -255,7 +384,81 @@ describe('useChatSession', () => {
     });
 
     const updatedStreaming = screen.getByTestId('streaming').textContent ?? '';
-    expect(updatedStreaming).not.toContain('iteration-marker:');
+    expect(updatedStreaming).toContain('narration:Checking cargo test:I have the latest command result from "cargo test" in hand');
+    expect(updatedStreaming.match(/narration:/g)).toHaveLength(2);
+  });
+
+  it('derives failed shell review titles from command context instead of repeating a generic label', async () => {
+    render(<Harness />);
+
+    await waitFor(() => {
+      expect(streamDispatch).not.toBeNull();
+    });
+
+    await act(async () => {
+      streamDispatch?.({ type: 'tool-start', toolName: 'shell' });
+      streamDispatch?.({ type: 'tool-args', args: '{"command":"cargo test --workspace"}' });
+      streamDispatch?.({ type: 'tool-result', name: 'shell', success: false, output: 'error: test failed', durationMs: 55 });
+      streamDispatch?.({ type: 'agent-iteration', iteration: 1 });
+    });
+
+    expect(screen.getByTestId('streaming')).toHaveTextContent(
+      'I hit a problem while working through "cargo test --workspace"',
+    );
+    expect(screen.getByTestId('streaming-narration-titles')).toHaveTextContent('Reviewing cargo test --workspace');
+    expect(screen.getByTestId('streaming-narration-titles')).not.toHaveTextContent('Resolving shell issue');
+  });
+
+  it('keeps task bookkeeping review narration suppressed so narration stays primary', async () => {
+    render(<Harness />);
+
+    await waitFor(() => {
+      expect(streamDispatch).not.toBeNull();
+    });
+
+    await act(async () => {
+      streamDispatch?.({ type: 'tool-start', toolName: 'task' });
+      streamDispatch?.({ type: 'tool-args', args: '{"action":"update_status","task_id":"task-1"}' });
+      streamDispatch?.({ type: 'tool-result', name: 'task', success: true, output: '{"ok":true}', durationMs: 18 });
+      streamDispatch?.({ type: 'agent-iteration', iteration: 1 });
+    });
+
+    expect(screen.getByTestId('streaming')).not.toHaveTextContent('review-fallback');
+    expect(screen.getByTestId('streaming')).not.toHaveTextContent('I’m reviewing');
+  });
+
+  it('replaces synthetic review narration with the arriving llm narration', async () => {
+    render(<Harness />);
+
+    await waitFor(() => {
+      expect(streamDispatch).not.toBeNull();
+    });
+
+    await act(async () => {
+      streamDispatch?.({ type: 'tool-start', toolName: 'web_search' });
+      streamDispatch?.({ type: 'tool-args', args: '{"query":"smart lighting market 2025 consumer drivers"}' });
+      streamDispatch?.({ type: 'tool-result', name: 'web_search', success: true, output: 'Found relevant results', durationMs: 21 });
+      streamDispatch?.({ type: 'agent-iteration', iteration: 1 });
+    });
+
+    expect(screen.getByTestId('streaming')).toHaveTextContent('I’m reading through the research returned for "smart lighting market 2025 consumer drivers"');
+
+    await act(async () => {
+      streamDispatch?.({
+        type: 'narration',
+        title: 'Reviewing research findings',
+        message: 'I’ve got a few promising market signals in view now, so I’m sorting out which consumer drivers actually matter for the request before I carry them into the plan.',
+        summary: 'The search returned usable market signals.',
+        reason: 'That matters because only a subset of the results will actually shape the recommendation.',
+        nextStep: 'I’ll fold the strongest signals into the next planning move.',
+        evidence: [],
+        stage: 'context',
+      });
+    });
+
+    const streaming = screen.getByTestId('streaming').textContent ?? '';
+    expect(streaming).toContain('I’ve got a few promising market signals in view now');
+    expect(streaming).not.toContain('I’m reading through the research returned for "smart lighting market 2025 consumer drivers"');
   });
 
   it('bumps the memory revision when streaming completes and tasks change', async () => {

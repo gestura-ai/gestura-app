@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentMessage } from '../types';
@@ -118,6 +118,7 @@ describe('MessageList', () => {
         title: 'Checking current files',
         stage: 'execution',
         message: 'I’m checking the current files before I make the next change.',
+        evidence: [],
       }],
     }]);
 
@@ -128,7 +129,14 @@ describe('MessageList', () => {
   });
 
   it('collapses long narration behind a titled row that expands on demand', () => {
-    const longNarration = 'I’m comparing the current implementation with the runtime evidence so I can confirm whether the next step should be a code change, a verification pass, or a task-state update before I move forward with the request. I also want to check whether the tracked task state still matches what the tools have actually proven so far, because that affects whether I should keep inspecting, make an edit, or switch into validation mode next.';
+    const longNarrationSegment = [
+      'I’m comparing the current implementation with the latest results so I can confirm whether the next step should be a code change, a verification pass, or a task-state update before I move forward with the request.',
+      'I also want to check whether the task state still matches what the tools have actually proven so far, because that affects whether I should keep inspecting, make an edit, or switch into validation mode next.',
+      'After that, I need to trace the last verification branch, reconcile the new proof with the current task state, and explain why the safest next move is either another edit or a final validation pass.',
+      'I’m also reviewing the earlier setup decisions, the current branch of work, the latest validation clues, and the remaining checks so the next narration update is grounded in what I actually confirmed instead of a vague summary that hides important detail from the user.',
+      'If the latest proof supports the current direction I’ll keep moving through the planned implementation path, but if it exposes a mismatch I’ll pivot into another inspection step, explain why that branch changed, and make sure the user can see exactly what is driving the decision.',
+    ].join(' ');
+    const longNarration = `${longNarrationSegment} ${longNarrationSegment}`;
 
     renderMessageList([{
       id: 'message-4',
@@ -136,16 +144,32 @@ describe('MessageList', () => {
       rawMarkdown: '',
       isStreaming: false,
       timestamp: Date.now(),
-      blocks: [{
-        kind: 'narration',
-        id: 'narration-2',
-        title: 'Reviewing implementation state',
-        stage: 'verification',
-        message: longNarration,
-      }],
+      blocks: [
+        {
+          kind: 'narration',
+          id: 'narration-setup',
+          title: 'Checking setup state',
+          stage: 'context',
+          message: 'I’m checking the setup state before I compare the implementation against the latest results.',
+          evidence: [],
+        },
+        {
+          kind: 'text',
+          id: 'text-before',
+          content: 'Done with the earlier setup.',
+        },
+        {
+          kind: 'narration',
+          id: 'narration-2',
+          title: 'Reviewing implementation state',
+          stage: 'verification',
+          message: longNarration,
+          evidence: [],
+        },
+      ],
     }]);
 
-    const toggle = screen.getByRole('button', { name: 'Reviewing implementation state' });
+    const toggle = screen.getByRole('button', { name: /Reviewing implementation state/i });
     expect(screen.queryByText(longNarration)).not.toBeInTheDocument();
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
 
@@ -157,8 +181,31 @@ describe('MessageList', () => {
     expect(toggle.lastElementChild).toHaveClass('agent-narration-chevron');
   });
 
-  it('auto-expands titled narration up to 30 words', () => {
-    const mediumNarration = 'I’m reviewing the latest terminal output, checking the changed files, and confirming the next safe step before I make the update in the current session.';
+  it('keeps the first narration in a message open as natural prose even when long', () => {
+    const longNarration = 'I’m breaking this request into subtasks so I can start with the highest-leverage implementation step, keep the verification work attached to the actual code change, and make the next decision explicit before I move into execution. After that, I’ll take the first concrete subtask and narrate why it comes before the remaining queued work.';
+
+    renderMessageList([{
+      id: 'message-4b',
+      role: 'assistant',
+      rawMarkdown: '',
+      isStreaming: false,
+      timestamp: Date.now(),
+      blocks: [{
+        kind: 'narration',
+        id: 'narration-2b',
+        title: 'Planning next step',
+        stage: 'planning',
+        message: longNarration,
+        evidence: [],
+      }],
+    }]);
+
+    expect(screen.getByText(longNarration)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Planning next step/i })).not.toBeInTheDocument();
+  });
+
+  it('keeps non-planning narration inline until it exceeds 40 words', () => {
+    const mediumNarration = 'I’m reviewing the latest terminal output, checking the changed files, and confirming the next safe step before I make the update in the current session so the implementation stays grounded in what the tools already proved.';
 
     renderMessageList([{
       id: 'message-5',
@@ -168,15 +215,151 @@ describe('MessageList', () => {
       timestamp: Date.now(),
       blocks: [{
         kind: 'narration',
+        id: 'narration-setup-2',
+        title: 'Checking setup state',
+        stage: 'context',
+        message: 'I’m checking the setup state before I narrate the next progress update.',
+        evidence: [],
+      }, {
+        kind: 'narration',
         id: 'narration-3',
         title: 'Reviewing current progress',
         stage: 'progress',
         message: mediumNarration,
+        evidence: [],
       }],
     }]);
 
-    const toggle = screen.getByRole('button', { name: 'Reviewing current progress' });
-    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.queryByRole('button', { name: /Reviewing current progress/i })).not.toBeInTheDocument();
     expect(screen.getByText(mediumNarration)).toBeInTheDocument();
+  });
+
+  it('renders structured narration as natural prose instead of labeled sections', () => {
+    renderMessageList([{
+      id: 'message-6',
+      role: 'assistant',
+      rawMarkdown: '',
+      isStreaming: false,
+      timestamp: Date.now(),
+      blocks: [{
+        kind: 'narration',
+        id: 'narration-4',
+        title: 'Verification is active',
+        stage: 'verification',
+        message: 'I verified the changed files and I’m moving into the targeted test pass now.',
+        summary: 'The latest results cleared the file edit step and moved the tracked work into verification.',
+        reason: 'That matters because the current task still needs direct proof before it can close cleanly.',
+        nextStep: 'I’ll run the targeted test command and use that result to decide whether this task is actually done.',
+        evidence: ['Current step: "Run targeted verification".', 'Still need to verify: targeted test evidence.'],
+      }],
+    }]);
+
+    expect(screen.queryByRole('button', { name: /Verification is active/i })).not.toBeInTheDocument();
+    expect(screen.getByText('I verified the changed files and I’m moving into the targeted test pass now.')).toBeInTheDocument();
+    expect(screen.queryByText('Now')).not.toBeInTheDocument();
+    expect(screen.queryByText('Why')).not.toBeInTheDocument();
+    expect(screen.queryByText('Next')).not.toBeInTheDocument();
+    expect(screen.queryByText('Evidence')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Current step/i)).not.toBeInTheDocument();
+  });
+
+  it('renders narration markdown instead of raw markdown text', () => {
+    renderMessageList([{
+      id: 'message-7',
+      role: 'assistant',
+      rawMarkdown: '',
+      isStreaming: false,
+      timestamp: Date.now(),
+      blocks: [{
+        kind: 'narration',
+        id: 'narration-5',
+        title: 'Reviewing results',
+        stage: 'verification',
+        message: 'I checked **build output** and confirmed `cargo test` is next.\n\n- verify failures\n- rerun tests',
+        evidence: [],
+      }],
+    }]);
+
+    const narration = screen.getByText('build output').closest('.agent-narration-text');
+
+    expect(narration).not.toBeNull();
+    expect(within(narration as HTMLElement).getByText('build output').tagName).toBe('STRONG');
+    expect(within(narration as HTMLElement).getByText('cargo test').tagName).toBe('CODE');
+    expect(within(narration as HTMLElement).getByText('verify failures').tagName).toBe('LI');
+    expect(within(narration as HTMLElement).getByText('rerun tests').tagName).toBe('LI');
+    expect(screen.queryByText('**build output**')).not.toBeInTheDocument();
+  });
+
+  it('renders nested narration bullets with indentation preserved as nested lists', () => {
+    renderMessageList([{
+      id: 'message-8',
+      role: 'assistant',
+      rawMarkdown: '',
+      isStreaming: false,
+      timestamp: Date.now(),
+      blocks: [{
+        kind: 'narration',
+        id: 'narration-6',
+        title: 'Reviewing results',
+        stage: 'verification',
+        message: [
+          'I checked the latest validation output.',
+          '',
+          '- verify failures',
+          '  - inspect cargo test log',
+          '    - capture failing crate',
+          '- rerun tests',
+        ].join('\n'),
+        evidence: [],
+      }],
+    }]);
+
+    const narration = screen.getByText('capture failing crate').closest('.agent-narration-text');
+    expect(narration).not.toBeNull();
+
+    const topLevelItem = within(narration as HTMLElement).getByText('verify failures').closest('li');
+    const nestedItem = within(topLevelItem as HTMLElement).getByText('inspect cargo test log').closest('li');
+    const deeplyNestedItem = within(nestedItem as HTMLElement).getByText('capture failing crate').closest('li');
+
+    expect(topLevelItem).not.toBeNull();
+    expect(nestedItem).not.toBeNull();
+    expect(deeplyNestedItem).not.toBeNull();
+    expect(nestedItem?.parentElement?.tagName).toBe('UL');
+    expect(nestedItem?.parentElement?.parentElement?.tagName).toBe('LI');
+    expect(deeplyNestedItem?.parentElement?.tagName).toBe('UL');
+  });
+
+  it('preserves markdown in structured task-management narrations assembled from fields', () => {
+    renderMessageList([{
+      id: 'message-9',
+      role: 'assistant',
+      rawMarkdown: '',
+      isStreaming: false,
+      timestamp: Date.now(),
+      blocks: [{
+        kind: 'narration',
+        id: 'narration-7',
+        title: 'Reviewing task updates',
+        stage: 'progress',
+        message: '',
+        summary: 'I updated **task bookkeeping** after checking the latest results.',
+        reason: 'That matters because the current task still needs `cargo test` confirmation.',
+        nextStep: 'Next I will:\n- rerun the focused test\n- update the task status if it passes',
+        evidence: ['Current step: `Run targeted verification`.', 'Still need to verify: nested task cleanup.'],
+      }],
+    }]);
+
+    const narration = screen.getByText('task bookkeeping').closest('.agent-narration-text');
+
+    expect(narration).not.toBeNull();
+    expect(within(narration as HTMLElement).getByText('task bookkeeping').tagName).toBe('STRONG');
+    expect(within(narration as HTMLElement).getAllByText('cargo test')[0].tagName).toBe('CODE');
+    expect(within(narration as HTMLElement).getAllByText('Run targeted verification')[0].tagName).toBe('CODE');
+    expect(within(narration as HTMLElement).getByText('rerun the focused test').tagName).toBe('LI');
+    expect(within(narration as HTMLElement).getByText('update the task status if it passes').tagName).toBe('LI');
+    expect(within(narration as HTMLElement).getByText(/Current step:/i).closest('li')).not.toBeNull();
+    expect(screen.queryByText('Evidence')).not.toBeInTheDocument();
+    expect(screen.queryByText('Why')).not.toBeInTheDocument();
+    expect(screen.queryByText('Next')).not.toBeInTheDocument();
   });
 });

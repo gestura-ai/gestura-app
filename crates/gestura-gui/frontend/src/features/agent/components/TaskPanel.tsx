@@ -4,7 +4,8 @@ import {
   deleteTask,
   updateTaskStatus,
 } from "../../../services/tauri/agent";
-import type { Task, TaskHierarchy, TaskStatus } from "../types";
+import type { Task, TaskHierarchy, TaskRuntimeSnapshot, TaskStatus } from "../types";
+import { parseMarkdown } from "../utils/markdown";
 import { TaskBreakdownModal } from "./TaskBreakdownModal";
 
 interface TaskPanelProps {
@@ -12,6 +13,7 @@ interface TaskPanelProps {
   onClose: () => void;
   sessionId: string;
   tasks: TaskHierarchy;
+  runtimeTaskSnapshot?: TaskRuntimeSnapshot | null;
   onRefreshTasks: () => Promise<void>;
   onSendMessage: (text: string, taskId?: string | null) => Promise<void>;
   onShowToast: (msg: string, kind?: "success" | "error" | "warning" | "info") => void;
@@ -62,8 +64,15 @@ function nextStatus(s: TaskStatus): TaskStatus {
   return STATUS_ORDER[(idx + 1) % STATUS_ORDER.length];
 }
 
+function summarizeRuntimeTasks(tasks: TaskRuntimeSnapshot['ready_tasks'], limit = 3): string | null {
+  if (tasks.length === 0) return null;
+  const names = tasks.slice(0, limit).map((task) => task.name);
+  const extra = tasks.length - names.length;
+  return extra > 0 ? `${names.join(', ')} +${extra} more` : names.join(', ');
+}
+
 export function TaskPanel({
-  isOpen, onClose, sessionId, tasks, onRefreshTasks, onSendMessage, onShowToast,
+  isOpen, onClose, sessionId, tasks, runtimeTaskSnapshot, onRefreshTasks, onSendMessage, onShowToast,
 }: TaskPanelProps) {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newName, setNewName] = useState("");
@@ -160,6 +169,39 @@ export function TaskPanel({
             </div>
           )}
 
+          {runtimeTaskSnapshot && (
+            <div className="task-runtime-summary" aria-label="Runtime task status">
+              <div className="task-runtime-summary-header">
+                <strong>Runtime focus</strong>
+                {runtimeTaskSnapshot.current_task && (
+                  <span className="task-runtime-current">
+                    {runtimeTaskSnapshot.current_task.name} [{runtimeTaskSnapshot.current_task.status}]
+                  </span>
+                )}
+              </div>
+              <p>{runtimeTaskSnapshot.status_message}</p>
+              {runtimeTaskSnapshot.missing_requirements.length > 0 && (
+                <p>
+                  Remaining checks: {runtimeTaskSnapshot.missing_requirements.join(', ')}
+                </p>
+              )}
+              {summarizeRuntimeTasks(runtimeTaskSnapshot.ready_tasks) && (
+                <p>Ready now: {summarizeRuntimeTasks(runtimeTaskSnapshot.ready_tasks)}</p>
+              )}
+              {!runtimeTaskSnapshot.ready_tasks.length
+                && summarizeRuntimeTasks(runtimeTaskSnapshot.parallel_ready_tasks) && (
+                  <p>
+                    Parallel-ready: {summarizeRuntimeTasks(runtimeTaskSnapshot.parallel_ready_tasks)}
+                  </p>
+                )}
+              {!runtimeTaskSnapshot.ready_tasks.length
+                && !runtimeTaskSnapshot.parallel_ready_tasks.length
+                && summarizeRuntimeTasks(runtimeTaskSnapshot.blocked_tasks) && (
+                  <p>Blocked on: {summarizeRuntimeTasks(runtimeTaskSnapshot.blocked_tasks)}</p>
+                )}
+            </div>
+          )}
+
           <div className="task-list">
             {allTasks.length === 0 ? (
               <div className="task-empty">No tasks yet. Click + to get started.</div>
@@ -168,6 +210,7 @@ export function TaskPanel({
                 <TaskItem
                   key={task.id}
                   task={task}
+                  runtimeCurrentTaskId={runtimeTaskSnapshot?.current_task?.id ?? null}
                   onCycleStatus={handleCycleStatus}
                   onPlay={handlePlay}
                   onDelete={handleDelete}
@@ -192,16 +235,26 @@ export function TaskPanel({
 interface TaskItemProps {
   task: Task;
   depth?: number;
+  runtimeCurrentTaskId?: string | null;
   onCycleStatus: (t: Task) => Promise<void>;
   onPlay: (t: Task) => Promise<void>;
   onDelete: (t: Task) => Promise<void>;
 }
 
-function TaskItem({ task, depth = 0, onCycleStatus, onPlay, onDelete }: TaskItemProps) {
+function TaskItem({
+  task,
+  depth = 0,
+  runtimeCurrentTaskId,
+  onCycleStatus,
+  onPlay,
+  onDelete,
+}: TaskItemProps) {
+  const isRuntimeCurrent = runtimeCurrentTaskId === task.id;
+
   return (
     <>
       <div
-        className={`task-item${depth > 0 ? " subtask" : ""}`}
+        className={`task-item${depth > 0 ? " subtask" : ""}${isRuntimeCurrent ? " runtime-current" : ""}`}
         style={depth > 0 ? { marginLeft: `${depth * 16}px` } : undefined}
       >
         <div className="task-header">
@@ -219,13 +272,19 @@ function TaskItem({ task, depth = 0, onCycleStatus, onPlay, onDelete }: TaskItem
             </button>
           </div>
         </div>
-        {task.description && <div className="task-description">{task.description}</div>}
+        {task.description && (
+          <div
+            className="task-description text-content markdown-body"
+            dangerouslySetInnerHTML={{ __html: parseMarkdown(task.description) }}
+          />
+        )}
       </div>
       {(task.subtasks ?? []).map((child) => (
         <TaskItem
           key={child.id}
           task={child}
           depth={depth + 1}
+          runtimeCurrentTaskId={runtimeCurrentTaskId}
           onCycleStatus={onCycleStatus}
           onPlay={onPlay}
           onDelete={onDelete}

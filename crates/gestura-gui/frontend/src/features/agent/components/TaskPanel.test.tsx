@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TaskPanel } from './TaskPanel';
-import type { TaskHierarchy } from '../types';
+import type { TaskHierarchy, TaskRuntimeSnapshot } from '../types';
 
 vi.mock('../../../services/tauri/agent', () => ({
   createTask: vi.fn(),
@@ -18,7 +18,7 @@ afterEach(() => {
   cleanup();
 });
 
-function renderTaskPanel(tasks: TaskHierarchy) {
+function renderTaskPanel(tasks: TaskHierarchy, runtimeTaskSnapshot: TaskRuntimeSnapshot | null = null) {
   const onSendMessage = vi.fn().mockResolvedValue(undefined);
   const onRefreshTasks = vi.fn().mockResolvedValue(undefined);
   const onShowToast = vi.fn();
@@ -30,6 +30,7 @@ function renderTaskPanel(tasks: TaskHierarchy) {
       onClose={onClose}
       sessionId="session-123"
       tasks={tasks}
+      runtimeTaskSnapshot={runtimeTaskSnapshot}
       onRefreshTasks={onRefreshTasks}
       onSendMessage={onSendMessage}
       onShowToast={onShowToast}
@@ -115,6 +116,53 @@ describe('TaskPanel', () => {
         expectedTask.id,
       );
     });
+  });
+
+  it('renders task descriptions as markdown in the task maintenance panel', () => {
+    const tasks: TaskHierarchy = [{
+      id: 'task-markdown',
+      name: 'Review validation output',
+      description: 'Check **failing crates** before rerunning `cargo test`.\n\n- inspect logs\n  - capture crate name',
+      status: 'InProgress',
+      subtasks: [],
+    }];
+
+    renderTaskPanel(tasks);
+
+    const description = screen.getByText('failing crates').closest('.task-description');
+
+    expect(description).not.toBeNull();
+    expect(screen.getByText('failing crates').tagName).toBe('STRONG');
+    expect(screen.getByText('cargo test').tagName).toBe('CODE');
+    expect(screen.getByText('inspect logs').tagName).toBe('LI');
+    expect(screen.getByText('capture crate name').tagName).toBe('LI');
+  });
+
+  it('surfaces streamed runtime task state in the panel', () => {
+    const tasks: TaskHierarchy = [{
+      id: 'verify-task',
+      name: 'Verify facts',
+      description: 'Cross-check the final details.',
+      status: 'NotStarted',
+      subtasks: [],
+    }];
+    const runtimeTaskSnapshot: TaskRuntimeSnapshot = {
+      root_task_id: 'root-task',
+      current_task: { id: 'verify-task', name: 'Verify facts', status: 'not_started' },
+      ready_tasks: [{ id: 'verify-task', name: 'Verify facts', status: 'not_started' }],
+      parallel_ready_tasks: [],
+      blocked_tasks: [],
+      open_tasks: [{ id: 'verify-task', name: 'Verify facts', status: 'not_started' }],
+      completed_tasks: [],
+      missing_requirements: ['verification still required'],
+      status_message: 'Verification remains open',
+    };
+
+    renderTaskPanel(tasks, runtimeTaskSnapshot);
+
+    expect(screen.getByLabelText('Runtime task status')).toHaveTextContent('Verification remains open');
+    expect(screen.getByLabelText('Runtime task status')).toHaveTextContent('Remaining checks: verification still required');
+    expect(screen.getByText('Verify facts').closest('.task-item')).toHaveClass('runtime-current');
   });
 });
 

@@ -293,34 +293,40 @@
 
 /* ─── Text content / markdown body ──────────────────────────────────────────── */
 
-.text-content.markdown-body {
+.text-content.markdown-body,
+.agent-narration-text.markdown-body {
   font-size: 14px;
   line-height: 1.65;
   color: var(--agent-text);
   word-break: break-word;
 }
 
-.text-content.markdown-body p {
+.text-content.markdown-body p,
+.agent-narration-text.markdown-body p {
   margin: 0 0 8px;
 }
 
-.text-content.markdown-body p:last-child {
+.text-content.markdown-body p:last-child,
+.agent-narration-text.markdown-body p:last-child {
   margin-bottom: 0;
 }
 
-.text-content.markdown-body h1 {
+.text-content.markdown-body h1,
+.agent-narration-text.markdown-body h1 {
   font-size: 18px;
   font-weight: 700;
   margin: 12px 0 6px;
 }
 
-.text-content.markdown-body h2 {
+.text-content.markdown-body h2,
+.agent-narration-text.markdown-body h2 {
   font-size: 16px;
   font-weight: 600;
   margin: 10px 0 4px;
 }
 
-.text-content.markdown-body h3 {
+.text-content.markdown-body h3,
+.agent-narration-text.markdown-body h3 {
   font-size: 14px;
   font-weight: 600;
   margin: 8px 0 4px;
@@ -328,23 +334,30 @@
 
 .text-content.markdown-body h4,
 .text-content.markdown-body h5,
-.text-content.markdown-body h6 {
+.text-content.markdown-body h6,
+.agent-narration-text.markdown-body h4,
+.agent-narration-text.markdown-body h5,
+.agent-narration-text.markdown-body h6 {
   font-size: 13px;
   font-weight: 600;
   margin: 6px 0 4px;
 }
 
 .text-content.markdown-body ul,
-.text-content.markdown-body ol {
+.text-content.markdown-body ol,
+.agent-narration-text.markdown-body ul,
+.agent-narration-text.markdown-body ol {
   margin: 6px 0;
   padding-left: 20px;
 }
 
-.text-content.markdown-body li {
+.text-content.markdown-body li,
+.agent-narration-text.markdown-body li {
   margin: 2px 0;
 }
 
-.text-content.markdown-body code {
+.text-content.markdown-body code,
+.agent-narration-text.markdown-body code {
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 12.5px;
   background: rgba(0, 0, 0, 0.06);
@@ -352,11 +365,13 @@
   padding: 1px 5px;
 }
 
-html[data-theme="dark"] .text-content.markdown-body code {
+html[data-theme="dark"] .text-content.markdown-body code,
+html[data-theme="dark"] .agent-narration-text.markdown-body code {
   background: rgba(255, 255, 255, 0.1);
 }
 
-.text-content.markdown-body pre {
+.text-content.markdown-body pre,
+.agent-narration-text.markdown-body pre {
   background: rgba(0, 0, 0, 0.06);
   border-radius: 8px;
   padding: 12px 14px;
@@ -364,44 +379,52 @@ html[data-theme="dark"] .text-content.markdown-body code {
   margin: 8px 0;
 }
 
-html[data-theme="dark"] .text-content.markdown-body pre {
+html[data-theme="dark"] .text-content.markdown-body pre,
+html[data-theme="dark"] .agent-narration-text.markdown-body pre {
   background: rgba(255, 255, 255, 0.05);
 }
 
-.text-content.markdown-body pre code {
+.text-content.markdown-body pre code,
+.agent-narration-text.markdown-body pre code {
   background: none;
   padding: 0;
 }
 
-.text-content.markdown-body blockquote {
+.text-content.markdown-body blockquote,
+.agent-narration-text.markdown-body blockquote {
   border-left: 3px solid var(--accent-primary);
   padding-left: 12px;
   margin: 8px 0;
   color: var(--text-secondary);
 }
 
-.text-content.markdown-body hr {
+.text-content.markdown-body hr,
+.agent-narration-text.markdown-body hr {
   border: none;
   border-top: 1px solid var(--glass-border);
   margin: 12px 0;
 }
 
-.text-content.markdown-body a {
+.text-content.markdown-body a,
+.agent-narration-text.markdown-body a {
   color: var(--accent-primary);
   text-decoration: none;
 }
 
-.text-content.markdown-body a:hover {
+.text-content.markdown-body a:hover,
+.agent-narration-text.markdown-body a:hover {
   text-decoration: underline;
 }
 
-.text-content.markdown-body .md-table-wrapper {
+.text-content.markdown-body .md-table-wrapper,
+.agent-narration-text.markdown-body .md-table-wrapper {
   overflow-x: auto;
   margin: 8px 0;
   border-radius: 6px;
 }
 
-.text-content.markdown-body table {
+.text-content.markdown-body table,
+.agent-narration-text.markdown-body table {
   border-collapse: collapse;
   border-spacing: 0;
   width: 100%;
@@ -410,36 +433,44 @@ html[data-theme="dark"] .text-content.markdown-body pre {
 }
 
 .text-content.markdown-body th,
-.text-content.markdown-body td {
+.text-content.markdown-body td,
+.agent-narration-text.markdown-body th,
+.agent-narration-text.markdown-body td {
   border: 1px solid var(--glass-border);
   padding: 7px 10px;
   text-align: left;
   vertical-align: top;
 }
 
-.text-content.markdown-body thead th {
+.text-content.markdown-body thead th,
+.agent-narration-text.markdown-body thead th {
   background: rgba(0, 0, 0, 0.04);
   font-weight: 700;
 }
 
-.text-content.markdown-body tbody tr:nth-child(even) {
+.text-content.markdown-body tbody tr:nth-child(even),
+.agent-narration-text.markdown-body tbody tr:nth-child(even) {
   background: rgba(0, 0, 0, 0.02);
 }
 
-html[data-theme="dark"] .text-content.markdown-body thead th {
+html[data-theme="dark"] .text-content.markdown-body thead th,
+html[data-theme="dark"] .agent-narration-text.markdown-body thead th {
   background: rgba(255, 255, 255, 0.06);
 }
 
-html[data-theme="dark"] .text-content.markdown-body tbody tr:nth-child(even) {
+html[data-theme="dark"] .text-content.markdown-body tbody tr:nth-child(even),
+html[data-theme="dark"] .agent-narration-text.markdown-body tbody tr:nth-child(even) {
   background: rgba(255, 255, 255, 0.03);
 }
 
-.text-content.markdown-body .task-item {
+.text-content.markdown-body .task-item,
+.agent-narration-text.markdown-body .task-item {
   list-style: none;
   margin-left: -16px;
 }
 
-.text-content.markdown-body .task-item input {
+.text-content.markdown-body .task-item input,
+.agent-narration-text.markdown-body .task-item input {
   margin-right: 6px;
 }
 
@@ -1716,6 +1747,16 @@ html[data-theme="dark"] .shell-console {
   color: var(--agent-text);
 }
 
+.agent-narration--before-narration {
+  margin-bottom: 0;
+  padding-bottom: 5px;
+}
+
+.agent-narration--after-narration {
+  margin-top: 0;
+  padding-top: 5px;
+}
+
 .agent-narration--collapsible {
   display: flex;
   flex-direction: column;
@@ -1724,6 +1765,10 @@ html[data-theme="dark"] .shell-console {
 
 .agent-narration-text {
   color: inherit;
+}
+
+.agent-narration-text--indented {
+  padding: 0 10px;
 }
 
 .agent-narration-toggle {
@@ -1749,7 +1794,7 @@ html[data-theme="dark"] .shell-console {
 .agent-narration-chevron {
   color: var(--text-secondary);
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 18px;
   line-height: 1;
 }
 
@@ -2968,6 +3013,38 @@ html[data-theme="dark"] .confirmation-args {
   border-radius: 8px;
   padding: 12px;
   transition: all 0.2s ease;
+}
+
+.task-runtime-summary {
+  margin-bottom: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(var(--accent-primary-rgb, 99, 102, 241), 0.08);
+  border: 1px solid rgba(var(--accent-primary-rgb, 99, 102, 241), 0.2);
+}
+
+.task-runtime-summary-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.task-runtime-summary p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.task-runtime-current {
+  font-size: 12px;
+  color: var(--accent-primary);
+}
+
+.task-item.runtime-current {
+  border-color: rgba(var(--accent-primary-rgb, 99, 102, 241), 0.45);
+  box-shadow: 0 0 0 1px rgba(var(--accent-primary-rgb, 99, 102, 241), 0.15);
 }
 
 .task-item:hover {

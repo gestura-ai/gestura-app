@@ -107,7 +107,7 @@ Add interactive controls to existing ToolsPanel for screenshot/recording tools:
 - [x] Verify core implementation exists
 - [x] Verify permission handling exists
 
-### Frontend (TODO)
+### Frontend Implementation Plan
 - [ ] Choose UI approach (Panel/Toolbar/ToolsPanel enhancement)
 - [ ] Create TypeScript types for return values
 - [ ] Implement UI component
@@ -118,7 +118,7 @@ Add interactive controls to existing ToolsPanel for screenshot/recording tools:
 - [ ] Integrate with agent (optional: attach screenshots to messages)
 - [ ] Add keyboard shortcuts (optional)
 
-### Testing (TODO)
+### Testing Checklist
 - [ ] Test screenshot capture (full screen)
 - [ ] Test screenshot capture (region)
 - [ ] Test screenshot capture (specific display)

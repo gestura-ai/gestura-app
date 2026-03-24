@@ -119,13 +119,27 @@ pub use gestura_core::agent_sessions::{
     SessionPermissionLevel, SessionState, SessionToolCall, SessionToolSettings, SessionVoiceConfig,
 };
 
-/// Default session tool settings derived from the global app configuration.
+/// Build effective session tool settings from a caller-provided global config.
 ///
-/// This is used in the GUI layer to preserve prior behavior where newly-created
-/// sessions inherited default enabled tools and permission level from config.
-fn default_session_tool_settings() -> SessionToolSettings {
-    let config = gestura_core::config::AppConfig::load();
-    SessionToolSettings::from_global_config(&config)
+/// Async Tauri commands that already loaded `AppConfig::load_async()` should use
+/// this helper to avoid a redundant synchronous config read on the hot path.
+pub fn get_session_tool_settings_from_config(
+    session_id: &str,
+    config: &gestura_core::config::AppConfig,
+) -> SessionToolSettings {
+    let mut effective = SessionToolSettings::from_global_config(config);
+
+    if let Some(overrides) = get_session_state(session_id).and_then(|s| s.tool_settings) {
+        // Session permission level always overrides the global default.
+        effective.permission_level = overrides.permission_level;
+
+        // Session enabled_tools entries override global defaults for matching keys.
+        for (name, enabled) in overrides.enabled_tools {
+            effective.enabled_tools.insert(name, enabled);
+        }
+    }
+
+    effective
 }
 
 /// Build a sparse per-session tool-settings override without snapshotting the
@@ -1314,19 +1328,8 @@ pub fn clear_session_voice_config(session_id: &str) {
 /// global defaults at the time of first interaction and never picked up newly-enabled
 /// tools (e.g. enabling `screenshot` later in the global settings panel).
 pub fn get_session_tool_settings(session_id: &str) -> SessionToolSettings {
-    let mut effective = default_session_tool_settings();
-
-    if let Some(overrides) = get_session_state(session_id).and_then(|s| s.tool_settings) {
-        // Session permission level always overrides the global default.
-        effective.permission_level = overrides.permission_level;
-
-        // Session enabled_tools entries override global defaults for matching keys.
-        for (name, enabled) in overrides.enabled_tools {
-            effective.enabled_tools.insert(name, enabled);
-        }
-    }
-
-    effective
+    let config = gestura_core::config::AppConfig::load();
+    get_session_tool_settings_from_config(session_id, &config)
 }
 
 /// Set the session permission level.

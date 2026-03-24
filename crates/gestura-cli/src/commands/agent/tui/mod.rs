@@ -572,8 +572,8 @@ fn run_main_loop(
                             app.set_status(msg.clone());
                             push_activity_info(app, format!("ℹ️ {}", msg));
                         }
-                        StreamChunk::Narration { message, .. } => {
-                            let msg = message;
+                        StreamChunk::Narration { narration, .. } => {
+                            let msg = narration.message;
                             app.set_status(msg.clone());
                             push_activity_info(app, format!("🗣️ {}", msg));
                         }

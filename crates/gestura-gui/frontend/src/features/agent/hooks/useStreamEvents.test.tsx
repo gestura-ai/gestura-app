@@ -93,4 +93,47 @@ describe('useStreamEvents', () => {
     expect(dispatch.mock.calls.map(([action]) => action.type)).toContain('paused');
     expect(dispatch.mock.calls.map(([action]) => action.type)).toContain('resumed');
   });
+
+  it('dispatches runtime task snapshots from the stream', async () => {
+    const dispatch = vi.fn<[StreamEventAction], void>();
+    render(<HookHarness sessionId="session-123" dispatch={dispatch} />);
+
+    await waitFor(() => {
+      expect(listeners.has('agent-stream-task-state')).toBe(true);
+    });
+
+    await act(async () => {
+      listeners.get('agent-stream-task-state')?.({
+        payload: {
+          session_id: 'session-123',
+          snapshot: {
+            root_task_id: 'root-task',
+            current_task: { id: 'verify-task', name: 'Verify facts', status: 'not_started' },
+            ready_tasks: [{ id: 'verify-task', name: 'Verify facts', status: 'not_started' }],
+            parallel_ready_tasks: [],
+            blocked_tasks: [],
+            open_tasks: [{ id: 'verify-task', name: 'Verify facts', status: 'not_started' }],
+            completed_tasks: [],
+            missing_requirements: ['verification still required'],
+            status_message: 'Verification remains open',
+          },
+        },
+      });
+    });
+
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'task-runtime-state',
+      snapshot: {
+        root_task_id: 'root-task',
+        current_task: { id: 'verify-task', name: 'Verify facts', status: 'not_started' },
+        ready_tasks: [{ id: 'verify-task', name: 'Verify facts', status: 'not_started' }],
+        parallel_ready_tasks: [],
+        blocked_tasks: [],
+        open_tasks: [{ id: 'verify-task', name: 'Verify facts', status: 'not_started' }],
+        completed_tasks: [],
+        missing_requirements: ['verification still required'],
+        status_message: 'Verification remains open',
+      },
+    });
+  });
 });

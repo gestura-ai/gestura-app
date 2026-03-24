@@ -356,10 +356,7 @@ impl TaskExecutionState {
     /// Return `true` when the observed runtime evidence satisfies the task's
     /// assigned verification profile.
     pub fn satisfies_profile(&self) -> bool {
-        let requires_progress = matches!(
-            self.verification_profile.execution_kind,
-            TaskExecutionKind::Planning | TaskExecutionKind::General
-        ) && !self.verification_profile.requires_mutation
+        let requires_progress = !self.verification_profile.requires_mutation
             && !self.verification_profile.requires_build
             && !self.verification_profile.requires_test;
 
@@ -1977,5 +1974,25 @@ mod tests {
         assert!(state.saw_mutation);
         assert!(state.satisfies_profile());
         assert_eq!(state.evidence.len(), 1);
+    }
+
+    #[test]
+    fn generic_verification_profile_requires_observed_progress() {
+        let mut state = TaskExecutionState::default();
+        state.merge_profile(TaskVerificationProfile {
+            execution_kind: TaskExecutionKind::Verification,
+            ..TaskVerificationProfile::default()
+        });
+
+        assert!(!state.satisfies_profile());
+
+        state.record_evidence(TaskExecutionEvidence::new(
+            TaskExecutionEvidenceKind::ToolActivity,
+            "Reviewed the generated artifact and cross-checked the facts",
+            Some("web_search".to_string()),
+            None,
+        ));
+
+        assert!(state.satisfies_profile());
     }
 }

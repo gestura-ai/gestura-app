@@ -454,9 +454,9 @@ pub fn open_system_preferences(pane: &str) -> bool {
 // ============================================================================
 // Linux Implementation (requires linux-permissions feature)
 // ============================================================================
-// Note: Full implementation will be added in Phase 2.
-// Current stubs return Granted as Linux typically doesn't have
-// permission dialogs like macOS TCC.
+// Linux uses best-effort runtime checks rather than macOS-style per-app
+// permission dialogs. Audio availability is inferred from the active audio
+// server, and accessibility is treated as generally available.
 
 /// Check microphone permission on Linux.
 ///
@@ -898,9 +898,9 @@ pub fn open_system_preferences(pane: &str) -> bool {
 // ============================================================================
 // Windows Implementation (requires windows-permissions feature)
 // ============================================================================
-// Note: Full implementation will be added in Phase 4.
-// Current stubs return Granted. Windows 10/11 do have privacy settings
-// for microphone/camera but the WinRT API integration is pending.
+// Windows uses best-effort preflight checks. Microphone access is typically
+// granted or denied on first use, so we report `Unknown` when the OS does not
+// expose a reliable non-interactive status query.
 
 /// Check microphone permission on Windows.
 ///

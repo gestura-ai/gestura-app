@@ -59,7 +59,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const [cliInstalled, setCliInstalled] = useState(false);
   const {
     messages, streamingMessage, isProcessing, isStopping, isListening, status,
-    pendingConfirmation, tasks, knowledgeItems, toolSettings, memoryRevision,
+    pendingConfirmation, tasks, runtimeTaskSnapshot, knowledgeItems, toolSettings, memoryRevision,
     userScrolledUp, setUserScrolledUp,
     sendMessage, cancelStream, resumeStream, canResume, isResuming, resolveConfirmation,
     toggleVoice, enhanceText,
@@ -243,29 +243,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
       <TaskPanel isOpen={isOpen('tasks')} onClose={closePanel} sessionId={sessionId}
         tasks={tasks} onRefreshTasks={refreshTasks} onSendMessage={sendMessage}
+        runtimeTaskSnapshot={runtimeTaskSnapshot}
         onShowToast={showToast} />
 
-      {isOpen('memory') && (
-        <div className="session-panel-overlay visible" onClick={closePanel}>
-          <div className="session-panel open" onClick={(event) => event.stopPropagation()}>
-            <div className="task-panel-header">
-              <div>
-                <h3>Memory</h3>
-                <p className="task-panel-subtitle">Session working memory + durable memory bank</p>
-              </div>
-              <button className="session-panel-close" onClick={closePanel} title="Close">
-                <span className="icon-close" />
-              </button>
-            </div>
-            <MemoryConsolePanel
-              sessionId={sessionId}
-              tasks={tasks}
-              refreshSignal={memoryRevision}
-              title="Session Memory"
-            />
-          </div>
-        </div>
-      )}
+      <MemoryConsolePanel
+        isOpen={isOpen('memory')}
+        onClose={closePanel}
+        sessionId={sessionId}
+        tasks={tasks}
+        refreshSignal={memoryRevision}
+        title="Session Memory"
+      />
 
       <KnowledgePanel isOpen={isOpen('knowledge')} onClose={closePanel}
         sessionId={sessionId}

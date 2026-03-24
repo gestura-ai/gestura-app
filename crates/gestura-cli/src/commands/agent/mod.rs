@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 //! Interactive agent command
 
 use super::Result;
@@ -1362,9 +1363,9 @@ fn execute_basic_mode_turn(
                     print!("  ");
                     let _ = std::io::stdout().flush();
                 }
-                StreamChunk::Narration { message, .. } => {
+                StreamChunk::Narration { narration, .. } => {
                     println!();
-                    println!("  {} {}", "◇".cyan(), message.dimmed());
+                    println!("  {} {}", "◇".cyan(), narration.message.dimmed());
                     print!("  ");
                     let _ = std::io::stdout().flush();
                 }
@@ -1716,7 +1717,7 @@ fn execute_basic_mode_turn(
         let _ = save_cli_session(agent_session);
     }
 
-    if agent_session.message_count() % 5 == 0 {
+    if agent_session.message_count().is_multiple_of(5) {
         let _ = save_cli_session(agent_session);
     }
 
