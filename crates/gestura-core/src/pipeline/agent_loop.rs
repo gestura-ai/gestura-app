@@ -2606,17 +2606,8 @@ impl AgentPipeline {
         }
 
         let always_mutating_verbs = [
-            "rewrite",
-            "edit",
-            "update",
-            "modify",
-            "replace",
-            "delete",
-            "rename",
-            "move",
-            "refactor",
-            "fix",
-            "scaffold",
+            "rewrite", "edit", "update", "modify", "replace", "delete", "rename", "move",
+            "refactor", "fix", "scaffold",
         ];
         if always_mutating_verbs
             .iter()
@@ -3003,7 +2994,10 @@ impl AgentPipeline {
             return false;
         }
 
-        if matches!(tool_call.name.as_str(), "read_file" | "web" | "web_search" | "code") {
+        if matches!(
+            tool_call.name.as_str(),
+            "read_file" | "web" | "web_search" | "code"
+        ) {
             return true;
         }
 
@@ -3157,7 +3151,11 @@ impl AgentPipeline {
             .get_current_task_id(session_id)
             .ok()
             .flatten()
-            .filter(|current_task_id| open_leaf_tasks.iter().any(|task| task.id == *current_task_id));
+            .filter(|current_task_id| {
+                open_leaf_tasks
+                    .iter()
+                    .any(|task| task.id == *current_task_id)
+            });
         let current_open_leaf_id_for_status = current_open_leaf_id.clone();
 
         let mut target_ids = Vec::new();
@@ -3165,7 +3163,9 @@ impl AgentPipeline {
             target_ids.push(current_task_id);
         }
 
-        if target_ids.is_empty() && let Some(first_open_leaf) = open_leaf_tasks.first() {
+        if target_ids.is_empty()
+            && let Some(first_open_leaf) = open_leaf_tasks.first()
+        {
             target_ids.push(first_open_leaf.id.clone());
         }
 
@@ -3295,9 +3295,16 @@ impl AgentPipeline {
                 continue;
             };
 
+            let stronger_phase_handoff_observed = evidence.saw_mutation
+                || updated_state.saw_mutation
+                || updated_state.build_succeeded
+                || updated_state.test_succeeded
+                || evidence.build_completed
+                || evidence.test_completed;
+
             let target_status = match profile.execution_kind {
                 TaskExecutionKind::Planning if updated_state.saw_tool_activity => {
-                    if updated_state.satisfies_profile() {
+                    if stronger_phase_handoff_observed && updated_state.satisfies_profile() {
                         Some(crate::TaskStatus::Completed)
                     } else {
                         Some(crate::TaskStatus::InProgress)
@@ -3331,7 +3338,7 @@ impl AgentPipeline {
                     }
                 }
                 TaskExecutionKind::General if updated_state.saw_tool_activity => {
-                    if updated_state.satisfies_profile() {
+                    if stronger_phase_handoff_observed && updated_state.satisfies_profile() {
                         Some(crate::TaskStatus::Completed)
                     } else {
                         Some(crate::TaskStatus::InProgress)
@@ -5078,99 +5085,98 @@ impl AgentPipeline {
         }
 
         if let Some(state) = runtime_state
-            && !state.completion_ready {
-                if state.open_descendant_summary.has_open() {
-                    Self::reconcile_open_descendants_after_success(
-                        session_id,
-                        task_id,
-                        final_response,
+            && !state.completion_ready
+        {
+            if state.open_descendant_summary.has_open() {
+                Self::reconcile_open_descendants_after_success(
+                    session_id,
+                    task_id,
+                    final_response,
+                    tool_calls,
+                );
+                if let Some(updated_state) =
+                    Self::reconcile_tracked_execution_progress_from_tool_activity(
+                        requires_build_and_test,
+                        requires_mutating_file_tool_success,
+                        Some(session_id),
+                        Some(task_id),
                         tool_calls,
-                    );
-                    if let Some(updated_state) =
-                        Self::reconcile_tracked_execution_progress_from_tool_activity(
-                            requires_build_and_test,
-                            requires_mutating_file_tool_success,
-                            Some(session_id),
-                            Some(task_id),
-                            tool_calls,
-                        )
-                    {
-                        if updated_state.completion_ready {
-                            return;
-                        }
-
-                        if updated_state.open_descendant_summary.has_open()
-                            && Self::text_signals_broad_plan_completion(final_response)
-                        {
-                            let terminalized =
-                                Self::terminalize_remaining_open_descendants_after_success_closeout(
-                                    session_id,
-                                    task_id,
-                                    true,
-                                );
-                            if !terminalized.is_empty()
-                                && let Some(closeout_state) =
-                                    Self::reconcile_tracked_execution_progress_from_tool_activity(
-                                        requires_build_and_test,
-                                        requires_mutating_file_tool_success,
-                                        Some(session_id),
-                                        Some(task_id),
-                                        tool_calls,
-                                    )
-                            {
-                                if closeout_state.completion_ready {
-                                    return;
-                                }
-
-                                Self::record_tracked_task_incomplete_memory_event(
-                                    Some(session_id),
-                                    Some(task_id),
-                                    &closeout_state,
-                                );
-                                Self::keep_tracked_task_open(session_id, task_id);
-                                tracing::warn!(
-                                    session_id = %session_id,
-                                    task_id = %task_id,
-                                    open_descendants = closeout_state.open_descendant_summary.total(),
-                                    missing_requirements = ?closeout_state.snapshot.missing_requirements,
-                                    "Tracked task remains open after broad success closeout terminalization"
-                                );
-                                return;
-                            }
-                        }
-
-                        Self::record_tracked_task_incomplete_memory_event(
-                            Some(session_id),
-                            Some(task_id),
-                            &updated_state,
-                        );
-                        Self::keep_tracked_task_open(session_id, task_id);
-                        tracing::warn!(
-                            session_id = %session_id,
-                            task_id = %task_id,
-                            open_descendants = updated_state.open_descendant_summary.total(),
-                            missing_requirements = ?updated_state.snapshot.missing_requirements,
-                            "Tracked task remains open after success closeout reconciliation"
-                        );
+                    )
+                {
+                    if updated_state.completion_ready {
                         return;
                     }
+
+                    if updated_state.open_descendant_summary.has_open()
+                        && Self::text_signals_broad_plan_completion(final_response)
+                    {
+                        let terminalized =
+                            Self::terminalize_remaining_open_descendants_after_success_closeout(
+                                session_id, task_id, true,
+                            );
+                        if !terminalized.is_empty()
+                            && let Some(closeout_state) =
+                                Self::reconcile_tracked_execution_progress_from_tool_activity(
+                                    requires_build_and_test,
+                                    requires_mutating_file_tool_success,
+                                    Some(session_id),
+                                    Some(task_id),
+                                    tool_calls,
+                                )
+                        {
+                            if closeout_state.completion_ready {
+                                return;
+                            }
+
+                            Self::record_tracked_task_incomplete_memory_event(
+                                Some(session_id),
+                                Some(task_id),
+                                &closeout_state,
+                            );
+                            Self::keep_tracked_task_open(session_id, task_id);
+                            tracing::warn!(
+                                session_id = %session_id,
+                                task_id = %task_id,
+                                open_descendants = closeout_state.open_descendant_summary.total(),
+                                missing_requirements = ?closeout_state.snapshot.missing_requirements,
+                                "Tracked task remains open after broad success closeout terminalization"
+                            );
+                            return;
+                        }
+                    }
+
+                    Self::record_tracked_task_incomplete_memory_event(
+                        Some(session_id),
+                        Some(task_id),
+                        &updated_state,
+                    );
+                    Self::keep_tracked_task_open(session_id, task_id);
+                    tracing::warn!(
+                        session_id = %session_id,
+                        task_id = %task_id,
+                        open_descendants = updated_state.open_descendant_summary.total(),
+                        missing_requirements = ?updated_state.snapshot.missing_requirements,
+                        "Tracked task remains open after success closeout reconciliation"
+                    );
+                    return;
                 }
-
-                Self::record_tracked_task_incomplete_memory_event(
-                    Some(session_id),
-                    Some(task_id),
-                    &state,
-                );
-                Self::keep_tracked_task_open(session_id, task_id);
-
-                tracing::warn!(
-                    session_id = %session_id,
-                    task_id = %task_id,
-                    open_descendants = state.open_descendant_summary.total(),
-                    missing_requirements = ?state.snapshot.missing_requirements,
-                    "Tracked task remains open after runtime reconciliation"
-                );
             }
+
+            Self::record_tracked_task_incomplete_memory_event(
+                Some(session_id),
+                Some(task_id),
+                &state,
+            );
+            Self::keep_tracked_task_open(session_id, task_id);
+
+            tracing::warn!(
+                session_id = %session_id,
+                task_id = %task_id,
+                open_descendants = state.open_descendant_summary.total(),
+                missing_requirements = ?state.snapshot.missing_requirements,
+                "Tracked task remains open after runtime reconciliation"
+            );
+        }
     }
 
     fn cancel_tracked_task(session_id: Option<&str>, task_id: Option<&str>, reason: &str) {
@@ -5677,13 +5683,13 @@ impl AgentPipeline {
                     Some(task_id),
                     &[],
                 )
-            {
-                prompt.push('\n');
-                prompt.push_str(&Self::format_runtime_snapshot_for_prompt(
-                    &runtime_state.snapshot,
-                ));
-                prompt.push('\n');
-            }
+        {
+            prompt.push('\n');
+            prompt.push_str(&Self::format_runtime_snapshot_for_prompt(
+                &runtime_state.snapshot,
+            ));
+            prompt.push('\n');
+        }
 
         prompt.push_str(
             "\nUser: The work is not finished yet. Continue the same run now by executing the runtime-selected current task, or the next ready task if the current one is blocked. Only batch tasks together when the runtime explicitly marks them as parallel-safe. Keep task status aligned with actual execution evidence, not with plans or promises. If you create new work, create a concrete subtask with a specific `name`. Do not mark the root task complete until every planned subtask is completed or explicitly cancelled for a real reason and required verification has actually run. Prioritize implementation, build, and test execution over planning chatter. Do not stop with another task update, plan recap, or promise to resume later unless you are genuinely blocked and explain the blocker clearly.\n",
@@ -9060,8 +9066,8 @@ impl AgentPipeline {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::question_mark)]
-#![allow(clippy::too_many_arguments)]
-use super::*;
+    #![allow(clippy::too_many_arguments)]
+    use super::*;
 
     #[test]
     fn meaningful_final_text_requires_real_summary_content() {
@@ -11281,7 +11287,7 @@ use super::*;
     }
 
     #[test]
-    fn runtime_reconciliation_does_not_prematurely_advance_unfocused_swot_siblings() {
+    fn runtime_reconciliation_keeps_research_in_progress_after_initial_search() {
         let manager = crate::get_global_task_manager();
         let session_id = format!("agent-loop-swot-runtime-focus-{}", uuid::Uuid::new_v4());
         let mut root = crate::Task::new(&session_id, "Root", "Root", None);
@@ -11291,7 +11297,7 @@ use super::*;
             "Gather the current market evidence",
             Some(root.id.clone()),
         );
-        let plan = crate::Task::new(
+        let _plan = crate::Task::new(
             &session_id,
             "Plan SWOT Structure",
             "Outline the markdown structure",
@@ -11309,19 +11315,19 @@ use super::*;
             "Draft the weaknesses bullets",
             Some(root.id.clone()),
         );
-        let opportunities = crate::Task::new(
+        let _opportunities = crate::Task::new(
             &session_id,
             "Develop Opportunities Section",
             "Draft the opportunities bullets",
             Some(root.id.clone()),
         );
-        let threats = crate::Task::new(
+        let _threats = crate::Task::new(
             &session_id,
             "Develop Threats Section",
             "Draft the threats bullets",
             Some(root.id.clone()),
         );
-        let implement = crate::Task::new(
+        let _implement = crate::Task::new(
             &session_id,
             "Implement Full SWOT Markdown",
             "Write the final markdown deliverable",
@@ -11339,12 +11345,12 @@ use super::*;
         let mut task_list = crate::TaskList::new(&session_id);
         task_list.add_task(root.clone());
         task_list.add_task(research.clone());
-        task_list.add_task(plan.clone());
+        task_list.add_task(_plan.clone());
         task_list.add_task(strengths.clone());
         task_list.add_task(weaknesses.clone());
-        task_list.add_task(opportunities.clone());
-        task_list.add_task(threats.clone());
-        task_list.add_task(implement.clone());
+        task_list.add_task(_opportunities.clone());
+        task_list.add_task(_threats.clone());
+        task_list.add_task(_implement.clone());
         task_list.add_task(verify.clone());
         manager
             .replace_task_list(task_list)
@@ -11385,105 +11391,21 @@ use super::*;
         let current_after_research = manager
             .get_current_task_id(&session_id)
             .expect("current task lookup should succeed")
-            .expect("current task should advance after research");
+            .expect("current task should stay focused on research");
 
-        assert_eq!(stored_research.status, crate::TaskStatus::Completed);
+        assert_eq!(stored_research.status, crate::TaskStatus::InProgress);
         assert_eq!(stored_verify.status, crate::TaskStatus::NotStarted);
         assert_eq!(stored_weaknesses.status, crate::TaskStatus::NotStarted);
-        assert_eq!(current_after_research, plan.id);
-
-        AgentPipeline::reconcile_tracked_execution_progress_from_tool_activity(
-            false,
-            true,
-            Some(&session_id),
-            Some(&root.id),
-            &[ToolCallRecord {
-                id: "2".to_string(),
-                name: "file".to_string(),
-                arguments: serde_json::json!({
-                    "operation": "write",
-                    "path": "swot_analysis.md",
-                    "content": "# SWOT\n- compiled\n",
-                })
-                .to_string(),
-                result: ToolResult::Success("Written to swot_analysis.md".to_string()),
-                duration_ms: 1,
-            }],
-        );
-
-        let stored_research = manager
-            .get_task(&session_id, &research.id)
-            .expect("research lookup should succeed")
-            .expect("research should exist");
-        let stored_implement = manager
-            .get_task(&session_id, &implement.id)
-            .expect("implement lookup should succeed")
-            .expect("implement should exist");
-        let stored_plan = manager
-            .get_task(&session_id, &plan.id)
-            .expect("plan lookup should succeed")
-            .expect("plan should exist");
-        let stored_strengths = manager
-            .get_task(&session_id, &strengths.id)
-            .expect("strengths lookup should succeed")
-            .expect("strengths should exist");
-        let current_after_write = manager
-            .get_current_task_id(&session_id)
-            .expect("current task lookup should succeed")
-            .expect("current task should advance after write");
-
-        assert_eq!(stored_research.status, crate::TaskStatus::Completed);
-        assert_eq!(stored_implement.status, crate::TaskStatus::InProgress);
-        assert_eq!(stored_verify.status, crate::TaskStatus::NotStarted);
-        assert_eq!(stored_plan.status, crate::TaskStatus::Completed);
-        assert_eq!(stored_strengths.status, crate::TaskStatus::NotStarted);
-        assert_eq!(current_after_write, implement.id);
-
-        AgentPipeline::reconcile_tracked_execution_progress_from_tool_activity(
-            false,
-            true,
-            Some(&session_id),
-            Some(&root.id),
-            &[ToolCallRecord {
-                id: "3".to_string(),
-                name: "read_file".to_string(),
-                arguments: serde_json::json!({
-                    "path": "swot_analysis.md",
-                })
-                .to_string(),
-                result: ToolResult::Success("# SWOT\n- compiled\n".to_string()),
-                duration_ms: 1,
-            }],
-        );
-
-        let stored_threats = manager
-            .get_task(&session_id, &threats.id)
-            .expect("threats lookup should succeed")
-            .expect("threats should exist");
-        let stored_opportunities = manager
-            .get_task(&session_id, &opportunities.id)
-            .expect("opportunities lookup should succeed")
-            .expect("opportunities should exist");
-        let stored_implement = manager
-            .get_task(&session_id, &implement.id)
-            .expect("implement lookup should succeed")
-            .expect("implement should exist after readback");
-        let current_after_readback = manager
-            .get_current_task_id(&session_id)
-            .expect("current task lookup should succeed")
-            .expect("current task should shift to verification after readback");
-
-        assert_eq!(stored_threats.status, crate::TaskStatus::NotStarted);
-        assert_eq!(stored_opportunities.status, crate::TaskStatus::NotStarted);
-        assert_eq!(stored_implement.status, crate::TaskStatus::Completed);
-        assert_eq!(stored_verify.status, crate::TaskStatus::NotStarted);
-        assert_eq!(current_after_readback, verify.id);
+        assert_eq!(current_after_research, research.id);
     }
 
     #[test]
-    fn runtime_reconciliation_advances_swot_flow_from_planning_to_implementation_after_research() {
+    fn runtime_reconciliation_advances_to_next_phase_after_explicit_planning_completion() {
         let manager = crate::get_global_task_manager();
-        let session_id = format!("agent-loop-swot-sequential-progress-{}", uuid::Uuid::new_v4());
+        let session_id = format!(
+            "agent-loop-swot-sequential-progress-{}",
+            uuid::Uuid::new_v4()
+        );
         let mut root = crate::Task::new(&session_id, "Root", "Root", None);
         let mut plan = crate::Task::new(
             &session_id,
@@ -11497,13 +11419,13 @@ use super::*;
             "Gather 2025-2026 market evidence",
             Some(root.id.clone()),
         );
-        let implement = crate::Task::new(
+        let _implement = crate::Task::new(
             &session_id,
             "Implement full SWOT",
             "Write the final markdown deliverable",
             Some(root.id.clone()),
         );
-        let verify = crate::Task::new(
+        let _verify = crate::Task::new(
             &session_id,
             "Verify and cross-check",
             "Cross-check key claims against supporting sources",
@@ -11516,8 +11438,8 @@ use super::*;
         task_list.add_task(root.clone());
         task_list.add_task(plan.clone());
         task_list.add_task(research.clone());
-        task_list.add_task(implement.clone());
-        task_list.add_task(verify.clone());
+        task_list.add_task(_implement.clone());
+        task_list.add_task(_verify.clone());
         manager
             .replace_task_list(task_list)
             .expect("replace task list");
@@ -11549,37 +11471,31 @@ use super::*;
         let current_after_plan = manager
             .get_current_task_id(&session_id)
             .expect("current task lookup should succeed")
-            .expect("current task should advance to research");
-        assert_eq!(stored_plan.status, crate::TaskStatus::Completed);
-        assert_eq!(current_after_plan, research.id);
+            .expect("current task should stay on planning until completion is explicit");
+        assert_eq!(stored_plan.status, crate::TaskStatus::InProgress);
+        assert_eq!(current_after_plan, plan.id);
 
-        AgentPipeline::reconcile_tracked_execution_progress_from_tool_activity(
+        manager
+            .update_task_status(&session_id, &plan.id, crate::TaskStatus::Completed)
+            .expect("explicitly complete planning task");
+
+        let runtime_state = AgentPipeline::reconcile_tracked_execution_progress_from_tool_activity(
             false,
             false,
             Some(&session_id),
             Some(&root.id),
-            &[ToolCallRecord {
-                id: "2".to_string(),
-                name: "web_search".to_string(),
-                arguments: serde_json::json!({
-                    "query": "major players smart home lighting market 2025",
-                })
-                .to_string(),
-                result: ToolResult::Success("found major player sources".to_string()),
-                duration_ms: 1,
-            }],
-        );
+            &[],
+        )
+        .expect("runtime state should be available");
 
-        let stored_research = manager
-            .get_task(&session_id, &research.id)
-            .expect("research lookup should succeed")
-            .expect("research should exist");
-        let current_after_research = manager
-            .get_current_task_id(&session_id)
-            .expect("current task lookup should succeed")
-            .expect("current task should advance to implementation");
-        assert_eq!(stored_research.status, crate::TaskStatus::Completed);
-        assert_eq!(current_after_research, implement.id);
+        assert_eq!(
+            runtime_state
+                .snapshot
+                .current_task
+                .as_ref()
+                .map(|task| task.id.as_str()),
+            Some(research.id.as_str())
+        );
     }
 
     #[test]
@@ -12337,7 +12253,7 @@ use super::*;
 
     #[test]
     fn tracked_task_reconciliation_completes_markdown_response_request_after_research_only_successes()
-    {
+     {
         let manager = crate::get_global_task_manager();
         let session_id = format!(
             "agent-loop-finalize-markdown-response-after-research-{}",
@@ -13119,7 +13035,8 @@ use super::*;
     }
 
     #[test]
-    fn tracked_task_reconciliation_completes_generic_verification_descendant_from_review_evidence() {
+    fn tracked_task_reconciliation_completes_generic_verification_descendant_from_review_evidence()
+    {
         let manager = crate::get_global_task_manager();
         let session_id = format!(
             "agent-loop-generic-verification-closeout-{}",
@@ -13331,7 +13248,7 @@ use super::*;
 
     #[test]
     fn terminalize_remaining_open_descendants_after_success_closeout_with_broad_claim_completes_non_placeholder_not_started()
-    {
+     {
         let manager = crate::get_global_task_manager();
         let session_id = format!(
             "agent-loop-terminalize-broad-plan-closeout-{}",

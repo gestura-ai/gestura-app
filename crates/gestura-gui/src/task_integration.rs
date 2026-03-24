@@ -385,31 +385,15 @@ pub fn update_task_with_result(
     tool_calls: Option<serde_json::Value>,
     duration_ms: Option<u64>,
 ) -> Result<(), String> {
-    let manager = get_task_manager();
-
-    // Update status
-    let status = if success {
-        TaskStatus::Completed
-    } else {
-        TaskStatus::Cancelled
-    };
-
-    manager
-        .update_task_status(session_id, task_id, status)
-        .map_err(|e| e.to_string())?;
-
-    // Update metadata with result info
-    let metadata = serde_json::json!({
-        "success": success,
-        "output": output,
-        "tool_calls": tool_calls,
-        "duration_ms": duration_ms,
-        "completed_at": chrono::Utc::now().to_rfc3339()
-    });
-
-    manager
-        .update_task_metadata(session_id, task_id, metadata)
-        .map_err(|e| e.to_string())?;
+    let status = update_task_with_result_with_manager(
+        get_task_manager(),
+        session_id,
+        task_id,
+        success,
+        output,
+        tool_calls,
+        duration_ms,
+    )?;
 
     // Emit task-updated event
     let _ = app.emit(
@@ -427,10 +411,57 @@ pub fn update_task_with_result(
         task_id = %task_id,
         success = success,
         duration_ms = ?duration_ms,
+        status = ?status,
         "Task result recorded"
     );
 
     Ok(())
+}
+
+fn update_task_with_result_with_manager(
+    manager: &gestura_core::TaskManager,
+    session_id: &str,
+    task_id: &str,
+    success: bool,
+    output: &str,
+    tool_calls: Option<serde_json::Value>,
+    duration_ms: Option<u64>,
+) -> Result<TaskStatus, String> {
+    let existing_task = manager
+        .get_task(session_id, task_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Task '{task_id}' not found"))?;
+
+    let metadata = merge_task_metadata(
+        existing_task.metadata,
+        serde_json::json!({
+            "success": success,
+            "output": output,
+            "tool_calls": tool_calls,
+            "duration_ms": duration_ms,
+            "completed_at": chrono::Utc::now().to_rfc3339()
+        }),
+    );
+
+    manager
+        .update_task_metadata(session_id, task_id, metadata)
+        .map_err(|e| e.to_string())?;
+
+    if success {
+        return match finalize_tracked_task_after_agent_run_with_manager(
+            manager, session_id, task_id,
+        )? {
+            TrackedTaskFinalization::Completed => Ok(TaskStatus::Completed),
+            TrackedTaskFinalization::StillInProgress { .. } => Ok(TaskStatus::InProgress),
+        };
+    }
+
+    let _ = cancel_open_descendants_with_manager(manager, session_id, task_id)?;
+    manager
+        .update_task_status(session_id, task_id, TaskStatus::Cancelled)
+        .map_err(|e| e.to_string())?;
+
+    Ok(TaskStatus::Cancelled)
 }
 
 /// Find a UI task by its orchestrator task ID
@@ -586,5 +617,51 @@ mod tests {
             .expect("get grandchild")
             .expect("stored grandchild");
         assert_eq!(stored_grandchild.status, TaskStatus::NotStarted);
+    }
+
+    #[test]
+    fn successful_task_result_keeps_parent_in_progress_when_subtasks_remain_open() {
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let manager = gestura_core::TaskManager::new(temp_dir.path());
+        let session_id = format!("task-result-open-subtasks-{}", uuid::Uuid::new_v4());
+
+        let root = manager
+            .create_task(&session_id, "Build hello app", "desc", None)
+            .expect("root task");
+        let child = manager
+            .create_task(&session_id, "Run build", "desc", Some(root.id.clone()))
+            .expect("child task");
+
+        let status = update_task_with_result_with_manager(
+            &manager,
+            &session_id,
+            &root.id,
+            true,
+            "run succeeded but follow-up work remains",
+            None,
+            Some(42),
+        )
+        .expect("record task result");
+
+        let stored_root = manager
+            .get_task(&session_id, &root.id)
+            .expect("get root")
+            .expect("stored root");
+        let stored_child = manager
+            .get_task(&session_id, &child.id)
+            .expect("get child")
+            .expect("stored child");
+
+        assert_eq!(status, TaskStatus::InProgress);
+        assert_eq!(stored_root.status, TaskStatus::InProgress);
+        assert_eq!(stored_child.status, TaskStatus::NotStarted);
+        assert_eq!(
+            stored_root
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("success"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
     }
 }

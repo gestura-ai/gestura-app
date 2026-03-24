@@ -201,7 +201,7 @@ impl AgentPipeline {
 
         let mut section = String::from("Tracked task context:\n");
         section.push_str(
-            "Use these exact task IDs when calling task tools to update progress. For `task_update_status`, ALWAYS send both the exact `task_id` and an explicit `status` (`notstarted`, `inprogress`, `completed`, or `cancelled`). The runtime already manages the tracked root task's overall lifecycle during this run, so do not call `task_update_status` on the root task just to keep it `InProgress` or preserve the current state. Reserve manual task updates for genuine status changes, especially on concrete subtasks; if no status changed, continue the real work instead.\n",
+            "Use these exact task IDs when calling task tools to update progress. For `task_update_status`, ALWAYS send both the exact `task_id` and an explicit `status` (`notstarted`, `inprogress`, `completed`, or `cancelled`). The runtime already manages the tracked root task's overall lifecycle during this run, so do not call `task_update_status` on the root task just to keep it `InProgress` or preserve the current state. Reserve manual task updates for genuine status changes, especially on concrete subtasks. Keep research, planning, and inspection-heavy subtasks `inprogress` until you are actually done with that phase; one successful search/read/fetch usually means progress, not completion. If no status changed, continue the real work instead.\n",
         );
         if tracked_root.id != tracked_task.id {
             section.push_str(&format!(
