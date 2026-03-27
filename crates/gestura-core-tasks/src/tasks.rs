@@ -218,6 +218,10 @@ pub struct TaskVerificationProfile {
     /// Whether the task requires a successful test command.
     #[serde(default)]
     pub requires_test: bool,
+    /// Whether the task requires external evidence (for example, a source
+    /// cross-check) rather than a local readback alone.
+    #[serde(default)]
+    pub requires_external_evidence: bool,
     /// Whether the runtime considers the task safe to run in parallel with other
     /// ready tasks.
     #[serde(default)]
@@ -310,6 +314,28 @@ impl TaskExecutionEvidence {
 }
 
 impl TaskExecutionState {
+    fn has_external_verification_evidence_after_latest_mutation(&self) -> bool {
+        let latest_mutation_index = self
+            .evidence
+            .iter()
+            .enumerate()
+            .filter_map(|(index, evidence)| {
+                (evidence.kind == TaskExecutionEvidenceKind::Mutation && evidence.success)
+                    .then_some(index)
+            })
+            .next_back();
+
+        self.evidence.iter().enumerate().any(|(index, evidence)| {
+            evidence.kind == TaskExecutionEvidenceKind::ToolActivity
+                && evidence.success
+                && evidence
+                    .tool_name
+                    .as_deref()
+                    .is_some_and(|tool_name| matches!(tool_name, "web" | "web_search"))
+                && latest_mutation_index.is_none_or(|mutation_index| index > mutation_index)
+        })
+    }
+
     /// Merge a runtime-authored verification profile into the current state.
     pub fn merge_profile(&mut self, profile: TaskVerificationProfile) {
         self.verification_profile = profile;
@@ -358,11 +384,14 @@ impl TaskExecutionState {
     pub fn satisfies_profile(&self) -> bool {
         let requires_progress = !self.verification_profile.requires_mutation
             && !self.verification_profile.requires_build
-            && !self.verification_profile.requires_test;
+            && !self.verification_profile.requires_test
+            && !self.verification_profile.requires_external_evidence;
 
         (!self.verification_profile.requires_mutation || self.saw_mutation)
             && (!self.verification_profile.requires_build || self.build_succeeded)
             && (!self.verification_profile.requires_test || self.test_succeeded)
+            && (!self.verification_profile.requires_external_evidence
+                || self.has_external_verification_evidence_after_latest_mutation())
             && (!requires_progress || self.saw_tool_activity)
     }
 }
@@ -1993,6 +2022,48 @@ mod tests {
             None,
         ));
 
+        assert!(state.satisfies_profile());
+    }
+
+    #[test]
+    fn external_verification_profile_requires_post_mutation_external_evidence() {
+        let mut state = TaskExecutionState::default();
+        state.merge_profile(TaskVerificationProfile {
+            execution_kind: TaskExecutionKind::Verification,
+            requires_external_evidence: true,
+            ..TaskVerificationProfile::default()
+        });
+
+        state.record_evidence(TaskExecutionEvidence::new(
+            TaskExecutionEvidenceKind::ToolActivity,
+            "Reviewed local output",
+            Some("read_file".to_string()),
+            None,
+        ));
+        assert!(!state.satisfies_profile());
+
+        state.record_evidence(TaskExecutionEvidence::new(
+            TaskExecutionEvidenceKind::ToolActivity,
+            "Cross-checked an earlier source",
+            Some("web_search".to_string()),
+            None,
+        ));
+        assert!(state.satisfies_profile());
+
+        state.record_evidence(TaskExecutionEvidence::new(
+            TaskExecutionEvidenceKind::Mutation,
+            "Updated the draft after review",
+            Some("file".to_string()),
+            None,
+        ));
+        assert!(!state.satisfies_profile());
+
+        state.record_evidence(TaskExecutionEvidence::new(
+            TaskExecutionEvidenceKind::ToolActivity,
+            "Cross-checked the updated draft against outside sources",
+            Some("web_search".to_string()),
+            None,
+        ));
         assert!(state.satisfies_profile());
     }
 }

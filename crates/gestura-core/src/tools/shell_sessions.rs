@@ -9,7 +9,7 @@ use crate::streaming::{ShellOutputStream, ShellProcessState, ShellSessionState, 
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-use super::shell_streaming::StreamingCommandResult;
+use super::shell_streaming::{ShellRuntimeFailureKind, StreamingCommandResult};
 
 /// Public summary for a managed PTY shell session.
 #[derive(Debug, Clone)]
@@ -66,7 +66,40 @@ mod imp {
     const DEFAULT_EXECUTION_TIMEOUT_SECS: u64 = 300;
     const MIN_STALL_TIMEOUT_SECS: u64 = 30;
     const MAX_STALL_TIMEOUT_SECS: u64 = 300;
+    const MAX_QUIET_WAIT_CYCLES_WITHOUT_SIGNAL: u8 = 2;
     const SHELL_OUTPUT_SEND_TIMEOUT: Duration = Duration::from_millis(100);
+    const STATUS_CHUNK_SEND_TIMEOUT: Duration = Duration::from_millis(100);
+    const STALL_SIGNAL_TAIL_BYTES: usize = 4096;
+
+    const INTERACTIVE_PROMPT_PATTERNS: &[&str] = &[
+        "ok to proceed?",
+        "need to install the following packages",
+        "would you like to continue",
+        "press enter to continue",
+        "press any key to continue",
+        "select an option",
+        "(y/n)",
+        "[y/n]",
+        "yes/no",
+        "enter password",
+        "enter passphrase",
+        "password:",
+        "passphrase:",
+    ];
+
+    const ERROR_OUTPUT_PATTERNS: &[&str] = &[
+        "command not found",
+        "no such file or directory",
+        "permission denied",
+        "not recognized as an internal or external command",
+        "is not recognized as an internal or external command",
+        "npm err!",
+        "traceback (most recent call last)",
+        "syntax error",
+        "fatal:",
+        "panic:",
+        "exception:",
+    ];
 
     async fn send_shell_output_chunk_best_effort(
         tx: &mpsc::Sender<StreamChunk>,
@@ -78,6 +111,23 @@ mod imp {
                 tracing::debug!(
                     timeout_ms = SHELL_OUTPUT_SEND_TIMEOUT.as_millis(),
                     "Dropping PTY shell output chunk because the stream receiver is not draining fast enough"
+                );
+            }
+        }
+    }
+
+    async fn send_status_chunk_best_effort(tx: &mpsc::Sender<StreamChunk>, message: String) {
+        match tokio::time::timeout(
+            STATUS_CHUNK_SEND_TIMEOUT,
+            tx.send(StreamChunk::Status { message }),
+        )
+        .await
+        {
+            Ok(Ok(())) | Ok(Err(_)) => {}
+            Err(_) => {
+                tracing::debug!(
+                    timeout_ms = STATUS_CHUNK_SEND_TIMEOUT.as_millis(),
+                    "Dropping PTY status chunk because the stream receiver is not draining fast enough"
                 );
             }
         }
@@ -124,6 +174,37 @@ mod imp {
         exit_code: Option<i32>,
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum StallSignal {
+        None,
+        InteractivePrompt,
+        ErrorOutput,
+    }
+
+    impl StallSignal {
+        fn runtime_failure_kind(self) -> Option<ShellRuntimeFailureKind> {
+            match self {
+                Self::None => None,
+                Self::InteractivePrompt => Some(ShellRuntimeFailureKind::WaitingForInput),
+                Self::ErrorOutput => Some(ShellRuntimeFailureKind::ErrorOutput),
+            }
+        }
+
+        fn status_message(self, shell_session_id: &str, command: &str) -> String {
+            match self {
+                Self::None => format!(
+                    "Shell runtime status: session `{shell_session_id}` saw no prompt or error indicator during a quiet period for `{command}` and will continue waiting."
+                ),
+                Self::InteractivePrompt => format!(
+                    "Shell runtime status: session `{shell_session_id}` classified quiet command `{command}` as waiting_for_input and is interrupting it."
+                ),
+                Self::ErrorOutput => format!(
+                    "Shell runtime status: session `{shell_session_id}` classified quiet command `{command}` as error_output and is interrupting it."
+                ),
+            }
+        }
+    }
+
     struct CommandCompletion {
         process_id: String,
         stdout: String,
@@ -131,6 +212,7 @@ mod imp {
         process_state: ShellProcessState,
         duration_ms: u64,
         session_state: ShellSessionState,
+        failure_kind: Option<ShellRuntimeFailureKind>,
     }
 
     struct SessionOutputParser {
@@ -760,6 +842,10 @@ mod imp {
             let mut interrupted = false;
             let mut interrupt_started_at: Option<Instant> = None;
             let mut last_activity_at: Option<Instant> = None;
+            let mut continued_wait_anchor_at: Option<Instant> = None;
+            let mut continued_wait_cycles = 0_u8;
+            let mut recent_output_tail = String::new();
+            let mut runtime_failure_kind: Option<ShellRuntimeFailureKind> = None;
 
             loop {
                 let wait_for = if interrupted {
@@ -772,6 +858,7 @@ mod imp {
                         .unwrap_or(Duration::from_secs(0))
                 } else if options.allow_long_running && start.elapsed() >= timeout {
                     let idle_for = last_activity_at
+                        .or(continued_wait_anchor_at)
                         .map(|timestamp| timestamp.elapsed())
                         .unwrap_or_else(|| start.elapsed());
                     stall_timeout
@@ -786,9 +873,12 @@ mod imp {
                 match tokio::time::timeout(wait_for, chunk_rx.recv()).await {
                     Ok(Some(chunk)) => {
                         last_activity_at = Some(Instant::now());
+                        continued_wait_anchor_at = None;
+                        continued_wait_cycles = 0;
                         let parsed = parser.push(&chunk);
                         if !parsed.output.is_empty() {
                             stdout.push_str(&parsed.output);
+                            append_recent_output_tail(&mut recent_output_tail, &parsed.output);
                             let output_chunk = StreamChunk::ShellOutput {
                                 process_id: process_id.clone(),
                                 shell_session_id: Some(self.shell_session_id.clone()),
@@ -841,6 +931,12 @@ mod imp {
                                         process_state,
                                         duration_ms,
                                         session_state,
+                                        failure_kind: if timed_out {
+                                            runtime_failure_kind
+                                                .or(Some(ShellRuntimeFailureKind::TimedOut))
+                                        } else {
+                                            runtime_failure_kind
+                                        },
                                     },
                                 )
                                 .await;
@@ -886,17 +982,79 @@ mod imp {
                                     process_state,
                                     duration_ms,
                                     session_state,
+                                    failure_kind: if timed_out {
+                                        runtime_failure_kind
+                                            .or(Some(ShellRuntimeFailureKind::TimedOut))
+                                    } else {
+                                        runtime_failure_kind
+                                    },
                                 },
                             )
                             .await;
                     }
                     Err(_) if !interrupted => {
-                        if options.allow_long_running
-                            && start.elapsed() >= timeout
-                            && last_activity_at
-                                .is_some_and(|timestamp| timestamp.elapsed() < stall_timeout)
-                        {
-                            continue;
+                        if options.allow_long_running && start.elapsed() >= timeout {
+                            let idle_for = last_activity_at
+                                .or(continued_wait_anchor_at)
+                                .map(|timestamp| timestamp.elapsed())
+                                .unwrap_or_else(|| start.elapsed());
+
+                            if idle_for < stall_timeout {
+                                continue;
+                            }
+
+                            let stall_signal =
+                                inspect_stall_signal(&recent_output_tail, parser.buffered_output());
+                            runtime_failure_kind = stall_signal.runtime_failure_kind();
+                            send_status_chunk_best_effort(
+                                &tx,
+                                stall_signal.status_message(&self.shell_session_id, command),
+                            )
+                            .await;
+
+                            match stall_signal {
+                                StallSignal::None => {
+                                    if continued_wait_cycles >= MAX_QUIET_WAIT_CYCLES_WITHOUT_SIGNAL
+                                    {
+                                        tracing::info!(
+                                            shell_session_id = %self.shell_session_id,
+                                            process_id = %process_id,
+                                            command = %command,
+                                            timeout_secs,
+                                            stall_timeout_secs = stall_timeout.as_secs(),
+                                            "Interrupting quiet PTY command after repeated quiet periods without prompt/error indicators"
+                                        );
+                                    } else {
+                                        continued_wait_anchor_at = Some(Instant::now());
+                                        continued_wait_cycles += 1;
+                                        tracing::debug!(
+                                            shell_session_id = %self.shell_session_id,
+                                            process_id = %process_id,
+                                            command = %command,
+                                            timeout_secs,
+                                            stall_timeout_secs = stall_timeout.as_secs(),
+                                            "Long-running PTY command is quiet with no prompt/error indicator; continuing to wait"
+                                        );
+                                        continue;
+                                    }
+                                }
+                                StallSignal::InteractivePrompt => {
+                                    tracing::info!(
+                                        shell_session_id = %self.shell_session_id,
+                                        process_id = %process_id,
+                                        command = %command,
+                                        "Interrupting quiet PTY command because recent output looks interactive"
+                                    );
+                                }
+                                StallSignal::ErrorOutput => {
+                                    tracing::info!(
+                                        shell_session_id = %self.shell_session_id,
+                                        process_id = %process_id,
+                                        command = %command,
+                                        "Interrupting quiet PTY command because recent output looks like an error"
+                                    );
+                                }
+                            }
                         }
 
                         timed_out = true;
@@ -936,6 +1094,8 @@ mod imp {
                                     process_state: ShellProcessState::Failed,
                                     duration_ms,
                                     session_state: ShellSessionState::Failed,
+                                    failure_kind: runtime_failure_kind
+                                        .or(Some(ShellRuntimeFailureKind::TimedOut)),
                                 },
                             )
                             .await;
@@ -981,6 +1141,7 @@ mod imp {
                 exit_code: completion.exit_code,
                 success: matches!(completion.process_state, ShellProcessState::Completed),
                 duration_ms: completion.duration_ms,
+                failure_kind: completion.failure_kind,
             })
         }
 
@@ -1233,6 +1394,51 @@ mod imp {
             }
             std::mem::take(&mut self.pending)
         }
+
+        fn buffered_output(&self) -> &str {
+            if self.started {
+                self.pending.as_str()
+            } else {
+                ""
+            }
+        }
+    }
+
+    fn append_recent_output_tail(buffer: &mut String, chunk: &str) {
+        if chunk.is_empty() {
+            return;
+        }
+        buffer.push_str(chunk);
+        trim_to_tail(buffer, STALL_SIGNAL_TAIL_BYTES);
+    }
+
+    fn inspect_stall_signal(flushed_output_tail: &str, buffered_output_tail: &str) -> StallSignal {
+        let mut combined = flushed_output_tail.to_string();
+        append_recent_output_tail(&mut combined, buffered_output_tail);
+        if combined.trim().is_empty() {
+            return StallSignal::None;
+        }
+
+        let normalized = combined.to_ascii_lowercase();
+        if INTERACTIVE_PROMPT_PATTERNS
+            .iter()
+            .any(|needle| normalized.contains(needle))
+        {
+            return StallSignal::InteractivePrompt;
+        }
+
+        if normalized
+            .lines()
+            .map(str::trim)
+            .any(|line| line.starts_with("error:"))
+            || ERROR_OUTPUT_PATTERNS
+                .iter()
+                .any(|needle| normalized.contains(needle))
+        {
+            return StallSignal::ErrorOutput;
+        }
+
+        StallSignal::None
     }
 
     fn find_done_marker(buffer: &str, done_prefix: &str) -> Option<(usize, usize, i32)> {
@@ -1378,6 +1584,10 @@ mod imp {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        async fn shutdown_session_for_test(pool_key: &str) {
+            let _ = tokio::time::timeout(Duration::from_secs(2), shutdown_session(pool_key)).await;
+        }
 
         async fn recv_session_lifecycle(
             rx: &mut mpsc::Receiver<StreamChunk>,
@@ -1640,6 +1850,134 @@ mod imp {
             shutdown_session("pty-activity-aware-pool")
                 .await
                 .expect("shutdown activity-aware PTY session pool");
+        }
+
+        #[tokio::test]
+        async fn activity_aware_execution_reports_continue_wait_before_timing_out_when_quiet_output_has_no_indicator()
+         {
+            let (tx, mut rx) = mpsc::channel(128);
+            let command = if cfg!(windows) {
+                "ping -n 6 127.0.0.1 >nul && echo done"
+            } else {
+                "sleep 4 && printf done"
+            };
+
+            let result = execute_in_session_with_options(
+                "pty-quiet-activity-aware-pool",
+                std::env::current_dir()
+                    .ok()
+                    .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                    .as_deref(),
+                command,
+                None,
+                ShellExecutionOptions {
+                    timeout_secs: Some(1),
+                    allow_long_running: true,
+                    stall_timeout_secs: Some(1),
+                },
+                tx,
+            )
+            .await
+            .expect("quiet activity-aware PTY command result");
+
+            shutdown_session_for_test("pty-quiet-activity-aware-pool").await;
+
+            assert!(!result.success);
+            assert_eq!(result.exit_code, 124);
+            assert_eq!(result.failure_kind, Some(ShellRuntimeFailureKind::TimedOut));
+
+            let mut saw_continue_wait_status = false;
+            while let Ok(chunk) = rx.try_recv() {
+                if let StreamChunk::Status { message } = chunk
+                    && message.contains("saw no prompt or error indicator")
+                    && message.contains("will continue waiting")
+                {
+                    saw_continue_wait_status = true;
+                    break;
+                }
+            }
+            assert!(saw_continue_wait_status);
+        }
+
+        #[tokio::test]
+        async fn activity_aware_execution_times_out_after_repeated_quiet_periods_without_signal() {
+            let (tx, _rx) = mpsc::channel(128);
+            let command = if cfg!(windows) {
+                "ping -n 6 127.0.0.1 >nul && echo done"
+            } else {
+                "sleep 4 && printf done"
+            };
+
+            let result = tokio::time::timeout(
+                Duration::from_secs(8),
+                execute_in_session_with_options(
+                    "pty-quiet-timeout-pool",
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                        .as_deref(),
+                    command,
+                    None,
+                    ShellExecutionOptions {
+                        timeout_secs: Some(1),
+                        allow_long_running: true,
+                        stall_timeout_secs: Some(1),
+                    },
+                    tx,
+                ),
+            )
+            .await
+            .expect("quiet PTY command should not hang")
+            .expect("quiet PTY timeout result");
+
+            shutdown_session_for_test("pty-quiet-timeout-pool").await;
+
+            assert!(!result.success);
+            assert_eq!(result.exit_code, 124);
+            assert_eq!(result.failure_kind, Some(ShellRuntimeFailureKind::TimedOut));
+        }
+
+        #[test]
+        fn stall_signal_maps_interactive_prompt_to_waiting_for_input_failure_kind() {
+            assert_eq!(
+                StallSignal::InteractivePrompt.runtime_failure_kind(),
+                Some(ShellRuntimeFailureKind::WaitingForInput)
+            );
+            assert!(
+                StallSignal::InteractivePrompt
+                    .status_message("shell-123", "pnpm add vite")
+                    .contains("waiting_for_input")
+            );
+        }
+
+        #[test]
+        fn stall_signal_detects_interactive_prompt_in_buffered_output() {
+            assert_eq!(
+                inspect_stall_signal(
+                    "",
+                    "Need to install the following packages:\ncreate-app\nProceed? (y/n)"
+                ),
+                StallSignal::InteractivePrompt
+            );
+        }
+
+        #[test]
+        fn stall_signal_detects_recent_error_output() {
+            assert_eq!(
+                inspect_stall_signal(
+                    "Compiling dependencies\n",
+                    "error: no such file or directory"
+                ),
+                StallSignal::ErrorOutput
+            );
+        }
+
+        #[test]
+        fn stall_signal_returns_none_when_output_has_no_clear_indicator() {
+            assert_eq!(
+                inspect_stall_signal("Compiling 24 crates\n", "Still working on build graph"),
+                StallSignal::None
+            );
         }
 
         #[tokio::test]

@@ -173,7 +173,7 @@ impl AgentPipeline {
         prompt.push('\n');
     }
 
-    /// Append the tracked task tree so the model can reference exact task IDs.
+    /// Append tracked task guidance with IDs for tool calls and names for user-visible prose.
     fn append_tracked_task_context(&self, prompt: &mut String, metadata: &RequestMetadata) {
         let Some(section) = Self::build_tracked_task_context_with_manager(
             crate::get_global_task_manager(),
@@ -201,7 +201,7 @@ impl AgentPipeline {
 
         let mut section = String::from("Tracked task context:\n");
         section.push_str(
-            "Use these exact task IDs when calling task tools to update progress. For `task_update_status`, ALWAYS send both the exact `task_id` and an explicit `status` (`notstarted`, `inprogress`, `completed`, or `cancelled`). The runtime already manages the tracked root task's overall lifecycle during this run, so do not call `task_update_status` on the root task just to keep it `InProgress` or preserve the current state. Reserve manual task updates for genuine status changes, especially on concrete subtasks. Keep research, planning, and inspection-heavy subtasks `inprogress` until you are actually done with that phase; one successful search/read/fetch usually means progress, not completion. If no status changed, continue the real work instead.\n",
+            "Use these exact task IDs when calling task tools to update progress, but in user-facing plans, narration, and summaries always refer to tasks by their human-readable names/titles instead of raw IDs. For `task_update_status`, ALWAYS send both the exact `task_id` and an explicit `status` (`notstarted`, `inprogress`, `completed`, or `cancelled`). The runtime already manages the tracked root task's overall lifecycle during this run, so do not call `task_update_status` on the root task just to keep it `InProgress` or preserve the current state. Reserve manual task updates for genuine status changes, especially on concrete subtasks. Keep research, planning, and inspection-heavy subtasks `inprogress` until you are actually done with that phase; one successful search/read/fetch usually means progress, not completion. If no status changed, continue the real work instead.\n",
         );
         if tracked_root.id != tracked_task.id {
             section.push_str(&format!(
@@ -610,6 +610,7 @@ mod tests {
         assert!(section.contains("Build hello app"));
         assert!(section.contains("Implement UI"));
         assert!(section.contains("Run build"));
+        assert!(section.contains("always refer to tasks by their human-readable names/titles"));
         assert!(section.contains("ALWAYS send both the exact `task_id` and an explicit `status`"));
         assert!(
             section.contains("runtime already manages the tracked root task's overall lifecycle")

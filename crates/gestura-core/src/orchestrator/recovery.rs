@@ -170,13 +170,13 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         drop(runs);
 
         for run in run_updates {
-            self.persist_run(&run)?;
+            self.persist_run_async(&run).await?;
         }
         for environment in environment_updates {
             self.persist_environment_record(&environment).await?;
         }
         for checkpoint in checkpoint_updates {
-            self.persist_delegated_checkpoint(&checkpoint)?;
+            self.persist_delegated_checkpoint_async(&checkpoint).await?;
         }
 
         Ok(())

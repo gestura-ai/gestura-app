@@ -33,7 +33,7 @@ pub trait SpeechProcessorCoreExt {
 #[async_trait::async_trait]
 impl SpeechProcessorCoreExt for SpeechProcessor {
     async fn transcribe_audio(&self, audio_path: &Path) -> Result<TranscriptionResult, AppError> {
-        let app_config = AppConfig::load();
+        let app_config = AppConfig::load_async().await;
         // Use secure storage (keychain when enabled) for API key fallback chains.
         let secret_provider = crate::secrets::SecureStorageSecretProvider::new(
             crate::security::create_secure_storage(),
@@ -51,7 +51,7 @@ impl SpeechProcessorCoreExt for SpeechProcessor {
     }
 
     async fn process_with_llm(&self, text: &str) -> Result<LlmResponse, AppError> {
-        let app_config = AppConfig::load();
+        let app_config = AppConfig::load_async().await;
         let provider = select_provider(
             &app_config,
             &AgentContext {

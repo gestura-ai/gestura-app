@@ -64,6 +64,17 @@ pub(super) fn persist_run_to_disk(root: &Path, run: &SupervisorRun) -> Result<()
     Ok(())
 }
 
+pub(super) async fn persist_run_to_disk_async(
+    root: &Path,
+    run: &SupervisorRun,
+) -> Result<(), String> {
+    let root = root.to_path_buf();
+    let run = run.clone();
+    tokio::task::spawn_blocking(move || persist_run_to_disk(&root, &run))
+        .await
+        .map_err(|error| format!("Failed to join orchestrator run persistence task: {error}"))?
+}
+
 pub(super) fn persist_environment_to_disk(
     root: &Path,
     environment: &EnvironmentRecord,
@@ -78,6 +89,19 @@ pub(super) fn persist_environment_to_disk(
         .map_err(|error| format!("Failed to persist environment record: {error}"))
 }
 
+pub(super) async fn persist_environment_to_disk_async(
+    root: &Path,
+    environment: &EnvironmentRecord,
+) -> Result<(), String> {
+    let root = root.to_path_buf();
+    let environment = environment.clone();
+    tokio::task::spawn_blocking(move || persist_environment_to_disk(&root, &environment))
+        .await
+        .map_err(|error| {
+            format!("Failed to join orchestrator environment persistence task: {error}")
+        })?
+}
+
 pub(super) fn persist_checkpoint_to_disk(
     root: &Path,
     checkpoint: &DelegatedTaskCheckpoint,
@@ -90,6 +114,17 @@ pub(super) fn persist_checkpoint_to_disk(
         .map_err(|error| format!("Failed to serialize delegated checkpoint: {error}"))?;
     fs::write(path, content)
         .map_err(|error| format!("Failed to persist delegated checkpoint: {error}"))
+}
+
+pub(super) async fn persist_checkpoint_to_disk_async(
+    root: &Path,
+    checkpoint: &DelegatedTaskCheckpoint,
+) -> Result<(), String> {
+    let root = root.to_path_buf();
+    let checkpoint = checkpoint.clone();
+    tokio::task::spawn_blocking(move || persist_checkpoint_to_disk(&root, &checkpoint))
+        .await
+        .map_err(|error| format!("Failed to join delegated checkpoint persistence task: {error}"))?
 }
 
 pub(super) fn load_persisted_runs(root: &Path) -> Vec<SupervisorRun> {
@@ -164,4 +199,27 @@ pub(super) fn load_persisted_environment_by_id(
     load_persisted_environments(root)
         .into_iter()
         .find(|record| record.id == environment_id)
+}
+
+pub(super) async fn load_persisted_environment_by_id_async(
+    root: &Path,
+    environment_id: &str,
+) -> Option<EnvironmentRecord> {
+    let root = root.to_path_buf();
+    let environment_id = environment_id.to_string();
+    let environment_id_for_task = environment_id.clone();
+    match tokio::task::spawn_blocking(move || {
+        load_persisted_environment_by_id(&root, &environment_id_for_task)
+    })
+    .await
+    {
+        Ok(record) => record,
+        Err(error) => {
+            tracing::warn!(
+                environment_id = %environment_id,
+                "Failed to join persisted environment lookup task: {error}"
+            );
+            None
+        }
+    }
 }

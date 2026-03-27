@@ -1,3 +1,6 @@
+use super::persistence::{
+    load_persisted_environment_by_id_async, persist_environment_to_disk_async,
+};
 use super::*;
 use gestura_core_agents::AgentExecutionMode;
 use gestura_core_tools::git::GitTools;
@@ -154,7 +157,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         record: &EnvironmentRecord,
     ) -> Result<(), String> {
         let root = record.spec.workspace_root.clone();
-        persist_environment_to_disk(&root, record)?;
+        persist_environment_to_disk_async(&root, record).await?;
         self.environments
             .lock()
             .await
@@ -188,9 +191,8 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             return Some(environment);
         }
 
-        self.default_workspace_dir
-            .as_ref()
-            .and_then(|root| load_persisted_environment_by_id(root, environment_id))
+        let root = self.default_workspace_dir.as_ref()?.clone();
+        load_persisted_environment_by_id_async(&root, environment_id).await
     }
 
     pub async fn retry_environment_preparation(
@@ -264,7 +266,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         drop(runs);
 
         for run in affected_runs {
-            self.persist_run(&run)?;
+            self.persist_run_async(&run).await?;
             self.notify_run_updated(run).await;
         }
 

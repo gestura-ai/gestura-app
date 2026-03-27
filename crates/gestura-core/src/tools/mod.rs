@@ -238,7 +238,19 @@ pub mod shell_streaming {
             exit_code,
             success,
             duration_ms,
+            failure_kind: timed_out.then_some(ShellRuntimeFailureKind::TimedOut),
         })
+    }
+
+    /// Runtime classification for why a shell command was interrupted or timed out.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ShellRuntimeFailureKind {
+        /// The command appeared to be waiting for interactive input.
+        WaitingForInput,
+        /// The command appeared to have emitted error output before going quiet.
+        ErrorOutput,
+        /// The command hit a generic timeout without a more specific runtime classification.
+        TimedOut,
     }
 
     /// Summary of a streaming command execution.
@@ -251,6 +263,7 @@ pub mod shell_streaming {
         pub exit_code: i32,
         pub success: bool,
         pub duration_ms: u64,
+        pub failure_kind: Option<ShellRuntimeFailureKind>,
     }
 
     // ------------------------------------------------------------------

@@ -41,9 +41,9 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 use self::persistence::{
-    load_persisted_checkpoints, load_persisted_environment_by_id, load_persisted_environments,
-    load_persisted_runs, persist_checkpoint_to_disk, persist_environment_to_disk,
-    persist_run_to_disk,
+    load_persisted_checkpoints, load_persisted_environments, load_persisted_runs,
+    persist_checkpoint_to_disk, persist_checkpoint_to_disk_async, persist_environment_to_disk,
+    persist_run_to_disk, persist_run_to_disk_async,
 };
 
 // Re-export shared task types for convenience and adapter compatibility.
@@ -1869,8 +1869,8 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             (child_run, parent_run, parent_message, child_message)
         };
 
-        self.persist_run(&child_run)?;
-        self.persist_run(&parent_run)?;
+        self.persist_run_async(&child_run).await?;
+        self.persist_run_async(&parent_run).await?;
         self.notify_run_updated(child_run.clone()).await;
         self.notify_run_updated(parent_run).await;
         self.notify_team_message(parent_message).await;
@@ -2544,7 +2544,8 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             .map(|record| record.task)
             .ok_or_else(|| format!("Task '{}' not found", task_id))?;
         let checkpoint = self
-            .load_delegated_checkpoint(&task)
+            .load_delegated_checkpoint_async(&task)
+            .await
             .ok_or_else(|| format!("Task '{}' has no delegated checkpoint", task_id))?;
 
         if checkpoint.result_published {
@@ -2604,7 +2605,8 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         updated_checkpoint.stage = DelegatedCheckpointStage::Queued;
         updated_checkpoint.note = Some("manual resume requested from checkpoint".to_string());
         updated_checkpoint.updated_at = Utc::now();
-        self.persist_delegated_checkpoint(&updated_checkpoint)?;
+        self.persist_delegated_checkpoint_async(&updated_checkpoint)
+            .await?;
         self.persist_run_with_hierarchy_sync(run_snapshot).await?;
         if let Some(task) = queued_to_start {
             self.schedule_task_execution(task);
@@ -2618,7 +2620,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             .supervisor_task_record(task_id)
             .await
             .map(|record| record.task)
-            && let Some(mut checkpoint) = self.load_delegated_checkpoint(&task)
+            && let Some(mut checkpoint) = self.load_delegated_checkpoint_async(&task).await
         {
             checkpoint.stage = DelegatedCheckpointStage::Queued;
             checkpoint.resume_state = None;
@@ -2628,7 +2630,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             checkpoint.result_published = false;
             checkpoint.note = Some("operator cleared checkpoint resume state".to_string());
             checkpoint.updated_at = Utc::now();
-            self.persist_delegated_checkpoint(&checkpoint)?;
+            self.persist_delegated_checkpoint_async(&checkpoint).await?;
         }
 
         self.retry_task(task_id).await
@@ -2677,14 +2679,14 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             run.clone()
         };
 
-        if let Some(mut checkpoint) = self.load_delegated_checkpoint(&task) {
+        if let Some(mut checkpoint) = self.load_delegated_checkpoint_async(&task).await {
             let message = note
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "blocked state acknowledged by operator".to_string());
             checkpoint.stage = DelegatedCheckpointStage::Blocked;
             checkpoint.note = Some(message);
             checkpoint.updated_at = Utc::now();
-            self.persist_delegated_checkpoint(&checkpoint)?;
+            self.persist_delegated_checkpoint_async(&checkpoint).await?;
         }
 
         self.persist_run_with_hierarchy_sync(run_snapshot).await?;
@@ -3390,7 +3392,8 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         self.persist_run_with_hierarchy_sync(run_snapshot.clone())
             .await?;
         if !matches!(task.execution_mode, AgentExecutionMode::Remote) {
-            self.persist_delegated_checkpoint(&delegated_start_checkpoint(&task))?;
+            self.persist_delegated_checkpoint_async(&delegated_start_checkpoint(&task))
+                .await?;
         }
 
         let observer_for_start = { self.observer.read().await.clone() };
@@ -3836,7 +3839,11 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         if !matches!(task.execution_mode, AgentExecutionMode::Remote)
             && !should_preserve_blocked_checkpoint
         {
-            self.persist_delegated_checkpoint(&delegated_terminal_checkpoint(&task, &task_result))?;
+            self.persist_delegated_checkpoint_async(&delegated_terminal_checkpoint(
+                &task,
+                &task_result,
+            ))
+            .await?;
         }
         if let Some(message) = gate_message {
             self.notify_team_message(message).await;
@@ -3970,6 +3977,18 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         persist_run_to_disk(root, run)
     }
 
+    async fn persist_run_async(&self, run: &SupervisorRun) -> Result<(), String> {
+        let Some(root) = run
+            .workspace_dir
+            .as_deref()
+            .or(self.default_workspace_dir.as_deref())
+        else {
+            return Ok(());
+        };
+
+        persist_run_to_disk_async(root, run).await
+    }
+
     fn persist_delegated_checkpoint(
         &self,
         checkpoint: &DelegatedTaskCheckpoint,
@@ -3985,6 +4004,22 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         persist_checkpoint_to_disk(root, checkpoint)
     }
 
+    async fn persist_delegated_checkpoint_async(
+        &self,
+        checkpoint: &DelegatedTaskCheckpoint,
+    ) -> Result<(), String> {
+        let Some(root) = self
+            .default_workspace_dir
+            .as_deref()
+            .or(checkpoint.workspace_dir.as_deref())
+        else {
+            return Ok(());
+        };
+
+        persist_checkpoint_to_disk_async(root, checkpoint).await
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     fn load_delegated_checkpoint(&self, task: &DelegatedTask) -> Option<DelegatedTaskCheckpoint> {
         let mut checkpoints = load_latest_checkpoints_by_task(checkpoint_roots_for_task(
             task,
@@ -3993,8 +4028,32 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         checkpoints.remove(&task.id)
     }
 
-    fn load_checkpoint_resume_state(&self, task: &DelegatedTask) -> Option<PausedExecutionState> {
-        self.load_delegated_checkpoint(task)
+    async fn load_delegated_checkpoint_async(
+        &self,
+        task: &DelegatedTask,
+    ) -> Option<DelegatedTaskCheckpoint> {
+        let roots = checkpoint_roots_for_task(task, self.default_workspace_dir.as_deref());
+        let task_id = task.id.clone();
+        match tokio::task::spawn_blocking(move || {
+            let mut checkpoints = load_latest_checkpoints_by_task(roots);
+            checkpoints.remove(&task_id)
+        })
+        .await
+        {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => {
+                tracing::warn!(task_id = %task.id, "Failed to join delegated checkpoint load task: {error}");
+                None
+            }
+        }
+    }
+
+    async fn load_checkpoint_resume_state_async(
+        &self,
+        task: &DelegatedTask,
+    ) -> Option<PausedExecutionState> {
+        self.load_delegated_checkpoint_async(task)
+            .await
             .and_then(|checkpoint| checkpoint.resume_state)
     }
 
@@ -4002,10 +4061,10 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         &self,
         run: SupervisorRun,
     ) -> Result<Vec<SupervisorRun>, String> {
-        self.persist_run(&run)?;
+        self.persist_run_async(&run).await?;
         let mut updated_runs = vec![run.clone()];
         if let Some(parent_run) = self.sync_parent_run_from_child(&run.id).await? {
-            self.persist_run(&parent_run)?;
+            self.persist_run_async(&parent_run).await?;
             updated_runs.push(parent_run);
         }
         for snapshot in &updated_runs {
@@ -4410,7 +4469,7 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
         request = request.with_workspace(workspace_dir.clone());
     }
 
-    if let Some(resume_state) = orchestrator.load_checkpoint_resume_state(task) {
+    if let Some(resume_state) = orchestrator.load_checkpoint_resume_state_async(task).await {
         request = request.with_resume_state(resume_state);
     }
 
@@ -4509,7 +4568,9 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
                             pending.name
                         )),
                     );
-                    let _ = orchestrator.persist_delegated_checkpoint(&checkpoint);
+                    let _ = orchestrator
+                        .persist_delegated_checkpoint_async(&checkpoint)
+                        .await;
                 }
             }
             StreamChunk::ToolCallResult {
@@ -4561,7 +4622,9 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
                         pending.name
                     )),
                 );
-                let _ = orchestrator.persist_delegated_checkpoint(&checkpoint);
+                let _ = orchestrator
+                    .persist_delegated_checkpoint_async(&checkpoint)
+                    .await;
                 if let Some(progress) =
                     local_execution_progress_from_chunk(&chunk, &telemetry_context)
                 {
@@ -4625,7 +4688,9 @@ async fn execute_delegated_task<M: OrchestratorAgentManager>(
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
                 };
-                let _ = orchestrator.persist_delegated_checkpoint(&checkpoint);
+                let _ = orchestrator
+                    .persist_delegated_checkpoint_async(&checkpoint)
+                    .await;
                 let _ = pipeline_handle.await;
 
                 return LocalDelegatedExecutionOutcome {

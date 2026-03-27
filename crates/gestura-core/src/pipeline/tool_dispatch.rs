@@ -2442,6 +2442,7 @@ impl AgentPipeline {
                         result.exit_code,
                         &result.stdout,
                         &result.stderr,
+                        result.failure_kind,
                     ))
                 }
             }
@@ -2449,7 +2450,12 @@ impl AgentPipeline {
         })
     }
 
-    fn format_shell_failure(exit_code: i32, stdout: &str, stderr: &str) -> String {
+    fn format_shell_failure(
+        exit_code: i32,
+        stdout: &str,
+        stderr: &str,
+        failure_kind: Option<crate::tools::shell_streaming::ShellRuntimeFailureKind>,
+    ) -> String {
         let stdout = stdout.trim_end();
         let stderr = stderr.trim_end();
         let mut sections = Vec::new();
@@ -2461,15 +2467,39 @@ impl AgentPipeline {
         }
         let combined = sections.join("\n\n");
 
-        if exit_code == 124 && Self::shell_output_looks_interactive(&combined) {
+        let classification_line = |label: &str| format!("Shell runtime classification: {label}.");
+
+        if matches!(
+            failure_kind,
+            Some(crate::tools::shell_streaming::ShellRuntimeFailureKind::WaitingForInput)
+        ) || (exit_code == 124 && Self::shell_output_looks_interactive(&combined))
+        {
+            let guidance = format!(
+                "{} Command likely waited for interactive input, but the shell tool is non-interactive and cannot answer prompts. Retry with unattended flags such as `-y`, `--yes`, `CI=1`, or an equivalent non-interactive mode, or ask the user for confirmation.",
+                classification_line("waiting_for_input")
+            );
+
             if combined.is_empty() {
-                return "Exit 124: Command likely waited for interactive input, but the shell tool is non-interactive and cannot answer prompts. Retry with unattended flags such as `-y`, `--yes`, `CI=1`, or an equivalent non-interactive mode, or ask the user for confirmation.".to_string();
+                return format!("Exit 124: {guidance}");
             }
 
-            return format!(
-                "Exit 124: Command likely waited for interactive input, but the shell tool is non-interactive and cannot answer prompts. Retry with unattended flags such as `-y`, `--yes`, `CI=1`, or an equivalent non-interactive mode, or ask the user for confirmation.\n\n{}",
-                combined
+            return format!("Exit 124: {guidance}\n\n{combined}");
+        }
+
+        if matches!(
+            failure_kind,
+            Some(crate::tools::shell_streaming::ShellRuntimeFailureKind::ErrorOutput)
+        ) {
+            let guidance = format!(
+                "{} The shell runtime interrupted this quiet long-running command because recent output looked like an error rather than healthy progress. Review the latest stdout/stderr and retry with a corrected command if needed.",
+                classification_line("error_output")
             );
+
+            if combined.is_empty() {
+                return format!("Exit {exit_code}: {guidance}");
+            }
+
+            return format!("Exit {exit_code}: {guidance}\n\n{combined}");
         }
 
         if stderr.to_ascii_lowercase().contains("not a terminal") {
@@ -2483,10 +2513,26 @@ impl AgentPipeline {
 
         if combined.is_empty() {
             if exit_code == 124 {
-                "Exit 124: Command timed out".to_string()
+                match failure_kind {
+                    Some(crate::tools::shell_streaming::ShellRuntimeFailureKind::TimedOut) => {
+                        format!(
+                            "Exit 124: {} Command timed out",
+                            classification_line("timed_out")
+                        )
+                    }
+                    _ => "Exit 124: Command timed out".to_string(),
+                }
             } else {
                 format!("Exit {exit_code}")
             }
+        } else if matches!(
+            failure_kind,
+            Some(crate::tools::shell_streaming::ShellRuntimeFailureKind::TimedOut)
+        ) {
+            format!(
+                "Exit {exit_code}: {}\n\n{combined}",
+                classification_line("timed_out")
+            )
         } else {
             format!("Exit {exit_code}:\n{combined}")
         }
@@ -4013,6 +4059,7 @@ impl AgentPipeline {
                                         r.exit_code,
                                         &r.stdout,
                                         &r.stderr,
+                                        r.failure_kind,
                                     ))
                                 }
                             }
@@ -4037,6 +4084,7 @@ impl AgentPipeline {
                                     result.exit_code,
                                     &result.stdout,
                                     &result.stderr,
+                                    None,
                                 ))
                             }
                         }
@@ -4101,6 +4149,7 @@ impl AgentPipeline {
                                         r.exit_code,
                                         &r.stdout,
                                         &r.stderr,
+                                        r.failure_kind,
                                     ))
                                 }
                             }
@@ -4124,6 +4173,7 @@ impl AgentPipeline {
                                     result.exit_code,
                                     &result.stdout,
                                     &result.stderr,
+                                    None,
                                 ))
                             }
                         }
@@ -8525,11 +8575,40 @@ mod tests {
             124,
             "Need to install the following packages:\ncreate-project-app@4.6.2\nOk to proceed? (y)\n",
             "",
+            None,
         );
 
         assert!(message.contains("likely waited for interactive input"));
+        assert!(message.contains("Shell runtime classification: waiting_for_input."));
         assert!(message.contains("shell tool is non-interactive"));
         assert!(message.contains("Ok to proceed? (y)"));
+    }
+
+    #[test]
+    fn shell_failure_format_surfaces_runtime_error_output_classification() {
+        let message = AgentPipeline::format_shell_failure(
+            124,
+            "",
+            "error: no such file or directory",
+            Some(crate::tools::shell_streaming::ShellRuntimeFailureKind::ErrorOutput),
+        );
+
+        assert!(message.contains("Shell runtime classification: error_output."));
+        assert!(message.contains("looked like an error"));
+        assert!(message.contains("error: no such file or directory"));
+    }
+
+    #[test]
+    fn shell_failure_format_surfaces_generic_timeout_classification() {
+        let message = AgentPipeline::format_shell_failure(
+            124,
+            "",
+            "",
+            Some(crate::tools::shell_streaming::ShellRuntimeFailureKind::TimedOut),
+        );
+
+        assert!(message.contains("Shell runtime classification: timed_out."));
+        assert!(message.contains("Command timed out"));
     }
 
     #[tokio::test]

@@ -658,6 +658,43 @@ impl SessionWorkingMemory {
         }
     }
 
+    fn remember_task_runtime_state_event(&mut self, payload: &serde_json::Value) {
+        let Some(snapshot) = payload
+            .get("snapshot")
+            .and_then(serde_json::Value::as_object)
+        else {
+            return;
+        };
+
+        let completion_ready = snapshot
+            .get("current_task")
+            .is_some_and(serde_json::Value::is_null)
+            && snapshot
+                .get("ready_tasks")
+                .and_then(serde_json::Value::as_array)
+                .is_none_or(Vec::is_empty)
+            && snapshot
+                .get("parallel_ready_tasks")
+                .and_then(serde_json::Value::as_array)
+                .is_none_or(Vec::is_empty)
+            && snapshot
+                .get("blocked_tasks")
+                .and_then(serde_json::Value::as_array)
+                .is_none_or(Vec::is_empty)
+            && snapshot
+                .get("open_tasks")
+                .and_then(serde_json::Value::as_array)
+                .is_none_or(Vec::is_empty)
+            && snapshot
+                .get("missing_requirements")
+                .and_then(serde_json::Value::as_array)
+                .is_none_or(Vec::is_empty);
+
+        if completion_ready {
+            self.resolve_all_blockers();
+        }
+    }
+
     fn trim_formatting_markers(text: &str) -> &str {
         text.trim()
             .trim_start_matches('#')
@@ -1101,6 +1138,15 @@ impl SessionWorkingMemory {
         {
             blocker.status = SessionBlockerStatus::Resolved;
             blocker.updated_at = Utc::now();
+        }
+    }
+
+    /// Resolve every currently open blocker in the active session.
+    pub fn resolve_all_blockers(&mut self) {
+        let now = Utc::now();
+        for blocker in &mut self.blockers {
+            blocker.status = SessionBlockerStatus::Resolved;
+            blocker.updated_at = now;
         }
     }
 
@@ -1757,6 +1803,11 @@ impl SessionState {
         {
             self.working_memory
                 .remember_narration_event(payload, event.timestamp);
+        } else if event.event_type == "agent-stream-task-state"
+            && let Some(payload) = event.payload.as_ref()
+        {
+            self.working_memory
+                .remember_task_runtime_state_event(payload);
         }
         self.activity_log.push(event);
     }
@@ -2204,6 +2255,47 @@ mod tests {
         assert_eq!(
             state.working_memory.blockers[0].detail.as_deref(),
             Some("The current search results conflict on the 2025 baseline.")
+        );
+    }
+
+    #[test]
+    fn completion_runtime_snapshot_resolves_open_blockers() {
+        let mut state = SessionState::default();
+
+        state.record_activity_event(
+            "agent-stream-narration",
+            Some(serde_json::json!({
+                "stage": "blocked",
+                "summary": "I still need one clean market-size source before finalizing the report.",
+                "reason": "The current search results conflict on the 2025 baseline."
+            })),
+        );
+        assert_eq!(state.working_memory.blockers.len(), 1);
+        assert_eq!(
+            state.working_memory.blockers[0].status,
+            SessionBlockerStatus::Open
+        );
+
+        state.record_activity_event(
+            "agent-stream-task-state",
+            Some(serde_json::json!({
+                "snapshot": {
+                    "root_task_id": "root-task",
+                    "current_task": null,
+                    "ready_tasks": [],
+                    "parallel_ready_tasks": [],
+                    "blocked_tasks": [],
+                    "open_tasks": [],
+                    "completed_tasks": [{"id": "verify", "name": "Verify facts", "status": "completed"}],
+                    "missing_requirements": [],
+                    "status_message": "All tracked work is complete"
+                }
+            })),
+        );
+
+        assert_eq!(
+            state.working_memory.blockers[0].status,
+            SessionBlockerStatus::Resolved
         );
     }
 
